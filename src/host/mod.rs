@@ -31,7 +31,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -46,7 +46,8 @@ use crate::signals;
 use crate::spawn;
 
 use acp::{AgentRequest, HostRequest, Pending, Session};
-use control::Peer;
+pub use control::check_bridge;
+use control::{Closer, Peer};
 
 /// The options for running it by hand. `brnr proxy` and `brnr start` also pass
 /// --link-fd, --ready-fd, --proxy-pid, --on-disconnect and --sigmask.
@@ -67,7 +68,8 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// link as gone. Only the writer thread waits; the host carries on.
 const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `brnr stop`: stdin is closed at once, then SIGTERM, then SIGKILL.
+/// `brnr stop`: stdin is closed once what is queued for it is written, then
+/// the agent's process group gets SIGTERM, then SIGKILL.
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
@@ -107,7 +109,7 @@ pub enum Permissions {
 }
 
 impl Permissions {
-    fn parse(name: &str) -> Result<Permissions, String> {
+    pub fn parse(name: &str) -> Result<Permissions, String> {
         match name {
             "ask" => Ok(Permissions::Ask),
             "auto-allow" => Ok(Permissions::AutoAllow),
@@ -137,6 +139,8 @@ struct Args {
     sigmask: Vec<c_int>,
     prompt: Option<String>,
     cwd: Option<String>,
+    /// Seconds `brnr start` waits for the session.
+    start_timeout: Option<u64>,
     program: Vec<OsString>,
 }
 
@@ -195,6 +199,7 @@ const OPTIONS: &[&str] = &[
     "--prompt",
     "--cwd",
     "--sigmask",
+    "--start-timeout",
 ];
 
 fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
@@ -237,6 +242,7 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
             "--on-disconnect" => a.on_disconnect = Some(value),
             "--prompt" => a.prompt = Some(value),
             "--cwd" => a.cwd = Some(value),
+            "--start-timeout" => a.start_timeout = Some(number(&key, &value)?),
             "--sigmask" => {
                 a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
             }
@@ -277,8 +283,9 @@ enum Ev {
     AgentExited,
     PeerOpened {
         peer: u64,
-        tx: Sender<String>,
+        tx: SyncSender<String>,
         label: String,
+        closer: Closer,
     },
     PeerRequest {
         peer: u64,
@@ -315,7 +322,10 @@ struct Host {
     policy: Policy,
     permissions: Permissions,
     agent_pid: pid_t,
-    agent_in: Option<ChildStdin>,
+    /// Bytes for the agent's stdin. Written on their own thread, so an agent
+    /// that stops reading can't stall the host; dropping this closes the
+    /// agent's stdin once what's queued is written.
+    agent_in: Option<Sender<Vec<u8>>>,
     /// Dropping this makes the stdout reader close the agent's stdout.
     stop_stdout: Option<PipeWriter>,
     /// Frames for the link writer while an editor is attached. Writes happen
@@ -325,6 +335,8 @@ struct Host {
     link_writer: Option<thread::JoinHandle<()>>,
     /// brnr start waits on this for the first session.
     ready: Option<File>,
+    /// When brnr start gives up waiting for the session.
+    start_deadline: Option<Instant>,
     log: Logger,
     sink: Sink,
     rx: Receiver<Ev>,
@@ -359,6 +371,9 @@ struct Host {
     stdout_open: bool,
     stderr_open: bool,
     drain_until: Option<Instant>,
+    /// A stop was asked for (brnr stop, a signal, a failed start).
+    stop_requested: bool,
+    /// The next escalation of a stop.
     stopping: Option<(Instant, StopStage)>,
 }
 
@@ -378,6 +393,17 @@ impl Host {
             .map_err(|e| (e, 2))?;
         for bridge in &profile.bridges {
             control::check_bridge(bridge).map_err(|e| (e, 2))?;
+        }
+        if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            return Err(("--prompt is empty".into(), 2));
+        }
+        // An editor's name is its own business; a headless session's name
+        // is how brnr finds it, so it has to be unique.
+        if link.is_none()
+            && let Some(name) = &a.name
+            && let Some(id) = running_named(name)
+        {
+            return Err((format!("a host named {name} is already running ({id})"), 2));
         }
         let mut program = a.program.clone();
         if program.is_empty() {
@@ -464,6 +490,9 @@ impl Host {
         sink.note(None, json!({ "event": "started", "info": info }));
 
         let (tx, rx) = mpsc::channel();
+        let (agent_in, agent_queue) = mpsc::channel();
+        let stdin = child.stdin.take().unwrap();
+        thread::spawn(move || write_agent_stdin(stdin, agent_queue));
         let (stop_rx, stop_tx) = io::pipe().expect("pipe");
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -493,6 +522,9 @@ impl Host {
         thread::spawn(move || read_signals(signals, t));
 
         let manual = link.is_none() && ready.is_none();
+        let start_deadline = (a.start_timeout)
+            .filter(|_| ready.is_some())
+            .map(|secs| Instant::now() + Duration::from_secs(secs));
         let mut host = Host {
             manual,
             startup_reported: false,
@@ -501,11 +533,12 @@ impl Host {
             policy,
             permissions,
             agent_pid,
-            agent_in: child.stdin.take(),
+            agent_in: Some(agent_in),
             stop_stdout: Some(stop_tx),
             link,
             link_writer,
             ready,
+            start_deadline,
             log,
             sink,
             rx,
@@ -528,6 +561,7 @@ impl Host {
             stdout_open: true,
             stderr_open: true,
             drain_until: None,
+            stop_requested: false,
             stopping: None,
         };
         for (n, bridge) in profile.bridges.iter().enumerate() {
@@ -563,11 +597,10 @@ impl Host {
             if self.drain_until.is_some_and(|t| now >= t) {
                 break;
             }
+            self.fire_start_timer(now);
             self.fire_stop_timer(now);
-            let wake = [self.drain_until, self.stopping.as_ref().map(|(t, _)| *t)]
-                .into_iter()
-                .flatten()
-                .min();
+            let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
+            let wake = [self.drain_until, stop_at, self.start_deadline].into_iter().flatten().min();
             let ev = match wake {
                 None => match self.rx.recv() {
                     Ok(ev) => ev,
@@ -593,8 +626,15 @@ impl Host {
         }
         self.startup_failed("the agent exited before the session started");
         let status = describe_status(self.status);
-        self.emit(json!({ "event": "exited", "status": status }));
-        self.sink.note(None, json!({ "event": "exited", "status": status }));
+        // Held messages that never became a prompt.
+        let undelivered: Vec<Value> = self
+            .sessions
+            .iter()
+            .flat_map(|s| s.held.iter().map(|text| json!({ "session": s.id, "text": text })))
+            .collect();
+        let event = json!({ "event": "exited", "status": status, "undelivered": undelivered });
+        self.emit(event.clone());
+        self.sink.note(None, event);
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.
@@ -643,6 +683,12 @@ impl Host {
             }
             Ev::AgentStderrEof => self.stderr_open = false,
             Ev::AgentExited => {
+                // Stopping: whatever the agent left running in its process
+                // group goes too. Done before reaping, while the pid (and so
+                // the group id) can't be reused.
+                if self.stop_requested {
+                    self.kill_group(libc::SIGKILL);
+                }
                 // Reaped here, on the thread that sends signals, so a signal
                 // can never reach a recycled pid.
                 self.status = reap(self.agent_pid).ok();
@@ -650,8 +696,8 @@ impl Host {
                 self.stopping = None;
                 self.drain_until = Some(Instant::now() + DRAIN);
             }
-            Ev::PeerOpened { peer, tx, label } => {
-                self.peers.insert(peer, Peer::new(tx, label));
+            Ev::PeerOpened { peer, tx, label, closer } => {
+                self.peers.insert(peer, Peer::new(tx, label, closer));
             }
             Ev::PeerRequest { peer, req } => self.peer_request(peer, req),
             Ev::PeerClosed { peer } => {
@@ -754,8 +800,8 @@ impl Host {
     }
 
     fn write_agent(&mut self, bytes: &[u8]) {
-        if let Some(agent) = &mut self.agent_in
-            && agent.write_all(bytes).is_err()
+        if let Some(agent) = &self.agent_in
+            && agent.send(bytes.to_vec()).is_err()
         {
             self.agent_in = None; // The agent closed its stdin.
         }
@@ -764,8 +810,8 @@ impl Host {
     // ---- stopping -----------------------------------------------------
 
     /// A signal to the host itself. HUP, INT, QUIT and TERM stop the agent
-    /// gracefully, and kill it if a stop is already under way; USR1 and USR2
-    /// are passed on.
+    /// gracefully, and kill its process group if a stop is already under
+    /// way; USR1 and USR2 are passed on.
     fn host_signal(&mut self, sig: c_int) {
         if self.status.is_some() {
             return;
@@ -775,11 +821,11 @@ impl Host {
             libc::SIGUSR1 | libc::SIGUSR2 => unsafe {
                 libc::kill(self.agent_pid, sig);
             },
-            _ if self.stopping.is_some() => {
+            _ if self.stop_requested => {
                 if self.manual {
                     eprintln!("brnr host: killing the agent");
                 }
-                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+                self.kill_group(libc::SIGKILL);
             }
             _ => {
                 if self.manual {
@@ -790,12 +836,13 @@ impl Host {
         }
     }
 
-    /// Closes the agent's stdin, then escalates to SIGTERM and SIGKILL if it
-    /// doesn't exit.
-    fn begin_stop(&mut self) {
-        if self.status.is_some() || self.stopping.is_some() {
+    /// Closes the agent's stdin, then escalates to SIGTERM and SIGKILL (of
+    /// its whole process group) if it doesn't exit.
+    pub(super) fn begin_stop(&mut self) {
+        if self.status.is_some() || self.stop_requested {
             return;
         }
+        self.stop_requested = true;
         self.sink.note(None, json!({ "event": "stopping" }));
         self.agent_in = None;
         self.stopping = Some((Instant::now() + STOP_TERM_AFTER, StopStage::Term));
@@ -808,19 +855,38 @@ impl Host {
         }
         match stage {
             StopStage::Term => {
-                unsafe { libc::kill(self.agent_pid, libc::SIGTERM) };
+                self.kill_group(libc::SIGTERM);
                 self.stopping = Some((now + STOP_KILL_AFTER, StopStage::Kill));
             }
             StopStage::Kill => {
-                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+                self.kill_group(libc::SIGKILL);
                 self.stopping = None;
             }
         }
     }
 
+    /// brnr start stops waiting for the session at the deadline, so the
+    /// host gives up too rather than carry on where nobody knows about it.
+    fn fire_start_timer(&mut self, now: Instant) {
+        if self.start_deadline.is_some_and(|t| now >= t) {
+            self.start_deadline = None;
+            if self.ready.is_some() {
+                self.fail_start("timed out waiting for the session");
+            }
+        }
+    }
+
+    /// Signals the agent's process group (it leads its own; see `start`).
+    /// Only while the agent hasn't been reaped, so the group id is ours.
+    fn kill_group(&self, sig: c_int) {
+        if self.status.is_none() {
+            unsafe { libc::kill(-self.agent_pid, sig) };
+        }
+    }
+
     /// Startup failed after the agent was spawned.
     fn kill_all(&mut self) {
-        unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+        self.kill_group(libc::SIGKILL);
         for &pid in &self.bridge_pids {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
@@ -843,6 +909,16 @@ fn write_link(mut link: UnixStream, frames: Receiver<(u8, Vec<u8>)>) {
     let _ = link.set_write_timeout(Some(LINK_WRITE_TIMEOUT));
     for (kind, payload) in frames {
         if frame::write(&mut link, kind, &payload).is_err() {
+            return;
+        }
+    }
+}
+
+/// Writes queued bytes to the agent's stdin until the queue closes or the
+/// agent closes its end. Dropping `stdin` on the way out closes it.
+fn write_agent_stdin(mut stdin: ChildStdin, queue: Receiver<Vec<u8>>) {
+    for bytes in queue {
+        if stdin.write_all(&bytes).is_err() {
             return;
         }
     }
@@ -983,6 +1059,24 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
         }
     }
     Ok(status)
+}
+
+/// The id of a running host called `name`, from the metadata files.
+pub fn running_named(name: &str) -> Option<String> {
+    fs::read_dir(paths::runtime_dir())
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.path()).ok()?).ok())
+        .find(|meta| meta["name"] == name && meta["host_pid"].as_i64().is_some_and(alive))
+        .map(|meta| meta["id"].as_str().unwrap_or("?").to_owned())
+}
+
+/// Whether process `pid` exists (it may belong to someone else).
+pub fn alive(pid: i64) -> bool {
+    pid > 0
+        && (unsafe { libc::kill(pid as pid_t, 0) } == 0
+            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.

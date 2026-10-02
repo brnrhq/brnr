@@ -7,7 +7,7 @@ use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{ChildStdin, Command};
 
 /// `brnr host`: the running binary, as the host.
 pub fn host_command() -> io::Result<Command> {
@@ -37,8 +37,9 @@ fn install_dir() -> io::Result<PathBuf> {
 /// intermediate child exits it is reparented to launchd/init: out of our
 /// process group and out from under us in the process tree. `fd` is moved
 /// to `target` in the new process, the only descriptor it gets from us
-/// besides what `cmd` sets up for stdio.
-pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<()> {
+/// besides what `cmd` sets up for stdio. Returns the new process's stdin if
+/// `cmd` asked for a pipe.
+pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Option<ChildStdin>> {
     unsafe {
         cmd.pre_exec(move || {
             // dup2 clears FD_CLOEXEC on the copy, except when the fd is
@@ -63,6 +64,7 @@ pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<()> {
     let program = PathBuf::from(cmd.get_program());
     let mut intermediate =
         cmd.spawn().map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))?;
+    let stdin = intermediate.stdin.take();
     intermediate.wait()?;
-    Ok(())
+    Ok(stdin)
 }

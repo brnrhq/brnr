@@ -52,21 +52,30 @@ pub struct Bridge {
 /// The named profile, or `default` (or nothing) when no name is given.
 pub fn load(name: Option<&str>) -> Result<Profile, String> {
     let path = paths::config_file();
+    let profiles = match load_all() {
+        Ok(Some(profiles)) => profiles,
+        Ok(None) if name.is_none() => return Ok(Profile::default()),
+        Ok(None) => return Err(format!("{}: no such file", path.display())),
+        Err(err) => return Err(err),
+    };
+    match name {
+        Some(name) => profiles
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no profile {name:?} in {}", path.display())),
+        None => Ok(profiles.get("default").cloned().unwrap_or_default()),
+    }
+}
+
+/// Every profile, or `None` if there is no config file.
+pub fn load_all() -> Result<Option<BTreeMap<String, Profile>>, String> {
+    let path = paths::config_file();
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == ErrorKind::NotFound && name.is_none() => {
-            return Ok(Profile::default());
-        }
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("{}: {err}", path.display())),
     };
     let file: ConfigFile =
         toml::from_str(&text).map_err(|e| format!("{}: {}", path.display(), e.message()))?;
-    match name {
-        Some(name) => file
-            .profiles
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("no profile {name:?} in {}", path.display())),
-        None => Ok(file.profiles.get("default").cloned().unwrap_or_default()),
-    }
+    Ok(Some(file.profiles))
 }
