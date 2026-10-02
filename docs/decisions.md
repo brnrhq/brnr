@@ -302,3 +302,15 @@ found; on Linux it is the link's target in the Cellar, where the adapters
 aren't. brnr now also looks next to the path it was started by (`argv[0]`,
 when it is a path), and passes that path on to the host, which is the one that
 starts the agent.
+
+## 28. The adapters' command names
+
+First the compiled adapters took the npm packages' command names
+(`claude-agent-acp`, `codex-acp`), so docs and configs read the same either
+way. Installed through Homebrew next to a global npm install, though, two
+commands of the same name are on PATH, and which one runs depends on PATH
+order.
+
+**Chosen: names of their own, `brnr-claude-adapter` and `brnr-codex-adapter`.**
+`brnr proxy -- claude-agent-acp` still runs the npm package. `brnr doctor`
+reports both kinds.

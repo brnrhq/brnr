@@ -290,7 +290,7 @@ fn adapters_next_to_a_symlinked_brnr() {
     let bin = env.dir.join("prefix").join("bin");
     fs::create_dir_all(&bin).unwrap();
     symlink(env!("CARGO_BIN_EXE_brnr"), bin.join("brnr")).unwrap();
-    symlink(AGENT, bin.join("claude-agent-acp")).unwrap();
+    symlink(AGENT, bin.join("brnr-claude-adapter")).unwrap();
     // Enough PATH for the fake agent's python3, not the prefix.
     let python = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();
     let python = String::from_utf8(python.stdout).unwrap();
@@ -298,11 +298,11 @@ fn adapters_next_to_a_symlinked_brnr() {
 
     let doctor = env.brnr_at(&bin.join("brnr"), &["doctor"]).env("PATH", &path).output().unwrap();
     let doctor = String::from_utf8_lossy(&doctor.stdout).into_owned();
-    let want = format!("ok    claude-agent-acp: {}", bin.join("claude-agent-acp").display());
+    let want = format!("ok    brnr-claude-adapter: {}", bin.join("brnr-claude-adapter").display());
     assert!(doctor.contains(&want), "{doctor}");
 
     let args =
-        ["start", "--name", "a", "--wait", "--prompt", "reply linked", "--", "claude-agent-acp"];
+        ["start", "--name", "a", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");

@@ -5,7 +5,8 @@
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, and every profile's settings, cwd, agent
 //!   and bridges are valid;
-//! - the bundled adapters: where `claude-agent-acp` and `codex-acp` are found;
+//! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
+//!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running hosts: each answers, and no two share a name.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
@@ -344,7 +345,7 @@ fn describe_profile(profile: &config::Profile) -> String {
 // ---- adapters ------------------------------------------------------------
 
 fn adapters(r: &mut Report) {
-    for name in ["claude-agent-acp", "codex-acp"] {
+    for name in ["brnr-claude-adapter", "brnr-codex-adapter", "claude-agent-acp", "codex-acp"] {
         match find_program(name) {
             Some(path) => r.line(Level::Ok, name, path.display().to_string()),
             None => r.line(Level::Info, name, "not found next to brnr or on PATH"),

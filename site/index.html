@@ -237,8 +237,8 @@
         <p class="intro">Set your editor's ACP agent command to <code>brnr proxy</code> and put the agent after <code>--</code>.</p>
       </div>
       <div class="body">
-<pre>brnr proxy -- claude-agent-acp
-brnr proxy -- codex-acp
+<pre>brnr proxy -- brnr-claude-adapter
+brnr proxy -- brnr-codex-adapter
 brnr proxy --profile work          <span class="c"># agent and settings from a profile</span></pre>
         <p>When the editor goes away, <code>on_disconnect</code> decides what happens. With <code>direct</code>, the default, the agent stops the way it would if the editor had started it. With <code>headless</code>, it keeps running and brnr answers it in place of the editor.</p>
       </div>
@@ -272,11 +272,11 @@ brnr stop demo</pre>
         <p class="intro">Start a headless session and check in on it later.</p>
       </div>
       <div class="body">
-<pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp</pre>
+<pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
         <p>The <code>permissions</code> setting in your profile handles permission requests. With <code>ask</code>, they wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge. Every session gets a transcript under <code>~/.brnr/projects</code>, stored in the same folders as Claude Code's own transcripts.</p>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
-agent = ["claude-agent-acp"]
+agent = ["brnr-claude-adapter"]
 on_disconnect = "headless"
 permissions = "ask"                 <span class="c"># ask | auto-allow | auto-deny</span></pre>
       </div>
@@ -290,7 +290,7 @@ permissions = "ask"                 <span class="c"># ask | auto-allow | auto-de
         <p class="intro">brnr works with any ACP agent. It doesn't include one.</p>
       </div>
       <div class="body">
-        <p>For Claude Code and Codex, install the ACP adapters with Homebrew (<code>brew install brnrhq/tap/brnr-adapters</code>, which compiles them on your machine) or from npm (<a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a>, <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a>). Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
+        <p>For Claude Code and Codex, install the ACP adapters with Homebrew (<code>brew install brnrhq/tap/brnr-adapters</code>, which compiles <code>brnr-claude-adapter</code> and <code>brnr-codex-adapter</code> on your machine) or from npm (<a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a>, <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a>). Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
         <p>brnr runs on macOS and Linux.</p>
       </div>
     </div>

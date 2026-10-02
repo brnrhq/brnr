@@ -22,7 +22,7 @@ pub fn host_command() -> io::Result<Command> {
 }
 
 /// A bare program name (no `/`) that is installed next to brnr, such as the
-/// adapters `claude-agent-acp` and `codex-acp`. Found there even when that
+/// adapters `brnr-claude-adapter` and `brnr-codex-adapter`. Found there even when that
 /// directory isn't on the editor's PATH.
 ///
 /// "Next to brnr" is the running binary's directory, and the directory of

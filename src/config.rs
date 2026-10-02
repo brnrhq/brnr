@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! [profiles.slack]
-//! agent = ["claude-agent-acp"]       # used when no agent is given after --
+//! agent = ["brnr-claude-adapter"]    # used when no agent is given after --
 //! cwd = "~/work/project"             # sessions started headless (brnr start)
 //! on_disconnect = "headless"         # direct | headless
 //! permissions = "ask"                # ask | auto-allow | auto-deny, with no editor attached
