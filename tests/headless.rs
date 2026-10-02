@@ -165,7 +165,7 @@ fn held_messages_are_reported_on_exit() {
         .unwrap();
     sleep(Duration::from_millis(300));
     let out = env.run(&["send", "a", "--after-turn", "later"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (session sess-1)");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (session sess-1, message m2)");
     assert!(env.run(&["stop", "a"]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
@@ -201,8 +201,12 @@ fn interrupts_keep_their_order() {
 fn slow_watcher_is_disconnected() {
     let env = Env::new("slowwatch").agent("FLOOD", "20000");
     env.start("a", &[]);
-    let mut watch =
-        env.brnr(&["watch", "a"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut watch = env
+        .brnr(&["watch", "a", "--raw"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     sleep(Duration::from_millis(300));
     unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
     assert!(env.run(&["send", "a", "go"]).status.success());
@@ -224,8 +228,12 @@ fn slow_watcher_is_disconnected() {
 fn reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
     env.start("a", &[]);
-    let mut watch =
-        env.brnr(&["watch", "a"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut watch = env
+        .brnr(&["watch", "a", "--raw"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
     sleep(Duration::from_millis(300));

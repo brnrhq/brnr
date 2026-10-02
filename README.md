@@ -69,13 +69,17 @@ When the editor goes away without a handoff, `on_disconnect` decides what happen
 ```sh
 brnr list                          # running hosts and their sessions
 brnr list --all                    # … plus inactive sessions, from their transcripts
+brnr status demo                   # what it's doing: turn, tools, plan, tokens, last message
 brnr send demo "also update the changelog"
 brnr send demo --after-turn "then run the tests"
 brnr send demo --interrupt "stop, wrong branch"
 brnr send demo --context "the API key is in .env.local"   # added to the next prompt
-brnr watch demo                    # every event and ACP message, live
-brnr pending                       # permission requests waiting for an answer
-brnr approve demo                  # or: brnr deny demo p2, --option <id>
+brnr send demo --wait "what did you change?"              # prints the reply
+brnr send demo --file src/api.rs --image screenshot.png "why does this look wrong?"
+brnr cancel demo                   # stop the running turn (held messages are dropped and listed)
+brnr queue demo                    # held messages and context; --drop m3, --clear
+brnr watch demo                    # live: messages, tools, plan, permissions (--raw: ACP too)
+brnr log demo                      # the story so far; --last 2, --follow, --thoughts, --json
 brnr stop demo                     # stdin closed, then SIGTERM, then SIGKILL
 ```
 
@@ -86,26 +90,90 @@ started goes with it.
 Injected messages reach the agent as ordinary user messages, and the editor
 shows them as such (`user_message_chunk`). When an agent takes up a message
 sent mid-turn is the agent's business: claude-agent-acp, for one, folds it into
-the running turn.
+the running turn. Every message gets an id (`m<n>`), which `send --wait` uses to
+find the turn that answers it.
+
+### Waiting, for scripts
+
+```sh
+brnr wait demo                     # until no turn is running and nothing is held
+brnr wait demo --for permission    # until a permission request is waiting
+brnr wait demo --for turn          # the next turn's end; --for exit: the host's
+brnr start --wait --stop-when-idle --prompt "fix the failing tests" -- claude-agent-acp
+```
+
+`wait`, `send --wait` and `start --wait` exit 0 when the turn ended normally
+(`end_turn`), 1 when it failed or stopped for another reason, and 124 on
+`--timeout <s>`. While they wait, permission requests are announced on stderr.
+
+### Permissions
+
+```sh
+brnr pending                       # permission requests waiting for an answer
+brnr show demo                     # one in full: the command, paths, the diff
+brnr approve demo                  # or: brnr deny demo p2, --option <id>
+```
+
+### Settings and sessions
+
+```sh
+brnr mode demo [plan]              # list or set the agent's mode
+brnr model demo [<model>]          # list or set the model
+brnr config demo [effort=high]     # any of the agent's config options
+brnr commands demo                 # the agent's slash commands (send them as text)
+brnr sessions demo                 # the agent's own list of sessions
+brnr fork demo                     # a copy of the session, in the same host
+brnr close demo --session <id>     # close one; a host with none left stops
+```
+
+### Notifications
+
+`brnr notify` runs a command for each event (by default `permission_request`,
+`turn_ended` and `exited`). The event is in its environment (`BRNR_EVENT`,
+`BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION`, `BRNR_REQUEST`,
+`BRNR_HOST`) and, as JSON, on its stdin; nothing is put on its command line, so
+what the agent writes can't become arguments.
+
+```sh
+brnr notify demo -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+```
+
+In a profile it is a bridge, for every host that profile starts:
+
+```toml
+[[profiles.work.bridges]]
+command = ["brnr", "notify", "--", "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
+```
 
 ## Headless sessions
 
 ```sh
 brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp
-brnr host --name demo --prompt - -- codex-acp < task.md     # in the foreground; Ctrl-C stops it
+brnr start --mode plan --model opus --prompt - < task.md       # set up before the first prompt
+brnr start --resume 0199c2                                     # carry on a session from list --inactive
+brnr host --name demo --prompt - -- codex-acp < task.md        # in the foreground; Ctrl-C stops it
 ```
 
 `brnr start` waits up to 120 seconds (`BRNR_START_TIMEOUT`) for the session
 to open. If it gives up, or is interrupted, the host stops too and the prompt
 is never sent. A `--name` must be unique among running hosts. Messages still
 held when the agent exits are listed in the `exited` event as `undelivered`.
+`--stop-when-idle` stops the host once a turn has ended and nothing is running
+or held.
+
+`--resume` uses the agent's `session/resume` (or `session/load`, without
+recording the replayed history again), in the session's cwd, with the agent and
+name it last had, and appends to the same transcript. `brnr host` shows the
+session as it goes (`--quiet`: not).
 
 With no editor attached the host is the agent's client: permission requests
-follow the `permissions` policy (`ask` waits for `brnr approve`/`deny` or a
-bridge), elicitation is declined, and anything else is answered with "method
-not found". The editor's `fs` and `terminal` client capabilities are removed
-from `initialize` up front (ACP v2 drops them), so the agent never comes to rely
-on something a headless host can't provide.
+follow the `permissions` rules (`ask` waits for `brnr approve`/`deny`, a bridge,
+or `permission_timeout`, which denies), elicitation is declined, and anything
+else is answered with "method not found". If the agent needs a login, the start
+fails and says so: log in with the agent's own CLI first. The editor's `fs` and
+`terminal` client capabilities are removed from `initialize` up front (ACP v2
+drops them), so the agent never comes to rely on something a headless host
+can't provide.
 
 ## Profiles
 
@@ -119,13 +187,27 @@ on_disconnect = "direct"
 agent = ["claude-agent-acp"]
 cwd = "~/work/project"              # for brnr start
 on_disconnect = "headless"
-permissions = "ask"                 # ask | auto-allow | auto-deny
+permissions = "ask"                 # ask | auto-allow | auto-deny, or by tool kind:
+# permissions = { default = "ask", read = "auto-allow", search = "auto-allow" }
+permission_timeout = 600            # deny what nobody answered in 10 minutes
+mode = "plan"                       # headless sessions: mode and config options
+config = { model = "opus" }         #   applied before the first prompt
+stop_when_idle = false
 log = true
 
 [[profiles.work.bridges]]
 command = ["~/bin/slack-bridge", "--channel", "#agents"]
 events = ["permission_request", "turn_ended"]
+
+[[profiles.work.mcp_servers]]       # for sessions the host opens
+name = "github"
+command = "github-mcp-server"       # or url = "https://…", type = "http" | "sse"
+args = ["stdio"]
+env = { GITHUB_TOKEN = "…" }
 ```
+
+Tool kinds are ACP's: read, edit, delete, move, search, execute, think, fetch,
+switch_mode, other.
 
 ## Bridges
 
@@ -134,10 +216,13 @@ the host from the profile (requests on its stdout, events on its stdin; it
 should exit when its stdin closes), or anything that connects to the control
 socket. Its environment has `BRNR_HOST`, `BRNR_HOST_ID` and `BRNR_SOCKET`.
 
-Requests: `status`, `send`, `subscribe`, `pending`, `approve`, `deny`, `stop`.
-Events: `user_message`, `agent_message`, `permission_request`,
-`permission_resolved`, `turn_ended`, `owner_changed`, `exited`, and `acp`
-(every ACP message with its direction; only sent to subscribers that ask for it).
+Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
+`approve`, `deny`, `set_mode`, `set_config`, `set_model`, `sessions`, `fork`,
+`close`, `stop` (see `src/host/control.rs`). Events: `user_message`,
+`agent_message`, `agent_thought`, `tool_call`, `plan`, `usage`,
+`session_changed`, `permission_request`, `permission_resolved`, `turn_ended`,
+`owner_changed`, `exited`, and `acp` (every ACP message with its direction; only
+sent to subscribers that ask for it).
 
 A bridge has to keep reading: one that falls a few thousand lines behind is
 dropped (a connection is closed, a started bridge gets SIGTERM) rather than
@@ -155,8 +240,10 @@ Like the agents' own transcripts, keyed by project folder:
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's file has the
 same folder and name as Claude Code's own transcript. Every record carries
-`host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining. Transcripts
-hold prompts and tool output, so brnr creates them readable only by you.
+`host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining. Besides the raw
+ACP, a session's file has the host's events (the same ones bridges get), which
+is what `brnr log` reads. Transcripts hold prompts and tool output, so brnr
+creates them readable only by you.
 
 ## Adapters
 

@@ -19,6 +19,8 @@
 
 mod acp;
 mod control;
+mod requests;
+mod state;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -45,20 +47,23 @@ use crate::paths;
 use crate::signals;
 use crate::spawn;
 
-use acp::{AgentRequest, HostRequest, Pending, Session};
+use acp::{AgentRequest, Pending, Session};
 pub use control::check_bridge;
 use control::{Closer, Peer};
+use requests::{HostRequest, SetupStep};
 
 /// The options for running it by hand. `brnr proxy` and `brnr start` also pass
 /// --link-fd, --ready-fd, --proxy-pid, --on-disconnect and --sigmask.
 const USAGE: &str = "usage: brnr host [--profile <name>] [--name <name>] [--cwd <dir>] \
-[--prompt <text> | --prompt -] [-- <agent> [args...]]
+[--prompt <text> | --prompt -] [--resume <session>] [--mode <mode>] [--set <option>=<value>]... \
+[--permissions <policy>] [--stop-when-idle] [--quiet] [-- <agent> [args...]]
 
 Runs a headless ACP session in the foreground: the host starts the agent,
-opens a session in the current directory (or --cwd) and sends --prompt if
-given. Talk to it with brnr (send, watch, approve, stop, ...). Ctrl-C stops
-it gracefully; press it again to kill the agent. Exits with the agent's
-exit status.";
+opens a session in the current directory (or --cwd), or resumes one, and
+sends --prompt if given. It shows the session as it goes (--quiet: not).
+Talk to it with brnr (send, watch, approve, stop, ...). Ctrl-C stops it
+gracefully; press it again to kill the agent. Exits with the agent's exit
+status.";
 
 /// How long to keep forwarding output after the agent exits, in case
 /// something it started still holds its stdout open.
@@ -118,12 +123,78 @@ impl Permissions {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Permissions::Ask => "ask",
             Permissions::AutoAllow => "auto-allow",
             Permissions::AutoDeny => "auto-deny",
         }
+    }
+}
+
+/// ACP's tool kinds, which permission rules can name.
+pub const TOOL_KINDS: &[&str] = &[
+    "read",
+    "edit",
+    "delete",
+    "move",
+    "search",
+    "execute",
+    "think",
+    "fetch",
+    "switch_mode",
+    "other",
+];
+
+/// The permission policy for each tool kind, with a default for the rest.
+#[derive(Clone)]
+pub struct PermissionRules {
+    pub default: Permissions,
+    pub kinds: Vec<(String, Permissions)>,
+}
+
+impl PermissionRules {
+    pub fn parse(spec: Option<&config::PermissionsSpec>) -> Result<PermissionRules, String> {
+        let mut rules = PermissionRules { default: Permissions::Ask, kinds: Vec::new() };
+        match spec {
+            None => {}
+            Some(config::PermissionsSpec::One(policy)) => {
+                rules.default = Permissions::parse(policy)?
+            }
+            Some(config::PermissionsSpec::ByKind(map)) => {
+                for (kind, policy) in map {
+                    let policy = Permissions::parse(policy)?;
+                    if kind == "default" {
+                        rules.default = policy;
+                    } else if TOOL_KINDS.contains(&kind.as_str()) {
+                        rules.kinds.push((kind.clone(), policy));
+                    } else {
+                        let kinds = TOOL_KINDS.join(", ");
+                        return Err(format!(
+                            "unknown tool kind {kind:?} (kinds: default, {kinds})"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(rules)
+    }
+
+    pub fn for_kind(&self, kind: &str) -> Permissions {
+        self.kinds.iter().find(|(k, _)| k == kind).map_or(self.default, |(_, p)| *p)
+    }
+
+    /// `"ask"`, or `{"default": "ask", "read": "auto-allow", …}`.
+    pub fn describe(&self) -> Value {
+        if self.kinds.is_empty() {
+            return json!(self.default.name());
+        }
+        let mut map = serde_json::Map::new();
+        map.insert("default".into(), json!(self.default.name()));
+        for (kind, policy) in &self.kinds {
+            map.insert(kind.clone(), json!(policy.name()));
+        }
+        Value::Object(map)
     }
 }
 
@@ -141,6 +212,12 @@ struct Args {
     cwd: Option<String>,
     /// Seconds `brnr start` waits for the session.
     start_timeout: Option<u64>,
+    resume: Option<String>,
+    mode: Option<String>,
+    set: Vec<(String, String)>,
+    permissions: Option<String>,
+    stop_when_idle: bool,
+    quiet: bool,
     program: Vec<OsString>,
 }
 
@@ -200,7 +277,14 @@ const OPTIONS: &[&str] = &[
     "--cwd",
     "--sigmask",
     "--start-timeout",
+    "--resume",
+    "--mode",
+    "--set",
+    "--permissions",
 ];
+
+/// Options without a value.
+const FLAGS: &[&str] = &["--stop-when-idle", "--quiet"];
 
 fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
     value.parse().map_err(|_| Some(format!("{key}: not a number: {value}")))
@@ -218,9 +302,23 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
         if arg == "-h" || arg == "--help" {
             return Err(None);
         }
+        match arg.as_str() {
+            "--stop-when-idle" => {
+                a.stop_when_idle = true;
+                continue;
+            }
+            "--quiet" => {
+                a.quiet = true;
+                continue;
+            }
+            _ => {}
+        }
+        debug_assert!(!FLAGS.contains(&arg.as_str()));
         let (key, inline) = match arg.split_once('=') {
-            Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
-            None => (arg, None),
+            Some((key, value)) if OPTIONS.contains(&key) => {
+                (key.to_owned(), Some(value.to_owned()))
+            }
+            _ => (arg, None),
         };
         if !OPTIONS.contains(&key.as_str()) {
             return Err(Some(format!("unknown option: {key}")));
@@ -243,6 +341,13 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
             "--prompt" => a.prompt = Some(value),
             "--cwd" => a.cwd = Some(value),
             "--start-timeout" => a.start_timeout = Some(number(&key, &value)?),
+            "--resume" => a.resume = Some(value),
+            "--mode" => a.mode = Some(value),
+            "--set" => match value.split_once('=') {
+                Some((k, v)) => a.set.push((k.to_owned(), v.to_owned())),
+                None => return Err(Some(format!("--set takes <option>=<value>, not {value}"))),
+            },
+            "--permissions" => a.permissions = Some(value),
             "--sigmask" => {
                 a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
             }
@@ -320,7 +425,9 @@ struct Host {
     info: Value,
     host_id: String,
     policy: Policy,
-    permissions: Permissions,
+    permissions: PermissionRules,
+    /// How long an unanswered permission request waits before it is denied.
+    permission_timeout: Option<Duration>,
     agent_pid: pid_t,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
     /// that stops reading can't stall the host; dropping this closes the
@@ -362,6 +469,23 @@ struct Host {
     editor_buf: Vec<u8>,
     /// Headless start: the first prompt, sent once the session exists.
     first_prompt: Option<String>,
+    /// Headless start: resume this session instead of opening a new one.
+    resume: Option<String>,
+    /// Headless start: mode and config options to set before the prompt.
+    setup: std::collections::VecDeque<SetupStep>,
+    /// Headless start: the session being opened.
+    starting: Option<String>,
+    /// MCP servers for the sessions the host opens, as ACP has them.
+    mcp_servers: Vec<Value>,
+    /// Stop once a turn has ended and nothing is running or held.
+    stop_when_idle: bool,
+    /// By hand: show the session's events on stdout.
+    show_events: bool,
+    /// What the agent said it can do in `initialize`.
+    agent_caps: Value,
+    auth_methods: Value,
+    next_message: u64,
+    started: Instant,
 
     // Bridges; see control.rs.
     peers: HashMap<u64, Peer>,
@@ -386,11 +510,24 @@ impl Host {
             .or(profile.on_disconnect.as_deref())
             .map_or(Ok(Policy::Direct), Policy::parse)
             .map_err(|e| (e, 2))?;
-        let permissions = profile
-            .permissions
-            .as_deref()
-            .map_or(Ok(Permissions::Ask), Permissions::parse)
+        let mut permissions =
+            PermissionRules::parse(profile.permissions.as_ref()).map_err(|e| (e, 2))?;
+        if let Some(policy) = &a.permissions {
+            permissions.default = Permissions::parse(policy).map_err(|e| (e, 2))?;
+        }
+        let mcp_servers = profile
+            .mcp_servers
+            .iter()
+            .map(config::McpServer::to_acp)
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|e| (e, 2))?;
+        let mut config_options: std::collections::BTreeMap<String, String> =
+            profile.config.clone().unwrap_or_default();
+        config_options.extend(a.set.iter().cloned());
+        let setup = requests::setup_steps(
+            a.mode.clone().or(profile.mode.clone()),
+            config_options.into_iter().collect(),
+        );
         for bridge in &profile.bridges {
             control::check_bridge(bridge).map_err(|e| (e, 2))?;
         }
@@ -483,7 +620,7 @@ impl Host {
             "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
             "socket": sock_path.to_string_lossy(),
             "on_disconnect": policy.name(),
-            "permissions": permissions.name(),
+            "permissions": permissions.describe(),
             "started": log::rfc3339(started),
         });
         write_atomic(&meta_path, format!("{info:#}\n").as_bytes());
@@ -532,6 +669,7 @@ impl Host {
             host_id,
             policy,
             permissions,
+            permission_timeout: profile.permission_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: Some(agent_in),
             stop_stdout: Some(stop_tx),
@@ -555,6 +693,16 @@ impl Host {
             next_permission: 0,
             editor_buf: Vec::new(),
             first_prompt: a.prompt,
+            resume: a.resume,
+            setup,
+            starting: None,
+            mcp_servers,
+            stop_when_idle: a.stop_when_idle || profile.stop_when_idle.unwrap_or(false),
+            show_events: manual && !a.quiet,
+            agent_caps: Value::Null,
+            auth_methods: Value::Null,
+            next_message: 0,
+            started: Instant::now(),
             peers: HashMap::new(),
             bridge_pids: Vec::new(),
             status: None,
@@ -599,8 +747,13 @@ impl Host {
             }
             self.fire_start_timer(now);
             self.fire_stop_timer(now);
+            self.fire_permission_timers(now);
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
-            let wake = [self.drain_until, stop_at, self.start_deadline].into_iter().flatten().min();
+            let permission_at = self.next_permission_deadline();
+            let wake = [self.drain_until, stop_at, self.start_deadline, permission_at]
+                .into_iter()
+                .flatten()
+                .min();
             let ev = match wake {
                 None => match self.rx.recv() {
                     Ok(ev) => ev,
@@ -630,11 +783,18 @@ impl Host {
         let undelivered: Vec<Value> = self
             .sessions
             .iter()
-            .flat_map(|s| s.held.iter().map(|text| json!({ "session": s.id, "text": text })))
+            .flat_map(|s| {
+                s.held.iter().map(|h| json!({ "session": s.id, "message": h.id, "text": h.text }))
+            })
             .collect();
-        let event = json!({ "event": "exited", "status": status, "undelivered": undelivered });
+        let mut event = json!({ "event": "exited", "status": status, "undelivered": undelivered });
         self.emit(event.clone());
-        self.sink.note(None, event);
+        event["ts"] = json!(log::rfc3339(SystemTime::now()));
+        event["host_id"] = json!(self.host_id);
+        // Each session's transcript says how it ended, too.
+        for s in &self.sessions {
+            self.sink.note(Some(&s.id), event.clone());
+        }
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.
