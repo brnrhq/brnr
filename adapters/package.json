@@ -1,0 +1,9 @@
+{
+  "name": "brnr-adapters",
+  "private": true,
+  "description": "ACP adapters bundled with brnr as single-file executables. The agents themselves (Claude Code, Codex) are not bundled; the adapters run the user's own.",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.85.1",
+    "@agentclientprotocol/codex-acp": "2.1.1"
+  }
+}

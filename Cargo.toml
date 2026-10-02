@@ -1,0 +1,18 @@
+[package]
+name = "brnr"
+version = "0.1.0"
+edition = "2024"
+description = "A burner phone for your coding agents: run ACP agents behind a host you can talk to from outside the editor."
+license = "Apache-2.0"
+repository = "https://github.com/brnrhq/brnr"
+readme = "README.md"
+keywords = ["acp", "agent", "claude", "codex", "editor"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["adapters/"]
+
+[dependencies]
+libc = "0.2.189"
+serde = { version = "1.0.229", features = ["derive"] }
+# preserve_order: a prompt the host rewrites keeps the editor's key order.
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+toml = "1.1.6"

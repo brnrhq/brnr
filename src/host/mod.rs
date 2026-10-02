@@ -1,0 +1,995 @@
+//! `brnr host`: owns the agent process and its pipes for the agent's whole life.
+//!
+//! Started detached by `brnr proxy` for an editor (with `--link-fd`), detached
+//! by `brnr start` for a session that is headless from the start (with
+//! `--ready-fd`), or by hand, in the foreground, for a headless session (see
+//! [`USAGE`]). It is the hub between three kinds of peer:
+//!
+//! - the agent, over its stdio;
+//! - the ACP owner: the editor, through the proxy on the link, or the host
+//!   itself when no editor is attached (see acp.rs);
+//! - any number of bridges, speaking JSON lines rather than ACP: children
+//!   started from the profile, and processes on the control socket such as
+//!   brnr (see control.rs).
+//!
+//! When the editor goes away, the `on_disconnect` policy decides: `direct`
+//! does what a directly spawned agent would have got (stdin closed, then
+//! SIGKILL; a signal the proxy catches reaches the agent as that signal),
+//! and `headless` keeps the agent running with the host as its client.
+
+mod acp;
+mod control;
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::mem::{take, zeroed};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
+
+use libc::{c_int, pid_t};
+use serde_json::{Value, json};
+
+use crate::config;
+use crate::frame;
+use crate::log::{self, Dir, Ids, Logger, Sink};
+use crate::paths;
+use crate::signals;
+use crate::spawn;
+
+use acp::{AgentRequest, HostRequest, Pending, Session};
+use control::Peer;
+
+/// The options for running it by hand. `brnr proxy` and `brnr start` also pass
+/// --link-fd, --ready-fd, --proxy-pid, --on-disconnect and --sigmask.
+const USAGE: &str = "usage: brnr host [--profile <name>] [--name <name>] [--cwd <dir>] \
+[--prompt <text> | --prompt -] [-- <agent> [args...]]
+
+Runs a headless ACP session in the foreground: the host starts the agent,
+opens a session in the current directory (or --cwd) and sends --prompt if
+given. Talk to it with brnr (send, watch, approve, stop, ...). Ctrl-C stops
+it gracefully; press it again to kill the agent. Exits with the agent's
+exit status.";
+
+/// How long to keep forwarding output after the agent exits, in case
+/// something it started still holds its stdout open.
+const DRAIN: Duration = Duration::from_millis(500);
+
+/// How long one write to the proxy may block before the host treats the
+/// link as gone. Only the writer thread waits; the host carries on.
+const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `brnr stop`: stdin is closed at once, then SIGTERM, then SIGKILL.
+const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
+const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
+
+/// What the host does when the editor goes away without a handoff.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Policy {
+    /// Behave as if the editor had run the agent directly.
+    Direct,
+    /// Keep the agent running, with the host as its client.
+    Headless,
+}
+
+impl Policy {
+    pub fn parse(name: &str) -> Result<Policy, String> {
+        match name {
+            "direct" => Ok(Policy::Direct),
+            "headless" => Ok(Policy::Headless),
+            other => Err(format!("unknown on_disconnect policy: {other}")),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Policy::Direct => "direct",
+            Policy::Headless => "headless",
+        }
+    }
+}
+
+/// How the host answers permission requests while no editor is attached.
+#[derive(Clone, Copy)]
+pub enum Permissions {
+    /// Tell the bridges and wait for an approve or deny.
+    Ask,
+    AutoAllow,
+    AutoDeny,
+}
+
+impl Permissions {
+    fn parse(name: &str) -> Result<Permissions, String> {
+        match name {
+            "ask" => Ok(Permissions::Ask),
+            "auto-allow" => Ok(Permissions::AutoAllow),
+            "auto-deny" => Ok(Permissions::AutoDeny),
+            other => Err(format!("unknown permissions policy: {other}")),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Permissions::Ask => "ask",
+            Permissions::AutoAllow => "auto-allow",
+            Permissions::AutoDeny => "auto-deny",
+        }
+    }
+}
+
+/// Passed by `brnr proxy` or `brnr start`; not a user interface.
+#[derive(Default)]
+struct Args {
+    link_fd: Option<RawFd>,
+    ready_fd: Option<RawFd>,
+    proxy_pid: Option<u32>,
+    profile: Option<String>,
+    name: Option<String>,
+    on_disconnect: Option<String>,
+    sigmask: Vec<c_int>,
+    prompt: Option<String>,
+    cwd: Option<String>,
+    program: Vec<OsString>,
+}
+
+pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let mut args = match parse_args(args) {
+        Ok(args) => args,
+        Err(None) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Err(Some(msg)) => {
+            eprintln!("brnr host: {msg}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(dir) = &args.cwd
+        && let Err(err) = std::env::set_current_dir(paths::expand(dir))
+    {
+        eprintln!("brnr host: {dir}: {err}");
+        return ExitCode::from(2);
+    }
+    if args.prompt.as_deref() == Some("-") {
+        let mut text = String::new();
+        if let Err(err) = io::stdin().read_to_string(&mut text) {
+            eprintln!("brnr host: stdin: {err}");
+            return ExitCode::from(2);
+        }
+        args.prompt = Some(text);
+    }
+    let keep: Vec<RawFd> = [args.link_fd, args.ready_fd].into_iter().flatten().collect();
+    close_inherited_fds(&keep);
+    keep.iter().for_each(|&fd| set_cloexec(fd));
+    let link = args.link_fd.map(|fd| unsafe { UnixStream::from_raw_fd(fd) });
+    let ready = args.ready_fd.map(|fd| unsafe { File::from_raw_fd(fd) });
+    let mut failure = Failure {
+        link: link.as_ref().and_then(|l| l.try_clone().ok()),
+        ready: ready.as_ref().and_then(|r| r.try_clone().ok()),
+    };
+
+    match Host::start(args, link, ready) {
+        Ok(host) => host.run(),
+        Err((msg, code)) => {
+            failure.report(&msg, code);
+            ExitCode::from(code)
+        }
+    }
+}
+
+const OPTIONS: &[&str] = &[
+    "--link-fd",
+    "--ready-fd",
+    "--proxy-pid",
+    "--profile",
+    "--name",
+    "--on-disconnect",
+    "--prompt",
+    "--cwd",
+    "--sigmask",
+];
+
+fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
+    value.parse().map_err(|_| Some(format!("{key}: not a number: {value}")))
+}
+
+/// `Err(None)` asks for the usage.
+fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<String>> {
+    let mut a = Args::default();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            a.program = args.collect();
+            break;
+        }
+        let arg = arg.into_string().map_err(|a| Some(format!("unknown option: {a:?}")))?;
+        if arg == "-h" || arg == "--help" {
+            return Err(None);
+        }
+        let (key, inline) = match arg.split_once('=') {
+            Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
+            None => (arg, None),
+        };
+        if !OPTIONS.contains(&key.as_str()) {
+            return Err(Some(format!("unknown option: {key}")));
+        }
+        let value = match inline {
+            Some(value) => value,
+            None => args
+                .next()
+                .ok_or_else(|| format!("{key} needs a value"))?
+                .into_string()
+                .map_err(|_| format!("bad value for {key}"))?,
+        };
+        match key.as_str() {
+            "--link-fd" => a.link_fd = Some(number(&key, &value)?),
+            "--ready-fd" => a.ready_fd = Some(number(&key, &value)?),
+            "--proxy-pid" => a.proxy_pid = Some(number(&key, &value)?),
+            "--profile" => a.profile = Some(value),
+            "--name" => a.name = Some(value),
+            "--on-disconnect" => a.on_disconnect = Some(value),
+            "--prompt" => a.prompt = Some(value),
+            "--cwd" => a.cwd = Some(value),
+            "--sigmask" => {
+                a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            _ => unreachable!("checked against OPTIONS"),
+        }
+    }
+    Ok(a)
+}
+
+/// Where a startup failure is reported: the proxy, or brnr start.
+struct Failure {
+    link: Option<UnixStream>,
+    ready: Option<File>,
+}
+
+impl Failure {
+    fn report(&mut self, msg: &str, code: u8) {
+        eprintln!("brnr host: {msg}");
+        if let Some(link) = &mut self.link {
+            let report = json!({ "error": msg, "code": code }).to_string();
+            let _ = frame::write(link, frame::FAILED, report.as_bytes());
+        }
+        if let Some(ready) = &mut self.ready {
+            let _ = writeln!(ready, "{}", json!({ "ok": false, "error": msg }));
+        }
+    }
+}
+
+enum Ev {
+    /// A frame from the proxy; `None` once the link is gone.
+    Link(Option<(u8, Vec<u8>)>),
+    /// One line of agent stdout, with its `\n` unless it was the last bytes.
+    AgentLine(Vec<u8>),
+    AgentStdoutEof,
+    AgentStderr(Vec<u8>),
+    AgentStderrEof,
+    /// The agent has terminated; it has not been reaped yet.
+    AgentExited,
+    PeerOpened {
+        peer: u64,
+        tx: Sender<String>,
+        label: String,
+    },
+    PeerRequest {
+        peer: u64,
+        req: Value,
+    },
+    PeerClosed {
+        peer: u64,
+    },
+    BridgeStderr {
+        label: String,
+        line: String,
+    },
+    BridgeExited {
+        label: String,
+        status: Option<i32>,
+        pid: pid_t,
+    },
+    /// A signal sent to the host itself.
+    Signal(c_int),
+}
+
+enum StopStage {
+    Term,
+    Kill,
+}
+
+struct Host {
+    /// Run by hand in a terminal: no proxy, no brnr waiting.
+    manual: bool,
+    /// By hand, a failed start has been reported on stderr.
+    startup_reported: bool,
+    info: Value,
+    host_id: String,
+    policy: Policy,
+    permissions: Permissions,
+    agent_pid: pid_t,
+    agent_in: Option<ChildStdin>,
+    /// Dropping this makes the stdout reader close the agent's stdout.
+    stop_stdout: Option<PipeWriter>,
+    /// Frames for the link writer while an editor is attached. Writes happen
+    /// on their own thread so an editor that stops reading can't stall the
+    /// host: signals, the control socket and bridges keep working.
+    link: Option<Sender<(u8, Vec<u8>)>>,
+    link_writer: Option<thread::JoinHandle<()>>,
+    /// brnr start waits on this for the first session.
+    ready: Option<File>,
+    log: Logger,
+    sink: Sink,
+    rx: Receiver<Ev>,
+    sock_path: PathBuf,
+    meta_path: PathBuf,
+    cwd: PathBuf,
+
+    // ACP state; see acp.rs.
+    sessions: Vec<Session>,
+    /// Requests whose response creates or ends a session.
+    pending: HashMap<String, Pending>,
+    /// Every unanswered request to the agent → the session it is about.
+    client_requests: HashMap<String, Option<String>>,
+    /// Requests the host itself sent the agent as its client.
+    host_requests: HashMap<String, HostRequest>,
+    /// Requests from the agent to its client that are unanswered.
+    agent_requests: Vec<AgentRequest>,
+    /// Request id of every unanswered prompt → its session.
+    prompt_session: HashMap<String, String>,
+    next_id: u64,
+    next_permission: u64,
+    /// Bytes from the editor after the last complete line.
+    editor_buf: Vec<u8>,
+    /// Headless start: the first prompt, sent once the session exists.
+    first_prompt: Option<String>,
+
+    // Bridges; see control.rs.
+    peers: HashMap<u64, Peer>,
+    bridge_pids: Vec<pid_t>,
+
+    status: Option<c_int>,
+    stdout_open: bool,
+    stderr_open: bool,
+    drain_until: Option<Instant>,
+    stopping: Option<(Instant, StopStage)>,
+}
+
+impl Host {
+    fn start(a: Args, link: Option<UnixStream>, ready: Option<File>) -> Result<Host, (String, u8)> {
+        let profile = config::load(a.profile.as_deref()).map_err(|e| (e, 2))?;
+        let policy = a
+            .on_disconnect
+            .as_deref()
+            .or(profile.on_disconnect.as_deref())
+            .map_or(Ok(Policy::Direct), Policy::parse)
+            .map_err(|e| (e, 2))?;
+        let permissions = profile
+            .permissions
+            .as_deref()
+            .map_or(Ok(Permissions::Ask), Permissions::parse)
+            .map_err(|e| (e, 2))?;
+        for bridge in &profile.bridges {
+            control::check_bridge(bridge).map_err(|e| (e, 2))?;
+        }
+        let mut program = a.program.clone();
+        if program.is_empty() {
+            program = profile.agent.iter().flatten().map(|s| paths::expand(s).into()).collect();
+        }
+        if program.is_empty() {
+            return Err(("no agent: give one after -- or set agent in the profile".into(), 2));
+        }
+        let cwd = std::env::current_dir().map_err(|e| (format!("cwd: {e}"), 1))?;
+
+        let dir = paths::runtime_dir();
+        paths::ensure_private(&dir).map_err(|e| (format!("{}: {e}", dir.display()), 1))?;
+        let id = std::process::id().to_string();
+        let started = SystemTime::now();
+        let host_id = format!("{}-{id}", log::compact_utc(started));
+        let sock_path = dir.join(format!("{id}.sock"));
+        let meta_path = dir.join(format!("{id}.json"));
+        let _ = fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path)
+            .map_err(|e| (format!("{}: {e}", sock_path.display()), 1))?;
+        let _ = fs::set_permissions(&sock_path, fs::Permissions::from_mode(0o600));
+        let cleanup = || {
+            let _ = fs::remove_file(&sock_path);
+        };
+
+        if let Some(bundled) = spawn::bundled(&program[0]) {
+            program[0] = bundled.into();
+        }
+        let mut cmd = Command::new(&program[0]);
+        cmd.args(&program[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Its own process group: a terminal's Ctrl-C (when run by hand) is
+        // for the host, which stops the agent its own way.
+        cmd.process_group(0);
+        let mask = a.sigmask.clone();
+        // std resets the mask in the child; give the agent the editor's.
+        unsafe {
+            cmd.pre_exec(move || {
+                signals::set_mask(&mask);
+                Ok(())
+            })
+        };
+        let mut child = cmd.spawn().map_err(|err| {
+            cleanup();
+            // Same codes a shell uses for "not found" / "not executable".
+            let code = if err.kind() == ErrorKind::PermissionDenied { 126 } else { 127 };
+            (format!("{}: {err}", program[0].to_string_lossy()), code)
+        })?;
+        let agent_pid = child.id() as pid_t;
+
+        let ids = Ids {
+            host_id: host_id.clone(),
+            host_pid: std::process::id(),
+            agent_pid: agent_pid as u32,
+        };
+        let log = if profile.log.unwrap_or(true) {
+            Logger::start(ids, a.proxy_pid).map_err(|e| {
+                cleanup();
+                unsafe { libc::kill(agent_pid, libc::SIGKILL) };
+                (format!("log: {e}"), 1)
+            })?
+        } else {
+            Logger::disabled()
+        };
+        let sink = log.sink();
+
+        let argv: Vec<String> = program.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        let info = json!({
+            "id": id,
+            "host_id": host_id,
+            "name": a.name,
+            "profile": a.profile,
+            "host_pid": std::process::id(),
+            "proxy_pid": a.proxy_pid,
+            "agent_pid": agent_pid,
+            "agent": argv,
+            "cwd": cwd.to_string_lossy(),
+            "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
+            "socket": sock_path.to_string_lossy(),
+            "on_disconnect": policy.name(),
+            "permissions": permissions.name(),
+            "started": log::rfc3339(started),
+        });
+        write_atomic(&meta_path, format!("{info:#}\n").as_bytes());
+        sink.note(None, json!({ "event": "started", "info": info }));
+
+        let (tx, rx) = mpsc::channel();
+        let (stop_rx, stop_tx) = io::pipe().expect("pipe");
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let t = tx.clone();
+        thread::spawn(move || read_agent_stdout(stdout, stop_rx, t));
+        let t = tx.clone();
+        thread::spawn(move || read_agent_stderr(stderr, t));
+        let t = tx.clone();
+        thread::spawn(move || {
+            if wait_exited(agent_pid).is_ok() {
+                let _ = t.send(Ev::AgentExited);
+            }
+        });
+        let mut link_writer = None;
+        let link = link.map(|link| {
+            let reader = link.try_clone().expect("clone link");
+            let t = tx.clone();
+            thread::spawn(move || read_link(reader, t));
+            let (frames, rx) = mpsc::channel();
+            link_writer = Some(thread::spawn(move || write_link(link, rx)));
+            frames
+        });
+        let t = tx.clone();
+        thread::spawn(move || control::serve(listener, t));
+        let signals = signals::install();
+        let t = tx.clone();
+        thread::spawn(move || read_signals(signals, t));
+
+        let manual = link.is_none() && ready.is_none();
+        let mut host = Host {
+            manual,
+            startup_reported: false,
+            info,
+            host_id,
+            policy,
+            permissions,
+            agent_pid,
+            agent_in: child.stdin.take(),
+            stop_stdout: Some(stop_tx),
+            link,
+            link_writer,
+            ready,
+            log,
+            sink,
+            rx,
+            sock_path,
+            meta_path,
+            cwd: cwd.clone(),
+            sessions: Vec::new(),
+            pending: HashMap::new(),
+            client_requests: HashMap::new(),
+            host_requests: HashMap::new(),
+            agent_requests: Vec::new(),
+            prompt_session: HashMap::new(),
+            next_id: 0,
+            next_permission: 0,
+            editor_buf: Vec::new(),
+            first_prompt: a.prompt,
+            peers: HashMap::new(),
+            bridge_pids: Vec::new(),
+            status: None,
+            stdout_open: true,
+            stderr_open: true,
+            drain_until: None,
+            stopping: None,
+        };
+        for (n, bridge) in profile.bridges.iter().enumerate() {
+            if let Err(err) = host.start_bridge(n, bridge, &tx) {
+                host.kill_all();
+                let _ = fs::remove_file(&host.sock_path);
+                let _ = fs::remove_file(&host.meta_path);
+                return Err((err, 2));
+            }
+        }
+        if host.link.is_some() {
+            let ready = json!({ "id": id, "host_pid": std::process::id(), "agent_pid": agent_pid });
+            host.send_link(frame::READY, ready.to_string().as_bytes());
+        } else {
+            host.begin_headless_start();
+        }
+        if host.manual {
+            eprintln!(
+                "brnr host: {id}: started {} (pid {agent_pid}) in {}; Ctrl-C to stop",
+                argv.join(" "),
+                cwd.display()
+            );
+        }
+        Ok(host)
+    }
+
+    fn run(mut self) -> ExitCode {
+        loop {
+            if self.status.is_some() && !self.stdout_open && !self.stderr_open {
+                break;
+            }
+            let now = Instant::now();
+            if self.drain_until.is_some_and(|t| now >= t) {
+                break;
+            }
+            self.fire_stop_timer(now);
+            let wake = [self.drain_until, self.stopping.as_ref().map(|(t, _)| *t)]
+                .into_iter()
+                .flatten()
+                .min();
+            let ev = match wake {
+                None => match self.rx.recv() {
+                    Ok(ev) => ev,
+                    Err(_) => break,
+                },
+                Some(at) => match self.rx.recv_timeout(at.saturating_duration_since(now)) {
+                    Ok(ev) => ev,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+            };
+            self.handle(ev);
+        }
+        self.finish()
+    }
+
+    fn finish(mut self) -> ExitCode {
+        for i in 0..self.sessions.len() {
+            self.flush_agent_message(i);
+        }
+        if let Some(status) = self.status {
+            self.send_link(frame::EXIT, &status.to_be_bytes());
+        }
+        self.startup_failed("the agent exited before the session started");
+        let status = describe_status(self.status);
+        self.emit(json!({ "event": "exited", "status": status }));
+        self.sink.note(None, json!({ "event": "exited", "status": status }));
+        let _ = fs::remove_file(&self.sock_path);
+        let _ = fs::remove_file(&self.meta_path);
+        // Bridges also see EOF on their stdin once we exit.
+        for &pid in &self.bridge_pids {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+        self.peers.clear();
+        if self.manual {
+            eprintln!("brnr host: agent exited: {status}");
+        }
+        // Let the writer deliver what's queued (it gives up on a proxy that
+        // stopped reading; see LINK_WRITE_TIMEOUT).
+        self.link = None;
+        if let Some(writer) = self.link_writer.take() {
+            let _ = writer.join();
+        }
+        self.log.finish();
+        match self.status {
+            // By hand, exit as the agent did, like a shell reports it.
+            Some(s) if self.manual && libc::WIFEXITED(s) => {
+                ExitCode::from(libc::WEXITSTATUS(s) as u8)
+            }
+            Some(s) if self.manual => ExitCode::from(128 + libc::WTERMSIG(s) as u8),
+            None if self.manual => ExitCode::FAILURE,
+            _ => ExitCode::SUCCESS,
+        }
+    }
+
+    fn handle(&mut self, ev: Ev) {
+        match ev {
+            Ev::Link(Some((kind, payload))) => match kind {
+                frame::DATA => self.editor_bytes(&payload),
+                frame::EOF => self.editor_eof(),
+                frame::SIGNAL if payload.len() == 4 => {
+                    self.signal(i32::from_be_bytes(payload.try_into().unwrap()));
+                }
+                frame::STDOUT_CLOSED => self.editor_stopped_reading(),
+                _ => {}
+            },
+            Ev::Link(None) => self.link_gone(),
+            Ev::AgentLine(line) => self.agent_line(&line),
+            Ev::AgentStdoutEof => self.stdout_open = false,
+            Ev::AgentStderr(bytes) => {
+                self.sink.msg(None, Dir::AgentStderr, &bytes);
+                self.send_link(frame::STDERR, &bytes);
+            }
+            Ev::AgentStderrEof => self.stderr_open = false,
+            Ev::AgentExited => {
+                // Reaped here, on the thread that sends signals, so a signal
+                // can never reach a recycled pid.
+                self.status = reap(self.agent_pid).ok();
+                self.agent_in = None;
+                self.stopping = None;
+                self.drain_until = Some(Instant::now() + DRAIN);
+            }
+            Ev::PeerOpened { peer, tx, label } => {
+                self.peers.insert(peer, Peer::new(tx, label));
+            }
+            Ev::PeerRequest { peer, req } => self.peer_request(peer, req),
+            Ev::PeerClosed { peer } => {
+                self.peers.remove(&peer);
+            }
+            Ev::BridgeStderr { label, line } => {
+                self.sink
+                    .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
+            }
+            Ev::Signal(sig) => self.host_signal(sig),
+            Ev::BridgeExited { label, status, pid } => {
+                self.bridge_pids.retain(|&p| p != pid);
+                self.sink.note(
+                    None,
+                    json!({ "event": "bridge-exited", "bridge": label, "status": status }),
+                );
+            }
+        }
+    }
+
+    // ---- the editor's side of the link --------------------------------
+
+    fn editor_attached(&self) -> bool {
+        self.link.is_some()
+    }
+
+    fn signal(&mut self, sig: c_int) {
+        let detaching = matches!(sig, libc::SIGHUP | libc::SIGINT | libc::SIGTERM);
+        if self.policy == Policy::Headless && detaching {
+            self.go_headless(&format!("proxy got signal {sig}"));
+        } else if self.status.is_none() {
+            self.sink.note(None, json!({ "event": "signal", "signal": sig }));
+            unsafe { libc::kill(self.agent_pid, sig) };
+        }
+    }
+
+    fn editor_eof(&mut self) {
+        if self.policy == Policy::Headless {
+            return self.go_headless("editor closed stdin");
+        }
+        let rest = take(&mut self.editor_buf);
+        if !rest.is_empty() {
+            self.record(None, Dir::EditorToAgent, &rest);
+            self.write_agent(&rest);
+        }
+        self.sink.note(None, json!({ "event": "editor-closed-stdin" }));
+        self.agent_in = None;
+    }
+
+    fn editor_stopped_reading(&mut self) {
+        self.sink.note(None, json!({ "event": "editor-stopped-reading" }));
+        match self.policy {
+            Policy::Headless => self.go_headless("editor stopped reading"),
+            // The agent gets EPIPE, just as it would directly.
+            Policy::Direct => self.stop_stdout = None,
+        }
+    }
+
+    fn link_gone(&mut self) {
+        if self.link.is_none() || self.status.is_some() {
+            self.link = None;
+            return; // Already headless, or the proxy left after the agent.
+        }
+        match self.policy {
+            Policy::Headless => self.go_headless("editor disconnected"),
+            Policy::Direct => {
+                self.link = None;
+                self.sink.note(None, json!({ "event": "editor-disconnected", "policy": "direct" }));
+                self.agent_in = None;
+                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// The editor is gone (or going) and the session carries on with the
+    /// host as the agent's client. The proxy is told to exit 0.
+    fn go_headless(&mut self, reason: &str) {
+        if self.link.is_none() || self.status.is_some() {
+            return;
+        }
+        self.send_link(frame::DETACHED, &[]);
+        self.link = None;
+        self.editor_buf.clear();
+        self.sink.set_proxy(None);
+        self.info["proxy_pid"] = Value::Null;
+        write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
+        self.sink
+            .note(None, json!({ "event": "owner-changed", "owner": "host", "reason": reason }));
+        self.emit(json!({ "event": "owner_changed", "owner": "host", "reason": reason }));
+        self.take_over_agent_requests();
+    }
+
+    fn send_link(&mut self, kind: u8, payload: &[u8]) {
+        if let Some(link) = &self.link
+            && link.send((kind, payload.to_vec())).is_err()
+        {
+            // The writer gave up; the reader thread reports the disconnect.
+            self.link = None;
+        }
+    }
+
+    fn write_agent(&mut self, bytes: &[u8]) {
+        if let Some(agent) = &mut self.agent_in
+            && agent.write_all(bytes).is_err()
+        {
+            self.agent_in = None; // The agent closed its stdin.
+        }
+    }
+
+    // ---- stopping -----------------------------------------------------
+
+    /// A signal to the host itself. HUP, INT, QUIT and TERM stop the agent
+    /// gracefully, and kill it if a stop is already under way; USR1 and USR2
+    /// are passed on.
+    fn host_signal(&mut self, sig: c_int) {
+        if self.status.is_some() {
+            return;
+        }
+        self.sink.note(None, json!({ "event": "host-signal", "signal": sig }));
+        match sig {
+            libc::SIGUSR1 | libc::SIGUSR2 => unsafe {
+                libc::kill(self.agent_pid, sig);
+            },
+            _ if self.stopping.is_some() => {
+                if self.manual {
+                    eprintln!("brnr host: killing the agent");
+                }
+                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+            }
+            _ => {
+                if self.manual {
+                    eprintln!("brnr host: stopping (again to kill)");
+                }
+                self.begin_stop();
+            }
+        }
+    }
+
+    /// Closes the agent's stdin, then escalates to SIGTERM and SIGKILL if it
+    /// doesn't exit.
+    fn begin_stop(&mut self) {
+        if self.status.is_some() || self.stopping.is_some() {
+            return;
+        }
+        self.sink.note(None, json!({ "event": "stopping" }));
+        self.agent_in = None;
+        self.stopping = Some((Instant::now() + STOP_TERM_AFTER, StopStage::Term));
+    }
+
+    fn fire_stop_timer(&mut self, now: Instant) {
+        let Some((at, stage)) = &self.stopping else { return };
+        if now < *at || self.status.is_some() {
+            return;
+        }
+        match stage {
+            StopStage::Term => {
+                unsafe { libc::kill(self.agent_pid, libc::SIGTERM) };
+                self.stopping = Some((now + STOP_KILL_AFTER, StopStage::Kill));
+            }
+            StopStage::Kill => {
+                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+                self.stopping = None;
+            }
+        }
+    }
+
+    /// Startup failed after the agent was spawned.
+    fn kill_all(&mut self) {
+        unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+        for &pid in &self.bridge_pids {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+    }
+}
+
+fn describe_status(status: Option<c_int>) -> Value {
+    match status {
+        None => Value::Null,
+        Some(s) if libc::WIFEXITED(s) => json!({ "code": libc::WEXITSTATUS(s) }),
+        Some(s) => json!({ "signal": libc::WTERMSIG(s) }),
+    }
+}
+
+// ---- threads -----------------------------------------------------------
+
+/// Writes queued frames to the proxy until the queue closes or a write
+/// fails or times out.
+fn write_link(mut link: UnixStream, frames: Receiver<(u8, Vec<u8>)>) {
+    let _ = link.set_write_timeout(Some(LINK_WRITE_TIMEOUT));
+    for (kind, payload) in frames {
+        if frame::write(&mut link, kind, &payload).is_err() {
+            return;
+        }
+    }
+}
+
+fn read_signals(mut signals: PipeReader, tx: Sender<Ev>) {
+    let mut sig = [0];
+    loop {
+        match signals.read(&mut sig) {
+            Ok(1) => {}
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            _ => return,
+        }
+        if tx.send(Ev::Signal(sig[0] as c_int)).is_err() {
+            return;
+        }
+    }
+}
+
+fn read_link(link: UnixStream, tx: Sender<Ev>) {
+    let mut reader = BufReader::new(link);
+    loop {
+        match frame::read(&mut reader) {
+            Ok(Some(frame)) => {
+                if tx.send(Ev::Link(Some(frame))).is_err() {
+                    return;
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = tx.send(Ev::Link(None));
+                return;
+            }
+        }
+    }
+}
+
+/// Splits the agent's stdout into lines until EOF, or until `stop` closes,
+/// which drops our end so the agent gets EPIPE like it would directly.
+fn read_agent_stdout(mut out: ChildStdout, stop: PipeReader, tx: Sender<Ev>) {
+    let mut fds = [
+        libc::pollfd { fd: out.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
+    let mut buf = vec![0; 64 * 1024];
+    let mut line = Vec::new();
+    loop {
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            if io::Error::last_os_error().kind() == ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if fds[1].revents != 0 {
+            break;
+        }
+        if fds[0].revents == 0 {
+            continue;
+        }
+        let n = match out.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        for &b in &buf[..n] {
+            line.push(b);
+            if b == b'\n' && tx.send(Ev::AgentLine(take(&mut line))).is_err() {
+                return;
+            }
+        }
+    }
+    if !line.is_empty() {
+        let _ = tx.send(Ev::AgentLine(line));
+    }
+    let _ = tx.send(Ev::AgentStdoutEof);
+}
+
+fn read_agent_stderr(err: ChildStderr, tx: Sender<Ev>) {
+    let mut reader = BufReader::new(err);
+    let mut line = Vec::new();
+    while let Ok(n) = reader.read_until(b'\n', &mut line) {
+        if n == 0 || tx.send(Ev::AgentStderr(take(&mut line))).is_err() {
+            break;
+        }
+    }
+    let _ = tx.send(Ev::AgentStderrEof);
+}
+
+// ---- process plumbing --------------------------------------------------
+
+/// Closes every fd we inherited except stdio and `keep`, so the host holds
+/// nothing of the editor's.
+fn close_inherited_fds(keep: &[RawFd]) {
+    let fds: Vec<RawFd> = match fs::read_dir("/dev/fd") {
+        Ok(dir) => dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok()).collect(),
+        Err(_) => return,
+    };
+    for fd in fds {
+        if fd > 2 && !keep.contains(&fd) {
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+fn set_cloexec(fd: RawFd) {
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+}
+
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
+    let tmp = path.with_extension("json.tmp");
+    let written = File::create(&tmp).and_then(|mut f| f.write_all(bytes));
+    if written.is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
+}
+
+/// Blocks until `pid` has terminated, without reaping it.
+fn wait_exited(pid: pid_t) -> io::Result<()> {
+    unsafe {
+        let mut info: libc::siginfo_t = zeroed();
+        let flags = libc::WEXITED | libc::WNOWAIT;
+        while libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reap(pid: pid_t) -> io::Result<c_int> {
+    let mut status = 0;
+    while unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    Ok(status)
+}
+
+/// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.
+fn id_key(id: &Value) -> String {
+    id.to_string()
+}
+
+fn text_block(text: &str) -> Value {
+    json!({ "type": "text", "text": text })
+}
