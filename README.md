@@ -224,9 +224,9 @@ Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
 `owner_changed`, `exited`, and `acp` (every ACP message with its direction; only
 sent to subscribers that ask for it).
 
-A bridge has to keep reading: one that falls a few thousand lines behind is
-dropped (a connection is closed, a started bridge gets SIGTERM) rather than
-buffered for without limit.
+A bridge has to keep reading: one that falls 16 MiB behind is dropped (a
+connection is closed, a started bridge gets SIGTERM) rather than buffered for
+without limit.
 
 ## Transcripts
 

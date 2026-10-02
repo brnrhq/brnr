@@ -253,3 +253,21 @@ claude-agent-acp advertises a `_session/steering` request for adding to a
 running turn. `send` while a turn runs still sends another
 `session/prompt`, which that adapter folds into the turn anyway, and which
 works with any agent. Steering could replace it for agents that offer it.
+
+## 25. How far behind a peer may fall
+
+First a queue of 4096 lines per peer. On a slow CI runner a `watch --raw`
+that was reading the whole time fell more than 4096 lines behind an agent
+streaming 20,000 chunks at once, and was cut off as if it had stopped.
+
+- **A. More lines.** Still a count, and lines vary from a few bytes to
+  megabytes.
+- **B. Drop `acp` events for a slow peer instead of disconnecting it.**
+  Lossy where `--raw` promises everything.
+- **C. A limit in bytes, 16 MiB per peer**, counted from when a line is
+  queued until its writer has written it.
+
+**Chosen: C**, plus: a peer with nothing queued always takes the next line,
+however big. Without that, one agent message over the limit (or a `status`
+quoting it) cut off every peer, `brnr status` included. The status report now
+quotes at most 4000 characters of the last message; the events have all of it.

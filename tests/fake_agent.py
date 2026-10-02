@@ -22,6 +22,7 @@ and by the prompt's text:
 
   hang ...          runs until cancelled
   reply <text>      answers with <text>
+  big <n>           answers with one message of n bytes
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
   perm <kind>       asks permission for a tool call of that kind first
@@ -178,6 +179,9 @@ for line in sys.stdin:
             hanging = mid
         elif first == "reply":
             say(sid, text[len("reply "):])
+            end_turn(mid)
+        elif first == "big":
+            say(sid, "z" * int(words[1]))
             end_turn(mid)
         elif first == "think":
             say(sid, "pondering", "agent_thought_chunk")

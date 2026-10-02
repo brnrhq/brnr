@@ -10,6 +10,10 @@ use super::Host;
 /// Tool call statuses after which the call is no longer running.
 const FINISHED: &[&str] = &["completed", "failed"];
 
+/// How much of the last agent message the status report has; the events
+/// have all of it.
+const LAST_MESSAGE_PREVIEW: usize = 4000;
+
 #[derive(Default)]
 pub(super) struct SessionState {
     pub(super) title: Option<String>,
@@ -80,7 +84,7 @@ impl SessionState {
             "plan": self.plan,
             "usage": self.usage,
             "tools": self.tools.iter().map(|(_, t)| t).collect::<Vec<_>>(),
-            "last_message": self.last_message,
+            "last_message": self.last_message.as_deref().map(preview),
         })
     }
 }
@@ -164,6 +168,13 @@ impl Host {
             _ => return,
         };
         self.emit(event);
+    }
+}
+
+fn preview(text: &str) -> String {
+    match text.char_indices().nth(LAST_MESSAGE_PREVIEW) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
     }
 }
 

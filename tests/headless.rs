@@ -199,7 +199,8 @@ fn interrupts_keep_their_order() {
 /// event queued for it in the host.
 #[test]
 fn slow_watcher_is_disconnected() {
-    let env = Env::new("slowwatch").agent("FLOOD", "20000");
+    // About 30 MB of events: more than a peer's queue holds.
+    let env = Env::new("slowwatch").agent("FLOOD", "40000");
     env.start("a", &[]);
     let mut watch = env
         .brnr(&["watch", "a", "--raw"])
@@ -219,7 +220,9 @@ fn slow_watcher_is_disconnected() {
     let mut err = String::new();
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(err.contains("closed the connection"), "{err}");
-    assert!(env.run(&["status", "a"]).status.success(), "host stopped answering");
+    // It may still be working through the burst; it must get there.
+    let answers = || env.run(&["status", "a"]).status.success();
+    assert!(wait_for(Duration::from_secs(30), answers), "host stopped answering");
 }
 
 /// A watcher that keeps reading stays connected through a burst, and ends
@@ -247,6 +250,35 @@ fn reading_watcher_stays_connected() {
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(watch.wait().unwrap().success(), "watch failed: {err}");
     assert!(lines.join().unwrap() > 20000, "watch missed events");
+}
+
+/// One message bigger than a peer's whole queue still reaches a peer that
+/// keeps up, and the status report (which quotes it) still gets out.
+#[test]
+fn huge_message_reaches_watchers() {
+    let env = Env::new("huge");
+    env.start("a", &[]);
+    let mut watch = env
+        .brnr(&["watch", "a", "--json", "--events", "agent_message"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let first = std::thread::spawn(move || BufReader::new(stdout).lines().next());
+    sleep(Duration::from_millis(300));
+    let size = 20_000_000;
+    assert!(env.run(&["send", "a", &format!("big {size}")]).status.success());
+    let line = first.join().unwrap().expect("no message").unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["text"].as_str().unwrap().len(), size);
+
+    let out = env.run(&["status", "a", "--json"]);
+    assert!(out.status.success(), "status: {}", stderr(&out));
+    let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let preview = status["sessions"][0]["last_message"].as_str().unwrap();
+    assert!(preview.chars().count() <= 4001, "status quotes {} chars", preview.chars().count());
+    let _ = watch.kill();
+    let _ = watch.wait();
 }
 
 /// A host that doesn't answer is reported as such, not as an errno.

@@ -34,17 +34,21 @@
 //! streamed chunk) and must be asked for by name. While an editor is
 //! attached, bridges observe; the editor answers the agent.
 //!
-//! Each peer has a queue of [`QUEUE`] lines. A peer that lets it fill up has
-//! stopped reading and is dropped rather than buffered for without limit: a
-//! connection is shut down, a started bridge gets SIGTERM.
+//! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
+//! up has stopped reading and is dropped rather than buffered for without
+//! limit: a connection is shut down, a started bridge gets SIGTERM. The limit
+//! is in bytes, not lines, so a burst of small events (an agent streaming
+//! fast) doesn't look like a peer that stopped reading.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Instant, SystemTime};
 
@@ -76,8 +80,8 @@ pub const EVENTS: &[&str] = &[
     "acp",
 ];
 
-/// Lines queued for one peer before it counts as having stopped reading.
-const QUEUE: usize = 4096;
+/// Bytes queued for one peer before it counts as having stopped reading.
+const QUEUE_BYTES: usize = 16 << 20;
 
 static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
@@ -87,8 +91,45 @@ pub(super) enum Closer {
     Bridge(pid_t),
 }
 
+/// Lines for one peer, and how many bytes of them its writer hasn't written
+/// yet.
+pub(super) struct Queue {
+    tx: Sender<String>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Queue {
+    /// The queue, and the writer's end of it.
+    fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
+        let (tx, rx) = mpsc::channel();
+        let queued = Arc::new(AtomicUsize::new(0));
+        (Queue { tx, queued: queued.clone() }, rx, queued)
+    }
+
+    /// Full only with a backlog: a peer that has written everything takes
+    /// the next line however big it is (a long agent message, a status).
+    fn push(&self, line: String) -> Queued {
+        let len = line.len() + 1;
+        let queued = self.queued.load(Relaxed);
+        if queued > 0 && queued + len > QUEUE_BYTES {
+            return Queued::Full;
+        }
+        self.queued.fetch_add(len, Relaxed);
+        match self.tx.send(line) {
+            Ok(()) => Queued::Ok,
+            Err(_) => Queued::Gone,
+        }
+    }
+}
+
+enum Queued {
+    Ok,
+    Gone,
+    Full,
+}
+
 pub(super) struct Peer {
-    tx: SyncSender<String>,
+    tx: Queue,
     label: String,
     closer: Closer,
     subscribed: bool,
@@ -97,7 +138,7 @@ pub(super) struct Peer {
 }
 
 impl Peer {
-    pub(super) fn new(tx: SyncSender<String>, label: String, closer: Closer) -> Peer {
+    pub(super) fn new(tx: Queue, label: String, closer: Closer) -> Peer {
         Peer { tx, label, closer, subscribed: false, events: None }
     }
 
@@ -137,8 +178,8 @@ pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
 fn connection(conn: UnixStream, tx: Sender<Ev>) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
-    let (out_tx, out_rx) = mpsc::sync_channel(QUEUE);
-    thread::spawn(move || write_lines(writer, out_rx));
+    let (out_tx, out_rx, queued) = Queue::new();
+    thread::spawn(move || write_lines(writer, out_rx, queued));
     let label = format!("socket#{peer}");
     let opened = Ev::PeerOpened { peer, tx: out_tx, label, closer: Closer::Socket(closer) };
     if tx.send(opened).is_err() {
@@ -148,11 +189,12 @@ fn connection(conn: UnixStream, tx: Sender<Ev>) {
     let _ = tx.send(Ev::PeerClosed { peer });
 }
 
-fn write_lines(mut out: impl Write, lines: Receiver<String>) {
+fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
     for line in lines {
         if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
             return;
         }
+        queued.fetch_sub(line.len() + 1, Relaxed);
     }
 }
 
@@ -194,9 +236,9 @@ impl Host {
         let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command[0]))?;
         let pid = child.id() as pid_t;
         let peer = NEXT_PEER.fetch_add(1, Relaxed);
-        let (out_tx, out_rx) = mpsc::sync_channel(QUEUE);
+        let (out_tx, out_rx, queued) = Queue::new();
         let stdin = child.stdin.take().unwrap();
-        thread::spawn(move || write_lines(stdin, out_rx));
+        thread::spawn(move || write_lines(stdin, out_rx, queued));
         let stdout = child.stdout.take().unwrap();
         let t = tx.clone();
         thread::spawn(move || {
@@ -265,12 +307,12 @@ impl Host {
     /// behind.
     fn send_to(&mut self, peer: u64, line: String) {
         let Some(p) = self.peers.get(&peer) else { return };
-        match p.tx.try_send(line) {
-            Ok(()) => {}
-            Err(TrySendError::Disconnected(_)) => {
+        match p.tx.push(line) {
+            Queued::Ok => {}
+            Queued::Gone => {
                 self.peers.remove(&peer);
             }
-            Err(TrySendError::Full(_)) => self.drop_peer(peer),
+            Queued::Full => self.drop_peer(peer),
         }
     }
 
