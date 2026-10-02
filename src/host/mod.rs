@@ -33,7 +33,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -388,7 +388,7 @@ enum Ev {
     AgentExited,
     PeerOpened {
         peer: u64,
-        tx: SyncSender<String>,
+        tx: control::Queue,
         label: String,
         closer: Closer,
     },
