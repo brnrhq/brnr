@@ -135,7 +135,7 @@ fn start_host(
         cmd.arg("--").args(program);
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD)
+    spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD).map(drop)
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit

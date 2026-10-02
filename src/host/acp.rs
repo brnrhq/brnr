@@ -54,6 +54,9 @@ pub(super) struct Session {
     pub(super) prompts: VecDeque<Prompt>,
     /// Injected messages waiting for the session to go idle.
     pub(super) held: VecDeque<String>,
+    /// How many of `held`, from the front, are interrupts: a new interrupt
+    /// goes after them, so interrupts keep the order they were sent in.
+    pub(super) interrupts: usize,
     /// Context to append to the next prompt.
     pub(super) context: Vec<String>,
     /// The agent message so far, for the `agent_message` event.
@@ -450,6 +453,9 @@ impl Host {
         if self.editor_attached() {
             return Err("the editor owns this session; answer it there".into());
         }
+        if self.status.is_some() || self.agent_in.is_none() {
+            return Err("the agent is no longer accepting input".into());
+        }
         let options =
             self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
         let outcome = match option {
@@ -569,10 +575,12 @@ impl Host {
                 let Some(session) = msg["result"]["sessionId"].as_str().map(str::to_owned) else {
                     return self.fail_start("session/new returned no sessionId");
                 };
-                let i = self.open_session(&session, None);
-                if let Some(prompt) = self.first_prompt.take() {
-                    self.send_prompt(i, prompt);
+                if self.stop_requested {
+                    return; // The start already failed (timed out) or was stopped.
                 }
+                let i = self.open_session(&session, None);
+                // brnr start hears of the session before the agent gets any
+                // work: if it has gone, nobody knows this session exists.
                 let ready = json!({
                     "ok": true,
                     "id": self.info["id"],
@@ -580,7 +588,14 @@ impl Host {
                     "session": session,
                 });
                 if let Some(mut ready_fd) = self.ready.take() {
-                    let _ = writeln!(ready_fd, "{ready}");
+                    self.start_deadline = None;
+                    if writeln!(ready_fd, "{ready}").is_err() {
+                        self.sink.note(None, json!({ "event": "start-abandoned" }));
+                        return self.begin_stop();
+                    }
+                }
+                if let Some(prompt) = self.first_prompt.take() {
+                    self.send_prompt(i, prompt);
                 }
                 if self.manual {
                     eprintln!("brnr host: session {session}");
@@ -589,7 +604,7 @@ impl Host {
         }
     }
 
-    fn fail_start(&mut self, error: &str) {
+    pub(super) fn fail_start(&mut self, error: &str) {
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
@@ -639,9 +654,11 @@ impl Host {
     /// held message.
     fn next_turn(&mut self, session: &str) {
         let Some(i) = self.find(session) else { return };
-        if self.sessions[i].prompts.is_empty()
-            && let Some(text) = self.sessions[i].held.pop_front()
+        let s = &mut self.sessions[i];
+        if s.prompts.is_empty()
+            && let Some(text) = s.held.pop_front()
         {
+            s.interrupts = s.interrupts.saturating_sub(1);
             self.send_prompt(i, text);
         }
     }
@@ -730,6 +747,7 @@ impl Host {
             prompts: VecDeque::new(),
             held: VecDeque::new(),
             context: Vec::new(),
+            interrupts: 0,
             agent_text: String::new(),
             agent_message_id: None,
         });

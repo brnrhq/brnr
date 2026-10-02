@@ -14,19 +14,25 @@
 //! - `pending`: permission requests waiting for an answer
 //! - `approve` / `deny` `{request?, option?, session?}`; only while no
 //!   editor is attached
-//! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL
+//! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
+//!   agent's process group)
 //!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
 //! streamed chunk) and must be asked for by name. While an editor is
 //! attached, bridges observe; the editor answers the agent.
+//!
+//! Each peer has a queue of [`QUEUE`] lines. A peer that lets it fill up has
+//! stopped reading and is dropped rather than buffered for without limit: a
+//! connection is shut down, a started bridge gets SIGTERM.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::thread;
 use std::time::SystemTime;
 
@@ -52,19 +58,29 @@ pub(super) const EVENTS: &[&str] = &[
     "acp",
 ];
 
+/// Lines queued for one peer before it counts as having stopped reading.
+const QUEUE: usize = 4096;
+
 static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
+/// How to cut a peer off.
+pub(super) enum Closer {
+    Socket(UnixStream),
+    Bridge(pid_t),
+}
+
 pub(super) struct Peer {
-    tx: Sender<String>,
+    tx: SyncSender<String>,
     label: String,
+    closer: Closer,
     subscribed: bool,
     /// `None`: every event.
     events: Option<Vec<String>>,
 }
 
 impl Peer {
-    pub(super) fn new(tx: Sender<String>, label: String) -> Peer {
-        Peer { tx, label, subscribed: false, events: None }
+    pub(super) fn new(tx: SyncSender<String>, label: String, closer: Closer) -> Peer {
+        Peer { tx, label, closer, subscribed: false, events: None }
     }
 
     fn wants(&self, event: &str) -> bool {
@@ -76,7 +92,7 @@ impl Peer {
     }
 }
 
-pub(super) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
+pub fn check_bridge(bridge: &Bridge) -> Result<(), String> {
     if bridge.command.is_empty() {
         return Err("a bridge needs a command".into());
     }
@@ -101,11 +117,13 @@ pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
 }
 
 fn connection(conn: UnixStream, tx: Sender<Ev>) {
-    let Ok(writer) = conn.try_clone() else { return };
+    let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
-    let (out_tx, out_rx) = mpsc::channel();
+    let (out_tx, out_rx) = mpsc::sync_channel(QUEUE);
     thread::spawn(move || write_lines(writer, out_rx));
-    if tx.send(Ev::PeerOpened { peer, tx: out_tx, label: format!("socket#{peer}") }).is_err() {
+    let label = format!("socket#{peer}");
+    let opened = Ev::PeerOpened { peer, tx: out_tx, label, closer: Closer::Socket(closer) };
+    if tx.send(opened).is_err() {
         return;
     }
     read_requests(conn, peer, &tx);
@@ -158,7 +176,7 @@ impl Host {
         let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command[0]))?;
         let pid = child.id() as pid_t;
         let peer = NEXT_PEER.fetch_add(1, Relaxed);
-        let (out_tx, out_rx) = mpsc::channel();
+        let (out_tx, out_rx) = mpsc::sync_channel(QUEUE);
         let stdin = child.stdin.take().unwrap();
         thread::spawn(move || write_lines(stdin, out_rx));
         let stdout = child.stdout.take().unwrap();
@@ -182,7 +200,7 @@ impl Host {
             let _ = t.send(Ev::BridgeExited { label: l, status, pid });
         });
 
-        let mut p = Peer::new(out_tx, label.clone());
+        let mut p = Peer::new(out_tx, label.clone(), Closer::Bridge(pid));
         p.subscribed = true;
         p.events = bridge.events.clone();
         self.peers.insert(peer, p);
@@ -208,7 +226,40 @@ impl Host {
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
         let line = event.to_string();
-        self.peers.retain(|_, p| !p.wants(&name) || p.tx.send(line.clone()).is_ok());
+        let peers: Vec<u64> =
+            self.peers.iter().filter(|(_, p)| p.wants(&name)).map(|(&id, _)| id).collect();
+        for peer in peers {
+            self.send_to(peer, line.clone());
+        }
+    }
+
+    /// Queues `line` for `peer`, dropping a peer that has gone or fallen
+    /// behind.
+    fn send_to(&mut self, peer: u64, line: String) {
+        let Some(p) = self.peers.get(&peer) else { return };
+        match p.tx.try_send(line) {
+            Ok(()) => {}
+            Err(TrySendError::Disconnected(_)) => {
+                self.peers.remove(&peer);
+            }
+            Err(TrySendError::Full(_)) => self.drop_peer(peer),
+        }
+    }
+
+    /// Cuts off a peer that stopped reading.
+    fn drop_peer(&mut self, peer: u64) {
+        let Some(p) = self.peers.remove(&peer) else { return };
+        let event = json!({ "event": "peer-dropped", "peer": p.label, "reason": "fell behind" });
+        self.sink.note(None, event);
+        match p.closer {
+            Closer::Socket(conn) => {
+                let _ = conn.shutdown(Shutdown::Both);
+            }
+            Closer::Bridge(pid) if self.bridge_pids.contains(&pid) => unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            },
+            Closer::Bridge(_) => {}
+        }
     }
 
     pub(super) fn peer_request(&mut self, peer: u64, req: Value) {
@@ -217,11 +268,7 @@ impl Host {
         if let Some(req_id) = req.get("req_id") {
             response["req_id"] = req_id.clone();
         }
-        if let Some(p) = self.peers.get(&peer)
-            && p.tx.send(response.to_string()).is_err()
-        {
-            self.peers.remove(&peer);
-        }
+        self.send_to(peer, response.to_string());
     }
 
     fn command(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
@@ -371,7 +418,9 @@ impl Host {
             }
             "interrupt" => {
                 if busy {
-                    self.sessions[i].held.push_front(text.clone());
+                    let s = &mut self.sessions[i];
+                    s.held.insert(s.interrupts, text.clone());
+                    s.interrupts += 1;
                     self.cancel(&session);
                     "interrupting"
                 } else {

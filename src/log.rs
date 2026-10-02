@@ -14,8 +14,9 @@
 //! the host log records a `session-opened` event naming each session file.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
@@ -249,12 +250,13 @@ fn embed(out: &mut Vec<u8>, line: &[u8]) {
 }
 
 /// Opens `path` for appending, creating its directory, so a session's file
-/// grows across hosts that serve it.
+/// grows across hosts that serve it. Transcripts hold prompts and tool
+/// output, so what this creates is private to the user.
 fn open_append(path: &Path) -> io::Result<File> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
-    OpenOptions::new().create(true).append(true).open(path)
+    OpenOptions::new().create(true).append(true).mode(0o600).open(path)
 }
 
 /// `20261001T171839` in UTC: the start of a host id.

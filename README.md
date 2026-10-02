@@ -80,6 +80,8 @@ brnr stop demo                     # stdin closed, then SIGTERM, then SIGKILL
 ```
 
 A target is a host id, a `--name`, or an ACP session id (or a unique prefix).
+`brnr stop` signals the agent's whole process group, so whatever the agent
+started goes with it.
 
 Injected messages reach the agent as ordinary user messages, and the editor
 shows them as such (`user_message_chunk`). When an agent takes up a message
@@ -92,6 +94,11 @@ the running turn.
 brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp
 brnr host --name demo --prompt - -- codex-acp < task.md     # in the foreground; Ctrl-C stops it
 ```
+
+`brnr start` waits up to 120 seconds (`BRNR_START_TIMEOUT`) for the session
+to open. If it gives up, or is interrupted, the host stops too and the prompt
+is never sent. A `--name` must be unique among running hosts. Messages still
+held when the agent exits are listed in the `exited` event as `undelivered`.
 
 With no editor attached the host is the agent's client: permission requests
 follow the `permissions` policy (`ask` waits for `brnr approve`/`deny` or a
@@ -132,6 +139,10 @@ Events: `user_message`, `agent_message`, `permission_request`,
 `permission_resolved`, `turn_ended`, `owner_changed`, `exited`, and `acp`
 (every ACP message with its direction; only sent to subscribers that ask for it).
 
+A bridge has to keep reading: one that falls a few thousand lines behind is
+dropped (a connection is closed, a started bridge gets SIGTERM) rather than
+buffered for without limit.
+
 ## Transcripts
 
 Like the agents' own transcripts, keyed by project folder:
@@ -144,7 +155,8 @@ Like the agents' own transcripts, keyed by project folder:
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's file has the
 same folder and name as Claude Code's own transcript. Every record carries
-`host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
+`host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining. Transcripts
+hold prompts and tool output, so brnr creates them readable only by you.
 
 ## Adapters
 
@@ -161,6 +173,21 @@ They don't include the agents. Each runs the user's own `claude` or `codex`
 licensed under Anthropic's Commercial Terms, not an open-source license; check
 those terms before redistributing it.
 
+## Doctor
+
+```sh
+brnr doctor                        # checks what brnr depends on
+brnr doctor --fix                  # … and repairs what it safely can
+```
+
+It checks that the runtime directory is private, isn't a symlink and is short
+enough for socket paths; that transcripts are readable only by you; that the
+config parses and each profile's agent, cwd, policies and bridges are valid;
+where the adapters are found; and that every running host answers and no two
+share a name. `--fix` makes the runtime directory and transcripts private
+(only what you own, never through a symlink) and removes files left by hosts
+that are gone. It exits non-zero if a check fails.
+
 ## Environment
 
 | Variable | Default |
@@ -168,6 +195,7 @@ those terms before redistributing it.
 | `BRNR_HOME` | `~/.brnr` (transcripts) |
 | `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
 | `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata) |
+| `BRNR_START_TIMEOUT` | `120`: seconds `brnr start` waits for the session |
 
 ## License
 

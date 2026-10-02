@@ -13,6 +13,7 @@
 //! brnr deny <target> [<request>] [--option <id>]
 //! brnr watch <target> [--events <a,b,...>] [--json]
 //! brnr stop <target>
+//! brnr doctor [--fix]
 //! ```
 //!
 //! `<target>` is a host id (from `list`), a `--name`, or an ACP session id
@@ -21,6 +22,10 @@
 //! `list` shows running hosts; `--all` adds inactive sessions (ones no
 //! running host serves, found from their transcripts) and `--inactive`
 //! shows only those.
+//!
+//! `start` waits `BRNR_START_TIMEOUT` seconds (default 120) for the session;
+//! if it gives up or is interrupted, the host stops without sending the
+//! prompt. A `--name` must be unique among running hosts.
 //!
 //! `send` timing:
 //! - default: send now; starts a turn if the agent is idle, otherwise the
@@ -32,7 +37,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -43,7 +48,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use brnr::host::alive;
 use brnr::{config, paths, spawn};
+
+mod doctor;
 
 const USAGE: &str = "usage:
   brnr proxy [--profile <p>] [--name <n>] [--on-disconnect direct|headless] [-- <agent> [args...]]
@@ -59,10 +67,14 @@ const USAGE: &str = "usage:
   brnr deny <target> [<request>] [--option <id>]
   brnr watch <target> [--events <a,b,...>] [--json]
   brnr stop <target>
+  brnr doctor [--fix]        check permissions, config and running hosts
   brnr --version";
 
-/// How long `start` waits for the agent to open its session.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long `start` waits for the agent to open its session, in seconds,
+/// unless `BRNR_START_TIMEOUT` says otherwise. The host gives up at the same
+/// time; `start` allows it a little longer to say so.
+const START_TIMEOUT: u64 = 120;
+const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `proxy` and `host`.
 pub fn main(args: Vec<String>) -> ExitCode {
@@ -77,6 +89,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Some("deny") => answer(rest, "deny"),
         Some("watch") => watch(rest),
         Some("stop") => stop(rest),
+        Some("doctor") => doctor::main(rest),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             Ok(())
@@ -142,6 +155,13 @@ fn start(args: &[String]) -> Result<(), String> {
     if prompt.as_deref() == Some("-") {
         prompt = Some(read_stdin()?);
     }
+    if prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
+        return Err("--prompt is empty".into());
+    }
+    let timeout = match env::var("BRNR_START_TIMEOUT") {
+        Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
+        Err(_) => START_TIMEOUT,
+    };
     let cfg = config::load(profile.as_deref())?;
     let cwd = match cwd.or(cfg.cwd) {
         Some(dir) => paths::expand(&dir),
@@ -154,19 +174,28 @@ fn start(args: &[String]) -> Result<(), String> {
 
     let (ready_rx, ready_tx) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
     let mut cmd = spawn::host_command().map_err(|e| e.to_string())?;
-    cmd.arg("--ready-fd").arg("3");
-    for (flag, value) in [("--profile", &profile), ("--name", &name), ("--prompt", &prompt)] {
+    cmd.arg("--ready-fd").arg("3").arg("--start-timeout").arg(timeout.to_string());
+    for (flag, value) in [("--profile", &profile), ("--name", &name)] {
         if let Some(value) = value {
             cmd.arg(flag).arg(value);
         }
     }
+    // The prompt goes over the host's stdin: on a command line, ps shows
+    // it for as long as the host runs, and Linux caps an argument at 128 KiB.
+    if prompt.is_some() {
+        cmd.arg("--prompt").arg("-");
+    }
     if !agent.is_empty() {
         cmd.arg("--").args(&agent);
     }
-    cmd.current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    spawn::detached(&mut cmd, ready_tx.as_raw_fd(), 3)
+    let stdin = if prompt.is_some() { Stdio::piped() } else { Stdio::null() };
+    cmd.current_dir(&cwd).stdin(stdin).stdout(Stdio::null()).stderr(Stdio::null());
+    let host_stdin = spawn::detached(&mut cmd, ready_tx.as_raw_fd(), 3)
         .map_err(|e| format!("starting host: {e}"))?;
     drop(ready_tx);
+    if let (Some(mut host_stdin), Some(prompt)) = (host_stdin, &prompt) {
+        host_stdin.write_all(prompt.as_bytes()).map_err(|e| format!("sending the prompt: {e}"))?;
+    }
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -174,8 +203,10 @@ fn start(args: &[String]) -> Result<(), String> {
         let _ = BufReader::new(ready_rx).read_line(&mut line);
         let _ = tx.send(line);
     });
+    // Exiting closes the pipe, which tells a host that is still starting
+    // that nobody is waiting: it stops instead of sending the prompt.
     let line = rx
-        .recv_timeout(START_TIMEOUT)
+        .recv_timeout(Duration::from_secs(timeout) + START_GRACE)
         .map_err(|_| "timed out waiting for the session".to_owned())?;
     let ready: Value =
         serde_json::from_str(&line).map_err(|_| "the host exited without starting a session")?;
@@ -546,14 +577,14 @@ fn stop(args: &[String]) -> Result<(), String> {
 /// own, such as the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
     let mut target = None;
-    let mut events = json!("all");
+    let mut events: Option<Vec<&str>> = None;
     let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--events" => {
                 let list = it.next().ok_or("--events needs a list")?;
-                events = json!(list.split(',').map(str::trim).collect::<Vec<_>>());
+                events = Some(list.split(',').map(str::trim).collect());
             }
             "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
@@ -562,6 +593,18 @@ fn watch(args: &[String]) -> Result<(), String> {
         }
     }
     let target = target.ok_or(USAGE)?;
+    // `exited` is how watch tells the host ending from the host cutting it
+    // off; it is asked for even when not shown.
+    let show_exited = events.as_ref().is_none_or(|e| e.contains(&"exited"));
+    let events = match events {
+        None => json!("all"),
+        Some(mut list) => {
+            if !show_exited {
+                list.push("exited");
+            }
+            json!(list)
+        }
+    };
     let hosts = discover();
     let (host, only_session) = resolve(&hosts, &target)?;
     let mut conn = connect(host).map_err(|e| format!("host {}: {e}", host.id()))?;
@@ -579,17 +622,23 @@ fn watch(args: &[String]) -> Result<(), String> {
     let mut out = io::stdout().lock();
     for line in lines.map_while(Result::ok) {
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+        let exited = event["event"] == "exited";
         if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
             && only != session
         {
             continue;
         }
-        let text = if json_out { line } else { describe(&event) };
-        if writeln!(out, "{text}").and_then(|()| out.flush()).is_err() {
-            break;
+        if !exited || show_exited {
+            let text = if json_out { line } else { describe(&event) };
+            if writeln!(out, "{text}").and_then(|()| out.flush()).is_err() {
+                return Ok(());
+            }
+        }
+        if exited {
+            return Ok(());
         }
     }
-    Ok(())
+    Err("the host closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
 /// One event as `HH:MM:SS.mmm  <session>  <what happened>`, continuation
@@ -623,7 +672,17 @@ fn describe(e: &Value) -> String {
             None => format!("turn ended: {} ({})", s(&e["stop_reason"]), s(&e["by"])),
         },
         "owner_changed" => format!("owner -> {} ({})", s(&e["owner"]), s(&e["reason"])),
-        "exited" => format!("agent exited: {}", e["status"]),
+        "exited" => {
+            let mut what = format!("agent exited: {}", e["status"]);
+            for held in e["undelivered"].as_array().into_iter().flatten() {
+                what.push_str(&format!(
+                    "\nnot delivered ({}): {}",
+                    s(&held["session"]),
+                    s(&held["text"])
+                ));
+            }
+            what
+        }
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
         other => format!("{other}: {e}"),
     };
@@ -636,8 +695,18 @@ fn describe(e: &Value) -> String {
 
 /// The host `target` names, and the ACP session if it named one.
 fn resolve<'a>(hosts: &'a [Host], target: &str) -> Result<(&'a Host, Option<String>), String> {
-    if let Some(host) = hosts.iter().find(|h| h.id() == target || h.meta["name"] == target) {
+    if let Some(host) = hosts.iter().find(|h| h.id() == target) {
         return Ok((host, None));
+    }
+    // brnr start refuses a name in use, but editors' hosts can share one.
+    let named: Vec<&Host> = hosts.iter().filter(|h| h.meta["name"] == target).collect();
+    match named[..] {
+        [host] => return Ok((host, None)),
+        [] => {}
+        _ => {
+            let ids: Vec<&str> = named.iter().map(|h| h.id()).collect();
+            return Err(format!("several hosts are named {target}: {}", ids.join(", ")));
+        }
     }
     let mut matches = Vec::new();
     for host in hosts {
@@ -700,7 +769,10 @@ fn request(host: &Host, req: &Value) -> io::Result<Value> {
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     writeln!(conn, "{req}")?;
     let mut line = String::new();
-    BufReader::new(conn).read_line(&mut line)?;
+    BufReader::new(conn).read_line(&mut line).map_err(|e| match e.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => io::Error::other("not answering"),
+        _ => e,
+    })?;
     serde_json::from_str(&line).map_err(io::Error::other)
 }
 
@@ -727,10 +799,4 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
             row.iter().zip(&widths).map(|(cell, w)| format!("{cell:<w$}")).collect();
         println!("{}", cells.join("  ").trim_end());
     }
-}
-
-fn alive(pid: i64) -> bool {
-    pid > 0
-        && (unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }

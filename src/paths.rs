@@ -30,11 +30,12 @@ pub fn runtime_dir() -> PathBuf {
 }
 
 /// Creates `dir` (mode 0700) if needed and refuses one that someone else
-/// owns or others can access.
+/// owns or others can access, or that is a symlink (which could point at any
+/// private directory of ours).
 pub fn ensure_private(dir: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    let meta = fs::metadata(dir)?;
-    if meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
+    let meta = fs::symlink_metadata(dir)?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
         return Err(io::Error::other("not a private directory owned by this user"));
     }
     Ok(())
