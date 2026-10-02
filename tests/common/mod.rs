@@ -42,6 +42,7 @@ impl Env {
             .env("BRNR_HOME", self.dir.join("home"))
             .env("BRNR_CONFIG", self.dir.join("none.toml"))
             .env("PROMPT_LOG", self.dir.join("prompts"))
+            .env("CALL_LOG", self.dir.join("calls"))
             .env("CHILD_PID", self.dir.join("child.pid"))
             .envs(self.agent_env.iter().map(|(k, v)| (k, v)));
         cmd
@@ -92,6 +93,39 @@ impl Env {
     pub fn prompts(&self) -> Vec<String> {
         let text = fs::read_to_string(self.dir.join("prompts")).unwrap_or_default();
         text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    /// Every message the agent received, in order.
+    pub fn calls(&self) -> Vec<Value> {
+        let text = fs::read_to_string(self.dir.join("calls")).unwrap_or_default();
+        text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    /// The agent's requests with `method`.
+    pub fn calls_of(&self, method: &str) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| c["method"] == method).collect()
+    }
+
+    /// `brnr <args>`, which must succeed; its stdout.
+    pub fn ok(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        assert!(out.status.success(), "brnr {args:?} failed: {}", stderr(&out));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// `brnr <args>`, which must fail; its stderr.
+    pub fn fails(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        assert!(
+            !out.status.success(),
+            "brnr {args:?} succeeded: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        stderr(&out)
+    }
+
+    pub fn write_config(&self, text: &str) {
+        fs::write(self.dir.join("none.toml"), text).unwrap();
     }
 
     pub fn child_pid(&self) -> i32 {

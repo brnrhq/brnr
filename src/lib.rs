@@ -18,5 +18,6 @@ pub mod host;
 pub mod log;
 pub mod paths;
 pub mod proxy;
+pub mod render;
 pub mod signals;
 pub mod spawn;

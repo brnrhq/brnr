@@ -1,0 +1,594 @@
+//! The headless CLI end to end against the fake agent: waiting for
+//! replies, the log, status, settings, sessions, permissions, attachments,
+//! notifications and resuming.
+
+mod common;
+
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::process::Stdio;
+use std::thread::sleep;
+use std::time::Duration;
+
+use common::*;
+use serde_json::Value;
+
+fn code(out: &std::process::Output) -> i32 {
+    out.status.code().unwrap_or(-1)
+}
+
+fn stdout(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The session's transcript events, as `log --json` gives them.
+fn events(env: &Env, target: &str) -> Vec<Value> {
+    env.ok(&["log", target, "--json"]).lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+fn idle(env: &Env) {
+    assert_eq!(code(&env.run(&["wait", "a", "--timeout", "10"])), 0, "not idle");
+}
+
+// ---- replies and waiting -------------------------------------------------
+
+#[test]
+fn send_wait_prints_the_reply() {
+    let env = Env::new("c-sendwait");
+    env.start("a", &[]);
+    let out = env.run(&["send", "a", "--wait", "reply", "hello", "there"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "hello there\n");
+}
+
+#[test]
+fn start_wait_prints_the_reply_and_the_turns_result() {
+    let env = Env::new("c-startwait");
+    let out = env.run(&start_args("a", &["--wait", "--prompt", "reply done"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "done\n");
+    assert!(stderr(&out).contains("started"), "{}", stderr(&out));
+
+    let env = Env::new("c-startfail");
+    let out = env.run(&start_args("a", &["--wait", "--prompt", "fail"]));
+    assert_eq!(code(&out), 1);
+    assert!(stderr(&out).contains("turn failed: boom"), "{}", stderr(&out));
+}
+
+#[test]
+fn send_wait_times_out() {
+    let env = Env::new("c-sendto");
+    env.start("a", &[]);
+    let out = env.run(&["send", "a", "--wait", "--timeout", "1", "hang on"]);
+    assert_eq!(code(&out), 124, "{}", stderr(&out));
+}
+
+#[test]
+fn send_wait_reports_a_permission_request() {
+    let env = Env::new("c-sendperm");
+    env.start("a", &[]);
+    let mut send =
+        env.brnr(&["send", "a", "--wait", "perm edit"]).stderr(Stdio::piped()).spawn().unwrap();
+    let mut err = BufReader::new(send.stderr.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("waiting for permission") {
+        line.clear();
+        assert!(err.read_line(&mut line).unwrap() > 0, "no permission notice");
+    }
+    assert!(line.contains("p1: Edit src/lib.rs"), "{line}");
+    env.ok(&["approve", "a"]);
+    assert!(wait_exit(&mut send, Duration::from_secs(10)));
+    assert!(send.wait().unwrap().success());
+}
+
+#[test]
+fn wait_returns_when_the_session_goes_idle() {
+    let env = Env::new("c-wait");
+    env.start("a", &[]);
+    assert_eq!(env.ok(&["wait", "a"]), "idle\n", "already idle");
+
+    env.ok(&["send", "a", "hang on"]);
+    let mut wait = env.brnr(&["wait", "a"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    assert!(wait.try_wait().unwrap().is_none(), "returned while busy");
+    env.ok(&["cancel", "a"]);
+    assert!(wait_exit(&mut wait, Duration::from_secs(10)));
+    // The turn was cancelled: not a normal end.
+    assert_eq!(wait.wait().unwrap().code(), Some(1));
+
+    assert_eq!(code(&env.run(&["wait", "a", "--for", "turn", "--timeout", "1"])), 124);
+}
+
+#[test]
+fn wait_for_permission() {
+    let env = Env::new("c-waitperm");
+    env.start("a", &[]);
+    env.ok(&["send", "a", "perm edit"]);
+    let out = env.ok(&["wait", "a", "--for", "permission", "--timeout", "10"]);
+    assert_eq!(out, "permission p1: Edit src/lib.rs\n");
+}
+
+#[test]
+fn wait_for_exit() {
+    let env = Env::new("c-waitexit");
+    env.start("a", &[]);
+    let mut wait = env.brnr(&["wait", "a", "--for", "exit"]).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    env.ok(&["stop", "a"]);
+    assert!(wait_exit(&mut wait, Duration::from_secs(15)));
+    assert!(wait.wait().unwrap().success());
+}
+
+// ---- cancel and the queue ------------------------------------------------
+
+#[test]
+fn cancel_drops_held_messages_and_says_so() {
+    let env = Env::new("c-cancel");
+    env.start("a", &["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["send", "a", "--after-turn", "later"]);
+    let out = env.ok(&["cancel", "a"]);
+    assert!(out.contains("cancelling"), "{out}");
+    assert!(out.contains("dropped m2: later"), "{out}");
+    idle(&env);
+    assert_eq!(env.prompts(), ["hang on"]);
+}
+
+#[test]
+fn cancel_can_keep_held_messages() {
+    let env = Env::new("c-keep");
+    env.start("a", &["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["send", "a", "--after-turn", "later"]);
+    env.ok(&["cancel", "a", "--keep-held"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    assert_eq!(env.prompts(), ["hang on", "later"]);
+}
+
+#[test]
+fn queue_lists_and_drops() {
+    let env = Env::new("c-queue");
+    env.start("a", &["--prompt", "hang on"]);
+    env.ok(&["send", "a", "--after-turn", "first"]);
+    env.ok(&["send", "a", "--after-turn", "second"]);
+    env.ok(&["send", "a", "--context", "some context"]);
+    let out = env.ok(&["queue", "a"]);
+    assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
+    let out = env.ok(&["queue", "a", "--drop", "m2", "--clear-context"]);
+    assert_eq!(out, "dropped m2: first\nm3 (after turn): second\n");
+    assert!(env.fails(&["queue", "a", "--drop", "m9"]).contains("no held message m9"));
+}
+
+// ---- seeing --------------------------------------------------------------
+
+#[test]
+fn log_shows_the_conversation() {
+    let env = Env::new("c-log");
+    env.start("a", &["--prompt", "tools"]);
+    idle(&env);
+    env.ok(&["send", "a", "--wait", "reply second"]);
+    let log = env.ok(&["log", "a"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(
+        lines,
+        [
+            "title: Fake session",
+            "user: tools",
+            "plan (0/2):",
+            "  [>] Run the tests",
+            "  [ ] Fix them",
+            "tool: Run the tests (execute)",
+            "tool done: Run the tests",
+            "plan (1/2):",
+            "  [x] Run the tests",
+            "  [ ] Fix them",
+            "agent: did the tools",
+            "turn ended: end_turn (control)",
+            "user: reply second",
+            "agent: second",
+            "turn ended: end_turn (control)",
+        ],
+        "{log}"
+    );
+    let last = env.ok(&["log", "a", "--last", "1"]);
+    assert!(last.lines().next().unwrap().ends_with("user: reply second"), "{last}");
+    assert!(env.ok(&["log", "a", "--raw"]).contains(r#""dir":"agent->editor""#));
+    let names: Vec<String> =
+        events(&env, "a").iter().map(|e| e["event"].as_str().unwrap().to_owned()).collect();
+    assert!(
+        names.contains(&"usage".to_owned()) && names.contains(&"tool_call".to_owned()),
+        "{names:?}"
+    );
+    let turn = events(&env, "a").into_iter().find(|e| e["event"] == "turn_ended").unwrap();
+    assert_eq!(turn["message"], "m1");
+}
+
+#[test]
+fn log_reads_an_inactive_session() {
+    let env = Env::new("c-loginactive");
+    env.start("a", &["--wait", "--prompt", "reply bye"]);
+    env.ok(&["stop", "a"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let log = env.ok(&["log", "sess-1"]);
+    assert!(log.contains("agent: bye"), "{log}");
+    let exited = log.lines().find(|l| l.contains("agent exited")).expect(&log);
+    assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
+}
+
+#[test]
+fn log_follows_until_the_host_exits() {
+    let env = Env::new("c-follow");
+    env.start("a", &[]);
+    let mut follow = env.brnr(&["log", "a", "--follow"]).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = BufReader::new(follow.stdout.take().unwrap());
+    env.ok(&["send", "a", "reply live"]);
+    let mut line = String::new();
+    while !line.contains("agent: live") {
+        line.clear();
+        assert!(out.read_line(&mut line).unwrap() > 0, "log ended early");
+    }
+    env.ok(&["stop", "a"]);
+    assert!(wait_exit(&mut follow, Duration::from_secs(15)), "log --follow didn't end");
+}
+
+#[test]
+fn thoughts_are_shown_when_asked() {
+    let env = Env::new("c-think");
+    env.start("a", &["--wait", "--prompt", "think"]);
+    assert!(!env.ok(&["log", "a"]).contains("pondering"));
+    assert!(env.ok(&["log", "a", "--thoughts"]).contains("thinking: pondering"));
+}
+
+#[test]
+fn watch_is_readable_by_default() {
+    let env = Env::new("c-watch");
+    env.start("a", &[]);
+    let mut watch = env.brnr(&["watch", "a"]).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = BufReader::new(watch.stdout.take().unwrap());
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "a", "reply hi"]);
+    let mut seen = Vec::new();
+    let mut line = String::new();
+    while !line.contains("turn ended") {
+        line.clear();
+        assert!(out.read_line(&mut line).unwrap() > 0, "watch ended early");
+        seen.push(line.clone());
+    }
+    assert!(seen.iter().any(|l| l.contains("agent: hi")), "{seen:?}");
+    assert!(!seen.iter().any(|l| l.contains("->")), "raw ACP by default: {seen:?}");
+    let _ = watch.kill();
+    let _ = watch.wait();
+}
+
+#[test]
+fn status_summarizes_the_session() {
+    let env = Env::new("c-status");
+    env.start("a", &["--prompt", "tools"]);
+    idle(&env);
+    let status = env.ok(&["status", "a"]);
+    for want in [
+        "session sess-1: Fake session",
+        "mode default, model small",
+        "idle",
+        "plan (1/2):",
+        "context window: 12.3k of 200.0k tokens, cost 0.42 USD",
+        "last message: did the tools",
+    ] {
+        assert!(status.contains(want), "missing {want:?} in\n{status}");
+    }
+    let json: Value = serde_json::from_str(&env.ok(&["status", "a", "--json"])).unwrap();
+    assert_eq!(json["sessions"][0]["mode"], "default");
+    assert_eq!(json["capabilities"]["fork"], true);
+}
+
+// ---- settings ------------------------------------------------------------
+
+#[test]
+fn mode_lists_and_switches() {
+    let env = Env::new("c-mode");
+    env.start("a", &[]);
+    let modes = env.ok(&["mode", "a"]);
+    assert!(modes.contains("* default") && modes.contains("  plan"), "{modes}");
+    assert_eq!(env.ok(&["mode", "a", "plan"]), "mode plan (session sess-1)\n");
+    assert!(env.ok(&["mode", "a"]).contains("* plan"));
+    assert!(env.fails(&["mode", "a", "warp"]).contains("no mode warp"));
+}
+
+#[test]
+fn model_and_config() {
+    let env = Env::new("c-model");
+    env.start("a", &[]);
+    assert!(env.ok(&["model", "a"]).contains("* small"));
+    env.ok(&["model", "a", "large"]);
+    assert!(env.ok(&["model", "a"]).contains("* large"));
+    assert_eq!(env.calls_of("session/set_config_option")[0]["params"]["value"], "large");
+    let config = env.ok(&["config", "a"]);
+    assert!(config.contains("model") && config.contains("small large"), "{config}");
+    env.ok(&["config", "a", "model=small"]);
+    assert!(env.fails(&["config", "a", "model=huge"]).contains("bad option"));
+}
+
+#[test]
+fn start_applies_mode_and_model_before_the_prompt() {
+    let env = Env::new("c-startmode");
+    env.start("a", &["--mode", "plan", "--model", "large", "--wait", "--prompt", "reply ok"]);
+    let methods: Vec<String> =
+        env.calls().iter().filter_map(|c| c["method"].as_str().map(str::to_owned)).collect();
+    assert_eq!(
+        methods,
+        [
+            "initialize",
+            "session/new",
+            "session/set_mode",
+            "session/set_config_option",
+            "session/prompt"
+        ]
+    );
+    let err = env.fails(&start_args("b", &["--mode", "warp"]));
+    assert!(err.contains("setting mode warp failed"), "{err}");
+}
+
+#[test]
+fn commands_lists_the_agents_commands() {
+    let env = Env::new("c-commands");
+    env.start("a", &[]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["commands", "a"]).contains("/compact")));
+}
+
+// ---- sessions ------------------------------------------------------------
+
+#[test]
+fn sessions_lists_the_agents_sessions() {
+    let env = Env::new("c-sessions");
+    env.start("a", &[]);
+    let out = env.ok(&["sessions", "a"]);
+    assert!(out.contains("old-1") && out.contains("An old session"), "{out}");
+}
+
+#[test]
+fn fork_and_close() {
+    let env = Env::new("c-fork");
+    env.start("a", &[]);
+    assert_eq!(
+        env.ok(&["fork", "a"]),
+        format!("forked sess-1 into sess-2 (host {})\n", env.host_pid())
+    );
+    assert!(env.fails(&["send", "a", "hello"]).contains("several sessions"));
+    env.ok(&["send", "a", "--session", "sess-2", "hello"]);
+    env.ok(&["close", "a", "--session", "sess-2"]);
+    assert!(env.ok(&["status", "a"]).contains("session sess-1"));
+    let host = env.host_pid();
+    env.ok(&["close", "a"]);
+    assert!(
+        wait_for(Duration::from_secs(15), || !alive(host)),
+        "host kept running with no session"
+    );
+}
+
+#[test]
+fn resume_continues_a_session() {
+    let env = Env::new("c-resume");
+    env.start("a", &["--wait", "--prompt", "reply first"]);
+    env.ok(&["stop", "a"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    // Same agent and name as before, without saying so.
+    let out = env.run(&["start", "--resume", "sess", "--wait", "--prompt", "reply again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "again\n");
+    assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "sess-1");
+    let log = env.ok(&["log", "a"]);
+    assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
+    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("is running"));
+}
+
+#[test]
+fn resume_by_loading_keeps_the_replay_out_of_the_transcript() {
+    let env = Env::new("c-load").agent("NO_RESUME", "1");
+    env.start("a", &["--wait", "--prompt", "reply first"]);
+    env.ok(&["stop", "a"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    assert_eq!(env.calls_of("session/load").len(), 1);
+    let raw = env.ok(&["log", "a", "--raw"]);
+    assert!(!raw.contains("replayed history"), "replay recorded:\n{raw}");
+    assert!(env.ok(&["log", "a"]).contains("agent: again"));
+}
+
+// ---- permissions ---------------------------------------------------------
+
+fn outcome(env: &Env, request: &str) -> Option<Value> {
+    env.calls()
+        .into_iter()
+        .find(|c| c["id"] == request && c.get("method").is_none())
+        .map(|c| c["result"]["outcome"].clone())
+}
+
+#[test]
+fn permission_rules_by_kind() {
+    let env = Env::new("c-rules");
+    env.write_config(
+        "[profiles.default]\npermissions = { default = \"ask\", read = \"auto-allow\" }\n",
+    );
+    env.start("a", &[]);
+    env.ok(&["send", "a", "perm read"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
+    env.ok(&["send", "a", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending", "a"]).contains("p2")));
+    assert!(outcome(&env, "perm-2").is_none(), "edit was answered without asking");
+}
+
+#[test]
+fn permissions_flag_overrides_the_default() {
+    let env = Env::new("c-permflag");
+    env.start("a", &["--permissions", "auto-deny"]);
+    env.ok(&["send", "a", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+}
+
+#[test]
+fn unanswered_permission_times_out_as_deny() {
+    let env = Env::new("c-permtimeout");
+    env.write_config("[profiles.default]\npermission_timeout = 1\n");
+    env.start("a", &[]);
+    env.ok(&["send", "a", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+    assert!(env.ok(&["log", "a"]).contains("permission p1 -> reject (by timeout)"));
+}
+
+#[test]
+fn show_explains_a_permission_request() {
+    let env = Env::new("c-show");
+    env.start("a", &[]);
+    env.ok(&["send", "a", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending", "a"]).contains("p1")));
+    let show = env.ok(&["show", "a"]);
+    for want in [
+        "p1, session sess-1, answered by the host",
+        "Edit src/lib.rs\nkind: edit\npath: src/lib.rs:2",
+        "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,3 +1,3 @@\n one\n-old line\n+new line\n three",
+        "options: allow (allow_once), reject (reject_once)",
+        "brnr approve a p1",
+    ] {
+        assert!(show.contains(want), "missing {want:?} in\n{show}");
+    }
+}
+
+// ---- lifecycle -----------------------------------------------------------
+
+#[test]
+fn stop_when_idle() {
+    let env = Env::new("c-idlestop");
+    env.start("a", &["--stop-when-idle", "--prompt", "reply bye"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "host kept running");
+    assert_eq!(env.prompts(), ["reply bye"]);
+}
+
+#[test]
+fn foreground_host_shows_the_session() {
+    let env = Env::new("c-fg");
+    let out = env
+        .brnr(&["host", "--prompt", "reply hi", "--stop-when-idle", "--", AGENT])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("user: reply hi") && text.contains("agent: hi"), "{text}");
+}
+
+#[test]
+fn mcp_servers_reach_the_agent() {
+    let env = Env::new("c-mcp");
+    env.write_config(
+        r#"[[profiles.default.mcp_servers]]
+name = "files"
+command = "true"
+args = ["--x"]
+env = { TOKEN = "t" }
+
+[[profiles.default.mcp_servers]]
+name = "web"
+url = "https://example.invalid/mcp"
+headers = { Authorization = "Bearer x" }
+"#,
+    );
+    env.start("a", &[]);
+    let servers = &env.calls_of("session/new")[0]["params"]["mcpServers"];
+    assert_eq!(servers[0]["name"], "files");
+    assert_eq!(servers[0]["env"][0], serde_json::json!({ "name": "TOKEN", "value": "t" }));
+    assert_eq!(servers[1]["type"], "http");
+    assert_eq!(servers[1]["headers"][0]["name"], "Authorization");
+
+    let env = Env::new("c-mcpsse");
+    env.write_config(
+        "[[profiles.default.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
+    );
+    assert!(env.fails(&start_args("a", &[])).contains("doesn't support sse"));
+}
+
+#[test]
+fn login_needed_is_explained() {
+    let env = Env::new("c-auth").agent("AUTH", "1");
+    let err = env.fails(&start_args("a", &[]));
+    assert!(err.contains("log in (Log in to the fake)"), "{err}");
+    assert!(err.contains("claude"), "{err}");
+}
+
+// ---- attachments ---------------------------------------------------------
+
+#[test]
+fn files_and_images_go_with_the_prompt() {
+    let env = Env::new("c-attach");
+    env.start("a", &[]);
+    let image = env.dir.join("dot.png");
+    fs::write(&image, b"\x89PNG fake").unwrap();
+    let file = env.dir.join("notes file.txt");
+    fs::write(&file, "notes").unwrap();
+    env.ok(&[
+        "send",
+        "a",
+        "--file",
+        file.to_str().unwrap(),
+        "--image",
+        image.to_str().unwrap(),
+        "look",
+    ]);
+    assert!(wait_for(Duration::from_secs(5), || !env.calls_of("session/prompt").is_empty()));
+    let prompt = &env.calls_of("session/prompt")[0]["params"]["prompt"];
+    assert_eq!(prompt[0]["text"], "look");
+    assert_eq!(prompt[1]["type"], "resource_link");
+    assert!(prompt[1]["uri"].as_str().unwrap().ends_with("/notes%20file.txt"), "{prompt}");
+    assert_eq!(prompt[2]["type"], "image");
+    assert_eq!(prompt[2]["mimeType"], "image/png");
+    assert_eq!(prompt[2]["data"], "iVBORyBmYWtl");
+
+    let env = Env::new("c-noimage").agent("NO_IMAGE", "1");
+    env.start("a", &[]);
+    let image = env.dir.join("dot.png");
+    fs::write(&image, b"x").unwrap();
+    assert!(
+        env.fails(&["send", "a", "--image", image.to_str().unwrap(), "look"])
+            .contains("doesn't take images")
+    );
+}
+
+// ---- notifications -------------------------------------------------------
+
+#[test]
+fn notify_runs_a_command_per_event() {
+    let env = Env::new("c-notify");
+    env.start("a", &[]);
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT|$BRNR_MESSAGE|$BRNR_TITLE\" >> '{}'", out.display());
+    let mut notify = env
+        .brnr(&["notify", "a", "--events", "turn_ended", "--", "sh", "-c", &script])
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "a", "--wait", "reply hi; $(touch pwned)"]);
+    assert!(wait_for(Duration::from_secs(5), || out.exists()));
+    let text = fs::read_to_string(&out).unwrap();
+    assert_eq!(text, "turn_ended|hi; $(touch pwned)|Fake session\n");
+    assert!(!env.dir.join("pwned").exists(), "the agent's text ran as shell");
+    env.ok(&["stop", "a"]);
+    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't exit with the host");
+}
+
+#[test]
+fn notify_works_as_a_bridge() {
+    let env = Env::new("c-notifybridge");
+    let out = env.dir.join("notified");
+    let config = format!(
+        "[[profiles.default.bridges]]\ncommand = [{:?}, \"notify\", \"--\", \"sh\", \"-c\", \"echo $BRNR_EVENT >> '{}'\"]\n",
+        env!("CARGO_BIN_EXE_brnr"),
+        out.display()
+    );
+    env.write_config(&config);
+    env.start("a", &[]);
+    sleep(Duration::from_millis(500));
+    env.ok(&["send", "a", "--wait", "reply hi"]);
+    assert!(wait_for(Duration::from_secs(5), || out.exists()));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended\n");
+}

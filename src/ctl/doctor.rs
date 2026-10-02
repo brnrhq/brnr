@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use brnr::host::{Permissions, Policy, alive, check_bridge};
+use brnr::host::{PermissionRules, Policy, alive, check_bridge};
 use brnr::{config, paths, spawn};
 
 use super::{Host, USAGE, request};
@@ -287,8 +287,20 @@ fn config_file(r: &mut Report) {
         if let Some(Err(e)) = profile.on_disconnect.as_deref().map(Policy::parse) {
             problems.push(e);
         }
-        if let Some(Err(e)) = profile.permissions.as_deref().map(Permissions::parse) {
+        if let Err(e) = PermissionRules::parse(profile.permissions.as_ref()) {
             problems.push(e);
+        }
+        for server in &profile.mcp_servers {
+            match server.to_acp() {
+                Err(e) => problems.push(e),
+                Ok(acp) => {
+                    if let Some(command) = acp["command"].as_str()
+                        && find_program(command).is_none()
+                    {
+                        problems.push(format!("MCP server {}: {command} not found", server.name));
+                    }
+                }
+            }
         }
         if let Some(cwd) = &profile.cwd
             && !paths::expand(cwd).is_dir()
@@ -321,7 +333,12 @@ fn config_file(r: &mut Report) {
 fn describe_profile(profile: &config::Profile) -> String {
     let agent = profile.agent.as_ref().map_or("given on the command line".into(), |a| a.join(" "));
     let bridges = profile.bridges.len();
-    format!("agent {agent}, {bridges} bridge{}", plural(bridges))
+    let mut out = format!("agent {agent}, {bridges} bridge{}", plural(bridges));
+    let servers = profile.mcp_servers.len();
+    if servers > 0 {
+        out.push_str(&format!(", {servers} MCP server{}", plural(servers)));
+    }
+    out
 }
 
 // ---- adapters ------------------------------------------------------------

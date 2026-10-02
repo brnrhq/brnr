@@ -7,13 +7,25 @@
 //! speak the same protocol, one JSON object per line.
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
+//! Where a request names no `session`, the host's only session is meant.
 //! - `status`
-//! - `send` `{text, mode?: now|after-turn|interrupt|context, replace?, session?}`
+//! - `send` `{text?, blocks?, mode?: now|after-turn|interrupt|context,
+//!   replace?, session?}`: the response has the message's id (`m<n>`), which
+//!   the `user_message` and `turn_ended` events of its turn carry
+//! - `cancel` `{session?, keep_held?}`: cancel the running turn; held
+//!   messages are dropped (and listed) unless `keep_held`
+//! - `queue` `{session?, drop?, clear?, clear_context?}`: the held messages
+//!   and context, after removing what was asked
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
-//! - `pending`: permission requests waiting for an answer
+//! - `pending`: permission requests waiting for an answer, in full
 //! - `approve` / `deny` `{request?, option?, session?}`; only while no
 //!   editor is attached
+//! - `set_mode` `{mode, session?}`, `set_config` `{option, value, session?}`,
+//!   `set_model` `{model, session?}`: answered once the agent has
+//! - `sessions` `{cursor?}`: the agent's own list of sessions
+//! - `fork` `{session?}`, `close` `{session}`: only while no editor is
+//!   attached; a headless host whose last session closes stops
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
 //!
@@ -34,22 +46,28 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::thread;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::Choice;
+use super::acp::{Choice, Held};
+use super::requests::PeerOp;
 use super::{Ev, Host};
 use crate::config::Bridge;
 use crate::log::{self, Dir};
-use crate::paths;
+use crate::{paths, render};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
-pub(super) const EVENTS: &[&str] = &[
+pub const EVENTS: &[&str] = &[
     "user_message",
     "agent_message",
+    "agent_thought",
+    "tool_call",
+    "plan",
+    "usage",
+    "session_changed",
     "permission_request",
     "permission_resolved",
     "turn_ended",
@@ -220,11 +238,21 @@ impl Host {
         }
     }
 
-    /// Sends `event` to every subscribed peer that wants it.
+    /// Sends `event` to every subscribed peer that wants it, and (but for
+    /// `acp`, which is the raw transcript already) records it in the
+    /// transcript, where `brnr log` reads it back.
     pub(super) fn emit(&mut self, mut event: Value) {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
+        if name != "acp" {
+            self.sink.note(event["session"].as_str(), event.clone());
+            if self.show_events
+                && let Some(text) = render::event(&event, &render::Options::foreground())
+            {
+                println!("{text}");
+            }
+        }
         let line = event.to_string();
         let peers: Vec<u64> =
             self.peers.iter().filter(|(_, p)| p.wants(&name)).map(|(&id, _)| id).collect();
@@ -262,32 +290,50 @@ impl Host {
         }
     }
 
+    /// Answers a request, now or (for what the agent must answer first)
+    /// once the agent has.
     pub(super) fn peer_request(&mut self, peer: u64, req: Value) {
-        let mut response =
-            self.command(peer, &req).unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-        if let Some(req_id) = req.get("req_id") {
-            response["req_id"] = req_id.clone();
+        let req_id = req.get("req_id").cloned();
+        match self.command(peer, &req) {
+            Ok(Some(response)) => self.reply(peer, req_id, response),
+            Ok(None) => {} // See requests.rs: answered when the agent answers.
+            Err(e) => self.reply(peer, req_id, json!({ "ok": false, "error": e })),
+        }
+    }
+
+    pub(super) fn reply(&mut self, peer: u64, req_id: Option<Value>, mut response: Value) {
+        if let Some(req_id) = req_id {
+            response["req_id"] = req_id;
         }
         self.send_to(peer, response.to_string());
     }
 
-    fn command(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+    /// `Ok(None)`: the answer comes from the agent, later.
+    fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, String> {
         if let Some(err) = req.get("parse_error") {
             return Err(format!("bad request: {}", err.as_str().unwrap_or_default()));
         }
+        let now = |v: Result<Value, String>| v.map(Some);
         match req["cmd"].as_str() {
-            Some("status") => Ok(self.status_report()),
-            Some("send") => self.send(req),
-            Some("subscribe") => self.subscribe(peer, req),
-            Some("pending") => Ok(json!({ "ok": true, "pending": self.pending_permissions() })),
-            Some("approve") => self.answer(peer, req, Choice::Allow),
-            Some("deny") => self.answer(peer, req, Choice::Deny),
+            Some("status") => Ok(Some(self.status_report())),
+            Some("send") => now(self.send(req)),
+            Some("cancel") => now(self.cancel_turn(req)),
+            Some("queue") => now(self.queue(req)),
+            Some("subscribe") => now(self.subscribe(peer, req)),
+            Some("pending") => {
+                Ok(Some(json!({ "ok": true, "pending": self.pending_permissions() })))
+            }
+            Some("approve") => now(self.answer(peer, req, Choice::Allow)),
+            Some("deny") => now(self.answer(peer, req, Choice::Deny)),
+            Some("set_mode" | "set_config" | "set_model" | "sessions" | "fork" | "close") => {
+                self.agent_op(peer, req).map(|()| None)
+            }
             Some("stop") => {
                 if self.status.is_some() {
                     return Err("the agent has already exited".into());
                 }
                 self.begin_stop();
-                Ok(json!({ "ok": true, "status": "stopping" }))
+                Ok(Some(json!({ "ok": true, "status": "stopping" })))
             }
             Some(other) => Err(format!("unknown command: {other}")),
             None => Err("missing cmd".into()),
@@ -311,9 +357,10 @@ impl Host {
         let p = self.peers.get_mut(&peer).ok_or("connection gone")?;
         p.subscribed = true;
         p.events = events.clone();
-        Ok(
-            json!({ "ok": true, "events": events.unwrap_or_else(|| EVENTS.iter().filter(|e| **e != "acp").map(|e| e.to_string()).collect()) }),
-        )
+        let names = events.unwrap_or_else(|| {
+            EVENTS.iter().filter(|e| **e != "acp").map(|e| e.to_string()).collect()
+        });
+        Ok(json!({ "ok": true, "events": names }))
     }
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
@@ -356,7 +403,9 @@ impl Host {
                     "owner": owner,
                     "title": r.params["toolCall"]["title"],
                     "kind": r.params["toolCall"]["kind"],
+                    "tool_call": r.params["toolCall"],
                     "options": r.params["options"],
+                    "timeout_seconds": r.deadline.map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
                 })
             })
             .collect()
@@ -367,6 +416,9 @@ impl Host {
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "host" });
         report["pending"] = json!(self.pending_permissions().len());
+        report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
+        report["stop_when_idle"] = json!(self.stop_when_idle);
+        report["stopping"] = json!(self.stop_requested);
         report["bridges"] = json!(
             self.peers
                 .values()
@@ -378,71 +430,284 @@ impl Host {
             .sessions
             .iter()
             .map(|s| {
-                json!({
+                let mut session = s.state.report();
+                let fields = json!({
                     "session_id": s.id,
                     "cwd": s.cwd.to_string_lossy(),
                     "busy": !s.prompts.is_empty(),
+                    "turn_seconds": s.turn_started.map(|t| t.elapsed().as_secs()),
                     "prompts": s.prompts.len(),
                     "held": s.held.len(),
                     "context": s.context.len(),
+                    "pending": self.agent_requests.iter().filter(|r| r.handle.is_some() && r.session.as_deref() == Some(&s.id)).count(),
                     "log": self.log.host_log().map(|_| paths::session_log(&s.cwd, &s.id).to_string_lossy().into_owned()),
-                })
+                });
+                if let (Some(session), Value::Object(fields)) = (session.as_object_mut(), fields) {
+                    session.extend(fields);
+                }
+                session
             })
             .collect();
         report
     }
 
     fn send(&mut self, req: &Value) -> Result<Value, String> {
-        let text = req["text"].as_str().ok_or("missing text")?.to_owned();
+        let text = req["text"].as_str().unwrap_or_default().to_owned();
+        let blocks = match &req["blocks"] {
+            Value::Null => Vec::new(),
+            Value::Array(blocks) => blocks.clone(),
+            _ => return Err("blocks must be a list of ACP content blocks".into()),
+        };
         let mode = req["mode"].as_str().unwrap_or("now");
         let replace = req["replace"].as_bool().unwrap_or(false);
+        if text.trim().is_empty() && blocks.is_empty() {
+            return Err("missing text".into());
+        }
         if self.status.is_some() || self.agent_in.is_none() {
             return Err("the agent is no longer accepting input".into());
         }
+        self.check_blocks(&blocks)?;
         let i = self.pick_session(req["session"].as_str())?;
         let session = self.sessions[i].id.clone();
+        if mode == "context" {
+            if !blocks.is_empty() {
+                return Err("context is text only".into());
+            }
+            let context = &mut self.sessions[i].context;
+            match context.last_mut() {
+                Some(last) if replace => *last = text.clone(),
+                _ => context.push(text.clone()),
+            }
+            self.sink.note(
+                Some(&session),
+                json!({ "event": "send", "mode": mode, "status": "held", "text": text }),
+            );
+            return Ok(json!({ "ok": true, "status": "held", "session": session }));
+        }
         let busy = !self.sessions[i].prompts.is_empty();
+        let held = Held { id: self.message_id(), text: text.clone(), blocks };
+        let message = held.id.clone();
         let status = match mode {
             "now" => {
-                self.send_prompt(i, text.clone());
+                self.send_prompt(i, held);
                 if busy { "queued" } else { "delivered" }
             }
             "after-turn" => {
                 if busy || !self.sessions[i].held.is_empty() {
-                    self.sessions[i].held.push_back(text.clone());
+                    self.sessions[i].held.push_back(held);
                     "held"
                 } else {
-                    self.send_prompt(i, text.clone());
+                    self.send_prompt(i, held);
                     "delivered"
                 }
             }
             "interrupt" => {
                 if busy {
                     let s = &mut self.sessions[i];
-                    s.held.insert(s.interrupts, text.clone());
+                    s.held.insert(s.interrupts, held);
                     s.interrupts += 1;
                     self.cancel(&session);
                     "interrupting"
                 } else {
-                    self.send_prompt(i, text.clone());
+                    self.send_prompt(i, held);
                     "delivered"
                 }
-            }
-            "context" => {
-                let context = &mut self.sessions[i].context;
-                match context.last_mut() {
-                    Some(last) if replace => *last = text.clone(),
-                    _ => context.push(text.clone()),
-                }
-                "held"
             }
             other => return Err(format!("unknown mode: {other}")),
         };
         self.sink.note(
             Some(&session),
-            json!({ "event": "send", "mode": mode, "replace": replace, "status": status, "text": text }),
+            json!({ "event": "send", "mode": mode, "status": status, "message": message, "text": text }),
         );
-        Ok(json!({ "ok": true, "status": status, "session": session }))
+        Ok(json!({ "ok": true, "status": status, "session": session, "message": message }))
+    }
+
+    /// Content blocks a bridge may add to a prompt.
+    fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("resource_link") if block["uri"].is_string() => {}
+                Some("image") if block["data"].is_string() && block["mimeType"].is_string() => {
+                    if self.capabilities()["image"] != true {
+                        return Err("the agent doesn't take images".into());
+                    }
+                }
+                Some("text") if block["text"].is_string() => {}
+                _ => return Err(format!("unsupported content block: {block}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// `cancel`: stops the running turn. Held messages would otherwise start
+    /// the next turn, so they are dropped unless `keep_held`.
+    fn cancel_turn(&mut self, req: &Value) -> Result<Value, String> {
+        let i = self.pick_session(req["session"].as_str())?;
+        let session = self.sessions[i].id.clone();
+        let dropped: Vec<Value> = if req["keep_held"].as_bool() == Some(true) {
+            Vec::new()
+        } else {
+            let s = &mut self.sessions[i];
+            s.interrupts = 0;
+            s.held.drain(..).map(|h| json!({ "message": h.id, "text": h.text })).collect()
+        };
+        let busy = !self.sessions[i].prompts.is_empty();
+        if busy {
+            self.cancel(&session);
+        }
+        let status = if busy { "cancelling" } else { "idle" };
+        self.sink.note(
+            Some(&session),
+            json!({ "event": "cancel", "status": status, "dropped": dropped }),
+        );
+        Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
+    }
+
+    fn queue(&mut self, req: &Value) -> Result<Value, String> {
+        let i = self.pick_session(req["session"].as_str())?;
+        let s = &mut self.sessions[i];
+        let mut dropped = Vec::new();
+        if let Some(id) = req["drop"].as_str() {
+            let pos =
+                s.held.iter().position(|h| h.id == id).ok_or(format!("no held message {id}"))?;
+            if pos < s.interrupts {
+                s.interrupts -= 1;
+            }
+            dropped.push(s.held.remove(pos).unwrap());
+        }
+        if req["clear"].as_bool() == Some(true) {
+            s.interrupts = 0;
+            dropped.extend(s.held.drain(..));
+        }
+        if req["clear_context"].as_bool() == Some(true) {
+            s.context.clear();
+        }
+        let held: Vec<Value> = s
+            .held
+            .iter()
+            .enumerate()
+            .map(|(n, h)| json!({ "message": h.id, "text": h.text, "interrupt": n < s.interrupts, "attachments": h.blocks.len() }))
+            .collect();
+        let dropped: Vec<Value> =
+            dropped.into_iter().map(|h| json!({ "message": h.id, "text": h.text })).collect();
+        Ok(
+            json!({ "ok": true, "session": s.id, "held": held, "context": s.context, "dropped": dropped }),
+        )
+    }
+
+    /// Requests the agent answers: they go out now and the bridge is
+    /// answered when the agent is (see requests.rs).
+    fn agent_op(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+        if self.status.is_some() || self.agent_in.is_none() {
+            return Err("the agent is no longer accepting input".into());
+        }
+        let cmd = req["cmd"].as_str().unwrap_or_default();
+        let req_id = req.get("req_id").cloned();
+        let caps = self.capabilities();
+        if cmd == "sessions" {
+            if caps["list"] != true {
+                return Err("the agent doesn't list its sessions".into());
+            }
+            let mut params = json!({ "cwd": self.cwd.to_string_lossy() });
+            if let Some(cursor) = req["cursor"].as_str() {
+                params["cursor"] = json!(cursor);
+            }
+            self.peer_op(peer, req_id, PeerOp::List, "session/list", params);
+            return Ok(());
+        }
+        let i = self.pick_session(req["session"].as_str())?;
+        let session = self.sessions[i].id.clone();
+        let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
+        match cmd {
+            "set_mode" => {
+                let mode = text("mode")?;
+                let state = &self.sessions[i].state;
+                let params = json!({ "sessionId": session, "modeId": mode });
+                if let Some(modes) = &state.modes {
+                    let known = modes["availableModes"]
+                        .as_array()
+                        .is_none_or(|m| m.iter().any(|x| x["id"] == mode.as_str()));
+                    if !known {
+                        return Err(format!("no mode {mode} (see brnr mode)"));
+                    }
+                    self.peer_op(
+                        peer,
+                        req_id,
+                        PeerOp::Mode { session, mode },
+                        "session/set_mode",
+                        params,
+                    );
+                } else {
+                    // An agent with modes only as a config option.
+                    let params = json!({ "sessionId": session, "configId": "mode", "value": mode });
+                    self.peer_op(
+                        peer,
+                        req_id,
+                        PeerOp::Config { session },
+                        "session/set_config_option",
+                        params,
+                    );
+                }
+            }
+            "set_config" => {
+                let (option, value) = (text("option")?, text("value")?);
+                let params = json!({ "sessionId": session, "configId": option, "value": value });
+                self.peer_op(
+                    peer,
+                    req_id,
+                    PeerOp::Config { session },
+                    "session/set_config_option",
+                    params,
+                );
+            }
+            "set_model" => {
+                let model = text("model")?;
+                let state = &self.sessions[i].state;
+                if let Some(option) = state.model_option() {
+                    let id = option["id"].clone();
+                    let params = json!({ "sessionId": session, "configId": id, "value": model });
+                    self.peer_op(
+                        peer,
+                        req_id,
+                        PeerOp::Config { session },
+                        "session/set_config_option",
+                        params,
+                    );
+                } else if state.models.is_some() {
+                    let params = json!({ "sessionId": session, "modelId": model });
+                    self.peer_op(
+                        peer,
+                        req_id,
+                        PeerOp::Model { session, model },
+                        "session/set_model",
+                        params,
+                    );
+                } else {
+                    return Err("the agent offers no model choice".into());
+                }
+            }
+            "fork" | "close" => {
+                if self.editor_attached() {
+                    return Err(format!("the editor owns this host; {cmd} sessions there"));
+                }
+                if caps[cmd] != true {
+                    return Err(format!("the agent can't {cmd} sessions"));
+                }
+                if cmd == "close" && req["session"].is_null() {
+                    return Err("close needs the session named".into());
+                }
+                let cwd = self.sessions[i].cwd.clone();
+                if cmd == "fork" {
+                    let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
+                    self.peer_op(peer, req_id, PeerOp::Fork { cwd }, "session/fork", params);
+                } else {
+                    let params = json!({ "sessionId": session });
+                    self.peer_op(peer, req_id, PeerOp::Close { session }, "session/close", params);
+                }
+            }
+            _ => unreachable!("checked in command"),
+        }
+        Ok(())
     }
 
     /// The session a request means: the one named (exactly or by unique
