@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brnr</title>
+<meta name="description" content="A burner phone for your coding agents. Run Claude Code or Codex behind a host you can message, watch and approve from outside the editor.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='2' fill='%2324291d'/%3E%3Crect x='4.5' y='3' width='7' height='5' fill='%23b8c795'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page: #e4e7df;
+    --ink: #24291d;
+    --muted: #59604d;
+    --rule: #c3c8b7;
+    --code-bg: #d6dbcc;
+    --link: #3f5520;
+    --bezel: #2a2e27;
+    --lcd: #b8c795;
+    --lcd-ink: #26331a;
+    --lcd-dim: #8f9f6c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page: #1c1f1a;
+      --ink: #e1e6d6;
+      --muted: #9da48f;
+      --rule: #383d32;
+      --code-bg: #262a22;
+      --link: #c3d89a;
+      --bezel: #0f110d;
+      --lcd: #9fd06a;
+      --lcd-ink: #17260c;
+      --lcd-dim: #79a64a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #1c1f1a;
+    --ink: #e1e6d6;
+    --muted: #9da48f;
+    --rule: #383d32;
+    --code-bg: #262a22;
+    --link: #c3d89a;
+    --bezel: #0f110d;
+    --lcd: #9fd06a;
+    --lcd-ink: #17260c;
+    --lcd-dim: #79a64a;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 400 1.0625rem/1.6 "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  }
+  a { color: var(--link); text-underline-offset: 0.18em; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--link); outline-offset: 3px; border-radius: 2px; }
+  code, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.875rem; }
+  :not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; white-space: nowrap; }
+  .alt code { white-space: normal; overflow-wrap: anywhere; }
+  pre {
+    margin: 0;
+    padding: 1rem 1.125rem;
+    background: var(--code-bg);
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+  pre .c { color: var(--muted); }
+
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1rem; }
+  @media (min-width: 40rem) { .wrap { padding: 0 2rem; } }
+
+  header.top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-top: 1.5rem; padding-bottom: 1.5rem;
+  }
+  .wordmark { font: 600 1.375rem/1 "Pixelify Sans", monospace; color: var(--ink); text-decoration: none; }
+  header.top nav a { margin-left: 1.25rem; font-weight: 600; }
+
+  /* Hero */
+  .hero {
+    display: grid; gap: 3rem; align-items: center;
+    padding-top: 2rem; padding-bottom: 4.5rem;
+  }
+  @media (min-width: 56rem) { .hero { grid-template-columns: 1fr auto; gap: 4rem; padding-top: 3.5rem; } }
+  h1 {
+    margin: 0;
+    font-weight: 800;
+    font-size: clamp(2.5rem, 6.5vw, 4.25rem);
+    line-height: 1.02;
+    letter-spacing: -0.025em;
+    max-width: 12ch;
+  }
+  .lede { margin: 1.5rem 0 2rem; font-size: 1.25rem; line-height: 1.5; max-width: 34rem; color: var(--muted); }
+  .install {
+    display: flex; align-items: center; gap: 0.5rem;
+    max-width: 30rem;
+    background: var(--code-bg); border-radius: 6px;
+    padding: 0.375rem 0.375rem 0.375rem 1.125rem;
+  }
+  .install code { flex: 1; font-size: 1rem; background: none; padding: 0; overflow-x: auto; white-space: nowrap; }
+  .install button {
+    font: 600 0.875rem/1 "Atkinson Hyperlegible Next", sans-serif;
+    color: var(--page); background: var(--ink);
+    border: 0; border-radius: 4px; padding: 0.625rem 0.875rem; cursor: pointer;
+    min-width: 4.75rem;
+  }
+  @media (max-width: 26rem) { .install code { font-size: 0.875rem; } .install { padding-left: 0.75rem; } }
+  .alt { margin: 0.875rem 0 0; font-size: 0.9375rem; color: var(--muted); }
+
+  /* The phone */
+  .phone {
+    justify-self: center;
+    width: min(20rem, 100%);
+    background: var(--bezel);
+    border-radius: 2.25rem 2.25rem 1.5rem 1.5rem;
+    padding: 2.25rem 1.25rem 1.75rem;
+    position: relative;
+  }
+  .phone::before {
+    content: ""; position: absolute; top: 1rem; left: 50%;
+    width: 3rem; height: 0.3rem; margin-left: -1.5rem;
+    background: #4a4f45; border-radius: 1rem;
+  }
+  .lcd {
+    background: var(--lcd);
+    color: var(--lcd-ink);
+    border-radius: 0.375rem;
+    box-shadow: inset 0 0 0 2px rgba(0,0,0,.18), inset 0 6px 14px rgba(0,0,0,.12);
+    padding: 0.625rem 0.75rem 0.875rem;
+    font: 400 1.0625rem/1.25 "Pixelify Sans", monospace;
+    min-height: 19rem;
+    font-variant-ligatures: none;
+    display: flex; flex-direction: column;
+  }
+  .status { display: flex; justify-content: space-between; font-size: 0.875rem; border-bottom: 2px solid var(--lcd-ink); padding-bottom: 0.25rem; margin-bottom: 0.625rem; }
+  .bars { letter-spacing: -0.1em; }
+  .thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+  .thread li { max-width: 88%; padding: 0.3rem 0.5rem; border: 2px solid var(--lcd-ink); }
+  .thread li.me { align-self: flex-end; background: var(--lcd-ink); color: var(--lcd); }
+  .thread li.from { border-style: dashed; }
+  .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem 0.75rem; margin-top: 1.375rem; }
+  .keys span { height: 0.85rem; background: #3b4037; border-radius: 0.6rem; }
+  .keys span:nth-child(-n+3) { height: 1.1rem; }
+  .caption { margin: 1rem 0 0; font-size: 0.8125rem; color: var(--muted); text-align: center; }
+  .caption code { font-size: 0.8125rem; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .js .thread li { opacity: 0; transform: translateY(4px); }
+    .js .thread li.on { opacity: 1; transform: none; transition: opacity .15s steps(2), transform .15s steps(2); }
+  }
+
+  /* Sections */
+  section { border-top: 1px solid var(--rule); padding-top: 3rem; padding-bottom: 3.5rem; }
+  .cols { display: grid; gap: 1.5rem 4rem; }
+  .hero > *, .cols > * { min-width: 0; }
+  @media (min-width: 56rem) { .cols { grid-template-columns: 19rem 1fr; } }
+  h2 { margin: 0; font-size: 1.625rem; line-height: 1.2; letter-spacing: -0.01em; font-weight: 800; }
+  .intro { margin: 0.75rem 0 0; color: var(--muted); }
+  .body > * { margin: 0; }
+  .body > * + * { margin-top: 1.25rem; }
+  .body p { max-width: 38rem; }
+  dl { margin: 0; display: grid; gap: 1rem; }
+  dl div { margin: 0; }
+  dt { font-weight: 600; }
+  dd { margin: 0.125rem 0 0; color: var(--muted); max-width: 38rem; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 1.5rem; padding-bottom: 2.5rem; color: var(--muted); font-size: 0.9375rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="wordmark" href="./">brnr</a>
+    <nav><a href="https://github.com/brnrhq/brnr">GitHub</a></nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>A burner phone for your coding agents.</h1>
+      <p class="lede">Run Claude Code or Codex from your editor as usual, then message it, watch it and answer its permission requests from any terminal. It keeps working after the editor closes.</p>
+      <div class="install">
+        <code id="brew">brew install brnrhq/tap/brnr</code>
+        <button type="button" id="copy" aria-describedby="brew">Copy</button>
+      </div>
+      <p class="alt">Or build it with Cargo: <code>cargo install --git https://github.com/brnrhq/brnr</code></p>
+    </div>
+
+    <figure class="phone-wrap" style="margin:0">
+      <div class="phone" role="img" aria-label="An agent's messages on a phone screen: it asks to edit src/api.rs, you approve, it finishes, and you ask it to update the changelog.">
+        <div class="lcd">
+          <div class="status"><span class="bars">▂▄▆</span><span>demo</span><span>▮▮▮▯</span></div>
+          <ol class="thread" aria-hidden="true">
+            <li class="from">Edit src/api.rs?</li>
+            <li class="me">approve</li>
+            <li class="from">Done. 3 files changed.</li>
+            <li class="me">also update the changelog</li>
+            <li class="from">On it.</li>
+          </ol>
+        </div>
+        <div class="keys" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      </div>
+      <figcaption class="caption">That's <code>brnr approve demo</code> and <code>brnr send demo</code>.</figcaption>
+    </figure>
+  </div>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>How it works</h2>
+        <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a host process that you can reach from outside.</p>
+      </div>
+      <div class="body">
+<pre>editor ──stdio── brnr proxy ──socketpair── brnr host ──pipes── agent
+                                              │
+                                   control socket ── brnr send / watch / …
+                                              │
+                                           bridges (Slack, push, …)</pre>
+        <dl>
+          <div><dt>brnr proxy</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
+          <div><dt>brnr host</dt><dd>Owns the agent for its whole life, in its own session. Killing the editor or the proxy can't take the agent with it unless you want it to.</dd></div>
+          <div><dt>Control commands</dt><dd>Talk to running hosts over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Use it from your editor</h2>
+        <p class="intro">Set your editor's ACP agent command to <code>brnr proxy</code> and put the agent after <code>--</code>.</p>
+      </div>
+      <div class="body">
+<pre>brnr proxy -- claude-agent-acp
+brnr proxy -- codex-acp
+brnr proxy --profile work          <span class="c"># agent and settings from a profile</span></pre>
+        <p>When the editor goes away, <code>on_disconnect</code> decides what happens. With <code>direct</code>, the default, the agent stops the way it would if the editor had started it. With <code>headless</code>, it keeps running and brnr answers it in place of the editor.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Talk to it from outside</h2>
+        <p class="intro">Target a host by its id, its <code>--name</code> or an ACP session id. A unique prefix is enough.</p>
+      </div>
+      <div class="body">
+<pre>brnr list                          <span class="c"># running hosts and their sessions</span>
+brnr send demo "also update the changelog"
+brnr send demo --after-turn "then run the tests"
+brnr send demo --interrupt "stop, wrong branch"
+brnr watch demo                    <span class="c"># every event and ACP message, live</span>
+brnr pending                       <span class="c"># permission requests waiting for an answer</span>
+brnr approve demo
+brnr stop demo</pre>
+        <p>Messages you send reach the agent as ordinary user messages, and the editor shows them as such.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Run it without an editor</h2>
+        <p class="intro">Start a headless session and check in on it later.</p>
+      </div>
+      <div class="body">
+<pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp</pre>
+        <p>The <code>permissions</code> setting in your profile handles permission requests. With <code>ask</code>, they wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge. Every session gets a transcript under <code>~/.brnr/projects</code>, stored in the same folders as Claude Code's own transcripts.</p>
+<pre><span class="c"># ~/.config/brnr/config.toml</span>
+[profiles.work]
+agent = ["claude-agent-acp"]
+on_disconnect = "headless"
+permissions = "ask"                 <span class="c"># ask | auto-allow | auto-deny</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Agents</h2>
+        <p class="intro">brnr works with any ACP agent. It doesn't include one.</p>
+      </div>
+      <div class="body">
+        <p>For Claude Code and Codex, install the ACP adapters from npm (<a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a>, <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a>), or build them as single-file executables from the repository with <code>adapters/build.sh</code>. Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
+        <p>brnr runs on macOS and Linux.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>brnr is licensed under Apache-2.0.</span>
+    <a href="https://github.com/brnrhq/brnr#readme">Read the full README</a>
+    <a href="https://github.com/brnrhq/homebrew-tap">Homebrew tap</a>
+  </footer>
+</div>
+
+<script>
+  document.documentElement.classList.add("js");
+
+  const button = document.getElementById("copy");
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById("brew").textContent);
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Select it";
+    }
+    setTimeout(() => { button.textContent = "Copy"; }, 1800);
+  });
+
+  // One message at a time, like a phone receiving them.
+  const messages = document.querySelectorAll(".thread li");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    messages.forEach((m) => m.classList.add("on"));
+  } else {
+    messages.forEach((m, i) => setTimeout(() => m.classList.add("on"), 500 + i * 900));
+  }
+</script>
+</body>
+</html>

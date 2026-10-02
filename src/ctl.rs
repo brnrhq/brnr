@@ -58,7 +58,8 @@ const USAGE: &str = "usage:
   brnr approve <target> [<request>] [--option <id>]
   brnr deny <target> [<request>] [--option <id>]
   brnr watch <target> [--events <a,b,...>] [--json]
-  brnr stop <target>";
+  brnr stop <target>
+  brnr --version";
 
 /// How long `start` waits for the agent to open its session.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
@@ -78,6 +79,10 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Some("stop") => stop(rest),
         Some("-h" | "--help") => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Some("-V" | "--version") => {
+            println!("brnr {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => Err(USAGE.to_owned()),
