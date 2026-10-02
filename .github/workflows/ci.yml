@@ -1,0 +1,33 @@
+# Lints and tests every pull request and every push to main, on Linux and
+# macOS. The integration tests drive the real binary against
+# tests/fake_agent.py, so they need python3 (both runners have it).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --release --all-targets -- -D warnings
+      # Release, as locally: some tests stream tens of thousands of events.
+      - run: cargo test --release
