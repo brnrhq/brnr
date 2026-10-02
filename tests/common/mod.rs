@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -35,7 +35,12 @@ impl Env {
     }
 
     pub fn brnr(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_brnr"));
+        self.brnr_at(Path::new(env!("CARGO_BIN_EXE_brnr")), args)
+    }
+
+    /// brnr started by another path to it, such as a symlink.
+    pub fn brnr_at(&self, path: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(path);
         cmd.args(args)
             .current_dir(&self.dir)
             .env("BRNR_DIR", self.dir.join("run"))

@@ -30,9 +30,12 @@ macOS and Linux (Unix sockets only).
 
 ```sh
 brew install brnrhq/tap/brnr
+brew install brnrhq/tap/brnr-adapters     # claude-agent-acp and codex-acp, compiled on your machine
 ```
 
-Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
+`brnr-adapters` builds `adapters/` (below) at the same version with bun, and
+links the adapters next to `brnr`, where brnr finds them even when an editor's
+`PATH` doesn't include Homebrew. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
 ## Build
 
