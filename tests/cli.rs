@@ -30,6 +30,16 @@ fn idle(env: &Env) {
     assert_eq!(code(&env.run(&["wait", "a", "--timeout", "10"])), 0, "not idle");
 }
 
+/// Until no turn is running, whatever the last turn's result (`wait` would
+/// report a cancelled one as a failure).
+fn settled(env: &Env) {
+    let busy = || {
+        let status: Value = serde_json::from_str(&env.ok(&["status", "a", "--json"])).unwrap();
+        status["sessions"][0]["busy"] == true
+    };
+    assert!(wait_for(Duration::from_secs(10), || !busy()), "still busy");
+}
+
 // ---- replies and waiting -------------------------------------------------
 
 #[test]
@@ -130,7 +140,7 @@ fn cancel_drops_held_messages_and_says_so() {
     let out = env.ok(&["cancel", "a"]);
     assert!(out.contains("cancelling"), "{out}");
     assert!(out.contains("dropped m2: later"), "{out}");
-    idle(&env);
+    settled(&env);
     assert_eq!(env.prompts(), ["hang on"]);
 }
 
