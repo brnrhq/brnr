@@ -26,6 +26,14 @@ editor ──stdio── brnr proxy ──socketpair── brnr host ──pipes
 
 macOS and Linux (Unix sockets only).
 
+## Install
+
+```sh
+brew install brnrhq/tap/brnr
+```
+
+Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
+
 ## Build
 
 ```sh

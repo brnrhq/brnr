@@ -1,0 +1,58 @@
+# On a version tag: publish a GitHub release and point the Homebrew formula
+# in brnrhq/homebrew-tap at it. The tap is pushed to with a deploy key whose
+# private half is the HOMEBREW_TAP_DEPLOY_KEY secret.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Build and test
+        run: cargo test --release && cargo build --release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: brnrhq/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Update the formula
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$GITHUB_REF_NAME.tar.gz"
+          sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          python3 - "$url" "$sha256" <<'PY'
+          import re, sys
+          url, sha256 = sys.argv[1:]
+          path = "tap/Formula/brnr.rb"
+          formula = open(path).read()
+          formula = re.sub(r'\n  (url|sha256) "[^"]*"', "", formula)
+          formula = re.sub(r'(\n  homepage "[^"]*")', rf'\1\n  url "{url}"\n  sha256 "{sha256}"', formula)
+          open(path, "w").write(formula)
+          PY
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "brnr ${GITHUB_REF_NAME#v}"
+          git push
