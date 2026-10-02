@@ -30,7 +30,7 @@ macOS and Linux (Unix sockets only).
 
 ```sh
 cargo build --release          # target/release/brnr
-adapters/build.sh              # optional: target/release/brnr-claude, brnr-codex (needs bun)
+adapters/build.sh              # optional: target/release/claude-agent-acp, codex-acp (needs bun)
 ```
 
 `brnr` is one binary. The adapters are separate, single-file builds of the ACP
@@ -41,13 +41,14 @@ adapters for Claude Code and Codex; see [Adapters](#adapters).
 Configure your editor's ACP agent command as:
 
 ```sh
-brnr proxy -- brnr-claude          # or: brnr proxy -- claude-agent-acp
-brnr proxy -- brnr-codex
+brnr proxy -- claude-agent-acp
+brnr proxy -- codex-acp
 brnr proxy --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
-doesn't need to include it.
+doesn't need to include it, and the bundled adapters are used even if the npm
+packages of the same name are installed too.
 
 When the editor goes away without a handoff, `on_disconnect` decides what happens:
 
@@ -80,8 +81,8 @@ the running turn.
 ## Headless sessions
 
 ```sh
-brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude
-brnr host --name demo --prompt - -- brnr-codex < task.md     # in the foreground; Ctrl-C stops it
+brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp
+brnr host --name demo --prompt - -- codex-acp < task.md     # in the foreground; Ctrl-C stops it
 ```
 
 With no editor attached the host is the agent's client: permission requests
@@ -100,7 +101,7 @@ on something a headless host can't provide.
 on_disconnect = "direct"
 
 [profiles.work]
-agent = ["brnr-claude"]
+agent = ["claude-agent-acp"]
 cwd = "~/work/project"              # for brnr start
 on_disconnect = "headless"
 permissions = "ask"                 # ask | auto-allow | auto-deny
@@ -140,15 +141,15 @@ same folder and name as Claude Code's own transcript. Every record carries
 ## Adapters
 
 `adapters/` builds the ACP adapters as single-file executables with
-`bun build --compile`:
+`bun build --compile`, under the same command names their npm packages install:
 
-- **brnr-claude**: [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
-- **brnr-codex**: [codex-acp](https://github.com/agentclientprotocol/codex-acp)
+- **claude-agent-acp**: [@agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
+- **codex-acp**: [@agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
 
 They don't include the agents. Each runs the user's own `claude` or `codex`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
 `CODEX_PATH`). `build.sh` copies the license of every package it compiles in to
-`licenses/`. Note that brnr-claude contains the Claude Agent SDK, which is
+`licenses/`. Note that claude-agent-acp contains the Claude Agent SDK, which is
 licensed under Anthropic's Commercial Terms, not an open-source license; check
 those terms before redistributing it.
 

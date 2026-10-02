@@ -17,7 +17,7 @@ pub fn host_command() -> io::Result<Command> {
 }
 
 /// A bare program name (no `/`) that is installed next to the running
-/// binary, such as the bundled adapters `brnr-claude` and `brnr-codex`. Found
+/// binary, such as the bundled adapters `claude-agent-acp` and `codex-acp`. Found
 /// there even when that directory isn't on the editor's PATH.
 pub fn bundled(program: &OsStr) -> Option<PathBuf> {
     if program.as_bytes().contains(&b'/') {
