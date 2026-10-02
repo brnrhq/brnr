@@ -271,3 +271,46 @@ streaming 20,000 chunks at once, and was cut off as if it had stopped.
 however big. Without that, one agent message over the limit (or a `status`
 quoting it) cut off every peer, `brnr status` included. The status report now
 quotes at most 4000 characters of the last message; the events have all of it.
+
+## 26. Adapters through Homebrew
+
+claude-agent-acp compiles in the Claude Agent SDK (Anthropic's Commercial
+Terms), so the tap doesn't ship prebuilt adapters.
+
+- **A. Tell Homebrew users to install the npm packages.** Needs Node 22 on
+  the editor's PATH, and the packages likely bring their own copies of the
+  agents through optional dependencies (`adapters/build.sh` leaves those out).
+- **B. A `brnr-adapters` formula that compiles them on the user's machine**
+  from brnr's `adapters/` at the same tag, pinned by `bun.lock`.
+
+**Chosen: B**, with the npm packages mentioned as the alternative. Nothing
+prebuilt is distributed; the user's machine fetches and compiles the
+packages, as `adapters/build.sh` does for anyone building from source.
+
+Compiler: **bun** rather than deno. `adapters/build.sh` already uses `bun
+build --compile` with a frozen lockfile, its output is what brnr's tests and
+smoke tests ran against, and both adapters are Node packages written for
+Node; deno's npm compatibility would be one more thing to verify for code
+that spawns and talks to subprocesses. Both are in homebrew-core; bun is a
+build-only dependency.
+
+## 27. Finding adapters next to a symlinked brnr
+
+Homebrew links `bin/brnr` and the adapters into its prefix's `bin`. On macOS
+the running binary's path is the link's, so an adapter next to the link is
+found; on Linux it is the link's target in the Cellar, where the adapters
+aren't. brnr now also looks next to the path it was started by (`argv[0]`,
+when it is a path), and passes that path on to the host, which is the one that
+starts the agent.
+
+## 28. The adapters' command names
+
+First the compiled adapters took the npm packages' command names
+(`claude-agent-acp`, `codex-acp`), so docs and configs read the same either
+way. Installed through Homebrew next to a global npm install, though, two
+commands of the same name are on PATH, and which one runs depends on PATH
+order.
+
+**Chosen: names of their own, `brnr-claude-adapter` and `brnr-codex-adapter`.**
+`brnr proxy -- claude-agent-acp` still runs the npm package. `brnr doctor`
+reports both kinds.

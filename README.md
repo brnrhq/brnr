@@ -30,15 +30,18 @@ macOS and Linux (Unix sockets only).
 
 ```sh
 brew install brnrhq/tap/brnr
+brew install brnrhq/tap/brnr-adapters     # brnr-claude-adapter, brnr-codex-adapter, compiled on your machine
 ```
 
-Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
+`brnr-adapters` builds `adapters/` (below) at the same version with bun, and
+links the adapters next to `brnr`, where brnr finds them even when an editor's
+`PATH` doesn't include Homebrew. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
 ## Build
 
 ```sh
 cargo build --release          # target/release/brnr
-adapters/build.sh              # optional: target/release/claude-agent-acp, codex-acp (needs bun)
+adapters/build.sh              # optional: target/release/brnr-claude-adapter, brnr-codex-adapter (needs bun)
 ```
 
 `brnr` is one binary. The adapters are separate, single-file builds of the ACP
@@ -49,14 +52,13 @@ adapters for Claude Code and Codex; see [Adapters](#adapters).
 Configure your editor's ACP agent command as:
 
 ```sh
-brnr proxy -- claude-agent-acp
-brnr proxy -- codex-acp
+brnr proxy -- brnr-claude-adapter  # or claude-agent-acp, from npm
+brnr proxy -- brnr-codex-adapter   # or codex-acp, from npm
 brnr proxy --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
-doesn't need to include it, and the bundled adapters are used even if the npm
-packages of the same name are installed too.
+doesn't need to include it.
 
 When the editor goes away without a handoff, `on_disconnect` decides what happens:
 
@@ -99,7 +101,7 @@ find the turn that answers it.
 brnr wait demo                     # until no turn is running and nothing is held
 brnr wait demo --for permission    # until a permission request is waiting
 brnr wait demo --for turn          # the next turn's end; --for exit: the host's
-brnr start --wait --stop-when-idle --prompt "fix the failing tests" -- claude-agent-acp
+brnr start --wait --stop-when-idle --prompt "fix the failing tests" -- brnr-claude-adapter
 ```
 
 `wait`, `send --wait` and `start --wait` exit 0 when the turn ended normally
@@ -148,10 +150,10 @@ command = ["brnr", "notify", "--", "sh", "-c", "terminal-notifier -title \"$BRNR
 ## Headless sessions
 
 ```sh
-brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp
+brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
 brnr start --mode plan --model opus --prompt - < task.md       # set up before the first prompt
 brnr start --resume 0199c2                                     # carry on a session from list --inactive
-brnr host --name demo --prompt - -- codex-acp < task.md        # in the foreground; Ctrl-C stops it
+brnr host --name demo --prompt - -- brnr-codex-adapter < task.md        # in the foreground; Ctrl-C stops it
 ```
 
 `brnr start` waits up to 120 seconds (`BRNR_START_TIMEOUT`) for the session
@@ -184,7 +186,7 @@ can't provide.
 on_disconnect = "direct"
 
 [profiles.work]
-agent = ["claude-agent-acp"]
+agent = ["brnr-claude-adapter"]
 cwd = "~/work/project"              # for brnr start
 on_disconnect = "headless"
 permissions = "ask"                 # ask | auto-allow | auto-deny, or by tool kind:
@@ -248,10 +250,11 @@ creates them readable only by you.
 ## Adapters
 
 `adapters/` builds the ACP adapters as single-file executables with
-`bun build --compile`, under the same command names their npm packages install:
+`bun build --compile`, under names of their own, so they don't clash with the
+npm packages' commands when both are installed:
 
-- **claude-agent-acp**: [@agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
-- **codex-acp**: [@agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
+- **brnr-claude-adapter**: [@agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
+- **brnr-codex-adapter**: [@agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
 
 They don't include the agents. Each runs the user's own `claude` or `codex`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /

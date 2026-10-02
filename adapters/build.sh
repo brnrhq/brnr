@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds the bundled adapters as single-file executables (bun --compile) into
-# <out>, default ../target/release, next to brnr. They keep the command names
-# their npm packages install: claude-agent-acp and codex-acp.
+# <out>, default ../target/release, next to brnr: brnr-claude-adapter
+# (claude-agent-acp) and brnr-codex-adapter (codex-acp). Their own names, so
+# they don't clash with the npm packages' commands when both are installed.
 #
 # Optional dependencies are omitted, so the native agent binaries the
 # adapters' packages would pull in (Claude Code via the Claude Agent SDK, the
@@ -12,8 +13,8 @@ out=${1:-../target/release}
 
 bun install --frozen-lockfile --omit=optional
 mkdir -p "$out"
-bun build --compile --minify claude.ts --outfile "$out/claude-agent-acp"
-bun build --compile --minify codex.ts --outfile "$out/codex-acp"
+bun build --compile --minify claude.ts --outfile "$out/brnr-claude-adapter"
+bun build --compile --minify codex.ts --outfile "$out/brnr-codex-adapter"
 
 # Third-party licenses of everything compiled in.
 mkdir -p "$out/licenses"
