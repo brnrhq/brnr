@@ -106,12 +106,13 @@ impl Queue {
         (Queue { tx, queued: queued.clone() }, rx, queued)
     }
 
-    /// Full only with a backlog: a peer that has written everything takes
-    /// the next line however big it is (a long agent message, a status).
+    /// Full once the backlog is past the limit: until then a peer takes the
+    /// next line however big it is (a long agent message, a status), so
+    /// one big line can't make a peer that keeps up look stopped. At most
+    /// the limit plus a line is queued.
     fn push(&self, line: String) -> Queued {
         let len = line.len() + 1;
-        let queued = self.queued.load(Relaxed);
-        if queued > 0 && queued + len > QUEUE_BYTES {
+        if self.queued.load(Relaxed) > QUEUE_BYTES {
             return Queued::Full;
         }
         self.queued.fetch_add(len, Relaxed);
@@ -313,6 +314,18 @@ impl Host {
                 self.peers.remove(&peer);
             }
             Queued::Full => self.drop_peer(peer),
+        }
+    }
+
+    /// Drops every peer, waiting up to `timeout` for their writers to send
+    /// what's queued (dropping the queue lets a writer finish it and stop).
+    pub(super) fn flush_peers(&mut self, timeout: std::time::Duration) {
+        let queued: Vec<Arc<AtomicUsize>> =
+            self.peers.values().map(|p| p.tx.queued.clone()).collect();
+        self.peers.clear();
+        let until = Instant::now() + timeout;
+        while queued.iter().any(|q| q.load(Relaxed) > 0) && Instant::now() < until {
+            thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 

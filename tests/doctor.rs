@@ -218,3 +218,51 @@ fn shared_name_warns() {
     let (_, text) = doctor(&env, &[]);
     assert!(text.contains("x names several hosts: 1, 2"), "{text}");
 }
+
+#[test]
+fn adapter_versions() {
+    let env = Env::new("dr-versions");
+    let bin = env.dir.join("bin");
+    mkdir(&bin, 0o755);
+    // A brnr adapter that knows --version.
+    let claude = "#!/bin/sh\n[ \"$1\" = --version ] && echo 'brnr-claude-adapter 0.85.1 (@agentclientprotocol/claude-agent-acp)'\n";
+    write(&bin.join("brnr-claude-adapter"), claude, 0o755);
+    // One built before --version: it waits for an editor instead.
+    write(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n", 0o755);
+    // codex-acp from npm: a bin link into the package.
+    let package = env.dir.join("lib/node_modules/@agentclientprotocol/codex-acp");
+    mkdir(&package.join("dist"), 0o755);
+    write(
+        &package.join("package.json"),
+        r#"{"name":"@agentclientprotocol/codex-acp","version":"2.1.1"}"#,
+        0o644,
+    );
+    write(&package.join("dist/index.js"), "#!/usr/bin/env node\n", 0o755);
+    symlink(
+        "../lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+        bin.join("codex-acp"),
+    )
+    .unwrap();
+
+    // A copy of brnr with nothing next to it (where it looks first: in a
+    // build, the adapters may well be next to the real one).
+    let alone = env.dir.join("alone");
+    mkdir(&alone, 0o755);
+    fs::copy(env!("CARGO_BIN_EXE_brnr"), alone.join("brnr")).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let out = env.brnr_at(&alone.join("brnr"), &["doctor"]).env("PATH", path).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let line = |name: &str| {
+        text.lines().find(|l| l.contains(&format!(" {name}: "))).unwrap_or("").to_owned()
+    };
+    assert!(
+        line("brnr-claude-adapter").ends_with("(@agentclientprotocol/claude-agent-acp 0.85.1)"),
+        "{text}"
+    );
+    assert!(
+        line("brnr-codex-adapter").ends_with("(version unknown: built before brnr 0.3.0)"),
+        "{text}"
+    );
+    assert!(line("codex-acp").ends_with("(@agentclientprotocol/codex-acp 2.1.1)"), "{text}");
+    assert!(line("claude-agent-acp").starts_with("--"), "{text}");
+}

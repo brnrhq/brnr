@@ -69,6 +69,10 @@ status.";
 /// something it started still holds its stdout open.
 const DRAIN: Duration = Duration::from_millis(500);
 
+/// How long the host, exiting, waits for peers to be sent what's queued for
+/// them; one that stopped reading doesn't hold it up for longer.
+const PEER_FLUSH: Duration = Duration::from_secs(2);
+
 /// How long one write to the proxy may block before the host treats the
 /// link as gone. Only the writer thread waits; the host carries on.
 const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -798,10 +802,12 @@ impl Host {
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.
+        // The last events (`exited`) reach the peers before we exit, and only
+        // then do started bridges get SIGTERM.
+        self.flush_peers(PEER_FLUSH);
         for &pid in &self.bridge_pids {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
-        self.peers.clear();
         if self.manual {
             eprintln!("brnr host: agent exited: {status}");
         }

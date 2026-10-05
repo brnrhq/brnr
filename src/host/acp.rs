@@ -399,6 +399,7 @@ impl Host {
                     self.agent_caps = result["agentCapabilities"].clone();
                     self.auth_methods = result["authMethods"].clone();
                     self.info["capabilities"] = self.capabilities();
+                    self.info["agent_info"] = result["agentInfo"].clone();
                 }
                 None
             }

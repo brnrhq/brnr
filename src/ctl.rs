@@ -402,9 +402,16 @@ fn describe_status(st: &Value, only: Option<&str>, target: &str) -> String {
     if let Some(name) = st["name"].as_str() {
         out.push_str(&format!(" ({name})"));
     }
+    let mut agent = agent_name(&st["agent"]);
+    // What the agent says it is, in initialize: the npm package and version
+    // of an adapter.
+    if let (Some(name), Some(version)) =
+        (st["agent_info"]["name"].as_str(), st["agent_info"]["version"].as_str())
+    {
+        agent.push_str(&format!(" ({name} {version})"));
+    }
     out.push_str(&format!(
-        ": {}, answered by the {}, up {}\n",
-        agent_name(&st["agent"]),
+        ": {agent}, answered by the {}, up {}\n",
         s(&st["owner"]),
         duration(st["uptime_seconds"].as_u64().unwrap_or(0))
     ));

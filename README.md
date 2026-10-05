@@ -30,15 +30,22 @@ macOS and Linux (Unix sockets only).
 
 ```sh
 brew install brnrhq/tap/brnr
+brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
+brew install brnrhq/tap/brnr-codex-adapter    # for Codex
 ```
 
-Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
+The adapter formulae compile the community's ACP adapters for Claude Code and
+Codex into standalone executables that need no Node.js ([Adapters](#adapters)
+says whose they are), and link them next to `brnr`, where brnr finds them even when an
+editor's `PATH` doesn't include Homebrew. Each is versioned by the npm package
+it builds, so `brew upgrade` rebuilds an adapter when that package moves.
+`brnr doctor` shows which version each adapter was built from. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
 ## Build
 
 ```sh
 cargo build --release          # target/release/brnr
-adapters/build.sh              # optional: target/release/claude-agent-acp, codex-acp (needs bun)
+adapters/build.sh              # optional: target/release/brnr-claude-adapter, brnr-codex-adapter (needs bun)
 ```
 
 `brnr` is one binary. The adapters are separate, single-file builds of the ACP
@@ -49,14 +56,13 @@ adapters for Claude Code and Codex; see [Adapters](#adapters).
 Configure your editor's ACP agent command as:
 
 ```sh
-brnr proxy -- claude-agent-acp
-brnr proxy -- codex-acp
+brnr proxy -- brnr-claude-adapter  # or claude-agent-acp, from npm
+brnr proxy -- brnr-codex-adapter   # or codex-acp, from npm
 brnr proxy --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
-doesn't need to include it, and the bundled adapters are used even if the npm
-packages of the same name are installed too.
+doesn't need to include it.
 
 When the editor goes away without a handoff, `on_disconnect` decides what happens:
 
@@ -99,7 +105,7 @@ find the turn that answers it.
 brnr wait demo                     # until no turn is running and nothing is held
 brnr wait demo --for permission    # until a permission request is waiting
 brnr wait demo --for turn          # the next turn's end; --for exit: the host's
-brnr start --wait --stop-when-idle --prompt "fix the failing tests" -- claude-agent-acp
+brnr start --wait --stop-when-idle --prompt "fix the failing tests" -- brnr-claude-adapter
 ```
 
 `wait`, `send --wait` and `start --wait` exit 0 when the turn ended normally
@@ -148,10 +154,10 @@ command = ["brnr", "notify", "--", "sh", "-c", "terminal-notifier -title \"$BRNR
 ## Headless sessions
 
 ```sh
-brnr start --cwd ~/work/project --prompt "fix the failing tests" -- claude-agent-acp
+brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
 brnr start --mode plan --model opus --prompt - < task.md       # set up before the first prompt
 brnr start --resume 0199c2                                     # carry on a session from list --inactive
-brnr host --name demo --prompt - -- codex-acp < task.md        # in the foreground; Ctrl-C stops it
+brnr host --name demo --prompt - -- brnr-codex-adapter < task.md        # in the foreground; Ctrl-C stops it
 ```
 
 `brnr start` waits up to 120 seconds (`BRNR_START_TIMEOUT`) for the session
@@ -184,7 +190,7 @@ can't provide.
 on_disconnect = "direct"
 
 [profiles.work]
-agent = ["claude-agent-acp"]
+agent = ["brnr-claude-adapter"]
 cwd = "~/work/project"              # for brnr start
 on_disconnect = "headless"
 permissions = "ask"                 # ask | auto-allow | auto-deny, or by tool kind:
@@ -247,18 +253,26 @@ creates them readable only by you.
 
 ## Adapters
 
-`adapters/` builds the ACP adapters as single-file executables with
-`bun build --compile`, under the same command names their npm packages install:
+The ACP adapters aren't brnr's work. `adapters/` packages two existing
+open-source adapters, unchanged, as standalone executables
+(`bun build --compile`). Each carries its own JavaScript runtime, so it needs
+no Node.js (or bun) installed, unlike the npm packages:
 
-- **claude-agent-acp**: [@agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
-- **codex-acp**: [@agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
+| Command | Builds | By | License |
+|---|---|---|---|
+| `brnr-claude-adapter` | [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp) | Zed Industries, Inc. and contributors | Apache-2.0; it includes Anthropic's [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript), under Anthropic's [Commercial Terms](https://www.anthropic.com/legal/commercial-terms) |
+| `brnr-codex-adapter` | [codex-acp](https://github.com/agentclientprotocol/codex-acp) | JetBrains s.r.o. | Apache-2.0 |
+
+brnr adds only a few lines in front of each (`adapters/claude.ts`,
+`adapters/codex.ts`): finding the user's own agent, and `--version`. The
+commands have names of their own so they don't clash with the npm packages'
+(`claude-agent-acp`, `codex-acp`) when both are installed.
 
 They don't include the agents. Each runs the user's own `claude` or `codex`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
 `CODEX_PATH`). `build.sh` copies the license of every package it compiles in to
-`licenses/`. Note that claude-agent-acp contains the Claude Agent SDK, which is
-licensed under Anthropic's Commercial Terms, not an open-source license; check
-those terms before redistributing it.
+`licenses/`. The Claude Agent SDK's license isn't an open-source one; check
+Anthropic's terms before redistributing a build of brnr-claude-adapter.
 
 ## Doctor
 
@@ -283,6 +297,17 @@ that are gone. It exits non-zero if a check fails.
 | `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
 | `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata) |
 | `BRNR_START_TIMEOUT` | `120`: seconds `brnr start` waits for the session |
+
+## Releasing
+
+```sh
+./release.sh minor     # or patch, major, 1.2.3: checks main, opens the release pull request
+./release.sh tag       # once it's merged: tags, releases, updates the Homebrew tap
+./release.sh notes     # what the release pull request would say
+```
+
+Dependabot opens a pull request when an adapter's npm package has a new
+release; the next brnr release ships it.
 
 ## License
 

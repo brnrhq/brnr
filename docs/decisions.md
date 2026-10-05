@@ -267,7 +267,97 @@ streaming 20,000 chunks at once, and was cut off as if it had stopped.
 - **C. A limit in bytes, 16 MiB per peer**, counted from when a line is
   queued until its writer has written it.
 
-**Chosen: C**, plus: a peer with nothing queued always takes the next line,
-however big. Without that, one agent message over the limit (or a `status`
-quoting it) cut off every peer, `brnr status` included. The status report now
+**Chosen: C**, counted as: a peer is behind once what it hasn't written is
+past the limit; until then it takes the next line however big. First it was
+"the next line would take it past the limit", which cut off peers that were
+keeping up when one big agent message (10 MB, at the end of a burst) came
+while they were a few MB behind (seen on the macOS CI runner); and before that,
+one message over the limit cut off every peer, `brnr status` included. The status report now
 quotes at most 4000 characters of the last message; the events have all of it.
+
+## 26. Adapters through Homebrew
+
+claude-agent-acp compiles in the Claude Agent SDK (Anthropic's Commercial
+Terms), so the tap doesn't ship prebuilt adapters.
+
+- **A. Tell Homebrew users to install the npm packages.** Needs Node 22 on
+  the editor's PATH, and the packages likely bring their own copies of the
+  agents through optional dependencies (`adapters/build.sh` leaves those out).
+- **B. A `brnr-adapters` formula that compiles them on the user's machine**
+  from brnr's `adapters/` at the same tag, pinned by `bun.lock`.
+
+**Chosen: B**, with the npm packages mentioned as the alternative. Nothing
+prebuilt is distributed; the user's machine fetches and compiles the
+packages, as `adapters/build.sh` does for anyone building from source.
+
+Compiler: **bun** rather than deno. `adapters/build.sh` already uses `bun
+build --compile` with a frozen lockfile, its output is what brnr's tests and
+smoke tests ran against, and both adapters are Node packages written for
+Node; deno's npm compatibility would be one more thing to verify for code
+that spawns and talks to subprocesses. Both are in homebrew-core; bun is a
+build-only dependency.
+
+## 27. Finding adapters next to a symlinked brnr
+
+Homebrew links `bin/brnr` and the adapters into its prefix's `bin`. On macOS
+the running binary's path is the link's, so an adapter next to the link is
+found; on Linux it is the link's target in the Cellar, where the adapters
+aren't. brnr now also looks next to the path it was started by (`argv[0]`,
+when it is a path), and passes that path on to the host, which is the one that
+starts the agent.
+
+## 28. The adapters' command names
+
+First the compiled adapters took the npm packages' command names
+(`claude-agent-acp`, `codex-acp`), so docs and configs read the same either
+way. Installed through Homebrew next to a global npm install, though, two
+commands of the same name are on PATH, and which one runs depends on PATH
+order.
+
+**Chosen: names of their own, `brnr-claude-adapter` and `brnr-codex-adapter`.**
+`brnr proxy -- claude-agent-acp` still runs the npm package. `brnr doctor`
+reports both kinds.
+
+## 29. One Homebrew formula per adapter
+
+`brnr-adapters` built both adapters. Replaced, before it was ever released,
+by `brnr-claude-adapter` and `brnr-codex-adapter` (named for the command each
+installs), in the same tap.
+
+- Install what you use: each is about 60 MB and its own build.
+- Licenses that fit: only the Claude adapter compiles in the Claude Agent SDK
+  (`license :cannot_represent`, with a caveat); the Codex adapter is
+  Apache-2.0.
+- One adapter's upstream breaking doesn't stop the other installing, and a
+  third agent's adapter is one more formula.
+
+Considered: a tap per adapter. A tap is a repository of formulae; more of
+them means more `brew tap`s for users and more release plumbing, for nothing
+a formula per adapter doesn't give.
+
+## 30. Which npm version an adapter was built from
+
+- Each adapter formula's version is its npm package's (`brnr-claude-adapter
+  0.85.1`), written by the release workflow from `adapters/package.json`. A
+  brnr release that doesn't move the pin changes the formula's source but not
+  its version, so nobody rebuilds for nothing; `brew outdated` shows an
+  adapter when its package does move. When adapters/ changes without a new
+  npm version, `release.sh` says so: bump the formula's `revision` by hand if
+  users need the new build.
+- The adapters say what they were built from (`--version`, compiled in), and
+  `brnr doctor` shows it, and the version of npm-installed adapters (from the
+  package.json their bin link leads to). `brnr status` shows what the agent
+  says it is in `initialize` (`agentInfo`).
+- Dependabot opens a pull request for new releases of the two adapter
+  packages, weekly. Considered: a release per upstream release; batching
+  them into brnr's releases keeps the pace a person's.
+
+## 31. `release.sh`
+
+Two steps, because main only changes through reviewed pull requests:
+`release.sh <bump>` lints and tests main and opens the release pull request
+(with the changes and the adapters' versions); `release.sh tag`, after the
+merge, checks CI passed on main, tags, follows the release workflow and checks
+the tap. Considered: one command that pushes the bump to main and tags, which
+skips review; and doing it all in a workflow (`workflow_dispatch`), which
+works but is harder to run and debug than a script you can read.

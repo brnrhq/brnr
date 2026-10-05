@@ -20,6 +20,18 @@ export function findAgent(name: string, extraDirs: string[] = []): string | unde
   return dirs.map((d) => join(d, name)).find((p) => existsSync(p));
 }
 
+/**
+ * `--version`: the adapter's name, and the npm package and version it was
+ * built from, then exit. brnr doctor reads it.
+ */
+export function version(adapter: string, pkg: { name: string; version: string }) {
+  const arg = process.argv[2];
+  if (arg === "--version" || arg === "-V") {
+    console.log(`${adapter} ${pkg.version} (${pkg.name})`);
+    process.exit(0);
+  }
+}
+
 /** Points `envVar` at the user's `name`, or exits 127 like a shell would. */
 export function requireAgent(adapter: string, name: string, envVar: string, extraDirs: string[] = []) {
   if (process.env[envVar]) return;

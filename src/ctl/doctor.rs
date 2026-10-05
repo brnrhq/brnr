@@ -5,7 +5,8 @@
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, and every profile's settings, cwd, agent
 //!   and bridges are valid;
-//! - the bundled adapters: where `claude-agent-acp` and `codex-acp` are found;
+//! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
+//!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running hosts: each answers, and no two share a name.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
@@ -343,13 +344,70 @@ fn describe_profile(profile: &config::Profile) -> String {
 
 // ---- adapters ------------------------------------------------------------
 
+/// brnr's adapters and the npm packages', where they are and the version of
+/// the npm package each is (or was built from).
 fn adapters(r: &mut Report) {
-    for name in ["claude-agent-acp", "codex-acp"] {
-        match find_program(name) {
-            Some(path) => r.line(Level::Ok, name, path.display().to_string()),
-            None => r.line(Level::Info, name, "not found next to brnr or on PATH"),
-        }
+    let adapters = [
+        ("brnr-claude-adapter", "@agentclientprotocol/claude-agent-acp"),
+        ("brnr-codex-adapter", "@agentclientprotocol/codex-acp"),
+        ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
+        ("codex-acp", "@agentclientprotocol/codex-acp"),
+    ];
+    for (name, package) in adapters {
+        let Some(path) = find_program(name) else {
+            r.line(Level::Info, name, "not found next to brnr or on PATH");
+            continue;
+        };
+        let version = if name.starts_with("brnr-") {
+            built_version(&path)
+                .unwrap_or_else(|| "version unknown: built before brnr 0.3.0".to_owned())
+        } else {
+            npm_version(&path, package).unwrap_or_else(|| "version unknown".to_owned())
+        };
+        r.line(Level::Ok, name, format!("{} ({version})", path.display()));
     }
+}
+
+/// What a brnr adapter says it was built from (`--version`): `<package>
+/// <version>`. Older builds don't know `--version` and would wait for an
+/// editor, so stdin is closed and they get a few seconds.
+fn built_version(path: &Path) -> Option<String> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let until = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() > until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().ok()?;
+    // brnr-claude-adapter 0.85.1 (@agentclientprotocol/claude-agent-acp)
+    let line = String::from_utf8(out.stdout).ok()?;
+    let mut words = line.split_whitespace();
+    let (_, version, package) = (words.next()?, words.next()?, words.next()?);
+    Some(format!("{} {version}", package.trim_matches(['(', ')'])))
+}
+
+/// The version of an npm-installed command's package: the `package.json`
+/// named `package` above the file its bin link points to.
+fn npm_version(path: &Path, package: &str) -> Option<String> {
+    let target = fs::canonicalize(path).ok()?;
+    let found = target.ancestors().skip(1).find_map(|dir| {
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(dir.join("package.json")).ok()?).ok()?;
+        (manifest["name"] == package).then(|| manifest["version"].as_str().map(str::to_owned))?
+    })?;
+    Some(format!("{package} {found}"))
 }
 
 /// Where the host would find `program`: a path, next to brnr, or on PATH.

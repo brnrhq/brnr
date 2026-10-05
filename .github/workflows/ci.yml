@@ -1,6 +1,8 @@
 # Lints and tests every pull request and every push to main, on Linux and
 # macOS. The integration tests drive the real binary against
-# tests/fake_agent.py, so they need python3 (both runners have it).
+# tests/fake_agent.py, so they need python3 (both runners have it). The
+# adapters are built and checked too, so that a pull request moving their
+# npm versions (Dependabot's) is tested.
 name: ci
 
 on:
@@ -31,3 +33,15 @@ jobs:
       - run: cargo clippy --release --all-targets -- -D warnings
       # Release, as locally: some tests stream tens of thousands of events.
       - run: cargo test --release
+
+  adapters:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: adapters/build.sh "$RUNNER_TEMP/adapters"
+      - run: adapters/check.py "$RUNNER_TEMP/adapters"
