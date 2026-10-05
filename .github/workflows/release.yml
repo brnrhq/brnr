@@ -58,9 +58,10 @@ jobs:
               path = f"tap/Formula/{name}.rb"
               formula = open(path).read()
               formula = re.sub(r'\n  (url|sha256|version) "[^"]*"', "", formula)
-              lines = f'\n  url "{url}"\n  sha256 "{sha256}"'
+              lines = f'\n  url "{url}"'
               if version:
                   lines += f'\n  version "{version}"'
+              lines += f'\n  sha256 "{sha256}"'
               formula = re.sub(r'(\n  homepage "[^"]*")', lambda m: m.group(1) + lines, formula)
               open(path, "w").write(formula)
           PY
