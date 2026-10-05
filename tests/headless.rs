@@ -169,7 +169,8 @@ fn held_messages_are_reported_on_exit() {
     assert!(env.run(&["stop", "a"]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
-    let line = BufReader::new(watch.stdout.take().unwrap()).lines().next().unwrap().unwrap();
+    let line = BufReader::new(watch.stdout.take().unwrap()).lines().next();
+    let line = line.expect("watch printed no exited event").unwrap();
     let exited: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(exited["event"], "exited");
     assert_eq!(exited["undelivered"][0]["text"], "later");
@@ -336,6 +337,30 @@ fn big_message_to_a_lagging_watcher() {
     assert!(watch.try_wait().unwrap().is_none(), "the watcher was disconnected");
     let _ = watch.kill();
     let _ = watch.wait();
+}
+
+/// Every watcher gets `exited` before the host is gone, not only those whose
+/// writer happened to run before the process ended.
+#[test]
+fn every_watcher_sees_the_exit() {
+    let env = Env::new("exitall");
+    env.start("a", &[]);
+    let watchers: Vec<_> = (0..8)
+        .map(|_| {
+            env.brnr(&["watch", "a", "--json", "--events", "exited"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    sleep(Duration::from_millis(500));
+    assert!(env.run(&["stop", "a"]).status.success());
+    for watch in watchers {
+        let out = watch.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(r#""event":"exited""#), "no exited: {}", stderr(&out));
+    }
 }
 
 /// A host that doesn't answer is reported as such, not as an errno.

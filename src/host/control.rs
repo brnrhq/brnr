@@ -317,6 +317,18 @@ impl Host {
         }
     }
 
+    /// Drops every peer, waiting up to `timeout` for their writers to send
+    /// what's queued (dropping the queue lets a writer finish it and stop).
+    pub(super) fn flush_peers(&mut self, timeout: std::time::Duration) {
+        let queued: Vec<Arc<AtomicUsize>> =
+            self.peers.values().map(|p| p.tx.queued.clone()).collect();
+        self.peers.clear();
+        let until = Instant::now() + timeout;
+        while queued.iter().any(|q| q.load(Relaxed) > 0) && Instant::now() < until {
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Cuts off a peer that stopped reading.
     fn drop_peer(&mut self, peer: u64) {
         let Some(p) = self.peers.remove(&peer) else { return };
