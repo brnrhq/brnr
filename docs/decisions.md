@@ -315,7 +315,7 @@ commands of the same name are on PATH, and which one runs depends on PATH
 order.
 
 **Chosen: names of their own, `brnr-claude-adapter` and `brnr-codex-adapter`.**
-`brnr proxy -- claude-agent-acp` still runs the npm package. `brnr doctor`
+`brnr acp -- claude-agent-acp` still runs the npm package. `brnr doctor`
 reports both kinds.
 
 ## 29. One Homebrew formula per adapter
@@ -361,3 +361,18 @@ merge, checks CI passed on main, tags, follows the release workflow and checks
 the tap. Considered: one command that pushes the bump to main and tags, which
 skips review; and doing it all in a workflow (`workflow_dispatch`), which
 works but is harder to run and debug than a script you can read.
+
+## 32. `brnr acp`, not `brnr proxy`
+
+What an editor runs as its agent was `brnr proxy`, named for how it works (it
+relays bytes to the host). `brnr acp` names what it is to the editor: an ACP
+agent command (`brnr acp -- brnr-claude-adapter`). `brnr proxy` is gone, not
+kept as an alias (see 33): editor configs written for 0.2.0 need the new
+name. Inside, the process is still the proxy (`proxy.rs`, and `proxy_pid` in
+metadata and transcripts).
+
+## 33. No backwards compatibility before 1.0.0
+
+Until 1.0.0, a change of name, flag, format or behaviour is made outright:
+no aliases for old names, no shims for old formats. Release notes say what
+changed. From 1.0.0 on, compatibility is kept within a major version.

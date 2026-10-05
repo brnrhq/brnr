@@ -10,14 +10,14 @@ permission requests from somewhere else, and keep it running after the editor
 goes away.
 
 ```text
-editor ──stdio── brnr proxy ──socketpair── brnr host ──pipes── agent
-                                              │
-                                   control socket ── brnr send / watch / …
-                                              │
-                                           bridges (Slack, push, …)
+editor ──stdio── brnr acp ──socketpair── brnr host ──pipes── agent
+                                            │
+                                 control socket ── brnr send / watch / …
+                                            │
+                                         bridges (Slack, push, …)
 ```
 
-- **brnr proxy** is what the editor runs as its agent. It only relays bytes.
+- **brnr acp** is what the editor runs as its agent. It only relays bytes.
 - **brnr host** owns the agent for its whole life. It runs in its own session
   (out of the editor's process group and process tree), so killing the editor,
   or the proxy, can't take the agent with it unless the policy says so.
@@ -56,9 +56,9 @@ adapters for Claude Code and Codex; see [Adapters](#adapters).
 Configure your editor's ACP agent command as:
 
 ```sh
-brnr proxy -- brnr-claude-adapter  # or claude-agent-acp, from npm
-brnr proxy -- brnr-codex-adapter   # or codex-acp, from npm
-brnr proxy --profile work          # agent and settings from a profile
+brnr acp -- brnr-claude-adapter  # or claude-agent-acp, from npm
+brnr acp -- brnr-codex-adapter   # or codex-acp, from npm
+brnr acp --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`

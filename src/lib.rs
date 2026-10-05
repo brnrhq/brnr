@@ -2,9 +2,9 @@
 //! channel for injecting messages.
 //!
 //! ```text
-//! editor ──stdio── brnr proxy ──socketpair── brnr host ──pipes── agent
-//!                                            │
-//!                                 control socket ── brnr
+//! editor ──stdio── brnr acp ──socketpair── brnr host ──pipes── agent
+//!                                          │
+//!                               control socket ── brnr
 //! ```
 //!
 //! The proxy is the editor's child and only relays bytes. The host, a

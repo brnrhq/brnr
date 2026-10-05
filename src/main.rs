@@ -1,8 +1,8 @@
 //! brnr: run ACP agents behind a host you can talk to from outside the
 //! editor. One binary:
 //!
-//! - `brnr proxy`: what the editor runs as its agent (see proxy.rs);
-//! - `brnr host`: owns the agent; started by `proxy` and `start`, or by hand
+//! - `brnr acp`: what the editor runs as its ACP agent (see proxy.rs);
+//! - `brnr host`: owns the agent; started by `acp` and `start`, or by hand
 //!   for a headless session in the foreground (see host/);
 //! - everything else controls running hosts (see ctl.rs).
 
@@ -14,7 +14,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     match args.next() {
-        Some(cmd) if cmd == "proxy" => brnr::proxy::main(args),
+        Some(cmd) if cmd == "acp" => brnr::proxy::main(args),
         Some(cmd) if cmd == "host" => brnr::host::main(args),
         first => {
             let rest: Vec<String> =
