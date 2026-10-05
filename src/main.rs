@@ -14,8 +14,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     match args.next() {
-        // `proxy` is what 0.2.0 called it: editor configs may still say so.
-        Some(cmd) if cmd == "acp" || cmd == "proxy" => brnr::proxy::main(args),
+        Some(cmd) if cmd == "acp" => brnr::proxy::main(args),
         Some(cmd) if cmd == "host" => brnr::host::main(args),
         first => {
             let rest: Vec<String> =

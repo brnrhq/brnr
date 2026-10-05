@@ -1,6 +1,5 @@
 //! The editor-facing process: `brnr acp [options] [-- <program> [args...]]`,
-//! a proxy between the editor and the host (and `brnr proxy`, its name in
-//! brnr 0.2.0).
+//! a proxy between the editor and the host.
 //!
 //! The editor launches this as if it were the agent. It starts a host (see
 //! host/) in a session of its own, which runs the agent, and from then on
