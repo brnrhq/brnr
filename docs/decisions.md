@@ -267,9 +267,12 @@ streaming 20,000 chunks at once, and was cut off as if it had stopped.
 - **C. A limit in bytes, 16 MiB per peer**, counted from when a line is
   queued until its writer has written it.
 
-**Chosen: C**, plus: a peer with nothing queued always takes the next line,
-however big. Without that, one agent message over the limit (or a `status`
-quoting it) cut off every peer, `brnr status` included. The status report now
+**Chosen: C**, counted as: a peer is behind once what it hasn't written is
+past the limit; until then it takes the next line however big. First it was
+"the next line would take it past the limit", which cut off peers that were
+keeping up when one big agent message (10 MB, at the end of a burst) came
+while they were a few MB behind (seen on the macOS CI runner); and before that,
+one message over the limit cut off every peer, `brnr status` included. The status report now
 quotes at most 4000 characters of the last message; the events have all of it.
 
 ## 26. Adapters through Homebrew

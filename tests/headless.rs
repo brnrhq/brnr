@@ -308,6 +308,36 @@ fn adapters_next_to_a_symlinked_brnr() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
 }
 
+/// A peer a few MB behind still takes one big message: it is cut off only
+/// once its backlog is past the limit, not because the next line is big.
+#[test]
+fn big_message_to_a_lagging_watcher() {
+    let env = Env::new("lagbig");
+    env.start("a", &[]);
+    let mut watch = env
+        .brnr(&["watch", "a", "--json", "--events", "agent_message"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    sleep(Duration::from_millis(300));
+    unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
+    for size in [6_000_000, 12_000_000] {
+        let out = env.run(&["send", "a", "--wait", &format!("big {size}")]);
+        assert!(out.status.success(), "send: {}", stderr(&out));
+    }
+    unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
+    let lines = std::thread::spawn(move || {
+        BufReader::new(stdout).lines().take(2).map(|l| l.unwrap().len()).collect::<Vec<_>>()
+    });
+    let sizes = lines.join().unwrap();
+    assert_eq!(sizes.len(), 2, "the watcher was cut off");
+    assert!(sizes[1] > 12_000_000, "{sizes:?}");
+    assert!(watch.try_wait().unwrap().is_none(), "the watcher was disconnected");
+    let _ = watch.kill();
+    let _ = watch.wait();
+}
+
 /// A host that doesn't answer is reported as such, not as an errno.
 #[test]
 fn unresponsive_host_is_reported() {
