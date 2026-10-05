@@ -34,8 +34,9 @@ brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on you
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
 ```
 
-The adapter formulae build `adapters/` (below) from brnr's source with bun,
-and link the adapters next to `brnr`, where brnr finds them even when an
+The adapter formulae compile the community's ACP adapters for Claude Code and
+Codex into standalone executables that need no Node.js ([Adapters](#adapters)
+says whose they are), and link them next to `brnr`, where brnr finds them even when an
 editor's `PATH` doesn't include Homebrew. Each is versioned by the npm package
 it builds, so `brew upgrade` rebuilds an adapter when that package moves.
 `brnr doctor` shows which version each adapter was built from. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
@@ -252,19 +253,26 @@ creates them readable only by you.
 
 ## Adapters
 
-`adapters/` builds the ACP adapters as single-file executables with
-`bun build --compile`, under names of their own, so they don't clash with the
-npm packages' commands when both are installed:
+The ACP adapters aren't brnr's work. `adapters/` packages two existing
+open-source adapters, unchanged, as standalone executables
+(`bun build --compile`). Each carries its own JavaScript runtime, so it needs
+no Node.js (or bun) installed, unlike the npm packages:
 
-- **brnr-claude-adapter**: [@agentclientprotocol/claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)
-- **brnr-codex-adapter**: [@agentclientprotocol/codex-acp](https://github.com/agentclientprotocol/codex-acp)
+| Command | Builds | By | License |
+|---|---|---|---|
+| `brnr-claude-adapter` | [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp) | Zed Industries, Inc. and contributors | Apache-2.0; it includes Anthropic's [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript), under Anthropic's [Commercial Terms](https://www.anthropic.com/legal/commercial-terms) |
+| `brnr-codex-adapter` | [codex-acp](https://github.com/agentclientprotocol/codex-acp) | JetBrains s.r.o. | Apache-2.0 |
+
+brnr adds only a few lines in front of each (`adapters/claude.ts`,
+`adapters/codex.ts`): finding the user's own agent, and `--version`. The
+commands have names of their own so they don't clash with the npm packages'
+(`claude-agent-acp`, `codex-acp`) when both are installed.
 
 They don't include the agents. Each runs the user's own `claude` or `codex`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
 `CODEX_PATH`). `build.sh` copies the license of every package it compiles in to
-`licenses/`. Note that claude-agent-acp contains the Claude Agent SDK, which is
-licensed under Anthropic's Commercial Terms, not an open-source license; check
-those terms before redistributing it.
+`licenses/`. The Claude Agent SDK's license isn't an open-source one; check
+Anthropic's terms before redistributing a build of brnr-claude-adapter.
 
 ## Doctor
 

@@ -1,5 +1,8 @@
-// brnr-claude-adapter: claude-agent-acp as a single executable, running the user's own Claude Code rather
-// than the native binary its SDK would otherwise bundle.
+// brnr-claude-adapter: claude-agent-acp (by Zed Industries, Inc. and
+// contributors, Apache-2.0; https://github.com/agentclientprotocol/claude-agent-acp),
+// unchanged, as a single executable that needs no Node.js. What brnr adds is
+// this launcher: it runs the user's own Claude Code rather than the native
+// binary the adapter's SDK would otherwise bundle, and answers --version.
 import { requireAgent, version } from "./find";
 // By path rather than through the package's exports: its version, compiled
 // in, for --version.
