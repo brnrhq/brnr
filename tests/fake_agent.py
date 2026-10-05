@@ -130,7 +130,8 @@ for line in sys.stdin:
             "sessionCapabilities": session_caps,
         }
         methods = [{"id": "fake-login", "name": "Log in to the fake"}]
-        result(mid, {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods})
+        info = {"name": "fake-agent", "version": "1.2.3"}
+        result(mid, {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods, "agentInfo": info})
     elif method == "session/new":
         time.sleep(float(env("NEW_DELAY", "0")))
         if env("AUTH"):

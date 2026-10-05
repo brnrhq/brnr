@@ -1,6 +1,8 @@
 # On a version tag: publish a GitHub release and point the Homebrew formulae
-# in brnrhq/homebrew-tap (brnr, and brnr-adapters, which builds adapters/
-# from the same source) at it. The tap is pushed to with a deploy key whose
+# in brnrhq/homebrew-tap at it: brnr, and one formula per adapter, which
+# builds adapters/ from the same source. An adapter formula's version is its
+# npm package's (from adapters/package.json), so `brew upgrade` rebuilds an
+# adapter when that changes, not on every brnr release. The tap is pushed to with a deploy key whose
 # private half is the HOMEBREW_TAP_DEPLOY_KEY secret.
 name: release
 
@@ -44,13 +46,22 @@ jobs:
           url="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$GITHUB_REF_NAME.tar.gz"
           sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
           python3 - "$url" "$sha256" <<'PY'
-          import re, sys
+          import json, re, sys
           url, sha256 = sys.argv[1:]
-          for name in ["brnr", "brnr-adapters"]:
+          deps = json.load(open("adapters/package.json"))["dependencies"]
+          formulae = {
+              "brnr": None,
+              "brnr-claude-adapter": deps["@agentclientprotocol/claude-agent-acp"],
+              "brnr-codex-adapter": deps["@agentclientprotocol/codex-acp"],
+          }
+          for name, version in formulae.items():
               path = f"tap/Formula/{name}.rb"
               formula = open(path).read()
-              formula = re.sub(r'\n  (url|sha256) "[^"]*"', "", formula)
-              formula = re.sub(r'(\n  homepage "[^"]*")', rf'\1\n  url "{url}"\n  sha256 "{sha256}"', formula)
+              formula = re.sub(r'\n  (url|sha256|version) "[^"]*"', "", formula)
+              lines = f'\n  url "{url}"\n  sha256 "{sha256}"'
+              if version:
+                  lines += f'\n  version "{version}"'
+              formula = re.sub(r'(\n  homepage "[^"]*")', lambda m: m.group(1) + lines, formula)
               open(path, "w").write(formula)
           PY
           cd tap

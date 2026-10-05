@@ -277,6 +277,7 @@ fn status_summarizes_the_session() {
     idle(&env);
     let status = env.ok(&["status", "a"]);
     for want in [
+        "fake_agent.py (fake-agent 1.2.3), answered by the host",
         "session sess-1: Fake session",
         "mode default, model small",
         "idle",

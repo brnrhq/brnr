@@ -314,3 +314,47 @@ order.
 **Chosen: names of their own, `brnr-claude-adapter` and `brnr-codex-adapter`.**
 `brnr proxy -- claude-agent-acp` still runs the npm package. `brnr doctor`
 reports both kinds.
+
+## 29. One Homebrew formula per adapter
+
+`brnr-adapters` built both adapters. Replaced, before it was ever released,
+by `brnr-claude-adapter` and `brnr-codex-adapter` (named for the command each
+installs), in the same tap.
+
+- Install what you use: each is about 60 MB and its own build.
+- Licenses that fit: only the Claude adapter compiles in the Claude Agent SDK
+  (`license :cannot_represent`, with a caveat); the Codex adapter is
+  Apache-2.0.
+- One adapter's upstream breaking doesn't stop the other installing, and a
+  third agent's adapter is one more formula.
+
+Considered: a tap per adapter. A tap is a repository of formulae; more of
+them means more `brew tap`s for users and more release plumbing, for nothing
+a formula per adapter doesn't give.
+
+## 30. Which npm version an adapter was built from
+
+- Each adapter formula's version is its npm package's (`brnr-claude-adapter
+  0.85.1`), written by the release workflow from `adapters/package.json`. A
+  brnr release that doesn't move the pin changes the formula's source but not
+  its version, so nobody rebuilds for nothing; `brew outdated` shows an
+  adapter when its package does move. When adapters/ changes without a new
+  npm version, `release.sh` says so: bump the formula's `revision` by hand if
+  users need the new build.
+- The adapters say what they were built from (`--version`, compiled in), and
+  `brnr doctor` shows it, and the version of npm-installed adapters (from the
+  package.json their bin link leads to). `brnr status` shows what the agent
+  says it is in `initialize` (`agentInfo`).
+- Dependabot opens a pull request for new releases of the two adapter
+  packages, weekly. Considered: a release per upstream release; batching
+  them into brnr's releases keeps the pace a person's.
+
+## 31. `release.sh`
+
+Two steps, because main only changes through reviewed pull requests:
+`release.sh <bump>` lints and tests main and opens the release pull request
+(with the changes and the adapters' versions); `release.sh tag`, after the
+merge, checks CI passed on main, tags, follows the release workflow and checks
+the tap. Considered: one command that pushes the bump to main and tags, which
+skips review; and doing it all in a workflow (`workflow_dispatch`), which
+works but is harder to run and debug than a script you can read.

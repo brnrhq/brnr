@@ -30,12 +30,15 @@ macOS and Linux (Unix sockets only).
 
 ```sh
 brew install brnrhq/tap/brnr
-brew install brnrhq/tap/brnr-adapters     # brnr-claude-adapter, brnr-codex-adapter, compiled on your machine
+brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
+brew install brnrhq/tap/brnr-codex-adapter    # for Codex
 ```
 
-`brnr-adapters` builds `adapters/` (below) at the same version with bun, and
-links the adapters next to `brnr`, where brnr finds them even when an editor's
-`PATH` doesn't include Homebrew. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
+The adapter formulae build `adapters/` (below) from brnr's source with bun,
+and link the adapters next to `brnr`, where brnr finds them even when an
+editor's `PATH` doesn't include Homebrew. Each is versioned by the npm package
+it builds, so `brew upgrade` rebuilds an adapter when that package moves.
+`brnr doctor` shows which version each adapter was built from. Or from source, below. More at [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
 ## Build
 
@@ -286,6 +289,17 @@ that are gone. It exits non-zero if a check fails.
 | `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
 | `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata) |
 | `BRNR_START_TIMEOUT` | `120`: seconds `brnr start` waits for the session |
+
+## Releasing
+
+```sh
+./release.sh minor     # or patch, major, 1.2.3: checks main, opens the release pull request
+./release.sh tag       # once it's merged: tags, releases, updates the Homebrew tap
+./release.sh notes     # what the release pull request would say
+```
+
+Dependabot opens a pull request when an adapter's npm package has a new
+release; the next brnr release ships it.
 
 ## License
 

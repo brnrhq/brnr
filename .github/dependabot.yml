@@ -1,0 +1,15 @@
+# A pull request when the ACP adapters brnr builds (adapters/) have a new
+# release, so the pins move when someone decides, not silently. CI tests the
+# pull request; the next release ships it, and Homebrew users see the new
+# version in `brew outdated` (each adapter formula is versioned by its npm
+# package).
+version: 2
+updates:
+  - package-ecosystem: bun
+    directory: /adapters
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: "@agentclientprotocol/*"
+    commit-message:
+      prefix: adapters
