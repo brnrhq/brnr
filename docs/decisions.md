@@ -343,7 +343,8 @@ a formula per adapter doesn't give.
   its version, so nobody rebuilds for nothing; `brew outdated` shows an
   adapter when its package does move. When adapters/ changes without a new
   npm version, `release.sh` says so: bump the formula's `revision` by hand if
-  users need the new build.
+  users need the new build. The release workflow drops the revision when the
+  npm version next moves, since a new version starts the count over.
 - The adapters say what they were built from (`--version`, compiled in), and
   `brnr doctor` shows it, and the version of npm-installed adapters (from the
   package.json their bin link leads to). `brnr status` shows what the agent

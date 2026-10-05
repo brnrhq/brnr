@@ -57,6 +57,10 @@ jobs:
           for name, version in formulae.items():
               path = f"tap/Formula/{name}.rb"
               formula = open(path).read()
+              # A new npm version starts the adapter's revisions over.
+              old = re.search(r'\n  version "([^"]*)"', formula)
+              if version and old and old.group(1) != version:
+                  formula = re.sub(r'\n  revision \d+', "", formula)
               formula = re.sub(r'\n  (url|sha256|version) "[^"]*"', "", formula)
               lines = f'\n  url "{url}"'
               if version:
