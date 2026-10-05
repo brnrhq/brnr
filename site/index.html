@@ -216,30 +216,30 @@
         <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a host process that you can reach from outside.</p>
       </div>
       <div class="body">
-<pre>editor ──stdio── brnr proxy ──socketpair── brnr host ──pipes── agent
-                                              │
-                                   control socket ── brnr send / watch / …
-                                              │
-                                           bridges (Slack, push, …)</pre>
-        <dl>
-          <div><dt>brnr proxy</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
-          <div><dt>brnr host</dt><dd>Owns the agent for its whole life, in its own session. Killing the editor or the proxy can't take the agent with it unless you want it to.</dd></div>
-          <div><dt>Control commands</dt><dd>Talk to running hosts over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
-        </dl>
-      </div>
+<pre>editor ──stdio── brnr acp ──socketpair── brnr host ──pipes── agent
+                                            │
+                                 control socket ── brnr send / watch / …
+                                            │
+                                         bridges (Slack, push, …)</pre>
+      <dl>
+        <div><dt>brnr acp</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
+        <div><dt>brnr host</dt><dd>Owns the agent for its whole life, in its own session. Killing the editor or the proxy can't take the agent with it unless you want it to.</dd></div>
+        <div><dt>Control commands</dt><dd>Talk to running hosts over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
+      </dl>
     </div>
-  </section>
+  </div>
+</section>
 
   <section>
     <div class="cols">
       <div>
         <h2>Use it from your editor</h2>
-        <p class="intro">Set your editor's ACP agent command to <code>brnr proxy</code> and put the agent after <code>--</code>.</p>
+        <p class="intro">Set your editor's ACP agent command to <code>brnr acp</code> and put the agent after <code>--</code>.</p>
       </div>
       <div class="body">
-<pre>brnr proxy -- brnr-claude-adapter
-brnr proxy -- brnr-codex-adapter
-brnr proxy --profile work          <span class="c"># agent and settings from a profile</span></pre>
+<pre>brnr acp -- brnr-claude-adapter
+brnr acp -- brnr-codex-adapter
+brnr acp --profile work          <span class="c"># agent and settings from a profile</span></pre>
         <p>When the editor goes away, <code>on_disconnect</code> decides what happens. With <code>direct</code>, the default, the agent stops the way it would if the editor had started it. With <code>headless</code>, it keeps running and brnr answers it in place of the editor.</p>
       </div>
     </div>

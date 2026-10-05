@@ -49,8 +49,8 @@ mod show;
 mod talk;
 
 const USAGE: &str = "usage:
-  brnr proxy [--profile <p>] [--name <n>] [--on-disconnect direct|headless] [-- <agent> [args...]]
-             what an editor runs as its agent
+  brnr acp [--profile <p>] [--name <n>] [--on-disconnect direct|headless] [-- <agent> [args...]]
+             what an editor runs as its ACP agent
   brnr host [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [-- <agent> [args...]]
              a headless session in the foreground (brnr host --help)
 
@@ -100,7 +100,7 @@ the rest
 const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
-/// The control commands: everything but `proxy` and `host`.
+/// The control commands: everything but `acp` and `host`.
 pub fn main(args: Vec<String>) -> ExitCode {
     let rest = args.get(1..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);

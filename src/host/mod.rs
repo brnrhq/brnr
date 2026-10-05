@@ -1,6 +1,6 @@
 //! `brnr host`: owns the agent process and its pipes for the agent's whole life.
 //!
-//! Started detached by `brnr proxy` for an editor (with `--link-fd`), detached
+//! Started detached by `brnr acp` for an editor (with `--link-fd`), detached
 //! by `brnr start` for a session that is headless from the start (with
 //! `--ready-fd`), or by hand, in the foreground, for a headless session (see
 //! [`USAGE`]). It is the hub between three kinds of peer:
@@ -52,7 +52,7 @@ pub use control::check_bridge;
 use control::{Closer, Peer};
 use requests::{HostRequest, SetupStep};
 
-/// The options for running it by hand. `brnr proxy` and `brnr start` also pass
+/// The options for running it by hand. `brnr acp` and `brnr start` also pass
 /// --link-fd, --ready-fd, --proxy-pid, --on-disconnect and --sigmask.
 const USAGE: &str = "usage: brnr host [--profile <name>] [--name <name>] [--cwd <dir>] \
 [--prompt <text> | --prompt -] [--resume <session>] [--mode <mode>] [--set <option>=<value>]... \
@@ -202,7 +202,7 @@ impl PermissionRules {
     }
 }
 
-/// Passed by `brnr proxy` or `brnr start`; not a user interface.
+/// Passed by `brnr acp` or `brnr start`; not a user interface.
 #[derive(Default)]
 struct Args {
     link_fd: Option<RawFd>,

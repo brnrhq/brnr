@@ -1,4 +1,6 @@
-//! The editor-facing process: `brnr proxy [options] [-- <program> [args...]]`.
+//! The editor-facing process: `brnr acp [options] [-- <program> [args...]]`,
+//! a proxy between the editor and the host (and `brnr proxy`, its name in
+//! brnr 0.2.0).
 //!
 //! The editor launches this as if it were the agent. It starts a host (see
 //! host/) in a session of its own, which runs the agent, and from then on
@@ -25,8 +27,15 @@ use serde_json::Value;
 
 use crate::{frame, signals, spawn};
 
-const USAGE: &str = "usage: brnr proxy [--profile <name>] [--name <name>] \
+const USAGE: &str = "usage: brnr acp [--profile <name>] [--name <name>] \
                      [--on-disconnect direct|headless] [-- <program> [args...]]";
+
+/// `brnr acp --help`: the usage, and what it is.
+const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
+    brnr acp -- brnr-claude-adapter
+The agent runs in a host of its own, which brnr's other commands can reach
+(brnr list, send, watch, approve, ...) and which can outlive the editor
+(--on-disconnect headless).";
 
 /// The fd the host finds its end of the link on.
 const HOST_LINK_FD: c_int = 3;
@@ -41,10 +50,15 @@ struct Options {
 type Link = Arc<Mutex<UnixStream>>;
 
 pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let (opts, program) = match parse_args(args) {
+    let args: Vec<OsString> = args.collect();
+    if args.first().is_some_and(|a| a == "-h" || a == "--help") {
+        println!("{USAGE}\n\n{HELP}");
+        return ExitCode::SUCCESS;
+    }
+    let (opts, program) = match parse_args(args.into_iter()) {
         Ok(parsed) => parsed,
         Err(msg) => {
-            eprintln!("brnr proxy: {msg}\n{USAGE}");
+            eprintln!("brnr acp: {msg}\n{USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -54,12 +68,12 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let (link, theirs) = match UnixStream::pair() {
         Ok(pair) => pair,
         Err(err) => {
-            eprintln!("brnr proxy: socketpair: {err}");
+            eprintln!("brnr acp: socketpair: {err}");
             return ExitCode::FAILURE;
         }
     };
     if let Err(err) = start_host(&opts, &mask, theirs, program) {
-        eprintln!("brnr proxy: starting host: {err}");
+        eprintln!("brnr acp: starting host: {err}");
         return ExitCode::FAILURE;
     }
 
@@ -149,7 +163,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
         let (kind, payload) = match frame::read(&mut reader) {
             Ok(Some(frame)) => frame,
             Ok(None) | Err(_) => {
-                eprintln!("brnr proxy: lost the connection to the host");
+                eprintln!("brnr acp: lost the connection to the host");
                 return ExitCode::FAILURE;
             }
         };
@@ -168,7 +182,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
             frame::FAILED => {
                 let failure: Value = serde_json::from_slice(&payload).unwrap_or_default();
                 let msg = failure["error"].as_str().unwrap_or("host failed to start");
-                eprintln!("brnr proxy: {msg}");
+                eprintln!("brnr acp: {msg}");
                 return ExitCode::from(failure["code"].as_u64().unwrap_or(1) as u8);
             }
             frame::EXIT if payload.len() == 4 => {

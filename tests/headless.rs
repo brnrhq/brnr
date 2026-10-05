@@ -419,3 +419,45 @@ fn runtime_dir_symlink_is_refused() {
     assert!(!out.status.success(), "started in a symlinked runtime dir");
     assert!(fs::read_dir(&target).unwrap().next().is_none(), "wrote into the symlink target");
 }
+
+/// `brnr acp` is what an editor runs as its agent, and `brnr proxy` (0.2.0's
+/// name) still works: ACP over stdio, with the host reachable meanwhile.
+#[test]
+fn acp_is_what_an_editor_runs() {
+    use std::io::Write;
+    for cmd in ["acp", "proxy"] {
+        let env = Env::new(&format!("ed-{cmd}"));
+        let mut editor = env
+            .brnr(&[cmd, "--name", "ed", "--", AGENT])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut to_agent = editor.stdin.take().unwrap();
+        let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+        let mut answer = |id: u64| -> Value {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert!(from_agent.read_line(&mut line).unwrap() > 0, "{cmd}: no answer to {id}");
+                let msg: Value = serde_json::from_str(&line).unwrap();
+                if msg["id"] == id {
+                    return msg;
+                }
+            }
+        };
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
+        writeln!(to_agent, "{initialize}").unwrap();
+        assert_eq!(answer(1)["result"]["protocolVersion"], 1, "{cmd}");
+        let new = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+            env.dir.display().to_string()
+        );
+        writeln!(to_agent, "{new}").unwrap();
+        assert_eq!(answer(2)["result"]["sessionId"], "sess-1", "{cmd}");
+        let list = env.ok(&["list"]);
+        assert!(list.contains("ed") && list.contains("editor"), "{cmd}: {list}");
+        drop(to_agent); // The editor goes away.
+        assert!(wait_exit(&mut editor, Duration::from_secs(15)), "{cmd} didn't exit");
+    }
+}
