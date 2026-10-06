@@ -7,7 +7,7 @@ use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{ChildStdin, Command};
+use std::process::{Child, ChildStdin, Command};
 
 /// `brnr host`: the running binary, as the host. It is told the path brnr
 /// was started by, so it looks for adapters where this process does (see
@@ -95,3 +95,23 @@ pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Optio
     intermediate.wait()?;
     Ok(stdin)
 }
+
+/// Starts `cmd` as our child in a process group of its own, with `fd` moved
+/// to `target`: `brnr start --foreground`, which waits for it and passes it
+/// the signals it gets, so a terminal's Ctrl-C reaches it once.
+pub fn child(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Child> {
+    unsafe {
+        cmd.pre_exec(move || {
+            if fd == target {
+                libc::fcntl(fd, libc::F_SETFD, 0);
+            } else if libc::dup2(fd, target) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })
+    };
+    cmd.process_group(0);
+    let program = PathBuf::from(cmd.get_program());
+    cmd.spawn().map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))
+}
+

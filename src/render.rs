@@ -1,5 +1,5 @@
 //! Events as text, the one way brnr shows a session: `brnr watch`, `brnr
-//! log` and `brnr host` in the foreground all use it. Also a tool call in
+//! log` and a session in the foreground all use it. Also a tool call in
 //! full (input, paths, diffs), for `brnr show`.
 
 use serde_json::Value;
@@ -53,10 +53,10 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         "permission_request" => {
             let options: Vec<String> =
                 e["options"].as_array().into_iter().flatten().map(|o| s(&o["optionId"])).collect();
+            let editor = if e["owner"] == "editor" { " (in the editor)" } else { "" };
             format!(
-                "permission {} ({} answers): {} [{}]",
+                "permission {}{editor}: {} [{}]",
                 s(&e["request"]),
-                s(&e["owner"]),
                 s(&e["title"]),
                 options.join(" ")
             )
@@ -71,7 +71,6 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             Some(error) => format!("turn failed: {} ({})", error["message"], s(&e["by"])),
             None => format!("turn ended: {} ({})", s(&e["stop_reason"]), s(&e["by"])),
         },
-        "owner_changed" => format!("owner -> {} ({})", s(&e["owner"]), s(&e["reason"])),
         "exited" => {
             let mut what = format!("agent exited: {}", e["status"]);
             for held in e["undelivered"].as_array().into_iter().flatten() {

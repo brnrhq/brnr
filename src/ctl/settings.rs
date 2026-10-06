@@ -1,57 +1,61 @@
-//! The agent's settings and sessions: `mode`, `config`, `model`,
-//! `commands`, `sessions`, `fork` and `close`.
+//! A session's settings and the sessions themselves: `mode`, `config`,
+//! `model`, `commands`, `sessions`, `fork` and `close`.
 
-use std::process::ExitCode;
-use std::time::Duration;
+use std::env;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
+use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Host, USAGE, discover, inactive_sessions, print_table, request_timeout, resolve};
+use brnr::{config, paths, spawn};
+
+use super::{
+    Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
+    running_session, text,
+};
 
 /// The agent may take a while to switch model or fork a session.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// `<target> [--session <id>]` and the rest of the arguments.
-fn target_args(args: &[String]) -> Result<(String, Option<String>, Vec<String>), String> {
-    let mut target = None;
+/// How long `brnr sessions` gives the agent to start and list.
+const LIST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `<session>`, the other arguments, and whether `--json` was given.
+fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> {
     let mut session = None;
     let mut rest = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
+    let mut json_out = false;
+    for arg in args {
         match arg.as_str() {
-            "--session" => session = Some(it.next().ok_or("--session needs an id")?.clone()),
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if session.is_none() => session = Some(arg.clone()),
             _ => rest.push(arg.clone()),
         }
     }
-    Ok((target.ok_or(USAGE)?, session, rest))
+    Ok((session.ok_or(USAGE)?, rest, json_out))
 }
 
-/// The host and the status of the session meant.
-fn session_status(target: &str, session: Option<String>) -> Result<(Host, Value), String> {
+/// The running session `arg` names: its process and its status.
+fn session_status(arg: &str) -> Result<(Host, Value), String> {
     let hosts = discover();
-    let (host, matched) = resolve(&hosts, target)?;
-    let wanted = session.or(matched);
-    let status = host.status.clone().ok_or("host is not answering")?;
-    let sessions = status["sessions"].as_array().cloned().unwrap_or_default();
-    let s = match (&wanted, &sessions[..]) {
-        (Some(id), _) => sessions
-            .iter()
-            .find(|s| s["session_id"].as_str().is_some_and(|s| s.starts_with(id.as_str())))
-            .cloned()
-            .ok_or(format!("no session {id}"))?,
-        (None, [one]) => one.clone(),
-        (None, []) => return Err("no ACP session yet".into()),
-        (None, _) => return Err("several sessions; pick one with --session".into()),
-    };
-    let host = Host { meta: host.meta.clone(), status: host.status.clone() };
-    Ok((host, s))
+    let (host, id) = running_session(&hosts, arg)?;
+    let status = host
+        .sessions()
+        .iter()
+        .find(|s| s["session_id"] == id.as_str())
+        .cloned()
+        .ok_or("the process is not answering")?;
+    Ok((Host { meta: host.meta.clone(), status: host.status.clone() }, status))
 }
 
 fn agent_call(host: &Host, req: &Value) -> Result<Value, String> {
     let response = request_timeout(host, req, AGENT_TIMEOUT)
-        .map_err(|e| format!("host {}: {e}", host.id()))?;
+        .map_err(|e| format!("process {}: {e}", host.id()))?;
     if response["ok"].as_bool() != Some(true) {
         return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
     }
@@ -63,72 +67,95 @@ fn s(v: &Value) -> &str {
 }
 
 pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
-    let (host, status) = session_status(&target, session)?;
+    let (arg, rest, json_out) = session_args(args)?;
+    let (host, status) = session_status(&arg)?;
     let id = s(&status["session_id"]).to_owned();
     match &rest[..] {
         [] => {
             let current = status["mode"].as_str();
-            let modes = status["modes"].as_array().cloned().unwrap_or_default();
+            let mut modes: Vec<Value> = status["modes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|m| json!({ "mode": m["id"], "name": m["name"], "description": m["description"] }))
+                .collect();
+            let mut current = current.map(str::to_owned);
             if modes.is_empty() {
                 // An agent with modes only as a config option.
                 let option =
                     status["config"].as_array().into_iter().flatten().find(|o| o["id"] == "mode");
-                return match option {
-                    Some(option) => {
-                        print_choices(option);
-                        Ok(ExitCode::SUCCESS)
-                    }
-                    None => Err("the agent offers no modes".into()),
-                };
+                let option = option.ok_or("the agent offers no modes")?;
+                modes = choices(option)
+                    .into_iter()
+                    .map(|(value, name)| json!({ "mode": value, "name": name, "description": null }))
+                    .collect();
+                current = option["currentValue"].as_str().map(str::to_owned);
             }
-            for m in modes {
-                let mark = if m["id"].as_str() == current { "*" } else { " " };
-                let about = m["description"].as_str().map(|d| format!("  {d}")).unwrap_or_default();
-                println!("{mark} {}{about}", s(&m["id"]));
+            if json_out {
+                print_json(&json!({ "session": id, "mode": current, "modes": modes }))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            for m in &modes {
+                let mark = if m["mode"].as_str() == current.as_deref() { "*" } else { " " };
+                let about = m["description"].as_str().or(m["name"].as_str());
+                let about = about.map(|d| format!("  {d}")).unwrap_or_default();
+                println!("{mark} {}{about}", s(&m["mode"]));
             }
         }
         [mode] => {
             agent_call(&host, &json!({ "cmd": "set_mode", "session": id, "mode": mode }))?;
-            println!("mode {mode} (session {id})");
+            if json_out {
+                print_json(&json!({ "session": id, "mode": mode }))?;
+            } else {
+                println!("mode {mode}");
+            }
         }
         _ => return Err(USAGE.to_owned()),
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// A select option's values, the current one starred.
-fn print_choices(option: &Value) {
-    let current = &option["currentValue"];
-    for choice in option["options"].as_array().into_iter().flatten() {
-        let mark = if &choice["value"] == current { "*" } else { " " };
-        println!("{mark} {}  {}", s(&choice["value"]), choice["name"].as_str().unwrap_or(""));
-    }
+/// A select option's values and their names.
+fn choices(option: &Value) -> Vec<(Value, Value)> {
+    option["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| (c["value"].clone(), c["name"].clone()))
+        .collect()
 }
 
 pub(super) fn config(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
-    let (host, status) = session_status(&target, session)?;
+    let (arg, rest, json_out) = session_args(args)?;
+    let (host, status) = session_status(&arg)?;
     let id = s(&status["session_id"]).to_owned();
     if rest.is_empty() {
-        let options = status["config"].as_array().cloned().unwrap_or_default();
+        let options: Vec<Value> = status["config"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|o| {
+                let choices: Vec<Value> = choices(o).into_iter().map(|(v, _)| v).collect();
+                json!({ "option": o["id"], "value": o["currentValue"], "choices": choices, "name": o["name"] })
+            })
+            .collect();
+        if json_out {
+            print_json(&json!({ "session": id, "options": options }))?;
+            return Ok(ExitCode::SUCCESS);
+        }
         if options.is_empty() {
             return Err("the agent has no config options".into());
         }
         let mut rows = vec![["OPTION", "VALUE", "CHOICES", "NAME"].map(String::from)];
         for o in &options {
-            let choices: Vec<&str> = o["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|c| c["value"].as_str())
-                .collect();
-            let value = match &o["currentValue"] {
+            let value = match &o["value"] {
                 Value::String(v) => v.clone(),
                 other => other.to_string(),
             };
+            let choices: Vec<&str> =
+                o["choices"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             rows.push([
-                s(&o["id"]).to_owned(),
+                s(&o["option"]).to_owned(),
                 value,
                 choices.join(" "),
                 o["name"].as_str().unwrap_or("").to_owned(),
@@ -137,6 +164,7 @@ pub(super) fn config(args: &[String]) -> Result<ExitCode, String> {
         print_table(rows);
         return Ok(ExitCode::SUCCESS);
     }
+    let mut set = Vec::new();
     for pair in &rest {
         let (option, value) =
             pair.split_once('=').ok_or(format!("<option>=<value>, not {pair}"))?;
@@ -144,14 +172,20 @@ pub(super) fn config(args: &[String]) -> Result<ExitCode, String> {
             &host,
             &json!({ "cmd": "set_config", "session": id, "option": option, "value": value }),
         )?;
-        println!("{option}={value} (session {id})");
+        if !json_out {
+            println!("{option}={value}");
+        }
+        set.push(json!({ "option": option, "value": value }));
+    }
+    if json_out {
+        print_json(&json!({ "session": id, "set": set }))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
-    let (host, status) = session_status(&target, session)?;
+    let (arg, rest, json_out) = session_args(args)?;
+    let (host, status) = session_status(&arg)?;
     let id = s(&status["session_id"]).to_owned();
     match &rest[..] {
         [] => {
@@ -160,20 +194,32 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
                 .into_iter()
                 .flatten()
                 .find(|o| o["id"] == "model" || o["category"] == "model");
-            if let Some(option) = option {
-                print_choices(option);
+            let models: Vec<Value> = if let Some(option) = option {
+                choices(option)
+                    .into_iter()
+                    .map(|(value, name)| json!({ "model": value, "name": name }))
+                    .collect()
             } else if let Some(models) = status["models"].as_array() {
-                for m in models {
-                    let mark = if m["modelId"] == status["model"] { "*" } else { " " };
-                    println!("{mark} {}  {}", s(&m["modelId"]), m["name"].as_str().unwrap_or(""));
-                }
+                models.iter().map(|m| json!({ "model": m["modelId"], "name": m["name"] })).collect()
             } else {
                 return Err("the agent offers no model choice".into());
+            };
+            if json_out {
+                print_json(&json!({ "session": id, "model": status["model"], "models": models }))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            for m in &models {
+                let mark = if m["model"] == status["model"] { "*" } else { " " };
+                println!("{mark} {}  {}", s(&m["model"]), m["name"].as_str().unwrap_or(""));
             }
         }
         [model] => {
             agent_call(&host, &json!({ "cmd": "set_model", "session": id, "model": model }))?;
-            println!("model {model} (session {id})");
+            if json_out {
+                print_json(&json!({ "session": id, "model": model }))?;
+            } else {
+                println!("model {model}");
+            }
         }
         _ => return Err(USAGE.to_owned()),
     }
@@ -181,87 +227,218 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
 }
 
 pub(super) fn commands(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
+    let (arg, rest, json_out) = session_args(args)?;
     if !rest.is_empty() {
         return Err(USAGE.to_owned());
     }
-    let (_, status) = session_status(&target, session)?;
-    let commands = status["commands"].as_array().cloned().unwrap_or_default();
+    let (_, status) = session_status(&arg)?;
+    let commands: Vec<Value> = status["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| json!({ "command": c["name"], "hint": c["input"]["hint"], "description": c["description"] }))
+        .collect();
+    if json_out {
+        print_json(&json!({ "session": status["session_id"], "commands": commands }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if commands.is_empty() {
         println!("the agent has announced no commands");
     }
     for c in commands {
-        let hint = c["input"]["hint"].as_str().map(|h| format!(" <{h}>")).unwrap_or_default();
-        println!("/{}{hint}  {}", s(&c["name"]), c["description"].as_str().unwrap_or(""));
+        let hint = c["hint"].as_str().map(|h| format!(" <{h}>")).unwrap_or_default();
+        println!("/{}{hint}  {}", s(&c["command"]), c["description"].as_str().unwrap_or(""));
     }
     Ok(ExitCode::SUCCESS)
 }
 
+// ---- the agent's sessions ------------------------------------------------
+
+/// `brnr sessions`: the agent's own list of sessions in a folder, asked of
+/// an agent started just for that (no process of brnr's), with what brnr
+/// knows of each.
 pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
-    let [target] = args else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
-    let (host, _) = resolve(&hosts, target)?;
-    // What brnr knows of each: running, inactive (a transcript), or nothing.
-    let running: Vec<(&str, &str)> = hosts
-        .iter()
-        .flat_map(|h| h.sessions().iter().map(move |x| (s(&x["session_id"]), h.id())))
-        .collect();
-    let past = inactive_sessions(&hosts);
-    let brnr = |id: &str| match running.iter().find(|(r, _)| *r == id) {
-        Some((_, host)) => format!("running ({host})"),
-        None if past.iter().any(|p| p["session_id"] == id) => "inactive".to_owned(),
-        None => "-".to_owned(),
+    let (mut profile, mut cwd, mut json_out, mut agent) = (None, None, false, Vec::new());
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--profile" => profile = Some(it.next().ok_or("--profile needs a name")?.clone()),
+            "--cwd" => cwd = Some(it.next().ok_or("--cwd needs a directory")?.clone()),
+            "--json" => json_out = true,
+            "--" => {
+                agent = it.by_ref().cloned().collect();
+                break;
+            }
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    let cfg = config::load(profile.as_deref())?;
+    if agent.is_empty() {
+        agent = cfg.agent.clone().unwrap_or_default();
+    }
+    if agent.is_empty() {
+        return Err("no agent: give one after -- or set agent in the profile".into());
+    }
+    let cwd = match cwd {
+        Some(dir) => paths::expand(&dir),
+        None => env::current_dir().map_err(|e| format!("cwd: {e}"))?,
     };
-    let mut rows = vec![["SESSION", "UPDATED", "BRNR", "TITLE", "CWD"].map(String::from)];
-    let mut cursor: Option<String> = None;
-    loop {
-        let req = json!({ "cmd": "sessions", "cursor": cursor });
-        let response = agent_call(host, &req)?;
-        for s in response["sessions"].as_array().into_iter().flatten() {
-            let updated = s["updatedAt"].as_str().unwrap_or("");
-            let updated = updated.get(..19).unwrap_or(updated).replace('T', " ");
-            let id = s["sessionId"].as_str().unwrap_or("?");
-            rows.push([
-                id.to_owned(),
-                updated,
-                brnr(id),
-                s["title"].as_str().unwrap_or("-").to_owned(),
-                s["cwd"].as_str().unwrap_or("?").to_owned(),
-            ]);
+    let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
+    let listed = list_sessions(&agent, &cwd.to_string_lossy())?;
+
+    // What brnr knows of each: running (in which process), inactive (a
+    // transcript), or nothing.
+    let hosts = discover();
+    let past = inactive_sessions(&hosts);
+    let brnr = |id: &str| {
+        for host in &hosts {
+            if host.sessions().iter().any(|x| x["session_id"] == id) {
+                return format!("running ({})", host.id());
+            }
         }
-        match response["next_cursor"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => break,
-        }
+        if past.iter().any(|p| p["session_id"] == id) { "inactive" } else { "-" }.to_owned()
+    };
+    let rows: Vec<Value> = listed
+        .iter()
+        .map(|x| {
+            let id = s(&x["sessionId"]);
+            json!({
+                "session": id,
+                "updated": x["updatedAt"],
+                "brnr": brnr(id),
+                "title": x["title"],
+                "cwd": x["cwd"],
+            })
+        })
+        .collect();
+    if json_out {
+        print_json(&json!(rows))?;
+        return Ok(ExitCode::SUCCESS);
     }
-    if rows.len() == 1 {
-        println!("the agent knows no sessions here");
-    } else {
-        print_table(rows);
+    if rows.is_empty() {
+        println!("the agent knows no sessions in {}", cwd.display());
+        return Ok(ExitCode::SUCCESS);
     }
+    let mut table = vec![["SESSION", "UPDATED", "BRNR", "TITLE", "CWD"].map(String::from)];
+    for r in &rows {
+        let updated = r["updated"].as_str().unwrap_or("");
+        table.push([
+            text(&r["session"]),
+            updated.get(..19).unwrap_or(updated).replace('T', " "),
+            text(&r["brnr"]),
+            r["title"].as_str().unwrap_or("-").to_owned(),
+            text(&r["cwd"]),
+        ]);
+    }
+    print_table(table);
     Ok(ExitCode::SUCCESS)
 }
+
+/// Starts `agent`, asks it for its sessions in `cwd` (`initialize`, then
+/// `session/list` page by page) and stops it.
+fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
+    let mut program = paths::expand(&agent[0]).into_os_string();
+    if let Some(bundled) = spawn::bundled(&program) {
+        program = bundled.into_os_string();
+    }
+    let mut child = Command::new(&program)
+        .args(&agent[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("{}: {e}", program.to_string_lossy()))?;
+    let pid = child.id() as i32;
+    let stop = || unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    let deadline = Instant::now() + LIST_TIMEOUT;
+    let mut ask = |id: u64, method: &str, params: Value| -> Result<Value, String> {
+        let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        writeln!(stdin, "{req}").map_err(|e| format!("the agent: {e}"))?;
+        loop {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let line = rx.recv_timeout(wait).map_err(|_| format!("the agent didn't answer {method}"))?;
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            if msg["id"] == id && msg.get("method").is_none() {
+                if let Some(error) = msg.get("error") {
+                    let what = error["message"].as_str().map_or(error.to_string(), str::to_owned);
+                    return Err(format!("{method} failed: {what}"));
+                }
+                return Ok(msg["result"].clone());
+            }
+        }
+    };
+    let result = (|| {
+        let init = ask(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
+            }),
+        )?;
+        if init["agentCapabilities"]["sessionCapabilities"]["list"].is_null() {
+            return Err("the agent doesn't list its sessions".to_owned());
+        }
+        let mut sessions = Vec::new();
+        let mut cursor: Option<String> = None;
+        for id in 2.. {
+            let mut params = json!({ "cwd": cwd });
+            if let Some(cursor) = &cursor {
+                params["cursor"] = json!(cursor);
+            }
+            let page = ask(id, "session/list", params)?;
+            sessions.extend(page["sessions"].as_array().cloned().unwrap_or_default());
+            match page["nextCursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        Ok(sessions)
+    })();
+    drop(ask);
+    stop();
+    let _ = child.wait();
+    result
+}
+
+// ---- forking, closing ---------------------------------------------------
 
 pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
+    let (arg, rest, json_out) = session_args(args)?;
     if !rest.is_empty() {
         return Err(USAGE.to_owned());
     }
-    let (host, status) = session_status(&target, session)?;
-    let from = s(&status["session_id"]).to_owned();
-    let response = agent_call(&host, &json!({ "cmd": "fork", "session": from }))?;
-    println!("forked {from} into {} (host {})", s(&response["session"]), host.id());
+    let hosts = discover();
+    let (host, from) = running_session(&hosts, &arg)?;
+    let response = agent_call(host, &json!({ "cmd": "fork", "session": from }))?;
+    let session = text(&response["session"]);
+    if json_out {
+        print_json(&json!({ "session": session, "from": from }))?;
+    } else {
+        println!("forked {from} into {session}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
-    let (target, session, rest) = target_args(args)?;
-    if !rest.is_empty() {
-        return Err(USAGE.to_owned());
-    }
-    let (host, status) = session_status(&target, session)?;
-    let id = s(&status["session_id"]).to_owned();
-    agent_call(&host, &json!({ "cmd": "close", "session": id }))?;
+    let [arg] = args else { return Err(USAGE.to_owned()) };
+    let hosts = discover();
+    let (host, id) = running_session(&hosts, arg)?;
+    agent_call(host, &json!({ "cmd": "close", "session": id }))?;
     println!("closed {id}");
     Ok(ExitCode::SUCCESS)
 }

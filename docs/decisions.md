@@ -458,3 +458,130 @@ event), "settings" (`mode`, `model`, `config`, `commands`) and "brnr"
 (`doctor`, `--version`), and says once, at the end, what a `<target>` and
 `--session` are. `stop` is with the commands that start a host (`acp`,
 `start`, `host`): it ends one, however it started.
+
+## 37. Commands take a session, or a process by pid
+
+A `<target>` was a host id (the host's pid), a host's `--name`, a session id
+or a unique prefix of one, and `--session` then picked a session inside the
+host, or brnr picked the only one. Too many meanings, and the picking hid
+that settings and messages belong to a session until a `fork` broke it.
+
+- **A. Keep `<target>`, document it better.**
+- **B. Two arguments, each meaning one thing:** `<session>`, a session's
+  exact id, for everything about a session; and `--pid <pid>` (or a `<pid>`
+  argument), a brnr process as `brnr ps` shows it, for what is about the
+  process.
+
+**Chosen: B.** No prefixes, no `--session`, no picking. `watch` and
+`notify` take one or the other and have no default. Bridges stay per
+process: a started bridge's environment has `BRNR_PID` instead of
+`BRNR_HOST` (sessions come and go in a process, and it has none when its
+bridges start; each event names its session), so as a bridge `notify` is
+run as `sh -c 'exec brnr notify --pid "$BRNR_PID" -- …'`. "Host" leaves the
+CLI and its help; it stays the name of the process inside brnr.
+
+## 38. No names: a session is its id
+
+Sessions had names for a while: `start --name`, `fork --name`, `brnr name`
+for any session, at most one running session per name, a name meaning the
+latest session that had it (the running one, else the one most recently
+started or resumed with it), the name coming back on `--resume` unless in
+use, and an index of it all under `~/.brnr`.
+
+**Chosen: none of it.** It was brnr's own layer over what ACP has, and a way
+of working it imposed: a policy to learn (which session a name means, when
+one is taken, what resuming does to it) rather than a description of the
+agent's sessions. `<session>` is the id the agent gave the session, running
+or not; `start --json` prints it for a script to keep
+(`s=$(brnr start --json … | jq -r .session)`), and anyone who wants shorter
+handles can keep them in their shell. The agent's own title for a session
+(`session_info_update`) is shown in `list` and `status`, to tell sessions
+apart, and is never something to type.
+
+## 39. `ps` and `stop`
+
+`brnr ps` lists brnr's processes: pid, agent, owner (`editor` or
+`headless`), cwd, uptime and its sessions. `brnr stop <pid>` stops a process
+and its agent, as `stop` did. Ending one session is `brnr close <session>`;
+a headless process with no session left stops. `list` is about sessions,
+`ps` about processes.
+
+## 40. No `on_disconnect`: an editor's agent goes with the editor
+
+`--on-disconnect direct|headless` and the profile's `on_disconnect` are
+gone, and `direct` is what happens: when the editor goes away, the agent's
+stdin is closed and it is stopped, as if the editor had run it. To carry
+on with the session, `brnr start --resume <session>`; the agents keep their
+sessions. Lost: a turn still running when the editor closes. Gone with it:
+the host taking over (`go_headless`, taking over the editor's pending agent
+requests) and the `owner_changed` event (see 35); a process's owner is set
+when it starts.
+
+## 41. `stop_when_idle` takes seconds
+
+`--stop-when-idle <s>` on `start` (and its `--foreground`), and
+`stop_when_idle = <s>` in a profile, replace the switch (see 14). A session
+is idle while no turn is running, nothing is held and no approval is
+waiting; a message or prompt starts the count again, and it counts from the
+start too, so a `start` without a prompt doesn't run forever. A `start` with
+a prompt sends it over the socket once the session is open, so the process
+is told one is coming (`--awaiting-prompt`) and counts from when it arrives.
+When it runs out the session closes (`session/close`), and the process
+stops with its last session; an agent that can't close sessions keeps one
+that ran out while it has others. `0` is as soon as it's idle, what the
+switch did.
+
+## 42. Same data in text and JSON; `list` is an index
+
+`list --json` gave every host's whole status report while the text showed
+six columns, and `status --json` was the raw report behind a summary (see 8).
+
+**Chosen:** a command's text and JSON carry the same data. `list` is an
+index, one row per session: id, title (the agent's, while it runs), state
+(`busy`, `idle`, `waiting` for an approval, `inactive`), pid, agent, cwd and
+when it was last active.
+`status <session>` is the detail, one session's, as a flat object. `ps`
+follows the same rule. The control socket's `status` stays the full report
+(bridges use it); brnr shapes what it prints from it.
+
+## 43. `sessions` without a running agent
+
+`brnr sessions [--profile <p>] [--cwd <dir>] [-- <agent>]` starts the agent
+just to ask it (`initialize`, `session/list` for the cwd, then it exits): no
+process of brnr's, no target, and the folder is explicit, here unless
+`--cwd` says otherwise. The BRNR column stays (see 36). The control socket's
+`sessions` request is gone with it.
+
+## 44. `--json` wherever a command prints data
+
+Only `list`, `status`, `watch` and `log` had it. Now every command that
+prints data does (`start`, `send`, `wait`, `cancel`, `queue`, `pending`,
+`show`, `approve`, `deny`, `ps`, `sessions`, `fork`, `mode`, `model`,
+`config`, `commands`, `doctor`): one JSON value, or one event per line for
+`log`, `watch` and `start --foreground`; errors stay on stderr with the same
+exit status. Commands whose answer is their exit status (`stop`, `close`,
+`notify`) don't. The usage says it once, at the end, rather than on
+every line. `--wait` with `--json` prints the turn as one object at its end:
+`{session, message, reply, stop_reason, error}`, and for `start` its
+`pid`.
+
+A usage error prints that command's lines of the usage, not all of it.
+
+## 45. `start --foreground`, not `brnr host`; approvals name their request
+
+`brnr host` was the foreground session by hand, and the process `acp` and
+`start` start. Its flags lagged `start`'s (no `--file`, `--image`, `--model`,
+`--set`, `--permissions`, `--wait`).
+
+**Chosen:** `start --foreground [--quiet]` runs the same process as `start`
+as its child, in a process group of its own, passing it the signals it gets
+(Ctrl-C once stops the session, twice kills the agent), shows the session as
+it goes (`--json`: as JSON lines), and exits as the agent did; for a
+supervisor such as systemd, or a container. `brnr host` stays, for brnr
+itself and by hand, out of the usage. `--wait` and `--foreground` don't go
+together: the foreground shows the whole session.
+
+`show`, `approve` and `deny` take `<session> <request>`: brnr no longer
+picks the only request waiting, as it no longer picks a session (see 37).
+`pending [<session>]` keeps its filter, and `--option` its default (allow, or
+reject, once).

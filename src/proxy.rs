@@ -6,10 +6,9 @@
 //! only relays: stdin and stdout carry ACP to and from the host, the agent's
 //! stderr comes out of the proxy's stderr, signals the proxy receives are
 //! handed to the host, and the proxy exits with the agent's exact wait
-//! status, or with 0 if the session carries on headless. The agent never
-//! holds the editor's file descriptors and is out of reach of the editor's
-//! process group and process tree, so what happens to it when the proxy
-//! dies is the host's --on-disconnect policy.
+//! status. The agent never holds the editor's file descriptors and is out of
+//! reach of the editor's process group and process tree; when the proxy
+//! goes, the host stops it as if the editor had run it.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -26,15 +25,13 @@ use serde_json::Value;
 
 use crate::{frame, signals, spawn};
 
-const USAGE: &str = "usage: brnr acp [--profile <name>] [--name <name>] \
-                     [--on-disconnect direct|headless] [-- <program> [args...]]";
+const USAGE: &str = "usage: brnr acp [--profile <name>] [-- <program> [args...]]";
 
 /// `brnr acp --help`: the usage, and what it is.
 const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
     brnr acp -- brnr-claude-adapter
-The agent runs in a host of its own, which brnr's other commands can reach
-(brnr list, send, watch, approve, ...) and which can outlive the editor
-(--on-disconnect headless).";
+The agent runs in a process of its own, which brnr's other commands can
+reach (brnr list, send, watch, approve, ...); it stops when the editor goes.";
 
 /// The fd the host finds its end of the link on.
 const HOST_LINK_FD: c_int = 3;
@@ -42,8 +39,6 @@ const HOST_LINK_FD: c_int = 3;
 #[derive(Default)]
 struct Options {
     profile: Option<String>,
-    name: Option<String>,
-    on_disconnect: Option<String>,
 }
 
 type Link = Arc<Mutex<UnixStream>>;
@@ -72,7 +67,7 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     if let Err(err) = start_host(&opts, &mask, theirs, program) {
-        eprintln!("brnr acp: starting host: {err}");
+        eprintln!("brnr acp: starting its process: {err}");
         return ExitCode::FAILURE;
     }
 
@@ -110,8 +105,6 @@ fn parse_args(
         };
         match key.as_str() {
             "--profile" => opts.profile = Some(value()?),
-            "--name" => opts.name = Some(value()?),
-            "--on-disconnect" => opts.on_disconnect = Some(value()?),
             _ => return Err(format!("unknown option: {key}")),
         }
     }
@@ -131,14 +124,8 @@ fn start_host(
         .arg(HOST_LINK_FD.to_string())
         .arg("--proxy-pid")
         .arg(std::process::id().to_string());
-    for (flag, value) in [
-        ("--profile", &opts.profile),
-        ("--name", &opts.name),
-        ("--on-disconnect", &opts.on_disconnect),
-    ] {
-        if let Some(value) = value {
-            cmd.arg(flag).arg(value);
-        }
+    if let Some(profile) = &opts.profile {
+        cmd.arg("--profile").arg(profile);
     }
     if !mask.is_empty() {
         let list: Vec<String> = mask.iter().map(c_int::to_string).collect();
@@ -152,7 +139,7 @@ fn start_host(
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit
-/// status arrives or the session goes headless.
+/// status arrives.
 fn run(link: UnixStream, writer: Link) -> ExitCode {
     let mut reader = BufReader::new(link);
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
@@ -162,7 +149,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
         let (kind, payload) = match frame::read(&mut reader) {
             Ok(Some(frame)) => frame,
             Ok(None) | Err(_) => {
-                eprintln!("brnr acp: lost the connection to the host");
+                eprintln!("brnr acp: lost the connection to its process");
                 return ExitCode::FAILURE;
             }
         };
@@ -180,14 +167,13 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
             }
             frame::FAILED => {
                 let failure: Value = serde_json::from_slice(&payload).unwrap_or_default();
-                let msg = failure["error"].as_str().unwrap_or("host failed to start");
+                let msg = failure["error"].as_str().unwrap_or("its process failed to start");
                 eprintln!("brnr acp: {msg}");
                 return ExitCode::from(failure["code"].as_u64().unwrap_or(1) as u8);
             }
             frame::EXIT if payload.len() == 4 => {
                 return mirror(i32::from_be_bytes(payload.try_into().unwrap()));
             }
-            frame::DETACHED => return ExitCode::SUCCESS,
             _ => {}
         }
     }

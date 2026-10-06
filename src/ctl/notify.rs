@@ -1,5 +1,6 @@
-//! `brnr notify [<target>] [--events <a,b,...>] -- <command> [args...]`:
-//! runs a command once per event, for notifications.
+//! `brnr notify (<session> | --pid <pid>) [--events <a,b,...>] -- <command>
+//! [args...]`: runs a command once per event of a session, or of every
+//! session in a process, for notifications.
 //!
 //! The event is in the command's environment and, as JSON, on its stdin;
 //! nothing is substituted into the command line, so what an agent writes
@@ -7,17 +8,16 @@
 //!
 //! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr watch` would
 //!   show it; `BRNR_TITLE`: the session's title, else its id;
-//! - `BRNR_SESSION`, `BRNR_REQUEST` (a permission request's handle),
+//! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's handle),
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
-//! - `BRNR_HOST`, `BRNR_HOST_ID`.
+//! - `BRNR_PID`, the process.
 //!
-//! Without a target it notifies for `$BRNR_HOST`, so it works as a bridge in
-//! a profile. `--events` is read as for `watch`, but its default (and
-//! `default`) is `permission_request`, `turn_ended`, `exited`. It exits when
-//! the host does.
+//! As a bridge in a profile it is given its process in `$BRNR_PID`:
+//! `sh -c 'exec brnr notify --pid "$BRNR_PID" -- …'`. `--events` is read as
+//! for `watch`, but its default (and `default`) is `permission_request`,
+//! `turn_ended`, `exited`. It exits when the process does.
 
 use std::collections::HashMap;
-use std::env;
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::process::{Command, ExitCode, Stdio};
@@ -27,12 +27,12 @@ use serde_json::Value;
 use brnr::render;
 
 use super::talk::Conn;
-use super::{USAGE, discover, events_arg, resolve};
+use super::{USAGE, discover, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] = &["permission_request", "turn_ended", "exited"];
 
 pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
+    let (mut session, mut pid) = (None, None);
     let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
     let mut events = default.clone();
     let mut command = Vec::new();
@@ -40,26 +40,24 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--events" => events = events_arg(it.next(), &default)?,
+            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
             "--" => {
                 command = it.by_ref().cloned().collect();
                 break;
             }
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if session.is_none() => session = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
     if command.is_empty() {
         return Err("notify needs a command after --".into());
     }
-    let target = match target.or_else(|| env::var("BRNR_HOST").ok()) {
-        Some(target) => target,
-        None => return Err("notify needs a target (or $BRNR_HOST, as a bridge)".into()),
-    };
     let hosts = discover();
-    let (host, only) = resolve(&hosts, &target)?;
+    let (host, only) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
     let mut conn = Conn::open(host)?;
-    // Agent messages and titles are tracked for the environment, not run for.
+    // Agent messages and titles are tracked for the environment, not run
+    // for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
     for extra in ["agent_message", "session_changed", "exited"] {
         if !wanted.contains(&extra) {
@@ -74,16 +72,14 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|s| {
-            Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
-        })
+        .filter_map(|s| Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned())))
         .collect();
     let options = render::Options { session: false, time: false };
     loop {
         let e = match conn.next_event(None) {
             Ok(Some(e)) => e,
             Ok(None) => continue,
-            Err(_) => return Ok(ExitCode::SUCCESS), // The host is gone.
+            Err(_) => return Ok(ExitCode::SUCCESS), // The process is gone.
         };
         let name = e["event"].as_str().unwrap_or_default().to_owned();
         let session = e["session"].as_str().unwrap_or_default().to_owned();
@@ -110,11 +106,10 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     ("BRNR_EVENT", name.clone()),
                     ("BRNR_TEXT", text.unwrap_or_default()),
                     ("BRNR_TITLE", title),
-                    ("BRNR_SESSION", session.clone()),
+                    ("BRNR_SESSION_ID", session.clone()),
                     ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
                     ("BRNR_MESSAGE", last_message.get(&session).cloned().unwrap_or_default()),
-                    ("BRNR_HOST", host.id().to_owned()),
-                    ("BRNR_HOST_ID", e["host_id"].as_str().unwrap_or_default().to_owned()),
+                    ("BRNR_PID", host.id().to_owned()),
                 ],
             );
         }

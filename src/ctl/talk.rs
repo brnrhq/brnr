@@ -3,9 +3,17 @@
 //!
 //! `start --wait` and `send --wait` print the agent's reply and exit with the
 //! turn's result; `wait` waits for a session to be idle (or for the next
-//! turn, a permission request, or the host's exit). Exit status: 0 when the
-//! turn ended normally (`end_turn`), 1 if it failed or stopped for another
-//! reason, 124 on `--timeout`.
+//! turn, an approval, or its process's exit). Exit status: 0 when the turn
+//! ended normally (`end_turn`), 1 if it failed or stopped for another reason,
+//! 124 on `--timeout`.
+//!
+//! `send` timing:
+//! - default: send now; starts a turn if the agent is idle, otherwise the
+//!   agent decides (claude-agent-acp folds it into the running turn).
+//! - `--after-turn`: brnr holds it until no turn is running.
+//! - `--interrupt`: brnr cancels the running turn, then sends it.
+//! - `--context`: no turn; appended to the next prompt, whoever sends it.
+//!   `--replace` replaces the last held context instead of adding to it.
 
 use std::collections::VecDeque;
 use std::env;
@@ -14,18 +22,18 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::process::{ExitCode, Stdio};
+use std::process::{Child, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::{config, paths, spawn};
+use brnr::{config, paths, signals, spawn};
 
 use super::{
-    Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, inactive_sessions,
-    read_stdin, resolve,
+    Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
+    print_json, read_stdin, response_json, running_session, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -48,7 +56,7 @@ pub(super) struct Conn {
 
 impl Conn {
     pub(super) fn open(host: &Host) -> Result<Conn, String> {
-        let stream = connect(host).map_err(|e| format!("host {}: {e}", host.id()))?;
+        let stream = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
         Ok(Conn { reader: BufReader::new(stream), writer, events: VecDeque::new(), next_req: 0 })
     }
@@ -64,7 +72,7 @@ impl Conn {
         req["req_id"] = json!(id);
         writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
         loop {
-            let msg = self.read(None)?.ok_or("the host closed the connection")?;
+            let msg = self.read(None)?.ok_or("the process closed the connection")?;
             if msg["req_id"] == id.as_str() {
                 if msg["ok"].as_bool() != Some(true) {
                     return Err(msg["error"].as_str().unwrap_or("request failed").to_owned());
@@ -103,7 +111,7 @@ impl Conn {
         self.reader.get_ref().set_read_timeout(timeout).map_err(|e| e.to_string())?;
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
-            Ok(0) => Err("the host closed the connection".into()),
+            Ok(0) => Err("the process closed the connection".into()),
             Ok(_) => Ok(Some(serde_json::from_str(&line).unwrap_or(Value::Null))),
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Ok(None),
             Err(e) => Err(e.to_string()),
@@ -117,17 +125,21 @@ impl Conn {
 const TURN_EVENTS: &[&str] =
     &["user_message", "agent_message", "permission_request", "turn_ended", "exited"];
 
-/// Prints the agent's messages in the turn that answers `message` until it
-/// ends, and returns the turn's exit status. Permission requests on the way
-/// are announced on stderr, with how to answer them.
+/// Follows the turn that answers `message` until it ends, printing the
+/// agent's messages as they come (or, with `json`, the turn as one object at
+/// the end: `{session, message, reply, stop_reason, error}` and `json`'s
+/// fields), and returns the turn's exit status. Approvals on the way are
+/// announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
-    target: &str,
+    arg: &str,
     session: &str,
     message: &str,
     deadline: Option<Instant>,
+    json: Option<Value>,
 ) -> Result<ExitCode, String> {
     let mut started = false;
+    let mut reply: Vec<String> = Vec::new();
     loop {
         let Some(e) = conn.next_event(deadline)? else {
             eprintln!("brnr: timed out waiting for the reply");
@@ -137,17 +149,36 @@ pub(super) fn wait_for_message(
         match e["event"].as_str().unwrap_or_default() {
             "user_message" if e["message"] == message => started = true,
             "agent_message" if ours && started => {
-                println!("{}", e["text"].as_str().unwrap_or_default());
-                io::stdout().flush().ok();
+                let text = e["text"].as_str().unwrap_or_default();
+                if json.is_some() {
+                    reply.push(text.to_owned());
+                } else {
+                    println!("{text}");
+                    io::stdout().flush().ok();
+                }
             }
             "permission_request" if ours => {
                 let request = e["request"].as_str().unwrap_or("?");
                 eprintln!(
-                    "brnr: waiting for permission {request}: {} (brnr show {target} {request}; brnr approve {target} {request})",
+                    "brnr: waiting for approval {request}: {} (brnr show {arg} {request}; brnr approve {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
                 );
             }
-            "turn_ended" if e["message"] == message => return Ok(turn_status(&e)),
+            "turn_ended" if e["message"] == message => {
+                if let Some(mut out) = json {
+                    for (k, v) in [
+                        ("session", json!(session)),
+                        ("message", json!(message)),
+                        ("reply", json!(reply.join("\n\n"))),
+                        ("stop_reason", e["stop_reason"].clone()),
+                        ("error", e["error"].clone()),
+                    ] {
+                        out[k] = v;
+                    }
+                    print_json(&out)?;
+                }
+                return Ok(turn_status(&e));
+            }
             "exited" => return Err("the agent exited before the turn ended".into()),
             _ => {}
         }
@@ -241,7 +272,6 @@ fn base64(data: &[u8]) -> String {
 #[derive(Default)]
 struct StartArgs {
     profile: Option<String>,
-    name: Option<String>,
     cwd: Option<String>,
     prompt: Option<String>,
     files: Vec<String>,
@@ -250,9 +280,12 @@ struct StartArgs {
     set: Vec<String>,
     permissions: Option<String>,
     resume: Option<String>,
-    stop_when_idle: bool,
+    stop_when_idle: Option<u64>,
     wait: bool,
     timeout: Option<u64>,
+    foreground: bool,
+    quiet: bool,
+    json: bool,
     agent: Vec<String>,
 }
 
@@ -263,7 +296,6 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
             "--profile" => a.profile = Some(value("--profile")?),
-            "--name" => a.name = Some(value("--name")?),
             "--cwd" => a.cwd = Some(value("--cwd")?),
             "--prompt" => a.prompt = Some(value("--prompt")?),
             "--file" => a.files.push(value("--file")?),
@@ -274,8 +306,13 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--permissions" => a.permissions = Some(value("--permissions")?),
             "--resume" => a.resume = Some(value("--resume")?),
             "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
-            "--stop-when-idle" => a.stop_when_idle = true,
+            "--stop-when-idle" => {
+                a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
+            }
             "--wait" => a.wait = true,
+            "--foreground" => a.foreground = true,
+            "--quiet" => a.quiet = true,
+            "--json" => a.json = true,
             "--" => {
                 a.agent = it.by_ref().cloned().collect();
                 break;
@@ -296,6 +333,15 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
     if a.wait && !has_prompt {
         return Err("--wait needs a --prompt (or --file, --image)".into());
     }
+    if a.wait && a.foreground {
+        return Err("--wait and --foreground don't go together".into());
+    }
+    if a.quiet && !a.foreground {
+        return Err("--quiet goes with --foreground".into());
+    }
+    if a.timeout.is_some() && !a.wait {
+        return Err("--timeout goes with --wait".into());
+    }
     Ok(a)
 }
 
@@ -306,28 +352,30 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
         Err(_) => START_TIMEOUT,
     };
+    let hosts = discover();
     let mut resume_cwd = None;
-    // A session brnr has no transcript of (one `brnr sessions` lists) goes
-    // to the agent as given, in --cwd or here, with -- <agent> or the
-    // profile's.
-    if let Some(wanted) = a.resume.clone()
-        && let Some(past) = resumable(&wanted)?
-    {
-        a.resume = past["session_id"].as_str().map(str::to_owned);
-        resume_cwd = past["cwd"].as_str().map(str::to_owned);
-        if a.agent.is_empty() {
-            a.agent = past["agent"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str().map(str::to_owned))
-                .collect();
-        }
-        if a.name.is_none() {
-            a.name = past["name"].as_str().map(str::to_owned);
-        }
-        if a.profile.is_none() {
-            a.profile = past["profile"].as_str().map(str::to_owned);
+    if let Some(wanted) = a.resume.clone() {
+        // A session brnr has no transcript of (one `brnr sessions` lists)
+        // goes to the agent as given, in --cwd or here, with -- <agent> or
+        // the profile's.
+        match find_session(&hosts, &wanted) {
+            Ok(Found::Running(..)) => return Err(format!("{wanted} is already running")),
+            Ok(Found::Inactive(past)) => {
+                a.resume = past["session_id"].as_str().map(str::to_owned);
+                resume_cwd = past["cwd"].as_str().map(str::to_owned);
+                if a.agent.is_empty() {
+                    a.agent = past["agent"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|s| s.as_str().map(str::to_owned))
+                        .collect();
+                }
+                if a.profile.is_none() {
+                    a.profile = past["profile"].as_str().map(str::to_owned);
+                }
+            }
+            Err(_) => {}
         }
     }
     let cfg = config::load(a.profile.as_deref())?;
@@ -345,7 +393,6 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     cmd.arg("--ready-fd").arg("3").arg("--start-timeout").arg(timeout.to_string());
     for (flag, value) in [
         ("--profile", &a.profile),
-        ("--name", &a.name),
         ("--mode", &a.mode),
         ("--permissions", &a.permissions),
         ("--resume", &a.resume),
@@ -357,15 +404,36 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     for set in &a.set {
         cmd.arg("--set").arg(set);
     }
-    if a.stop_when_idle {
-        cmd.arg("--stop-when-idle");
+    if let Some(secs) = a.stop_when_idle {
+        cmd.arg("--stop-when-idle").arg(secs.to_string());
+    }
+    if a.prompt.is_some() || !blocks.is_empty() {
+        cmd.arg("--awaiting-prompt");
+    }
+    for (flag, on) in [("--foreground", a.foreground), ("--quiet", a.quiet), ("--json", a.json)] {
+        if on && a.foreground {
+            cmd.arg(flag);
+        }
     }
     if !a.agent.is_empty() {
         cmd.arg("--").args(&a.agent);
     }
-    cmd.current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    spawn::detached(&mut cmd, ready_tx.as_raw_fd(), 3)
-        .map_err(|e| format!("starting host: {e}"))?;
+    cmd.current_dir(&cwd).stdin(Stdio::null());
+    let mut child = None;
+    if a.foreground {
+        // Our child, in a group of its own, printing the session to our
+        // stdout; we pass it the signals we get (Ctrl-C), once.
+        let signals = signals::install();
+        let started = spawn::child(&mut cmd, ready_tx.as_raw_fd(), 3)
+            .map_err(|e| format!("starting the process: {e}"))?;
+        let pid = started.id() as i32;
+        thread::spawn(move || forward_signals(signals, pid));
+        child = Some(started);
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        spawn::detached(&mut cmd, ready_tx.as_raw_fd(), 3)
+            .map_err(|e| format!("starting the process: {e}"))?;
+    }
     drop(ready_tx);
 
     let (tx, rx) = mpsc::channel();
@@ -374,206 +442,217 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         let _ = BufReader::new(ready_rx).read_line(&mut line);
         let _ = tx.send(line);
     });
-    // Exiting closes the pipe, which tells a host that is still starting
+    // Exiting closes the pipe, which tells a process that is still starting
     // that nobody is waiting: it stops instead of carrying on.
     let line = rx
         .recv_timeout(Duration::from_secs(timeout) + START_GRACE)
         .map_err(|_| "timed out waiting for the session".to_owned())?;
-    let ready: Value =
-        serde_json::from_str(&line).map_err(|_| "the host exited without starting a session")?;
+    let ready: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
     if ready["ok"].as_bool() != Some(true) {
-        return Err(ready["error"].as_str().unwrap_or("start failed").to_owned());
+        if let Some(child) = child {
+            return Ok(exit_status(child)); // It has said why, on our stderr.
+        }
+        let error = ready["error"].as_str().unwrap_or("the process exited without a session");
+        return Err(error.to_owned());
     }
-    let (id, session) = (s(&ready["id"]), s(&ready["session"]));
-    let started = format!("started {id} (session {session})");
-    if a.wait {
-        eprintln!("{started}");
-    } else {
-        println!("{started}");
-    }
-    if a.prompt.is_none() && blocks.is_empty() {
-        return Ok(ExitCode::SUCCESS);
+    let (pid, session) = (text(&ready["id"]), text(&ready["session"]));
+    let about = json!({ "session": session, "pid": pid.parse::<u64>().ok() });
+    if child.is_none() && !a.wait {
+        if a.json {
+            print_json(&about)?;
+        } else {
+            println!("{}", describe_started(&about));
+        }
+    } else if a.wait && !a.json {
+        eprintln!("{}", describe_started(&about));
     }
 
-    // The prompt goes over the control socket, as `brnr send` sends it.
-    let hosts = discover();
-    let host = hosts.iter().find(|h| h.id() == id).ok_or("the host went away")?;
-    let sent = (|| {
-        let mut conn = Conn::open(host)?;
+    let has_prompt = a.prompt.is_some() || !blocks.is_empty();
+    if has_prompt {
+        // The prompt goes over the control socket, as `brnr send` sends it.
+        let hosts = discover();
+        let host = hosts.iter().find(|h| h.id() == pid).ok_or("the process went away")?;
+        let sent = (|| {
+            let mut conn = Conn::open(host)?;
+            if a.wait {
+                conn.subscribe(TURN_EVENTS)?;
+            }
+            let req = json!({ "cmd": "send", "session": session, "text": a.prompt, "blocks": blocks });
+            let message = text(&conn.call(req)?["message"]);
+            Ok::<_, String>((conn, message))
+        })();
+        let (mut conn, message) = match sent {
+            Ok(sent) => sent,
+            Err(err) => {
+                let _ = call(host, &json!({ "cmd": "stop" }));
+                return Err(format!("sending the prompt: {err} (the session was stopped)"));
+            }
+        };
         if a.wait {
-            conn.subscribe(TURN_EVENTS)?;
+            let json_out = a.json.then_some(about);
+            return wait_for_message(&mut conn, &session, &session, &message, deadline(a.timeout), json_out);
         }
-        let req = json!({ "cmd": "send", "session": session, "text": a.prompt, "blocks": blocks });
-        let message = s(&conn.call(req)?["message"]);
-        Ok::<_, String>((conn, message))
-    })();
-    let (mut conn, message) = match sent {
-        Ok(sent) => sent,
-        Err(err) => {
-            let _ = call(host, &json!({ "cmd": "stop" }));
-            return Err(format!("sending the prompt: {err} (the host was stopped)"));
-        }
-    };
-    if !a.wait {
-        return Ok(ExitCode::SUCCESS);
     }
-    wait_for_message(&mut conn, &id, &session, &message, deadline(a.timeout))
+    Ok(child.map_or(ExitCode::SUCCESS, exit_status))
 }
 
-/// The inactive session `wanted` names (an id or unique prefix), if brnr
-/// has its transcript.
-fn resumable(wanted: &str) -> Result<Option<Value>, String> {
-    let hosts = discover();
-    let running = hosts.iter().flat_map(|h| h.sessions().iter().map(move |s| (h, s)));
-    for (host, s) in running {
-        if s["session_id"].as_str().is_some_and(|id| id.starts_with(wanted)) {
-            return Err(format!("{wanted} is running in host {}", host.id()));
-        }
-    }
-    let past = inactive_sessions(&hosts);
-    let matches: Vec<&Value> = past
-        .iter()
-        .filter(|p| p["session_id"].as_str().is_some_and(|id| id.starts_with(wanted)))
-        .collect();
-    match matches[..] {
-        [one] => Ok(Some(one.clone())),
-        [] => Ok(None),
-        _ => Err(format!("{wanted} matches several sessions")),
+/// `started sess-1 (process 4466)`.
+fn describe_started(about: &Value) -> String {
+    format!("started {} (process {})", text(&about["session"]), about["pid"])
+}
+
+/// `start --foreground`: the signals we get go to the process we started.
+fn forward_signals(mut signals: io::PipeReader, pid: i32) {
+    use std::io::Read;
+    let mut sig = [0];
+    while matches!(signals.read(&mut sig), Ok(1)) {
+        unsafe { libc::kill(pid, sig[0] as i32) };
     }
 }
 
-fn s(v: &Value) -> String {
-    v.as_str().unwrap_or("?").to_owned()
+/// Waits for the process `start --foreground` started and exits as it did.
+fn exit_status(mut child: Child) -> ExitCode {
+    use std::os::unix::process::ExitStatusExt;
+    match child.wait() {
+        Ok(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => ExitCode::from(code as u8),
+            (_, Some(sig)) => ExitCode::from(128 + sig as u8),
+            _ => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::FAILURE,
+    }
 }
 
 // ---- send ----------------------------------------------------------------
 
 pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut session = None;
+    let mut arg = None;
     let mut mode = None;
-    let mut replace = false;
-    let mut wait = false;
+    let (mut replace, mut wait, mut json_out) = (false, false, false);
     let mut timeout = None;
     let mut files = Vec::new();
     let mut images = Vec::new();
     let mut words = Vec::new();
     let mut it = args.iter();
-    while let Some(arg) = it.next() {
+    while let Some(a) = it.next() {
         let set_mode = |mode: &mut Option<&str>, m| match mode.replace(m) {
             Some(prev) if prev != m => Err(format!("--{prev} and --{m} don't go together")),
             _ => Ok(()),
         };
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
-        match arg.as_str() {
-            "--session" => session = Some(value("--session")?),
+        match a.as_str() {
             "--after-turn" => set_mode(&mut mode, "after-turn")?,
             "--interrupt" => set_mode(&mut mode, "interrupt")?,
             "--context" => set_mode(&mut mode, "context")?,
             "--replace" => replace = true,
             "--wait" => wait = true,
+            "--json" => json_out = true,
             "--timeout" => timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--file" => files.push(value("--file")?),
             "--image" => images.push(value("--image")?),
             "--" => words.extend(it.by_ref().cloned()),
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
-            _ => words.push(arg.clone()),
+            _ if arg.is_none() => arg = Some(a.clone()),
+            _ => words.push(a.clone()),
         }
     }
-    let target = target.ok_or(USAGE)?;
+    let arg = arg.ok_or(USAGE)?;
     if replace && mode != Some("context") {
         return Err("--replace only applies to --context".into());
     }
     if wait && mode == Some("context") {
         return Err("--wait needs a turn; --context doesn't start one".into());
     }
-    let text = if words == ["-"] { read_stdin()? } else { words.join(" ") };
+    let text_in = if words == ["-"] { read_stdin()? } else { words.join(" ") };
     let blocks = attachments(&files, &images)?;
-    if text.trim().is_empty() && blocks.is_empty() {
+    if text_in.trim().is_empty() && blocks.is_empty() {
         return Err("nothing to send".into());
     }
 
     let hosts = discover();
-    let (host, matched) = resolve(&hosts, &target)?;
+    let (host, session) = running_session(&hosts, &arg)?;
     let req = json!({
         "cmd": "send",
-        "session": session.or(matched),
-        "text": text,
+        "session": session,
+        "text": text_in,
         "blocks": blocks,
         "mode": mode.unwrap_or("now"),
         "replace": replace,
     });
     if !wait {
         let response = call(host, &req)?;
-        let message =
-            response["message"].as_str().map(|m| format!(", message {m}")).unwrap_or_default();
-        println!("{} (session {}{message})", s(&response["status"]), s(&response["session"]));
+        if json_out {
+            print_json(&response_json(response))?;
+        } else {
+            println!("{}", describe_sent(&response));
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let mut conn = Conn::open(host)?;
     conn.subscribe(TURN_EVENTS)?;
     let response = conn.call(req)?;
-    eprintln!(
-        "{} (session {}, message {})",
-        s(&response["status"]),
-        s(&response["session"]),
-        s(&response["message"])
-    );
-    wait_for_message(
-        &mut conn,
-        &target,
-        &s(&response["session"]),
-        &s(&response["message"]),
-        deadline(timeout),
-    )
+    if !json_out {
+        eprintln!("{}", describe_sent(&response));
+    }
+    let message = text(&response["message"]);
+    wait_for_message(&mut conn, &arg, &session, &message, deadline(timeout), json_out.then(|| json!({})))
+}
+
+/// `delivered (message m1)`, `held`, …
+fn describe_sent(response: &Value) -> String {
+    let message = response["message"].as_str().map(|m| format!(" (message {m})")).unwrap_or_default();
+    format!("{}{message}", text(&response["status"]))
 }
 
 // ---- wait ----------------------------------------------------------------
 
 pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut session = None;
+    let mut arg = None;
     let mut what = "idle".to_owned();
     let mut timeout = None;
+    let mut json_out = false;
     let mut it = args.iter();
-    while let Some(arg) = it.next() {
+    while let Some(a) = it.next() {
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
-        match arg.as_str() {
+        match a.as_str() {
             "--for" => what = value("--for")?,
-            "--session" => session = Some(value("--session")?),
             "--timeout" => timeout = Some(seconds("--timeout", &value("--timeout")?)?),
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if arg.is_none() => arg = Some(a.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
     if !matches!(what.as_str(), "idle" | "turn" | "permission" | "exit") {
         return Err(format!("--for idle|turn|permission|exit, not {what}"));
     }
-    let target = target.ok_or(USAGE)?;
+    let arg = arg.ok_or(USAGE)?;
     let hosts = discover();
-    let (host, matched) = resolve(&hosts, &target)?;
-    let session = session.or(matched);
+    let (host, session) = running_session(&hosts, &arg)?;
     let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
     // Subscribed before looking, so nothing happens unseen in between.
     conn.subscribe(&["turn_ended", "permission_request", "exited"])?;
-    let mine = |e: &Value| session.as_deref().is_none_or(|s| e["session"] == s);
-    let timed_out = || {
-        eprintln!("brnr: timed out");
-        Ok(ExitCode::from(TIMED_OUT))
+    let mine = |e: &Value| e["session"] == session.as_str();
+    // What ended the wait: printed as text, or with --json as itself.
+    let done = |what: &Value, text: String| {
+        if json_out {
+            return print_json(what);
+        }
+        println!("{text}");
+        Ok(())
     };
+    let idle_now = json!({ "event": "idle", "session": session });
     match what.as_str() {
         "permission" => {
             let pending = conn.call(json!({ "cmd": "pending" }))?;
             if let Some(p) = pending["pending"].as_array().into_iter().flatten().find(|p| mine(p)) {
-                println!("{}", describe_permission(p));
+                done(p, describe_permission(p))?;
                 return Ok(ExitCode::SUCCESS);
             }
         }
-        "idle" if idle(&mut conn, session.as_deref())? => {
-            println!("idle");
+        "idle" if idle(&mut conn, &session)? => {
+            done(&idle_now, "idle".into())?;
             return Ok(ExitCode::SUCCESS);
         }
         _ => {}
@@ -581,29 +660,32 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     loop {
         let e = match conn.next_event(deadline) {
             Ok(Some(e)) => e,
-            Ok(None) => return timed_out(),
+            Ok(None) => {
+                eprintln!("brnr: timed out");
+                return Ok(ExitCode::from(TIMED_OUT));
+            }
             Err(_) if what == "exit" => {
-                println!("exited");
+                done(&json!({ "event": "exited", "status": null }), "exited".into())?;
                 return Ok(ExitCode::SUCCESS);
             }
             Err(e) => return Err(e),
         };
         match (e["event"].as_str().unwrap_or_default(), what.as_str()) {
             ("exited", "exit") => {
-                println!("exited: {}", e["status"]);
+                done(&e, format!("exited: {}", e["status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("exited", _) => return Err("the agent exited".into()),
             ("permission_request", "permission") if mine(&e) => {
-                println!("{}", describe_permission(&e));
+                done(&e, describe_permission(&e))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("turn_ended", "turn") if mine(&e) => {
-                println!("turn ended: {}", e["stop_reason"].as_str().unwrap_or("error"));
+                done(&e, format!("turn ended: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                 return Ok(turn_status(&e));
             }
-            ("turn_ended", "idle") if mine(&e) && idle(&mut conn, session.as_deref())? => {
-                println!("idle: {}", e["stop_reason"].as_str().unwrap_or("error"));
+            ("turn_ended", "idle") if mine(&e) && idle(&mut conn, &session)? => {
+                done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                 return Ok(turn_status(&e));
             }
             _ => {}
@@ -611,82 +693,87 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// Whether the session (or every session) has no turn running and nothing
-/// held.
-fn idle(conn: &mut Conn, session: Option<&str>) -> Result<bool, String> {
+/// Whether the session has no turn running and nothing held.
+fn idle(conn: &mut Conn, session: &str) -> Result<bool, String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
     Ok(status["sessions"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|s| session.is_none_or(|id| s["session_id"] == id))
+        .filter(|s| s["session_id"] == session)
         .all(|s| s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0))
 }
 
 fn describe_permission(p: &Value) -> String {
-    format!("permission {}: {}", s(&p["request"]), s(&p["title"]))
+    format!("approval {}: {}", text(&p["request"]), text(&p["title"]))
 }
 
 // ---- cancel and queue ----------------------------------------------------
 
 pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut session = None;
-    let mut keep_held = false;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
+    let mut arg = None;
+    let (mut keep_held, mut json_out) = (false, false);
+    for a in args {
+        match a.as_str() {
             "--keep-held" => keep_held = true,
-            "--session" => session = Some(it.next().ok_or("--session needs an id")?.clone()),
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if arg.is_none() => arg = Some(a.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let target = target.ok_or(USAGE)?;
+    let arg = arg.ok_or(USAGE)?;
     let hosts = discover();
-    let (host, matched) = resolve(&hosts, &target)?;
-    let req = json!({ "cmd": "cancel", "session": session.or(matched), "keep_held": keep_held });
+    let (host, session) = running_session(&hosts, &arg)?;
+    let req = json!({ "cmd": "cancel", "session": session, "keep_held": keep_held });
     let response = call(host, &req)?;
-    println!("{} (session {})", s(&response["status"]), s(&response["session"]));
+    if json_out {
+        print_json(&response_json(response))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("{}", text(&response["status"]));
     for held in response["dropped"].as_array().into_iter().flatten() {
-        println!("dropped {}: {}", s(&held["message"]), s(&held["text"]));
+        println!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) fn queue(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut session = None;
+    let mut arg = None;
+    let mut json_out = false;
     let mut req = json!({ "cmd": "queue" });
     let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
+    while let Some(a) = it.next() {
+        match a.as_str() {
             "--drop" => req["drop"] = json!(it.next().ok_or("--drop needs a message id")?),
             "--clear" => req["clear"] = json!(true),
             "--clear-context" => req["clear_context"] = json!(true),
-            "--session" => session = Some(it.next().ok_or("--session needs an id")?.clone()),
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if arg.is_none() => arg = Some(a.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let target = target.ok_or(USAGE)?;
+    let arg = arg.ok_or(USAGE)?;
     let hosts = discover();
-    let (host, matched) = resolve(&hosts, &target)?;
-    req["session"] = json!(session.or(matched));
+    let (host, session) = running_session(&hosts, &arg)?;
+    req["session"] = json!(session);
     let response = call(host, &req)?;
+    if json_out {
+        print_json(&response_json(response))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     for held in response["dropped"].as_array().into_iter().flatten() {
-        println!("dropped {}: {}", s(&held["message"]), s(&held["text"]));
+        println!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
     }
     let held = response["held"].as_array().map_or(&[][..], Vec::as_slice);
     let context = response["context"].as_array().map_or(&[][..], Vec::as_slice);
     if held.is_empty() && context.is_empty() {
-        println!("nothing held (session {})", s(&response["session"]));
+        println!("nothing held");
     }
     for h in held {
         let how = if h["interrupt"] == true { "interrupt" } else { "after turn" };
-        println!("{} ({how}): {}", s(&h["message"]), s(&h["text"]));
+        println!("{} ({how}): {}", text(&h["message"]), text(&h["text"]));
     }
     for c in context {
         println!("context: {}", c.as_str().unwrap_or("?"));

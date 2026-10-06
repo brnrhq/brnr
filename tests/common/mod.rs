@@ -73,9 +73,9 @@ impl Env {
         out
     }
 
-    /// `brnr start --name <name> [args] -- fake_agent.py`, which must succeed.
-    pub fn start(&self, name: &str, args: &[&str]) -> Output {
-        let out = self.run(&start_args(name, args));
+    /// `brnr start [args] -- fake_agent.py`, which must succeed.
+    pub fn start(&self, args: &[&str]) -> Output {
+        let out = self.run(&start_args(args));
         assert!(out.status.success(), "start failed: {}", stderr(&out));
         out
     }
@@ -93,6 +93,16 @@ impl Env {
         let hosts = self.hosts();
         assert_eq!(hosts.len(), 1, "expected one host: {hosts:?}");
         hosts[0]["host_pid"].as_i64().unwrap() as i32
+    }
+
+    /// The one running process's pid, as `brnr ps` and `--pid` have it.
+    pub fn pid(&self) -> String {
+        self.host_pid().to_string()
+    }
+
+    /// `brnr stop` for the one running process, which must succeed.
+    pub fn stop(&self) {
+        self.ok(&["stop", &self.pid()]);
     }
 
     pub fn prompts(&self) -> Vec<String> {
@@ -159,8 +169,8 @@ impl Drop for Env {
     }
 }
 
-pub fn start_args<'a>(name: &'a str, args: &[&'a str]) -> Vec<&'a str> {
-    let mut all = vec!["start", "--name", name];
+pub fn start_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = vec!["start"];
     all.extend_from_slice(args);
     all.extend_from_slice(&["--", AGENT]);
     all

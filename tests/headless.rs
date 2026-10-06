@@ -1,5 +1,5 @@
-//! Headless sessions (`brnr start`, `brnr host`) against a fake ACP agent
-//! (fake_agent.py). Each test gets its own runtime, state and config
+//! Headless sessions (`brnr start`) and editors' (`brnr acp`) against a fake
+//! ACP agent (fake_agent.py). Each test gets its own runtime, state and config
 //! directories, and kills whatever it leaves running.
 
 mod common;
@@ -23,7 +23,7 @@ use serde_json::Value;
 fn abandoned_start_sends_no_prompt() {
     let env = Env::new("abandon").agent("NEW_DELAY", "2");
     let mut start = env
-        .brnr(&start_args("a", &["--prompt", "run the migration"]))
+        .brnr(&start_args(&["--prompt", "run the migration"]))
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -41,7 +41,7 @@ fn abandoned_start_sends_no_prompt() {
 fn start_timeout_stops_the_host() {
     let env = Env::new("timeout").agent("NEW_DELAY", "4");
     let out = env
-        .brnr(&start_args("a", &["--prompt", "run the migration"]))
+        .brnr(&start_args(&["--prompt", "run the migration"]))
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
@@ -54,19 +54,9 @@ fn start_timeout_stops_the_host() {
 }
 
 #[test]
-fn duplicate_name_is_refused() {
-    let env = Env::new("dup");
-    env.start("demo", &[]);
-    let out = env.run(&start_args("demo", &[]));
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("already running"), "{}", stderr(&out));
-    assert_eq!(env.hosts().len(), 1);
-}
-
-#[test]
 fn empty_prompt_is_refused() {
     let env = Env::new("empty");
-    let out = env.run(&start_args("a", &["--prompt", " "]));
+    let out = env.run(&start_args(&["--prompt", " "]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("empty"), "{}", stderr(&out));
     assert!(env.hosts().is_empty());
@@ -77,7 +67,7 @@ fn empty_prompt_is_refused() {
 #[test]
 fn prompt_is_not_on_the_command_line() {
     let env = Env::new("argv");
-    env.start("a", &["--prompt", "deploy with sk-SECRET-123"]);
+    env.start(&["--prompt", "deploy with sk-SECRET-123"]);
     let ps = Command::new("ps").args(["-o", "args=", "-p", &env.host_pid().to_string()]).output();
     let args = String::from_utf8_lossy(&ps.unwrap().stdout).into_owned();
     assert!(args.contains("brnr"), "ps: {args}");
@@ -90,7 +80,7 @@ fn prompt_is_not_on_the_command_line() {
 fn large_prompt_from_stdin() {
     let env = Env::new("bigprompt");
     let prompt = "x".repeat(300_000);
-    let out = env.run_with_stdin(&start_args("a", &["--prompt", "-"]), prompt.as_bytes());
+    let out = env.run_with_stdin(&start_args(&["--prompt", "-"]), prompt.as_bytes());
     assert!(out.status.success(), "start failed: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     assert_eq!(env.prompts()[0].len(), prompt.len());
@@ -103,15 +93,15 @@ fn large_prompt_from_stdin() {
 #[test]
 fn stalled_agent_can_still_be_stopped() {
     let env = Env::new("stall").agent("STALL", "1");
-    env.start("a", &[]);
+    env.start(&[]);
     let host = env.host_pid();
     let big = vec![b'x'; 1 << 20];
-    let out = env.run_with_stdin(&["send", "a", "-"], &big);
+    let out = env.run_with_stdin(&["send", "sess-1", "-"], &big);
     assert!(out.status.success(), "send: {}", stderr(&out));
 
-    let out = env.run(&["status", "a"]);
+    let out = env.run(&["status", "sess-1"]);
     assert!(out.status.success(), "status: {}", stderr(&out));
-    let out = env.run(&["stop", "a"]);
+    let out = env.run(&["stop", &host.to_string()]);
     assert!(out.status.success(), "stop: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
 }
@@ -120,9 +110,9 @@ fn stalled_agent_can_still_be_stopped() {
 #[test]
 fn stop_kills_the_agents_children() {
     let env = Env::new("stubborn").agent("STUBBORN", "all");
-    env.start("a", &[]);
+    env.start(&[]);
     let (host, child) = (env.host_pid(), env.child_pid());
-    assert!(env.run(&["stop", "a"]).status.success());
+    assert!(env.run(&["stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "agent's child survived");
 }
@@ -131,9 +121,9 @@ fn stop_kills_the_agents_children() {
 #[test]
 fn stop_kills_children_left_behind() {
     let env = Env::new("orphan").agent("STUBBORN", "child");
-    env.start("a", &[]);
+    env.start(&[]);
     let (host, child) = (env.host_pid(), env.child_pid());
-    assert!(env.run(&["stop", "a"]).status.success());
+    assert!(env.run(&["stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "agent's child survived");
 }
@@ -143,11 +133,11 @@ fn stop_kills_children_left_behind() {
 #[test]
 fn approve_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
-    env.start("a", &["--prompt", "edit it"]);
-    let waiting = || String::from_utf8_lossy(&env.run(&["pending", "a"]).stdout).contains("p1");
+    env.start(&["--prompt", "edit it"]);
+    let waiting = || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
     assert!(wait_for(Duration::from_secs(5), waiting), "no permission request");
-    assert!(env.run(&["stop", "a"]).status.success());
-    let out = env.run(&["approve", "a"]);
+    assert!(env.run(&["stop", &env.pid()]).status.success());
+    let out = env.run(&["approve", "sess-1", "p1"]);
     assert!(!out.status.success(), "approve succeeded during stop");
     assert!(stderr(&out).contains("no longer"), "{}", stderr(&out));
 }
@@ -157,16 +147,16 @@ fn approve_during_stop_fails() {
 #[test]
 fn held_messages_are_reported_on_exit() {
     let env = Env::new("held");
-    env.start("a", &["--prompt", "hang on"]);
+    env.start(&["--prompt", "hang on"]);
     let mut watch = env
-        .brnr(&["watch", "a", "--json", "--events", "exited"])
+        .brnr(&["watch", "sess-1", "--json", "--events", "exited"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    let out = env.run(&["send", "a", "--after-turn", "later"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (session sess-1, message m2)");
-    assert!(env.run(&["stop", "a"]).status.success());
+    let out = env.run(&["send", "sess-1", "--after-turn", "later"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (message m2)");
+    assert!(env.run(&["stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let line = BufReader::new(watch.stdout.take().unwrap()).lines().next();
@@ -184,10 +174,10 @@ fn held_messages_are_reported_on_exit() {
 #[test]
 fn interrupts_keep_their_order() {
     let env = Env::new("interrupt").agent("CANCEL_DELAY", "1");
-    env.start("a", &["--prompt", "hang on"]);
+    env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     for text in ["first", "second"] {
-        let out = env.run(&["send", "a", "--interrupt", text]);
+        let out = env.run(&["send", "sess-1", "--interrupt", text]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3), "{:?}", env.prompts());
@@ -202,16 +192,16 @@ fn interrupts_keep_their_order() {
 fn slow_watcher_is_disconnected() {
     // About 30 MB of events: more than a peer's queue holds.
     let env = Env::new("slowwatch").agent("FLOOD", "40000");
-    env.start("a", &[]);
+    env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--events", "all"])
+        .brnr(&["watch", "sess-1", "--events", "all"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
     unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
-    assert!(env.run(&["send", "a", "go"]).status.success());
+    assert!(env.run(&["send", "sess-1", "go"]).status.success());
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
     sleep(Duration::from_secs(3));
     unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
@@ -222,7 +212,7 @@ fn slow_watcher_is_disconnected() {
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(err.contains("closed the connection"), "{err}");
     // It may still be working through the burst; it must get there.
-    let answers = || env.run(&["status", "a"]).status.success();
+    let answers = || env.run(&["status", "sess-1"]).status.success();
     assert!(wait_for(Duration::from_secs(30), answers), "host stopped answering");
 }
 
@@ -231,9 +221,9 @@ fn slow_watcher_is_disconnected() {
 #[test]
 fn reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
-    env.start("a", &[]);
+    env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--events", "all"])
+        .brnr(&["watch", "sess-1", "--events", "all"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -241,10 +231,10 @@ fn reading_watcher_stays_connected() {
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
     sleep(Duration::from_millis(300));
-    assert!(env.run(&["send", "a", "go"]).status.success());
+    assert!(env.run(&["send", "sess-1", "go"]).status.success());
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
     sleep(Duration::from_secs(2));
-    assert!(env.run(&["stop", "a"]).status.success());
+    assert!(env.run(&["stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let mut err = String::new();
@@ -258,9 +248,9 @@ fn reading_watcher_stays_connected() {
 #[test]
 fn huge_message_reaches_watchers() {
     let env = Env::new("huge");
-    env.start("a", &[]);
+    env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--json", "--events", "agent_message"])
+        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -268,15 +258,15 @@ fn huge_message_reaches_watchers() {
     let first = std::thread::spawn(move || BufReader::new(stdout).lines().next());
     sleep(Duration::from_millis(300));
     let size = 20_000_000;
-    assert!(env.run(&["send", "a", &format!("big {size}")]).status.success());
+    assert!(env.run(&["send", "sess-1", &format!("big {size}")]).status.success());
     let line = first.join().unwrap().expect("no message").unwrap();
     let event: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["text"].as_str().unwrap().len(), size);
 
-    let out = env.run(&["status", "a", "--json"]);
+    let out = env.run(&["status", "sess-1", "--json"]);
     assert!(out.status.success(), "status: {}", stderr(&out));
     let status: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let preview = status["sessions"][0]["last_message"].as_str().unwrap();
+    let preview = status["last_message"].as_str().unwrap();
     assert!(preview.chars().count() <= 4001, "status quotes {} chars", preview.chars().count());
     let _ = watch.kill();
     let _ = watch.wait();
@@ -303,7 +293,7 @@ fn adapters_next_to_a_symlinked_brnr() {
     assert!(doctor.contains(&want), "{doctor}");
 
     let args =
-        ["start", "--name", "a", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
+        ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
@@ -314,9 +304,9 @@ fn adapters_next_to_a_symlinked_brnr() {
 #[test]
 fn big_message_to_a_lagging_watcher() {
     let env = Env::new("lagbig");
-    env.start("a", &[]);
+    env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--json", "--events", "agent_message"])
+        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -324,7 +314,7 @@ fn big_message_to_a_lagging_watcher() {
     sleep(Duration::from_millis(300));
     unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
     for size in [6_000_000, 12_000_000] {
-        let out = env.run(&["send", "a", "--wait", &format!("big {size}")]);
+        let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
@@ -344,10 +334,10 @@ fn big_message_to_a_lagging_watcher() {
 #[test]
 fn every_watcher_sees_the_exit() {
     let env = Env::new("exitall");
-    env.start("a", &[]);
+    env.start(&[]);
     let watchers: Vec<_> = (0..8)
         .map(|_| {
-            env.brnr(&["watch", "a", "--json", "--events", "exited"])
+            env.brnr(&["watch", "sess-1", "--json", "--events", "exited"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -355,7 +345,7 @@ fn every_watcher_sees_the_exit() {
         })
         .collect();
     sleep(Duration::from_millis(500));
-    assert!(env.run(&["stop", "a"]).status.success());
+    assert!(env.run(&["stop", &env.pid()]).status.success());
     for watch in watchers {
         let out = watch.wait_with_output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
@@ -367,10 +357,10 @@ fn every_watcher_sees_the_exit() {
 #[test]
 fn unresponsive_host_is_reported() {
     let env = Env::new("unresp");
-    env.start("a", &[]);
+    env.start(&[]);
     let host = env.host_pid();
     unsafe { libc::kill(host, libc::SIGSTOP) };
-    let out = env.run(&["send", "a", "hello"]);
+    let out = env.run(&["send", "sess-1", "hello"]);
     unsafe { libc::kill(host, libc::SIGCONT) };
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
@@ -381,7 +371,7 @@ fn unresponsive_host_is_reported() {
 #[test]
 fn transcripts_are_private() {
     let env = Env::new("perms");
-    env.start("a", &["--prompt", "hello"]);
+    env.start(&["--prompt", "hello"]);
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     let home = env.dir.join("home");
     let mut checked = 0;
@@ -415,31 +405,26 @@ fn runtime_dir_symlink_is_refused() {
     fs::create_dir(&target).unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(&target, env.dir.join("run")).unwrap();
-    let out = env.run(&start_args("a", &[]));
+    let out = env.run(&start_args(&[]));
     assert!(!out.status.success(), "started in a symlinked runtime dir");
     assert!(fs::read_dir(&target).unwrap().next().is_none(), "wrote into the symlink target");
 }
 
 /// `brnr acp` is what an editor runs as its agent: ACP over stdio, with the
-/// host reachable meanwhile.
+/// session reachable meanwhile. When the editor goes, the agent goes too.
 #[test]
 fn acp_is_what_an_editor_runs() {
     use std::io::Write;
-    let cmd = "acp";
-    let env = Env::new(&format!("ed-{cmd}"));
-    let mut editor = env
-        .brnr(&[cmd, "--name", "ed", "--", AGENT])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let env = Env::new("ed-acp");
+    let mut editor =
+        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let mut answer = |id: u64| -> Value {
         let mut line = String::new();
         loop {
             line.clear();
-            assert!(from_agent.read_line(&mut line).unwrap() > 0, "{cmd}: no answer to {id}");
+            assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
             let msg: Value = serde_json::from_str(&line).unwrap();
             if msg["id"] == id {
                 return msg;
@@ -448,50 +433,20 @@ fn acp_is_what_an_editor_runs() {
     };
     let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
     writeln!(to_agent, "{initialize}").unwrap();
-    assert_eq!(answer(1)["result"]["protocolVersion"], 1, "{cmd}");
+    assert_eq!(answer(1)["result"]["protocolVersion"], 1);
     let new = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
         env.dir.display().to_string()
     );
     writeln!(to_agent, "{new}").unwrap();
-    assert_eq!(answer(2)["result"]["sessionId"], "sess-1", "{cmd}");
-    let list = env.ok(&["list"]);
-    assert!(list.contains("ed") && list.contains("editor"), "{cmd}: {list}");
-    drop(to_agent); // The editor goes away.
-    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "{cmd} didn't exit");
-}
-
-/// The host taking over from an editor is in the session's transcript, not
-/// only in the host log: `brnr log` shows it.
-#[test]
-fn taking_over_is_in_the_session_log() {
-    use std::io::Write;
-    let env = Env::new("takeover");
-    let mut editor = env
-        .brnr(&["acp", "--name", "ed", "--on-disconnect", "headless", "--", AGENT])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut to_agent = editor.stdin.take().unwrap();
-    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
-    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
-    let new = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
-        env.dir.display().to_string()
-    );
-    writeln!(to_agent, "{initialize}\n{new}").unwrap();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no session");
-        if serde_json::from_str::<Value>(&line).unwrap()["id"] == 2 {
-            break;
-        }
-    }
-    drop(to_agent); // The editor goes away; the host carries on.
+    assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
+    assert!(env.ok(&["ps"]).contains("editor"));
+    assert!(env.ok(&["list"]).contains("sess-1"));
+    let host = env.host_pid();
+    drop(to_agent); // The editor goes away, and the agent with it.
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
-    let took_over = || env.ok(&["log", "ed"]).contains("owner -> host (");
-    assert!(wait_for(Duration::from_secs(10), took_over), "{}", env.ok(&["log", "ed"]));
-    env.ok(&["stop", "ed"]);
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
+    assert!(env.ok(&["log", "sess-1"]).contains("title: Fake session"));
+    let err = env.fails(&["acp", "--on-disconnect", "headless", "--", AGENT]);
+    assert!(err.contains("unknown option: --on-disconnect"), "{err}");
 }

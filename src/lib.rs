@@ -1,5 +1,5 @@
-//! An ACP proxy whose agent outlives the editor connection, with a side
-//! channel for injecting messages.
+//! An ACP proxy with a side channel: brnr's other commands reach the
+//! agent's sessions while it runs, from an editor or headless.
 //!
 //! ```text
 //! editor ──stdio── brnr acp ──socketpair── brnr host ──pipes── agent

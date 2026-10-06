@@ -26,7 +26,7 @@
 use std::collections::VecDeque;
 use std::mem::take;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
@@ -88,6 +88,12 @@ pub(super) struct Session {
     pub(super) turn_started: Option<Instant>,
     /// `session/load` is replaying history (see the module docs).
     pub(super) replaying: bool,
+    /// Since when nothing has been running, held or waiting for an answer
+    /// (see `fire_idle_timers`); `idle_done` once its time ran out.
+    idle_since: Option<Instant>,
+    idle_done: bool,
+    /// When it last had an event, or opened.
+    pub(super) last_active: SystemTime,
 }
 
 /// A request whose response creates or ends a session.
@@ -456,13 +462,6 @@ impl Host {
 
     // ---- the host as the agent's client --------------------------------
 
-    /// The editor has gone: whatever it left unanswered is now the host's.
-    pub(super) fn take_over_agent_requests(&mut self) {
-        for req in take(&mut self.agent_requests) {
-            self.answer_as_client(req);
-        }
-    }
-
     fn answer_as_client(&mut self, mut req: AgentRequest) {
         match req.method.as_str() {
             "session/request_permission" => {
@@ -472,7 +471,7 @@ impl Host {
                 if matches!(rule, Permissions::Ask) {
                     req.deadline = self.permission_timeout.map(|t| Instant::now() + t);
                 }
-                let event = permission_event(&req, "host");
+                let event = permission_event(&req, "headless");
                 self.agent_requests.push(req);
                 self.emit(event);
                 let policy = match rule {
@@ -634,7 +633,7 @@ impl Host {
     }
 
     /// After a prompt is answered: once the session is idle, send the next
-    /// held message, or stop if the session is done and that was asked for.
+    /// held message.
     fn next_turn(&mut self, session: &str) {
         let Some(i) = self.find(session) else { return };
         let s = &mut self.sessions[i];
@@ -642,14 +641,69 @@ impl Host {
             && let Some(held) = s.held.pop_front()
         {
             s.interrupts = s.interrupts.saturating_sub(1);
-            return self.send_prompt(i, held);
-        }
-        let idle = self.sessions.iter().all(|s| s.prompts.is_empty() && s.held.is_empty());
-        if self.stop_when_idle && idle && !self.editor_attached() {
-            self.sink.note(None, json!({ "event": "stopping-when-idle" }));
-            self.begin_stop();
+            self.send_prompt(i, held);
         }
     }
+
+    /// Whether session `i` has nothing running, held or waiting for an
+    /// answer.
+    pub(super) fn is_idle(&self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        s.prompts.is_empty()
+            && s.held.is_empty()
+            && !self.agent_requests.iter().any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
+    }
+
+    /// `stop_when_idle`: a headless session idle that long closes, and the
+    /// process stops with its last session. Idle time counts from the start
+    /// too, so a session started without a prompt doesn't run forever.
+    pub(super) fn fire_idle_timers(&mut self, now: Instant) {
+        let Some(limit) = self.stop_when_idle else { return };
+        if self.editor_attached() || !self.started_ok || self.stop_requested {
+            return;
+        }
+        for i in 0..self.sessions.len() {
+            let idle = self.is_idle(i);
+            let s = &mut self.sessions[i];
+            if !idle {
+                (s.idle_since, s.idle_done) = (None, false);
+            } else if s.idle_since.is_none() {
+                s.idle_since = Some(now);
+            }
+        }
+        let Some(i) = (0..self.sessions.len()).find(|&i| {
+            let s = &self.sessions[i];
+            !s.idle_done && s.idle_since.is_some_and(|t| now >= t + limit)
+        }) else {
+            return;
+        };
+        self.sessions[i].idle_done = true;
+        let session = self.sessions[i].id.clone();
+        self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
+        if self.sessions.len() == 1 {
+            self.begin_stop();
+        } else if self.capabilities()["close"] == true {
+            // As `brnr close` would, with nobody to answer (peer 0).
+            let params = json!({ "sessionId": session });
+            let op = super::requests::PeerOp::Close { session };
+            self.peer_op(0, None, op, "session/close", params);
+        }
+    }
+
+    /// The next idle session's time running out, for the event loop.
+    pub(super) fn next_idle_deadline(&self) -> Option<Instant> {
+        let limit = self.stop_when_idle?;
+        if self.editor_attached() || !self.started_ok || self.stop_requested {
+            return None;
+        }
+        // A session that just went idle has no `idle_since` until the loop
+        // comes round; this wakes it then.
+        (0..self.sessions.len())
+            .filter(|&i| !self.sessions[i].idle_done && self.is_idle(i))
+            .map(|i| self.sessions[i].idle_since.map_or_else(Instant::now, |t| t + limit))
+            .min()
+    }
+
 
     /// A new `m<n>` message id.
     pub(super) fn message_id(&mut self) -> String {
@@ -685,6 +739,7 @@ impl Host {
         });
         let prompt = Prompt { id: key.clone(), injected: true, message: Some(held.id.clone()) };
         self.start_turn(i, prompt);
+        self.started_ok = true;
         self.prompt_session.insert(key.clone(), session.clone());
         self.client_requests.insert(key.clone(), Some(session.clone()));
         let text = prompt_text(Some(&json!(blocks)));
@@ -803,6 +858,9 @@ impl Host {
             state: SessionState::default(),
             turn_started: None,
             replaying: false,
+            idle_since: None,
+            idle_done: false,
+            last_active: SystemTime::now(),
         });
         self.sessions.len() - 1
     }
