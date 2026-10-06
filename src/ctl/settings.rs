@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Host, USAGE, discover, print_table, request_timeout, resolve};
+use super::{Host, USAGE, discover, inactive_sessions, print_table, request_timeout, resolve};
 
 /// The agent may take a while to switch model or fork a session.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -201,7 +201,18 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let [target] = args else { return Err(USAGE.to_owned()) };
     let hosts = discover();
     let (host, _) = resolve(&hosts, target)?;
-    let mut rows = vec![["SESSION", "UPDATED", "TITLE", "CWD"].map(String::from)];
+    // What brnr knows of each: running, inactive (a transcript), or nothing.
+    let running: Vec<(&str, &str)> = hosts
+        .iter()
+        .flat_map(|h| h.sessions().iter().map(move |x| (s(&x["session_id"]), h.id())))
+        .collect();
+    let past = inactive_sessions(&hosts);
+    let brnr = |id: &str| match running.iter().find(|(r, _)| *r == id) {
+        Some((_, host)) => format!("running ({host})"),
+        None if past.iter().any(|p| p["session_id"] == id) => "inactive".to_owned(),
+        None => "-".to_owned(),
+    };
+    let mut rows = vec![["SESSION", "UPDATED", "BRNR", "TITLE", "CWD"].map(String::from)];
     let mut cursor: Option<String> = None;
     loop {
         let req = json!({ "cmd": "sessions", "cursor": cursor });
@@ -209,9 +220,11 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
         for s in response["sessions"].as_array().into_iter().flatten() {
             let updated = s["updatedAt"].as_str().unwrap_or("");
             let updated = updated.get(..19).unwrap_or(updated).replace('T', " ");
+            let id = s["sessionId"].as_str().unwrap_or("?");
             rows.push([
-                s["sessionId"].as_str().unwrap_or("?").to_owned(),
+                id.to_owned(),
                 updated,
+                brnr(id),
                 s["title"].as_str().unwrap_or("-").to_owned(),
                 s["cwd"].as_str().unwrap_or("?").to_owned(),
             ]);

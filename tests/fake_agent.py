@@ -156,7 +156,8 @@ for line in sys.stdin:
         result(mid, {})
     elif method == "session/list":
         old = {"sessionId": "old-1", "cwd": params.get("cwd"), "title": "An old session", "updatedAt": "2026-10-01T10:00:00Z"}
-        result(mid, {"sessions": [old]})
+        live = [{"sessionId": f"sess-{n}", "cwd": params.get("cwd")} for n in range(1, sessions + 1)]
+        result(mid, {"sessions": [old] + live})
     elif method == "session/set_mode":
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})

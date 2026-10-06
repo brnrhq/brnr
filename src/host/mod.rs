@@ -48,7 +48,7 @@ use crate::signals;
 use crate::spawn;
 
 use acp::{AgentRequest, Pending, Session};
-pub use control::check_bridge;
+pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
 use requests::{HostRequest, SetupStep};
 
@@ -791,14 +791,9 @@ impl Host {
                 s.held.iter().map(|h| json!({ "session": s.id, "message": h.id, "text": h.text }))
             })
             .collect();
-        let mut event = json!({ "event": "exited", "status": status, "undelivered": undelivered });
-        self.emit(event.clone());
-        event["ts"] = json!(log::rfc3339(SystemTime::now()));
-        event["host_id"] = json!(self.host_id);
-        // Each session's transcript says how it ended, too.
-        for s in &self.sessions {
-            self.sink.note(Some(&s.id), event.clone());
-        }
+        self.emit_to_sessions(
+            json!({ "event": "exited", "status": status, "undelivered": undelivered }),
+        );
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.
@@ -950,9 +945,7 @@ impl Host {
         self.sink.set_proxy(None);
         self.info["proxy_pid"] = Value::Null;
         write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
-        self.sink
-            .note(None, json!({ "event": "owner-changed", "owner": "host", "reason": reason }));
-        self.emit(json!({ "event": "owner_changed", "owner": "host", "reason": reason }));
+        self.emit_to_sessions(json!({ "event": "owner_changed", "owner": "host", "reason": reason }));
         self.take_over_agent_requests();
     }
 

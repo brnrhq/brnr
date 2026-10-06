@@ -376,3 +376,84 @@ metadata and transcripts).
 Until 1.0.0, a change of name, flag, format or behaviour is made outright:
 no aliases for old names, no shims for old formats. Release notes say what
 changed. From 1.0.0 on, compatibility is kept within a major version.
+
+## 34. `log` takes `watch`'s flags; `--events` alone chooses events
+
+`log --raw` printed the transcript's records as stored, and `--json` the
+host events in them, so the two didn't go together, and `--raw` meant
+something else than for `watch` (the ACP messages too). `log` had no
+`--events`.
+
+- **A. Keep the record dump; add `--events` over the records.** `--raw`
+  keeps two meanings.
+- **B. `log` reads a record as the event `watch` would have shown:** an ACP
+  message becomes an `acp` event. `--events` and `--json` then mean the same
+  for both, and `log --json` is what a watcher got live.
+
+**Chosen: B.** The stored records are still in the file (`brnr list --json`
+names it); `log` no longer prints them as they are (see 33).
+
+That left `--raw` meaning "every event, `acp` included", which is a choice
+of events: it was `--events all` under another name (the host's `subscribe`
+already took `"all"`), and was ignored next to `--events`. So `--raw` is
+gone and `--events` takes `all`.
+
+`--thoughts` was the same kind of flag: thoughts were always chosen, and the
+text output dropped them without it, so `--events agent_thought` alone
+printed nothing, and `--json` had them where text didn't. Now it is gone
+too, and `--events` alone chooses: an event chosen is shown. Without
+`--events`, `watch` and `log` show every event but the quiet ones, `acp`
+and `agent_thought` (`QUIET`, in text and JSON alike, and in `brnr host`'s
+foreground output), and `default` names that set, so `--events
+default,agent_thought` adds the thoughts. Bridges and the host's
+`subscribe` keep their own default: every event but `acp`.
+
+`notify` reads `--events` the same way (`events_arg`): names, `all`, and
+`default`, which is each command's own default (for `notify`,
+`permission_request`, `turn_ended`, `exited`), and unknown names fail in
+the CLI, before connecting, with the same message.
+
+## 35. Host-wide events in every session's transcript
+
+`log` reads one file, the session's. Events with no session went only to the
+host log, so `log` never showed `owner_changed` (the host taking over from
+the editor, which decides who answers permissions), while `watch` did.
+`exited` was already copied into each session's file.
+
+- **A. `log` also reads the host log** for the session's time span. Two
+  files to merge and to follow, and the host log has ACP and stderr that
+  aren't the session's.
+- **B. The host writes such events into every session's file too**, as it
+  did for `exited` (`emit_to_sessions`).
+
+**Chosen: B.** `log` keeps to one file. The host log's other records (ACP
+before a session exists, agent stderr) stay there. The host log also had the
+take-over twice, as a hyphenated `owner-changed` note and as the event; the
+note is gone, and the one record of a headless start is `owner_changed` now.
+
+## 36. `list` and `sessions` stay apart; `--resume` takes the agent's ids
+
+`brnr list` is brnr's view of the machine: running hosts and the sessions it
+has transcripts of, in any cwd, with no agent to ask. `brnr sessions` asks
+one host's agent (`session/list`, in that host's cwd), which knows sessions
+started outside brnr.
+
+- **A. One command.** `list` would have to start an agent for every agent
+  and cwd to ask it, and not every agent can list.
+- **B. Keep both, and join them where they meet.** `sessions` has a BRNR
+  column (`running (<host>)`, `inactive`, `-`), and `start --resume` takes
+  an id brnr has no transcript of: it goes to the agent as given, in
+  `--cwd` (or here), with the agent after `--` (or the profile's). Before,
+  `sessions` listed sessions `--resume` refused.
+
+**Chosen: B.** An id brnr does know still brings its cwd, agent and name
+(see 10); a prefix only matches what brnr knows.
+
+The usage groups the rest by what they are about: "chat" (`send`, `wait`,
+`cancel`, `queue`), "approvals", "sessions" (`list`, `status`, `sessions`,
+`fork`, `close`: brnr's sessions and the agent's, side by side), "events"
+(`log`, `watch`, `notify`: the events so far, live, and a command per
+event), "settings" (`mode`, `model`, `config`, `commands`) and "brnr"
+(`doctor`, `--version`), and says once, at the end, what a `<target>` and
+`--session` are. `stop` is with the commands that start a host (`acp`,
+`start`, `host`): it ends one, however it started.

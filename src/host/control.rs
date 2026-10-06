@@ -80,6 +80,11 @@ pub const EVENTS: &[&str] = &[
     "acp",
 ];
 
+/// Events brnr leaves out of what it shows unless asked for by name: the
+/// ACP messages and the agent's thoughts. `watch` and `log` without
+/// `--events`, and `brnr host` in the foreground.
+pub const QUIET: &[&str] = &["acp", "agent_thought"];
+
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
 
@@ -281,16 +286,27 @@ impl Host {
         }
     }
 
+    /// An event of the host's own (no session) that happened to every
+    /// session too, such as the agent exiting: emitted, and recorded in each
+    /// session's transcript as well as the host log.
+    pub(super) fn emit_to_sessions(&mut self, event: Value) {
+        let event = self.emit(event);
+        for s in &self.sessions {
+            self.sink.note(Some(&s.id), event.clone());
+        }
+    }
+
     /// Sends `event` to every subscribed peer that wants it, and (but for
     /// `acp`, which is the raw transcript already) records it in the
-    /// transcript, where `brnr log` reads it back.
-    pub(super) fn emit(&mut self, mut event: Value) {
+    /// transcript, where `brnr log` reads it back. Returns it as sent.
+    pub(super) fn emit(&mut self, mut event: Value) -> Value {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
         if name != "acp" {
             self.sink.note(event["session"].as_str(), event.clone());
             if self.show_events
+                && !QUIET.contains(&name.as_str())
                 && let Some(text) = render::event(&event, &render::Options::foreground())
             {
                 println!("{text}");
@@ -302,6 +318,7 @@ impl Host {
         for peer in peers {
             self.send_to(peer, line.clone());
         }
+        event
     }
 
     /// Queues `line` for `peer`, dropping a peer that has gone or fallen

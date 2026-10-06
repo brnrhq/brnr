@@ -204,7 +204,7 @@ fn slow_watcher_is_disconnected() {
     let env = Env::new("slowwatch").agent("FLOOD", "40000");
     env.start("a", &[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--raw"])
+        .brnr(&["watch", "a", "--events", "all"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -233,7 +233,7 @@ fn reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
     env.start("a", &[]);
     let mut watch = env
-        .brnr(&["watch", "a", "--raw"])
+        .brnr(&["watch", "a", "--events", "all"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -459,4 +459,39 @@ fn acp_is_what_an_editor_runs() {
     assert!(list.contains("ed") && list.contains("editor"), "{cmd}: {list}");
     drop(to_agent); // The editor goes away.
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "{cmd} didn't exit");
+}
+
+/// The host taking over from an editor is in the session's transcript, not
+/// only in the host log: `brnr log` shows it.
+#[test]
+fn taking_over_is_in_the_session_log() {
+    use std::io::Write;
+    let env = Env::new("takeover");
+    let mut editor = env
+        .brnr(&["acp", "--name", "ed", "--on-disconnect", "headless", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{initialize}\n{new}").unwrap();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no session");
+        if serde_json::from_str::<Value>(&line).unwrap()["id"] == 2 {
+            break;
+        }
+    }
+    drop(to_agent); // The editor goes away; the host carries on.
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
+    let took_over = || env.ok(&["log", "ed"]).contains("owner -> host (");
+    assert!(wait_for(Duration::from_secs(10), took_over), "{}", env.ok(&["log", "ed"]));
+    env.ok(&["stop", "ed"]);
 }

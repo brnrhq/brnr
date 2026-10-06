@@ -84,8 +84,8 @@ brnr send demo --wait "what did you change?"              # prints the reply
 brnr send demo --file src/api.rs --image screenshot.png "why does this look wrong?"
 brnr cancel demo                   # stop the running turn (held messages are dropped and listed)
 brnr queue demo                    # held messages and context; --drop m3, --clear
-brnr watch demo                    # live: messages, tools, plan, permissions (--raw: ACP too)
-brnr log demo                      # the story so far; --last 2, --follow, --thoughts, --json
+brnr watch demo                    # live: messages, tools, plan, permissions (--events all: thoughts, ACP too)
+brnr log demo                      # the story so far; --last 2, --follow, and watch's flags
 brnr stop demo                     # stdin closed, then SIGTERM, then SIGKILL
 ```
 
@@ -120,22 +120,38 @@ brnr show demo                     # one in full: the command, paths, the diff
 brnr approve demo                  # or: brnr deny demo p2, --option <id>
 ```
 
-### Settings and sessions
+### Settings
+
+Each is the session's (`--session <id>` when the host has several).
 
 ```sh
-brnr mode demo [plan]              # list or set the agent's mode
+brnr mode demo [plan]              # list or set the session's mode
 brnr model demo [<model>]          # list or set the model
 brnr config demo [effort=high]     # any of the agent's config options
 brnr commands demo                 # the agent's slash commands (send them as text)
-brnr sessions demo                 # the agent's own list of sessions
+```
+
+### Sessions
+
+```sh
 brnr fork demo                     # a copy of the session, in the same host
 brnr close demo --session <id>     # close one; a host with none left stops
+brnr sessions demo                 # the agent's own list, and what brnr knows of each
+brnr start --resume <id> -- brnr-claude-adapter    # any of them, even one brnr never saw
 ```
+
+`brnr sessions` asks the host's agent (`session/list`, in the host's cwd), so
+it includes sessions started outside brnr; its BRNR column says which are
+running, and in which host, and which brnr has a transcript of (`inactive`).
+`--resume` takes an id or prefix from `brnr list --inactive`, or any id the
+agent knows, which it resumes in `--cwd` (or here) with the agent after `--`
+(or the profile's).
 
 ### Notifications
 
 `brnr notify` runs a command for each event (by default `permission_request`,
-`turn_ended` and `exited`). The event is in its environment (`BRNR_EVENT`,
+`turn_ended` and `exited`; `--events` as for `watch`, where `default` means
+these three). The event is in its environment (`BRNR_EVENT`,
 `BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION`, `BRNR_REQUEST`,
 `BRNR_HOST`) and, as JSON, on its stdin; nothing is put on its command line, so
 what the agent writes can't become arguments.
@@ -248,7 +264,9 @@ by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's file has the
 same folder and name as Claude Code's own transcript. Every record carries
 `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining. Besides the raw
 ACP, a session's file has the host's events (the same ones bridges get), which
-is what `brnr log` reads. Transcripts hold prompts and tool output, so brnr
+is what `brnr log` reads; the host's own events that concern every session
+(the host taking over from the editor, the agent exiting) are in each of them
+as well as in the host log. Transcripts hold prompts and tool output, so brnr
 creates them readable only by you.
 
 ## Adapters
