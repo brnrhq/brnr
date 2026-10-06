@@ -12,8 +12,9 @@
 //! - `BRNR_HOST`, `BRNR_HOST_ID`.
 //!
 //! Without a target it notifies for `$BRNR_HOST`, so it works as a bridge in
-//! a profile. Default events: `permission_request`, `turn_ended`, `exited`.
-//! It exits when the host does.
+//! a profile. `--events` is read as for `watch`, but its default (and
+//! `default`) is `permission_request`, `turn_ended`, `exited`. It exits when
+//! the host does.
 
 use std::collections::HashMap;
 use std::env;
@@ -26,21 +27,19 @@ use serde_json::Value;
 use brnr::render;
 
 use super::talk::Conn;
-use super::{USAGE, discover, resolve};
+use super::{USAGE, discover, events_arg, resolve};
 
 const DEFAULT_EVENTS: &[&str] = &["permission_request", "turn_ended", "exited"];
 
 pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     let mut target = None;
-    let mut events: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
+    let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
+    let mut events = default.clone();
     let mut command = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--events" => {
-                let list = it.next().ok_or("--events needs a list")?;
-                events = list.split(',').map(|e| e.trim().to_owned()).collect();
-            }
+            "--events" => events = events_arg(it.next(), &default)?,
             "--" => {
                 command = it.by_ref().cloned().collect();
                 break;
@@ -79,7 +78,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
             Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
         })
         .collect();
-    let options = render::Options { session: false, thoughts: true, time: false };
+    let options = render::Options { session: false, time: false };
     loop {
         let e = match conn.next_event(None) {
             Ok(Some(e)) => e,

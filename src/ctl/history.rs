@@ -2,12 +2,13 @@
 //! session live, from the events the host recorded in it.
 //!
 //! ```text
-//! brnr log <target> [--session <id>] [--last <n>] [--follow] [--thoughts] [--raw | --json]
+//! brnr log <target> [--session <id>] [--last <n>] [--follow] [--events <a,b,...>] [--json]
 //! ```
 //!
-//! `--last <n>` starts at the n-th last message sent to the agent;
-//! `--follow` keeps printing until the session's host exits; `--raw` prints
-//! the transcript's records as they are, ACP included.
+//! It starts at the beginning of the session, or with `--last <n>` at the
+//! n-th last message sent to the agent; `--follow` keeps printing until the
+//! session's host exits. `--events` and `--json` mean what they do for
+//! `watch`; an ACP message in the transcript is an `acp` event.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -16,12 +17,12 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use brnr::host::alive;
 use brnr::render;
 
-use super::{USAGE, discover, inactive_sessions, resolve};
+use super::{USAGE, default_events, discover, events_arg, inactive_sessions, resolve};
 
 const POLL: Duration = Duration::from_millis(200);
 
@@ -29,7 +30,8 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     let mut target = None;
     let mut session = None;
     let mut last = None;
-    let (mut follow, mut thoughts, mut raw, mut json_out) = (false, false, false, false);
+    let mut events = default_events();
+    let (mut follow, mut json_out) = (false, false);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -39,20 +41,17 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
                 last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
             }
             "--follow" | "-f" => follow = true,
-            "--thoughts" => thoughts = true,
-            "--raw" => raw = true,
+            "--events" => events = events_arg(it.next(), &default_events())?,
             "--json" => json_out = true,
             flag if flag.starts_with('-') => return Err(format!("unknown option: {flag}")),
             _ if target.is_none() => target = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
-    if raw && json_out {
-        return Err("--raw and --json don't go together".into());
-    }
+    let wanted = |e: &Value| events.iter().any(|name| e["event"] == name.as_str());
+    let show = Show { options: render::Options { session: false, time: true }, json_out };
     let target = target.ok_or(USAGE)?;
     let (path, host_pid) = transcript(&target, session.as_deref())?;
-    let options = render::Options { session: false, thoughts, time: true };
     let mut file =
         BufReader::new(File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?);
 
@@ -71,10 +70,11 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     let mut out = io::stdout().lock();
     let mut shown = 0;
     for line in &records[from..] {
-        shown += print(&mut out, line, &options, raw, json_out)?;
+        shown += show.print(&mut out, record_event(line).filter(wanted))?;
     }
-    if shown == 0 && !records.is_empty() && !raw && !follow {
-        eprintln!("brnr: no events in {} (an older brnr wrote it); try --raw", path.display());
+    let no_events = !records.iter().any(|l| record_event(l).is_some_and(|e| e["event"] != "acp"));
+    if shown == 0 && no_events && !records.is_empty() && !follow {
+        eprintln!("brnr: no events in {} (an older brnr wrote it); try --events acp", path.display());
     }
     if !follow {
         return Ok(ExitCode::SUCCESS);
@@ -83,8 +83,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
         let mut more = Vec::new();
         read_lines(&mut file, &mut partial, &mut more)?;
         for line in &more {
-            print(&mut out, line, &options, raw, json_out)?;
-            if record_event(line).is_some_and(|e| e["event"] == "exited") {
+            let event = record_event(line);
+            let exited = event.as_ref().is_some_and(|e| e["event"] == "exited");
+            show.print(&mut out, event.filter(wanted))?;
+            if exited {
                 return Ok(ExitCode::SUCCESS);
             }
         }
@@ -148,35 +150,44 @@ fn read_lines(
     }
 }
 
-/// A host event recorded in the transcript (see host/control.rs, `emit`).
+/// A transcript record as the event `watch` would have shown: a host event
+/// (see host/control.rs, `emit`), or an ACP message as an `acp` event.
 fn record_event(line: &str) -> Option<Value> {
-    let record: Value = serde_json::from_str(line).ok()?;
-    let event = record.get("event")?;
-    event["event"].is_string().then(|| event.clone())
+    let mut record: Value = serde_json::from_str(line).ok()?;
+    if record["event"]["event"].is_string() {
+        return Some(record["event"].take());
+    }
+    let msg = record.get("msg").or(record.get("raw"))?;
+    Some(json!({
+        "event": "acp",
+        "ts": record["ts"],
+        "host_id": record["host_id"],
+        "session": record["session_id"],
+        "dir": record["dir"],
+        "msg": msg,
+    }))
 }
 
 fn is_message(line: &str) -> bool {
     record_event(line).is_some_and(|e| e["event"] == "user_message")
 }
 
-/// Prints one record as asked; returns how many lines it showed.
-fn print(
-    out: &mut impl Write,
-    line: &str,
-    options: &render::Options,
-    raw: bool,
+struct Show {
+    options: render::Options,
     json_out: bool,
-) -> Result<usize, String> {
-    let text = if raw {
-        Some(line.trim_end().to_owned())
-    } else {
-        record_event(line)
-            .and_then(|e| if json_out { Some(e.to_string()) } else { render::event(&e, options) })
-    };
-    let Some(text) = text else { return Ok(0) };
-    match writeln!(out, "{text}").and_then(|()| out.flush()) {
-        Ok(()) => Ok(1),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => Err(e.to_string()),
+}
+
+impl Show {
+    /// Prints one event as asked; returns how many lines it showed.
+    fn print(&self, out: &mut impl Write, event: Option<Value>) -> Result<usize, String> {
+        let text = event.and_then(|e| {
+            if self.json_out { Some(e.to_string()) } else { render::event(&e, &self.options) }
+        });
+        let Some(text) = text else { return Ok(0) };
+        match writeln!(out, "{text}").and_then(|()| out.flush()) {
+            Ok(()) => Ok(1),
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }

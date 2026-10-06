@@ -307,8 +307,12 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         Err(_) => START_TIMEOUT,
     };
     let mut resume_cwd = None;
-    if let Some(wanted) = a.resume.clone() {
-        let past = resumable(&wanted)?;
+    // A session brnr has no transcript of (one `brnr sessions` lists) goes
+    // to the agent as given, in --cwd or here, with -- <agent> or the
+    // profile's.
+    if let Some(wanted) = a.resume.clone()
+        && let Some(past) = resumable(&wanted)?
+    {
         a.resume = past["session_id"].as_str().map(str::to_owned);
         resume_cwd = past["cwd"].as_str().map(str::to_owned);
         if a.agent.is_empty() {
@@ -416,8 +420,9 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     wait_for_message(&mut conn, &id, &session, &message, deadline(a.timeout))
 }
 
-/// The inactive session `wanted` names (an id or unique prefix).
-fn resumable(wanted: &str) -> Result<Value, String> {
+/// The inactive session `wanted` names (an id or unique prefix), if brnr
+/// has its transcript.
+fn resumable(wanted: &str) -> Result<Option<Value>, String> {
     let hosts = discover();
     let running = hosts.iter().flat_map(|h| h.sessions().iter().map(move |s| (h, s)));
     for (host, s) in running {
@@ -431,8 +436,8 @@ fn resumable(wanted: &str) -> Result<Value, String> {
         .filter(|p| p["session_id"].as_str().is_some_and(|id| id.starts_with(wanted)))
         .collect();
     match matches[..] {
-        [one] => Ok(one.clone()),
-        [] => Err(format!("no inactive session {wanted} (see brnr list --inactive)")),
+        [one] => Ok(Some(one.clone())),
+        [] => Ok(None),
         _ => Err(format!("{wanted} matches several sessions")),
     }
 }

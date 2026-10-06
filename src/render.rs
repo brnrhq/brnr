@@ -13,15 +13,13 @@ const CONTEXT: usize = 3;
 pub struct Options {
     /// A column with the session id (for hosts with several sessions).
     pub session: bool,
-    /// Show the agent's thoughts.
-    pub thoughts: bool,
     /// Start with the event's time.
     pub time: bool,
 }
 
 impl Options {
     pub fn foreground() -> Options {
-        Options { session: false, thoughts: false, time: true }
+        Options { session: false, time: true }
     }
 }
 
@@ -35,7 +33,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             _ => format!("user: {}", s(&e["text"])),
         },
         "agent_message" => format!("agent: {}", s(&e["text"])),
-        "agent_thought" if o.thoughts => format!("thinking: {}", s(&e["text"])),
+        "agent_thought" => format!("thinking: {}", s(&e["text"])),
         // A tool call's start and its end; progress in between isn't shown.
         "tool_call" => {
             let title = s(&e["title"]);
@@ -81,6 +79,8 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             }
             what
         }
+        // An ACP message (`--events acp`): the direction and the message.
+        "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
         _ => return None,
     };
     let mut prefix = String::new();

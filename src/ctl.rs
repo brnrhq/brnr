@@ -38,7 +38,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use brnr::host::alive;
+use brnr::host::{EVENTS, QUIET, alive};
 use brnr::{paths, render};
 
 mod doctor;
@@ -51,48 +51,57 @@ mod talk;
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--name <n>] [--on-disconnect direct|headless] [-- <agent> [args...]]
              what an editor runs as its ACP agent
-  brnr host [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [-- <agent> [args...]]
-             a headless session in the foreground (brnr host --help)
 
-starting
   brnr start [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
              [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
              [--permissions ask|auto-allow|auto-deny] [--stop-when-idle]
              [--resume <session>] [--wait [--timeout <s>]] [-- <agent> [args...]]
+             a headless session in the background
 
-talking
+  brnr host [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [-- <agent> [args...]]
+             a headless session in the foreground (brnr host --help)
+
+  brnr stop <target>
+             ends a host, however it started, and its agent
+
+chat
   brnr send <target> [--session <id>] [--after-turn | --interrupt | --context [--replace]]
             [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] (<text>... | -)
   brnr wait <target> [--session <id>] [--for idle|turn|permission|exit] [--timeout <s>]
   brnr cancel <target> [--session <id>] [--keep-held]
   brnr queue <target> [--session <id>] [--drop <message>] [--clear] [--clear-context]
 
-seeing
-  brnr list [--all | --inactive] [--json]
-  brnr status <target> [--json]
-  brnr watch <target> [--events <a,b,...>] [--thoughts] [--raw] [--json]
-  brnr log <target> [--session <id>] [--last <n>] [--follow] [--thoughts] [--raw | --json]
-
-permissions
+approvals
   brnr pending [<target>]
   brnr show <target> [<request>]
   brnr approve <target> [<request>] [--option <id>]
   brnr deny <target> [<request>] [--option <id>]
 
-settings and sessions
-  brnr mode <target> [--session <id>] [<mode>]
-  brnr model <target> [--session <id>] [<model>]
-  brnr config <target> [--session <id>] [<option>=<value>...]
-  brnr commands <target> [--session <id>]
+sessions
+  brnr list [--all | --inactive] [--json]
+  brnr status <target> [--json]
   brnr sessions <target>
   brnr fork <target> [--session <id>]
   brnr close <target> [--session <id>]
 
-the rest
-  brnr notify [<target>] [--events <a,b,...>] -- <command> [args...]
-  brnr stop <target>
+events
+  brnr log <target> [--session <id>] [--last <n>] [--follow] [--events <default|all|event>,...]
+           [--json]
+  brnr watch <target> [--events <default|all|event>,...] [--json]
+  brnr notify [<target>] [--events <default|all|event>,...] -- <command> [args...]
+
+settings
+  brnr mode <target> [--session <id>] [<mode>]
+  brnr model <target> [--session <id>] [<model>]
+  brnr config <target> [--session <id>] [<option>=<value>...]
+  brnr commands <target> [--session <id>]
+
+brnr
   brnr doctor [--fix]
-  brnr --version";
+  brnr --version
+
+<target> is a host id, a --name, or an ACP session id (or a unique prefix of
+one); --session <id> picks the session when the host has several.";
 
 /// How long `start` waits for the agent to open its session, in seconds,
 /// unless `BRNR_START_TIMEOUT` says otherwise. The host gives up at the same
@@ -590,24 +599,18 @@ fn stop(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Prints the host's events until it exits, as `brnr log` shows them. With
-/// `--raw`, every ACP message in both directions too. A target that names a
-/// session shows only that session's events (plus the host's own, such as
-/// the agent exiting).
+/// Prints the host's events until it exits, as `brnr log` shows them. A
+/// target that names a session shows only that session's events (plus the
+/// host's own, such as the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
     let mut target = None;
-    let mut events: Option<Vec<&str>> = None;
-    let (mut json_out, mut raw, mut thoughts) = (false, false, false);
+    let mut events = default_events();
+    let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--events" => {
-                let list = it.next().ok_or("--events needs a list")?;
-                events = Some(list.split(',').map(str::trim).collect());
-            }
+            "--events" => events = events_arg(it.next(), &default_events())?,
             "--json" => json_out = true,
-            "--raw" => raw = true,
-            "--thoughts" => thoughts = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ if target.is_none() => target = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
@@ -616,17 +619,10 @@ fn watch(args: &[String]) -> Result<(), String> {
     let target = target.ok_or(USAGE)?;
     // `exited` is how watch tells the host ending from the host cutting it
     // off; it is asked for even when not shown.
-    let show_exited = events.as_ref().is_none_or(|e| e.contains(&"exited"));
-    let events = match events {
-        None if raw => json!("all"),
-        None => Value::Null,
-        Some(mut list) => {
-            if !show_exited {
-                list.push("exited");
-            }
-            json!(list)
-        }
-    };
+    let show_exited = events.iter().any(|e| e == "exited");
+    if !show_exited {
+        events.push("exited".to_owned());
+    }
     let hosts = discover();
     let (host, only_session) = resolve(&hosts, &target)?;
     let mut conn = connect(host).map_err(|e| format!("host {}: {e}", host.id()))?;
@@ -642,7 +638,7 @@ fn watch(args: &[String]) -> Result<(), String> {
         return Err(first["error"].as_str().unwrap_or("subscribe failed").to_owned());
     }
     let mut out = io::stdout().lock();
-    let options = render::Options { session: true, thoughts, time: true };
+    let options = render::Options { session: true, time: true };
     for line in lines.map_while(Result::ok) {
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
         let exited = event["event"] == "exited";
@@ -654,8 +650,6 @@ fn watch(args: &[String]) -> Result<(), String> {
         if !exited || show_exited {
             let text = if json_out {
                 Some(line)
-            } else if event["event"] == "acp" {
-                Some(describe_acp(&event))
             } else {
                 render::event(&event, &options)
             };
@@ -672,14 +666,38 @@ fn watch(args: &[String]) -> Result<(), String> {
     Err("the host closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
-/// An `acp` event (`watch --raw`): the direction and the message.
-fn describe_acp(e: &Value) -> String {
-    let time = e["ts"].as_str().and_then(|t| t.get(11..19)).unwrap_or("");
-    let session: String = e["session"].as_str().unwrap_or("-").chars().take(8).collect();
-    format!("{time}  {session:<8}  {:<15} {}", e["dir"].as_str().unwrap_or("?"), e["msg"])
+// ---- plumbing ------------------------------------------------------------
+
+/// The value of `--events` (for `watch`, `log` and `notify`): event names,
+/// `default` for the command's own `default` (what it does without
+/// `--events`), `all` for every event.
+fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
+    let list = list.ok_or("--events needs a list")?;
+    let mut events = Vec::new();
+    for name in list.split(',').map(str::trim) {
+        let names = match name {
+            "all" => EVENTS.iter().map(|e| e.to_string()).collect(),
+            "default" => default.to_vec(),
+            _ if EVENTS.contains(&name) => vec![name.to_owned()],
+            _ => {
+                let names = EVENTS.join(", ");
+                return Err(format!("unknown event {name:?} (events: default, all, {names})"));
+            }
+        };
+        for name in names {
+            if !events.contains(&name) {
+                events.push(name);
+            }
+        }
+    }
+    Ok(events)
 }
 
-// ---- plumbing ------------------------------------------------------------
+/// What `watch` and `log` show without `--events`: every event but the
+/// quiet ones (ACP messages and thoughts).
+fn default_events() -> Vec<String> {
+    EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
+}
 
 /// The host `target` names, and the ACP session if it named one.
 fn resolve<'a>(hosts: &'a [Host], target: &str) -> Result<(&'a Host, Option<String>), String> {

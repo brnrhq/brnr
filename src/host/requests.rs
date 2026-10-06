@@ -61,8 +61,9 @@ impl Host {
     /// Started with no editor (`brnr start`, `brnr host`): the host opens the
     /// session itself.
     pub(super) fn begin_headless_start(&mut self) {
+        // Recorded, not emitted: there is no session yet to tell.
         let reason =
-            json!({ "event": "owner-changed", "owner": "host", "reason": "started headless" });
+            json!({ "event": "owner_changed", "owner": "host", "reason": "started headless" });
         self.sink.note(None, reason);
         let params = json!({
             "protocolVersion": 1,

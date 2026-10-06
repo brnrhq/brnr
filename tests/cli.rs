@@ -202,7 +202,18 @@ fn log_shows_the_conversation() {
     );
     let last = env.ok(&["log", "a", "--last", "1"]);
     assert!(last.lines().next().unwrap().ends_with("user: reply second"), "{last}");
-    assert!(env.ok(&["log", "a", "--raw"]).contains(r#""dir":"agent->editor""#));
+    // `all` adds the ACP messages to the events, as for `watch`.
+    let all = env.ok(&["log", "a", "--events", "all"]);
+    assert!(all.lines().any(|l| l[10..].starts_with("agent->editor ")), "{all}");
+    assert!(all.contains("agent: second"), "{all}");
+    let acp: Vec<Value> = env
+        .ok(&["log", "a", "--events", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|e| e["event"] == "acp")
+        .collect();
+    assert!(acp.iter().any(|e| e["dir"] == "agent->editor" && e["msg"]["jsonrpc"] == "2.0"));
+    assert!(acp.iter().all(|e| e["session"] == "sess-1" && e["ts"].is_string()));
     let names: Vec<String> =
         events(&env, "a").iter().map(|e| e["event"].as_str().unwrap().to_owned()).collect();
     assert!(
@@ -211,6 +222,19 @@ fn log_shows_the_conversation() {
     );
     let turn = events(&env, "a").into_iter().find(|e| e["event"] == "turn_ended").unwrap();
     assert_eq!(turn["message"], "m1");
+}
+
+#[test]
+fn log_shows_only_the_events_asked_for() {
+    let env = Env::new("c-log-events");
+    env.start("a", &["--wait", "--prompt", "reply first"]);
+    let log = env.ok(&["log", "a", "--events", "user_message,turn_ended"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(lines, ["user: reply first", "turn ended: end_turn (control)"], "{log}");
+    let acp = env.ok(&["log", "a", "--events", "acp", "--json"]);
+    assert!(!acp.is_empty() && acp.lines().all(|l| l.contains(r#""event":"acp""#)), "{acp}");
+    assert!(env.fails(&["log", "a", "--events", "nope"]).contains(r#"unknown event "nope""#));
+    assert!(env.fails(&["log", "a", "--raw"]).contains("unknown option: --raw"));
 }
 
 #[test]
@@ -246,7 +270,11 @@ fn thoughts_are_shown_when_asked() {
     let env = Env::new("c-think");
     env.start("a", &["--wait", "--prompt", "think"]);
     assert!(!env.ok(&["log", "a"]).contains("pondering"));
-    assert!(env.ok(&["log", "a", "--thoughts"]).contains("thinking: pondering"));
+    assert!(!env.ok(&["log", "a", "--json"]).contains("pondering"));
+    assert!(env.ok(&["log", "a", "--events", "agent_thought"]).contains("thinking: pondering"));
+    let both = env.ok(&["log", "a", "--events", "default,agent_thought"]);
+    assert!(both.contains("thinking: pondering") && both.contains("user: think"), "{both}");
+    assert!(env.fails(&["log", "a", "--thoughts"]).contains("unknown option: --thoughts"));
 }
 
 #[test]
@@ -354,6 +382,20 @@ fn sessions_lists_the_agents_sessions() {
     env.start("a", &[]);
     let out = env.ok(&["sessions", "a"]);
     assert!(out.contains("old-1") && out.contains("An old session"), "{out}");
+    // What brnr knows of each.
+    let row = |id: &str| out.lines().find(|l| l.starts_with(id)).unwrap_or_else(|| panic!("{out}"));
+    assert!(!row("old-1").contains("running") && !row("old-1").contains("inactive"), "{out}");
+    assert!(row("sess-1").contains(&format!("running ({})", env.host_pid())), "{out}");
+}
+
+#[test]
+fn resume_a_session_only_the_agent_knows() {
+    let env = Env::new("c-resume-agent");
+    let out = env.run(&start_args("r", &["--resume", "old-1", "--wait", "--prompt", "reply again"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "again\n");
+    assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "old-1");
+    assert!(env.ok(&["log", "old-1"]).contains("agent: again"));
 }
 
 #[test]
@@ -400,8 +442,8 @@ fn resume_by_loading_keeps_the_replay_out_of_the_transcript() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(env.calls_of("session/load").len(), 1);
-    let raw = env.ok(&["log", "a", "--raw"]);
-    assert!(!raw.contains("replayed history"), "replay recorded:\n{raw}");
+    let all = env.ok(&["log", "a", "--events", "all"]);
+    assert!(!all.contains("replayed history"), "replay recorded:\n{all}");
     assert!(env.ok(&["log", "a"]).contains("agent: again"));
 }
 
@@ -585,6 +627,29 @@ fn notify_runs_a_command_per_event() {
     assert!(!env.dir.join("pwned").exists(), "the agent's text ran as shell");
     env.ok(&["stop", "a"]);
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't exit with the host");
+}
+
+#[test]
+fn notify_reads_events_as_watch_does() {
+    let env = Env::new("c-notifyevents");
+    env.start("a", &[]);
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT\" >> '{}'", out.display());
+    let notify = |events: &str| {
+        env.brnr(&["notify", "a", "--events", events, "--", "sh", "-c", &script]).spawn().unwrap()
+    };
+    // `default` is notify's own: the turn ending, not the messages in it.
+    let mut first = notify("default,user_message");
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "a", "--wait", "reply hi"]);
+    assert!(wait_for(Duration::from_secs(5), || {
+        fs::read_to_string(&out).is_ok_and(|t| t.lines().count() >= 2)
+    }));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "user_message\nturn_ended\n");
+    env.ok(&["stop", "a"]);
+    assert!(wait_exit(&mut first, Duration::from_secs(15)), "notify didn't exit with the host");
+    let err = env.fails(&["notify", "a", "--events", "nope", "--", "true"]);
+    assert!(err.contains(r#"unknown event "nope" (events: default, all,"#), "{err}");
 }
 
 #[test]
