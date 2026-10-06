@@ -4,8 +4,8 @@
 //!   `session/new`, `session/resume` or `session/load`, then the mode and
 //!   config options the start asked for, before the first prompt;
 //! - what bridges ask of the agent through the host: set the mode, a config
-//!   option or the model, list the agent's sessions, fork or close one. The
-//!   bridge gets its answer when the agent's arrives.
+//!   option or the model, fork or close a session. The bridge gets its answer
+//!   when the agent's arrives.
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -52,7 +52,6 @@ pub(super) enum PeerOp {
     Mode { session: String, mode: String },
     Config { session: String },
     Model { session: String, model: String },
-    List,
     Fork { cwd: PathBuf },
     Close { session: String },
 }
@@ -61,10 +60,6 @@ impl Host {
     /// Started with no editor (`brnr start`, `brnr host`): the host opens the
     /// session itself.
     pub(super) fn begin_headless_start(&mut self) {
-        // Recorded, not emitted: there is no session yet to tell.
-        let reason =
-            json!({ "event": "owner_changed", "owner": "host", "reason": "started headless" });
-        self.sink.note(None, reason);
         let params = json!({
             "protocolVersion": 1,
             "clientCapabilities": {},
@@ -249,8 +244,9 @@ impl Host {
                 return self.begin_stop();
             }
         }
-        if self.manual {
-            eprintln!("brnr host: session {session}");
+        self.started_ok = !self.awaiting_prompt;
+        if self.foreground {
+            eprintln!("brnr: session {session}");
         }
         if let Some(text) = self.first_prompt.take() {
             let held = Held { id: self.message_id(), text, blocks: Vec::new() };
@@ -266,9 +262,9 @@ impl Host {
 
     /// Reports `error` to brnr start if it is still waiting.
     pub(super) fn startup_failed(&mut self, error: &str) {
-        if self.manual && self.sessions.is_empty() && !self.startup_reported {
+        if self.foreground && self.sessions.is_empty() && !self.startup_reported {
             self.startup_reported = true;
-            eprintln!("brnr host: {error}");
+            eprintln!("brnr: {error}");
         }
         if let Some(mut ready) = self.ready.take() {
             let _ = writeln!(ready, "{}", json!({ "ok": false, "error": error }));
@@ -343,11 +339,6 @@ impl Host {
                 }
                 json!({ "ok": true, "session": session, "model": model })
             }
-            PeerOp::List => json!({
-                "ok": true,
-                "sessions": result["sessions"],
-                "next_cursor": result["nextCursor"],
-            }),
             PeerOp::Fork { cwd } => {
                 let Some(session) = result["sessionId"].as_str().map(str::to_owned) else {
                     return json!({ "ok": false, "error": "session/fork returned no sessionId" });

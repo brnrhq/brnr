@@ -1,19 +1,20 @@
-//! `brnr doctor [--fix]`: checks what brnr depends on and says what's wrong.
+//! `brnr doctor [--fix] [--json]`: checks what brnr depends on and says
+//! what's wrong.
 //!
 //! - the runtime directory: private to the user, not a symlink, short enough
-//!   for a socket path, and free of metadata left by hosts that are gone;
+//!   for a socket path, and free of metadata left by processes that are gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, and every profile's settings, cwd, agent
 //!   and bridges are valid;
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
-//! - running hosts: each answers, and no two share a name.
+//! - running processes: each answers.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata. It never touches anything it would refuse to use.
-//! The exit status is non-zero if a check failed.
+//! The exit status is non-zero if a check failed. `--json` prints the checks
+//! as a list of `{level, check, message}`.
 
-use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use brnr::host::{PermissionRules, Policy, alive, check_bridge};
+use brnr::host::{PermissionRules, alive, check_bridge};
 use brnr::{config, paths, spawn};
 
 use super::{Host, USAGE, request};
@@ -40,6 +41,8 @@ enum Level {
 
 struct Report {
     fix: bool,
+    json: bool,
+    checks: Vec<Value>,
     failed: usize,
     warned: usize,
 }
@@ -58,22 +61,42 @@ impl Report {
                 "FAIL"
             }
         };
-        println!("{tag:<5} {what}: {}", msg.as_ref());
+        if self.json {
+            let level = match level {
+                Level::Ok => "ok",
+                Level::Info => "info",
+                Level::Warn => "warn",
+                Level::Fail => "fail",
+            };
+            self.checks.push(json!({ "level": level, "check": what, "message": msg.as_ref() }));
+        } else {
+            println!("{tag:<5} {what}: {}", msg.as_ref());
+        }
     }
 }
 
 pub fn main(args: &[String]) -> Result<(), String> {
-    let fix = match args {
-        [] => false,
-        [flag] if flag == "--fix" => true,
-        _ => return Err(USAGE.to_owned()),
-    };
-    let mut r = Report { fix, failed: 0, warned: 0 };
+    let (mut fix, mut json_out) = (false, false);
+    for arg in args {
+        match arg.as_str() {
+            "--fix" => fix = true,
+            "--json" => json_out = true,
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    let mut r = Report { fix, json: json_out, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
     transcripts(&mut r);
     config_file(&mut r);
     adapters(&mut r);
     running(&mut r, &hosts);
+    if r.json {
+        println!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
+        return match r.failed {
+            0 => Ok(()),
+            n => Err(format!("{n} check{} failed", plural(n))),
+        };
+    }
     match (r.failed, r.warned) {
         (0, 0) => Ok(()),
         (0, n) => {
@@ -96,7 +119,7 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
     let dir = paths::runtime_dir();
     if dir.is_relative() {
         let msg =
-            format!("BRNR_DIR is relative ({}): hosts resolve it in their own cwd", dir.display());
+            format!("BRNR_DIR is relative ({}): processes resolve it in their own cwd", dir.display());
         r.line(Level::Fail, what, msg);
     }
     let room = sun_path_len() - 1;
@@ -168,10 +191,10 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
         r.line(
             Level::Ok,
             what,
-            format!("removed what hosts that are gone left behind: {}", names.join(", ")),
+            format!("removed what processes that are gone left behind: {}", names.join(", ")),
         );
     } else {
-        let msg = format!("left by hosts that are gone: {} (brnr doctor --fix)", names.join(", "));
+        let msg = format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
         r.line(Level::Warn, what, msg);
     }
     hosts
@@ -285,9 +308,6 @@ fn config_file(r: &mut Report) {
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
         let mut problems = Vec::new();
-        if let Some(Err(e)) = profile.on_disconnect.as_deref().map(Policy::parse) {
-            problems.push(e);
-        }
         if let Err(e) = PermissionRules::parse(profile.permissions.as_ref()) {
             problems.push(e);
         }
@@ -427,33 +447,21 @@ fn executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-// ---- running hosts -------------------------------------------------------
+// ---- running processes ---------------------------------------------------
 
 fn running(r: &mut Report, hosts: &[Host]) {
-    let what = "hosts";
+    let what = "processes";
     if hosts.is_empty() {
         return r.line(Level::Ok, what, "none running");
     }
-    let mut names: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut answering = 0;
     for host in hosts {
-        let id = host.id();
-        if let Some(name) = host.meta["name"].as_str() {
-            names.entry(name).or_default().push(id);
-        }
         match request(host, &json!({ "cmd": "status" })) {
             Ok(_) => answering += 1,
-            Err(e) => {
-                let pid = &host.meta["host_pid"];
-                r.line(Level::Warn, what, format!("{id} (pid {pid}) is running but {e}"));
-            }
+            Err(e) => r.line(Level::Warn, what, format!("{} is running but {e}", host.id())),
         }
     }
     if answering > 0 {
         r.line(Level::Ok, what, format!("{answering} running and answering"));
-    }
-    for (name, ids) in names.iter().filter(|(_, ids)| ids.len() > 1) {
-        let msg = format!("{name} names several hosts: {}; use their ids", ids.join(", "));
-        r.line(Level::Warn, what, msg);
     }
 }

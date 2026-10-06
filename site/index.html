@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brnr</title>
-<meta name="description" content="A burner phone for your coding agents. Run Claude Code or Codex behind a host you can message, watch and approve from outside the editor.">
+<meta name="description" content="A burner phone for your coding agents. Run Claude Code or Codex sessions you can message, watch and approve from outside the editor.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='2' fill='%2324291d'/%3E%3Crect x='4.5' y='3' width='7' height='5' fill='%23b8c795'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -183,7 +183,7 @@
   <div class="hero">
     <div>
       <h1>A burner phone for your coding agents.</h1>
-      <p class="lede">Run Claude Code or Codex from your editor as usual, then message it, watch it and answer its permission requests from any terminal. It keeps working after the editor closes.</p>
+      <p class="lede">Run Claude Code or Codex from your editor as usual, then message it, watch it and answer its approvals from any terminal. Or run it with no editor at all, and pick up an editor's session after it closes.</p>
       <div class="install">
         <code id="brew">brew install brnrhq/tap/brnr</code>
         <button type="button" id="copy" aria-describedby="brew">Copy</button>
@@ -205,7 +205,7 @@
         </div>
         <div class="keys" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
       </div>
-      <figcaption class="caption">That's <code>brnr approve demo</code> and <code>brnr send demo</code>.</figcaption>
+      <figcaption class="caption">That's <code>brnr approve $s p1</code> and <code>brnr send $s</code>.</figcaption>
     </figure>
   </div>
 
@@ -213,18 +213,18 @@
     <div class="cols">
       <div>
         <h2>How it works</h2>
-        <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a host process that you can reach from outside.</p>
+        <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a process of its own that you can reach from outside.</p>
       </div>
       <div class="body">
-<pre>editor ──stdio── brnr acp ──socketpair── brnr host ──pipes── agent
+<pre>editor ──stdio── brnr acp ──socketpair── brnr process ──pipes── agent
                                             │
                                  control socket ── brnr send / watch / …
                                             │
                                          bridges (Slack, push, …)</pre>
       <dl>
         <div><dt>brnr acp</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
-        <div><dt>brnr host</dt><dd>Owns the agent for its whole life, in its own session. Killing the editor or the proxy can't take the agent with it unless you want it to.</dd></div>
-        <div><dt>Control commands</dt><dd>Talk to running hosts over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
+        <div><dt>The brnr process</dt><dd>Owns the agent for its whole life, out of the editor's process group. When the editor goes, it stops the agent the way the editor would have. <code>brnr ps</code> lists them.</dd></div>
+        <div><dt>Control commands</dt><dd>Talk to running sessions over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
       </dl>
     </div>
   </div>
@@ -240,7 +240,7 @@
 <pre>brnr acp -- brnr-claude-adapter
 brnr acp -- brnr-codex-adapter
 brnr acp --profile work          <span class="c"># agent and settings from a profile</span></pre>
-        <p>When the editor goes away, <code>on_disconnect</code> decides what happens. With <code>direct</code>, the default, the agent stops the way it would if the editor had started it. With <code>headless</code>, it keeps running and brnr answers it in place of the editor.</p>
+        <p>When the editor goes away, the agent stops the way it would if the editor had started it. <code>brnr start --resume</code> carries on with its session headless.</p>
       </div>
     </div>
   </section>
@@ -249,17 +249,17 @@ brnr acp --profile work          <span class="c"># agent and settings from a pro
     <div class="cols">
       <div>
         <h2>Talk to it from outside</h2>
-        <p class="intro">Target a host by its id, its <code>--name</code> or an ACP session id. A unique prefix is enough.</p>
+        <p class="intro">Name a session by its id, as <code>brnr list</code> shows it with the agent's title.</p>
       </div>
       <div class="body">
-<pre>brnr list                          <span class="c"># running hosts and their sessions</span>
-brnr send demo "also update the changelog"
-brnr send demo --after-turn "then run the tests"
-brnr send demo --interrupt "stop, wrong branch"
-brnr watch demo                    <span class="c"># every event and ACP message, live</span>
-brnr pending                       <span class="c"># permission requests waiting for an answer</span>
-brnr approve demo
-brnr stop demo</pre>
+<pre>brnr list                          <span class="c"># running sessions; --all: ended ones too</span>
+brnr send $s "also update the changelog"
+brnr send $s --after-turn "then run the tests"
+brnr send $s --interrupt "stop, wrong branch"
+brnr watch $s                      <span class="c"># messages, tools, plan and approvals, live</span>
+brnr pending                       <span class="c"># approvals waiting for an answer</span>
+brnr approve $s p1
+brnr close $s</pre>
         <p>Messages you send reach the agent as ordinary user messages, and the editor shows them as such.</p>
       </div>
     </div>
@@ -273,11 +273,11 @@ brnr stop demo</pre>
       </div>
       <div class="body">
 <pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
-        <p>The <code>permissions</code> setting in your profile handles permission requests. With <code>ask</code>, they wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge. Every session gets a transcript under <code>~/.brnr/projects</code>, stored in the same folders as Claude Code's own transcripts.</p>
+        <p>The <code>permissions</code> setting in your profile handles approvals. With <code>ask</code>, they wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge. Every session gets a transcript under <code>~/.brnr/projects</code>, stored in the same folders as Claude Code's own transcripts.</p>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]
-on_disconnect = "headless"
+stop_when_idle = 600                <span class="c"># close a session idle 10 minutes</span>
 permissions = "ask"                 <span class="c"># ask | auto-allow | auto-deny</span></pre>
       </div>
     </div>

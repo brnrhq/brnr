@@ -45,7 +45,7 @@ fn dead_pid() -> u32 {
 #[test]
 fn a_used_setup_is_healthy() {
     let env = Env::new("dr-ok");
-    env.start("a", &["--prompt", "hello"]);
+    env.start(&["--prompt", "hello"]);
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "{text}");
     assert!(lines(&text, "warn").is_empty() && lines(&text, "FAIL").is_empty(), "{text}");
@@ -122,7 +122,7 @@ fn stale_metadata_is_removed() {
 
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "{text}");
-    assert!(text.contains("left by hosts that are gone"), "{text}");
+    assert!(text.contains("left by processes that are gone"), "{text}");
     assert_eq!(fs::read_dir(&run).unwrap().count(), 3, "doctor without --fix removed something");
 
     let (ok, text) = doctor(&env, &["--fix"]);
@@ -141,7 +141,6 @@ agent = ["true"]
 agent = ["no-such-agent-brnr"]
 cwd = "/no/such/dir"
 permissions = "maybe"
-on_disconnect = "later"
 
 [[profiles.bad.bridges]]
 command = ["true"]
@@ -153,8 +152,8 @@ events = ["nope"]
     assert!(!ok, "{text}");
     assert!(text.contains("ok    profile good"), "{text}");
     let fails = lines(&text, "FAIL  profile bad").len();
-    assert_eq!(fails, 5, "{text}");
-    for problem in ["no-such-agent-brnr not found", "/no/such/dir", "maybe", "later", "nope"] {
+    assert_eq!(fails, 4, "{text}");
+    for problem in ["no-such-agent-brnr not found", "/no/such/dir", "maybe", "nope"] {
         assert!(text.contains(problem), "missing {problem}: {text}");
     }
 }
@@ -190,33 +189,13 @@ fn relative_runtime_dir_fails() {
 #[test]
 fn unresponsive_host_warns() {
     let env = Env::new("dr-stuck");
-    env.start("a", &[]);
+    env.start(&[]);
     let host = env.host_pid();
     unsafe { libc::kill(host, libc::SIGSTOP) };
     let (ok, text) = doctor(&env, &[]);
     unsafe { libc::kill(host, libc::SIGCONT) };
     assert!(ok, "{text}");
-    assert!(text.contains(&format!("(pid {host}) is running but not answering")), "{text}");
-}
-
-#[test]
-#[allow(clippy::zombie_processes)] // Reaped by the environment; see below.
-fn shared_name_warns() {
-    let env = Env::new("dr-name");
-    let run = env.dir.join("run");
-    mkdir(&run, 0o700);
-    // Two editors' hosts may share a name; a live process stands in for
-    // them. The environment kills it when the test ends; it isn't reaped
-    // before then, so its pid can't be reused meanwhile.
-    let stand_in = Command::new("sleep").arg("60").spawn().unwrap();
-    let pid = stand_in.id();
-    for id in ["1", "2"] {
-        let meta =
-            format!(r#"{{"id":"{id}","name":"x","host_pid":{pid},"socket":"/nonexistent"}}"#);
-        write(&run.join(format!("{id}.json")), &meta, 0o600);
-    }
-    let (_, text) = doctor(&env, &[]);
-    assert!(text.contains("x names several hosts: 1, 2"), "{text}");
+    assert!(text.contains(&format!("{host} is running but not answering")), "{text}");
 }
 
 #[test]

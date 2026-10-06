@@ -2,12 +2,12 @@
 //! session live, from the events the host recorded in it.
 //!
 //! ```text
-//! brnr log <target> [--session <id>] [--last <n>] [--follow] [--events <a,b,...>] [--json]
+//! brnr log <session> [--last <n>] [--follow] [--events <a,b,...>] [--json]
 //! ```
 //!
-//! It starts at the beginning of the session, or with `--last <n>` at the
-//! n-th last message sent to the agent; `--follow` keeps printing until the
-//! session's host exits. `--events` and `--json` mean what they do for
+//! A session running or not, by id or name. It starts at the beginning of
+//! the session, or with `--last <n>` at the n-th last message sent to the
+//! agent; `--follow` keeps printing until the session's process exits. `--events` and `--json` mean what they do for
 //! `watch`; an ACP message in the transcript is an `acp` event.
 
 use std::fs::File;
@@ -22,20 +22,18 @@ use serde_json::{Value, json};
 use brnr::host::alive;
 use brnr::render;
 
-use super::{USAGE, default_events, discover, events_arg, inactive_sessions, resolve};
+use super::{Found, USAGE, default_events, discover, events_arg, find_session};
 
 const POLL: Duration = Duration::from_millis(200);
 
 pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     let mut target = None;
-    let mut session = None;
     let mut last = None;
     let mut events = default_events();
     let (mut follow, mut json_out) = (false, false);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--session" => session = Some(it.next().ok_or("--session needs an id")?.clone()),
             "--last" => {
                 let n = it.next().ok_or("--last needs a number")?;
                 last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
@@ -51,7 +49,7 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     let wanted = |e: &Value| events.iter().any(|name| e["event"] == name.as_str());
     let show = Show { options: render::Options { session: false, time: true }, json_out };
     let target = target.ok_or(USAGE)?;
-    let (path, host_pid) = transcript(&target, session.as_deref())?;
+    let (path, host_pid) = transcript(&target)?;
     let mut file =
         BufReader::new(File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?);
 
@@ -97,40 +95,19 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// The transcript `target` means and the pid of the host serving it, if
-/// one is: a running session, or else an inactive one by id or prefix.
-fn transcript(target: &str, session: Option<&str>) -> Result<(PathBuf, Option<i64>), String> {
+/// The transcript of the session `arg` names, and the pid of the process
+/// serving it, if one is.
+fn transcript(arg: &str) -> Result<(PathBuf, Option<i64>), String> {
     let hosts = discover();
-    if let Ok((host, matched)) = resolve(&hosts, target) {
-        let wanted = session.map(str::to_owned).or(matched);
-        let sessions = host.sessions();
-        let s = match (wanted, sessions) {
-            (Some(id), _) => sessions
-                .iter()
-                .find(|s| s["session_id"].as_str().is_some_and(|s| s.starts_with(&id)))
-                .ok_or(format!("no session {id} in host {}", host.id()))?,
-            (None, [one]) => one,
-            (None, []) => return Err(format!("host {} has no session yet", host.id())),
-            (None, _) => {
-                return Err(format!(
-                    "host {} has several sessions; pick one with --session",
-                    host.id()
-                ));
-            }
-        };
-        let path = s["log"].as_str().ok_or("this host keeps no transcript (log = false)")?;
-        return Ok((PathBuf::from(path), host.meta["host_pid"].as_i64()));
-    }
-    let wanted = session.unwrap_or(target);
-    let past = inactive_sessions(&hosts);
-    let matches: Vec<&Value> = past
-        .iter()
-        .filter(|p| p["session_id"].as_str().is_some_and(|id| id.starts_with(wanted)))
-        .collect();
-    match matches[..] {
-        [one] => Ok((PathBuf::from(one["log"].as_str().unwrap_or_default()), None)),
-        [] => Err(format!("no host or session matches {wanted} (see brnr list --all)")),
-        _ => Err(format!("{wanted} matches several sessions")),
+    match find_session(&hosts, arg)? {
+        Found::Running(host, id) => {
+            let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
+            let path = s
+                .and_then(|s| s["log"].as_str())
+                .ok_or("this process keeps no transcript (log = false)")?;
+            Ok((PathBuf::from(path), host.meta["host_pid"].as_i64()))
+        }
+        Found::Inactive(past) => Ok((PathBuf::from(past["log"].as_str().unwrap_or_default()), None)),
     }
 }
 

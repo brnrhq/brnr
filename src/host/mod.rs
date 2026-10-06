@@ -1,9 +1,11 @@
-//! `brnr host`: owns the agent process and its pipes for the agent's whole life.
+//! `brnr host`: owns the agent process and its pipes for the agent's whole
+//! life. brnr calls it a process (`brnr ps`, `--pid`); it isn't a command
+//! of its own in the usage.
 //!
-//! Started detached by `brnr acp` for an editor (with `--link-fd`), detached
-//! by `brnr start` for a session that is headless from the start (with
-//! `--ready-fd`), or by hand, in the foreground, for a headless session (see
-//! [`USAGE`]). It is the hub between three kinds of peer:
+//! Started detached by `brnr acp` for an editor (with `--link-fd`), by `brnr
+//! start` for a headless session (with `--ready-fd`; detached, or with
+//! `--foreground` as its child), or by hand (see [`USAGE`]). It is the hub
+//! between three kinds of peer:
 //!
 //! - the agent, over its stdio;
 //! - the ACP owner: the editor, through the proxy on the link, or the host
@@ -12,10 +14,9 @@
 //!   started from the profile, and processes on the control socket such as
 //!   brnr (see control.rs).
 //!
-//! When the editor goes away, the `on_disconnect` policy decides: `direct`
-//! does what a directly spawned agent would have got (stdin closed, then
-//! SIGKILL; a signal the proxy catches reaches the agent as that signal),
-//! and `headless` keeps the agent running with the host as its client.
+//! When the editor goes away, the agent gets what a directly spawned agent
+//! would have: its stdin is closed and it is killed (a signal the proxy
+//! catches reaches the agent as that signal).
 
 mod acp;
 mod control;
@@ -52,18 +53,18 @@ pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
 use requests::{HostRequest, SetupStep};
 
-/// The options for running it by hand. `brnr acp` and `brnr start` also pass
-/// --link-fd, --ready-fd, --proxy-pid, --on-disconnect and --sigmask.
-const USAGE: &str = "usage: brnr host [--profile <name>] [--name <name>] [--cwd <dir>] \
-[--prompt <text> | --prompt -] [--resume <session>] [--mode <mode>] [--set <option>=<value>]... \
-[--permissions <policy>] [--stop-when-idle] [--quiet] [-- <agent> [args...]]
+/// The options for running it by hand; `brnr start --foreground` is the
+/// way the usage offers. `brnr acp` and `brnr start` also pass --link-fd,
+/// --ready-fd, --proxy-pid, --start-timeout and --sigmask.
+const USAGE: &str = "usage: brnr host [--profile <name>] [--cwd <dir>] \
+[--prompt <text> | --prompt -] [--resume <session id>] [--mode <mode>] [--set <option>=<value>]... \
+[--permissions <policy>] [--stop-when-idle <seconds>] [--quiet] [--json] [-- <agent> [args...]]
 
-Runs a headless ACP session in the foreground: the host starts the agent,
-opens a session in the current directory (or --cwd), or resumes one, and
-sends --prompt if given. It shows the session as it goes (--quiet: not).
-Talk to it with brnr (send, watch, approve, stop, ...). Ctrl-C stops it
-gracefully; press it again to kill the agent. Exits with the agent's exit
-status.";
+Runs a headless ACP session in the foreground (as brnr start --foreground
+does): starts the agent, opens a session in the current directory (or
+--cwd), or resumes one, and sends --prompt if given. It shows the session as
+it goes (--json: as JSON lines; --quiet: not). Ctrl-C stops it gracefully;
+press it again to kill the agent. Exits with the agent's exit status.";
 
 /// How long to keep forwarding output after the agent exits, in case
 /// something it started still holds its stdout open.
@@ -81,32 +82,6 @@ const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// the agent's process group gets SIGTERM, then SIGKILL.
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
-
-/// What the host does when the editor goes away without a handoff.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Policy {
-    /// Behave as if the editor had run the agent directly.
-    Direct,
-    /// Keep the agent running, with the host as its client.
-    Headless,
-}
-
-impl Policy {
-    pub fn parse(name: &str) -> Result<Policy, String> {
-        match name {
-            "direct" => Ok(Policy::Direct),
-            "headless" => Ok(Policy::Headless),
-            other => Err(format!("unknown on_disconnect policy: {other}")),
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Policy::Direct => "direct",
-            Policy::Headless => "headless",
-        }
-    }
-}
 
 /// How the host answers permission requests while no editor is attached.
 #[derive(Clone, Copy)]
@@ -209,8 +184,6 @@ struct Args {
     ready_fd: Option<RawFd>,
     proxy_pid: Option<u32>,
     profile: Option<String>,
-    name: Option<String>,
-    on_disconnect: Option<String>,
     sigmask: Vec<c_int>,
     prompt: Option<String>,
     cwd: Option<String>,
@@ -220,8 +193,14 @@ struct Args {
     mode: Option<String>,
     set: Vec<(String, String)>,
     permissions: Option<String>,
-    stop_when_idle: bool,
+    stop_when_idle: Option<u64>,
+    /// Run for `brnr start --foreground`: as by hand, with brnr waiting.
+    foreground: bool,
     quiet: bool,
+    json: bool,
+    /// brnr start sends a prompt once the session is open: idle time only
+    /// counts from then.
+    awaiting_prompt: bool,
     program: Vec<OsString>,
 }
 
@@ -275,8 +254,6 @@ const OPTIONS: &[&str] = &[
     "--ready-fd",
     "--proxy-pid",
     "--profile",
-    "--name",
-    "--on-disconnect",
     "--prompt",
     "--cwd",
     "--sigmask",
@@ -285,10 +262,11 @@ const OPTIONS: &[&str] = &[
     "--mode",
     "--set",
     "--permissions",
+    "--stop-when-idle",
 ];
 
 /// Options without a value.
-const FLAGS: &[&str] = &["--stop-when-idle", "--quiet"];
+const FLAGS: &[&str] = &["--foreground", "--quiet", "--json", "--awaiting-prompt"];
 
 fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
     value.parse().map_err(|_| Some(format!("{key}: not a number: {value}")))
@@ -307,12 +285,20 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
             return Err(None);
         }
         match arg.as_str() {
-            "--stop-when-idle" => {
-                a.stop_when_idle = true;
+            "--foreground" => {
+                a.foreground = true;
                 continue;
             }
             "--quiet" => {
                 a.quiet = true;
+                continue;
+            }
+            "--json" => {
+                a.json = true;
+                continue;
+            }
+            "--awaiting-prompt" => {
+                a.awaiting_prompt = true;
                 continue;
             }
             _ => {}
@@ -340,8 +326,7 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
             "--ready-fd" => a.ready_fd = Some(number(&key, &value)?),
             "--proxy-pid" => a.proxy_pid = Some(number(&key, &value)?),
             "--profile" => a.profile = Some(value),
-            "--name" => a.name = Some(value),
-            "--on-disconnect" => a.on_disconnect = Some(value),
+            "--stop-when-idle" => a.stop_when_idle = Some(number(&key, &value)?),
             "--prompt" => a.prompt = Some(value),
             "--cwd" => a.cwd = Some(value),
             "--start-timeout" => a.start_timeout = Some(number(&key, &value)?),
@@ -369,7 +354,7 @@ struct Failure {
 
 impl Failure {
     fn report(&mut self, msg: &str, code: u8) {
-        eprintln!("brnr host: {msg}");
+        eprintln!("brnr: {msg}");
         if let Some(link) = &mut self.link {
             let report = json!({ "error": msg, "code": code }).to_string();
             let _ = frame::write(link, frame::FAILED, report.as_bytes());
@@ -422,13 +407,13 @@ enum StopStage {
 }
 
 struct Host {
-    /// Run by hand in a terminal: no proxy, no brnr waiting.
-    manual: bool,
+    /// In a terminal, by hand or for `brnr start --foreground`: it says on
+    /// stderr how things go, and exits with the agent's status.
+    foreground: bool,
     /// By hand, a failed start has been reported on stderr.
     startup_reported: bool,
     info: Value,
     host_id: String,
-    policy: Policy,
     permissions: PermissionRules,
     /// How long an unanswered permission request waits before it is denied.
     permission_timeout: Option<Duration>,
@@ -473,6 +458,11 @@ struct Host {
     editor_buf: Vec<u8>,
     /// Headless start: the first prompt, sent once the session exists.
     first_prompt: Option<String>,
+    /// Headless start: the session is open and set up (or there is an
+    /// editor), and has had brnr start's prompt if one is coming; idle
+    /// sessions only count from then.
+    started_ok: bool,
+    awaiting_prompt: bool,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
     /// Headless start: mode and config options to set before the prompt.
@@ -481,10 +471,12 @@ struct Host {
     starting: Option<String>,
     /// MCP servers for the sessions the host opens, as ACP has them.
     mcp_servers: Vec<Value>,
-    /// Stop once a turn has ended and nothing is running or held.
-    stop_when_idle: bool,
-    /// By hand: show the session's events on stdout.
+    /// Close a session idle this long (see `fire_idle_timers`).
+    stop_when_idle: Option<Duration>,
+    /// In the foreground: show the session's events on stdout, as text or
+    /// (`--json`) JSON lines.
     show_events: bool,
+    json_events: bool,
     /// What the agent said it can do in `initialize`.
     agent_caps: Value,
     auth_methods: Value,
@@ -508,12 +500,6 @@ struct Host {
 impl Host {
     fn start(a: Args, link: Option<UnixStream>, ready: Option<File>) -> Result<Host, (String, u8)> {
         let profile = config::load(a.profile.as_deref()).map_err(|e| (e, 2))?;
-        let policy = a
-            .on_disconnect
-            .as_deref()
-            .or(profile.on_disconnect.as_deref())
-            .map_or(Ok(Policy::Direct), Policy::parse)
-            .map_err(|e| (e, 2))?;
         let mut permissions =
             PermissionRules::parse(profile.permissions.as_ref()).map_err(|e| (e, 2))?;
         if let Some(policy) = &a.permissions {
@@ -537,14 +523,6 @@ impl Host {
         }
         if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
             return Err(("--prompt is empty".into(), 2));
-        }
-        // An editor's name is its own business; a headless session's name
-        // is how brnr finds it, so it has to be unique.
-        if link.is_none()
-            && let Some(name) = &a.name
-            && let Some(id) = running_named(name)
-        {
-            return Err((format!("a host named {name} is already running ({id})"), 2));
         }
         let mut program = a.program.clone();
         if program.is_empty() {
@@ -614,7 +592,6 @@ impl Host {
         let info = json!({
             "id": id,
             "host_id": host_id,
-            "name": a.name,
             "profile": a.profile,
             "host_pid": std::process::id(),
             "proxy_pid": a.proxy_pid,
@@ -623,7 +600,6 @@ impl Host {
             "cwd": cwd.to_string_lossy(),
             "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
             "socket": sock_path.to_string_lossy(),
-            "on_disconnect": policy.name(),
             "permissions": permissions.describe(),
             "started": log::rfc3339(started),
         });
@@ -662,16 +638,16 @@ impl Host {
         let t = tx.clone();
         thread::spawn(move || read_signals(signals, t));
 
-        let manual = link.is_none() && ready.is_none();
+        let foreground = (link.is_none() && ready.is_none()) || a.foreground;
         let start_deadline = (a.start_timeout)
             .filter(|_| ready.is_some())
             .map(|secs| Instant::now() + Duration::from_secs(secs));
+        let stop_when_idle = a.stop_when_idle.or(profile.stop_when_idle).map(Duration::from_secs);
         let mut host = Host {
-            manual,
+            foreground,
             startup_reported: false,
             info,
             host_id,
-            policy,
             permissions,
             permission_timeout: profile.permission_timeout.map(Duration::from_secs),
             agent_pid,
@@ -697,12 +673,15 @@ impl Host {
             next_permission: 0,
             editor_buf: Vec::new(),
             first_prompt: a.prompt,
+            started_ok: false,
+            awaiting_prompt: a.awaiting_prompt,
             resume: a.resume,
             setup,
             starting: None,
             mcp_servers,
-            stop_when_idle: a.stop_when_idle || profile.stop_when_idle.unwrap_or(false),
-            show_events: manual && !a.quiet,
+            stop_when_idle,
+            show_events: foreground && !a.quiet,
+            json_events: a.json,
             agent_caps: Value::Null,
             auth_methods: Value::Null,
             next_message: 0,
@@ -725,14 +704,15 @@ impl Host {
             }
         }
         if host.link.is_some() {
+            host.started_ok = true;
             let ready = json!({ "id": id, "host_pid": std::process::id(), "agent_pid": agent_pid });
             host.send_link(frame::READY, ready.to_string().as_bytes());
         } else {
             host.begin_headless_start();
         }
-        if host.manual {
+        if host.foreground {
             eprintln!(
-                "brnr host: {id}: started {} (pid {agent_pid}) in {}; Ctrl-C to stop",
+                "brnr: process {id}: started {} in {}; Ctrl-C to stop",
                 argv.join(" "),
                 cwd.display()
             );
@@ -752,9 +732,11 @@ impl Host {
             self.fire_start_timer(now);
             self.fire_stop_timer(now);
             self.fire_permission_timers(now);
+            self.fire_idle_timers(now);
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
-            let wake = [self.drain_until, stop_at, self.start_deadline, permission_at]
+            let idle_at = self.next_idle_deadline();
+            let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
                 .into_iter()
                 .flatten()
                 .min();
@@ -803,8 +785,8 @@ impl Host {
         for &pid in &self.bridge_pids {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
-        if self.manual {
-            eprintln!("brnr host: agent exited: {status}");
+        if self.foreground {
+            eprintln!("brnr: agent exited: {status}");
         }
         // Let the writer deliver what's queued (it gives up on a proxy that
         // stopped reading; see LINK_WRITE_TIMEOUT).
@@ -814,12 +796,13 @@ impl Host {
         }
         self.log.finish();
         match self.status {
-            // By hand, exit as the agent did, like a shell reports it.
-            Some(s) if self.manual && libc::WIFEXITED(s) => {
+            // In the foreground, exit as the agent did, like a shell
+            // reports it.
+            Some(s) if self.foreground && libc::WIFEXITED(s) => {
                 ExitCode::from(libc::WEXITSTATUS(s) as u8)
             }
-            Some(s) if self.manual => ExitCode::from(128 + libc::WTERMSIG(s) as u8),
-            None if self.manual => ExitCode::FAILURE,
+            Some(s) if self.foreground => ExitCode::from(128 + libc::WTERMSIG(s) as u8),
+            None if self.foreground => ExitCode::FAILURE,
             _ => ExitCode::SUCCESS,
         }
     }
@@ -885,20 +868,15 @@ impl Host {
         self.link.is_some()
     }
 
+    /// A signal the proxy caught reaches the agent as that signal.
     fn signal(&mut self, sig: c_int) {
-        let detaching = matches!(sig, libc::SIGHUP | libc::SIGINT | libc::SIGTERM);
-        if self.policy == Policy::Headless && detaching {
-            self.go_headless(&format!("proxy got signal {sig}"));
-        } else if self.status.is_none() {
+        if self.status.is_none() {
             self.sink.note(None, json!({ "event": "signal", "signal": sig }));
             unsafe { libc::kill(self.agent_pid, sig) };
         }
     }
 
     fn editor_eof(&mut self) {
-        if self.policy == Policy::Headless {
-            return self.go_headless("editor closed stdin");
-        }
         let rest = take(&mut self.editor_buf);
         if !rest.is_empty() {
             self.record(None, Dir::EditorToAgent, &rest);
@@ -910,43 +888,20 @@ impl Host {
 
     fn editor_stopped_reading(&mut self) {
         self.sink.note(None, json!({ "event": "editor-stopped-reading" }));
-        match self.policy {
-            Policy::Headless => self.go_headless("editor stopped reading"),
-            // The agent gets EPIPE, just as it would directly.
-            Policy::Direct => self.stop_stdout = None,
-        }
+        // The agent gets EPIPE, just as it would directly.
+        self.stop_stdout = None;
     }
 
+    /// The editor went away: the agent goes too, as if the editor had run it.
     fn link_gone(&mut self) {
         if self.link.is_none() || self.status.is_some() {
             self.link = None;
-            return; // Already headless, or the proxy left after the agent.
+            return; // The proxy left after the agent.
         }
-        match self.policy {
-            Policy::Headless => self.go_headless("editor disconnected"),
-            Policy::Direct => {
-                self.link = None;
-                self.sink.note(None, json!({ "event": "editor-disconnected", "policy": "direct" }));
-                self.agent_in = None;
-                unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
-            }
-        }
-    }
-
-    /// The editor is gone (or going) and the session carries on with the
-    /// host as the agent's client. The proxy is told to exit 0.
-    fn go_headless(&mut self, reason: &str) {
-        if self.link.is_none() || self.status.is_some() {
-            return;
-        }
-        self.send_link(frame::DETACHED, &[]);
         self.link = None;
-        self.editor_buf.clear();
-        self.sink.set_proxy(None);
-        self.info["proxy_pid"] = Value::Null;
-        write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
-        self.emit_to_sessions(json!({ "event": "owner_changed", "owner": "host", "reason": reason }));
-        self.take_over_agent_requests();
+        self.sink.note(None, json!({ "event": "editor-disconnected" }));
+        self.agent_in = None;
+        unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
     }
 
     fn send_link(&mut self, kind: u8, payload: &[u8]) {
@@ -981,14 +936,14 @@ impl Host {
                 libc::kill(self.agent_pid, sig);
             },
             _ if self.stop_requested => {
-                if self.manual {
-                    eprintln!("brnr host: killing the agent");
+                if self.foreground {
+                    eprintln!("brnr: killing the agent");
                 }
                 self.kill_group(libc::SIGKILL);
             }
             _ => {
-                if self.manual {
-                    eprintln!("brnr host: stopping (again to kill)");
+                if self.foreground {
+                    eprintln!("brnr: stopping (again to kill)");
                 }
                 self.begin_stop();
             }
@@ -1218,17 +1173,6 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
         }
     }
     Ok(status)
-}
-
-/// The id of a running host called `name`, from the metadata files.
-pub fn running_named(name: &str) -> Option<String> {
-    fs::read_dir(paths::runtime_dir())
-        .ok()?
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.path()).ok()?).ok())
-        .find(|meta| meta["name"] == name && meta["host_pid"].as_i64().is_some_and(alive))
-        .map(|meta| meta["id"].as_str().unwrap_or("?").to_owned())
 }
 
 /// Whether process `pid` exists (it may belong to someone else).

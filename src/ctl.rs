@@ -1,33 +1,23 @@
-//! The control commands: start headless sessions and talk to running hosts
-//! over their control sockets. `brnr --help` lists them; the modules have
-//! the details:
+//! The control commands: start headless sessions and talk to running ones
+//! over their processes' control sockets. `brnr --help` lists them; the
+//! modules have the details:
 //!
 //! - talk.rs: `start`, `send`, `wait`, `cancel`, `queue`
 //! - history.rs: `log`
 //! - settings.rs: `mode`, `config`, `model`, `commands`, `sessions`, `fork`,
 //!   `close`
 //! - show.rs: `show`; notify.rs: `notify`; doctor.rs: `doctor`
-//! - here: `list`, `status`, `pending`, `approve`, `deny`, `watch`, `stop`
+//! - here: `ps`, `stop`, `list`, `status`, `pending`, `approve`, `deny`,
+//!   `watch`
 //!
-//! `<target>` is a host id (from `list`), a `--name`, or an ACP session id
-//! or unique prefix of one.
+//! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
+//! brnr process, which runs one agent for one or more sessions. Commands that
+//! act on a session need it running and say so when it isn't.
 //!
-//! `list` shows running hosts; `--all` adds inactive sessions (ones no
-//! running host serves, found from their transcripts) and `--inactive`
-//! shows only those.
-//!
-//! `start` waits `BRNR_START_TIMEOUT` seconds (default 120) for the session;
-//! if it gives up or is interrupted, the host stops without sending the
-//! prompt. A `--name` must be unique among running hosts.
-//!
-//! `send` timing:
-//! - default: send now; starts a turn if the agent is idle, otherwise the
-//!   agent decides (claude-agent-acp folds it into the running turn).
-//! - `--after-turn`: the host holds it until no turn is running.
-//! - `--interrupt`: the host cancels the running turn, then sends it.
-//! - `--context`: no turn; appended to the next prompt, whoever sends it.
-//!   `--replace` replaces the last held context instead of adding to it.
+//! `--json` prints what the text says, as one JSON value (one event per line
+//! for `log`, `watch` and `start --foreground`).
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
@@ -49,63 +39,65 @@ mod show;
 mod talk;
 
 const USAGE: &str = "usage:
-  brnr acp [--profile <p>] [--name <n>] [--on-disconnect direct|headless] [-- <agent> [args...]]
+  brnr acp [--profile <p>] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
-  brnr start [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
+  brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
              [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--permissions ask|auto-allow|auto-deny] [--stop-when-idle]
-             [--resume <session>] [--wait [--timeout <s>]] [-- <agent> [args...]]
-             a headless session in the background
+             [--permissions ask|auto-allow|auto-deny] [--stop-when-idle <s>]
+             [--resume <session>] [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
+             [-- <agent> [args...]]
+             a headless session, in the background (or the foreground)
 
-  brnr host [--profile <p>] [--name <n>] [--cwd <dir>] [--prompt <text> | -] [-- <agent> [args...]]
-             a headless session in the foreground (brnr host --help)
-
-  brnr stop <target>
-             ends a host, however it started, and its agent
+processes
+  brnr ps [--json]
+  brnr stop <pid>
 
 chat
-  brnr send <target> [--session <id>] [--after-turn | --interrupt | --context [--replace]]
-            [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] (<text>... | -)
-  brnr wait <target> [--session <id>] [--for idle|turn|permission|exit] [--timeout <s>]
-  brnr cancel <target> [--session <id>] [--keep-held]
-  brnr queue <target> [--session <id>] [--drop <message>] [--clear] [--clear-context]
+  brnr send <session> [--after-turn | --interrupt | --context [--replace]]
+            [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
+            (<text>... | -)
+  brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
+  brnr cancel <session> [--keep-held] [--json]
+  brnr queue <session> [--drop <message>] [--clear] [--clear-context] [--json]
 
 approvals
-  brnr pending [<target>]
-  brnr show <target> [<request>]
-  brnr approve <target> [<request>] [--option <id>]
-  brnr deny <target> [<request>] [--option <id>]
+  brnr pending [<session>] [--json]
+  brnr show <session> <request> [--json]
+  brnr approve <session> <request> [--option <id>] [--json]
+  brnr deny <session> <request> [--option <id>] [--json]
 
 sessions
-  brnr list [--all | --inactive] [--json]
-  brnr status <target> [--json]
-  brnr sessions <target>
-  brnr fork <target> [--session <id>]
-  brnr close <target> [--session <id>]
+  brnr list [--inactive | --all] [--json]
+  brnr status <session> [--json]
+  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
+  brnr fork <session> [--json]
+  brnr close <session>
 
 events
-  brnr log <target> [--session <id>] [--last <n>] [--follow] [--events <default|all|event>,...]
-           [--json]
-  brnr watch <target> [--events <default|all|event>,...] [--json]
-  brnr notify [<target>] [--events <default|all|event>,...] -- <command> [args...]
+  brnr log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
+  brnr watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
+  brnr notify (<session> | --pid <pid>) [--events <default|all|event>,...] -- <command> [args...]
 
 settings
-  brnr mode <target> [--session <id>] [<mode>]
-  brnr model <target> [--session <id>] [<model>]
-  brnr config <target> [--session <id>] [<option>=<value>...]
-  brnr commands <target> [--session <id>]
+  brnr mode <session> [<mode>] [--json]
+  brnr model <session> [<model>] [--json]
+  brnr config <session> [<option>=<value>...] [--json]
+  brnr commands <session> [--json]
 
 brnr
-  brnr doctor [--fix]
+  brnr doctor [--fix] [--json]
   brnr --version
 
-<target> is a host id, a --name, or an ACP session id (or a unique prefix of
-one); --session <id> picks the session when the host has several.";
+<session> is a session's id, as brnr list shows it. <request> is a pending approval's handle,
+as brnr pending shows it. <pid> is a brnr process, which runs one agent for one or more
+sessions, as brnr ps shows them.
+--json prints the same data as the text: one JSON value, or one event per line for log, watch
+and start --foreground.";
 
 /// How long `start` waits for the agent to open its session, in seconds,
-/// unless `BRNR_START_TIMEOUT` says otherwise. The host gives up at the same
-/// time; `start` allows it a little longer to say so.
+/// unless `BRNR_START_TIMEOUT` says otherwise. The process gives up at the
+/// same time; `start` allows it a little longer to say so.
 const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
@@ -129,13 +121,14 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Some("close") => settings::close(rest),
         Some("show") => show::show(rest),
         Some("notify") => notify::notify(rest),
+        Some("ps") => done(ps(rest)),
+        Some("stop") => done(stop(rest)),
         Some("list") => done(list(rest)),
         Some("status") => done(status(rest)),
         Some("pending") => done(pending(rest)),
         Some("approve") => done(answer(rest, "approve")),
         Some("deny") => done(answer(rest, "deny")),
         Some("watch") => done(watch(rest)),
-        Some("stop") => done(stop(rest)),
         Some("doctor") => done(doctor::main(rest)),
         Some("-h" | "--help") => {
             println!("{USAGE}");
@@ -149,6 +142,10 @@ pub fn main(args: Vec<String>) -> ExitCode {
     };
     match result {
         Ok(code) => code,
+        Err(msg) if msg == USAGE => {
+            eprintln!("{}", usage_of(args.first().map_or("", String::as_str)));
+            ExitCode::FAILURE
+        }
         Err(msg) => {
             eprintln!("brnr: {msg}");
             ExitCode::FAILURE
@@ -156,7 +153,30 @@ pub fn main(args: Vec<String>) -> ExitCode {
     }
 }
 
-/// A running host: its metadata file and, if it answered, its live status.
+/// The usage of one command (its lines in [`USAGE`]), or all of it for a
+/// command there is none of.
+fn usage_of(cmd: &str) -> String {
+    let mut lines = Vec::new();
+    let mut ours = false;
+    for line in USAGE.lines() {
+        let rest = line.trim_start();
+        if rest.starts_with("brnr ") {
+            ours = rest.split_whitespace().nth(1) == Some(cmd);
+        } else if !line.starts_with("    ") {
+            ours = false;
+        }
+        if ours {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        return USAGE.to_owned();
+    }
+    format!("usage:\n{}\n(brnr --help for every command)", lines.join("\n"))
+}
+
+/// A running brnr process: its metadata file and, if it answered, its live
+/// status.
 struct Host {
     meta: Value,
     status: Option<Value>,
@@ -167,6 +187,7 @@ impl Host {
         self.status.as_ref().unwrap_or(&self.meta)
     }
 
+    /// Its pid, which names its socket and metadata.
     fn id(&self) -> &str {
         self.meta["id"].as_str().unwrap_or("?")
     }
@@ -176,7 +197,118 @@ impl Host {
     }
 }
 
-// ---- inspecting ----------------------------------------------------------
+// ---- naming sessions and processes ---------------------------------------
+
+/// What a `<session>` argument names.
+enum Found<'a> {
+    /// A running session: its process and id.
+    Running(&'a Host, String),
+    /// One that has ended, as `inactive_sessions` has it.
+    Inactive(Value),
+}
+
+/// The session with id `arg`, running or not.
+fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
+    for host in hosts {
+        if host.sessions().iter().any(|s| s["session_id"] == arg) {
+            return Ok(Found::Running(host, arg.to_owned()));
+        }
+    }
+    if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
+        return Ok(Found::Inactive(p));
+    }
+    // A process that doesn't answer may well have it.
+    let silent: Vec<&str> = hosts.iter().filter(|h| h.status.is_none()).map(Host::id).collect();
+    if !silent.is_empty() {
+        return Err(format!("no session {arg}, and process {} is not answering", silent.join(", ")));
+    }
+    Err(format!("no session {arg} (see brnr list --all)"))
+}
+
+/// The running session `arg` names, for what needs one running.
+fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String), String> {
+    match find_session(hosts, arg)? {
+        Found::Running(host, id) => Ok((host, id)),
+        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr start --resume {arg}")),
+    }
+}
+
+/// The process with pid `pid`.
+fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
+    hosts.iter().find(|h| h.id() == pid).ok_or(format!("no brnr process {pid} (see brnr ps)"))
+}
+
+/// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
+/// the session if one was named.
+fn session_or_pid<'a>(
+    hosts: &'a [Host],
+    session: Option<&str>,
+    pid: Option<&str>,
+) -> Result<(&'a Host, Option<String>), String> {
+    match (session, pid) {
+        (Some(session), None) => running_session(hosts, session).map(|(h, id)| (h, Some(id))),
+        (None, Some(pid)) => process(hosts, pid).map(|h| (h, None)),
+        _ => Err("give a <session> or --pid <pid>".into()),
+    }
+}
+
+// ---- processes -----------------------------------------------------------
+
+fn ps(args: &[String]) -> Result<(), String> {
+    let json_out = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return Err(USAGE.to_owned()),
+    };
+    let hosts = discover();
+    let rows: Vec<Value> = hosts
+        .iter()
+        .map(|host| {
+            let info = host.info();
+            let sessions: Vec<&Value> = host.sessions().iter().map(|s| &s["session_id"]).collect();
+            json!({
+                "pid": host.id().parse::<u64>().ok(),
+                "owner": if host.status.is_some() { info["owner"].clone() } else { json!("unreachable") },
+                "agent": agent_name(&info["agent"]),
+                "sessions": sessions,
+                "uptime_seconds": info["uptime_seconds"],
+                "cwd": info["cwd"],
+            })
+        })
+        .collect();
+    if json_out {
+        return print_json(&json!(rows));
+    }
+    if rows.is_empty() {
+        println!("no brnr processes");
+        return Ok(());
+    }
+    let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP", "CWD"].map(String::from)];
+    for r in &rows {
+        let sessions: Vec<String> = r["sessions"].as_array().into_iter().flatten().map(text).collect();
+        table.push([
+            r["pid"].to_string(),
+            text(&r["owner"]),
+            text(&r["agent"]),
+            if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
+            r["uptime_seconds"].as_u64().map_or("?".to_owned(), duration),
+            text(&r["cwd"]),
+        ]);
+    }
+    print_table(table);
+    Ok(())
+}
+
+fn stop(args: &[String]) -> Result<(), String> {
+    let [pid] = args else { return Err(USAGE.to_owned()) };
+    let hosts = discover();
+    let host = process(&hosts, pid)?;
+    let response = call(host, &json!({ "cmd": "stop" }))?;
+    println!("{}", response["status"].as_str().unwrap_or("?"));
+    Ok(())
+}
+
+// ---- sessions ------------------------------------------------------------
 
 fn list(args: &[String]) -> Result<(), String> {
     let (mut json_out, mut active, mut inactive) = (false, true, false);
@@ -189,106 +321,64 @@ fn list(args: &[String]) -> Result<(), String> {
         }
     }
     let hosts = discover();
-    let past = if inactive { inactive_sessions(&hosts) } else { Vec::new() };
-    if json_out {
-        let running: Vec<&Value> = hosts.iter().map(Host::info).collect();
-        let out = match (active, inactive) {
-            (true, false) => json!(running),
-            (false, _) => json!(past),
-            (true, true) => json!({ "active": running, "inactive": past }),
-        };
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
-        return Ok(());
-    }
+    let mut rows = Vec::new();
     if active {
-        list_active(&hosts);
+        for host in &hosts {
+            for s in host.sessions() {
+                rows.push(json!({
+                    "session": s["session_id"],
+                    "title": s["title"],
+                    "state": s["state"],
+                    "pid": host.id().parse::<u64>().ok(),
+                    "agent": agent_name(&host.info()["agent"]),
+                    "cwd": s["cwd"],
+                    "last_active": s["last_active"],
+                }));
+            }
+        }
     }
     if inactive {
-        if active {
-            println!();
+        for p in inactive_sessions(&hosts) {
+            rows.push(json!({
+                "session": p["session_id"],
+                "title": null,
+                "state": "inactive",
+                "pid": null,
+                "agent": agent_name(&p["agent"]),
+                "cwd": p["cwd"],
+                "last_active": p["last_active"],
+            }));
         }
-        list_inactive(&past);
     }
+    if json_out {
+        return print_json(&json!(rows));
+    }
+    if rows.is_empty() {
+        println!("no {}sessions", if active { "running " } else { "" });
+        return Ok(());
+    }
+    let mut table =
+        vec![["SESSION", "TITLE", "STATE", "PID", "AGENT", "LAST ACTIVE", "CWD"].map(String::from)];
+    for r in &rows {
+        table.push([
+            text(&r["session"]),
+            r["title"].as_str().unwrap_or("-").to_owned(),
+            text(&r["state"]),
+            r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
+            text(&r["agent"]),
+            r["last_active"].as_str().map_or("?".to_owned(), when),
+            text(&r["cwd"]),
+        ]);
+    }
+    print_table(table);
     Ok(())
 }
 
-fn list_active(hosts: &[Host]) {
-    if hosts.is_empty() {
-        println!("no running sessions");
-        return;
-    }
-    let mut rows = vec![["ID", "NAME", "OWNER", "AGENT", "SESSIONS", "CWD"].map(String::from)];
-    for host in hosts {
-        let info = host.info();
-        let sessions: Vec<String> = host
-            .sessions()
-            .iter()
-            .map(|s| {
-                let id = s["session_id"].as_str().unwrap_or("?");
-                let mut flags = Vec::new();
-                if s["busy"].as_bool() == Some(true) {
-                    flags.push("busy".to_owned());
-                }
-                for key in ["held", "context"] {
-                    if let Some(n) = s[key].as_u64().filter(|&n| n > 0) {
-                        flags.push(format!("{key}:{n}"));
-                    }
-                }
-                if flags.is_empty() { id.to_owned() } else { format!("{id} ({})", flags.join(" ")) }
-            })
-            .collect();
-        let mut owner = if host.status.is_some() {
-            info["owner"].as_str().unwrap_or("?")
-        } else {
-            "unreachable"
-        }
-        .to_owned();
-        if let Some(n) = info["pending"].as_u64().filter(|&n| n > 0) {
-            owner.push_str(&format!(" ({n} pending)"));
-        }
-        rows.push([
-            host.id().to_owned(),
-            info["name"].as_str().unwrap_or("-").to_owned(),
-            owner,
-            agent_name(&info["agent"]),
-            if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
-            info["cwd"].as_str().unwrap_or("?").to_owned(),
-        ]);
-    }
-    print_table(rows);
-}
-
-fn list_inactive(past: &[Value]) {
-    if past.is_empty() {
-        println!("no inactive sessions");
-        return;
-    }
-    let mut rows =
-        vec![["SESSION", "LAST ACTIVE", "ENDED", "NAME", "AGENT", "CWD"].map(String::from)];
-    for s in past {
-        let last = s["last_active"].as_str().unwrap_or("?");
-        // 2026-10-01T19:34:25.959660Z -> 2026-10-01 19:34:25Z
-        let last = match (last.get(..10), last.get(11..19)) {
-            (Some(day), Some(time)) => format!("{day} {time}Z"),
-            _ => last.to_owned(),
-        };
-        rows.push([
-            s["session_id"].as_str().unwrap_or("?").to_owned(),
-            last,
-            s["ended"].as_str().unwrap_or("?").to_owned(),
-            s["name"].as_str().unwrap_or("-").to_owned(),
-            agent_name(&s["agent"]),
-            s["cwd"].as_str().unwrap_or("?").to_owned(),
-        ]);
-    }
-    print_table(rows);
-}
-
-/// Sessions with a transcript that no running host is serving, most
-/// recently active first. Only the first and last record of each file are
-/// read: the first names the cwd and host log, the last says when and under
-/// which host the session was last active. That host's log says which agent
-/// it ran and how it ended.
+/// Sessions with a transcript that no running process is serving, most
+/// recently active first. Only the
+/// first and last record of each file are read: the first names the cwd,
+/// the last says when and in which process the session was last active.
+/// That process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
     // session id alone can repeat across folders.
@@ -305,41 +395,30 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"));
 
-    let mut host_logs: std::collections::HashMap<String, (Value, Value)> = Default::default();
+    // A process that doesn't answer can't say which sessions it has: the
+    // ones it was last in may well be running.
+    let silent: Vec<i64> = hosts
+        .iter()
+        .filter(|h| h.status.is_none())
+        .filter_map(|h| h.meta["host_pid"].as_i64())
+        .collect();
+    let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
     for file in files {
         let (Some(first), Some(last)) = (first_record(&file), last_record(&file)) else { continue };
         let Some(session) = last["session_id"].as_str() else { continue };
-        if running.contains(&file) {
+        if running.contains(&file) || last["host_pid"].as_i64().is_some_and(|p| silent.contains(&p)) {
             continue;
         }
         let host_id = last["host_id"].as_str().unwrap_or_default().to_owned();
-        let (started, exited) = host_logs
+        let start = started
             .entry(host_id.clone())
-            .or_insert_with(|| {
-                let log = paths::host_log(&host_id);
-                (first_record(&log).unwrap_or_default(), last_record(&log).unwrap_or_default())
-            })
-            .clone();
-        let info = &started["event"]["info"];
-        let ended = match &exited["event"] {
-            e if e["event"] == "exited" => {
-                match (e["status"]["code"].as_i64(), e["status"]["signal"].as_i64()) {
-                    (Some(code), _) => format!("exit {code}"),
-                    (_, Some(sig)) => format!("signal {sig}"),
-                    _ => "exited".to_owned(),
-                }
-            }
-            _ if alive(last["host_pid"].as_i64().unwrap_or(0)) => "closed".to_owned(),
-            _ => "host lost".to_owned(),
-        };
+            .or_insert_with(|| first_record(&paths::host_log(&host_id)).unwrap_or_default());
+        let info = &start["event"]["info"];
         past.push(json!({
             "session_id": session,
             "cwd": first["event"]["cwd"],
             "last_active": last["ts"],
-            "ended": ended,
-            "host_id": host_id,
-            "name": info["name"],
             "profile": info["profile"],
             "agent": info["agent"],
             "log": file.to_string_lossy(),
@@ -388,115 +467,122 @@ fn agent_name(argv: &Value) -> String {
 }
 
 fn status(args: &[String]) -> Result<(), String> {
-    let (target, json_out) = match args {
-        [target] => (target, false),
-        [target, flag] | [flag, target] if flag == "--json" => (target, true),
+    let (arg, json_out) = match args {
+        [arg] => (arg, false),
+        [arg, flag] | [flag, arg] if flag == "--json" => (arg, true),
         _ => return Err(USAGE.to_owned()),
     };
     let hosts = discover();
-    let (host, only) = resolve(&hosts, target)?;
-    let status = host.status.as_ref().ok_or("host is not answering")?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(status).unwrap());
-        return Ok(());
-    }
-    print!("{}", describe_status(status, only.as_deref(), target));
-    Ok(())
-}
-
-/// The status report as a summary: the host, then each session's state.
-fn describe_status(st: &Value, only: Option<&str>, target: &str) -> String {
-    let s = |v: &Value| v.as_str().unwrap_or("?").to_owned();
-    let mut out = format!("host {}", s(&st["id"]));
-    if let Some(name) = st["name"].as_str() {
-        out.push_str(&format!(" ({name})"));
-    }
-    let mut agent = agent_name(&st["agent"]);
+    let (host, id) = running_session(&hosts, arg)?;
+    let st = host.status.as_ref().ok_or("the process is not answering")?;
+    let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
+    let mut agent = json!({ "program": agent_name(&st["agent"]) });
     // What the agent says it is, in initialize: the npm package and version
     // of an adapter.
     if let (Some(name), Some(version)) =
         (st["agent_info"]["name"].as_str(), st["agent_info"]["version"].as_str())
     {
+        agent["name"] = json!(name);
+        agent["version"] = json!(version);
+    }
+    let report = json!({
+        "session": id,
+        "title": x["title"],
+        "pid": host.id().parse::<u64>().ok(),
+        "agent": agent,
+        "owner": st["owner"],
+        "cwd": x["cwd"],
+        "state": x["state"],
+        "turn_seconds": x["turn_seconds"],
+        "mode": x["mode"],
+        "model": x["model"],
+        "tools": x["tools"],
+        "plan": x["plan"],
+        "pending": x["pending"],
+        "held": x["held"],
+        "context": x["context"],
+        "usage": x["usage"],
+        "last_message": x["last_message"],
+        "last_active": x["last_active"],
+        "stop_when_idle": st["stop_when_idle"],
+        "stopping": st["stopping"],
+        "uptime_seconds": st["uptime_seconds"],
+    });
+    if json_out {
+        return print_json(&report);
+    }
+    print!("{}", describe_status(&report, arg));
+    Ok(())
+}
+
+/// The status report as text, line by line.
+fn describe_status(x: &Value, arg: &str) -> String {
+    let mut out = format!("session {}", text(&x["session"]));
+    if let Some(title) = x["title"].as_str() {
+        out.push_str(&format!(": {title}"));
+    }
+    out.push('\n');
+    let a = &x["agent"];
+    let mut agent = text(&a["program"]);
+    if let (Some(name), Some(version)) = (a["name"].as_str(), a["version"].as_str()) {
         agent.push_str(&format!(" ({name} {version})"));
     }
     out.push_str(&format!(
-        ": {agent}, answered by the {}, up {}\n",
-        s(&st["owner"]),
-        duration(st["uptime_seconds"].as_u64().unwrap_or(0))
+        "process {}: {agent}, {}, up {}\n",
+        x["pid"],
+        text(&x["owner"]),
+        duration(x["uptime_seconds"].as_u64().unwrap_or(0))
     ));
-    out.push_str(&format!("cwd {}\n", s(&st["cwd"])));
-    if st["stopping"] == true {
+    out.push_str(&format!("cwd {}\n", text(&x["cwd"])));
+    if x["stopping"] == true {
         out.push_str("stopping\n");
-    } else if st["stop_when_idle"] == true {
-        out.push_str("stops when idle\n");
+    } else if let Some(secs) = x["stop_when_idle"].as_u64() {
+        out.push_str(&format!("closes when idle for {}\n", duration(secs)));
     }
-    let sessions: Vec<&Value> = st["sessions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|x| only.is_none_or(|id| x["session_id"] == id))
+    let settings: Vec<String> = [("mode", &x["mode"]), ("model", &x["model"])]
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|v| format!("{k} {v}")))
         .collect();
-    if sessions.is_empty() {
-        out.push_str("no session yet\n");
+    if !settings.is_empty() {
+        out.push_str(&format!("{}\n", settings.join(", ")));
     }
-    for x in sessions {
-        out.push_str(&format!("\nsession {}", s(&x["session_id"])));
-        if let Some(title) = x["title"].as_str() {
-            out.push_str(&format!(": {title}"));
+    match (x["state"].as_str(), x["turn_seconds"].as_u64()) {
+        (Some("idle"), _) | (_, None) => out.push_str("idle\n"),
+        (_, Some(secs)) => out.push_str(&format!("working for {}\n", duration(secs))),
+    }
+    for tool in x["tools"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "tool: {} ({}, {})\n",
+            text(&tool["title"]),
+            text(&tool["kind"]),
+            text(&tool["status"])
+        ));
+    }
+    if x["plan"].is_array() {
+        out.push_str(&format!("{}\n", render::plan(&x["plan"])));
+    }
+    if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
+        out.push_str(&format!("{n} approval(s) waiting: brnr pending {arg}\n"));
+    }
+    let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
+    if held + context > 0 {
+        out.push_str(&format!("held: {held} message(s), {context} context (brnr queue {arg})\n"));
+    }
+    let usage = &x["usage"];
+    if let (Some(used), Some(size)) = (usage["used"].as_u64(), usage["size"].as_u64()) {
+        let mut line = format!("context window: {} of {} tokens", tokens(used), tokens(size));
+        if let (Some(amount), Some(currency)) =
+            (usage["cost"]["amount"].as_f64(), usage["cost"]["currency"].as_str())
+        {
+            line.push_str(&format!(", cost {amount:.2} {currency}"));
         }
-        out.push('\n');
-        let settings: Vec<String> = [("mode", &x["mode"]), ("model", &x["model"])]
-            .iter()
-            .filter_map(|(k, v)| v.as_str().map(|v| format!("{k} {v}")))
-            .collect();
-        if !settings.is_empty() {
-            out.push_str(&format!("  {}\n", settings.join(", ")));
-        }
-        match x["turn_seconds"].as_u64() {
-            Some(secs) if x["busy"] == true => {
-                out.push_str(&format!("  working for {}\n", duration(secs)));
-            }
-            _ => out.push_str("  idle\n"),
-        }
-        for tool in x["tools"].as_array().into_iter().flatten() {
-            out.push_str(&format!(
-                "  tool: {} ({}, {})\n",
-                s(&tool["title"]),
-                s(&tool["kind"]),
-                s(&tool["status"])
-            ));
-        }
-        if x["plan"].is_array() {
-            let plan = render::plan(&x["plan"]);
-            for line in plan.lines() {
-                out.push_str(&format!("  {line}\n"));
-            }
-        }
-        if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
-            out.push_str(&format!("  {n} permission request(s) waiting: brnr show {target}\n"));
-        }
-        let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
-        if held + context > 0 {
-            out.push_str(&format!(
-                "  held: {held} message(s), {context} context (brnr queue {target})\n"
-            ));
-        }
-        let usage = &x["usage"];
-        if let (Some(used), Some(size)) = (usage["used"].as_u64(), usage["size"].as_u64()) {
-            let mut line = format!("  context window: {} of {} tokens", tokens(used), tokens(size));
-            if let (Some(amount), Some(currency)) =
-                (usage["cost"]["amount"].as_f64(), usage["cost"]["currency"].as_str())
-            {
-                line.push_str(&format!(", cost {amount:.2} {currency}"));
-            }
-            out.push_str(&format!("{line}\n"));
-        }
-        if let Some(last) = x["last_message"].as_str() {
-            let last = last.trim().replace('\n', " ");
-            let short: String = last.chars().take(200).collect();
-            let more = if last.chars().count() > 200 { "…" } else { "" };
-            out.push_str(&format!("  last message: {short}{more}\n"));
-        }
+        out.push_str(&format!("{line}\n"));
+    }
+    if let Some(last) = x["last_message"].as_str() {
+        let last = last.trim().replace('\n', " ");
+        let short: String = last.chars().take(200).collect();
+        let more = if last.chars().count() > 200 { "…" } else { "" };
+        out.push_str(&format!("last message: {short}{more}\n"));
     }
     out
 }
@@ -519,113 +605,145 @@ fn tokens(n: u64) -> String {
     }
 }
 
+/// `2026-10-01T19:34:25.959660Z` as `2026-10-01 19:34:25Z`.
+fn when(ts: &str) -> String {
+    match (ts.get(..10), ts.get(11..19)) {
+        (Some(day), Some(time)) => format!("{day} {time}Z"),
+        _ => ts.to_owned(),
+    }
+}
+
+// ---- approvals -----------------------------------------------------------
+
+/// The approvals waiting, in every process or in one session's.
 fn pending(args: &[String]) -> Result<(), String> {
+    let mut json_out = false;
+    let mut arg = None;
+    for a in args {
+        match a.as_str() {
+            "--json" => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ if arg.is_none() => arg = Some(a.clone()),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
     let hosts = discover();
-    let chosen: Vec<&Host> = match args {
-        [] => hosts.iter().collect(),
-        [target] => vec![resolve(&hosts, target)?.0],
-        _ => return Err(USAGE.to_owned()),
+    let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
+        None => (hosts.iter().collect(), None),
+        Some(arg) => {
+            let (host, id) = running_session(&hosts, arg)?;
+            (vec![host], Some(id))
+        }
     };
-    let mut rows =
-        vec![["HOST", "REQUEST", "OWNER", "SESSION", "TITLE", "OPTIONS"].map(String::from)];
+    let mut rows = Vec::new();
     for host in chosen {
         let response = request(host, &json!({ "cmd": "pending" }))
-            .map_err(|e| format!("host {}: {e}", host.id()))?;
+            .map_err(|e| format!("process {}: {e}", host.id()))?;
         for p in response["pending"].as_array().into_iter().flatten() {
-            let options: Vec<String> = p["options"]
+            if only.as_deref().is_some_and(|id| p["session"] != id) {
+                continue;
+            }
+            let options: Vec<Value> = p["options"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|o| {
-                    format!(
-                        "{}={}",
-                        o["optionId"].as_str().unwrap_or("?"),
-                        o["kind"].as_str().unwrap_or("?")
-                    )
-                })
+                .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
                 .collect();
-            rows.push([
-                host.id().to_owned(),
-                p["request"].as_str().unwrap_or("?").to_owned(),
-                p["owner"].as_str().unwrap_or("?").to_owned(),
-                p["session"].as_str().unwrap_or("-").to_owned(),
-                p["title"].as_str().unwrap_or("-").to_owned(),
-                options.join(" "),
-            ]);
+            rows.push(json!({
+                "session": p["session"],
+                "request": p["request"],
+                "owner": p["owner"],
+                "kind": p["kind"],
+                "title": p["title"],
+                "options": options,
+            }));
         }
     }
-    if rows.len() == 1 {
-        println!("nothing waiting");
-    } else {
-        print_table(rows);
+    if json_out {
+        return print_json(&json!(rows));
     }
+    if rows.is_empty() {
+        println!("nothing waiting");
+        return Ok(());
+    }
+    let mut table =
+        vec![["SESSION", "REQUEST", "OWNER", "KIND", "TITLE", "OPTIONS"].map(String::from)];
+    for r in &rows {
+        let options: Vec<String> = r["options"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|o| format!("{}={}", text(&o["option"]), text(&o["kind"])))
+            .collect();
+        table.push([
+            text(&r["session"]),
+            text(&r["request"]),
+            text(&r["owner"]),
+            text(&r["kind"]),
+            text(&r["title"]),
+            options.join(" "),
+        ]);
+    }
+    print_table(table);
     Ok(())
 }
-
-// ---- acting --------------------------------------------------------------
 
 fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut option = None;
+    let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--option" => option = Some(it.next().ok_or("--option needs an id")?.clone()),
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => positional.push(arg.clone()),
         }
     }
-    let (target, request_id) = match &positional[..] {
-        [target] => (target, None),
-        [target, request_id] => (target, Some(request_id.clone())),
-        _ => return Err(USAGE.to_owned()),
-    };
+    let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
     let hosts = discover();
-    let (host, session) = resolve(&hosts, target)?;
-    let req = json!({ "cmd": cmd, "request": request_id, "option": option, "session": session });
+    let (host, session) = running_session(&hosts, arg)?;
+    let req = json!({ "cmd": cmd, "session": session, "request": request_id, "option": option });
     let response = call(host, &req)?;
     let outcome = &response["outcome"];
+    if json_out {
+        return print_json(&json!({ "session": session, "request": request_id, "outcome": outcome }));
+    }
     let what = outcome["optionId"].as_str().or(outcome["outcome"].as_str()).unwrap_or("?");
-    println!("{} {what}", response["request"].as_str().unwrap_or("?"));
+    println!("{request_id} {what}");
     Ok(())
 }
 
-fn stop(args: &[String]) -> Result<(), String> {
-    let [target] = args else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
-    let (host, _) = resolve(&hosts, target)?;
-    let response = call(host, &json!({ "cmd": "stop" }))?;
-    println!("{}", response["status"].as_str().unwrap_or("?"));
-    Ok(())
-}
+// ---- events --------------------------------------------------------------
 
-/// Prints the host's events until it exits, as `brnr log` shows them. A
-/// target that names a session shows only that session's events (plus the
-/// host's own, such as the agent exiting).
+/// Prints a session's events (`<session>`), or a process's (`--pid`), until
+/// the process exits, as `brnr log` shows them. A session's are its own plus
+/// the process's (the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
-    let mut target = None;
+    let (mut session, mut pid) = (None, None);
     let mut events = default_events();
     let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--events" => events = events_arg(it.next(), &default_events())?,
+            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
             "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
+            _ if session.is_none() => session = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let target = target.ok_or(USAGE)?;
-    // `exited` is how watch tells the host ending from the host cutting it
-    // off; it is asked for even when not shown.
+    // `exited` is how watch tells the process ending from it cutting the
+    // connection; it is asked for even when not shown.
     let show_exited = events.iter().any(|e| e == "exited");
     if !show_exited {
         events.push("exited".to_owned());
     }
     let hosts = discover();
-    let (host, only_session) = resolve(&hosts, &target)?;
-    let mut conn = connect(host).map_err(|e| format!("host {}: {e}", host.id()))?;
+    let (host, only_session) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
+    let mut conn = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
     writeln!(conn, "{}", json!({ "cmd": "subscribe", "events": events }))
         .map_err(|e| e.to_string())?;
     let mut lines = BufReader::new(conn).lines();
@@ -633,12 +751,12 @@ fn watch(args: &[String]) -> Result<(), String> {
         .next()
         .and_then(Result::ok)
         .and_then(|l| serde_json::from_str(&l).ok())
-        .ok_or("no answer from the host")?;
+        .ok_or("no answer from the process")?;
     if first["ok"].as_bool() != Some(true) {
         return Err(first["error"].as_str().unwrap_or("subscribe failed").to_owned());
     }
     let mut out = io::stdout().lock();
-    let options = render::Options { session: true, time: true };
+    let options = render::Options { session: only_session.is_none(), time: true };
     for line in lines.map_while(Result::ok) {
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
         let exited = event["event"] == "exited";
@@ -648,11 +766,7 @@ fn watch(args: &[String]) -> Result<(), String> {
             continue;
         }
         if !exited || show_exited {
-            let text = if json_out {
-                Some(line)
-            } else {
-                render::event(&event, &options)
-            };
+            let text = if json_out { Some(line) } else { render::event(&event, &options) };
             if let Some(text) = text
                 && writeln!(out, "{text}").and_then(|()| out.flush()).is_err()
             {
@@ -663,10 +777,8 @@ fn watch(args: &[String]) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("the host closed the connection (a watcher that falls behind is disconnected)".into())
+    Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
-
-// ---- plumbing ------------------------------------------------------------
 
 /// The value of `--events` (for `watch`, `log` and `notify`): event names,
 /// `default` for the command's own `default` (what it does without
@@ -699,45 +811,10 @@ fn default_events() -> Vec<String> {
     EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
 }
 
-/// The host `target` names, and the ACP session if it named one.
-fn resolve<'a>(hosts: &'a [Host], target: &str) -> Result<(&'a Host, Option<String>), String> {
-    if let Some(host) = hosts.iter().find(|h| h.id() == target) {
-        return Ok((host, None));
-    }
-    // brnr start refuses a name in use, but editors' hosts can share one.
-    let named: Vec<&Host> = hosts.iter().filter(|h| h.meta["name"] == target).collect();
-    match named[..] {
-        [host] => return Ok((host, None)),
-        [] => {}
-        _ => {
-            let ids: Vec<&str> = named.iter().map(|h| h.id()).collect();
-            return Err(format!("several hosts are named {target}: {}", ids.join(", ")));
-        }
-    }
-    let mut matches = Vec::new();
-    for host in hosts {
-        for s in host.sessions() {
-            let id = s["session_id"].as_str().unwrap_or_default();
-            if id == target {
-                return Ok((host, Some(id.to_owned())));
-            }
-            if id.starts_with(target) {
-                matches.push((host, id.to_owned()));
-            }
-        }
-    }
-    match matches.len() {
-        0 => Err(format!("no host or session matches {target} (see brnr list)")),
-        1 => {
-            let (host, id) = matches.pop().unwrap();
-            Ok((host, Some(id)))
-        }
-        _ => Err(format!("{target} matches several sessions")),
-    }
-}
+// ---- plumbing ------------------------------------------------------------
 
-/// Every host with a metadata file, asking each for its live status. Files
-/// left by a host that no longer exists are removed.
+/// Every process with a metadata file, asking each for its live status.
+/// Files left by a process that no longer exists are removed.
 fn discover() -> Vec<Host> {
     let dir = paths::runtime_dir();
     let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
@@ -789,11 +866,31 @@ fn request_timeout(host: &Host, req: &Value, timeout: Duration) -> io::Result<Va
 
 /// A request whose failure is the command's failure.
 fn call(host: &Host, req: &Value) -> Result<Value, String> {
-    let response = request(host, req).map_err(|e| format!("host {}: {e}", host.id()))?;
+    let response = request(host, req).map_err(|e| format!("process {}: {e}", host.id()))?;
     if response["ok"].as_bool() != Some(true) {
         return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
     }
     Ok(response)
+}
+
+/// A response as `--json` prints it: what it says, without `ok` and
+/// `req_id`.
+fn response_json(mut response: Value) -> Value {
+    if let Some(map) = response.as_object_mut() {
+        map.remove("ok");
+        map.remove("req_id");
+    }
+    response
+}
+
+fn print_json(value: &Value) -> Result<(), String> {
+    println!("{}", serde_json::to_string_pretty(value).unwrap());
+    Ok(())
+}
+
+/// A string, or `?`.
+fn text(v: &Value) -> String {
+    v.as_str().unwrap_or("?").to_owned()
 }
 
 fn read_stdin() -> Result<String, String> {

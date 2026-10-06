@@ -17,6 +17,10 @@ with environment variables:
   NO_RESUME=1       offer session/load but not session/resume
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required
+  FIRST_SESSION=<n> number the sessions it opens from n + 1 (sess-<n+1>)
+
+session/list always has old-1 and sess-1, as an agent's store of sessions
+would.
 
 and by the prompt's text:
 
@@ -109,7 +113,7 @@ if stubborn:
         f.write(str(child.pid))
 
 model = "small"
-sessions = 0
+sessions = int(env("FIRST_SESSION") or 0)
 hanging = None  # id of a prompt that runs until cancelled
 asking = {}  # permission request id -> (prompt id, session)
 
@@ -156,8 +160,8 @@ for line in sys.stdin:
         result(mid, {})
     elif method == "session/list":
         old = {"sessionId": "old-1", "cwd": params.get("cwd"), "title": "An old session", "updatedAt": "2026-10-01T10:00:00Z"}
-        live = [{"sessionId": f"sess-{n}", "cwd": params.get("cwd")} for n in range(1, sessions + 1)]
-        result(mid, {"sessions": [old] + live})
+        known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
+        result(mid, {"sessions": [old, known]})
     elif method == "session/set_mode":
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})
