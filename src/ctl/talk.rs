@@ -278,7 +278,6 @@ struct StartArgs {
     images: Vec<String>,
     mode: Option<String>,
     set: Vec<String>,
-    permissions: Option<String>,
     resume: Option<String>,
     stop_when_idle: Option<u64>,
     wait: bool,
@@ -303,7 +302,6 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--mode" => a.mode = Some(value("--mode")?),
             "--model" => a.set.push(format!("model={}", value("--model")?)),
             "--set" => a.set.push(value("--set")?),
-            "--permissions" => a.permissions = Some(value("--permissions")?),
             "--resume" => a.resume = Some(value("--resume")?),
             "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--stop-when-idle" => {
@@ -394,7 +392,6 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     for (flag, value) in [
         ("--profile", &a.profile),
         ("--mode", &a.mode),
-        ("--permissions", &a.permissions),
         ("--resume", &a.resume),
     ] {
         if let Some(value) = value {

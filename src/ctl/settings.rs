@@ -15,7 +15,7 @@ use brnr::{config, paths, spawn};
 
 use super::{
     Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
-    running_session, text,
+    running_session, text, when,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -286,31 +286,40 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
     let listed = list_sessions(&agent, &cwd.to_string_lossy())?;
 
-    // What brnr knows of each: running (in which process), inactive (a
-    // transcript), or nothing.
+    // What brnr knows of each, in brnr list's terms: a running session's
+    // state and process, `inactive` for one with a transcript, nothing for
+    // one only the agent knows.
     let hosts = discover();
     let past = inactive_sessions(&hosts);
-    let brnr = |id: &str| {
+    let known = |id: &str| -> (Value, Value, Value) {
         for host in &hosts {
-            if host.sessions().iter().any(|x| x["session_id"] == id) {
-                return format!("running ({})", host.id());
+            if let Some(x) = host.sessions().iter().find(|x| x["session_id"] == id) {
+                return (x["state"].clone(), json!(host.id().parse::<u64>().ok()), x["last_active"].clone());
             }
         }
-        if past.iter().any(|p| p["session_id"] == id) { "inactive" } else { "-" }.to_owned()
+        match past.iter().find(|p| p["session_id"] == id) {
+            Some(p) => (json!("inactive"), Value::Null, p["last_active"].clone()),
+            None => (Value::Null, Value::Null, Value::Null),
+        }
     };
-    let rows: Vec<Value> = listed
+    let mut rows: Vec<Value> = listed
         .iter()
         .map(|x| {
             let id = s(&x["sessionId"]);
+            let (state, pid, active) = known(id);
             json!({
                 "session": id,
-                "updated": x["updatedAt"],
-                "brnr": brnr(id),
                 "title": x["title"],
+                "state": state,
+                "pid": pid,
+                // The agent's updatedAt; brnr's own when it has none.
+                "last_active": if x["updatedAt"].is_string() { x["updatedAt"].clone() } else { active },
                 "cwd": x["cwd"],
             })
         })
         .collect();
+    // Most recently active first, like brnr list.
+    rows.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
     if json_out {
         print_json(&json!(rows))?;
         return Ok(ExitCode::SUCCESS);
@@ -319,14 +328,14 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
         println!("the agent knows no sessions in {}", cwd.display());
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = vec![["SESSION", "UPDATED", "BRNR", "TITLE", "CWD"].map(String::from)];
+    let mut table = vec![["SESSION", "TITLE", "STATE", "PID", "LAST ACTIVE", "CWD"].map(String::from)];
     for r in &rows {
-        let updated = r["updated"].as_str().unwrap_or("");
         table.push([
             text(&r["session"]),
-            updated.get(..19).unwrap_or(updated).replace('T', " "),
-            text(&r["brnr"]),
             r["title"].as_str().unwrap_or("-").to_owned(),
+            r["state"].as_str().unwrap_or("-").to_owned(),
+            r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
+            r["last_active"].as_str().map_or("-".to_owned(), when),
             text(&r["cwd"]),
         ]);
     }

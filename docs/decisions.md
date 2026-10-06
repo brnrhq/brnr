@@ -585,3 +585,67 @@ together: the foreground shows the whole session.
 picks the only request waiting, as it no longer picks a session (see 37).
 `pending [<session>]` keeps its filter, and `--option` its default (allow, or
 reject, once).
+
+## 46. One row shape for session tables; `ps` is about the process
+
+`list` and `sessions` each had their own columns (`UPDATED` vs `LAST
+ACTIVE`, a `BRNR` column folding state and pid into one cell, timestamps
+formatted two ways) and their own order (hosts as discovered vs the agent's
+order). And `ps` had a CWD column showing the *process's* cwd — where the
+editor happened to start brnr, often `/` — beside `list`'s per-session cwds.
+
+**Chosen:** every table of sessions has the same columns, in the same order,
+formatted the same way: SESSION, TITLE, STATE, PID, (AGENT,) LAST ACTIVE,
+CWD — `sessions` drops AGENT, which it was given on the command line. The
+`BRNR` column (see 36) becomes STATE and PID in `list`'s terms: a running
+session's live state (`idle`, `busy`, `waiting`), `inactive` for a
+transcript, `-` for one only the agent knows; `last_active` is the agent's
+`updatedAt`, or brnr's own when the agent gives none. Rows are ordered most
+recently active first, everywhere. `ps` loses its CWD column (sessions have
+cwds; the JSON keeps the process's).
+
+## 47. No client-side approval policy; the agent's mode is the policy
+
+brnr had its own permissions policy for headless sessions (`--permissions
+ask|auto-allow|auto-deny`, per ACP tool kind in the profile): how the host
+answers `session/request_permission` when no editor is attached. It overlapped
+the agent's own session mode — Claude's `acceptEdits` or `bypassPermissions`
+says when to ask at all — and the two composed confusingly: mode `default`
+plus `auto-allow` approved everything one round-trip at a time, `plan` plus
+`auto-allow` approved leaving plan mode, and neither setting knew of the
+other.
+
+- **A. Keep both layers.** Agent-agnostic rules by tool kind, auditable
+  auto-answers in the transcript; but two policies for one question.
+- **B. One policy: the agent's.** How much to ask is the agent's mode, set at
+  start (`brnr start --mode acceptEdits`, `mode` in the profile, applied
+  before the first prompt) or later (`brnr mode`). brnr always asks when the
+  agent does: a request waits for `brnr approve`/`deny` or a bridge, and
+  `permission_timeout` denies what nobody answers.
+
+**Chosen: B.** The `permissions` profile key, the `--permissions` flag and
+the by-kind rules are gone; a config that still has them fails to load (and
+`brnr doctor` says so). What brnr does headless is no longer configuration,
+so it needs no querying either.
+
+## 48. Injected messages are shown to the editor as a tool call
+
+The editor was shown an injected message (`brnr send`, attached context) as
+a synthesized `user_message_chunk`. Editors don't render one that arrives
+out of turn: in ACP's model user messages are what the *client* sends, so an
+unsolicited chunk mid-turn (or between turns) has no place in their
+transcript and is dropped or misplaced.
+
+- **A. `user_message_chunk`.** Semantically honest, but not rendered.
+- **B. `agent_message_chunk` / `agent_thought_chunk`.** Rendered, but the
+  text appears as the agent's own words.
+- **C. A completed `tool_call`.** The one update editors render as a block
+  of its own at any point in a turn: title, status, content.
+
+**Chosen: C.** One `session/update` with `sessionUpdate: tool_call`,
+`toolCallId: brnr-echo-<n>`, kind `other`, status `completed`, titled
+`Message via brnr` (or `Context via brnr`), the message's content blocks as
+its content. Only the editor sees it: events, bridges and the transcript's
+own story keep `user_message` with `by: control`. The echo still lands at
+send time — when the agent takes a mid-turn message up remains its business
+(see the acp.rs module notes).

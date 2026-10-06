@@ -4,9 +4,6 @@
 //! [profiles.slack]
 //! agent = ["brnr-claude-adapter"]    # used when no agent is given after --
 //! cwd = "~/work/project"             # sessions started headless (brnr start)
-//! permissions = "ask"                # ask | auto-allow | auto-deny, with no editor attached
-//! # or by ACP tool kind, with a default for the rest:
-//! # permissions = { default = "ask", read = "auto-allow", search = "auto-allow" }
 //! permission_timeout = 600           # seconds until an unanswered request is denied
 //! mode = "plan"                      # sessions started headless: the agent's mode,
 //! config = { model = "opus" }        # and config options, before the first prompt
@@ -47,7 +44,6 @@ struct ConfigFile {
 pub struct Profile {
     pub agent: Option<Vec<String>>,
     pub cwd: Option<String>,
-    pub permissions: Option<PermissionsSpec>,
     pub permission_timeout: Option<u64>,
     pub mode: Option<String>,
     pub config: Option<BTreeMap<String, String>>,
@@ -57,14 +53,6 @@ pub struct Profile {
     pub bridges: Vec<Bridge>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
-}
-
-/// `permissions`: one policy, or one per ACP tool kind plus a `default`.
-#[derive(Clone, Deserialize)]
-#[serde(untagged)]
-pub enum PermissionsSpec {
-    One(String),
-    ByKind(BTreeMap<String, String>),
 }
 
 /// An MCP server for sessions the host opens: stdio (`command`) or remote

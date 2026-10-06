@@ -7,18 +7,18 @@
 //! - The editor's `initialize` loses the `fs` and `terminal` client
 //!   capabilities ([`DROPPED_CAPABILITIES`]).
 //! - An injected prompt goes to the agent as a `session/prompt` with a host
-//!   id (`brnr-<n>`). Its response is kept from the editor, and the
-//!   editor is shown the text as a `user_message_chunk` as it is sent. ACP
-//!   says nothing about when an agent takes up a prompt sent mid-turn
+//!   id (`brnr-<n>`). Its response is kept from the editor, and the editor
+//!   is shown the text as it is sent, as a completed tool call (`echo`).
+//!   ACP says nothing about when an agent takes up a prompt sent mid-turn
 //!   (claude-agent-acp folds it into the running turn at its next step), so
 //!   the moment it is sent is the only point the host can show.
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
 //! - With no editor attached, the host answers what the agent asks of its
-//!   client. Permission requests follow the `permissions` rules (by tool
-//!   kind), and with `ask` they wait for an approve or deny from a bridge, or
-//!   until `permission_timeout` denies them. Elicitation is declined, and
-//!   anything else gets "method not found".
+//!   client. Permission requests wait for an approve or deny from a bridge
+//!   or the CLI, until `permission_timeout` denies them; how much the agent
+//!   asks is the agent's mode (`--mode`, see 47 in the decision log).
+//!   Elicitation is declined, and anything else gets "method not found".
 //! - While `session/load` replays a resumed session's history, the replayed
 //!   updates are neither recorded nor turned into events: the transcript has
 //!   them already.
@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{Map, Value, json};
 
 use super::state::SessionState;
-use super::{Host, Permissions, id_key, text_block};
+use super::{Host, id_key, text_block};
 use crate::frame;
 use crate::log::Dir;
 
@@ -278,13 +278,12 @@ impl Host {
             self.sessions[i].context = context;
             return None;
         };
-        blocks.extend(context.iter().map(|t| text_block(t)));
+        let attached: Vec<Value> = context.iter().map(|t| text_block(t)).collect();
+        blocks.extend(attached.iter().cloned());
         let event =
             json!({ "event": "context-attached", "to": "editor-prompt", "count": context.len() });
         self.sink.note(Some(session), event);
-        for text in &context {
-            self.echo(session, text);
-        }
+        self.echo(session, "Context via brnr", &attached);
         Some(serde_json::to_vec(&msg).unwrap())
     }
 
@@ -465,26 +464,10 @@ impl Host {
     fn answer_as_client(&mut self, mut req: AgentRequest) {
         match req.method.as_str() {
             "session/request_permission" => {
-                let handle = req.handle.clone().unwrap();
-                let kind = req.params["toolCall"]["kind"].as_str().unwrap_or("other");
-                let rule = self.permissions.for_kind(kind);
-                if matches!(rule, Permissions::Ask) {
-                    req.deadline = self.permission_timeout.map(|t| Instant::now() + t);
-                }
+                req.deadline = self.permission_timeout.map(|t| Instant::now() + t);
                 let event = permission_event(&req, "headless");
                 self.agent_requests.push(req);
                 self.emit(event);
-                let policy = match rule {
-                    Permissions::Ask => return,
-                    Permissions::AutoAllow => Choice::Allow,
-                    Permissions::AutoDeny => Choice::Deny,
-                };
-                if let Err(err) = self.resolve_permission(&handle, policy, None, "policy") {
-                    self.sink.note(
-                        None,
-                        json!({ "event": "policy-failed", "request": handle, "error": err }),
-                    );
-                }
             }
             "elicitation/create" => {
                 self.respond(&req, json!({ "result": { "action": "decline" } }))
@@ -743,9 +726,7 @@ impl Host {
         self.prompt_session.insert(key.clone(), session.clone());
         self.client_requests.insert(key.clone(), Some(session.clone()));
         let text = prompt_text(Some(&json!(blocks)));
-        for block in &blocks {
-            self.echo_block(&session, block);
-        }
+        self.echo(&session, "Message via brnr", &blocks);
         self.emit(json!({
             "event": "user_message",
             "session": session,
@@ -806,29 +787,39 @@ impl Host {
         self.cancel_permissions(session);
     }
 
-    /// Shows the editor an injected message as the user's.
-    fn echo(&mut self, session: &str, text: &str) {
-        self.echo_block(session, &text_block(text));
-    }
-
-    fn echo_block(&mut self, session: &str, block: &Value) {
+    /// Shows the editor an injected message, as a completed tool call:
+    /// the one update an editor renders as a block of its own wherever the
+    /// turn is. A `user_message_chunk` out of turn is not rendered (see 48
+    /// in the decision log).
+    fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
         if let Some(i) = self.find(session) {
             self.flush_agent_message(i);
         }
+        if !self.editor_attached() {
+            return;
+        }
+        self.next_id += 1;
+        let content: Vec<Value> =
+            blocks.iter().map(|b| json!({ "type": "content", "content": b })).collect();
         let msg = json!({
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": {
                 "sessionId": session,
-                "update": { "sessionUpdate": "user_message_chunk", "content": block },
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": format!("brnr-echo-{}", self.next_id),
+                    "title": title,
+                    "kind": "other",
+                    "status": "completed",
+                    "content": content,
+                },
             },
         });
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
-        if self.editor_attached() {
-            self.record(Some(session), Dir::ControlToEditor, &line);
-            self.send_link(frame::DATA, &line);
-        }
+        self.record(Some(session), Dir::ControlToEditor, &line);
+        self.send_link(frame::DATA, &line);
     }
 
     // ---- sessions ------------------------------------------------------

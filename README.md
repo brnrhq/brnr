@@ -89,7 +89,8 @@ them, with the agent's title for each, and `start --json` prints the new one
 has ended too; commands that need it running say so when it isn't.
 
 Injected messages reach the agent as ordinary user messages, and the editor
-shows them as such (`user_message_chunk`). When an agent takes up a message
+shows them as a completed tool call ("Message via brnr"), the one update
+editors render anywhere in a turn. When an agent takes up a message
 sent mid-turn is the agent's business: claude-agent-acp, for one, folds it into
 the running turn. Every message gets an id (`m<n>`), which `send --wait` uses to
 find the turn that answers it.
@@ -140,9 +141,10 @@ brnr stop 4466                     # stdin closed, then SIGTERM, then SIGKILL
 ```
 
 `brnr sessions` starts the agent just to ask it (`session/list`), so it
-includes sessions started outside brnr and needs nothing running; its BRNR
-column says which are running, and in which process, and which brnr has a
-transcript of (`inactive`). `--resume` takes an id brnr knows, or any id the
+includes sessions started outside brnr and needs nothing running; its STATE
+and PID columns say, as `brnr list` would, which are running and in which
+process, which brnr has a transcript of (`inactive`), and which only the
+agent knows (`-`). `--resume` takes an id brnr knows, or any id the
 agent knows, which it resumes in `--cwd` (or here) with the agent after
 `--` (or the profile's). `brnr stop` signals the agent's whole process group,
 so whatever the agent started goes with it.
@@ -194,10 +196,11 @@ as the agent did.
 recording the replayed history again), in the session's cwd, with the agent it
 last had, and appends to the same transcript.
 
-With no editor attached brnr is the agent's client: approvals follow the
-`permissions` rules (`ask` waits for `brnr approve`/`deny`, a bridge, or
-`permission_timeout`, which denies), elicitation is declined, and anything
-else is answered with "method not found". If the agent needs a login, the start
+With no editor attached brnr is the agent's client: approvals wait for
+`brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody
+answers), elicitation is declined, and anything else is answered with
+"method not found". How much the agent asks is the agent's own setting:
+its mode (`--mode`, `brnr mode`). If the agent needs a login, the start
 fails and says so: log in with the agent's own CLI first. The editor's `fs` and
 `terminal` client capabilities are removed from `initialize` up front (ACP v2
 drops them), so the agent never comes to rely on something only an editor can
@@ -211,8 +214,6 @@ provide.
 [profiles.work]
 agent = ["brnr-claude-adapter"]
 cwd = "~/work/project"              # for brnr start
-permissions = "ask"                 # ask | auto-allow | auto-deny, or by tool kind:
-# permissions = { default = "ask", read = "auto-allow", search = "auto-allow" }
 permission_timeout = 600            # deny what nobody answered in 10 minutes
 mode = "plan"                       # headless sessions: mode and config options
 config = { model = "opus" }         #   applied before the first prompt

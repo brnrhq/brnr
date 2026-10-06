@@ -58,7 +58,7 @@ use requests::{HostRequest, SetupStep};
 /// --ready-fd, --proxy-pid, --start-timeout and --sigmask.
 const USAGE: &str = "usage: brnr host [--profile <name>] [--cwd <dir>] \
 [--prompt <text> | --prompt -] [--resume <session id>] [--mode <mode>] [--set <option>=<value>]... \
-[--permissions <policy>] [--stop-when-idle <seconds>] [--quiet] [--json] [-- <agent> [args...]]
+[--stop-when-idle <seconds>] [--quiet] [--json] [-- <agent> [args...]]
 
 Runs a headless ACP session in the foreground (as brnr start --foreground
 does): starts the agent, opens a session in the current directory (or
@@ -83,100 +83,6 @@ const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
-/// How the host answers permission requests while no editor is attached.
-#[derive(Clone, Copy)]
-pub enum Permissions {
-    /// Tell the bridges and wait for an approve or deny.
-    Ask,
-    AutoAllow,
-    AutoDeny,
-}
-
-impl Permissions {
-    pub fn parse(name: &str) -> Result<Permissions, String> {
-        match name {
-            "ask" => Ok(Permissions::Ask),
-            "auto-allow" => Ok(Permissions::AutoAllow),
-            "auto-deny" => Ok(Permissions::AutoDeny),
-            other => Err(format!("unknown permissions policy: {other}")),
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Permissions::Ask => "ask",
-            Permissions::AutoAllow => "auto-allow",
-            Permissions::AutoDeny => "auto-deny",
-        }
-    }
-}
-
-/// ACP's tool kinds, which permission rules can name.
-pub const TOOL_KINDS: &[&str] = &[
-    "read",
-    "edit",
-    "delete",
-    "move",
-    "search",
-    "execute",
-    "think",
-    "fetch",
-    "switch_mode",
-    "other",
-];
-
-/// The permission policy for each tool kind, with a default for the rest.
-#[derive(Clone)]
-pub struct PermissionRules {
-    pub default: Permissions,
-    pub kinds: Vec<(String, Permissions)>,
-}
-
-impl PermissionRules {
-    pub fn parse(spec: Option<&config::PermissionsSpec>) -> Result<PermissionRules, String> {
-        let mut rules = PermissionRules { default: Permissions::Ask, kinds: Vec::new() };
-        match spec {
-            None => {}
-            Some(config::PermissionsSpec::One(policy)) => {
-                rules.default = Permissions::parse(policy)?
-            }
-            Some(config::PermissionsSpec::ByKind(map)) => {
-                for (kind, policy) in map {
-                    let policy = Permissions::parse(policy)?;
-                    if kind == "default" {
-                        rules.default = policy;
-                    } else if TOOL_KINDS.contains(&kind.as_str()) {
-                        rules.kinds.push((kind.clone(), policy));
-                    } else {
-                        let kinds = TOOL_KINDS.join(", ");
-                        return Err(format!(
-                            "unknown tool kind {kind:?} (kinds: default, {kinds})"
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(rules)
-    }
-
-    pub fn for_kind(&self, kind: &str) -> Permissions {
-        self.kinds.iter().find(|(k, _)| k == kind).map_or(self.default, |(_, p)| *p)
-    }
-
-    /// `"ask"`, or `{"default": "ask", "read": "auto-allow", …}`.
-    pub fn describe(&self) -> Value {
-        if self.kinds.is_empty() {
-            return json!(self.default.name());
-        }
-        let mut map = serde_json::Map::new();
-        map.insert("default".into(), json!(self.default.name()));
-        for (kind, policy) in &self.kinds {
-            map.insert(kind.clone(), json!(policy.name()));
-        }
-        Value::Object(map)
-    }
-}
-
 /// Passed by `brnr acp` or `brnr start`; not a user interface.
 #[derive(Default)]
 struct Args {
@@ -192,7 +98,6 @@ struct Args {
     resume: Option<String>,
     mode: Option<String>,
     set: Vec<(String, String)>,
-    permissions: Option<String>,
     stop_when_idle: Option<u64>,
     /// Run for `brnr start --foreground`: as by hand, with brnr waiting.
     foreground: bool,
@@ -261,7 +166,6 @@ const OPTIONS: &[&str] = &[
     "--resume",
     "--mode",
     "--set",
-    "--permissions",
     "--stop-when-idle",
 ];
 
@@ -336,7 +240,6 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<S
                 Some((k, v)) => a.set.push((k.to_owned(), v.to_owned())),
                 None => return Err(Some(format!("--set takes <option>=<value>, not {value}"))),
             },
-            "--permissions" => a.permissions = Some(value),
             "--sigmask" => {
                 a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
             }
@@ -414,7 +317,6 @@ struct Host {
     startup_reported: bool,
     info: Value,
     host_id: String,
-    permissions: PermissionRules,
     /// How long an unanswered permission request waits before it is denied.
     permission_timeout: Option<Duration>,
     agent_pid: pid_t,
@@ -500,11 +402,6 @@ struct Host {
 impl Host {
     fn start(a: Args, link: Option<UnixStream>, ready: Option<File>) -> Result<Host, (String, u8)> {
         let profile = config::load(a.profile.as_deref()).map_err(|e| (e, 2))?;
-        let mut permissions =
-            PermissionRules::parse(profile.permissions.as_ref()).map_err(|e| (e, 2))?;
-        if let Some(policy) = &a.permissions {
-            permissions.default = Permissions::parse(policy).map_err(|e| (e, 2))?;
-        }
         let mcp_servers = profile
             .mcp_servers
             .iter()
@@ -600,7 +497,6 @@ impl Host {
             "cwd": cwd.to_string_lossy(),
             "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
             "socket": sock_path.to_string_lossy(),
-            "permissions": permissions.describe(),
             "started": log::rfc3339(started),
         });
         write_atomic(&meta_path, format!("{info:#}\n").as_bytes());
@@ -648,7 +544,6 @@ impl Host {
             startup_reported: false,
             info,
             host_id,
-            permissions,
             permission_timeout: profile.permission_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: Some(agent_in),

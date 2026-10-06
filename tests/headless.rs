@@ -442,6 +442,23 @@ fn acp_is_what_an_editor_runs() {
     assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
     assert!(env.ok(&["ps"]).contains("editor"));
     assert!(env.ok(&["list"]).contains("sess-1"));
+    // A message sent from outside is shown to the editor as a completed
+    // tool call; its response (to brnr's own prompt id) is kept from it.
+    env.ok(&["send", "sess-1", "reply hi"]);
+    let echo = loop {
+        let mut line = String::new();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no echo");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        let update = &msg["params"]["update"];
+        if update["sessionUpdate"] == "tool_call" {
+            break update.clone();
+        }
+        assert!(msg.get("id").is_none(), "the editor saw brnr's prompt: {line}");
+    };
+    assert!(echo["toolCallId"].as_str().unwrap().starts_with("brnr-echo-"), "{echo}");
+    assert_eq!(echo["title"], "Message via brnr");
+    assert_eq!(echo["status"], "completed");
+    assert_eq!(echo["content"][0]["content"]["text"], "reply hi");
     let host = env.host_pid();
     drop(to_agent); // The editor goes away, and the agent with it.
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");

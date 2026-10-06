@@ -392,13 +392,16 @@ fn sessions_lists_the_agents_sessions() {
     // An agent of its own, started to ask: no process of brnr's needed.
     let out = env.ok(&["sessions", "--", AGENT]);
     assert!(out.contains("old-1") && out.contains("An old session"), "{out}");
-    // What brnr knows of each.
+    // What brnr knows of each, in brnr list's terms.
     let row = |id: &str| out.lines().find(|l| l.starts_with(id)).unwrap_or_else(|| panic!("{out}"));
-    assert!(!row("old-1").contains("running") && !row("old-1").contains("inactive"), "{out}");
-    assert!(row("sess-1").contains(&format!("running ({})", env.host_pid())), "{out}");
+    assert!(!row("old-1").contains("idle") && !row("old-1").contains("inactive"), "{out}");
+    assert!(row("sess-1").contains("idle") && row("sess-1").contains(&env.host_pid().to_string()), "{out}");
     let json: Value = serde_json::from_str(&env.ok(&["sessions", "--json", "--", AGENT])).unwrap();
-    assert_eq!(json[0]["session"], "old-1");
-    assert_eq!(json[0]["brnr"], "-");
+    // Most recently active first: the running session, then the agent's old one.
+    assert_eq!(json[0]["session"], "sess-1");
+    assert_eq!(json[0]["pid"].as_i64(), Some(i64::from(env.host_pid())));
+    assert_eq!(json[1]["session"], "old-1");
+    assert!(json[1]["state"].is_null() && json[1]["pid"].is_null(), "{json}");
     assert_eq!(env.hosts().len(), 1, "an agent was left running");
 }
 
@@ -465,30 +468,6 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
         .into_iter()
         .find(|c| c["id"] == request && c.get("method").is_none())
         .map(|c| c["result"]["outcome"].clone())
-}
-
-#[test]
-fn permission_rules_by_kind() {
-    let env = Env::new("c-rules");
-    env.write_config(
-        "[profiles.default]\npermissions = { default = \"ask\", read = \"auto-allow\" }\n",
-    );
-    env.start(&[]);
-    env.ok(&["send", "sess-1", "perm read"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
-    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending", "sess-1"]).contains("p2")));
-    assert!(outcome(&env, "perm-2").is_none(), "edit was answered without asking");
-}
-
-#[test]
-fn permissions_flag_overrides_the_default() {
-    let env = Env::new("c-permflag");
-    env.start(&["--permissions", "auto-deny"]);
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
-    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
 }
 
 #[test]
@@ -717,10 +696,13 @@ fn ps_lists_the_processes() {
     assert_eq!(ps[0]["owner"], "headless");
     assert_eq!(ps[0]["sessions"], serde_json::json!(["sess-1", "sess-2"]));
     assert!(env.ok(&["ps"]).contains("sess-1, sess-2"));
+    // Most recently active first; both just opened, so take them by id.
     let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
-    assert_eq!(list[0]["title"], "Fake session");
-    assert_eq!(list[1]["session"], "sess-2");
-    assert_eq!(list[1]["pid"], ps[0]["pid"]);
+    let row = |id: &str| {
+        list.as_array().unwrap().iter().find(|r| r["session"] == id).unwrap_or_else(|| panic!("{list}"))
+    };
+    assert_eq!(row("sess-1")["title"], "Fake session");
+    assert_eq!(row("sess-2")["pid"], ps[0]["pid"]);
     // A session's watch and the process's.
     assert!(env.fails(&["watch"]).contains("<session> or --pid"));
     assert!(env.fails(&["stop", "sess-1"]).contains("no brnr process sess-1"));

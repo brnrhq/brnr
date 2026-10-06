@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use brnr::host::{PermissionRules, alive, check_bridge};
+use brnr::host::{alive, check_bridge};
 use brnr::{config, paths, spawn};
 
 use super::{Host, USAGE, request};
@@ -308,9 +308,6 @@ fn config_file(r: &mut Report) {
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
         let mut problems = Vec::new();
-        if let Err(e) = PermissionRules::parse(profile.permissions.as_ref()) {
-            problems.push(e);
-        }
         for server in &profile.mcp_servers {
             match server.to_acp() {
                 Err(e) => problems.push(e),

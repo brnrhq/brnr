@@ -44,8 +44,8 @@ const USAGE: &str = "usage:
 
   brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
              [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--permissions ask|auto-allow|auto-deny] [--stop-when-idle <s>]
-             [--resume <session>] [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
+             [--stop-when-idle <s>] [--resume <session>]
+             [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
              [-- <agent> [args...]]
              a headless session, in the background (or the foreground)
 
@@ -283,7 +283,10 @@ fn ps(args: &[String]) -> Result<(), String> {
         println!("no brnr processes");
         return Ok(());
     }
-    let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP", "CWD"].map(String::from)];
+    // Each session has a cwd of its own (brnr list); the process's is only
+    // where the editor happened to start it, so the table leaves it to
+    // --json.
+    let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
         let sessions: Vec<String> = r["sessions"].as_array().into_iter().flatten().map(text).collect();
         table.push([
@@ -292,7 +295,6 @@ fn ps(args: &[String]) -> Result<(), String> {
             text(&r["agent"]),
             if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
             r["uptime_seconds"].as_u64().map_or("?".to_owned(), duration),
-            text(&r["cwd"]),
         ]);
     }
     print_table(table);
@@ -350,6 +352,8 @@ fn list(args: &[String]) -> Result<(), String> {
             }));
         }
     }
+    // Most recently active first, like brnr sessions, however many processes.
+    rows.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
     if json_out {
         return print_json(&json!(rows));
     }

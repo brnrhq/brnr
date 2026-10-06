@@ -140,7 +140,6 @@ agent = ["true"]
 [profiles.bad]
 agent = ["no-such-agent-brnr"]
 cwd = "/no/such/dir"
-permissions = "maybe"
 
 [[profiles.bad.bridges]]
 command = ["true"]
@@ -152,8 +151,8 @@ events = ["nope"]
     assert!(!ok, "{text}");
     assert!(text.contains("ok    profile good"), "{text}");
     let fails = lines(&text, "FAIL  profile bad").len();
-    assert_eq!(fails, 4, "{text}");
-    for problem in ["no-such-agent-brnr not found", "/no/such/dir", "maybe", "nope"] {
+    assert_eq!(fails, 3, "{text}");
+    for problem in ["no-such-agent-brnr not found", "/no/such/dir", "nope"] {
         assert!(text.contains(problem), "missing {problem}: {text}");
     }
 }
