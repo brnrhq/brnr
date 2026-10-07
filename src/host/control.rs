@@ -61,7 +61,7 @@ use super::requests::PeerOp;
 use super::{Ev, Host};
 use crate::config::Bridge;
 use crate::log::{self, Dir};
-use crate::{json, paths, render};
+use crate::{json, paths, render, spawn};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
@@ -230,7 +230,10 @@ impl Host {
         tx: &Sender<Ev>,
     ) -> Result<(), String> {
         let label = format!("{}#{n}", bridge.command[0]);
-        let mut cmd = Command::new(paths::expand(&bridge.command[0]));
+        // A bare name is looked for next to brnr first, as an agent's is: so
+        // `brnr` is this brnr, whatever the editor's PATH.
+        let program = paths::expand(&bridge.command[0]);
+        let mut cmd = Command::new(spawn::bundled(program.as_os_str()).unwrap_or(program));
         cmd.args(&bridge.command[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
