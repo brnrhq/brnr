@@ -12,6 +12,8 @@ with environment variables:
   STUBBORN=child    only the child ignores SIGTERM
   CHILD_PID=<file>  where the child's pid is written
   FLOOD=<n>         stream n agent_message_chunk updates for every prompt
+  NOISE=<n>         write n notifications brnr doesn't interpret (500 bytes
+                    each) for every prompt
   PERMISSION=1      ask permission (kind edit) before answering a prompt
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
@@ -29,6 +31,9 @@ with environment variables:
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
   LEGACY_MODELS=1   also offer the unstable models and session/set_model
+  STDERR=<text>     write text on stderr as it starts
+  EXIT=<code>       exit with code as it starts (after STDERR), reading
+                    nothing
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
@@ -44,6 +49,7 @@ and by the prompt's text:
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
+  many <n>          answers with n messages, each of its own
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
   settings [<m>]    reports its config options, with model m if given (none:
@@ -154,6 +160,8 @@ def run(mid, sid, text):
     global hanging, model
     for _ in range(int(env("FLOOD", "0"))):
         say(sid, "y" * 500)
+    for _ in range(int(env("NOISE", "0"))):
+        send({"jsonrpc": "2.0", "method": "_fake/noise", "params": {"pad": "n" * 500}})
     words = text.split()
     first = words[0] if words else ""
     if first == "hang":
@@ -166,6 +174,10 @@ def run(mid, sid, text):
         end_turn(mid)
     elif first == "big":
         say(sid, "z" * int(words[1]))
+        end_turn(mid)
+    elif first == "many":
+        for i in range(int(words[1])):
+            update(sid, {"sessionUpdate": "agent_message_chunk", "messageId": f"msg-{i}", "content": {"type": "text", "text": f"message {i}"}})
         end_turn(mid)
     elif first == "think":
         say(sid, "pondering", "agent_thought_chunk")
@@ -234,6 +246,12 @@ def run(mid, sid, text):
     else:
         end_turn(mid)
 
+
+if env("STDERR"):
+    sys.stderr.write(env("STDERR") + "\n")
+    sys.stderr.flush()
+if env("EXIT"):
+    sys.exit(int(env("EXIT")))
 
 if env("LEAVE_GROUP"):
     os.setpgid(0, os.getpgid(os.getppid()))

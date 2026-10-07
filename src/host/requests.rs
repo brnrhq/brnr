@@ -315,7 +315,7 @@ impl Host {
         self.start_deadline = None;
         self.start_done = true;
         if self.foreground {
-            eprintln!("brnr: session {}", crate::render::clean(&session));
+            self.say(format!("brnr: session {}", crate::render::clean(&session)));
         }
         if let (Some(prompt), Some(id)) = (self.prompt.take(), message) {
             self.send_prompt(i, Held { id, text: prompt.text, blocks: prompt.blocks });
@@ -331,13 +331,15 @@ impl Host {
 
     /// Reports `error` to brnr start if it is still waiting, and in the
     /// foreground on stderr: a step after the session opened (its mode, a
-    /// config option) fails the start as much as opening it does.
+    /// config option) fails the start as much as opening it does. It ends
+    /// with the agent's last lines on stderr (ADR 10).
     pub(super) fn startup_failed(&mut self, error: &str) {
+        let error = self.with_stderr(error);
         if self.foreground && !self.start_done && !self.startup_reported {
             self.startup_reported = true;
-            eprintln!("brnr: {}", crate::render::clean(error));
+            self.say(format!("brnr: {}", crate::render::clean(&error)));
         }
-        self.report_failure(error);
+        self.report_failure(&error);
     }
 
     /// The agent needs a login, which a headless host can't do: say how.

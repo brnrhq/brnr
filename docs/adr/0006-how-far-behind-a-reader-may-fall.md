@@ -1,9 +1,8 @@
 # 6. How far behind a reader may fall
 
-Accepted 2026-10-07, from former decision 25. Partly implemented: the limit
-for peers is; backpressure on the editor link, the agent's stdin and the
-host's own channels, the removal of `LINK_WRITE_TIMEOUT`, and the
-foreground's bounded buffer are not.
+Accepted 2026-10-07, from former decision 25. Implemented. While the
+agent's stdin holds the link back, what the proxy sends behind the editor's
+input (a signal, stdin's EOF) waits with it; the proxy going away doesn't.
 Resolves review item 1, and with ADR 9 review item 3.
 
 ## Context

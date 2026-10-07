@@ -1,6 +1,6 @@
 # 10. The agent's stderr
 
-Accepted 2026-10-07. Not yet implemented for headless sessions.
+Accepted 2026-10-07. Implemented.
 Resolves review item 9.
 
 ## Context

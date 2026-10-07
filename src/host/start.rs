@@ -18,7 +18,7 @@ use std::io::{self, ErrorKind, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::thread;
 
 use serde_json::json;
@@ -39,7 +39,7 @@ impl Host {
         &mut self,
         channel: UnixStream,
         events: Vec<String>,
-        tx: &Sender<Ev>,
+        tx: &SyncSender<Ev>,
     ) -> io::Result<()> {
         let (writer, reader, closer) =
             (channel.try_clone()?, channel.try_clone()?, channel.try_clone()?);

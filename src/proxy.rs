@@ -234,7 +234,7 @@ fn relay_stdin(link: Link) {
 /// `write_all` that also works on a non-blocking descriptor, which an
 /// editor may give us: O_NONBLOCK belongs to the open file, which the editor
 /// may share, so it is waited out rather than cleared.
-fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
         match out.write(bytes) {
             Ok(0) => return Err(ErrorKind::WriteZero.into()),

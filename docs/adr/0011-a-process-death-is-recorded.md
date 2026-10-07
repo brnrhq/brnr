@@ -1,7 +1,8 @@
 # 11. A process's own death is recorded
 
-Accepted 2026-10-07. Not yet implemented. The cause of the deaths below is
-still to be found.
+Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
+be found. What can't be recorded: a panic on the logger's own thread, and an
+abort (a stack overflow), which runs no hook.
 From the review's "to investigate".
 
 ## Context

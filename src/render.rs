@@ -99,7 +99,11 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
         }
         "session_closed" => format!("session closed ({})", s(&e["by"])),
-        "exited" => format!("agent exited: {}", e["status"]),
+        // With a reason when brnr itself died (a panic, ADR 11).
+        "exited" => match e["reason"].as_str() {
+            Some(reason) => format!("agent exited: {}; {reason}", e["status"]),
+            None => format!("agent exited: {}", e["status"]),
+        },
         // An ACP message (`--events acp`): the direction and the message.
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
         _ => return None,

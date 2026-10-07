@@ -1,7 +1,6 @@
 # 9. `start --foreground`
 
-Accepted (former decision 45); reviewed 2026-10-07. Implemented, except: a
-closed or slow stdout (below), and the agent's stderr (ADR 10).
+Accepted (former decision 45); reviewed 2026-10-07. Implemented.
 Resolves review item 3 with ADR 6.
 
 ## Context
