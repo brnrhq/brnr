@@ -666,11 +666,12 @@ impl Host {
     }
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
-    /// process stops with its last session. Idle time counts from the start
-    /// too, so a session started without a prompt doesn't run forever.
+    /// process stops with its last session. Idle time counts from the
+    /// commit too, so a session started without a prompt doesn't run
+    /// forever; one with a prompt is busy from then.
     pub(super) fn fire_idle_timers(&mut self, now: Instant) {
         let Some(limit) = self.stop_when_idle else { return };
-        if self.editor_attached() || !self.started_ok || self.stop_requested {
+        if self.editor_attached() || !self.start_done || self.stop_requested {
             return;
         }
         for i in 0..self.sessions.len() {
@@ -705,7 +706,7 @@ impl Host {
     /// The next idle session's time running out, for the event loop.
     pub(super) fn next_idle_deadline(&self) -> Option<Instant> {
         let limit = self.stop_when_idle?;
-        if self.editor_attached() || !self.started_ok || self.stop_requested {
+        if self.editor_attached() || !self.start_done || self.stop_requested {
             return None;
         }
         // A session that just went idle has no `idle_since` until the loop
@@ -754,7 +755,6 @@ impl Host {
         });
         let prompt = Prompt { id: key.clone(), injected: true, message: Some(held.id.clone()) };
         self.start_turn(i, prompt);
-        self.started_ok = true;
         self.prompt_session.insert(key.clone(), session.clone());
         self.client_requests.insert(key.clone(), Some(session.clone()));
         let text = prompt_text(Some(&json!(blocks)));

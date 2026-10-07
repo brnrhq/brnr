@@ -9,14 +9,11 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command};
 
-/// `brnr host`: the running binary, as the host. It is told the path brnr
-/// was started by, so it looks for adapters where this process does (see
-/// [`bundled`]).
+/// `brnr host`: the running binary, as the host. Its argv is only that: the
+/// rest, the agent's command among it, goes in the start request (see
+/// request.rs), which has the adapter found already (see [`bundled`]).
 pub fn host_command() -> io::Result<Command> {
     let mut cmd = Command::new(env::current_exe()?);
-    if let Some(started_as) = started_as() {
-        cmd.arg0(started_as);
-    }
     cmd.arg("host");
     Ok(cmd)
 }
@@ -65,7 +62,7 @@ fn started_as() -> Option<PathBuf> {
 /// process group and out from under us in the process tree. `fd` is moved
 /// to `target` in the new process, the only descriptor it gets from us
 /// besides what `cmd` sets up for stdio. Returns the new process's stdin if
-/// `cmd` asked for a pipe.
+/// `cmd` asked for a pipe (the host's, for its start request).
 pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Option<ChildStdin>> {
     unsafe {
         cmd.pre_exec(move || {

@@ -16,7 +16,9 @@ with environment variables:
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
   NO_IMAGE=1        don't take images in prompts
-  AUTH=1            session/new fails: authentication required
+  AUTH=1            session/new fails: authentication required, unless
+                    authenticate with fake-login came first
+  AUTH_FAIL=1       authenticate fails
   FIRST_SESSION=<n> number the sessions it opens from n + 1 (sess-<n+1>)
   PERM_COMMAND=<c>  a permission request is for running command c (kind
                     execute, titled c)
@@ -120,6 +122,7 @@ if stubborn:
 
 model = "small"
 sessions = int(env("FIRST_SESSION") or 0)
+authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
 asking = {}  # permission request id -> (prompt id, session)
 
@@ -142,9 +145,15 @@ for line in sys.stdin:
         methods = [{"id": "fake-login", "name": "Log in to the fake"}]
         info = {"name": "fake-agent", "version": "1.2.3"}
         result(mid, {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods, "agentInfo": info})
+    elif method == "authenticate":
+        if env("AUTH_FAIL") or params.get("methodId") != "fake-login":
+            error(mid, -32000, "Login failed")
+        else:
+            authenticated = True
+            result(mid, {})
     elif method == "session/new":
         time.sleep(float(env("NEW_DELAY", "0")))
-        if env("AUTH"):
+        if env("AUTH") and not authenticated:
             error(mid, -32000, "Authentication required")
             continue
         sessions += 1

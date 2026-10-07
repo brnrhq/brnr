@@ -1,15 +1,18 @@
 //! The editor-facing process: `brnr acp [options] [-- <program> [args...]]`,
 //! a proxy between the editor and the host.
 //!
-//! The editor launches this as if it were the agent. It starts a host (see
-//! host/) in a session of its own, which runs the agent, and from then on
-//! only relays: stdin and stdout carry ACP to and from the host, the agent's
-//! stderr comes out of the proxy's stderr, signals the proxy receives are
-//! handed to the host, and the proxy exits with the agent's exact wait
-//! status. The agent never holds the editor's file descriptors and is out of
-//! reach of the editor's process group and process tree; when the proxy
-//! goes, the host stops it as if the editor had run it.
+//! The editor launches this as if it were the agent. It resolves the
+//! profile and the agent into the host's start request (see request.rs),
+//! starts the host (see host/) in a session of its own, which runs the
+//! agent, and from then on only relays: stdin and stdout carry ACP to and
+//! from the host, the agent's stderr comes out of the proxy's stderr,
+//! signals the proxy receives are handed to the host, and the proxy exits
+//! with the agent's exact wait status. The agent never holds the editor's
+//! file descriptors and is out of reach of the editor's process group and
+//! process tree; when the proxy goes, the host stops it as if the editor had
+//! run it.
 
+use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufReader, ErrorKind, PipeReader, Read, Write};
@@ -23,7 +26,8 @@ use std::thread;
 use libc::c_int;
 use serde_json::Value;
 
-use crate::{frame, signals, spawn};
+use crate::request::{self, Request, Role};
+use crate::{config, frame, signals, spawn};
 
 const USAGE: &str = "usage: brnr acp [--profile <name>] [-- <program> [args...]]";
 
@@ -57,7 +61,15 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
 
-    let mask = signals::current_mask();
+    // A config error is the editor's to see, as the process's own failures
+    // are.
+    let request = match resolve(opts, program, signals::current_mask()) {
+        Ok(request) => request,
+        Err(msg) => {
+            eprintln!("brnr acp: {msg}");
+            return ExitCode::from(2);
+        }
+    };
     let signals = signals::install();
     let (link, theirs) = match UnixStream::pair() {
         Ok(pair) => pair,
@@ -66,7 +78,7 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(err) = start_host(&opts, &mask, theirs, program) {
+    if let Err(err) = start_host(&request, theirs) {
         eprintln!("brnr acp: starting its process: {err}");
         return ExitCode::FAILURE;
     }
@@ -111,31 +123,31 @@ fn parse_args(
     Ok((opts, args.collect()))
 }
 
-/// Starts the host detached (see spawn.rs) with its stdio on /dev/null; its
-/// only connection to us is `theirs`, moved to fd 3.
-fn start_host(
-    opts: &Options,
-    mask: &[c_int],
-    theirs: UnixStream,
-    program: Vec<OsString>,
-) -> io::Result<()> {
+/// The editor's process, as its start request has it: the profile's shared
+/// and editor parts, the agent, our cwd, the editor's signal mask.
+fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Request, String> {
+    let profile = config::load(opts.profile.as_deref())?;
+    let agent = (program.into_iter())
+        .map(|a| a.into_string().map_err(|a| format!("the agent's command isn't UTF-8: {a:?}")))
+        .collect::<Result<Vec<String>, String>>()?;
+    let cwd = env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let editor = request::Editor {
+        proxy_pid: std::process::id(),
+        sigmask: mask,
+        experimental: profile.editor.experimental.clone(),
+        features: profile.editor.features.clone(),
+    };
+    Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))
+}
+
+/// Starts the host detached (see spawn.rs) with its stdout and stderr on
+/// /dev/null, writes it the request on its stdin, and closes that; its only
+/// connection to us is then `theirs`, moved to fd 3.
+fn start_host(request: &Request, theirs: UnixStream) -> io::Result<()> {
     let mut cmd = spawn::host_command()?;
-    cmd.arg("--link-fd")
-        .arg(HOST_LINK_FD.to_string())
-        .arg("--proxy-pid")
-        .arg(std::process::id().to_string());
-    if let Some(profile) = &opts.profile {
-        cmd.arg("--profile").arg(profile);
-    }
-    if !mask.is_empty() {
-        let list: Vec<String> = mask.iter().map(c_int::to_string).collect();
-        cmd.arg("--sigmask").arg(list.join(","));
-    }
-    if !program.is_empty() {
-        cmd.arg("--").args(program);
-    }
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD).map(drop)
+    cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    let stdin = spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD)?;
+    request.send(stdin.expect("piped"))
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit

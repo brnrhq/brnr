@@ -19,5 +19,6 @@ pub mod log;
 pub mod paths;
 pub mod proxy;
 pub mod render;
+pub mod request;
 pub mod signals;
 pub mod spawn;

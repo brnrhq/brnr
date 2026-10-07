@@ -1,18 +1,19 @@
 //! `brnr host`: owns the agent process and its pipes for the agent's whole
 //! life. brnr calls it a process (`brnr ps`, `--pid`); it isn't a command
-//! of its own in the usage.
+//! of its own in the usage, and isn't run by hand.
 //!
-//! Started detached by `brnr acp` for an editor (with `--link-fd`), by `brnr
-//! start` for a headless session (with `--ready-fd`; detached, or with
-//! `--foreground` as its child), or by hand (see [`USAGE`]). It is the hub
+//! Started detached by `brnr acp` for an editor, or by `brnr start` for a
+//! headless session (detached, or with `--foreground` as its child), with
+//! the one request that says everything on its stdin (see request.rs) and
+//! fd 3: the editor link, or the start channel (see start.rs). It is the hub
 //! between three kinds of peer:
 //!
 //! - the agent, over its stdio;
 //! - the ACP owner: the editor, through the proxy on the link, or the host
 //!   itself when no editor is attached (see acp.rs);
 //! - any number of bridges, speaking JSON lines rather than ACP: children
-//!   started from the profile, and processes on the control socket such as
-//!   brnr (see control.rs).
+//!   started from the profile, processes on the control socket such as
+//!   brnr (see control.rs), and `brnr start` on its start channel.
 //!
 //! When the editor goes away, the agent gets what a directly spawned agent
 //! would have: its stdin is closed and it is killed, with its process group
@@ -22,9 +23,10 @@
 mod acp;
 mod control;
 mod requests;
+mod start;
 mod state;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
@@ -42,30 +44,21 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::{c_int, pid_t};
 use serde_json::{Value, json};
 
-use crate::config;
+use crate::config::{Experimental, Feature, Log};
 use crate::frame;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
+use crate::request::{Prompt, Request, Role};
 use crate::signals;
-use crate::spawn;
 
 use acp::{AgentRequest, Pending, Session};
 pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
 use requests::{HostRequest, SetupStep};
+use start::StartChannel;
 
-/// The options for running it by hand; `brnr start --foreground` is the
-/// way the usage offers. `brnr acp` and `brnr start` also pass --link-fd,
-/// --ready-fd, --proxy-pid, --start-timeout and --sigmask.
-const USAGE: &str = "usage: brnr host [--profile <name>] [--cwd <dir>] \
-[--prompt <text> | --prompt -] [--resume <session id>] [--mode <mode>] [--set <option>=<value>]... \
-[--stop-when-idle <seconds>] [--quiet] [--json] [-- <agent> [args...]]
-
-Runs a headless ACP session in the foreground (as brnr start --foreground
-does): starts the agent, opens a session in the current directory (or
---cwd), or resumes one, and sends --prompt if given. It shows the session as
-it goes (--json: as JSON lines; --quiet: not). Ctrl-C stops it gracefully;
-press it again to kill the agent. Exits with the agent's exit status.";
+/// Where the editor link or the start channel is: a socket either way.
+const CHANNEL_FD: RawFd = 3;
 
 /// How long to keep forwarding output after the agent exits, in case
 /// something it started still holds its stdout open.
@@ -84,73 +77,33 @@ const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
-/// Passed by `brnr acp` or `brnr start`; not a user interface.
-#[derive(Default)]
-struct Args {
-    link_fd: Option<RawFd>,
-    ready_fd: Option<RawFd>,
-    proxy_pid: Option<u32>,
-    profile: Option<String>,
-    sigmask: Vec<c_int>,
-    prompt: Option<String>,
-    cwd: Option<String>,
-    /// Seconds `brnr start` waits for the session.
-    start_timeout: Option<u64>,
-    resume: Option<String>,
-    mode: Option<String>,
-    set: Vec<(String, String)>,
-    stop_when_idle: Option<u64>,
-    /// Run for `brnr start --foreground`: as by hand, with brnr waiting.
-    foreground: bool,
-    quiet: bool,
-    json: bool,
-    /// brnr start sends a prompt once the session is open: idle time only
-    /// counts from then.
-    awaiting_prompt: bool,
-    program: Vec<OsString>,
-}
-
-pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let mut args = match parse_args(args) {
-        Ok(args) => args,
-        Err(None) => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
-        Err(Some(msg)) => {
-            eprintln!("brnr host: {msg}\n{USAGE}");
+pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
+    // It takes no flags and reads no config: everything is in the request.
+    if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
+        eprintln!(
+            "brnr host is started by brnr start and brnr acp, not by hand \
+             (brnr start --foreground runs a session in a terminal)"
+        );
+        return ExitCode::from(2);
+    }
+    close_inherited_fds(&[CHANNEL_FD]);
+    set_cloexec(CHANNEL_FD);
+    let channel = unsafe { UnixStream::from_raw_fd(CHANNEL_FD) };
+    let request = match read_request() {
+        Ok(request) => request,
+        Err((msg, editor)) => {
+            let channel = editor.map(|editor| (channel, editor));
+            Failure { channel }.report(&msg, 2);
             return ExitCode::from(2);
         }
     };
-    if args.foreground {
+    if request.headless().is_some_and(|h| h.foreground.is_some()) {
         // In a process group of its own, writing to the terminal.
         signals::write_from_background();
     }
-    if let Some(dir) = &args.cwd
-        && let Err(err) = std::env::set_current_dir(paths::expand(dir))
-    {
-        eprintln!("brnr host: {dir}: {err}");
-        return ExitCode::from(2);
-    }
-    if args.prompt.as_deref() == Some("-") {
-        let mut text = String::new();
-        if let Err(err) = io::stdin().read_to_string(&mut text) {
-            eprintln!("brnr host: stdin: {err}");
-            return ExitCode::from(2);
-        }
-        args.prompt = Some(text);
-    }
-    let keep: Vec<RawFd> = [args.link_fd, args.ready_fd].into_iter().flatten().collect();
-    close_inherited_fds(&keep);
-    keep.iter().for_each(|&fd| set_cloexec(fd));
-    let link = args.link_fd.map(|fd| unsafe { UnixStream::from_raw_fd(fd) });
-    let ready = args.ready_fd.map(|fd| unsafe { File::from_raw_fd(fd) });
-    let mut failure = Failure {
-        link: link.as_ref().and_then(|l| l.try_clone().ok()),
-        ready: ready.as_ref().and_then(|r| r.try_clone().ok()),
-    };
-
-    match Host::start(args, link, ready) {
+    let editor = matches!(request.role, Role::Editor(_));
+    let mut failure = Failure { channel: channel.try_clone().ok().map(|c| (c, editor)) };
+    match Host::start(request, channel) {
         Ok(host) => host.run(),
         Err((msg, code)) => {
             failure.report(&msg, code);
@@ -159,116 +112,44 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
-const OPTIONS: &[&str] = &[
-    "--link-fd",
-    "--ready-fd",
-    "--proxy-pid",
-    "--profile",
-    "--prompt",
-    "--cwd",
-    "--sigmask",
-    "--start-timeout",
-    "--resume",
-    "--mode",
-    "--set",
-    "--stop-when-idle",
-];
-
-/// Options without a value.
-const FLAGS: &[&str] = &["--foreground", "--quiet", "--json", "--awaiting-prompt"];
-
-fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
-    value.parse().map_err(|_| Some(format!("{key}: not a number: {value}")))
+/// The request on stdin, read to EOF. One cut short (whoever started us
+/// died writing it) or that doesn't parse is refused; the error goes on fd 3
+/// if the request says what is there (`Some(editor)`).
+fn read_request() -> Result<Request, (String, Option<bool>)> {
+    let mut bytes = Vec::new();
+    io::stdin().lock().read_to_end(&mut bytes).map_err(|e| (format!("stdin: {e}"), None))?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        let raw: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        let role = raw["role"].as_object();
+        let editor = role.filter(|r| r.len() == 1).map(|r| r.contains_key("editor"));
+        (format!("invalid start request: {e}"), editor)
+    })
 }
 
-/// `Err(None)` asks for the usage.
-fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<String>> {
-    let mut a = Args::default();
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            a.program = args.collect();
-            break;
-        }
-        let arg = arg.into_string().map_err(|a| Some(format!("unknown option: {a:?}")))?;
-        if arg == "-h" || arg == "--help" {
-            return Err(None);
-        }
-        match arg.as_str() {
-            "--foreground" => {
-                a.foreground = true;
-                continue;
-            }
-            "--quiet" => {
-                a.quiet = true;
-                continue;
-            }
-            "--json" => {
-                a.json = true;
-                continue;
-            }
-            "--awaiting-prompt" => {
-                a.awaiting_prompt = true;
-                continue;
-            }
-            _ => {}
-        }
-        debug_assert!(!FLAGS.contains(&arg.as_str()));
-        let (key, inline) = match arg.split_once('=') {
-            Some((key, value)) if OPTIONS.contains(&key) => {
-                (key.to_owned(), Some(value.to_owned()))
-            }
-            _ => (arg, None),
-        };
-        if !OPTIONS.contains(&key.as_str()) {
-            return Err(Some(format!("unknown option: {key}")));
-        }
-        let value = match inline {
-            Some(value) => value,
-            None => args
-                .next()
-                .ok_or_else(|| format!("{key} needs a value"))?
-                .into_string()
-                .map_err(|_| format!("bad value for {key}"))?,
-        };
-        match key.as_str() {
-            "--link-fd" => a.link_fd = Some(number(&key, &value)?),
-            "--ready-fd" => a.ready_fd = Some(number(&key, &value)?),
-            "--proxy-pid" => a.proxy_pid = Some(number(&key, &value)?),
-            "--profile" => a.profile = Some(value),
-            "--stop-when-idle" => a.stop_when_idle = Some(number(&key, &value)?),
-            "--prompt" => a.prompt = Some(value),
-            "--cwd" => a.cwd = Some(value),
-            "--start-timeout" => a.start_timeout = Some(number(&key, &value)?),
-            "--resume" => a.resume = Some(value),
-            "--mode" => a.mode = Some(value),
-            "--set" => match value.split_once('=') {
-                Some((k, v)) => a.set.push((k.to_owned(), v.to_owned())),
-                None => return Err(Some(format!("--set takes <option>=<value>, not {value}"))),
-            },
-            "--sigmask" => {
-                a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
-            }
-            _ => unreachable!("checked against OPTIONS"),
-        }
-    }
-    Ok(a)
+fn is_socket(fd: RawFd) -> bool {
+    let mut st: libc::stat = unsafe { zeroed() };
+    unsafe { libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == libc::S_IFSOCK }
 }
 
-/// Where a startup failure is reported: the proxy, or brnr start.
+/// Where a startup failure is reported, besides stderr: fd 3, as a frame
+/// for the proxy on an editor's link (`true`), or as a line for brnr start
+/// on the start channel.
 struct Failure {
-    link: Option<UnixStream>,
-    ready: Option<File>,
+    channel: Option<(UnixStream, bool)>,
 }
 
 impl Failure {
     fn report(&mut self, msg: &str, code: u8) {
         eprintln!("brnr: {}", crate::render::clean(msg));
-        if let Some(link) = &mut self.link {
-            let report = json!({ "error": msg, "code": code }).to_string();
-            let _ = frame::write(link, frame::FAILED, report.as_bytes());
-        }
-        if let Some(ready) = &mut self.ready {
-            let _ = writeln!(ready, "{}", json!({ "ok": false, "error": msg }));
+        match &mut self.channel {
+            Some((link, true)) => {
+                let report = json!({ "error": msg, "code": code }).to_string();
+                let _ = frame::write(link, frame::FAILED, report.as_bytes());
+            }
+            Some((start, false)) => {
+                let _ = writeln!(start, "{}", json!({ "ok": false, "error": msg }));
+            }
+            None => {}
         }
     }
 }
@@ -307,6 +188,10 @@ enum Ev {
     },
     /// A signal sent to the host itself.
     Signal(c_int),
+    /// brnr start closed its end of the start channel.
+    StartGone {
+        peer: u64,
+    },
 }
 
 enum StopStage {
@@ -315,14 +200,14 @@ enum StopStage {
 }
 
 struct Host {
-    /// In a terminal, by hand or for `brnr start --foreground`: it says on
-    /// stderr how things go, and exits with the agent's status.
+    /// For `brnr start --foreground`, in a terminal: it says on stderr how
+    /// things go, and exits with the agent's status.
     foreground: bool,
-    /// By hand, a failed start has been reported on stderr.
+    /// In the foreground, a failed start has been reported on stderr.
     startup_reported: bool,
-    /// The start is over: the session is open and set up, and brnr start
-    /// has been told (see `finish_start`), or an editor attached. Until
-    /// then, the process stopping is the start failing.
+    /// The start is over: it has committed (the session is open and set up,
+    /// and brnr start has been told, see `finish_start`), or an editor
+    /// attached. Until then, the process stopping is the start failing.
     start_done: bool,
     info: Value,
     host_id: String,
@@ -343,9 +228,10 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<thread::JoinHandle<()>>,
-    /// brnr start waits on this for the first session.
-    ready: Option<File>,
-    /// When brnr start gives up waiting for the session.
+    /// brnr start's start channel, until the start commits or fails.
+    start_channel: Option<StartChannel>,
+    /// When the start fails if it hasn't committed: the request's start
+    /// timeout.
     start_deadline: Option<Instant>,
     log: Logger,
     sink: Sink,
@@ -370,13 +256,10 @@ struct Host {
     next_permission: u64,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
-    /// Headless start: the first prompt, sent once the session exists.
-    first_prompt: Option<String>,
-    /// Headless start: the session is open and set up (or there is an
-    /// editor), and has had brnr start's prompt if one is coming; idle
-    /// sessions only count from then.
-    started_ok: bool,
-    awaiting_prompt: bool,
+    /// Headless start: the prompt, sent once the start has committed.
+    prompt: Option<Prompt>,
+    /// Headless start: the login method to run before the session opens.
+    auth: Option<String>,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
     /// Headless start: mode and config options to set before the prompt.
@@ -397,6 +280,21 @@ struct Host {
     next_message: u64,
     started: Instant,
 
+    // What the request carries for what enforces it.
+    /// Stable ACP to the letter (ADR 41).
+    #[expect(dead_code, reason = "carried for strict mode (ADR 41)")]
+    strict: bool,
+    /// What to record (ADR 22). `false` turns the logger off; `events` is to
+    /// leave out the raw ACP, once events and ACP are two files.
+    #[expect(dead_code, reason = "carried for ADR 22's two files")]
+    logging: Log,
+    /// An editor's process: the actions on its session it allows (ADR 4),
+    /// and the process-management behaviours it turns on (ADR 42).
+    #[expect(dead_code, reason = "carried for experimental actions (ADR 4)")]
+    experimental: BTreeSet<Experimental>,
+    #[expect(dead_code, reason = "carried for feature flags (ADR 42)")]
+    features: BTreeSet<Feature>,
+
     // Bridges; see control.rs.
     peers: HashMap<u64, Peer>,
     bridge_pids: Vec<pid_t>,
@@ -412,35 +310,17 @@ struct Host {
 }
 
 impl Host {
-    fn start(a: Args, link: Option<UnixStream>, ready: Option<File>) -> Result<Host, (String, u8)> {
-        let profile = config::load(a.profile.as_deref()).map_err(|e| (e, 2))?;
-        let mcp_servers = profile
-            .mcp_servers
-            .iter()
-            .map(config::McpServer::to_acp)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| (e, 2))?;
-        let mut config_options: std::collections::BTreeMap<String, String> =
-            profile.config.clone().unwrap_or_default();
-        config_options.extend(a.set.iter().cloned());
-        let setup = requests::setup_steps(
-            a.mode.clone().or(profile.mode.clone()),
-            config_options.into_iter().collect(),
-        );
-        for bridge in &profile.bridges {
-            control::check_bridge(bridge).map_err(|e| (e, 2))?;
-        }
-        if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
-            return Err(("--prompt is empty".into(), 2));
-        }
-        let mut program = a.program.clone();
+    fn start(req: Request, channel: UnixStream) -> Result<Host, (String, u8)> {
+        let recorded = req.recorded();
+        let Request { profile, agent, cwd, strict, log: logging, bridges, role } = req;
+        let (editor, headless) = match role {
+            Role::Editor(editor) => (Some(editor), None),
+            Role::Headless(headless) => (None, Some(headless)),
+        };
+        let program: Vec<OsString> = agent.iter().map(OsString::from).collect();
         if program.is_empty() {
-            program = profile.agent.iter().flatten().map(|s| paths::expand(s).into()).collect();
+            return Err(("no agent".into(), 2));
         }
-        if program.is_empty() {
-            return Err(("no agent: give one after -- or set agent in the profile".into(), 2));
-        }
-        let cwd = std::env::current_dir().map_err(|e| (format!("cwd: {e}"), 1))?;
 
         let dir = paths::runtime_dir();
         paths::ensure_private(&dir).map_err(|e| (format!("{}: {e}", dir.display()), 1))?;
@@ -457,15 +337,16 @@ impl Host {
             let _ = fs::remove_file(&sock_path);
         };
 
-        if let Some(bundled) = spawn::bundled(&program[0]) {
-            program[0] = bundled.into();
-        }
         let mut cmd = Command::new(&program[0]);
-        cmd.args(&program[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        // Its own process group: a terminal's Ctrl-C (when run by hand) is
+        cmd.args(&program[1..])
+            .current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Its own process group: a terminal's Ctrl-C (in the foreground) is
         // for the host, which stops the agent its own way.
         cmd.process_group(0);
-        let mask = a.sigmask.clone();
+        let mask = editor.as_ref().map(|e| e.sigmask.clone()).unwrap_or_default();
         // std resets the mask in the child; give the agent the editor's.
         unsafe {
             cmd.pre_exec(move || {
@@ -487,33 +368,34 @@ impl Host {
             host_pid: std::process::id(),
             agent_pid: agent_pid as u32,
         };
-        let log = if profile.log.unwrap_or(true) {
-            Logger::start(ids, a.proxy_pid).map_err(|e| {
+        let proxy_pid = editor.as_ref().map(|e| e.proxy_pid);
+        let log = if logging == Log::Off {
+            Logger::disabled()
+        } else {
+            Logger::start(ids, proxy_pid).map_err(|e| {
                 cleanup();
                 unsafe { libc::kill(agent_pid, libc::SIGKILL) };
                 (format!("log: {e}"), 1)
             })?
-        } else {
-            Logger::disabled()
         };
         let sink = log.sink();
 
-        let argv: Vec<String> = program.iter().map(|s| s.to_string_lossy().into_owned()).collect();
         let info = json!({
             "id": id,
             "host_id": host_id,
-            "profile": a.profile,
+            "profile": profile,
             "host_pid": std::process::id(),
-            "proxy_pid": a.proxy_pid,
+            "proxy_pid": proxy_pid,
             "agent_pid": agent_pid,
-            "agent": argv,
+            "agent": agent,
             "cwd": cwd.to_string_lossy(),
             "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
             "socket": sock_path.to_string_lossy(),
             "started": log::rfc3339(started),
         });
         write_atomic(&meta_path, format!("{info:#}\n").as_bytes());
-        sink.note(None, json!({ "event": "started", "info": info }));
+        // Every process records what it was asked to do (ADR 8).
+        sink.note(None, json!({ "event": "started", "info": info, "request": recorded }));
 
         let (tx, rx) = mpsc::channel();
         let (agent_in, agent_queue) = mpsc::channel();
@@ -533,6 +415,10 @@ impl Host {
             }
         });
         let mut link_writer = None;
+        let (link, start_channel) = match editor {
+            Some(_) => (Some(channel), None),
+            None => (None, Some(channel)),
+        };
         let link = link.map(|link| {
             let reader = link.try_clone().expect("clone link");
             let t = tx.clone();
@@ -547,25 +433,31 @@ impl Host {
         let t = tx.clone();
         thread::spawn(move || read_signals(signals, t));
 
-        let foreground = (link.is_none() && ready.is_none()) || a.foreground;
-        let start_deadline = (a.start_timeout)
-            .filter(|_| ready.is_some())
-            .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
-        let stop_when_idle = a.stop_when_idle.or(profile.stop_when_idle).map(Duration::from_secs);
+        // An editor's process has no start deadline, and none of the rest.
+        let start_deadline = (headless.as_ref())
+            .and_then(|h| Instant::now().checked_add(Duration::from_secs(h.start_timeout)));
+        let h = headless.unwrap_or_default();
+        let shown = h.foreground.as_ref();
+        let (foreground, show_events) = (shown.is_some(), shown.is_some_and(|f| !f.quiet));
+        let json_events = shown.is_some_and(|f| f.json);
+        let (experimental, features) = match &editor {
+            Some(e) => (e.experimental.clone(), e.features.clone()),
+            None => (BTreeSet::new(), BTreeSet::new()),
+        };
         let mut host = Host {
             foreground,
             startup_reported: false,
             start_done: false,
             info,
             host_id,
-            permission_timeout: profile.permission_timeout.map(Duration::from_secs),
+            permission_timeout: h.permission_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: Some(agent_in),
             stop_stdout: Some(stop_tx),
             editor: link.is_some(),
             link,
             link_writer,
-            ready,
+            start_channel: None,
             start_deadline,
             log,
             sink,
@@ -582,20 +474,23 @@ impl Host {
             next_id: 0,
             next_permission: 0,
             editor_buf: Vec::new(),
-            first_prompt: a.prompt,
-            started_ok: false,
-            awaiting_prompt: a.awaiting_prompt,
-            resume: a.resume,
-            setup,
+            prompt: h.prompt,
+            auth: h.auth,
+            resume: h.resume,
+            setup: requests::setup_steps(h.mode, h.config.into_iter().collect()),
             starting: None,
-            mcp_servers,
-            stop_when_idle,
-            show_events: foreground && !a.quiet,
-            json_events: a.json,
+            mcp_servers: h.mcp_servers,
+            stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
+            show_events,
+            json_events,
             agent_caps: Value::Null,
             auth_methods: Value::Null,
             next_message: 0,
             started: Instant::now(),
+            strict,
+            logging,
+            experimental,
+            features,
             peers: HashMap::new(),
             bridge_pids: Vec::new(),
             status: None,
@@ -605,7 +500,16 @@ impl Host {
             stop_requested: false,
             stopping: None,
         };
-        for (n, bridge) in profile.bridges.iter().enumerate() {
+        // The first peer: brnr start hears of whatever happens from here.
+        if let Some(channel) = start_channel
+            && let Err(err) = host.open_start_channel(channel, h.events, &tx)
+        {
+            host.kill_all();
+            let _ = fs::remove_file(&host.sock_path);
+            let _ = fs::remove_file(&host.meta_path);
+            return Err((format!("start channel: {err}"), 1));
+        }
+        for (n, bridge) in bridges.iter().enumerate() {
             if let Err(err) = host.start_bridge(n, bridge, &tx) {
                 host.kill_all();
                 let _ = fs::remove_file(&host.sock_path);
@@ -614,7 +518,6 @@ impl Host {
             }
         }
         if host.editor {
-            host.started_ok = true;
             host.start_done = true;
             let ready = json!({ "id": id, "host_pid": std::process::id(), "agent_pid": agent_pid });
             host.send_link(frame::READY, ready.to_string().as_bytes());
@@ -624,7 +527,7 @@ impl Host {
         if host.foreground {
             eprintln!(
                 "brnr: process {id}: started {} in {}; Ctrl-C to stop",
-                argv.join(" "),
+                agent.join(" "),
                 cwd.display()
             );
         }
@@ -767,6 +670,7 @@ impl Host {
                     .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
             }
             Ev::Signal(sig) => self.host_signal(sig),
+            Ev::StartGone { peer } => self.start_gone(peer),
             Ev::BridgeExited { label, pid } => {
                 // Reaped here, once it is out of `bridge_pids`, so a signal to
                 // a bridge can never reach a recycled pid.
@@ -900,12 +804,13 @@ impl Host {
         }
     }
 
-    /// brnr start stops waiting for the session at the deadline, so the
-    /// host gives up too rather than carry on where nobody knows about it.
+    /// The start fails when its timeout passes before the commit, rather
+    /// than carry on where nobody knows about it (brnr start gives up
+    /// waiting a little later).
     fn fire_start_timer(&mut self, now: Instant) {
         if self.start_deadline.is_some_and(|t| now >= t) {
             self.start_deadline = None;
-            if self.ready.is_some() {
+            if !self.start_done && !self.stop_requested {
                 self.fail_start("timed out waiting for the session");
             }
         }

@@ -86,7 +86,7 @@ pub const QUIET: &[&str] = &["acp", "agent_thought"];
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
 
-static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
+pub(super) static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
 /// How to cut a peer off.
 pub(super) enum Closer {
@@ -103,7 +103,7 @@ pub(super) struct Queue {
 
 impl Queue {
     /// The queue, and the writer's end of it.
-    fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
+    pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
         (Queue { tx, queued: queued.clone() }, rx, queued)
@@ -136,9 +136,9 @@ pub(super) struct Peer {
     tx: Queue,
     label: String,
     closer: Closer,
-    subscribed: bool,
+    pub(super) subscribed: bool,
     /// `None`: every event.
-    events: Option<Vec<String>>,
+    pub(super) events: Option<Vec<String>>,
 }
 
 impl Peer {
@@ -193,7 +193,7 @@ fn connection(conn: UnixStream, tx: Sender<Ev>) {
     let _ = tx.send(Ev::PeerClosed { peer });
 }
 
-fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
+pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
     for line in lines {
         if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
             return;
@@ -606,7 +606,7 @@ impl Host {
     }
 
     /// Content blocks a bridge may add to a prompt.
-    fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
+    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
         for block in blocks {
             match block["type"].as_str() {
                 Some("resource_link") if block["uri"].is_string() => {}

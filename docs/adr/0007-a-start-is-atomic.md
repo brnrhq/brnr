@@ -1,6 +1,6 @@
 # 7. A start is atomic and commits at ready
 
-Accepted 2026-10-07. Not yet implemented.
+Accepted 2026-10-07. Implemented.
 Replaces former decision 4; amends former decisions 21 and 41; resolves
 review item 7.
 
