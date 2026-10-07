@@ -1,7 +1,6 @@
 # 29. Requests the agent answers
 
-Accepted (former decision 22); reviewed 2026-10-07. Implemented (with
-`set_model` still among them, until ADR 28).
+Accepted (former decision 22); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

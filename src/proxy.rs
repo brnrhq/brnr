@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::request::{self, Request, Role};
 use crate::{config, frame, signals, spawn};
 
-const USAGE: &str = "usage: brnr acp [--profile <name>] [-- <program> [args...]]";
+const USAGE: &str = "usage: brnr acp [--profile <name>] [--strict] [-- <program> [args...]]";
 
 /// `brnr acp --help`: the usage, and what it is.
 const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
@@ -43,6 +43,9 @@ const HOST_LINK_FD: c_int = 3;
 #[derive(Default)]
 struct Options {
     profile: Option<String>,
+    /// `--strict`: stable ACP to the letter (ADR 41), as `strict = true` in
+    /// the profile.
+    strict: bool,
 }
 
 type Link = Arc<Mutex<UnixStream>>;
@@ -117,6 +120,8 @@ fn parse_args(
         };
         match key.as_str() {
             "--profile" => opts.profile = Some(value()?),
+            "--strict" if inline.is_none() => opts.strict = true,
+            "--strict" => return Err("--strict takes no value".into()),
             _ => return Err(format!("unknown option: {key}")),
         }
     }
@@ -137,7 +142,9 @@ fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Re
         experimental: profile.editor.experimental.clone(),
         features: profile.editor.features.clone(),
     };
-    Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))
+    let mut request = Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))?;
+    request.strict |= opts.strict;
+    Ok(request)
 }
 
 /// Starts the host detached (see spawn.rs) with its stdout and stderr on

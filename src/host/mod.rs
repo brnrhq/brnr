@@ -25,6 +25,7 @@ mod control;
 mod requests;
 mod start;
 mod state;
+mod strict;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
@@ -288,15 +289,16 @@ struct Host {
     /// (`--json`) JSON lines.
     show_events: bool,
     json_events: bool,
-    /// What the agent said it can do in `initialize`.
+    /// What the agent said it can do in `initialize`, and the `_meta` of
+    /// its answer, where conventions ahead of the spec are advertised.
     agent_caps: Value,
+    agent_meta: Value,
     auth_methods: Value,
     next_message: u64,
     started: Instant,
 
     // What the request carries for what enforces it.
-    /// Stable ACP to the letter (ADR 41).
-    #[expect(dead_code, reason = "carried for strict mode (ADR 41)")]
+    /// Stable ACP to the letter (see strict.rs).
     strict: bool,
     /// What to record (ADR 22). `false` turns the logger off; `events` is to
     /// leave out the raw ACP, once events and ACP are two files.
@@ -494,13 +496,14 @@ impl Host {
             prompt: h.prompt,
             auth: h.auth,
             resume: h.resume,
-            setup: requests::setup_steps(h.mode, h.config.into_iter().collect()),
+            setup: requests::setup_steps(h.mode, h.model, h.config.into_iter().collect()),
             starting: None,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
             show_events,
             json_events,
             agent_caps: Value::Null,
+            agent_meta: Value::Null,
             auth_methods: Value::Null,
             next_message: 0,
             started: Instant::now(),

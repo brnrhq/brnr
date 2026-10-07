@@ -8,11 +8,15 @@
 //! or its message was dropped (or, waiting for a turn or an approval, the
 //! session closed first), 124 on `--timeout` (see ADR 21 in docs/adr).
 //!
-//! `send` timing:
-//! - default: send now; starts a turn if the agent is idle, otherwise the
-//!   agent decides (claude-agent-acp folds it into the running turn).
-//! - `--after-turn`: brnr holds it until no turn is running.
-//! - `--interrupt`: brnr cancels the running turn, then sends it.
+//! `send` (ADR 18 in docs/adr):
+//! - default: a prompt and a turn of its own, sent now if no turn is
+//!   running, else held and sent when the running one ends, in the order
+//!   sent. brnr never sends a prompt while one runs.
+//! - `--steer`: into the running turn (`_session/steering`), which then
+//!   carries it; a prompt when no turn is running. Refused while one runs if
+//!   the agent doesn't steer, and in strict mode.
+//! - `--interrupt`: brnr cancels the running turn, then sends it, ahead of
+//!   what is held.
 //! - `--context`: no turn; appended to the next prompt, whoever sends it.
 //!   `--replace` replaces the last held context instead of adding to it.
 
@@ -329,10 +333,12 @@ struct StartArgs {
     files: Vec<String>,
     images: Vec<String>,
     mode: Option<String>,
+    model: Option<String>,
     set: Vec<String>,
     resume: Option<String>,
     stop_when_idle: Option<u64>,
     auth: Option<String>,
+    strict: bool,
     wait: bool,
     timeout: Option<u64>,
     foreground: bool,
@@ -353,7 +359,7 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--file" => a.files.push(value("--file")?),
             "--image" => a.images.push(value("--image")?),
             "--mode" => a.mode = Some(value("--mode")?),
-            "--model" => a.set.push(format!("model={}", value("--model")?)),
+            "--model" => a.model = Some(value("--model")?),
             "--set" => a.set.push(value("--set")?),
             "--resume" => a.resume = Some(value("--resume")?),
             "--auth" => a.auth = Some(value("--auth")?),
@@ -361,6 +367,7 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--stop-when-idle" => {
                 a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
             }
+            "--strict" => a.strict = true,
             "--wait" => a.wait = true,
             "--foreground" => a.foreground = true,
             "--quiet" => a.quiet = true,
@@ -453,6 +460,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     let headless = request::Headless {
         resume: a.resume,
         mode: a.mode.or(h.mode.clone()),
+        model: a.model,
         config,
         mcp_servers,
         auth: a.auth.or(h.auth.clone()),
@@ -464,7 +472,8 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
     };
     let role = Role::Headless(headless);
-    let request = Request::new(a.profile, &cfg, a.agent, cwd.clone(), role)?;
+    let mut request = Request::new(a.profile, &cfg, a.agent, cwd.clone(), role)?;
+    request.strict |= a.strict;
 
     let (channel, theirs) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let mut cmd = spawn::host_command().map_err(|e| e.to_string())?;
@@ -577,7 +586,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         };
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match a.as_str() {
-            "--after-turn" => set_mode(&mut mode, "after-turn")?,
+            "--steer" => set_mode(&mut mode, "steer")?,
             "--interrupt" => set_mode(&mut mode, "interrupt")?,
             "--context" => set_mode(&mut mode, "context")?,
             "--replace" => replace = true,
@@ -612,7 +621,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         "session": session,
         "text": text_in,
         "blocks": blocks,
-        "mode": mode.unwrap_or("now"),
+        "mode": mode.unwrap_or("prompt"),
         "replace": replace,
     });
     if !wait {

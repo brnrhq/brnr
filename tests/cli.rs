@@ -184,7 +184,7 @@ fn cancel_drops_held_messages_and_says_so() {
     let env = Env::new("c-cancel");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    env.ok(&["send", "sess-1", "--after-turn", "later"]);
+    env.ok(&["send", "sess-1", "later"]);
     let out = env.ok(&["cancel", "sess-1"]);
     assert!(out.contains("cancelling"), "{out}");
     assert!(out.contains("dropped m2: later"), "{out}");
@@ -207,7 +207,7 @@ fn send_wait_on_a_dropped_message() {
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let send = |json: bool| {
-        let mut args = vec!["send", "sess-1", "--wait", "--after-turn", "later"];
+        let mut args = vec!["send", "sess-1", "--wait", "later"];
         if json {
             args.push("--json");
         }
@@ -243,7 +243,7 @@ fn cancel_can_keep_held_messages() {
     let env = Env::new("c-keep");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    env.ok(&["send", "sess-1", "--after-turn", "later"]);
+    env.ok(&["send", "sess-1", "later"]);
     env.ok(&["cancel", "sess-1", "--keep-held"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
     assert_eq!(env.prompts(), ["hang on", "later"]);
@@ -253,8 +253,8 @@ fn cancel_can_keep_held_messages() {
 fn queue_lists_and_drops() {
     let env = Env::new("c-queue");
     env.start(&["--prompt", "hang on"]);
-    env.ok(&["send", "sess-1", "--after-turn", "first"]);
-    env.ok(&["send", "sess-1", "--after-turn", "second"]);
+    env.ok(&["send", "sess-1", "first"]);
+    env.ok(&["send", "sess-1", "second"]);
     env.ok(&["send", "sess-1", "--context", "some context"]);
     let out = env.ok(&["queue", "sess-1"]);
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
@@ -493,6 +493,54 @@ fn model_and_config() {
     assert!(env.fails(&["config", "sess-1", "model=huge"]).contains("bad option"));
 }
 
+/// `brnr model` is `config` for the option whose category is `model`,
+/// whatever its id, and so is `start --model`. Without one the agent offers
+/// no model choice, an option that is only called `model` and the unstable
+/// `session/set_model` notwithstanding (ADR 28).
+#[test]
+fn model_is_the_option_of_category_model() {
+    let env = Env::new("c-modelcat").agent("MODEL_ID", "llm");
+    env.start(&["--model", "large"]);
+    let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
+    assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"llm".into(), &"large".into()));
+    assert!(env.ok(&["model", "sess-1"]).contains("* large"));
+    env.ok(&["model", "sess-1", "small"]);
+    assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"llm".into(), &"small".into()));
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["model"], "small");
+
+    let env = Env::new("c-modelnone").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
+    env.start(&[]);
+    for args in [&["model", "sess-1"][..], &["model", "sess-1", "large"]] {
+        let err = env.fails(args);
+        assert!(err.contains("the agent offers no model choice"), "{err}");
+    }
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert!(status["model"].is_null(), "{status}");
+    // `config` is by id, as ever.
+    env.ok(&["config", "sess-1", "model=large"]);
+    assert!(env.calls_of("session/set_model").is_empty());
+
+    let env = Env::new("c-modelstart").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
+    let err = env.fails(&start_args(&["--model", "large", "--prompt", "hi"]));
+    assert!(err.contains("setting model large: the agent offers no model choice"), "{err}");
+    assert!(env.calls_of("session/set_model").is_empty() && env.prompts().is_empty());
+}
+
+/// An agent with no modes, but a config option of category `mode`: that is
+/// its mode, for `brnr mode` and `start --mode`.
+#[test]
+fn mode_as_a_config_option() {
+    let env = Env::new("c-modeopt").agent("MODE_OPTION", "approvals");
+    env.start(&["--mode", "plan"]);
+    let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
+    assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"approvals".into(), &"plan".into()));
+    assert!(env.ok(&["mode", "sess-1"]).contains("* plan"));
+    assert_eq!(env.ok(&["mode", "sess-1", "default"]), "mode default\n");
+    assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"approvals".into(), &"default".into()));
+    assert!(env.calls_of("session/set_mode").is_empty());
+}
+
 #[test]
 fn start_applies_mode_and_model_before_the_prompt() {
     let env = Env::new("c-startmode");
@@ -610,7 +658,7 @@ fn close_ends_what_follows_the_session() {
     let turn = spawn(&["wait", "sess-2", "--for", "turn"]);
     let permission = spawn(&["wait", "sess-2", "--for", "permission"]);
     let idle = spawn(&["wait", "sess-2", "--json"]);
-    let sent = spawn(&["send", "sess-2", "--wait", "--after-turn", "later"]);
+    let sent = spawn(&["send", "sess-2", "--wait", "later"]);
     let held = || env.ok(&["queue", "sess-2"]).contains("later");
     assert!(wait_for(Duration::from_secs(5), held), "not held");
     sleep(Duration::from_millis(300));

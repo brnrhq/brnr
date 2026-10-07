@@ -44,7 +44,7 @@ of to-resolve; the map at the end says where each went.
 | [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape | yes |
 | [16](0016-fork-and-close.md) | Fork and close | partly |
 | [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
-| [18](0018-what-send-does.md) | What `send` does | no |
+| [18](0018-what-send-does.md) | What `send` does | mostly |
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
 | [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
 | [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
@@ -54,7 +54,7 @@ of to-resolve; the map at the end says where each went.
 | [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | no |
 | [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | mostly |
 | [27](0027-approvals.md) | Approvals: the agent's mode is the policy | mostly |
-| [28](0028-mode-model-and-config.md) | Mode, model and config options | partly |
+| [28](0028-mode-model-and-config.md) | Mode, model and config options | mostly |
 | [29](0029-requests-the-agent-answers.md) | Requests the agent answers | yes |
 | [30](0030-authentication.md) | Authentication | yes |
 | [31](0031-mcp-servers.md) | MCP servers for headless sessions | mostly |
@@ -67,7 +67,7 @@ of to-resolve; the map at the end says where each went.
 | [38](0038-adapter-names-and-lookup.md) | The adapters' names, and finding them next to brnr | yes |
 | [39](0039-adapter-versions.md) | Which adapter version is built, and how it shows | yes |
 | [40](0040-release-sh.md) | `release.sh` | yes |
-| [41](0041-strict-mode.md) | Strict mode | no |
+| [41](0041-strict-mode.md) | Strict mode | mostly |
 | [42](0042-feature-flags.md) | Feature flags for process management | no |
 | [43](0043-acp-schema-types.md) | ACP types from the official schema crate | no |
 

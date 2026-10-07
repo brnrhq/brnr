@@ -64,8 +64,10 @@ pub struct Editor {
 pub struct Headless {
     /// Resume this session instead of opening a new one.
     pub resume: Option<String>,
-    /// The mode and config options to set before the prompt.
+    /// The mode, the model (the config option whose category is `model`,
+    /// ADR 28) and config options to set before the prompt.
     pub mode: Option<String>,
+    pub model: Option<String>,
     pub config: BTreeMap<String, String>,
     /// As ACP has them.
     pub mcp_servers: Vec<Value>,
