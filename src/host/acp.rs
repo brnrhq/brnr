@@ -51,8 +51,9 @@ const ENDS_AGENT_MESSAGE: &[&str] =
 pub(super) struct Prompt {
     id: String,
     injected: bool,
-    /// The `m<n>` id of the message it carries, if the host sent it.
-    message: Option<String>,
+    /// The `m<n>` ids of the messages its turn carries: the one the host sent
+    /// as the prompt, if it did. A turn can carry more than one (ADR 17).
+    messages: Vec<String>,
 }
 
 /// A message accepted by the host and not yet sent as a prompt.
@@ -226,6 +227,11 @@ impl Host {
                     .insert(key.to_owned(), Pending::Attach { session: session.clone(), cwd });
             }
             ("session/close", Some(session)) => {
+                // Dropped now: held until the agent answers, they would go out as
+                // the running turn ends.
+                if let Some(i) = self.find(session) {
+                    self.drop_held(i, "close");
+                }
                 self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
             }
             ("session/prompt", Some(session)) => return self.editor_prompt(session, key, msg),
@@ -256,7 +262,7 @@ impl Host {
         msg: &mut Map<String, Value>,
     ) -> Option<Vec<u8>> {
         let i = self.open_session(session, None);
-        self.start_turn(i, Prompt { id: key.to_owned(), injected: false, message: None });
+        self.start_turn(i, Prompt { id: key.to_owned(), injected: false, messages: Vec::new() });
         self.prompt_session.insert(key.to_owned(), session.to_owned());
         let rewritten = self.attach_context(i, session, msg);
         let text = prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
@@ -354,9 +360,9 @@ impl Host {
                 }
             }
             let injected = prompt.as_ref().is_some_and(|p| p.injected);
-            let message = prompt.and_then(|p| p.message);
+            let messages = prompt.map(|p| p.messages).unwrap_or_default();
             session = Some(sid.clone());
-            turn = Some((sid, injected, message));
+            turn = Some((sid, injected, messages));
         }
         let forward = ours.is_none() && !turn.as_ref().is_some_and(|(_, injected, _)| *injected);
         let dir = if forward { Dir::AgentToEditor } else { Dir::AgentToControl };
@@ -367,7 +373,7 @@ impl Host {
         if let Some(request) = ours {
             self.host_request_done(request, msg);
         }
-        if let Some((sid, injected, message)) = turn {
+        if let Some((sid, injected, messages)) = turn {
             let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
             if let Some(i) = self.find(&sid) {
                 self.flush_agent_message(i);
@@ -379,7 +385,7 @@ impl Host {
                 "session": sid,
                 "by": if injected { "control" } else { "editor" },
                 "prompt": key,
-                "message": message,
+                "messages": messages,
                 "stop_reason": stop_reason,
                 "error": msg.get("error"),
             }));
@@ -412,8 +418,7 @@ impl Host {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
-                    self.flush_agent_message(i);
-                    self.sessions.remove(i);
+                    self.close_session(i, "editor");
                 }
                 Some(session)
             }
@@ -656,6 +661,42 @@ impl Host {
         }
     }
 
+    /// Drops everything session `i` holds (see `dropped`).
+    pub(super) fn drop_held(&mut self, i: usize, by: &str) -> Vec<Value> {
+        let s = &mut self.sessions[i];
+        s.interrupts = 0;
+        let held: Vec<Held> = s.held.drain(..).collect();
+        self.dropped(i, held, by)
+    }
+
+    /// Messages taken from session `i`'s held ones, never to be sent: each is
+    /// a `message_dropped` event, `by` `cancel`, `queue`, `close` or `exit`
+    /// (ADR 20). Returns them as `{message, text}`, for a response.
+    pub(super) fn dropped(&mut self, i: usize, held: Vec<Held>, by: &str) -> Vec<Value> {
+        let session = self.sessions[i].id.clone();
+        held.into_iter()
+            .map(|h| {
+                self.emit(json!({
+                    "event": "message_dropped",
+                    "session": session,
+                    "message": h.id,
+                    "text": h.text,
+                    "by": by,
+                }));
+                json!({ "message": h.id, "text": h.text })
+            })
+            .collect()
+    }
+
+    /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
+    /// what it still holds is dropped, then `session_closed` (ADR 20).
+    pub(super) fn close_session(&mut self, i: usize, by: &str) {
+        self.flush_agent_message(i);
+        self.drop_held(i, "close");
+        let session = self.sessions.remove(i).id;
+        self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
+    }
+
     /// Whether session `i` has nothing running, held or waiting for an
     /// answer.
     pub(super) fn is_idle(&self, i: usize) -> bool {
@@ -697,7 +738,7 @@ impl Host {
         } else if self.capabilities()["close"] == true {
             // As `brnr close` would, with nobody to answer (peer 0).
             let params = json!({ "sessionId": session });
-            let op = super::requests::PeerOp::Close { session };
+            let op = super::requests::PeerOp::Close { session, by: "idle" };
             self.peer_op(0, None, op, "session/close", params);
         }
     }
@@ -752,7 +793,7 @@ impl Host {
             "method": "session/prompt",
             "params": { "sessionId": session, "prompt": blocks },
         });
-        let prompt = Prompt { id: key.clone(), injected: true, message: Some(held.id.clone()) };
+        let prompt = Prompt { id: key.clone(), injected: true, messages: vec![held.id.clone()] };
         self.start_turn(i, prompt);
         self.started_ok = true;
         self.prompt_session.insert(key.clone(), session.clone());

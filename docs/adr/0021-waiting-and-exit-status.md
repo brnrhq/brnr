@@ -1,8 +1,7 @@
 # 21. Waiting, and exit status
 
 Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented,
-except ending on `session_closed` and `message_dropped` (ADR 20), `dropped`
-in the JSON, and `start --wait` reading the start channel (ADR 7).
+except `start --wait` reading the start channel (ADR 7).
 
 ## Decision
 

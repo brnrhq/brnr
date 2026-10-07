@@ -18,8 +18,8 @@
 //! As a bridge in a profile it is given its process in `$BRNR_PID`:
 //! `sh -c 'exec brnr notify --pid "$BRNR_PID" -- …'`. `--events` is read as
 //! for `watch`, but its default (and `default`) is `permission_request`,
-//! `turn_ended`, `exited`. It exits when the process does, and fails if the
-//! process cuts it off first.
+//! `turn_ended`, `exited`. It exits when the process does (or the session
+//! closes), and fails if the process cuts it off first.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -65,10 +65,10 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     let hosts = discover()?;
     let (host, only) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
     let mut conn = Conn::open(host)?;
-    // Agent messages and titles are tracked for the environment, not run
-    // for.
+    // Agent messages and titles are tracked for the environment, and the
+    // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
-    for extra in ["agent_message", "session_changed", "exited"] {
+    for extra in ["agent_message", "session_changed", "session_closed", "exited"] {
         if !wanted.contains(&extra) {
             wanted.push(extra);
         }
@@ -125,7 +125,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                 ],
             );
         }
-        if name == "exited" {
+        if name == "exited" || (name == "session_closed" && only.is_some()) {
             return Ok(ExitCode::SUCCESS);
         }
     }

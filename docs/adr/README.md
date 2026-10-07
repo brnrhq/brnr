@@ -43,13 +43,13 @@ of to-resolve; the map at the end says where each went.
 | [14](0014-resuming.md) | Resuming | mostly |
 | [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape | yes |
 | [16](0016-fork-and-close.md) | Fork and close | partly |
-| [17](0017-message-ids-and-turns.md) | Message ids and turns | mostly |
+| [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
 | [18](0018-what-send-does.md) | What `send` does | no |
-| [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | mostly |
-| [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | no |
+| [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
+| [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
 | [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | mostly |
 | [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | mostly |
-| [23](0023-choosing-events.md) | Choosing events, and what text shows | partly |
+| [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
 | [24](0024-log-last.md) | `log --last <n>` | yes |
 | [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | no |
 | [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | no |

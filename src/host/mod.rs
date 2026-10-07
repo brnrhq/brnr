@@ -679,16 +679,10 @@ impl Host {
         }
         let status = describe_status(self.status);
         // Held messages that never became a prompt.
-        let undelivered: Vec<Value> = self
-            .sessions
-            .iter()
-            .flat_map(|s| {
-                s.held.iter().map(|h| json!({ "session": s.id, "message": h.id, "text": h.text }))
-            })
-            .collect();
-        self.emit_to_sessions(
-            json!({ "event": "exited", "status": status, "undelivered": undelivered }),
-        );
+        for i in 0..self.sessions.len() {
+            self.drop_held(i, "exit");
+        }
+        self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.

@@ -597,15 +597,8 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if held + context > 0 {
         out.push_str(&format!("held: {held} message(s), {context} context (brnr queue {arg})\n"));
     }
-    let usage = &x["usage"];
-    if let (Some(used), Some(size)) = (usage["used"].as_u64(), usage["size"].as_u64()) {
-        let mut line = format!("context window: {} of {} tokens", tokens(used), tokens(size));
-        if let (Some(amount), Some(currency)) =
-            (usage["cost"]["amount"].as_f64(), usage["cost"]["currency"].as_str())
-        {
-            line.push_str(&format!(", cost {amount:.2} {currency}"));
-        }
-        out.push_str(&format!("{line}\n"));
+    if let Some(usage) = render::usage(&x["usage"]) {
+        out.push_str(&format!("context window: {usage}\n"));
     }
     if let Some(last) = x["last_message"].as_str() {
         let last = last.trim().replace('\n', " ");
@@ -622,15 +615,6 @@ fn duration(secs: u64) -> String {
         s if s >= 3600 => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
         s if s >= 60 => format!("{}m{:02}s", s / 60, s % 60),
         s => format!("{s}s"),
-    }
-}
-
-/// `950`, `12.3k`, `1.2M`.
-fn tokens(n: u64) -> String {
-    match n {
-        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
-        n if n >= 1_000 => format!("{:.1}k", n as f64 / 1e3),
-        n => n.to_string(),
     }
 }
 
@@ -747,8 +731,8 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 // ---- events --------------------------------------------------------------
 
 /// Prints a session's events (`<session>`), or a process's (`--pid`), until
-/// the process exits, as `brnr log` shows them. A session's are its own plus
-/// the process's (the agent exiting).
+/// the process exits (or the session closes), as `brnr log` shows them. A
+/// session's are its own plus the process's (the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
     let (mut session, mut pid) = (None, None);
     let mut events = default_events();
@@ -764,14 +748,19 @@ fn watch(args: &[String]) -> Result<(), String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    // `exited` is how watch tells the process ending from it cutting the
-    // connection; it is asked for even when not shown.
-    let show_exited = events.iter().any(|e| e == "exited");
-    if !show_exited {
-        events.push("exited".to_owned());
-    }
     let hosts = discover()?;
     let (host, only_session) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
+    // `exited` (and for a session, `session_closed`) is how watch tells the
+    // end from the process cutting the connection; asked for even when not
+    // shown.
+    let shown = events.clone();
+    let ends: &[&str] =
+        if only_session.is_some() { &["exited", "session_closed"] } else { &["exited"] };
+    for end in ends {
+        if !events.iter().any(|e| e == end) {
+            events.push(end.to_string());
+        }
+    }
     let mut conn = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
     writeln!(conn, "{}", json!({ "cmd": "subscribe", "events": events }))
         .map_err(|e| e.to_string())?;
@@ -788,13 +777,14 @@ fn watch(args: &[String]) -> Result<(), String> {
     let options = render::Options { session: only_session.is_none(), time: true };
     for line in lines.map_while(Result::ok) {
         let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
-        let exited = event["event"] == "exited";
+        let name = event["event"].as_str().unwrap_or_default();
         if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
             && only != session
         {
             continue;
         }
-        if !exited || show_exited {
+        let end = ends.contains(&name);
+        if shown.iter().any(|e| e == name) {
             let text = if json_out { Some(line) } else { render::event(&event, &options) };
             if let Some(text) = text
                 && writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()).is_err()
@@ -802,7 +792,7 @@ fn watch(args: &[String]) -> Result<(), String> {
                 return Ok(());
             }
         }
-        if exited {
+        if end {
             return Ok(());
         }
     }
@@ -835,7 +825,7 @@ fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, 
 }
 
 /// What `watch` and `log` show without `--events`: every event but the
-/// quiet ones (ACP messages and thoughts).
+/// quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
 fn default_events() -> Vec<String> {
     EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
 }

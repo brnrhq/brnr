@@ -31,7 +31,9 @@ impl Options {
 }
 
 /// One event as `HH:MM:SS  [session]  what happened`, continuation lines
-/// indented under the description; `None` for events not worth a line.
+/// indented under the description: every event brnr emits has a line, so
+/// what `--events` chooses is shown in text as in JSON. `None` for what
+/// isn't an event.
 pub fn event(e: &Value, o: &Options) -> Option<String> {
     let s = |v: &Value| v.as_str().unwrap_or("?").to_owned();
     let what = match e["event"].as_str()? {
@@ -41,21 +43,36 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         },
         "agent_message" => format!("agent: {}", s(&e["text"])),
         "agent_thought" => format!("thinking: {}", s(&e["text"])),
-        // A tool call's start and its end; progress in between isn't shown.
+        // A tool call's start and its end; `tool_progress` is each change of
+        // status in between.
         "tool_call" => {
             let title = s(&e["title"]);
             match e["status"].as_str() {
                 Some("completed") => format!("tool done: {title}"),
                 Some("failed") => format!("tool failed: {title}"),
                 _ if e["started"] == true => format!("tool: {title} ({})", s(&e["kind"])),
-                _ => return None,
+                _ => format!("tool: {title} {}", s(&e["status"])),
             }
         }
+        "tool_progress" => format!("tool: {} {}", s(&e["title"]), s(&e["status"])),
         "plan" => plan(&e["entries"]),
+        "usage" => format!("usage: {}", usage(&e["usage"]).unwrap_or_else(|| "?".into())),
         "session_changed" => match e["what"].as_str() {
             Some("title") => format!("title: {}", s(&e["value"])),
             Some("mode") => format!("mode: {}", s(&e["value"])),
-            _ => return None,
+            // Each option as `brnr config` sets it: `model=opus`.
+            Some("config") => {
+                let options = e["value"].as_array().into_iter().flatten().map(|o| {
+                    let value = &o["currentValue"];
+                    let value = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                    format!("{}={value}", s(&o["id"]))
+                });
+                format!("config: {}", options.collect::<Vec<_>>().join(" "))
+            }
+            Some("commands") => {
+                format!("commands: {} available", e["value"].as_array().map_or(0, Vec::len))
+            }
+            what => format!("{}: {}", what.unwrap_or("?"), e["value"]),
         },
         "permission_request" => {
             let options: Vec<String> =
@@ -78,13 +95,11 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             Some(error) => format!("turn failed: {} ({})", error["message"], s(&e["by"])),
             None => format!("turn ended: {} ({})", s(&e["stop_reason"]), s(&e["by"])),
         },
-        "exited" => {
-            let mut what = format!("agent exited: {}", e["status"]);
-            for held in e["undelivered"].as_array().into_iter().flatten() {
-                what.push_str(&format!("\nnot delivered: {}", s(&held["text"])));
-            }
-            what
+        "message_dropped" => {
+            format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
         }
+        "session_closed" => format!("session closed ({})", s(&e["by"])),
+        "exited" => format!("agent exited: {}", e["status"]),
         // An ACP message (`--events acp`): the direction and the message.
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
         _ => return None,
@@ -128,6 +143,28 @@ fn unsafe_char(c: char) -> bool {
         '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => true,
         '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => true,
         _ => false,
+    }
+}
+
+/// What `usage_update` says of a session: `12.3k of 200.0k tokens, cost
+/// 0.42 USD` (the context window, and the cost if the agent gives one).
+pub fn usage(usage: &Value) -> Option<String> {
+    let (used, size) = (usage["used"].as_u64()?, usage["size"].as_u64()?);
+    let mut line = format!("{} of {} tokens", tokens(used), tokens(size));
+    if let (Some(amount), Some(currency)) =
+        (usage["cost"]["amount"].as_f64(), usage["cost"]["currency"].as_str())
+    {
+        line.push_str(&format!(", cost {amount:.2} {currency}"));
+    }
+    Some(line)
+}
+
+/// `950`, `12.3k`, `1.2M`.
+fn tokens(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
+        n if n >= 1_000 => format!("{:.1}k", n as f64 / 1e3),
+        n => n.to_string(),
     }
 }
 
@@ -369,6 +406,36 @@ mod tests {
         let e = serde_json::json!({ "event": "agent_message", "text": "hi\x1b]0;title\x07" });
         let shown = event(&e, &Options { session: false, time: false }).unwrap();
         assert_eq!(shown, "agent: hi\\u001b]0;title\\u0007");
+    }
+
+    /// What `--events` can choose is shown in text too (ADR 23 in docs/adr).
+    #[test]
+    fn every_event_has_a_line() {
+        for name in crate::host::EVENTS {
+            let e = serde_json::json!({ "event": name });
+            assert!(event(&e, &Options { session: false, time: false }).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn lines_of_the_quiet_and_new_events() {
+        use serde_json::json;
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let progress = json!({ "event": "tool_progress", "title": "Run", "status": "in_progress" });
+        assert_eq!(shown(progress), "tool: Run in_progress");
+        let usage = json!({ "event": "usage", "usage": { "used": 950, "size": 1_200_000 } });
+        assert_eq!(shown(usage), "usage: 950 of 1.2M tokens");
+        let model = json!({ "id": "model", "currentValue": "opus" });
+        let options = json!([model, { "id": "fast", "currentValue": true }]);
+        let config = json!({ "event": "session_changed", "what": "config", "value": options });
+        assert_eq!(shown(config), "config: model=opus fast=true");
+        let commands = json!({ "event": "session_changed", "what": "commands", "value": [{}, {}] });
+        assert_eq!(shown(commands), "commands: 2 available");
+        let dropped =
+            json!({ "event": "message_dropped", "message": "m3", "text": "later", "by": "queue" });
+        assert_eq!(shown(dropped), "dropped m3 (queue): later");
+        let closed = json!({ "event": "session_closed", "by": "idle" });
+        assert_eq!(shown(closed), "session closed (idle)");
     }
 
     #[test]

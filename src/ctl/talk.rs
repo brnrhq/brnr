@@ -4,8 +4,9 @@
 //! `start --wait` and `send --wait` print the agent's reply and exit with the
 //! turn's result; `wait` waits for a session to be idle (or for the next
 //! turn, an approval, or its process's exit). Exit status: 0 when the turn
-//! ended normally (`end_turn`), 1 if it failed or stopped for another reason,
-//! 124 on `--timeout`.
+//! ended normally (`end_turn`), 1 if it failed or stopped for another reason
+//! or its message was dropped (or, waiting for a turn or an approval, the
+//! session closed first), 124 on `--timeout` (see ADR 21 in docs/adr).
 //!
 //! `send` timing:
 //! - default: send now; starts a turn if the agent is idle, otherwise the
@@ -122,13 +123,21 @@ impl Conn {
 // ---- waiting for a turn --------------------------------------------------
 
 /// Events `wait_for_message` needs.
-const TURN_EVENTS: &[&str] =
-    &["user_message", "agent_message", "permission_request", "turn_ended", "exited"];
+const TURN_EVENTS: &[&str] = &[
+    "user_message",
+    "agent_message",
+    "permission_request",
+    "turn_ended",
+    "message_dropped",
+    "session_closed",
+    "exited",
+];
 
 /// Follows the turn that answers `message` until it ends, printing the
 /// agent's messages as they come (or, with `json`, the turn as one object at
-/// the end: `{session, message, reply, stop_reason, error}` and `json`'s
-/// fields), and returns the turn's exit status. Approvals on the way are
+/// the end: `{session, message, reply, stop_reason, error, dropped}` and
+/// `json`'s fields), and returns the turn's exit status: 1, too, for a message
+/// dropped before it was sent (`dropped` says why). Approvals on the way are
 /// announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
@@ -164,25 +173,55 @@ pub(super) fn wait_for_message(
                     e["title"].as_str().unwrap_or("?")
                 );
             }
-            "turn_ended" if e["message"] == message => {
-                if let Some(mut out) = json {
-                    for (k, v) in [
-                        ("session", json!(session)),
-                        ("message", json!(message)),
-                        ("reply", json!(reply.join("\n\n"))),
-                        ("stop_reason", e["stop_reason"].clone()),
-                        ("error", e["error"].clone()),
-                    ] {
-                        out[k] = v;
-                    }
-                    print_json(&out)?;
+            "turn_ended" if carries(&e, message) => {
+                if let Some(out) = json {
+                    print_turn(out, session, message, &reply, &e)?;
                 }
                 return Ok(turn_status(&e));
+            }
+            "message_dropped" if e["message"] == message => {
+                if let Some(out) = json {
+                    print_turn(out, session, message, &reply, &e)?;
+                }
+                errln!("brnr: {message} was dropped ({})", e["by"].as_str().unwrap_or("?"));
+                return Ok(ExitCode::FAILURE);
+            }
+            "session_closed" if ours => {
+                return Err("the session closed before the turn ended".into());
             }
             "exited" => return Err("the agent exited before the turn ended".into()),
             _ => {}
         }
     }
+}
+
+/// The turn as `--json` prints it, from the event that ended it
+/// (`turn_ended`, or `message_dropped` for a message never sent): `out` with
+/// `{session, message, reply, stop_reason, error, dropped}`.
+fn print_turn(
+    mut out: Value,
+    session: &str,
+    message: &str,
+    reply: &[String],
+    end: &Value,
+) -> Result<(), String> {
+    let dropped = if end["event"] == "message_dropped" { end["by"].clone() } else { Value::Null };
+    for (k, v) in [
+        ("session", json!(session)),
+        ("message", json!(message)),
+        ("reply", json!(reply.join("\n\n"))),
+        ("stop_reason", end["stop_reason"].clone()),
+        ("error", end["error"].clone()),
+        ("dropped", dropped),
+    ] {
+        out[k] = v;
+    }
+    print_json(&out)
+}
+
+/// Whether `turn_ended` event `e` is of the turn that carried `message`.
+fn carries(e: &Value, message: &str) -> bool {
+    e["messages"].as_array().is_some_and(|m| m.iter().any(|m| m == message))
 }
 
 /// 0 for a turn that ended normally, else 1 (and why, on stderr).
@@ -630,7 +669,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
     // Subscribed before looking, so nothing happens unseen in between.
-    conn.subscribe(&["turn_ended", "permission_request", "exited"])?;
+    conn.subscribe(&["turn_ended", "permission_request", "session_closed", "exited"])?;
     let mine = |e: &Value| e["session"] == session.as_str();
     // What ended the wait: printed as text, or with --json as itself.
     let done = |what: &Value, text: String| {
@@ -641,6 +680,10 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
         Ok(())
     };
     let idle_now = json!({ "event": "idle", "session": session });
+    // How the last turn ended: a wait for `idle` that ends on an idle or a
+    // closed session exits as if it had waited for that turn (see ADR 21 in
+    // docs/adr).
+    let mut last_turn = Value::Null;
     match what.as_str() {
         "permission" => {
             let pending = conn.call(json!({ "cmd": "pending" }))?;
@@ -650,15 +693,12 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         "idle" => {
-            if let Some(s) = idle(&mut conn, &session)? {
+            let (is_idle, s) = idle(&mut conn, &session)?;
+            if is_idle {
                 done(&idle_now, "idle".into())?;
-                // As if it had waited for that turn (see ADR 21 in
-                // docs/adr): how the last one ended, if there was one.
-                return Ok(match &s["last_turn"] {
-                    turn if turn.is_object() => turn_status(turn),
-                    _ => ExitCode::SUCCESS,
-                });
+                return Ok(ended_as(&s["last_turn"]));
             }
+            last_turn = s["last_turn"].clone();
         }
         _ => {}
     }
@@ -681,6 +721,15 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 return Ok(ExitCode::SUCCESS);
             }
             ("exited", _) => return Err("the agent exited".into()),
+            // A closed session counts as idle; there is no next turn or
+            // approval in it to wait for.
+            ("session_closed", "idle") if mine(&e) => {
+                done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
+                return Ok(ended_as(&last_turn));
+            }
+            ("session_closed", "turn" | "permission") if mine(&e) => {
+                return Err("the session closed".into());
+            }
             ("permission_request", "permission") if mine(&e) => {
                 done(&e, describe_permission(&e))?;
                 return Ok(ExitCode::SUCCESS);
@@ -689,25 +738,33 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 done(&e, format!("turn ended: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                 return Ok(turn_status(&e));
             }
-            ("turn_ended", "idle") if mine(&e) && idle(&mut conn, &session)?.is_some() => {
-                done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
-                return Ok(turn_status(&e));
+            ("turn_ended", "idle") if mine(&e) => {
+                last_turn = e.clone();
+                if idle(&mut conn, &session)?.0 {
+                    done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
+                    return Ok(turn_status(&e));
+                }
             }
             _ => {}
         }
     }
 }
 
-/// The session's status if it has no turn running and nothing held (null
-/// for one that has closed).
-fn idle(conn: &mut Conn, session: &str) -> Result<Option<Value>, String> {
+/// Whether the session is idle, with no turn running and nothing held (a
+/// closed one counts), and its status (null for one that has closed).
+fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
     let sessions = status["sessions"].as_array().map_or(&[][..], Vec::as_slice);
     Ok(match sessions.iter().find(|s| s["session_id"] == session) {
-        Some(s) if s["busy"] == true || s["held"].as_u64().unwrap_or(0) > 0 => None,
-        Some(s) => Some(s.clone()),
-        None => Some(Value::Null),
+        Some(s) => (s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0, s.clone()),
+        None => (true, Value::Null),
     })
+}
+
+/// The exit status of a turn that ended as `turn` says (`turn_ended`, or
+/// status's `last_turn`); 0 when there was none.
+fn ended_as(turn: &Value) -> ExitCode {
+    if turn.is_object() { turn_status(turn) } else { ExitCode::SUCCESS }
 }
 
 fn describe_permission(p: &Value) -> String {

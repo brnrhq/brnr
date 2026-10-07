@@ -32,6 +32,7 @@ and by the prompt's text:
   big <n>           answers with one message of n bytes
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
+  settings          reports its config options, then answers
   perm <kind>       asks permission for a tool call of that kind first
   fail              the turn fails
 """
@@ -211,6 +212,9 @@ for line in sys.stdin:
             update(sid, {"sessionUpdate": "plan", "entries": plan})
             update(sid, {"sessionUpdate": "usage_update", "used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})
             say(sid, "did the tools")
+            end_turn(mid)
+        elif first == "settings":
+            update(sid, {"sessionUpdate": "config_option_update", "configOptions": config(model)})
             end_turn(mid)
         elif first == "fail":
             error(mid, -32603, "boom")

@@ -1,8 +1,8 @@
 # 23. Choosing events, and what text shows
 
 Accepted (former decisions 2, 18, 19 and 34); reviewed 2026-10-07.
-Implemented, except `tool_progress`, `usage` being quiet, and text lines for
-`usage` and for `session_changed` about config and commands.
+Implemented. `usage` has the context window and the cost, not tokens in and
+out, so its line is `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
 
 ## Context
 

@@ -1,6 +1,7 @@
 # 20. Dropped messages and closed sessions are events
 
-Accepted 2026-10-07. Not yet implemented.
+Accepted 2026-10-07. Implemented, except `--take-over` (ADR 3, not yet
+implemented) and the README's list of events.
 Resolves review item 5.
 
 ## Context

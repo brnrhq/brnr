@@ -47,13 +47,14 @@ impl SetupStep {
     }
 }
 
-/// What a bridge asked the agent for.
+/// What a bridge asked the agent for. A close is `by` `close`, or `idle` for
+/// `stop_when_idle`, as `session_closed` has it.
 pub(super) enum PeerOp {
     Mode { session: String, mode: String },
     Config { session: String },
     Model { session: String, model: String },
     Fork { cwd: PathBuf },
-    Close { session: String },
+    Close { session: String, by: &'static str },
 }
 
 impl Host {
@@ -350,10 +351,9 @@ impl Host {
                 self.sessions[i].state.result(result);
                 json!({ "ok": true, "session": session })
             }
-            PeerOp::Close { session } => {
+            PeerOp::Close { session, by } => {
                 if let Some(i) = self.find(&session) {
-                    self.flush_agent_message(i);
-                    self.sessions.remove(i);
+                    self.close_session(i, by);
                 }
                 if self.sessions.is_empty() && !self.editor_attached() {
                     self.begin_stop();

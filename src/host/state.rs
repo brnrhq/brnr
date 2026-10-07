@@ -134,7 +134,7 @@ impl Host {
                 if !finished {
                     state.tools.push((id, tool.clone()));
                 }
-                let mut event = tool_event(&session, &tool);
+                let mut event = tool_event(&session, &tool, "tool_call");
                 event["started"] = json!(true);
                 event
             }
@@ -156,8 +156,11 @@ impl Host {
                     return None; // Progress, not a change of status.
                 };
                 tool["status"] = json!(status);
-                let event = tool_event(&session, tool);
-                if FINISHED.contains(&status) {
+                // `tool_call` again at the end, `tool_progress` on the way.
+                let finished = FINISHED.contains(&status);
+                let name = if finished { "tool_call" } else { "tool_progress" };
+                let event = tool_event(&session, tool, name);
+                if finished {
                     state.tools.remove(pos);
                 }
                 event
@@ -203,9 +206,9 @@ fn preview(text: &str) -> String {
     }
 }
 
-fn tool_event(session: &str, tool: &Value) -> Value {
+fn tool_event(session: &str, tool: &Value, name: &str) -> Value {
     let mut event = tool.clone();
-    event["event"] = json!("tool_call");
+    event["event"] = json!(name);
     event["session"] = json!(session);
     event
 }

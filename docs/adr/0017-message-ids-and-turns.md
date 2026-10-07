@@ -1,7 +1,7 @@
 # 17. Message ids and turns
 
-Accepted (former decision 3); reviewed 2026-10-07. Implemented, except
-`messages` in `turn_ended` (today a single `message`).
+Accepted (former decision 3); reviewed 2026-10-07. Implemented; until
+steering (ADR 18), a turn's `messages` has one id at most.
 
 ## Context
 

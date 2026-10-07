@@ -11,7 +11,7 @@
 //! - `status`
 //! - `send` `{session, text?, blocks?, mode?: now|after-turn|interrupt|context,
 //!   replace?}`: the response has the message's id (`m<n>`), which the
-//!   `user_message` and `turn_ended` events of its turn carry
+//!   `user_message` of its turn carries, and the `turn_ended` in `messages`
 //! - `cancel` `{session, keep_held?}`: cancel the running turn; held
 //!   messages are dropped (and listed) unless `keep_held`
 //! - `queue` `{session, drop?, clear?, clear_context?}`: the held messages
@@ -30,8 +30,10 @@
 //!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
-//! streamed chunk) and must be asked for by name. While an editor is
-//! attached, bridges observe; the editor answers the agent.
+//! streamed chunk) and must be asked for by name. A held message that goes
+//! unsent (`cancel`, `queue`, its session closing, the agent exiting) is a
+//! `message_dropped`; a session that closes, `session_closed`. While an
+//! editor is attached, bridges observe; the editor answers the agent.
 //!
 //! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
 //! up has stopped reading and is dropped rather than buffered for without
@@ -68,20 +70,24 @@ pub const EVENTS: &[&str] = &[
     "agent_message",
     "agent_thought",
     "tool_call",
+    "tool_progress",
     "plan",
     "usage",
     "session_changed",
     "permission_request",
     "permission_resolved",
     "turn_ended",
+    "message_dropped",
+    "session_closed",
     "exited",
     "acp",
 ];
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
-/// ACP messages and the agent's thoughts. `watch` and `log` without
-/// `--events`, and a session in the foreground.
-pub const QUIET: &[&str] = &["acp", "agent_thought"];
+/// ACP messages, the agent's thoughts, usage and tool calls' progress.
+/// `watch` and `log` without `--events`, and a session in the foreground,
+/// in text and JSON alike.
+pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
@@ -630,19 +636,14 @@ impl Host {
         let dropped: Vec<Value> = if req["keep_held"].as_bool() == Some(true) {
             Vec::new()
         } else {
-            let s = &mut self.sessions[i];
-            s.interrupts = 0;
-            s.held.drain(..).map(|h| json!({ "message": h.id, "text": h.text })).collect()
+            self.drop_held(i, "cancel")
         };
         let busy = !self.sessions[i].prompts.is_empty();
         if busy {
             self.cancel(&session);
         }
         let status = if busy { "cancelling" } else { "idle" };
-        self.sink.note(
-            Some(&session),
-            json!({ "event": "cancel", "status": status, "dropped": dropped }),
-        );
+        self.sink.note(Some(&session), json!({ "event": "cancel", "status": status }));
         Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
     }
 
@@ -665,14 +666,14 @@ impl Host {
         if req["clear_context"].as_bool() == Some(true) {
             s.context.clear();
         }
+        let dropped = self.dropped(i, dropped, "queue");
+        let s = &self.sessions[i];
         let held: Vec<Value> = s
             .held
             .iter()
             .enumerate()
             .map(|(n, h)| json!({ "message": h.id, "text": h.text, "interrupt": n < s.interrupts, "attachments": h.blocks.len() }))
             .collect();
-        let dropped: Vec<Value> =
-            dropped.into_iter().map(|h| json!({ "message": h.id, "text": h.text })).collect();
         Ok(
             json!({ "ok": true, "session": s.id, "held": held, "context": s.context, "dropped": dropped }),
         )
@@ -771,8 +772,12 @@ impl Host {
                     let op = PeerOp::Fork { cwd };
                     self.peer_op(peer, req_id, op, "session/fork", params);
                 } else {
+                    // Dropped now: held until the agent answers, they would go out
+                    // as the running turn ends.
+                    self.drop_held(i, "close");
                     let params = json!({ "sessionId": session });
-                    self.peer_op(peer, req_id, PeerOp::Close { session }, "session/close", params);
+                    let op = PeerOp::Close { session, by: "close" };
+                    self.peer_op(peer, req_id, op, "session/close", params);
                 }
             }
             _ => unreachable!("checked in command"),

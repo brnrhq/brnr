@@ -185,14 +185,14 @@ fn approve_during_stop_fails() {
     assert!(stderr(&out).contains("no longer"), "{}", stderr(&out));
 }
 
-/// Messages still held when the agent exits are reported, not dropped
-/// silently.
+/// Messages still held when the agent exits are dropped with an event each,
+/// before `exited`, not silently.
 #[test]
 fn held_messages_are_reported_on_exit() {
     let env = Env::new("held");
     env.start(&["--prompt", "hang on"]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "exited"])
+        .brnr(&["watch", "sess-1", "--json", "--events", "message_dropped,exited"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -202,12 +202,19 @@ fn held_messages_are_reported_on_exit() {
     assert!(env.run(&["stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
-    let line = BufReader::new(watch.stdout.take().unwrap()).lines().next();
-    let line = line.expect("watch printed no exited event").unwrap();
-    let exited: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(exited["event"], "exited");
-    assert_eq!(exited["undelivered"][0]["text"], "later");
-    assert_eq!(exited["undelivered"][0]["session"], "sess-1");
+    let lines: Vec<Value> = BufReader::new(watch.stdout.take().unwrap())
+        .lines()
+        .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let dropped = &lines[0];
+    assert_eq!(dropped["event"], "message_dropped");
+    assert_eq!(dropped["session"], "sess-1");
+    assert_eq!(dropped["message"], "m2");
+    assert_eq!(dropped["text"], "later");
+    assert_eq!(dropped["by"], "exit");
+    assert_eq!(lines[1]["event"], "exited");
+    assert!(lines[1].get("undelivered").is_none(), "{}", lines[1]);
 }
 
 // ---- sending -----------------------------------------------------------
@@ -598,6 +605,29 @@ fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     writeln!(to_agent, "{new}").unwrap();
     assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
     (editor, to_agent, from_agent)
+}
+
+/// The editor closing its session (`session/close`) is a `session_closed`,
+/// by the editor, in the session's transcript; the process stays the
+/// editor's.
+#[test]
+fn editor_close_is_an_event() {
+    let env = Env::new("ed-close");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let close =
+        r#"{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"sess-1"}}"#;
+    writeln!(to_agent, "{close}").unwrap();
+    let mut line = String::new();
+    while !serde_json::from_str::<Value>(&line).is_ok_and(|m| m["id"] == 3) {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to the close");
+    }
+    assert!(!env.ok(&["list"]).contains("sess-1"), "the session is still listed");
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "session_closed"]);
+    let closed: Value =
+        serde_json::from_str(log.lines().next().expect("no session_closed")).unwrap();
+    assert_eq!((&closed["session"], &closed["by"]), (&"sess-1".into(), &"editor".into()));
+    assert!(env.ok(&["ps"]).contains("editor"));
 }
 
 /// When the editor goes, what the agent started goes too: its process

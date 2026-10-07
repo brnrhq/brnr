@@ -180,6 +180,52 @@ fn cancel_drops_held_messages_and_says_so() {
     assert!(out.contains("dropped m2: later"), "{out}");
     settled(&env);
     assert_eq!(env.prompts(), ["hang on"]);
+    // And so do the events, for whoever relied on it.
+    let dropped: Vec<Value> =
+        events(&env, "sess-1").into_iter().filter(|e| e["event"] == "message_dropped").collect();
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert_eq!((&dropped[0]["message"], &dropped[0]["text"]), (&"m2".into(), &"later".into()));
+    assert_eq!(dropped[0]["by"], "cancel");
+    assert!(env.ok(&["log", "sess-1"]).contains("dropped m2 (cancel): later"));
+}
+
+/// `send --wait` for a message that is dropped before it is sent exits 1
+/// and says so, rather than waiting for the process to exit.
+#[test]
+fn send_wait_on_a_dropped_message() {
+    let env = Env::new("c-dropwait");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let send = |json: bool| {
+        let mut args = vec!["send", "sess-1", "--wait", "--after-turn", "later"];
+        if json {
+            args.push("--json");
+        }
+        env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let (text, json) = (send(false), send(true));
+    let held = || env.ok(&["queue", "sess-1"]).lines().count() == 2;
+    assert!(wait_for(Duration::from_secs(5), held), "{}", env.ok(&["queue", "sess-1"]));
+    env.ok(&["cancel", "sess-1"]);
+    let (text, json) = (text.wait_with_output().unwrap(), json.wait_with_output().unwrap());
+    assert_eq!(code(&text), 1, "{}", stderr(&text));
+    assert_eq!(stdout(&text), "");
+    let message = if stderr(&text).contains("m2") { "m2" } else { "m3" };
+    assert!(
+        stderr(&text).contains(&format!("brnr: {message} was dropped (cancel)")),
+        "{}",
+        stderr(&text)
+    );
+    assert_eq!(code(&json), 1, "{}", stderr(&json));
+    let turn: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(turn["dropped"], "cancel");
+    assert_eq!(turn["session"], "sess-1");
+    assert!(turn["stop_reason"].is_null() && turn["error"].is_null(), "{turn}");
+    assert_ne!(turn["message"], message);
+    // A turn that ran says it wasn't dropped.
+    let out = env.ok(&["send", "sess-1", "--wait", "--json", "reply fine"]);
+    let turn: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((&turn["stop_reason"], &turn["dropped"]), (&"end_turn".into(), &Value::Null));
 }
 
 #[test]
@@ -207,6 +253,13 @@ fn queue_lists_and_drops() {
     let json: Value = serde_json::from_str(&env.ok(&["queue", "sess-1", "--json"])).unwrap();
     assert_eq!(json["held"][0]["message"], "m3");
     assert!(env.fails(&["queue", "sess-1", "--drop", "m9"]).contains("no held message m9"));
+    assert_eq!(env.ok(&["queue", "sess-1", "--clear"]), "dropped m3: second\nnothing held\n");
+    let dropped: Vec<(Value, Value)> = events(&env, "sess-1")
+        .into_iter()
+        .filter(|e| e["event"] == "message_dropped")
+        .map(|e| (e["message"].clone(), e["by"].clone()))
+        .collect();
+    assert_eq!(dropped, [("m2".into(), "queue".into()), ("m3".into(), "queue".into())]);
 }
 
 // ---- seeing --------------------------------------------------------------
@@ -222,6 +275,7 @@ fn log_shows_the_conversation() {
     assert_eq!(
         lines,
         [
+            "commands: 1 available",
             "title: Fake session",
             "user: tools",
             "plan (0/2):",
@@ -257,12 +311,49 @@ fn log_shows_the_conversation() {
     assert!(acp.iter().all(|e| e["session"] == "sess-1" && e["ts"].is_string()));
     let names: Vec<String> =
         events(&env, "sess-1").iter().map(|e| e["event"].as_str().unwrap().to_owned()).collect();
-    assert!(
-        names.contains(&"usage".to_owned()) && names.contains(&"tool_call".to_owned()),
-        "{names:?}"
-    );
+    assert!(names.contains(&"tool_call".to_owned()), "{names:?}");
+    // Quiet in JSON as in text: usage and tool progress only when asked for.
+    for quiet in ["usage", "tool_progress"] {
+        assert!(!names.contains(&quiet.to_owned()), "{quiet} by default: {names:?}");
+    }
     let turn = events(&env, "sess-1").into_iter().find(|e| e["event"] == "turn_ended").unwrap();
-    assert_eq!(turn["message"], "m1");
+    assert_eq!(turn["messages"], serde_json::json!(["m1"]));
+    assert!(turn.get("message").is_none(), "{turn}");
+}
+
+/// The quiet events, and what `session_changed` says of config and
+/// commands, each have a line of text, as they have JSON.
+#[test]
+fn every_event_chosen_is_shown_in_text() {
+    let env = Env::new("c-quiet");
+    env.start(&["--wait", "--prompt", "tools"]);
+    env.ok(&["send", "sess-1", "--wait", "settings"]);
+    let shown = |events: &str| -> Vec<String> {
+        env.ok(&["log", "sess-1", "--events", events]).lines().map(|l| l[10..].to_owned()).collect()
+    };
+    assert_eq!(
+        shown("tool_call,tool_progress"),
+        [
+            "tool: Run the tests (execute)",
+            "tool: Run the tests in_progress",
+            "tool done: Run the tests",
+        ]
+    );
+    assert_eq!(shown("usage"), ["usage: 12.3k of 200.0k tokens, cost 0.42 USD"]);
+    assert_eq!(
+        shown("session_changed"),
+        ["commands: 1 available", "title: Fake session", "config: model=small"]
+    );
+    let json = env.ok(&["log", "sess-1", "--events", "default,usage,tool_progress", "--json"]);
+    let names: Vec<Value> =
+        json.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone()).collect();
+    assert!(names.contains(&"usage".into()) && names.contains(&"tool_progress".into()), "{json}");
+    let progress = json.lines().find(|l| l.contains(r#""event":"tool_progress""#)).unwrap();
+    let progress: Value = serde_json::from_str(progress).unwrap();
+    assert_eq!(
+        (&progress["status"], &progress["tool_call_id"]),
+        (&"in_progress".into(), &"t1".into())
+    );
 }
 
 #[test]
@@ -485,6 +576,75 @@ fn fork_and_close() {
         wait_for(Duration::from_secs(15), || !alive(host)),
         "the process kept running with no session"
     );
+}
+
+/// Closing a session drops what it holds, then says it closed; whatever
+/// follows the session ends with it, and the process carries on.
+#[test]
+fn close_ends_what_follows_the_session() {
+    let env = Env::new("c-closed");
+    env.start(&[]);
+    env.ok(&["fork", "sess-1"]);
+    assert_eq!(code(&env.run(&["send", "sess-2", "--wait", "fail"])), 1);
+    env.ok(&["send", "sess-2", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT\" >> '{}'", out.display());
+    let spawn = |args: &[&str]| {
+        env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let watch = spawn(&["watch", "sess-2"]);
+    let notify =
+        spawn(&["notify", "sess-2", "--events", "message_dropped", "--", "sh", "-c", &script]);
+    let turn = spawn(&["wait", "sess-2", "--for", "turn"]);
+    let permission = spawn(&["wait", "sess-2", "--for", "permission"]);
+    let idle = spawn(&["wait", "sess-2", "--json"]);
+    let sent = spawn(&["send", "sess-2", "--wait", "--after-turn", "later"]);
+    let held = || env.ok(&["queue", "sess-2"]).contains("later");
+    assert!(wait_for(Duration::from_secs(5), held), "not held");
+    sleep(Duration::from_millis(300));
+    env.ok(&["close", "sess-2"]);
+
+    let watch = watch.wait_with_output().unwrap();
+    assert_eq!(code(&watch), 0, "{}", stderr(&watch));
+    let text = stdout(&watch);
+    let lines: Vec<&str> = text.lines().map(|l| &l[10..]).collect();
+    let end = ["dropped m3 (close): later", "session closed (close)"];
+    assert_eq!(lines[lines.len() - 2..], end, "{text}");
+    let notify = notify.wait_with_output().unwrap();
+    assert_eq!(code(&notify), 0, "{}", stderr(&notify));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "message_dropped\n");
+    for wait in [turn, permission] {
+        let wait = wait.wait_with_output().unwrap();
+        assert_eq!(code(&wait), 1, "{}", stderr(&wait));
+        assert!(stderr(&wait).contains("the session closed"), "{}", stderr(&wait));
+    }
+    // A closed session counts as idle, and the wait exits as its last turn
+    // ended: that one failed.
+    let idle = idle.wait_with_output().unwrap();
+    assert_eq!(code(&idle), 1, "{}", stderr(&idle));
+    let closed: Value = serde_json::from_slice(&idle.stdout).unwrap();
+    assert_eq!((&closed["event"], &closed["by"]), (&"session_closed".into(), &"close".into()));
+    let sent = sent.wait_with_output().unwrap();
+    assert_eq!(code(&sent), 1, "{}", stderr(&sent));
+    assert!(stderr(&sent).contains("m3 was dropped (close)"), "{}", stderr(&sent));
+
+    let names: Vec<Value> =
+        events(&env, "sess-2").into_iter().map(|e| e["event"].clone()).collect();
+    assert_eq!(names[names.len() - 2..], ["message_dropped", "session_closed"], "{names:?}");
+    assert!(env.ok(&["status", "sess-1"]).contains("session sess-1"));
+}
+
+/// A session that `stop_when_idle` closes, while the process has others,
+/// says so; the process stops with its last one.
+#[test]
+fn idle_close_is_an_event() {
+    let env = Env::new("c-idleclose");
+    env.start(&["--stop-when-idle", "2"]);
+    env.ok(&["fork", "sess-1"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    let closed = events(&env, "sess-1").into_iter().find(|e| e["event"] == "session_closed");
+    assert_eq!(closed.expect("no session_closed")["by"], "idle");
 }
 
 #[test]

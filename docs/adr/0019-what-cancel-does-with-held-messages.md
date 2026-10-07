@@ -1,7 +1,6 @@
 # 19. What `cancel` does with held messages
 
-Accepted (former decision 6); reviewed 2026-10-07. Implemented, except the
-`message_dropped` events (ADR 20).
+Accepted (former decision 6); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

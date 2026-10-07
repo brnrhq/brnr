@@ -7,8 +7,9 @@
 //!
 //! A session running or not, by id or name. It starts at the beginning of
 //! the session, or with `--last <n>` at the n-th last message sent to the
-//! agent; `--follow` keeps printing until the session's process exits. `--events` and `--json` mean what they do for
-//! `watch`; an ACP message in the transcript is an `acp` event.
+//! agent; `--follow` keeps printing until the session closes or its
+//! process exits. `--events` and `--json` mean what they do for `watch`; an
+//! ACP message in the transcript is an `acp` event.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -86,9 +87,12 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
         read_lines(&mut file, &mut partial, &mut more)?;
         for line in &more {
             let event = record_event(line);
-            let exited = event.as_ref().is_some_and(|e| e["event"] == "exited");
+            // Nothing more comes once the session closes or the agent exits.
+            let end = event
+                .as_ref()
+                .is_some_and(|e| e["event"] == "exited" || e["event"] == "session_closed");
             show.print(&mut out, event.filter(wanted))?;
-            if exited {
+            if end {
                 return Ok(ExitCode::SUCCESS);
             }
         }
