@@ -1,6 +1,7 @@
 # 26. Lines brnr can't parse
 
-Accepted 2026-10-07. Not yet implemented.
+Accepted 2026-10-07. Implemented, except telling the editor its late answer
+was dropped (ADR 4): for now the host log says so.
 Resolves review item 2.
 
 ## Context

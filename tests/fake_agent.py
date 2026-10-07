@@ -33,6 +33,10 @@ and by the prompt's text:
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
   perm <kind>       asks permission for a tool call of that kind first
+  odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
+                    surrogate (the title ends in half an emoji), deep (the
+                    input nests n deep, 10000 by default) or garbled (the
+                    line isn't JSON)
   fail              the turn fails
 """
 
@@ -214,6 +218,22 @@ for line in sys.stdin:
             end_turn(mid)
         elif first == "fail":
             error(mid, -32603, "boom")
+        elif first == "odd":
+            how = words[1] if len(words) > 1 else "surrogate"
+            request = f"perm-{len(asking) + 1}"
+            asking[request] = mid
+            title = "Edit " + chr(0xD83D) if how == "surrogate" else "Edit src/lib.rs"
+            tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
+            options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
+            params = {"sessionId": sid, "toolCall": tool, "options": options}
+            line = json.dumps({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+            if how == "deep":
+                n = int(words[2]) if len(words) > 2 else 10000
+                line = line.replace('"INPUT"', "[" * n + "]" * n)
+            elif how == "garbled":
+                line = line[:-1]
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
         elif first == "perm" or env("PERMISSION"):
             kind = words[1] if first == "perm" and len(words) > 1 else "edit"
             request = f"perm-{len(asking) + 1}"

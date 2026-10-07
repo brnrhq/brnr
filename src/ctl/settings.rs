@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::{config, paths, spawn};
+use brnr::{config, json, paths, spawn};
 
 use super::{
     Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
@@ -380,7 +380,13 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
         loop {
             let wait = deadline.saturating_duration_since(Instant::now());
             let line = rx.recv_timeout(wait).map_err(|_| format!("the agent didn't answer {method}"))?;
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            // As the host reads it (see json.rs): a title cut mid-emoji is no
+            // reason to miss the answer.
+            let line = line.as_bytes();
+            let Some(Some(msg)) = json::on_stack(json::depth(line), || json::parse::<Value>(line))
+            else {
+                continue;
+            };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
                     let what = error["message"].as_str().map_or(error.to_string(), str::to_owned);

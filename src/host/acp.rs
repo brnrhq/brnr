@@ -23,6 +23,11 @@
 //!   updates are neither recorded nor turned into events: the transcript has
 //!   them already. What they say the session is now (its title, mode, config
 //!   options and commands) is kept.
+//!
+//! Lines are read as json.rs reads them: any JSON text, a lone surrogate as
+//! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
+//! docs/adr): an editor's answer to an id the host doesn't know goes on to
+//! the agent, but for its late answers to requests the host answered itself.
 
 use std::collections::VecDeque;
 use std::mem::take;
@@ -33,8 +38,8 @@ use serde_json::{Map, Value, json};
 
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
-use crate::frame;
 use crate::log::Dir;
+use crate::{frame, json};
 
 /// Client capabilities removed from the editor's `initialize`. ACP v2 drops
 /// them and they add nothing an agent needs, so no agent comes to rely on
@@ -156,10 +161,25 @@ impl Host {
         self.editor_buf.drain(..start);
     }
 
-    fn editor_line(&mut self, mut line: Vec<u8>) {
+    fn editor_line(&mut self, line: Vec<u8>) {
+        let depth = json::depth(&line);
+        let mut line = Some(line);
+        let read = self.deep(depth, |host| {
+            let line = line.take().unwrap();
+            let msg = host.read(&line, depth);
+            host.editor_message(line, msg);
+        });
+        if read.is_none() {
+            // No stack to read it on: as a line that isn't JSON.
+            self.sink.note(None, json!({ "event": "line-too-deep", "depth": depth }));
+            self.editor_message(line.take().unwrap(), None);
+        }
+    }
+
+    fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
         let mut session = None;
         let mut deferred = None;
-        if let Ok(Value::Object(mut msg)) = serde_json::from_slice::<Value>(&line) {
+        if let Some(Value::Object(mut msg)) = msg {
             session = param_session(&msg);
             let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
             match (method, msg.get("id").cloned()) {
@@ -176,14 +196,18 @@ impl Host {
                 }
                 (None, Some(id)) => {
                     let key = id_key(&id);
-                    if !self.agent_requests.iter().any(|r| r.key == key) {
-                        // Already answered by the host (a cancel), or never
-                        // asked: the agent must not get a second answer.
+                    if self.agent_requests.iter().any(|r| r.key == key) {
+                        session = self.agent_request_answered(&key, &msg, "editor");
+                    } else if self.answered.remove(&key) {
+                        // Answered by the host already (a cancel): the agent
+                        // must not get a second answer.
                         let event = json!({ "event": "editor-response-dropped", "id": id });
                         self.sink.note(session.as_deref(), event);
                         return;
                     }
-                    session = self.agent_request_answered(&key, &msg, "editor");
+                    // Otherwise it answers a request the host couldn't read,
+                    // or none: it goes on, and the agent ignores an answer to
+                    // something it never asked (ADR 26 in docs/adr).
                 }
                 _ => {}
             }
@@ -300,7 +324,20 @@ impl Host {
 
     pub(super) fn agent_line(&mut self, line: &[u8]) {
         let body = line.strip_suffix(b"\n").unwrap_or(line);
-        let Ok(Value::Object(msg)) = serde_json::from_slice::<Value>(body) else {
+        let depth = json::depth(body);
+        let read = self.deep(depth, |host| {
+            let msg = host.read(body, depth);
+            host.agent_message(line, msg);
+        });
+        if read.is_none() {
+            // No stack to read it on: as a line that isn't JSON.
+            self.sink.note(None, json!({ "event": "line-too-deep", "depth": depth }));
+            self.agent_message(line, None);
+        }
+    }
+
+    fn agent_message(&mut self, line: &[u8], msg: Option<Value>) {
+        let Some(Value::Object(msg)) = msg else {
             self.record(None, Dir::AgentToEditor, line);
             self.send_link(frame::DATA, line);
             return;
@@ -568,7 +605,7 @@ impl Host {
 
     /// ACP: a client that cancels a turn answers that session's pending
     /// permission requests with `cancelled`. If the editor is showing one,
-    /// its late answer is dropped (see `editor_line`).
+    /// its late answer is dropped (see `editor_message`).
     fn cancel_permissions(&mut self, session: &str) {
         let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
             .into_iter()
@@ -587,6 +624,10 @@ impl Host {
     }
 
     fn respond(&mut self, req: &AgentRequest, body: Value) {
+        if self.editor_attached() {
+            // The editor may still answer it (see `editor_message`).
+            self.answered.insert(req.key.clone());
+        }
         let mut msg = json!({ "jsonrpc": "2.0", "id": req.id });
         if let (Some(msg), Value::Object(body)) = (msg.as_object_mut(), body) {
             msg.extend(body);

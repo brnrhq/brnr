@@ -650,3 +650,98 @@ fn non_blocking_stdin_is_waited_on() {
     drop(writer);
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
 }
+
+// ---- lines brnr reads --------------------------------------------------
+
+/// A prompt from the editor, with id `id`.
+fn editor_prompt(id: u64, text: &str) -> String {
+    let prompt = [serde_json::json!({ "type": "text", "text": text })];
+    let params = serde_json::json!({ "sessionId": "sess-1", "prompt": prompt });
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": params })
+        .to_string()
+}
+
+/// The next line the editor gets that has `text` in it.
+fn line_with(from_agent: &mut BufReader<ChildStdout>, text: &str) -> String {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no line with {text}");
+        if line.contains(text) {
+            return line;
+        }
+    }
+}
+
+/// The editor allowing the fake agent's first permission request.
+const ALLOW: &str = r#"{"jsonrpc":"2.0","id":"perm-1","result":{"outcome":{"outcome":"selected","optionId":"allow"}}}"#;
+
+/// A title cut in the middle of an emoji (a lone surrogate) is JSON: the
+/// request reaches the editor as the agent wrote it, the host knows the
+/// session waits on it (titled with U+FFFD), and the editor's answer
+/// reaches the agent.
+#[test]
+fn a_lone_surrogate_is_read() {
+    let env = Env::new("ed-lone");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "odd surrogate")).unwrap();
+    let request = line_with(&mut from_agent, "session/request_permission");
+    assert!(request.contains(r#""title": "Edit \ud83d""#), "{request}");
+    let pending: Value = serde_json::from_str(&env.ok(&["pending", "sess-1", "--json"])).unwrap();
+    assert_eq!(pending[0]["title"], "Edit \u{fffd}", "{pending}");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+}
+
+/// So is nesting deeper than serde_json's 128: the host reads a request
+/// 20000 deep, and carries on once it is answered.
+#[test]
+fn deep_nesting_is_read() {
+    let env = Env::new("ed-deep");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "odd deep 20000")).unwrap();
+    let request = line_with(&mut from_agent, "session/request_permission");
+    assert!(request.contains(&"[".repeat(20000)), "the request was cut");
+    let state = || {
+        let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+        status["state"].clone()
+    };
+    assert_eq!(state(), "waiting");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+    assert_eq!(state(), "idle");
+}
+
+/// A request that isn't JSON at all can't be tracked, but its answer isn't
+/// held back: an answer to an id the host doesn't know goes to the agent.
+#[test]
+fn an_answer_the_host_cant_place_reaches_the_agent() {
+    let env = Env::new("ed-garbled");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "odd garbled")).unwrap();
+    let request = line_with(&mut from_agent, "session/request_permission");
+    assert!(serde_json::from_str::<Value>(&request).is_err(), "{request}");
+    assert_eq!(env.ok(&["pending", "sess-1", "--json"]).trim(), "[]");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+}
+
+/// When a turn is cancelled from outside, the host answers the agent's
+/// pending request itself; the editor's late answer to it is dropped, so the
+/// agent isn't answered twice.
+#[test]
+fn a_late_answer_to_a_cancelled_request_is_dropped() {
+    let env = Env::new("ed-late");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    env.ok(&["cancel", "sess-1"]);
+    line_with(&mut from_agent, "end_turn");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    // Once a later prompt is answered, the host has seen the late answer.
+    writeln!(to_agent, "{}", editor_prompt(4, "reply done")).unwrap();
+    line_with(&mut from_agent, "end_turn");
+    let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0]["result"]["outcome"]["outcome"], "cancelled");
+}

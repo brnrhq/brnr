@@ -59,7 +59,7 @@ use super::requests::PeerOp;
 use super::{Ev, Host};
 use crate::config::Bridge;
 use crate::log::{self, Dir};
-use crate::{paths, render};
+use crate::{json, paths, render};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
@@ -287,8 +287,11 @@ impl Host {
         self.sink.msg(session, dir, bytes);
         if self.peers.values().any(|p| p.wants("acp")) {
             let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-            let msg = serde_json::from_slice::<Value>(body)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(body).into_owned()));
+            // As the host reads it, where this stack takes it (see json.rs).
+            let msg = (json::depth(body) <= self.stack)
+                .then(|| json::parse::<Value>(body))
+                .flatten()
+                .unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
             self.emit(json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg }));
         }
     }

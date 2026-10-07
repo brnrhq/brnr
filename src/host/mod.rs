@@ -24,7 +24,7 @@ mod control;
 mod requests;
 mod state;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
@@ -44,6 +44,7 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::frame;
+use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
 use crate::signals;
@@ -364,12 +365,19 @@ struct Host {
     host_requests: HashMap<String, HostRequest>,
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
+    /// Agent requests the host answered itself while the editor may answer
+    /// them too (a cancel): its late answers are dropped (see acp.rs).
+    answered: HashSet<String>,
     /// Request id of every unanswered prompt → its session.
     prompt_session: HashMap<String, String>,
     next_id: u64,
     next_permission: u64,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
+    /// How deeply what the host holds may nest, and how deeply the stack it
+    /// is running on takes (see `deep`).
+    deepest: usize,
+    stack: usize,
     /// Headless start: the first prompt, sent once the session exists.
     first_prompt: Option<String>,
     /// Headless start: the session is open and set up (or there is an
@@ -578,10 +586,13 @@ impl Host {
             client_requests: HashMap::new(),
             host_requests: HashMap::new(),
             agent_requests: Vec::new(),
+            answered: HashSet::new(),
             prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,
             editor_buf: Vec::new(),
+            deepest: 0,
+            stack: json::SHALLOW,
             first_prompt: a.prompt,
             started_ok: false,
             awaiting_prompt: a.awaiting_prompt,
@@ -662,9 +673,42 @@ impl Host {
                     Err(RecvTimeoutError::Disconnected) => break,
                 },
             };
-            self.handle(ev);
+            let mut ev = Some(ev);
+            if self.deep(0, |host| host.handle(ev.take().unwrap())).is_none() {
+                // No stack to be had for what the host holds: this one, then.
+                self.handle(ev.take().unwrap());
+            }
         }
-        self.finish()
+        // Finishing drops what the host holds: on a stack that takes it too.
+        let deepest = self.deepest;
+        let mut host = Some(self);
+        json::on_stack(deepest, || host.take().unwrap().finish())
+            .unwrap_or_else(|| host.take().unwrap().finish())
+    }
+
+    /// Runs `f` on a stack that takes values `depth` deep, and what the host
+    /// holds: this one, or a thread's of its own (see json.rs). `None` if
+    /// there is no such stack to be had.
+    fn deep<R: Send>(&mut self, depth: usize, f: impl FnOnce(&mut Host) -> R + Send) -> Option<R> {
+        let need = depth.max(self.deepest);
+        if need <= self.stack {
+            return Some(f(self));
+        }
+        let outer = self.stack;
+        let result = json::on_stack(need, || {
+            self.stack = need;
+            f(self)
+        });
+        self.stack = outer;
+        result
+    }
+
+    /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
+    /// `deep`). What the host keeps of it may now nest that deep.
+    fn read(&mut self, line: &[u8], depth: usize) -> Option<Value> {
+        let msg = json::parse(line)?;
+        self.deepest = self.deepest.max(depth);
+        Some(msg)
     }
 
     fn finish(mut self) -> ExitCode {
