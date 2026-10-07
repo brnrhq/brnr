@@ -47,7 +47,7 @@ of to-resolve; the map at the end says where each went.
 | [18](0018-what-send-does.md) | What `send` does | no |
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
 | [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
-| [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | mostly |
+| [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
 | [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | mostly |
 | [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
 | [24](0024-log-last.md) | `log --last <n>` | yes |

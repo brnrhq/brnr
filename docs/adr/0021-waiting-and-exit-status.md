@@ -1,7 +1,6 @@
 # 21. Waiting, and exit status
 
-Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented,
-except `start --wait` reading the start channel (ADR 7).
+Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

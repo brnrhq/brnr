@@ -1,8 +1,7 @@
 # 12. Stopping when idle
 
 Accepted (former decisions 14 and 41); reviewed 2026-10-07. Implemented,
-except as ADR 7 changes the start, ADR 20 adds `session_closed`, ADR 33 moves
-the key, and the refused `fork` below.
+except the refused `fork` below.
 
 ## Context
 
