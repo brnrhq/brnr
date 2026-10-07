@@ -65,7 +65,7 @@ use super::acp::{Choice, Held};
 use super::requests::PeerOp;
 use super::strict::Beyond;
 use super::{Ev, Host};
-use crate::config::Bridge;
+use crate::config::{Bridge, Log};
 use crate::log::{self, Dir};
 use crate::{json, paths, render, spawn};
 
@@ -527,6 +527,9 @@ impl Host {
                     (_, false) => "busy",
                     _ => "idle",
                 };
+                // Its transcript: events, and raw ACP (ADR 22).
+                let events = paths::session_log(&s.cwd, &s.id);
+                let acp = paths::acp_log(&events);
                 let fields = json!({
                     "session_id": s.id,
                     "state": state,
@@ -539,7 +542,8 @@ impl Host {
                     "context": s.context.len(),
                     "pending": pending,
                     "last_turn": s.last_turn,
-                    "log": self.log.host_log().map(|_| paths::session_log(&s.cwd, &s.id).to_string_lossy().into_owned()),
+                    "log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
+                    "acp_log": (self.logging == Log::All).then(|| acp.to_string_lossy()),
                 });
                 if let (Some(session), Value::Object(fields)) = (session.as_object_mut(), fields) {
                     session.extend(fields);

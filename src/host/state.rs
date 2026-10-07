@@ -2,8 +2,14 @@
 //! `session/update`s and from the results of the requests that open or
 //! change a session: title, mode, config options, plan, usage, running tool
 //! calls. `brnr status` shows it, and the host turns changes into events.
+//!
+//! A `session_changed` says what changed (ADR 22 in docs/adr): the title or
+//! the mode, or of the config options and the commands, a JSON merge patch
+//! (RFC 7396) over them by id and name: `{"model": "opus"}` for an option's
+//! value, `{"review": {…}}` for a command added, `null` for what is gone.
+//! `brnr status` has them in full.
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::Host;
 
@@ -41,13 +47,25 @@ pub(super) struct SessionState {
 impl SessionState {
     /// Takes what a result that opens or changes a session says about it
     /// (`session/new`, `load`, `resume`, `fork`, `set_config_option`, …).
-    pub(super) fn result(&mut self, result: &Value) {
+    /// Returns what it changed of the config options (see the module docs).
+    pub(super) fn result(&mut self, result: &Value) -> Option<Value> {
         if let Some(modes) = result.get("modes").filter(|m| m.is_object()) {
             self.modes = Some(modes.clone());
         }
+        let mut changed = None;
         if let Some(config) = result.get("configOptions").filter(|c| c.is_array()) {
-            self.config = Some(config.clone());
+            changed = self.set_config(config);
         }
+        changed
+    }
+
+    /// Takes the config options; returns what changed of their values.
+    fn set_config(&mut self, config: &Value) -> Option<Value> {
+        let old = self.config.as_ref().and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        let new = config.as_array().map_or(&[][..], Vec::as_slice);
+        let changed = patch(old, new, "id", Some("currentValue"));
+        self.config = Some(config.clone());
+        changed
     }
 
     pub(super) fn current_mode(&self) -> Option<&str> {
@@ -87,6 +105,16 @@ impl SessionState {
 }
 
 impl Host {
+    /// Takes the result of a request that changes session `i`
+    /// (`set_config_option`, `set_mode`): a change to its config options is
+    /// a `session_changed`, as an update saying so would be.
+    pub(super) fn apply_result(&mut self, i: usize, result: &Value) {
+        if let Some(config) = self.sessions[i].state.result(result) {
+            let session = self.sessions[i].id.clone();
+            self.emit(changed(&session, "config", config));
+        }
+    }
+
     /// Tracks one `session/update` that isn't agent text, emitting the
     /// events that changes to it make.
     pub(super) fn track_state(&mut self, i: usize, kind: &str, update: &Value) {
@@ -173,13 +201,14 @@ impl Host {
                 changed(&session, "mode", json!(mode))
             }
             "config_option_update" => {
-                state.config = Some(update["configOptions"].clone());
-                changed(&session, "config", update["configOptions"].clone())
+                let config = state.set_config(&update["configOptions"])?;
+                changed(&session, "config", config)
             }
             "available_commands_update" => {
                 let commands = update["availableCommands"].as_array().cloned().unwrap_or_default();
-                state.commands = commands.clone();
-                changed(&session, "commands", json!(commands))
+                let added = patch(&state.commands, &commands, "name", None);
+                state.commands = commands;
+                changed(&session, "commands", added?)
             }
             _ => return None,
         };
@@ -203,4 +232,61 @@ fn tool_event(session: &str, tool: &Value, name: &str) -> Value {
 
 fn changed(session: &str, what: &str, value: Value) -> Value {
     json!({ "event": "session_changed", "session": session, "what": what, "value": value })
+}
+
+/// What changed from `old` to `new`, lists of objects named by their `key`,
+/// as a merge patch over the map from each name to its `field` (the whole
+/// object without one): each name that is new or whose value is different,
+/// with its value, then `null` for each name gone. `None` if nothing did.
+fn patch(old: &[Value], new: &[Value], key: &str, field: Option<&str>) -> Option<Value> {
+    fn value<'a>(o: &'a Value, field: Option<&str>) -> &'a Value {
+        field.map_or(o, |f| &o[f])
+    }
+    let named = |list: &'_ [Value], name: &str| list.iter().position(|o| o[key] == name);
+    let mut patch = Map::new();
+    for o in new {
+        let Some(name) = o[key].as_str() else { continue };
+        let before = named(old, name).map(|j| value(&old[j], field));
+        if before != Some(value(o, field)) {
+            patch.insert(name.to_owned(), value(o, field).clone());
+        }
+    }
+    for o in old {
+        if let Some(name) = o[key].as_str()
+            && named(new, name).is_none()
+        {
+            patch.insert(name.to_owned(), Value::Null);
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_patch_has_what_changed() {
+        let option =
+            |id: &str, value: Value| json!({ "id": id, "currentValue": value, "options": [] });
+        let old = [option("model", json!("small")), option("fast", json!(false))];
+        let new = [
+            option("model", json!("large")),
+            option("fast", json!(false)),
+            option("effort", json!("high")),
+        ];
+        let config = |old: &[Value], new: &[Value]| patch(old, new, "id", Some("currentValue"));
+        assert_eq!(config(&old, &new), Some(json!({ "model": "large", "effort": "high" })));
+        assert_eq!(config(&new, &old), Some(json!({ "model": "small", "effort": null })));
+        assert_eq!(config(&old, &old), None);
+        let compact = json!({ "name": "compact", "description": "Compact" });
+        let review = json!({ "name": "review", "description": "Review" });
+        let reworded = json!({ "name": "review", "description": "Review it" });
+        let commands =
+            |old, new| patch(std::slice::from_ref(old), std::slice::from_ref(new), "name", None);
+        let shown = commands(&compact, &review);
+        assert_eq!(shown, Some(json!({ "review": review, "compact": null })));
+        assert_eq!(commands(&review, &reworded), Some(json!({ "review": reworded })));
+        assert_eq!(commands(&compact, &compact), None);
+    }
 }

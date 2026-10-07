@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 
 use super::acp::Held;
 use super::{Host, id_key};
-use crate::log::Dir;
+use crate::log::{self, Dir};
 
 pub(super) enum HostRequest {
     Initialize,
@@ -88,13 +88,12 @@ impl Host {
         line.push(b'\n');
         self.client_requests.insert(key.clone(), session.clone());
         self.host_requests.insert(key.clone(), kind);
-        self.record(session.as_deref(), Dir::ControlToAgent, &line);
+        // Without the MCP servers' secrets (ADR 25 in docs/adr).
+        let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());
+        self.record(session.as_deref(), Dir::ControlToAgent, &recorded);
         if matches!(method, "session/new" | "session/fork") {
-            let pending = super::acp::Pending::New {
-                cwd,
-                request: Some(line.clone()),
-                dir: Dir::ControlToAgent,
-            };
+            let pending =
+                super::acp::Pending::New { cwd, request: Some(recorded), dir: Dir::ControlToAgent };
             self.pending.insert(key, pending);
         }
         self.write_agent(&line);
@@ -169,11 +168,12 @@ impl Host {
             }
             HostRequest::Setup(step) => {
                 let Some(i) = self.starting.clone().and_then(|s| self.find(&s)) else { return };
-                if let SetupStep::Mode(mode) = step {
-                    self.sessions[i].state.set_mode(&mode);
+                if let SetupStep::Mode(mode) = &step {
+                    self.sessions[i].state.set_mode(mode);
                 }
-                // A config option's answer has them all (a mode or model too).
-                self.sessions[i].state.result(&result);
+                // A config option's answer has them all (a mode or model
+                // too); what it changed is a `session_changed`.
+                self.apply_result(i, &result);
                 self.run_setup(i);
             }
             HostRequest::Peer { .. } | HostRequest::Steer { .. } => unreachable!(),
@@ -374,13 +374,13 @@ impl Host {
             PeerOp::Mode { session, mode } => {
                 if let Some(i) = self.find(&session) {
                     self.sessions[i].state.set_mode(&mode);
-                    self.sessions[i].state.result(result);
+                    self.apply_result(i, result);
                 }
                 json!({ "ok": true, "session": session, "mode": mode })
             }
             PeerOp::Config { session } => {
                 let config = self.find(&session).map(|i| {
-                    self.sessions[i].state.result(result);
+                    self.apply_result(i, result);
                     self.sessions[i].state.config.clone()
                 });
                 json!({ "ok": true, "session": session, "config": config.flatten() })

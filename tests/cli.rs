@@ -287,7 +287,7 @@ fn log_shows_the_conversation() {
         lines,
         [
             "user: tools",
-            "commands: 1 available",
+            "commands: +compact",
             "title: Fake session",
             "plan (0/2):",
             "  [>] Run the tests",
@@ -338,7 +338,7 @@ fn log_shows_the_conversation() {
 fn every_event_chosen_is_shown_in_text() {
     let env = Env::new("c-quiet");
     env.start(&["--wait", "--prompt", "tools"]);
-    env.ok(&["send", "sess-1", "--wait", "settings"]);
+    env.ok(&["send", "sess-1", "--wait", "settings large"]);
     let shown = |events: &str| -> Vec<String> {
         env.ok(&["log", "sess-1", "--events", events]).lines().map(|l| l[10..].to_owned()).collect()
     };
@@ -353,7 +353,7 @@ fn every_event_chosen_is_shown_in_text() {
     assert_eq!(shown("usage"), ["usage: 12.3k of 200.0k tokens, cost 0.42 USD"]);
     assert_eq!(
         shown("session_changed"),
-        ["commands: 1 available", "title: Fake session", "config: model=small"]
+        ["commands: +compact", "title: Fake session", "config: model=large"]
     );
     let json = env.ok(&["log", "sess-1", "--events", "default,usage,tool_progress", "--json"]);
     let names: Vec<Value> =
@@ -365,6 +365,42 @@ fn every_event_chosen_is_shown_in_text() {
         (&progress["status"], &progress["tool_call_id"]),
         (&"in_progress".into(), &"t1".into())
     );
+}
+
+/// With `acp` events chosen, `log` reads the session's raw ACP file too,
+/// merged with its events in the order they happened (ADR 22).
+#[test]
+fn log_merges_the_raw_acp_in_time() {
+    let env = Env::new("c-merge");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.ok(&["send", "sess-1", "--wait", "reply second"]);
+    let all: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let at = all.iter().position(|e| e["text"] == "reply second").expect("no second message");
+    let seen: Vec<String> = all[at..]
+        .iter()
+        .map(|e| match e["event"].as_str().unwrap() {
+            "acp" => format!("acp {}", e["dir"].as_str().unwrap()),
+            name => name.to_owned(),
+        })
+        .collect();
+    // The message, the prompt it went as, the agent's reply and its answer,
+    // then what the host made of them.
+    assert_eq!(
+        seen,
+        [
+            "user_message",
+            "acp control->agent",
+            "acp agent->editor",
+            "acp agent->control",
+            "agent_message",
+            "turn_ended",
+        ]
+    );
+    assert_eq!(all[at + 1]["msg"]["method"], "session/prompt");
 }
 
 #[test]
@@ -404,6 +440,28 @@ fn log_follows_until_the_host_exits() {
         line.clear();
         assert!(out.read_line(&mut line).unwrap() > 0, "log ended early");
     }
+    env.stop();
+    assert!(wait_exit(&mut follow, Duration::from_secs(15)), "log --follow didn't end");
+}
+
+/// `log --follow` with `acp` chosen follows the raw ACP file as well.
+#[test]
+fn log_follows_the_raw_acp_too() {
+    let env = Env::new("c-followacp");
+    env.start(&[]);
+    let args = ["log", "sess-1", "--follow", "--events", "acp,agent_message", "--json"];
+    let mut follow = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = BufReader::new(follow.stdout.take().unwrap());
+    env.ok(&["send", "sess-1", "reply live"]);
+    let mut seen: Vec<Value> = Vec::new();
+    while !seen.last().is_some_and(|e| e["event"] == "agent_message") {
+        let mut line = String::new();
+        assert!(out.read_line(&mut line).unwrap() > 0, "log ended early");
+        seen.push(serde_json::from_str(&line).unwrap());
+    }
+    assert_eq!(seen.last().unwrap()["text"], "live");
+    let chunk = |e: &Value| e["msg"]["params"]["update"]["content"]["text"] == "live";
+    assert!(seen.iter().any(|e| e["event"] == "acp" && chunk(e)), "{seen:?}");
     env.stop();
     assert!(wait_exit(&mut follow, Duration::from_secs(15)), "log --follow didn't end");
 }
@@ -559,6 +617,54 @@ fn start_applies_mode_and_model_before_the_prompt() {
     );
     let err = env.fails(&start_args(&["--mode", "warp"]));
     assert!(err.contains("setting mode warp failed"), "{err}");
+}
+
+/// `session_changed` says what changed of the config options and the
+/// commands, live and in the transcript alike; `brnr config` and `brnr
+/// commands` have them in full (ADR 22).
+#[test]
+fn session_changed_says_what_changed() {
+    let env = Env::new("c-changed");
+    env.start(&[]);
+    let args = ["watch", "sess-1", "--events", "session_changed", "--json"];
+    let watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    // The agent's answer to brnr config changes the model; saying so again
+    // changes nothing.
+    env.ok(&["config", "sess-1", "model=large"]);
+    env.ok(&["send", "sess-1", "--wait", "settings large"]);
+    assert!(env.ok(&["config", "sess-1"]).contains("small large"));
+    env.ok(&["send", "sess-1", "--wait", "commands"]);
+    let commands = env.ok(&["commands", "sess-1"]);
+    assert!(commands.contains("/review") && !commands.contains("/compact"), "{commands}");
+    env.ok(&["send", "sess-1", "--wait", "settings none"]);
+
+    let log = env.ok(&["log", "sess-1", "--events", "session_changed"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(
+        lines,
+        [
+            "commands: +compact",
+            "title: Fake session",
+            "config: model=large",
+            "commands: +review -compact",
+            "config: -model",
+        ]
+    );
+    let recorded: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "session_changed", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let review = serde_json::json!({ "name": "review", "description": "Review the changes" });
+    assert_eq!(recorded[2]["value"], serde_json::json!({ "model": "large" }));
+    assert_eq!(recorded[3]["value"], serde_json::json!({ "review": review, "compact": null }));
+    assert_eq!(recorded[4]["value"], serde_json::json!({ "model": null }));
+    env.stop();
+    let live = watch.wait_with_output().unwrap();
+    let live: Vec<Value> =
+        stdout(&live).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(live[live.len() - 3..], recorded[2..], "live: {live:?}");
 }
 
 #[test]

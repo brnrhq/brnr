@@ -406,10 +406,10 @@ fn list(args: &[String]) -> Result<(), String> {
 }
 
 /// Sessions with a transcript that no running process is serving, most
-/// recently active first. Only the
-/// first and last record of each file are read: the first names the cwd,
-/// the last says when and in which process the session was last active.
-/// That process's log says which agent it ran.
+/// recently active first. Only the first and last record of each events
+/// file are read: the first names the cwd, the last says when and in which
+/// process the session was last active. That process's log says which
+/// agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
     // session id alone can repeat across folders.
@@ -424,7 +424,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         .flatten()
         .flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"));
+        .filter(|p| paths::is_events_log(p));
 
     // A process that doesn't answer can't say which sessions it has: the
     // ones it was last in may well be running.

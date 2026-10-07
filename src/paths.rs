@@ -6,10 +6,11 @@
 //!   the user, which is the access control.
 //! - Logs: under `$BRNR_HOME`, else `~/.brnr`, laid out like the
 //!   agents' own transcripts so they can be joined with them:
-//!   `projects/<folder>/<session id>.jsonl` per ACP session, where
-//!   `<folder>` is the session's cwd with every non-alphanumeric character
-//!   turned into `-` (as `~/.claude/projects` does), and
-//!   `hosts/<host id>.jsonl` for what belongs to no session.
+//!   `projects/<folder>/<session id>.jsonl` per ACP session, its events,
+//!   and `<session id>.acp.jsonl` beside it, its raw ACP, where `<folder>`
+//!   is the session's cwd with every non-alphanumeric character turned
+//!   into `-` (as `~/.claude/projects` does); and `hosts/<host id>.jsonl`
+//!   for what belongs to no session.
 //! - Config: `$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`,
 //!   else `~/.config/brnr/config.toml`.
 
@@ -71,11 +72,26 @@ pub fn host_log(host_id: &str) -> PathBuf {
 }
 
 pub fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    let name: String = session
+    let mut name: String = session
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
         .collect();
+    // `x.acp` would be named like session `x`'s raw ACP.
+    if name.ends_with(".acp") {
+        name.replace_range(name.len() - 4..name.len() - 3, "_");
+    }
     state_dir().join("projects").join(project_key(cwd)).join(format!("{name}.jsonl"))
+}
+
+/// The raw ACP file beside a session's events file (`session_log`).
+pub fn acp_log(events: &Path) -> PathBuf {
+    events.with_extension("acp.jsonl")
+}
+
+/// Whether `path`, in a project folder, is a session's events file.
+pub fn is_events_log(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl")
 }
 
 /// The folder name a project's logs go in: its path with every character
@@ -95,4 +111,24 @@ pub fn expand(path: &str) -> PathBuf {
 
 fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sessions_two_files() {
+        let name = |session: &str| {
+            let events = session_log(Path::new("/w"), session);
+            let acp = acp_log(&events);
+            assert!(is_events_log(&events) && !is_events_log(&acp), "{session}");
+            let file = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+            (file(&events), file(&acp))
+        };
+        assert_eq!(name("s-1"), ("s-1.jsonl".into(), "s-1.acp.jsonl".into()));
+        assert_eq!(name("a/b"), ("a_b.jsonl".into(), "a_b.acp.jsonl".into()));
+        // Not session `x`'s raw file.
+        assert_eq!(name("x.acp"), ("x_acp.jsonl".into(), "x_acp.acp.jsonl".into()));
+    }
 }

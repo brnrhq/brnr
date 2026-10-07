@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{Bridge, Experimental, Feature, Log, Profile};
-use crate::{host, paths, spawn};
+use crate::{host, log, paths, spawn};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,10 +148,13 @@ impl Request {
         stdin.write_all(&serde_json::to_vec(self)?)
     }
 
-    /// The request as the host log's `started` record holds it.
+    /// The request as the host log's `started` record holds it: the values
+    /// of the MCP servers' `env` and `headers` redacted (ADR 25).
     pub fn recorded(&self) -> Value {
-        // ADR 25 redacts the values of the MCP servers' `env` and `headers`
-        // here: everything recorded of the request passes through this.
-        serde_json::to_value(self).unwrap_or_default()
+        let mut request = serde_json::to_value(self).unwrap_or_default();
+        if let Some(servers) = request.pointer_mut("/role/headless/mcp_servers") {
+            log::redact_mcp_servers(servers);
+        }
+        request
     }
 }
