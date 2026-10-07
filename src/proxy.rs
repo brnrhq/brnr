@@ -153,7 +153,7 @@ fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Re
 fn start_host(request: &Request, theirs: UnixStream) -> io::Result<()> {
     let mut cmd = spawn::host_command()?;
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
-    let stdin = spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD)?;
+    let (stdin, _) = spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD)?;
     request.send(stdin.expect("piped"))
 }
 

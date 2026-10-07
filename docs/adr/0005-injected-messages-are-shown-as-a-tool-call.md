@@ -1,7 +1,9 @@
 # 5. Injected messages are shown to the editor as a tool call
 
-Accepted (former decision 48); reviewed 2026-10-07. Implemented. Applies
-where ADR 4's `send`, `context` or `close` are enabled.
+Accepted (former decision 48); reviewed 2026-10-07. Implemented, and the
+form of ADR 4's notes to the editor: a late answer to an approval answered
+elsewhere, a session closed or taken over. Applies where ADR 4's actions are
+enabled.
 
 ## Context
 

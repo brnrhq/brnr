@@ -1,7 +1,7 @@
 # 28. Mode, model and config options
 
-Accepted (former decision 9); reviewed 2026-10-07. Implemented, except
-telling the editor (ADR 4).
+Accepted (former decision 9); reviewed 2026-10-07. Implemented, telling
+the editor included (ADR 4).
 Resolves review item 6 with ADR 4.
 
 ## Context

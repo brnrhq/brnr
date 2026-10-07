@@ -1,8 +1,6 @@
 # 41. Strict mode
 
-Accepted 2026-10-07. Implemented, but for ADR 4's experimental actions,
-which don't exist yet; the check they are to call is `check_strict` in
-`src/host/strict.rs`.
+Accepted 2026-10-07. Implemented.
 
 ## Context
 

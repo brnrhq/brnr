@@ -25,13 +25,14 @@ mod acp;
 mod control;
 mod death;
 mod display;
+mod experimental;
 mod flow;
 mod requests;
 mod start;
 mod state;
 mod strict;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
@@ -301,8 +302,13 @@ struct Host {
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
     /// Agent requests the host answered itself while the editor may answer
-    /// them too (a cancel): its late answers are dropped (see acp.rs).
-    answered: HashSet<String>,
+    /// them too (a cancel, an approve): its late answers are dropped (see
+    /// experimental.rs).
+    answered: HashMap<String, experimental::Answered>,
+    /// Sessions brnr closed under the editor (ADR 4) → the process that took
+    /// each over, if one did: the editor's requests for them are answered
+    /// here.
+    closed: HashMap<String, Option<u32>>,
     /// Request id of every unanswered prompt → its session.
     prompt_session: HashMap<String, String>,
     next_id: u64,
@@ -348,7 +354,6 @@ struct Host {
     logging: Log,
     /// An editor's process: the actions on its session it allows (ADR 4),
     /// and the process-management behaviours it turns on (ADR 42).
-    #[expect(dead_code, reason = "carried for experimental actions (ADR 4)")]
     experimental: BTreeSet<Experimental>,
     features: BTreeSet<Feature>,
 
@@ -542,7 +547,8 @@ impl Host {
             client_requests: HashMap::new(),
             host_requests: HashMap::new(),
             agent_requests: Vec::new(),
-            answered: HashSet::new(),
+            answered: HashMap::new(),
+            closed: HashMap::new(),
             prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,

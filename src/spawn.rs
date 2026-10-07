@@ -2,8 +2,8 @@
 
 use std::env;
 use std::ffi::OsStr;
-use std::io;
-use std::os::fd::RawFd;
+use std::io::{self, Read};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -62,10 +62,24 @@ fn started_as() -> Option<PathBuf> {
 /// process group and out from under us in the process tree. `fd` is moved
 /// to `target` in the new process, the only descriptor it gets from us
 /// besides what `cmd` sets up for stdio. Returns the new process's stdin if
-/// `cmd` asked for a pipe (the host's, for its start request).
-pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Option<ChildStdin>> {
+/// `cmd` asked for a pipe (the host's, for its start request), and its pid.
+pub fn detached(
+    cmd: &mut Command,
+    fd: RawFd,
+    target: RawFd,
+) -> io::Result<(Option<ChildStdin>, u32)> {
+    // The intermediate child writes the new process's pid here as it goes;
+    // the new process doesn't keep it past exec.
+    let (mut pid_reader, pid_writer) = io::pipe()?;
+    let pid_fd = pid_writer.as_raw_fd();
     unsafe {
         cmd.pre_exec(move || {
+            // Out of the way of `target`, should the pipe be there.
+            let pid_fd = if pid_fd == target {
+                libc::fcntl(pid_fd, libc::F_DUPFD_CLOEXEC, target + 1)
+            } else {
+                pid_fd
+            };
             // dup2 clears FD_CLOEXEC on the copy, except when the fd is
             // already `target` and dup2 does nothing.
             if fd == target {
@@ -79,18 +93,26 @@ pub fn detached(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Optio
             match libc::fork() {
                 -1 => Err(io::Error::last_os_error()),
                 0 => Ok(()),
-                _ => libc::_exit(0),
+                pid => {
+                    let bytes = pid.to_ne_bytes();
+                    libc::write(pid_fd, bytes.as_ptr().cast(), bytes.len());
+                    libc::_exit(0)
+                }
             }
         })
     };
     // spawn() returns once the grandchild has exec'd (or failed to); the
     // child it hands back is the intermediate, which has already exited.
     let program = PathBuf::from(cmd.get_program());
+    let spawned = cmd.spawn();
+    drop(pid_writer);
     let mut intermediate =
-        cmd.spawn().map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))?;
+        spawned.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))?;
     let stdin = intermediate.stdin.take();
     intermediate.wait()?;
-    Ok(stdin)
+    let mut pid = [0; size_of::<libc::pid_t>()];
+    pid_reader.read_exact(&mut pid)?;
+    Ok((stdin, libc::pid_t::from_ne_bytes(pid) as u32))
 }
 
 /// Starts `cmd` as our child in a process group of its own, with `fd` moved

@@ -34,6 +34,8 @@ with environment variables:
   STDERR=<text>     write text on stderr as it starts
   EXIT=<code>       exit with code as it starts (after STDERR), reading
                     nothing
+  QUIET_MODE=1      session/set_mode sends no current_mode_update: ACP answers
+                    only the requester
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
@@ -334,7 +336,8 @@ for line in sys.stdin:
     elif method == "session/set_mode":
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})
-            update(sid, {"sessionUpdate": "current_mode_update", "currentModeId": params["modeId"]})
+            if not env("QUIET_MODE"):
+                update(sid, {"sessionUpdate": "current_mode_update", "currentModeId": params["modeId"]})
         else:
             error(mid, -32602, f"no mode {params.get('modeId')}")
     elif method == "session/set_model" and env("LEGACY_MODELS"):

@@ -29,8 +29,8 @@ of to-resolve; the map at the end says where each went.
 |---|---|---|
 | [1](0001-principles.md) | Principles | — |
 | [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | mostly |
-| [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | mostly |
-| [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | no |
+| [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | yes |
+| [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | yes |
 | [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
 | [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | yes |
 | [7](0007-a-start-is-atomic.md) | A start is atomic and commits at ready | yes |
@@ -42,9 +42,9 @@ of to-resolve; the map at the end says where each went.
 | [13](0013-sessions-are-ids-processes-are-pids.md) | Sessions are the agent's ids, processes are pids | yes |
 | [14](0014-resuming.md) | Resuming | yes |
 | [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape | yes |
-| [16](0016-fork-and-close.md) | Fork and close | mostly |
+| [16](0016-fork-and-close.md) | Fork and close | yes |
 | [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
-| [18](0018-what-send-does.md) | What `send` does | mostly |
+| [18](0018-what-send-does.md) | What `send` does | yes |
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
 | [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
 | [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
@@ -52,9 +52,9 @@ of to-resolve; the map at the end says where each went.
 | [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
 | [24](0024-log-last.md) | `log --last <n>` | yes |
 | [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | yes |
-| [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | mostly |
-| [27](0027-approvals.md) | Approvals: the agent's mode is the policy | mostly |
-| [28](0028-mode-model-and-config.md) | Mode, model and config options | mostly |
+| [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | yes |
+| [27](0027-approvals.md) | Approvals: the agent's mode is the policy | yes |
+| [28](0028-mode-model-and-config.md) | Mode, model and config options | yes |
 | [29](0029-requests-the-agent-answers.md) | Requests the agent answers | yes |
 | [30](0030-authentication.md) | Authentication | yes |
 | [31](0031-mcp-servers.md) | MCP servers for headless sessions | yes |
@@ -67,7 +67,7 @@ of to-resolve; the map at the end says where each went.
 | [38](0038-adapter-names-and-lookup.md) | The adapters' names, and finding them next to brnr | yes |
 | [39](0039-adapter-versions.md) | Which adapter version is built, and how it shows | yes |
 | [40](0040-release-sh.md) | `release.sh` | yes |
-| [41](0041-strict-mode.md) | Strict mode | mostly |
+| [41](0041-strict-mode.md) | Strict mode | yes |
 | [42](0042-feature-flags.md) | Feature flags for process management | yes |
 | [43](0043-acp-schema-types.md) | ACP types from the official schema crate | no |
 

@@ -417,46 +417,53 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         Err(_) => START_TIMEOUT,
     };
     let mut resume_cwd = None;
+    let hosts = if a.resume.is_some() { discover()? } else { Vec::new() };
+    // --take-over: the process holding the session, and the session. It
+    // closes the session once the process to resume it has started, so it
+    // can say which (ADR 3, ADR 4).
+    let mut owner = None;
     if let Some(wanted) = a.resume.clone() {
-        let mut hosts = discover()?;
         // A session another process holds is refused, naming the process,
-        // unless --take-over: that process closes it first (ADR 3). The
-        // process started here takes the lock itself, and is refused the same
-        // way if it has been taken meanwhile.
-        if let Some(pid) = lock::holder(&wanted) {
-            if !a.take_over {
+        // unless --take-over. The process started here takes the lock itself,
+        // and is refused the same way if it has been taken meanwhile.
+        let found = match lock::holder(&wanted) {
+            Some(pid) if !a.take_over => {
                 return Err(format!(
                     "{wanted} is running in process {pid} (--take-over closes it there and \
                      resumes it here)"
                 ));
             }
-            settings::take_over(&hosts, &wanted, pid)?;
-            hosts = discover()?;
-        }
-        // A session brnr has no transcript of (one `brnr sessions` lists)
-        // goes to the agent as given, in --cwd or here, with -- <agent> or
-        // the profile's.
-        match find_session(&hosts, &wanted) {
-            // Served without its lock, shared by an editor's process.
-            Ok(Found::Running(host, _)) => {
-                return Err(format!("{wanted} is running in process {}", host.id()));
+            Some(pid) => {
+                let (host, running) = settings::held(&hosts, &wanted, pid)?;
+                owner = Some((host, wanted.clone()));
+                Some(running)
             }
-            Ok(Found::Inactive(past)) => {
-                a.resume = past["session_id"].as_str().map(str::to_owned);
-                resume_cwd = past["cwd"].as_str().map(str::to_owned);
-                if a.agent.is_empty() {
-                    a.agent = past["agent"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|s| s.as_str().map(str::to_owned))
-                        .collect();
+            // A session brnr has no transcript of (one `brnr sessions` lists)
+            // goes to the agent as given, in --cwd or here, with -- <agent>
+            // or the profile's.
+            None => match find_session(&hosts, &wanted) {
+                // Served without its lock, shared by an editor's process.
+                Ok(Found::Running(host, _)) => {
+                    return Err(format!("{wanted} is running in process {}", host.id()));
                 }
-                if a.profile.is_none() {
-                    a.profile = past["profile"].as_str().map(str::to_owned);
-                }
+                Ok(Found::Inactive(past)) => Some(past),
+                Err(_) => None,
+            },
+        };
+        if let Some(past) = found {
+            a.resume = past["session_id"].as_str().map(str::to_owned);
+            resume_cwd = past["cwd"].as_str().map(str::to_owned);
+            if a.agent.is_empty() {
+                a.agent = past["agent"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect();
             }
-            Err(_) => {}
+            if a.profile.is_none() {
+                a.profile = past["profile"].as_str().map(str::to_owned);
+            }
         }
     }
     let cfg = config::load(a.profile.as_deref())?;
@@ -501,23 +508,34 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     let mut cmd = spawn::host_command().map_err(|e| e.to_string())?;
     cmd.current_dir(&cwd).stdin(Stdio::piped());
     let mut child = None;
-    let stdin = if a.foreground {
+    let (stdin, pid) = if a.foreground {
         // Our child, in a group of its own, printing the session to our
         // stdout; we pass it the signals we get (Ctrl-C), once.
         let signals = signals::install();
         let mut started = spawn::child(&mut cmd, theirs.as_raw_fd(), 3)
             .map_err(|e| format!("starting the process: {e}"))?;
-        let pid = started.id() as i32;
-        thread::spawn(move || forward_signals(signals, pid));
+        let pid = started.id();
+        thread::spawn(move || forward_signals(signals, pid as i32));
         let stdin = started.stdin.take();
         child = Some(started);
-        stdin
+        (stdin, pid)
     } else {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
         spawn::detached(&mut cmd, theirs.as_raw_fd(), 3)
             .map_err(|e| format!("starting the process: {e}"))?
     };
     drop(theirs);
+    // The process waits for its request meanwhile; if the session can't be
+    // taken over, it goes without one, having done nothing.
+    if let Some((owner, session)) = owner
+        && let Err(err) = settings::take_over(owner, &session, pid)
+    {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        if let Some(mut child) = child {
+            let _ = child.wait();
+        }
+        return Err(err);
+    }
     request.send(stdin.expect("piped")).map_err(|e| format!("starting the process: {e}"))?;
 
     // Exiting closes the channel, which tells a process that is still

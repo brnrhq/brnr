@@ -468,11 +468,13 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// `start --resume --take-over`: process `pid`, which holds `session`'s
-/// lock, closes it as `brnr close` does, cancelling a running turn, and so
-/// lets go of it (ADR 3). Not an editor's process: closing an editor's
-/// session from outside is the experimental `close` (ADR 4), which brnr
-/// doesn't have yet.
-pub(super) fn take_over(hosts: &[Host], session: &str, pid: u32) -> Result<(), String> {
+/// lock, and the session as its transcript has it once closed there (its
+/// cwd, the process's agent and profile), for the process that resumes it.
+pub(super) fn held<'a>(
+    hosts: &'a [Host],
+    session: &str,
+    pid: u32,
+) -> Result<(&'a Host, Value), String> {
     let running = format!("{session} is running in process {pid}");
     let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
         return Err(format!("{running}, which brnr doesn't list"));
@@ -480,11 +482,34 @@ pub(super) fn take_over(hosts: &[Host], session: &str, pid: u32) -> Result<(), S
     let Some(status) = &host.status else {
         return Err(format!("{running}, which is not answering"));
     };
-    if status["owner"] == "editor" {
-        return Err(format!("{running}, an editor's: close it there first"));
-    }
-    agent_call(host, &json!({ "cmd": "close", "session": session }))
-        .map_err(|e| format!("{running}, which didn't close it: {e}"))?;
+    let Some(s) = host.sessions().iter().find(|s| s["session_id"] == session) else {
+        return Err(format!("{session} is opening in process {pid}"));
+    };
+    let past = json!({
+        "session_id": session,
+        "cwd": s["cwd"],
+        "agent": status["agent"],
+        "profile": status["profile"],
+    });
+    Ok((host, past))
+}
+
+/// `start --resume --take-over`: `owner`, which holds `session`'s lock,
+/// closes it as `brnr close` does, cancelling a running turn, and so lets go
+/// of it (ADR 3) for process `to` to resume. An editor's process does only
+/// if its profile enables the experimental `close`, and tells the editor
+/// where the session went (ADR 4).
+pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), String> {
+    let pid = owner.id();
+    let running = format!("{session} is running in process {pid}");
+    let req = json!({ "cmd": "close", "session": session, "take_over": to });
+    agent_call(owner, &req).map_err(|e| {
+        if owner.info()["owner"] == "editor" {
+            format!("{running}, an editor's: {e}")
+        } else {
+            format!("{running}, which didn't close it: {e}")
+        }
+    })?;
     errln!("brnr: closed {session} in process {pid}");
     Ok(())
 }

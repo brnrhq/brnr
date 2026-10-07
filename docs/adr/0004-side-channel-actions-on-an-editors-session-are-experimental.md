@@ -1,13 +1,12 @@
 # 4. Side-channel actions on an editor's session are experimental
 
-Accepted 2026-10-07. Not yet implemented: today `send`, `queue`, `cancel`,
-`mode`, `model` and `config` work on an editor's session without any opt-in,
-and `approve`, `deny`, `fork` and `close` are refused. Of the compensations,
-the echo of `send` and `context` exists (ADR 5), and `cancel` already answers
-the agent's pending requests `cancelled` and drops the editor's late answers,
-but with only a note in the host log; `$/cancel_request`, telling the editor,
-the `tool_call_update`, the settings updates and everything for `close`
-don't.
+Accepted 2026-10-07. Implemented: each action is refused on an editor's
+session unless its profile enables it, and in strict mode, and each
+compensation in the table is sent. The `tool_call_update` for an approve or a
+deny sets only `status` (`in_progress`, `failed`), which the agent's own
+updates carry on from; the editor's acknowledgement of a `$/cancel_request`
+(an error) is dropped without telling it. Not yet tried against real editors
+(see Consequences).
 Amends former decisions 9 and 11; resolves review item 6 with ADR 28.
 
 ## Context

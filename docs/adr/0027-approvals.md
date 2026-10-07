@@ -1,8 +1,8 @@
 # 27. Approvals: the agent's mode is the policy
 
 Accepted (former decisions 7, 12, 45 and 47); reviewed 2026-10-07.
-Implemented, except approvals on an editor's session (ADR 4) and the move of
-`permission_timeout` to the profile's headless part (ADR 33).
+Implemented; approvals on an editor's session are ADR 4's experimental
+`approve`.
 
 ## Context
 
