@@ -383,6 +383,7 @@ impl Host {
                     && let Some(i) = self.find(session)
                 {
                     self.sessions[i].closing = None; // Still open: it takes requests again.
+                    self.close_failed(session, &error_message(error));
                 }
                 json!({ "ok": false, "error": error_message(error) })
             }
@@ -393,11 +394,14 @@ impl Host {
 
     fn peer_result(&mut self, op: PeerOp, result: &Value) -> Value {
         match op {
+            // The agent answers only the requester (ADR 28): an editor is
+            // told here (see experimental.rs).
             PeerOp::Mode { session, mode } => {
                 if let Some(i) = self.find(&session) {
                     self.sessions[i].state.set_mode(&mode);
                     self.apply_result(i, result);
                 }
+                self.mode_set(&session, &mode);
                 json!({ "ok": true, "session": session, "mode": mode })
             }
             PeerOp::Config { session } => {
@@ -405,6 +409,7 @@ impl Host {
                     self.apply_result(i, result);
                     self.sessions[i].state.config.clone()
                 });
+                self.config_set(&session, result);
                 json!({ "ok": true, "session": session, "config": config.flatten() })
             }
             PeerOp::Fork { cwd } => {

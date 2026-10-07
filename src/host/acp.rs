@@ -11,9 +11,15 @@
 //!   held. With `--steer` it goes into the running turn instead, as
 //!   `_session/steering` (ADR 18 in docs/adr). The responses are kept from
 //!   the editor, and the editor is shown the text as it is sent, as a
-//!   completed tool call (`echo`).
+//!   completed tool call (`echo`). On an editor's session it is the
+//!   experimental `send` (ADR 4), refused while a prompt runs.
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
+//! - What the side channel does to an editor's session (ADR 4, see
+//!   experimental.rs): a permission request the host answered in the
+//!   editor's place is withdrawn from it (`$/cancel_request`), and its late
+//!   answer dropped; brnr's notes to it take the echo's form; and a session
+//!   brnr closed under it has its later requests answered by the host.
 //! - With no editor attached, the host answers what the agent asks of its
 //!   client. Permission requests wait for an approve or deny from a bridge
 //!   or the CLI, until `permission_timeout` denies them; how much the agent
@@ -28,6 +34,10 @@
 //!   and how to release it, and never reaches the agent (ADR 3); with
 //!   `shared_sessions` in the profile (ADR 42) it goes through, and the
 //!   session is served shared (see `Hold`).
+//!
+//! The editor's own steers (`_session/steering`) pass through untouched; once
+//! the agent has taken one into the turn, it is a `user_message` by the
+//! editor.
 //!
 //! Lines are read as json.rs reads them: any JSON text, a lone surrogate as
 //! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
@@ -159,7 +169,8 @@ impl Session {
     }
 }
 
-/// A request whose response creates or ends a session.
+/// A request whose response the host acts on: one that creates or ends a
+/// session, the editor's `initialize`, or the editor's own steer.
 pub(super) enum Pending {
     /// `session/new`. Its request is logged once the response says which
     /// session it belongs to.
@@ -177,12 +188,18 @@ pub(super) enum Pending {
     },
     /// The editor's `initialize`: the host notes what the agent can do.
     Initialize,
+    /// The editor's `_session/steering`, passed through as it is: its text
+    /// is a `user_message` once the agent has taken it into the turn.
+    Steering {
+        session: String,
+        text: String,
+    },
 }
 
 /// A request from the agent to its client.
 pub(super) struct AgentRequest {
-    key: String,
-    id: Value,
+    pub(super) key: String,
+    pub(super) id: Value,
     method: String,
     pub(super) session: Option<String>,
     pub(super) params: Value,
@@ -246,6 +263,11 @@ impl Host {
                     {
                         return self.refuse(id, sid, &method, &error);
                     }
+                    if let Some(sid) = &session
+                        && let Some(error) = self.closed_error(sid, &method)
+                    {
+                        return self.refuse(id, sid, &method, &error);
+                    }
                     let key = id_key(&id);
                     if let Some(rewritten) = self.editor_request(&method, &key, &mut msg, &session)
                     {
@@ -260,11 +282,9 @@ impl Host {
                     let key = id_key(&id);
                     if self.agent_requests.iter().any(|r| r.key == key) {
                         session = self.agent_request_answered(&key, &msg, "editor");
-                    } else if self.answered.remove(&key) {
-                        // Answered by the host already (a cancel): the agent
-                        // must not get a second answer.
-                        let event = json!({ "event": "editor-response-dropped", "id": id });
-                        self.sink.note(session.as_deref(), event);
+                    } else if self.late_answer(&key, &id, &msg) {
+                        // Answered by the host already (a cancel, an approve
+                        // or deny): the agent must not get a second answer.
                         return;
                     }
                     // Otherwise it answers a request the host couldn't read,
@@ -331,6 +351,11 @@ impl Host {
                 self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
             }
             ("session/prompt", Some(session)) => return self.editor_prompt(session, key, msg),
+            ("_session/steering", Some(session)) => {
+                let text = prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
+                let steering = Pending::Steering { session: session.clone(), text };
+                self.pending.insert(key.to_owned(), steering);
+            }
             _ => {}
         }
         None
@@ -583,6 +608,12 @@ impl Host {
                 }
                 None
             }
+            Pending::Steering { session, text } => {
+                if result.is_some_and(|r| r["outcome"] == "injected") {
+                    self.editor_steered(&session, text);
+                }
+                Some(session)
+            }
         }
     }
 
@@ -658,7 +689,9 @@ impl Host {
     /// Answers permission request `handle`: with `option` if given (not one
     /// of the other kind: a deny can't pick an allow option), else the first
     /// allow (or reject) option. Denying a request that offers no reject
-    /// option cancels it.
+    /// option cancels it. On an editor's session, where this is the
+    /// experimental `approve` (see experimental.rs), the request is then
+    /// withdrawn from the editor.
     pub(super) fn resolve_permission(
         &mut self,
         handle: &str,
@@ -671,9 +704,6 @@ impl Host {
             .iter()
             .position(|r| r.handle.as_deref() == Some(handle))
             .ok_or_else(|| format!("no pending request {handle}"))?;
-        if self.editor_attached() {
-            return Err("the editor owns this session; answer it there".into());
-        }
         if self.status.is_some() || self.agent_in.is_none() {
             return Err("the agent is no longer accepting input".into());
         }
@@ -713,6 +743,11 @@ impl Host {
         };
         let req = self.agent_requests.remove(pos);
         self.respond(&req, json!({ "result": { "outcome": outcome } }));
+        let how = match choice {
+            Choice::Allow => "approved",
+            Choice::Deny => "denied",
+        };
+        self.withdraw(&req, how, by);
         self.emit(json!({
             "event": "permission_resolved",
             "session": req.session,
@@ -725,7 +760,7 @@ impl Host {
 
     /// ACP: a client that cancels a turn answers that session's pending
     /// permission requests with `cancelled`. If the editor is showing one,
-    /// its late answer is dropped (see `editor_message`).
+    /// it is withdrawn, and its late answer dropped (see experimental.rs).
     fn cancel_permissions(&mut self, session: &str) {
         let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
             .into_iter()
@@ -733,6 +768,7 @@ impl Host {
         self.agent_requests = keep;
         for req in cancel {
             self.respond(&req, json!({ "result": { "outcome": { "outcome": "cancelled" } } }));
+            self.withdraw(&req, "cancelled", "cancel");
             self.emit(json!({
                 "event": "permission_resolved",
                 "session": req.session,
@@ -744,10 +780,6 @@ impl Host {
     }
 
     fn respond(&mut self, req: &AgentRequest, body: Value) {
-        if self.editor_attached() {
-            // The editor may still answer it (see `editor_message`).
-            self.answered.insert(req.key.clone());
-        }
         let mut msg = json!({ "jsonrpc": "2.0", "id": req.id });
         if let (Some(msg), Value::Object(body)) = (msg.as_object_mut(), body) {
             msg.extend(body);
@@ -1074,6 +1106,25 @@ impl Host {
         }));
     }
 
+    /// The editor's own steer, which the agent took into the running turn of
+    /// `session`: a `user_message` of that turn, by the editor, as brnr's own
+    /// steers are (see `injected`). The steer itself went through untouched.
+    fn editor_steered(&mut self, session: &str, text: String) {
+        let Some(i) = self.find(session) else { return };
+        let Some(key) = self.sessions[i].prompts.front().map(|p| p.id.clone()) else {
+            let event = json!({ "event": "steer-after-turn", "by": "editor" });
+            return self.sink.note(Some(session), event);
+        };
+        self.flush_agent_message(i);
+        self.emit(json!({
+            "event": "user_message",
+            "session": session,
+            "by": "editor",
+            "prompt": key,
+            "text": text,
+        }));
+    }
+
     /// Denies permission requests nobody answered within
     /// `permission_timeout`.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
@@ -1123,8 +1174,9 @@ impl Host {
     /// Shows the editor an injected message, as a completed tool call:
     /// the one update an editor renders as a block of its own wherever the
     /// turn is. A `user_message_chunk` out of turn is not rendered (see
-    /// ADR 5 in docs/adr).
-    fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
+    /// ADR 5 in docs/adr). brnr's notes to the editor take the same form
+    /// (see experimental.rs).
+    pub(super) fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
         if let Some(i) = self.find(session) {
             self.flush_agent_message(i);
         }
@@ -1134,24 +1186,35 @@ impl Host {
         self.next_id += 1;
         let content: Vec<Value> =
             blocks.iter().map(|b| json!({ "type": "content", "content": b })).collect();
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": session,
-                "update": {
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": format!("brnr-echo-{}", self.next_id),
-                    "title": title,
-                    "kind": "other",
-                    "status": "completed",
-                    "content": content,
-                },
-            },
-        });
-        let mut line = serde_json::to_vec(&msg).unwrap();
+        self.update_editor(
+            session,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": format!("brnr-echo-{}", self.next_id),
+                "title": title,
+                "kind": "other",
+                "status": "completed",
+                "content": content,
+            }),
+        );
+    }
+
+    /// A `session/update` of brnr's own for the editor.
+    pub(super) fn update_editor(&mut self, session: &str, update: Value) {
+        let params = json!({ "sessionId": session, "update": update });
+        let msg = json!({ "jsonrpc": "2.0", "method": "session/update", "params": params });
+        self.send_editor(Some(session), &msg);
+    }
+
+    /// A message of brnr's own for the editor, recorded as such; none
+    /// without an editor.
+    pub(super) fn send_editor(&mut self, session: Option<&str>, msg: &Value) {
+        if !self.editor_attached() {
+            return;
+        }
+        let mut line = serde_json::to_vec(msg).unwrap();
         line.push(b'\n');
-        self.record(Some(session), Dir::ControlToEditor, &line);
+        self.record(session, Dir::ControlToEditor, &line);
         self.send_link(frame::DATA, &line);
     }
 

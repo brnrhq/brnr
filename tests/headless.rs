@@ -983,6 +983,7 @@ fn runtime_dir_symlink_is_refused() {
 fn acp_is_what_an_editor_runs() {
     use std::io::Write;
     let env = Env::new("ed-acp");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"send\"]\n");
     let mut editor =
         env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
@@ -1080,8 +1081,13 @@ fn acp_hands_over_one_request() {
 
 /// `brnr acp`, initialized, as an editor starts it.
 fn editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
-    let mut editor =
-        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    editor_with(env, &[])
+}
+
+/// `brnr acp <args>`, initialized.
+fn editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let args: Vec<&str> = ["acp"].iter().chain(args).chain(&["--", AGENT]).copied().collect();
+    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     writeln!(to_agent, "{INITIALIZE}").unwrap();
@@ -1104,7 +1110,12 @@ fn response(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Value {
 
 /// `brnr acp` with a session open (sess-1), as an editor has it.
 fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
-    let (editor, mut to_agent, mut from_agent) = editor(env);
+    open_editor_with(env, &[])
+}
+
+/// `brnr acp <args>` with sess-1 open.
+fn open_editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let (editor, mut to_agent, mut from_agent) = editor_with(env, args);
     let new = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
         env.dir.display().to_string()
@@ -1260,16 +1271,22 @@ fn shared_sessions_let_an_editor_load_a_held_session() {
     let _ = editor.kill();
 }
 
-/// `--take-over` doesn't take a session from an editor: closing an editor's
-/// session from outside is the experimental `close` (ADR 4).
+/// `--take-over` doesn't take a session from an editor whose profile doesn't
+/// enable the experimental `close` (ADR 4), and the process started for it
+/// goes, having done nothing.
 #[test]
 fn take_over_from_an_editor_is_refused() {
     let env = Env::new("ed-takeover");
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let pid = env.pid();
     let err = env.fails(&start_args(&["--resume", "sess-1", "--take-over"]));
-    assert!(err.contains(&format!("sess-1 is running in process {pid}, an editor's")), "{err}");
+    let refused = format!(
+        "sess-1 is running in process {pid}, an editor's: `close` on an editor's session is \
+         experimental"
+    );
+    assert!(err.contains(&refused), "{err}");
     assert!(env.calls_of("session/close").is_empty());
+    assert_eq!(env.hosts().len(), 1, "a second process started");
     let _ = editor.kill();
 }
 
@@ -1350,20 +1367,374 @@ fn an_answer_the_host_cant_place_reaches_the_agent() {
 
 /// When a turn is cancelled from outside, the host answers the agent's
 /// pending request itself; the editor's late answer to it is dropped, so the
-/// agent isn't answered twice.
+/// agent isn't answered twice, and the editor is told so in the session
+/// (ADR 26).
 #[test]
 fn a_late_answer_to_a_cancelled_request_is_dropped() {
     let env = Env::new("ed-late");
-    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     env.ok(&["cancel", "sess-1"]);
     line_with(&mut from_agent, "end_turn");
     writeln!(to_agent, "{ALLOW}").unwrap();
+    let note = update(&mut from_agent, "tool_call");
+    assert_eq!(note["title"], "Already cancelled via brnr", "{note}");
+    let text = note["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"Edit src/lib.rs\" was already cancelled through brnr"), "{text}");
     // Once a later prompt is answered, the host has seen the late answer.
     writeln!(to_agent, "{}", editor_prompt(4, "reply done")).unwrap();
     line_with(&mut from_agent, "end_turn");
     let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
     assert_eq!(answers.len(), 1, "{answers:?}");
     assert_eq!(answers[0]["result"]["outcome"]["outcome"], "cancelled");
+}
+
+// ---- experimental actions on an editor's session (ADR 4) ---------------
+
+/// `brnr acp` with sess-1 open, its profile's editor part enabling `actions`.
+fn experimental_editor(env: &Env, actions: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let names: Vec<String> = actions.iter().map(|a| format!("{a:?}")).collect();
+    env.write_config(&format!(
+        "[profiles.default.editor]\nexperimental = [{}]\n",
+        names.join(", ")
+    ));
+    open_editor(env)
+}
+
+/// The next message the editor gets that `wanted` picks.
+fn message(from_agent: &mut BufReader<ChildStdout>, wanted: impl Fn(&Value) -> bool) -> Value {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no such message");
+        if let Ok(msg) = serde_json::from_str::<Value>(&line)
+            && wanted(&msg)
+        {
+            return msg;
+        }
+    }
+}
+
+/// The next `session/update` of kind `kind` the editor gets: the update.
+fn update(from_agent: &mut BufReader<ChildStdout>, kind: &str) -> Value {
+    let msg = message(from_agent, |m| m["params"]["update"]["sessionUpdate"] == kind);
+    msg["params"]["update"].clone()
+}
+
+/// Waits for sess-1 to have no turn running.
+fn wait_idle(env: &Env) {
+    let idle = || {
+        let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+        status["state"] == "idle"
+    };
+    assert!(wait_for(Duration::from_secs(5), idle), "sess-1 is still busy");
+}
+
+/// Each action on an editor's session is refused unless its profile enables
+/// it, saying what to add; observing it is always allowed, and the agent
+/// hears of none of it.
+#[test]
+fn experimental_actions_are_refused_without_opt_in() {
+    let env = Env::new("ex-refused");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    let actions: [(&[&str], &str); 10] = [
+        (&["send", "sess-1", "hi"], "send"),
+        (&["send", "sess-1", "--context", "hi"], "context"),
+        (&["queue", "sess-1", "--clear-context"], "context"),
+        (&["cancel", "sess-1"], "cancel"),
+        (&["approve", "sess-1", "p1"], "approve"),
+        (&["deny", "sess-1", "p1"], "approve"),
+        (&["mode", "sess-1", "plan"], "settings"),
+        (&["model", "sess-1", "large"], "settings"),
+        (&["config", "sess-1", "model=large"], "settings"),
+        (&["close", "sess-1"], "close"),
+    ];
+    for (args, action) in actions {
+        let err = env.fails(args);
+        let says = format!(
+            "`{action}` on an editor's session is experimental; enable it with `experimental = \
+             [\"{action}\"]` under `[profiles.default.editor]`"
+        );
+        assert!(err.contains(&says), "{args:?}: {err}");
+    }
+    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
+    let observing: [&[&str]; 9] = [
+        &["status", "sess-1"],
+        &["pending", "sess-1"],
+        &["show", "sess-1", "p1"],
+        &["queue", "sess-1"],
+        &["mode", "sess-1"],
+        &["model", "sess-1"],
+        &["config", "sess-1"],
+        &["commands", "sess-1"],
+        &["log", "sess-1"],
+    ];
+    for args in observing {
+        env.ok(args);
+    }
+    for method in ["session/cancel", "session/set_mode", "session/set_config_option"] {
+        assert!(env.calls_of(method).is_empty(), "the agent got {method}");
+    }
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+    let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(env.prompts(), ["perm edit"]);
+}
+
+/// In strict mode an editor's session has no experimental actions, whatever
+/// its profile enables (ADR 41), and fork stays refused.
+#[test]
+fn strict_mode_has_no_experimental_actions() {
+    let env = Env::new("ex-strict");
+    env.write_config(
+        "[profiles.default]\nstrict = true\n\n[profiles.default.editor]\nexperimental = \
+         [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n",
+    );
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    let actions: [(&[&str], &str); 7] = [
+        (&["send", "sess-1", "hi"], "send"),
+        (&["send", "sess-1", "--context", "hi"], "context"),
+        (&["cancel", "sess-1"], "cancel"),
+        (&["approve", "sess-1", "p1"], "approve"),
+        (&["deny", "sess-1", "p1"], "approve"),
+        (&["mode", "sess-1", "plan"], "settings"),
+        (&["close", "sess-1"], "close"),
+    ];
+    for (args, action) in actions {
+        let err = env.fails(args);
+        let says =
+            format!("{action} on an editor's session is an experimental action, and strict mode");
+        assert!(err.contains(&says), "{args:?}: {err}");
+    }
+    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+}
+
+/// `send` to an editor's session goes as a prompt only while no turn runs,
+/// the editor's or brnr's, and is shown to the editor (ADR 5); it is never
+/// held, steered or interrupting. Enabling `send` enables nothing else, and
+/// the refusal names the profile.
+#[test]
+fn send_to_an_editors_session_waits_for_no_turn() {
+    let env = Env::new("ex-send");
+    env.write_config("[profiles.work.editor]\nexperimental = [\"send\"]\n");
+    let (_editor, mut to_agent, mut from_agent) = open_editor_with(&env, &["--profile", "work"]);
+    assert!(env.ok(&["send", "sess-1", "reply hi"]).starts_with("delivered"));
+    let echo = update(&mut from_agent, "tool_call");
+    assert_eq!(
+        (&echo["title"], &echo["status"]),
+        (&"Message via brnr".into(), &"completed".into())
+    );
+    wait_idle(&env);
+    // The editor's turn.
+    writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    let err = env.fails(&["send", "sess-1", "more"]);
+    assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
+    for flag in ["--steer", "--interrupt"] {
+        let err = env.fails(&["send", "sess-1", flag, "more"]);
+        let says = format!("the editor controls this session's turns; {flag} is its call");
+        assert!(err.contains(&says), "{err}");
+    }
+    let err = env.fails(&["cancel", "sess-1"]);
+    assert!(err.contains("`cancel` on an editor's session is experimental"), "{err}");
+    assert!(err.contains("under `[profiles.work.editor]`"), "{err}");
+    let cancel = r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"sess-1"}}"#;
+    writeln!(to_agent, "{cancel}").unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
+    // brnr's own turn.
+    env.ok(&["send", "sess-1", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 3));
+    let err = env.fails(&["send", "sess-1", "more"]);
+    assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
+    writeln!(to_agent, "{cancel}").unwrap();
+    wait_idle(&env);
+    sleep(Duration::from_millis(300));
+    assert_eq!(env.prompts(), ["reply hi", "hang", "hang on"]);
+    assert!(env.calls_of("_session/steering").is_empty());
+}
+
+/// `context` joins the editor's own next prompt, and is shown to it.
+#[test]
+fn context_joins_the_editors_next_prompt() {
+    let env = Env::new("ex-context");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["context"]);
+    let err = env.fails(&["send", "sess-1", "hi"]);
+    assert!(err.contains("`send` on an editor's session is experimental"), "{err}");
+    env.ok(&["send", "sess-1", "--context", "dropped"]);
+    env.ok(&["queue", "sess-1", "--clear-context"]);
+    env.ok(&["send", "sess-1", "--context", "kept"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
+    let echo = update(&mut from_agent, "tool_call");
+    assert_eq!(echo["title"], "Context via brnr");
+    assert_eq!(echo["content"][0]["content"]["text"], "kept");
+    response(&mut from_agent, 3);
+    assert_eq!(env.prompts(), ["reply ok\nkept"]);
+}
+
+/// `cancel` answers the agent's pending request `cancelled` and withdraws it
+/// from the editor (`$/cancel_request`). The editor acknowledging that is
+/// dropped, with nothing to tell it.
+#[test]
+fn cancel_withdraws_the_editors_requests() {
+    let env = Env::new("ex-cancel");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    assert!(env.ok(&["cancel", "sess-1"]).starts_with("cancelling"));
+    let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+    assert_eq!(withdrawn["params"], serde_json::json!({ "requestId": "perm-1" }));
+    response(&mut from_agent, 3);
+    let ack =
+        r#"{"jsonrpc":"2.0","id":"perm-1","error":{"code":-32800,"message":"Request cancelled"}}"#;
+    writeln!(to_agent, "{ack}").unwrap();
+    writeln!(to_agent, "{}", editor_prompt(4, "reply done")).unwrap();
+    let mut line = String::new();
+    while !serde_json::from_str::<Value>(&line).is_ok_and(|m| m["id"] == 4) {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to 4");
+        assert!(!line.contains("Already cancelled"), "told of its acknowledgement: {line}");
+    }
+    let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0]["result"]["outcome"]["outcome"], "cancelled");
+}
+
+/// `approve` and `deny` answer the agent in the editor's place: the request
+/// is withdrawn from the editor and its tool call updated. The editor's own
+/// answer after that is dropped, and it is told who answered first.
+#[test]
+fn approve_answers_in_the_editors_place() {
+    let env = Env::new("ex-approve");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["approve"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
+    let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+    assert_eq!(withdrawn["params"]["requestId"], "perm-1");
+    let tool = update(&mut from_agent, "tool_call_update");
+    assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"in_progress".into()));
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    let note = update(&mut from_agent, "tool_call");
+    assert_eq!(note["title"], "Already approved via brnr", "{note}");
+    let text = note["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    let says = "\"Edit src/lib.rs\" was already approved through brnr's control socket";
+    assert!(text.contains(says), "{text}");
+    // A denied tool call has failed.
+    writeln!(to_agent, "{}", editor_prompt(4, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    assert_eq!(env.ok(&["deny", "sess-1", "p2"]), "p2 reject\n");
+    let tool = update(&mut from_agent, "tool_call_update");
+    assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"failed".into()));
+    response(&mut from_agent, 4);
+    let answers: Vec<Value> = (env.calls().into_iter())
+        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .map(|c| c["result"]["outcome"]["optionId"].clone())
+        .collect();
+    assert_eq!(answers, ["allow", "reject"]);
+}
+
+/// The agent answers a change of mode or config option only to the host,
+/// which asked; the editor is sent the update itself (ADR 28).
+#[test]
+fn settings_are_told_to_the_editor() {
+    let env = Env::new("ex-settings").agent("QUIET_MODE", "1");
+    let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
+    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    assert_eq!(update(&mut from_agent, "current_mode_update")["currentModeId"], "plan");
+    env.ok(&["model", "sess-1", "large"]);
+    let config = update(&mut from_agent, "config_option_update");
+    assert_eq!(config["configOptions"][0]["currentValue"], "large", "{config}");
+    env.ok(&["config", "sess-1", "model=small"]);
+    let config = update(&mut from_agent, "config_option_update");
+    assert_eq!(config["configOptions"][0]["currentValue"], "small", "{config}");
+}
+
+/// `close` cancels the editor's turn, tells it in the session, and closes the
+/// session; the editor's requests for it are answered by brnr after that,
+/// until it loads it again.
+#[test]
+fn close_tells_the_editor() {
+    let env = Env::new("ex-close");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["close"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["close", "sess-1"]);
+    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Session closed via brnr");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
+    assert_eq!(env.calls_of("session/close").len(), 1);
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "session_closed"]);
+    let closed: Value =
+        serde_json::from_str(log.lines().next().expect("no session_closed")).unwrap();
+    assert_eq!(closed["by"], "close");
+    writeln!(to_agent, "{}", editor_prompt(4, "reply again")).unwrap();
+    let error = response(&mut from_agent, 4)["error"].clone();
+    let says = "session sess-1 was closed via brnr; load it again to continue it here";
+    assert!(error["message"].as_str().unwrap_or_default().contains(says), "{error}");
+    assert_eq!(env.prompts(), ["hang"]);
+    writeln!(to_agent, "{}", editor_load(&env, 5, "sess-1")).unwrap();
+    assert!(response(&mut from_agent, 5)["result"].is_object());
+    writeln!(to_agent, "{}", editor_prompt(6, "reply back")).unwrap();
+    assert_eq!(response(&mut from_agent, 6)["result"]["stopReason"], "end_turn");
+}
+
+/// With `close` enabled, `--take-over` takes the session from an editor: the
+/// editor is told in the session which process has it, and its requests for
+/// it say where it continues.
+#[test]
+fn take_over_from_an_editor() {
+    let env = Env::new("ex-takeover");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["close"]);
+    let editors = env.pid();
+    writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&start_args(&["--resume", "sess-1", "--take-over"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let said = format!("closed sess-1 in process {editors}");
+    assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let pid = status["pid"].to_string();
+    assert_ne!(pid, editors);
+    let note = update(&mut from_agent, "tool_call");
+    assert_eq!(note["title"], format!("Session taken over by brnr (process {pid})"));
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
+    writeln!(to_agent, "{}", editor_prompt(4, "reply here")).unwrap();
+    let error = response(&mut from_agent, 4)["error"].clone();
+    let says = format!(
+        "session sess-1 was taken over by brnr (process {pid}); it continues in brnr process {pid}"
+    );
+    assert!(error["message"].as_str().unwrap_or_default().contains(&says), "{error}");
+    assert_eq!(env.prompts(), ["hang"]);
+}
+
+/// The editor's own steer goes to the agent untouched, and once the agent has
+/// taken it into the turn it is a `user_message` of that turn, by the editor.
+#[test]
+fn the_editors_own_steer_is_recorded() {
+    let env = Env::new("ex-steer");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let prompt = [serde_json::json!({ "type": "text", "text": "reply steered" })];
+    let params = serde_json::json!({ "sessionId": "sess-1", "prompt": prompt });
+    let method = "_session/steering";
+    let steer =
+        serde_json::json!({ "jsonrpc": "2.0", "id": 4, "method": method, "params": params });
+    writeln!(to_agent, "{steer}").unwrap();
+    assert_eq!(response(&mut from_agent, 4)["result"]["outcome"], "injected");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    assert_eq!(env.calls_of("_session/steering"), [steer]);
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "user_message"]);
+    let said: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!((&said[1]["by"], &said[1]["text"]), (&"editor".into(), &"reply steered".into()));
+    assert_eq!(said[1]["prompt"], said[0]["prompt"]);
 }

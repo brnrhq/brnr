@@ -23,24 +23,28 @@
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
-//! - `approve` / `deny` `{session, request, option?}`; only while no editor
-//!   is attached
+//! - `approve` / `deny` `{session, request, option?}`
 //! - `set_mode` `{session, mode}`, `set_config` `{session, option, value}`,
 //!   `set_model` `{session, model}` (the config option whose category is
 //!   `model`): answered once the agent has
-//! - `fork` `{session}`, `close` `{session}`: only while no editor is
-//!   attached. `close` cancels a running turn first, and is answered once
-//!   the agent has closed the session; a headless process whose last
-//!   session closes stops
+//! - `fork` `{session}`: never in an editor's process
+//! - `close` `{session, take_over?}`: cancels a running turn first, and is
+//!   answered once the agent has closed the session; a headless process
+//!   whose last session closes stops. `take_over` is the pid of the process
+//!   `start --resume --take-over` resumes it in
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
+//!
+//! On an editor's session every command that acts on it (`send`, `cancel`,
+//! `queue --clear-context`, `approve`, `deny`, the settings and `close`) is
+//! experimental: refused unless the editor's profile enables it (ADR 4, see
+//! experimental.rs). Bridges observe it freely.
 //!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
 //! streamed chunk) and must be asked for by name. A held message that goes
 //! unsent (`cancel`, `queue`, its session closing, the agent exiting) is a
-//! `message_dropped`; a session that closes, `session_closed`. While an
-//! editor is attached, bridges observe; the editor answers the agent.
+//! `message_dropped`; a session that closes, `session_closed`.
 //!
 //! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
 //! up has stopped reading and is dropped rather than buffered for without
@@ -67,7 +71,7 @@ use super::acp::{Choice, Held};
 use super::requests::PeerOp;
 use super::strict::Beyond;
 use super::{Ev, Host};
-use crate::config::{Bridge, Log};
+use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
 use crate::{json, paths, render, spawn};
 
@@ -466,6 +470,7 @@ impl Host {
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        self.check_experimental(Experimental::Approve)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let ours = self
@@ -580,6 +585,7 @@ impl Host {
         }
         self.check_blocks(&blocks)?;
         let i = self.session_index(req)?;
+        self.check_editor_send(i, mode)?;
         let session = self.sessions[i].id.clone();
         if mode == "context" {
             if !blocks.is_empty() {
@@ -663,6 +669,7 @@ impl Host {
     /// the next turn, so they are dropped unless `keep_held`.
     fn cancel_turn(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        self.check_experimental(Experimental::Cancel)?;
         let session = self.sessions[i].id.clone();
         let dropped: Vec<Value> = if req["keep_held"].as_bool() == Some(true) {
             Vec::new()
@@ -680,6 +687,9 @@ impl Host {
 
     fn queue(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        if req["clear_context"].as_bool() == Some(true) {
+            self.check_experimental(Experimental::Context)?;
+        }
         let s = &mut self.sessions[i];
         let mut dropped = Vec::new();
         if let Some(id) = req["drop"].as_str() {
@@ -722,6 +732,9 @@ impl Host {
         let i = self.session_index(req)?;
         let session = self.sessions[i].id.clone();
         let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
+        if cmd.starts_with("set_") {
+            self.check_experimental(Experimental::Settings)?;
+        }
         match cmd {
             "set_mode" => {
                 let mode = text("mode")?;
@@ -782,31 +795,35 @@ impl Host {
                     params,
                 );
             }
-            "fork" | "close" => {
+            "fork" => {
+                // A forked session would be a headless one in a process that
+                // ends with the editor, which ACP can't tell of it (ADR 4).
                 if self.editor_attached() {
-                    return Err(format!("the editor owns this process; {cmd} sessions there"));
+                    return Err("the editor owns this process; fork sessions there".into());
                 }
-                if cmd == "fork" {
-                    self.check_strict(Beyond::Fork)?;
-                }
-                if caps[cmd] != true {
-                    return Err(format!("the agent can't {cmd} sessions"));
+                self.check_strict(Beyond::Fork)?;
+                if caps["fork"] != true {
+                    return Err("the agent can't fork sessions".into());
                 }
                 // A second session could never close when idle, and the
                 // process would never stop (ADR 12).
-                if cmd == "fork" && self.stop_when_idle.is_some() && caps["close"] != true {
+                if self.stop_when_idle.is_some() && caps["close"] != true {
                     return Err("the agent can't close sessions: with stop_when_idle, a forked \
                                 session would never close"
                         .into());
                 }
                 let cwd = self.sessions[i].cwd.clone();
-                if cmd == "fork" {
-                    let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
-                    let op = PeerOp::Fork { cwd };
-                    self.peer_op(peer, req_id, op, "session/fork", params);
-                } else {
-                    self.close(i, peer, req_id, "close");
+                let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
+                self.peer_op(peer, req_id, PeerOp::Fork { cwd }, "session/fork", params);
+            }
+            "close" => {
+                self.check_experimental(Experimental::Close)?;
+                if caps["close"] != true {
+                    return Err("the agent can't close sessions".into());
                 }
+                let taken_by = req["take_over"].as_u64().and_then(|pid| u32::try_from(pid).ok());
+                self.close(i, peer, req_id, "close");
+                self.closing_under_editor(&session, taken_by);
             }
             _ => unreachable!("checked in command"),
         }

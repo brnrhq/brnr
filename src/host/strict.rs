@@ -24,7 +24,6 @@ pub(super) enum Beyond {
     /// `brnr fork`: `session/fork`, unstable in ACP v1 (ADR 16).
     Fork,
     /// An action on an editor's session through the side channel (ADR 4).
-    #[expect(dead_code, reason = "for the experimental actions (ADR 4)")]
     Experimental(Experimental),
 }
 
