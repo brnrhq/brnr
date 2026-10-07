@@ -16,6 +16,7 @@ pub mod config;
 pub mod frame;
 pub mod host;
 pub mod json;
+pub mod lock;
 pub mod log;
 pub mod paths;
 pub mod proxy;

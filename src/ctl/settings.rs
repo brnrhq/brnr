@@ -471,3 +471,25 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
 }
+
+/// `start --resume --take-over`: process `pid`, which holds `session`'s
+/// lock, closes it as `brnr close` does, cancelling a running turn, and so
+/// lets go of it (ADR 3). Not an editor's process: closing an editor's
+/// session from outside is the experimental `close` (ADR 4), which brnr
+/// doesn't have yet.
+pub(super) fn take_over(hosts: &[Host], session: &str, pid: u32) -> Result<(), String> {
+    let running = format!("{session} is running in process {pid}");
+    let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
+        return Err(format!("{running}, which brnr doesn't list"));
+    };
+    let Some(status) = &host.status else {
+        return Err(format!("{running}, which is not answering"));
+    };
+    if status["owner"] == "editor" {
+        return Err(format!("{running}, an editor's: close it there first"));
+    }
+    agent_call(host, &json!({ "cmd": "close", "session": session }))
+        .map_err(|e| format!("{running}, which didn't close it: {e}"))?;
+    errln!("brnr: closed {session} in process {pid}");
+    Ok(())
+}

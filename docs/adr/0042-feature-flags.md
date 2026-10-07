@@ -1,6 +1,6 @@
 # 42. Feature flags for process management
 
-Accepted 2026-10-07. Not yet implemented.
+Accepted 2026-10-07. Implemented.
 
 ## Context
 

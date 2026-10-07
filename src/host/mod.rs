@@ -52,7 +52,7 @@ use crate::paths;
 use crate::request::{Prompt, Request, Role};
 use crate::signals;
 
-use acp::{AgentRequest, Pending, Session};
+use acp::{AgentRequest, Hold, Pending, Session};
 pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
 use requests::{HostRequest, SetupStep};
@@ -251,6 +251,9 @@ struct Host {
     sessions: Vec<Session>,
     /// Requests whose response creates or ends a session.
     pending: HashMap<String, Pending>,
+    /// Sessions this process has taken (or failed to take) the lock of
+    /// before the agent opened them: a resume or a load not yet answered.
+    claimed: HashMap<String, Hold>,
     /// Every unanswered request to the agent → the session it is about.
     client_requests: HashMap<String, Option<String>>,
     /// Requests the host itself sent the agent as its client.
@@ -306,7 +309,6 @@ struct Host {
     /// and the process-management behaviours it turns on (ADR 42).
     #[expect(dead_code, reason = "carried for experimental actions (ADR 4)")]
     experimental: BTreeSet<Experimental>,
-    #[expect(dead_code, reason = "carried for feature flags (ADR 42)")]
     features: BTreeSet<Feature>,
 
     // Bridges; see control.rs.
@@ -481,6 +483,7 @@ impl Host {
             cwd: cwd.clone(),
             sessions: Vec::new(),
             pending: HashMap::new(),
+            claimed: HashMap::new(),
             client_requests: HashMap::new(),
             host_requests: HashMap::new(),
             agent_requests: Vec::new(),
@@ -636,6 +639,13 @@ impl Host {
             self.drop_held(i, "exit");
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
+        // Let go of the sessions as brnr stops listing the process (ADR 3).
+        self.claimed.clear();
+        for s in &mut self.sessions {
+            if let Hold::Owner(lock) = &mut s.hold {
+                lock.take();
+            }
+        }
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.

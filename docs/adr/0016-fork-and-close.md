@@ -1,9 +1,8 @@
 # 16. Fork and close
 
 Accepted (former decision 11); reviewed 2026-10-07. Implemented for
-headless sessions, except cancelling a running turn before closing; `close`
-on an editor's session (ADR 4), the refused `fork` of ADR 12 and strict
-mode's (ADR 41) are not.
+headless sessions; `close` on an editor's session (ADR 4) and strict mode's
+refused `fork` (ADR 41) are not.
 
 ## Decision
 

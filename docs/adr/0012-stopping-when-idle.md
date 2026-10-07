@@ -1,7 +1,6 @@
 # 12. Stopping when idle
 
-Accepted (former decisions 14 and 41); reviewed 2026-10-07. Implemented,
-except the refused `fork` below.
+Accepted (former decisions 14 and 41); reviewed 2026-10-07. Implemented.
 
 ## Context
 

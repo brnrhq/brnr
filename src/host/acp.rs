@@ -23,6 +23,11 @@
 //!   updates are neither recorded nor turned into events: the transcript has
 //!   them already. What they say the session is now (its title, mode, config
 //!   options and commands) is kept.
+//! - The editor's `session/load` or `session/resume` of a session another
+//!   process holds is answered by the host with an error, naming the process
+//!   and how to release it, and never reaches the agent (ADR 3); with
+//!   `shared_sessions` in the profile (ADR 42) it goes through, and the
+//!   session is served shared (see `Hold`).
 //!
 //! Lines are read as json.rs reads them: any JSON text, a lone surrogate as
 //! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
@@ -30,16 +35,20 @@
 //! the agent, but for its late answers to requests the host answered itself.
 
 use std::collections::VecDeque;
+use std::fs;
 use std::mem::take;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
+use super::requests::PeerOp;
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
+use crate::config::Feature;
+use crate::lock::{self, Lock};
 use crate::log::Dir;
-use crate::{frame, json};
+use crate::{frame, json, paths};
 
 /// Client capabilities removed from the editor's `initialize`. ACP v2 drops
 /// them and they add nothing an agent needs, so no agent comes to rely on
@@ -103,6 +112,39 @@ pub(super) struct Session {
     pub(super) last_active: SystemTime,
     /// How the last turn ended: `{stop_reason, error}`, as `turn_ended`.
     pub(super) last_turn: Option<Value>,
+    /// How this process holds it (ADR 3).
+    pub(super) hold: Hold,
+    /// A close asked for, until the agent has closed it: meanwhile the
+    /// session takes no more requests (see `close`).
+    pub(super) closing: Option<Close>,
+}
+
+/// How a process holds a session it serves (ADR 3).
+pub(super) enum Hold {
+    /// Its lock: the process is the session's owner, and keeps its
+    /// transcript. `None` if the lock couldn't be taken (see the host log).
+    Owner(Option<Lock>),
+    /// Process `pid` held the lock when the editor loaded the session here
+    /// (`shared_sessions`, ADR 42): that one keeps the transcript, and this
+    /// one records the session in its host log only.
+    Shared(u32),
+}
+
+pub(super) enum Close {
+    /// `session/close` goes once the turn it cancelled has ended, and
+    /// `peer` hears when the agent has closed it.
+    AfterTurn {
+        peer: u64,
+        req_id: Option<Value>,
+        by: &'static str,
+    },
+    Sent,
+}
+
+impl Session {
+    pub(super) fn shared(&self) -> bool {
+        matches!(self.hold, Hold::Shared(_))
+    }
 }
 
 /// A request whose response creates or ends a session.
@@ -185,6 +227,12 @@ impl Host {
             let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
             match (method, msg.get("id").cloned()) {
                 (Some(method), Some(id)) => {
+                    if matches!(method.as_str(), "session/load" | "session/resume")
+                        && let Some(sid) = &session
+                        && let Err(error) = self.attach(sid)
+                    {
+                        return self.refuse(id, sid, &method, &error);
+                    }
                     let key = id_key(&id);
                     if let Some(rewritten) = self.editor_request(&method, &key, &mut msg, &session)
                     {
@@ -262,6 +310,43 @@ impl Host {
             _ => {}
         }
         None
+    }
+
+    /// The editor's `session/load` or `session/resume` of `session`: its lock
+    /// is taken before the agent hears of it. One another process holds is
+    /// refused, saying how to release it (ADR 3), unless the profile shares
+    /// sessions (`shared_sessions`, ADR 42).
+    fn attach(&mut self, session: &str) -> Result<(), String> {
+        if self.find(session).is_some() || self.claimed.contains_key(session) {
+            return Ok(()); // Ours already.
+        }
+        let hold = self.take_lock(session);
+        if let Hold::Shared(pid) = hold
+            && !self.features.contains(&Feature::SharedSessions)
+        {
+            return Err(held_elsewhere(session, pid));
+        }
+        self.claimed.insert(session.to_owned(), hold);
+        Ok(())
+    }
+
+    /// Answers the editor's request `id` with an error in the agent's place:
+    /// the agent never hears of it.
+    fn refuse(&mut self, id: Value, session: &str, method: &str, error: &str) {
+        let event = json!({
+            "event": "editor-request-refused",
+            "session_id": session,
+            "id": id,
+            "method": method,
+            "error": error,
+        });
+        self.sink.note(None, event);
+        let msg =
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": error } });
+        let mut line = serde_json::to_vec(&msg).unwrap();
+        line.push(b'\n');
+        self.record(None, Dir::ControlToEditor, &line);
+        self.send_link(frame::DATA, &line);
     }
 
     fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
@@ -448,6 +533,8 @@ impl Host {
                 if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
                     self.sessions[i].state.result(result);
+                } else {
+                    self.claimed.remove(&session); // Its lock goes (see `attach`).
                 }
                 Some(session)
             }
@@ -694,6 +781,12 @@ impl Host {
     fn next_turn(&mut self, session: &str) {
         let Some(i) = self.find(session) else { return };
         let s = &mut self.sessions[i];
+        if s.prompts.is_empty() && matches!(s.closing, Some(Close::AfterTurn { .. })) {
+            if let Some(Close::AfterTurn { peer, req_id, by }) = s.closing.take() {
+                self.send_close(i, peer, req_id, by);
+            }
+            return;
+        }
         if s.prompts.is_empty()
             && let Some(held) = s.held.pop_front()
         {
@@ -727,6 +820,32 @@ impl Host {
                 json!({ "message": h.id, "text": h.text })
             })
             .collect()
+    }
+
+    /// Closes session `i`, `by` `close` (`brnr close`, `--take-over`) or
+    /// `idle`: a running turn is cancelled first, its pending approvals
+    /// answered `cancelled`, and `session/close` goes once it has ended
+    /// (ADR 16). `peer` hears when the agent has closed it (peer 0: nobody).
+    pub(super) fn close(&mut self, i: usize, peer: u64, req_id: Option<Value>, by: &'static str) {
+        // Dropped now: held until the agent answers, they would go out as the
+        // running turn ends.
+        self.drop_held(i, "close");
+        if !self.is_idle(i) {
+            let session = self.sessions[i].id.clone();
+            self.cancel(&session);
+        }
+        if self.sessions[i].prompts.is_empty() {
+            self.send_close(i, peer, req_id, by);
+        } else {
+            self.sessions[i].closing = Some(Close::AfterTurn { peer, req_id, by });
+        }
+    }
+
+    fn send_close(&mut self, i: usize, peer: u64, req_id: Option<Value>, by: &'static str) {
+        let session = self.sessions[i].id.clone();
+        self.sessions[i].closing = Some(Close::Sent);
+        let params = json!({ "sessionId": session });
+        self.peer_op(peer, req_id, PeerOp::Close { session, by }, "session/close", params);
     }
 
     /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
@@ -768,7 +887,7 @@ impl Host {
         let Some(i) = (0..self.sessions.len()).find(|&i| {
             let s = &self.sessions[i];
             let until = s.idle_since.and_then(|t| t.checked_add(limit)); // None: never.
-            !s.idle_done && until.is_some_and(|t| now >= t)
+            !s.idle_done && s.closing.is_none() && until.is_some_and(|t| now >= t)
         }) else {
             return;
         };
@@ -779,9 +898,7 @@ impl Host {
             self.begin_stop();
         } else if self.capabilities()["close"] == true {
             // As `brnr close` would, with nobody to answer (peer 0).
-            let params = json!({ "sessionId": session });
-            let op = super::requests::PeerOp::Close { session, by: "idle" };
-            self.peer_op(0, None, op, "session/close", params);
+            self.close(i, 0, None, "idle");
         }
     }
 
@@ -942,14 +1059,25 @@ impl Host {
         self.sessions.iter().position(|s| s.id == session)
     }
 
-    /// Index of `session`, started (with its log file) if this is the first
-    /// we hear of it. Without a cwd, the host's own is used.
+    /// Index of `session`, started (with its lock and log file) if this is
+    /// the first we hear of it. Without a cwd, the host's own is used.
     pub(super) fn open_session(&mut self, session: &str, cwd: Option<&str>) -> usize {
         if let Some(i) = self.find(session) {
             return i;
         }
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| self.cwd.clone());
-        self.sink.open_session(session, &cwd);
+        let hold = match self.claimed.remove(session) {
+            Some(hold) => hold,
+            None => self.take_lock(session),
+        };
+        match hold {
+            Hold::Shared(pid) => {
+                let event =
+                    json!({ "event": "session-shared", "session_id": session, "held_by": pid });
+                self.sink.note(None, event);
+            }
+            Hold::Owner(_) => self.sink.open_session(session, &cwd),
+        }
         self.sessions.push(Session {
             id: session.to_owned(),
             cwd,
@@ -967,8 +1095,56 @@ impl Host {
             idle_done: false,
             last_active: SystemTime::now(),
             last_turn: None,
+            hold,
+            closing: None,
         });
         self.sessions.len() - 1
+    }
+
+    /// `session`'s lock, for a session this process is to serve. One another
+    /// process holds is shared, as `attach` lets it be; one that can't be
+    /// locked is served as if it were held, and the host log says why.
+    fn take_lock(&mut self, session: &str) -> Hold {
+        match lock::take(session) {
+            Ok(lock) => Hold::Owner(Some(lock)),
+            Err(lock::Error::Held(pid)) => Hold::Shared(pid),
+            Err(lock::Error::Io(err)) => {
+                let error = err.to_string();
+                let event = json!({ "event": "lock-failed", "session_id": session, "error": error });
+                self.sink.note(None, event);
+                Hold::Owner(None)
+            }
+        }
+    }
+
+    /// Takes the lock of `session`, which a headless start resumes, before
+    /// the agent is asked for it: one another process holds can't be served
+    /// here (ADR 3).
+    pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
+        let lock = lock::take(session).map_err(|err| match err {
+            lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
+            lock::Error::Io(err) => format!("{}: {err}", paths::session_lock(session).display()),
+        })?;
+        self.claimed.insert(session.to_owned(), Hold::Owner(Some(lock)));
+        Ok(())
+    }
+}
+
+/// What the editor is told of a session process `pid` holds: how to
+/// release it.
+fn held_elsewhere(session: &str, pid: u32) -> String {
+    let meta = fs::read(paths::runtime_dir().join(format!("{pid}.json"))).ok();
+    let meta: Value = meta.and_then(|m| serde_json::from_slice(&m).ok()).unwrap_or_default();
+    if meta["proxy_pid"].is_number() {
+        format!(
+            "brnr: session {session} is open in another editor (brnr process {pid}); close it \
+             there first"
+        )
+    } else {
+        format!(
+            "brnr: session {session} is running in brnr process {pid}; release it first with \
+             `brnr close {session}`"
+        )
     }
 }
 

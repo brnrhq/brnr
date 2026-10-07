@@ -30,11 +30,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::request::{self, Request, Role};
-use brnr::{config, paths, signals, spawn};
+use brnr::{config, lock, paths, signals, spawn};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
-    print_json, read_stdin, response_json, running_session, text,
+    print_json, read_stdin, response_json, running_session, settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -331,6 +331,7 @@ struct StartArgs {
     mode: Option<String>,
     set: Vec<String>,
     resume: Option<String>,
+    take_over: bool,
     stop_when_idle: Option<u64>,
     auth: Option<String>,
     wait: bool,
@@ -356,6 +357,7 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--model" => a.set.push(format!("model={}", value("--model")?)),
             "--set" => a.set.push(value("--set")?),
             "--resume" => a.resume = Some(value("--resume")?),
+            "--take-over" => a.take_over = true,
             "--auth" => a.auth = Some(value("--auth")?),
             "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--stop-when-idle" => {
@@ -394,6 +396,9 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
     if a.timeout.is_some() && !a.wait {
         return Err("--timeout goes with --wait".into());
     }
+    if a.take_over && a.resume.is_none() {
+        return Err("--take-over goes with --resume".into());
+    }
     Ok(a)
 }
 
@@ -404,14 +409,31 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
         Err(_) => START_TIMEOUT,
     };
-    let hosts = discover()?;
     let mut resume_cwd = None;
     if let Some(wanted) = a.resume.clone() {
+        let mut hosts = discover()?;
+        // A session another process holds is refused, naming the process,
+        // unless --take-over: that process closes it first (ADR 3). The
+        // process started here takes the lock itself, and is refused the same
+        // way if it has been taken meanwhile.
+        if let Some(pid) = lock::holder(&wanted) {
+            if !a.take_over {
+                return Err(format!(
+                    "{wanted} is running in process {pid} (--take-over closes it there and \
+                     resumes it here)"
+                ));
+            }
+            settings::take_over(&hosts, &wanted, pid)?;
+            hosts = discover()?;
+        }
         // A session brnr has no transcript of (one `brnr sessions` lists)
         // goes to the agent as given, in --cwd or here, with -- <agent> or
         // the profile's.
         match find_session(&hosts, &wanted) {
-            Ok(Found::Running(..)) => return Err(format!("{wanted} is already running")),
+            // Served without its lock, shared by an editor's process.
+            Ok(Found::Running(host, _)) => {
+                return Err(format!("{wanted} is running in process {}", host.id()));
+            }
             Ok(Found::Inactive(past)) => {
                 a.resume = past["session_id"].as_str().map(str::to_owned);
                 resume_cwd = past["cwd"].as_str().map(str::to_owned);

@@ -12,7 +12,9 @@
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
-//! act on a session need it running and say so when it isn't.
+//! act on a session need it running and say so when it isn't. Which process
+//! serves a session is what the session's lock says (ADR 3, see lock.rs),
+//! whether that process answers or not.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `log`, `watch` and `start --foreground`).
@@ -29,7 +31,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{paths, render};
+use brnr::{lock, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -59,7 +61,7 @@ const USAGE: &str = "usage:
 
   brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
              [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--stop-when-idle <s>] [--auth <method>] [--resume <session>]
+             [--stop-when-idle <s>] [--auth <method>] [--resume <session> [--take-over]]
              [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
              [-- <agent> [args...]]
              a headless session, in the background (or the foreground)
@@ -222,6 +224,14 @@ impl Host {
     fn sessions(&self) -> &[Value] {
         self.status.as_ref().and_then(|s| s["sessions"].as_array()).map_or(&[], Vec::as_slice)
     }
+
+    /// The sessions whose locks it holds, as `locks` has them: what it
+    /// serves, asked of nobody.
+    fn held(&self, locks: &[lock::Entry]) -> Vec<String> {
+        let pid = self.id().parse().ok();
+        let held = locks.iter().filter(|e| e.pid.is_some() && e.pid == pid);
+        held.filter_map(|e| e.session.clone()).collect()
+    }
 }
 
 // ---- naming sessions and processes ---------------------------------------
@@ -234,20 +244,24 @@ enum Found<'a> {
     Inactive(Value),
 }
 
-/// The session with id `arg`, running or not.
+/// The session with id `arg`, running or not: in the process holding its
+/// lock, or one that serves it shared, without the lock (ADR 3).
 fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
-    for host in hosts {
-        if host.sessions().iter().any(|s| s["session_id"] == arg) {
-            return Ok(Found::Running(host, arg.to_owned()));
-        }
+    let serves = |host: &Host| host.sessions().iter().any(|s| s["session_id"] == arg);
+    if let Some(pid) = lock::holder(arg) {
+        return match hosts.iter().find(|h| h.id() == pid.to_string()) {
+            Some(host) if serves(host) => Ok(Found::Running(host, arg.to_owned())),
+            Some(host) if host.status.is_none() => {
+                Err(format!("{arg} is running in process {pid}, which is not answering"))
+            }
+            _ => Err(format!("{arg} is opening in process {pid}")),
+        };
+    }
+    if let Some(host) = hosts.iter().find(|h| serves(h)) {
+        return Ok(Found::Running(host, arg.to_owned()));
     }
     if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
         return Ok(Found::Inactive(p));
-    }
-    // A process that doesn't answer may well have it.
-    let silent: Vec<&str> = hosts.iter().filter(|h| h.status.is_none()).map(Host::id).collect();
-    if !silent.is_empty() {
-        return Err(format!("no session {arg}, and process {} is not answering", silent.join(", ")));
     }
     Err(format!("no session {arg} (see brnr list --all)"))
 }
@@ -288,11 +302,16 @@ fn ps(args: &[String]) -> Result<(), String> {
         _ => return Err(USAGE.to_owned()),
     };
     let hosts = discover()?;
+    let locks = lock::all();
     let rows: Vec<Value> = hosts
         .iter()
         .map(|host| {
             let info = host.info();
-            let sessions: Vec<&Value> = host.sessions().iter().map(|s| &s["session_id"]).collect();
+            // One that doesn't answer serves what it holds the locks of.
+            let sessions: Vec<Value> = match host.status {
+                Some(_) => host.sessions().iter().map(|s| s["session_id"].clone()).collect(),
+                None => host.held(&locks).into_iter().map(Value::from).collect(),
+            };
             json!({
                 "pid": host.id().parse::<u64>().ok(),
                 "owner": if host.status.is_some() { info["owner"].clone() } else { json!("unreachable") },
@@ -350,6 +369,7 @@ fn list(args: &[String]) -> Result<(), String> {
         }
     }
     let hosts = discover()?;
+    let locks = lock::all();
     let mut rows = Vec::new();
     if active {
         for host in &hosts {
@@ -363,6 +383,20 @@ fn list(args: &[String]) -> Result<(), String> {
                     "cwd": s["cwd"],
                     "last_active": s["last_active"],
                 }));
+            }
+            // One that doesn't answer: what it holds the locks of, and no more.
+            if host.status.is_none() {
+                for session in host.held(&locks) {
+                    rows.push(json!({
+                        "session": session,
+                        "title": null,
+                        "state": "unreachable",
+                        "pid": host.id().parse::<u64>().ok(),
+                        "agent": agent_name(&host.info()["agent"]),
+                        "cwd": null,
+                        "last_active": null,
+                    }));
+                }
             }
         }
     }
@@ -426,19 +460,16 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"));
 
-    // A process that doesn't answer can't say which sessions it has: the
-    // ones it was last in may well be running.
-    let silent: Vec<i64> = hosts
-        .iter()
-        .filter(|h| h.status.is_none())
-        .filter_map(|h| h.meta["host_pid"].as_i64())
-        .collect();
+    // A session whose lock is held is running, whether its process answers
+    // or not.
+    let held: Vec<String> =
+        lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session).collect();
     let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
     for file in files {
         let (Some(first), Some(last)) = (first_record(&file), last_record(&file)) else { continue };
         let Some(session) = last["session_id"].as_str() else { continue };
-        if running.contains(&file) || last["host_pid"].as_i64().is_some_and(|p| silent.contains(&p)) {
+        if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
         }
         let host_id = last["host_id"].as_str().unwrap_or_default().to_owned();
@@ -507,6 +538,14 @@ fn status(args: &[String]) -> Result<(), String> {
     let (host, id) = running_session(&hosts, arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
+    // Processes serving it without its lock, `shared_sessions` (ADR 3): what
+    // happens there isn't in its transcript.
+    let shares = |s: &Value| s["session_id"] == id.as_str() && s["shared"] == true;
+    let shared_by: Vec<u64> = hosts
+        .iter()
+        .filter(|h| h.sessions().iter().any(shares))
+        .filter_map(|h| h.id().parse().ok())
+        .collect();
     let mut agent = json!({ "program": agent_name(&st["agent"]) });
     // What the agent says it is, in initialize: the npm package and version
     // of an adapter.
@@ -522,6 +561,8 @@ fn status(args: &[String]) -> Result<(), String> {
         "pid": host.id().parse::<u64>().ok(),
         "agent": agent,
         "owner": st["owner"],
+        "held_by": lock::holder(&id),
+        "shared_by": shared_by,
         "cwd": x["cwd"],
         "state": x["state"],
         "turn_seconds": x["turn_seconds"],
@@ -564,6 +605,18 @@ fn describe_status(x: &Value, arg: &str) -> String {
         text(&x["owner"]),
         duration(x["uptime_seconds"].as_u64().unwrap_or(0))
     ));
+    let shared_by: Vec<String> =
+        x["shared_by"].as_array().into_iter().flatten().map(Value::to_string).collect();
+    if !shared_by.is_empty() {
+        let held = match x["held_by"].as_u64() {
+            Some(pid) => format!("process {pid}'s"),
+            None => "no process's (none holds it now)".to_owned(),
+        };
+        out.push_str(&format!(
+            "shared by process {}: the transcript is {held}, and has none of what happens there\n",
+            shared_by.join(", ")
+        ));
+    }
     out.push_str(&format!("cwd {}\n", text(&x["cwd"])));
     if x["stopping"] == true {
         out.push_str("stopping\n");
