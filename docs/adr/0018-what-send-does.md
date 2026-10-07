@@ -1,8 +1,8 @@
 # 18. What `send` does
 
-Accepted 2026-10-07. Implemented for headless sessions. On an editor's
-session `send` isn't experimental yet (ADR 4): it is held, steered or
-interrupts as on a headless one. Replaces former decision 24.
+Accepted 2026-10-07. Implemented. On an editor's session `send` is ADR 4's
+experimental action: refused while a turn runs, and never held, steered or
+interrupting. Replaces former decision 24.
 
 ## Context
 

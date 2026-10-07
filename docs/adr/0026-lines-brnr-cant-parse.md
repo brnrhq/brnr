@@ -1,7 +1,7 @@
 # 26. Lines brnr can't parse
 
-Accepted 2026-10-07. Implemented, except telling the editor its late answer
-was dropped (ADR 4): for now the host log says so.
+Accepted 2026-10-07. Implemented. The editor is told in the session that
+its late answer was dropped, and who answered first (ADR 4).
 Resolves review item 2.
 
 ## Context
