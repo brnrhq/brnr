@@ -12,6 +12,8 @@ with environment variables:
   STUBBORN=child    only the child ignores SIGTERM
   CHILD_PID=<file>  where the child's pid is written
   FLOOD=<n>         stream n agent_message_chunk updates for every prompt
+  NOISE=<n>         write n notifications brnr doesn't interpret (500 bytes
+                    each) for every prompt
   PERMISSION=1      ask permission (kind edit) before answering a prompt
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
@@ -23,6 +25,9 @@ with environment variables:
   PERM_COMMAND=<c>  a permission request is for running command c (kind
                     execute, titled c)
   LEAVE_GROUP=1     move to its parent's process group, out of its own
+  STDERR=<text>     write text on stderr as it starts
+  EXIT=<code>       exit with code as it starts (after STDERR), reading
+                    nothing
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
@@ -32,6 +37,7 @@ and by the prompt's text:
   hang ...          runs until cancelled
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
+  many <n>          answers with n messages, each of its own
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
   settings          reports its config options, then answers
@@ -110,6 +116,12 @@ def opened(session):
     """What session/new and session/fork answer with."""
     return {"sessionId": session, "modes": MODES, "configOptions": config(model)}
 
+
+if env("STDERR"):
+    sys.stderr.write(env("STDERR") + "\n")
+    sys.stderr.flush()
+if env("EXIT"):
+    sys.exit(int(env("EXIT")))
 
 if env("LEAVE_GROUP"):
     os.setpgid(0, os.getpgid(os.getppid()))
@@ -200,6 +212,8 @@ for line in sys.stdin:
         append("PROMPT_LOG", text)
         for _ in range(int(env("FLOOD", "0"))):
             say(sid, "y" * 500)
+        for _ in range(int(env("NOISE", "0"))):
+            send({"jsonrpc": "2.0", "method": "_fake/noise", "params": {"pad": "n" * 500}})
         words = text.split()
         first = words[0] if words else ""
         if first == "hang":
@@ -209,6 +223,10 @@ for line in sys.stdin:
             end_turn(mid)
         elif first == "big":
             say(sid, "z" * int(words[1]))
+            end_turn(mid)
+        elif first == "many":
+            for i in range(int(words[1])):
+                update(sid, {"sessionUpdate": "agent_message_chunk", "messageId": f"msg-{i}", "content": {"type": "text", "text": f"message {i}"}})
             end_turn(mid)
         elif first == "think":
             say(sid, "pondering", "agent_thought_chunk")

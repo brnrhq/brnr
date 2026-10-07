@@ -32,12 +32,12 @@ of to-resolve; the map at the end says where each went.
 | [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | no |
 | [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | no |
 | [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
-| [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | partly |
+| [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | yes |
 | [7](0007-a-start-is-atomic.md) | A start is atomic and commits at ready | yes |
 | [8](0008-one-resolved-start-request.md) | A process is started with one resolved request | mostly |
-| [9](0009-start-foreground.md) | `start --foreground` | partly |
-| [10](0010-the-agents-stderr.md) | The agent's stderr | partly |
-| [11](0011-a-process-death-is-recorded.md) | A process's own death is recorded | no |
+| [9](0009-start-foreground.md) | `start --foreground` | yes |
+| [10](0010-the-agents-stderr.md) | The agent's stderr | yes |
+| [11](0011-a-process-death-is-recorded.md) | A process's own death is recorded | yes |
 | [12](0012-stopping-when-idle.md) | Stopping when idle | mostly |
 | [13](0013-sessions-are-ids-processes-are-pids.md) | Sessions are the agent's ids, processes are pids | yes |
 | [14](0014-resuming.md) | Resuming | mostly |

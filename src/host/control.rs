@@ -51,7 +51,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread;
 use std::time::{Instant, SystemTime};
 
@@ -179,7 +179,7 @@ fn check_events(events: &[String]) -> Result<(), String> {
 
 // ---- connections ---------------------------------------------------------
 
-pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
+pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let tx = tx.clone();
@@ -187,7 +187,7 @@ pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
     }
 }
 
-fn connection(conn: UnixStream, tx: Sender<Ev>) {
+fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
     let (out_tx, out_rx, queued) = Queue::new();
@@ -212,7 +212,7 @@ pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: 
 
 /// Requests, one per line, until EOF. A line that isn't JSON (not even
 /// UTF-8) is answered with an error; the peer stays.
-fn read_requests(input: impl Read, peer: u64, tx: &Sender<Ev>) {
+fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
     while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
@@ -233,7 +233,7 @@ impl Host {
         &mut self,
         n: usize,
         bridge: &Bridge,
-        tx: &Sender<Ev>,
+        tx: &SyncSender<Ev>,
     ) -> Result<(), String> {
         let label = format!("{}#{n}", bridge.command[0]);
         // A bare name is looked for next to brnr first, as an agent's is: so
@@ -328,12 +328,19 @@ impl Host {
             if let Some(i) = event["session"].as_str().and_then(|s| self.find(s)) {
                 self.sessions[i].last_active = SystemTime::now();
             }
-            if self.show_events && !QUIET.contains(&name.as_str()) {
-                if self.json_events {
-                    println!("{}", render::clean(&line));
-                } else if let Some(text) = render::event(&event, &render::Options::foreground()) {
-                    println!("{text}");
-                }
+            if self.show_events
+                && !QUIET.contains(&name.as_str())
+                && let Some(display) = &self.display
+            {
+                // On the display's thread, which never holds the host up
+                // (ADR 9).
+                display.event(|| {
+                    if self.json_events {
+                        Some(render::clean(&line).into_owned())
+                    } else {
+                        render::event(&event, &render::Options::foreground())
+                    }
+                });
             }
         }
         let peers: Vec<u64> =

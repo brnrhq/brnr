@@ -269,6 +269,103 @@ fn foreground_close_of_the_last_session() {
     assert!(fg.wait().unwrap().success(), "{err}");
 }
 
+/// Everything the processes' host logs hold.
+fn host_logs(env: &Env) -> String {
+    let Ok(dir) = fs::read_dir(env.dir.join("home/hosts")) else { return String::new() };
+    dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect()
+}
+
+/// What is left in the runtime dir.
+fn runtime_files(env: &Env) -> Vec<String> {
+    let dir = fs::read_dir(env.dir.join("run")).unwrap();
+    dir.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
+}
+
+/// `brnr start --foreground … | head -1`: the display stops, with a note in
+/// the host log, and the session carries on. Stopped, it records `exited`
+/// and leaves nothing behind in the runtime dir.
+#[test]
+fn foreground_outlives_its_stdout() {
+    let env = Env::new("fg-head");
+    let (reader, writer) = std::io::pipe().unwrap();
+    let mut fg = env
+        .brnr(&start_args(&["--foreground", "--prompt", "reply hi"]))
+        .stdout(writer)
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    BufReader::new(reader).read_line(&mut first).unwrap();
+    assert!(first.contains("user: reply hi"), "{first}");
+    // Something more to show, on a stdout nobody reads any more.
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply again"]), "again\n");
+    let stopped = || host_logs(&env).contains(r#""event":"display-stopped""#);
+    assert!(wait_for(Duration::from_secs(5), stopped), "no note of the display stopping");
+    assert!(env.ok(&["status", "sess-1"]).contains("idle"));
+    env.stop();
+    assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop");
+    let mut err = String::new();
+    fg.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(fg.wait().unwrap().success(), "{err}");
+    assert!(err.contains("brnr: agent exited"), "{err}");
+    let exited = env.ok(&["log", "sess-1", "--json", "--events", "exited"]);
+    assert!(exited.contains(r#""event":"exited""#), "{exited}");
+    assert!(runtime_files(&env).is_empty(), "{:?}", runtime_files(&env));
+}
+
+/// A foreground reader that falls behind is skipped past and told how many
+/// events it missed; the session isn't held up, and its transcript has them
+/// all.
+#[test]
+fn slow_foreground_reader_is_told_what_it_missed() {
+    let env = Env::new("fg-slow");
+    let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "many 80000"];
+    let mut fg =
+        env.brnr(&start_args(&args)).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    // The session runs to its end while nothing is read.
+    let ended = || host_logs(&env).contains(r#""event":"exited""#) && env.hosts().is_empty();
+    assert!(wait_for(Duration::from_secs(30), ended), "the session was held up");
+    let mut out = String::new();
+    fg.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    assert!(fg.wait().unwrap().success());
+    let not_shown = |l: &str| l.strip_prefix("… ")?.strip_suffix(" events not shown")?.parse().ok();
+    let skipped: Vec<u64> = out.lines().filter_map(not_shown).collect();
+    assert!(!skipped.is_empty(), "no line about skipped events");
+    let shown = out.lines().filter(|l| not_shown(l).is_none()).count() as u64;
+    let logged = env.ok(&["log", "sess-1"]).lines().count() as u64;
+    assert!(logged > 80000, "{logged}");
+    assert_eq!(shown + skipped.iter().sum::<u64>(), logged);
+}
+
+/// In the foreground the agent's stderr goes to stderr as it comes,
+/// unchanged; stdout is the events. It is in the host log too.
+#[test]
+fn foreground_passes_the_agents_stderr() {
+    let env = Env::new("fg-stderr").agent("STDERR", "[session/create] phase=ready \x1b[1m");
+    let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "reply hi"];
+    let out = env.run(&start_args(&args));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("[session/create] phase=ready \x1b[1m\n"), "{}", stderr(&out));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("phase=ready"));
+    let logged = r#""dir":"agent-stderr","raw":"[session/create] phase=ready"#;
+    assert!(host_logs(&env).contains(logged));
+}
+
+/// A start that fails ends its error with the agent's last lines on stderr:
+/// brnr start's, and the foreground's after the agent's stderr itself.
+#[test]
+fn failed_start_shows_the_agents_stderr() {
+    let env = Env::new("errtail").agent("STDERR", "Error: claude CLI not found").agent("EXIT", "1");
+    let err = env.fails(&start_args(&["--prompt", "hi"]));
+    let want = "the agent exited before the session started. \
+                The agent's last lines on stderr:\n  Error: claude CLI not found\n";
+    assert!(err.ends_with(want), "{err}");
+    let out = env.run(&start_args(&["--foreground", "--prompt", "hi"]));
+    assert!(!out.status.success());
+    assert_eq!(stderr(&out).matches("Error: claude CLI not found").count(), 2, "{}", stderr(&out));
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
+}
+
 /// Answering a permission request while the agent is being stopped can't
 /// reach it, so it fails rather than claiming success.
 #[test]
@@ -313,6 +410,51 @@ fn held_messages_are_reported_on_exit() {
     assert_eq!(dropped["by"], "exit");
     assert_eq!(lines[1]["event"], "exited");
     assert!(lines[1].get("undelivered").is_none(), "{}", lines[1]);
+}
+
+// ---- a process's death -------------------------------------------------
+
+/// A panic ends the process, but not without a word (ADR 11), on the event
+/// loop or on another thread: the panic is in the host log, with what Rust
+/// said of it on stderr; `exited`, with the reason, is in the session's
+/// transcript and reaches the peers; the agent goes; and the process's
+/// files are removed. (`BRNR_TEST_PANIC` lets a request ask for the panic.)
+#[test]
+fn a_panic_is_recorded() {
+    for on in ["loop", "thread"] {
+        let env = Env::new(&format!("panic-{on}"));
+        let out = env.brnr(&start_args(&[])).env("BRNR_TEST_PANIC", "1").output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let host = env.hosts().remove(0);
+        let pid = |key: &str| host[key].as_i64().unwrap() as i32;
+        let (host_pid, agent_pid) = (pid("host_pid"), pid("agent_pid"));
+        // A peer, subscribed to `exited`, asks for the panic.
+        let mut conn = UnixStream::connect(host["socket"].as_str().unwrap()).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        let mut from_host = BufReader::new(conn.try_clone().unwrap()).lines();
+        writeln!(conn, r#"{{"cmd":"subscribe","events":["exited"]}}"#).unwrap();
+        from_host.next().unwrap().unwrap();
+        writeln!(conn, r#"{{"cmd":"panic","on":"{on}"}}"#).unwrap();
+        let exited: Value = from_host
+            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .find(|m: &Value| m["event"] == "exited")
+            .expect("no exited");
+
+        assert!(wait_for(Duration::from_secs(15), || !alive(host_pid)), "{on}: still running");
+        assert!(wait_for(Duration::from_secs(5), || !alive(agent_pid)), "{on}: the agent lives on");
+        let reason = exited["reason"].as_str().unwrap_or_default();
+        assert!(reason.starts_with("brnr panicked at src/host/"), "{on}: {exited}");
+        assert!(reason.ends_with(": a test asked for it"), "{on}: {exited}");
+        let logged = env.ok(&["log", "sess-1", "--json", "--events", "exited"]);
+        assert!(logged.contains(reason), "{on}: {logged}");
+        let shown = env.ok(&["log", "sess-1", "--events", "exited"]);
+        assert!(shown.contains(&format!("agent exited: null; {reason}")), "{on}: {shown}");
+        let log = host_logs(&env);
+        assert!(log.contains(r#""event":{"event":"panic""#), "{on}: {log}");
+        let said = log.contains(r#""event":"host-stderr""#) && log.contains("panicked at");
+        assert!(said, "{on}: {log}");
+        assert!(runtime_files(&env).is_empty(), "{on}: {:?}", runtime_files(&env));
+    }
 }
 
 // ---- sending -----------------------------------------------------------
@@ -782,22 +924,56 @@ fn editor_gone_takes_the_agents_children() {
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "its child outlived the editor");
 }
 
-/// An editor that stops reading for LINK_WRITE_TIMEOUT (30 s) is gone, and
-/// the agent with it; until then the editor still owns the session.
+/// The memory process `pid` holds, in bytes.
+fn rss(pid: i32) -> u64 {
+    let ps = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&ps.stdout).trim().parse::<u64>().unwrap_or(0) << 10
+}
+
+/// An editor that stops reading holds its agent back, as a pipe would: the
+/// host keeps no more of the agent's output than its cap (some 80 MB comes),
+/// the agent waits as long as the editor does (30 s here, once the time
+/// after which the host gave up on the editor and ended the agent), and goes
+/// on once the editor reads again.
 #[test]
-fn editor_that_stops_reading_is_gone() {
-    let env = Env::new("ed-stall").agent("FLOOD", "40000");
-    let (mut editor, mut to_agent, from_agent) = open_editor(&env);
+fn editor_that_stops_reading_holds_the_agent_back() {
+    let env = Env::new("ed-stall").agent("NOISE", "150000");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     let host = env.host_pid();
-    // Some 25 MB of updates, which the editor never reads.
-    let prompt = r#"{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"reply hi"}]}}"#;
-    writeln!(to_agent, "{prompt}").unwrap();
-    sleep(Duration::from_secs(2));
+    writeln!(to_agent, "{}", editor_prompt(3, "reply done")).unwrap();
+    sleep(Duration::from_secs(32));
+    assert!(alive(host), "a stalled editor ended its agent");
+    let held = rss(host);
+    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
     assert!(env.ok(&["ps"]).contains("editor"));
-    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
-    assert!(wait_for(Duration::from_secs(60), || !alive(host)), "the agent outlived a stalled editor");
-    drop(from_agent);
-    let _ = editor.kill();
+    // The agent went on: its answer comes after everything it wrote.
+    line_with(&mut from_agent, "end_turn");
+    assert!(alive(host) && env.ok(&["ps"]).contains("editor"));
+}
+
+/// The agent's stdin likewise: an agent that stops reading holds back what
+/// the editor writes, and the host keeps no more of it than its cap. The
+/// editor going away is still noticed, and takes the agent with it.
+#[test]
+fn a_stalled_agent_holds_the_editor_back() {
+    let env = Env::new("ed-full").agent("STALL", "1");
+    let (mut editor, mut to_agent, _from_agent) = open_editor(&env);
+    let host = env.host_pid();
+    // 200 MB of notifications, which the agent never reads.
+    let writer = std::thread::spawn(move || {
+        let params = serde_json::json!({ "pad": "x".repeat(100_000) });
+        let line = serde_json::json!({ "jsonrpc": "2.0", "method": "_noise", "params": params });
+        let line = format!("{line}\n");
+        (0..2000).all(|_| to_agent.write_all(line.as_bytes()).is_ok())
+    });
+    sleep(Duration::from_secs(5));
+    assert!(!writer.is_finished(), "the editor's writes didn't wait");
+    let held = rss(host);
+    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    editor.kill().unwrap();
+    editor.wait().unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
+    assert!(!writer.join().unwrap(), "the editor's writes all went through");
 }
 
 /// An editor may hand over a non-blocking stdin: nothing to read yet is not
