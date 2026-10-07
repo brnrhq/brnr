@@ -1,8 +1,9 @@
 # 2. The editor's process: `brnr acp` relays, the host owns the agent
 
 Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented,
-except: the rationale for the dropped capabilities is still the old one in the
-README, and `LINK_WRITE_TIMEOUT` is still there (ADR 6).
+except: passing `fs` and `terminal` through in strict mode (ADR 41), the
+README still giving the old rationale for dropping them, and
+`LINK_WRITE_TIMEOUT` still being there (ADR 6).
 
 ## Context
 
@@ -30,10 +31,11 @@ editor notices nothing different (P1).
   session headless, `brnr start --resume <session>`; the agents keep their
   sessions. Lost: a turn still running when the editor closes. A process's
   owner is set when it starts (P11, P14).
-- The editor's `initialize` loses the `fs` and `terminal` client
+- By default the editor's `initialize` loses the `fs` and `terminal` client
   capabilities, one of the few deliberate changes to the stream (P1). ACP v2
-  drops them, and they add nothing an agent needs; without them now, no agent
-  comes to rely on them.
+  drops them (its `ClientCapabilities` has neither), they add nothing an
+  agent needs, and without them now no agent comes to rely on them. In strict
+  mode they pass through, as stable v1 has them (ADR 41).
 
 ## Caveats
 
@@ -54,4 +56,7 @@ What the editor sees differently, stated in the README:
   agent goes with its editor (P1).
 - The old reason for dropping `fs` and `terminal`, "the host won't implement
   them for when the editor is gone", went with `go_headless`. ACP v2 is the
-  reason now; the prose still giving the old one is to be rewritten.
+  reason now; the README still gives the old one, and is to be rewritten.
+- Passing `fs` and `terminal` through always: by P1's test the agent is
+  affected, since it can't use the editor's buffers or terminal. Kept for
+  strict mode; the default follows v2.

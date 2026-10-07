@@ -16,9 +16,11 @@ config.
 ## Decision
 
 - Whoever starts a process (`start`, `acp`) resolves everything first:
-  profile, agent, cwd, role (editor or headless), mode, config options, MCP
-  servers, auth method, prompt and attachments, timeouts, `stop_when_idle`,
-  bridges, the signal mask. It writes one JSON request on the process's
+  profile, agent, cwd, role (editor or headless), strict mode (ADR 41),
+  experimental actions and feature flags (ADR 4, 42), mode, config options,
+  MCP servers, auth method, prompt and attachments, timeouts,
+  `stop_when_idle`, what to log (ADR 22), bridges, the signal mask. It writes
+  one JSON request on the process's
   stdin; file descriptors carry only the editor link or the start channel
   (ADR 7).
 - The process reads no config and takes no flags. `brnr host` is no longer

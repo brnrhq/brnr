@@ -29,13 +29,17 @@ For headless sessions:
 | | Idle | A turn is running |
 |---|---|---|
 | `send` | sent as a prompt | held; sent as its own turn when the running one ends, in order |
-| `send --steer` | sent as a prompt (`promptRequired`) | injected into the running turn; refused if the agent doesn't advertise steering (P7) |
+| `send --steer` | sent as a prompt (`promptRequired`) | injected into the running turn; refused if the agent doesn't advertise steering (P7), or in strict mode |
 | `send --interrupt` | sent as a prompt | `session/cancel`, then sent ahead of what is held |
 | `send --context` | appended to the next prompt | appended to the next prompt |
 
 - Each held message is its own prompt and turn, in the order sent;
   interrupts go ahead of held messages, keeping their own order.
 - A second `session/prompt` is never sent while one runs.
+- `_session/steering` is an ACP extension, a convention both adapters
+  implement alike: used by default, refused in strict mode (ADR 41). What a
+  second prompt mid-turn means isn't a convention: the adapters disagree
+  (P2).
 - `--after-turn` is gone: it is what `send` does now (P9).
 - The response's status is `delivered`, `held`, `steered` or `interrupting`
   (`queued`, a second prompt mid-turn, is gone).

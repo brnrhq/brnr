@@ -21,7 +21,8 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
 - The host reads every RFC 8259 text. In the copy it interprets, a lone
   surrogate becomes U+FFFD, and there is no depth limit (serde_json's
   `unbounded_depth`, with the stack grown as needed). The line itself is
-  forwarded byte for byte, as always.
+  forwarded byte for byte, as always. This stays brnr's own work with the
+  official schema types too (ADR 43): they parse with serde_json.
 - For a line that isn't JSON at all: the host keeps the ids of agent
   requests it answered itself (permission requests cancelled, or answered
   from outside, ADR 4) and drops only the editor's late answers to those,

@@ -11,27 +11,48 @@ brnr plays two roles (P12): with an editor attached it is a proxy between the
 editor and the agent; headless, it is the agent's ACP client. Several
 principles apply differently to the two.
 
-## P1. The proxy is invisible to the editor
+## P1. Follow ACP faithfully
 
-`brnr acp` must not change how the editor and the agent interact. Bytes,
-signals, stderr, stdin EOF and the exit status pass through unchanged. What
-brnr does through the side channel aims to keep the editor's view in step
-with the agent's state; ACP has no notion of a side channel, so where that
-can't be done, the gap is a caveat, stated in the README. The deliberate
-changes to the stream are few, and each is named: the editor's `fs` and
-`terminal` capabilities are dropped (ADR 2); an editor's load of a session
-another process owns is refused (ADR 3); and the side channel's experimental
-actions, where enabled, add to and answer for the editor's session (ADR 4,
-ADR 26).
+brnr does what ACP specifies, as it specifies it. The test for anything it
+does beyond that: can a client or an agent that follows the protocol be
+affected by it, now or as the protocol moves on? Three kinds of "beyond" are
+kept apart:
+
+- The protocol itself. By default brnr speaks stable ACP plus the conventions
+  current agents and editors implement alike, ahead of the spec
+  (`_session/steering`, `session/fork` while it is unstable, dropping `fs`
+  and `terminal` as ACP v2 does). Strict mode, chosen per process, is stable
+  ACP to the letter and nothing else (ADR 41).
+- Actions brnr adds to an editor's session through the side channel:
+  experimental, each enabled by name (ADR 4).
+- brnr's own process management, such as which sessions a process may serve:
+  defaults that protect the user, and feature flags to change them (ADR 42).
+  It isn't protocol, so strict mode doesn't change it.
+
+What is outside ACP's scope and can't affect a party that follows it is none
+of these, and needs no mark: headless operation (brnr is an ordinary client),
+observing a session (`watch`, `log`, `notify`, bridges), brnr's own CLI.
+
+With an editor attached, a faithful intermediary is invisible: `brnr acp`
+must not change how the editor and the agent interact. Bytes, signals,
+stderr, stdin EOF and the exit status pass through unchanged. What brnr does
+through the side channel aims to keep the editor's view in step with the
+agent's state; where that can't be done, the gap is a caveat, stated in the
+README. The deliberate changes to the stream are few, and each is named: by
+default the editor's `fs` and `terminal` capabilities are dropped (ADR 2); an
+editor's load of a session another process owns is refused unless a feature
+flag allows it (ADR 3); and the experimental actions, where enabled, add to
+and answer for the editor's session (ADR 4, ADR 26).
 
 ## P2. ACP as ACP has it
 
 Sessions, modes, config options, approvals and login are the agent's. brnr
 adds a layer of its own only where ACP has nothing (message ids, held
 messages, waiting, idle stops, permission timeouts, events, transcripts), and
-keeps it thin, named and visible. A feature that works only because of one
-adapter's undocumented behaviour breaks this even where ACP has nothing: to
-brnr the adapter is the agent, and adapters differ.
+keeps it thin, named and visible. A convention agents and editors implement
+alike can be followed (P1); one adapter's undocumented behaviour can't be
+relied on, even where ACP has nothing: to brnr the adapter is the agent, and
+adapters differ (what a prompt sent mid-turn means, ADR 18).
 
 ## P3. Nothing is lost silently
 
@@ -54,9 +75,9 @@ The host interprets ACP once, into events. Everything brnr shows is made of
 them: `watch`, `log`, `status`, the foreground, bridges, `notify`, live or
 read back from the transcript. Text and JSON carry the same events: an event
 chosen is shown in both, and what is too noisy for the default is left out of
-the default in both. The transcript keeps the raw ACP beside the events, so
-the interpretation can be checked against what was said; the one exception is
-values brnr knows are secrets, which are recorded redacted (ADR 25).
+the default in both. Beside the events, brnr keeps the raw ACP by default
+(ADR 22), so the interpretation can be checked against what was said; values
+brnr knows are secrets are recorded redacted (ADR 25).
 
 ## P6. Memory stays bounded
 
@@ -77,8 +98,8 @@ It never reaches a command line or a path unsanitized: values go in the
 environment (ADR 36), and session ids become file names (transcripts, and
 ADR 3's lock files) only sanitized, as `paths::session_log` does: anything
 but ASCII letters, digits, `-`, `_` and `.` becomes `_`. Wherever brnr shows
-it, control characters and bidi
-overrides are escaped (`render::clean`); JSON carries it as sent.
+it, control characters and bidi overrides are escaped (`render::clean`); JSON
+carries it as sent.
 
 ## P9. No backwards compatibility before 1.0
 
@@ -96,7 +117,9 @@ commits at the ready report (ADR 7, ADR 8).
 A session's owner is the editor, or headless (later perhaps a web client).
 Ownership changes only by closing the session under one owner and resuming
 it under the other, when someone asks for it in so many words (ADR 3); never
-as a side effect.
+as a side effect. A feature flag can let an editor's process serve a session
+another process owns (ADR 42); the agent then splits the conversation, and
+the process holding the session's lock stays its owner of record.
 
 ## P12. Two roles
 

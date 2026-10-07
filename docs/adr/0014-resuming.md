@@ -10,7 +10,7 @@ except the ownership lock and `--take-over` (ADR 3).
   `session/load`. While a load replays history, the host neither records nor
   emits the replayed updates: they are in the transcript already. What they
   say the session is now (its title, mode, config options and commands) is
-  kept.
+  kept. `session/load` is ACP v1's; v2 drops it, leaving `session/resume`.
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
   the session's own record (P4); `--cwd` or `-- <agent>` override. An id
   brnr doesn't know (one `brnr sessions` lists) goes to the agent as given,

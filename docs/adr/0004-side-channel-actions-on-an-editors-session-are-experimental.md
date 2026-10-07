@@ -5,8 +5,9 @@ Accepted 2026-10-07. Not yet implemented: today `send`, `queue`, `cancel`,
 and `approve`, `deny`, `fork` and `close` are refused. Of the compensations,
 the echo of `send` and `context` exists (ADR 5), and `cancel` already answers
 the agent's pending requests `cancelled` and drops the editor's late answers,
-but with only a note in the host log; telling the editor, the
-`tool_call_update`, the settings updates and everything for `close` don't.
+but with only a note in the host log; `$/cancel_request`, telling the editor,
+the `tool_call_update`, the settings updates and everything for `close`
+don't.
 Amends former decisions 9 and 11; resolves review item 6 with ADR 28.
 
 ## Context
@@ -16,7 +17,8 @@ client and owns the session (P11). Observing it and notifying other services
 (`watch`, `log`, `status`, `notify`, bridges) is what the side channel is for
 (P12). Acting on it is something ACP doesn't define and the editor doesn't
 expect: each action leaves the editor's view behind the agent's in some way,
-and only some of that can be made up for (P1).
+and only some of that can be made up for. These are what P1 calls
+experimental: actions brnr adds to an editor's session.
 
 ## Decision
 
@@ -38,8 +40,8 @@ always allowed.
 |---|---|---|
 | `send` | `send` | Sent as a prompt only while the session is idle (no prompt in flight, the editor's or brnr's); refused while a turn runs. The editor controls its turns: whether a message mid-turn is queued, steered or interrupts is its call, so there are no held messages, `--steer` or `--interrupt` on an editor's session (ADR 18). Shown to the editor as a completed tool call (ADR 5). |
 | `context` | `send --context`, `queue --clear-context` | Appended to the editor's own next prompt, and shown as "Context via brnr" (ADR 5). |
-| `cancel` | `cancel` | The host answers the agent's pending permission requests `cancelled`, as ACP requires of whoever cancels; the editor's dialogs stay open, and its late answers are handled as for `approve`. |
-| `approve` | `approve`, `deny` | When a request is answered from outside, the host sends the editor a `tool_call_update` for the request's tool call. When the editor answers it later, its answer is dropped (the agent must not get two) and the editor is told in the session that it was already approved or denied, and by whom. ACP has no way to withdraw a request from the client. |
+| `cancel` | `cancel` | The host answers the agent's pending permission requests `cancelled`, as ACP requires of whoever cancels, and withdraws them from the editor with `$/cancel_request`; late answers are handled as for `approve`. |
+| `approve` | `approve`, `deny` | When a request is answered from outside, the host withdraws it from the editor with `$/cancel_request` (stable ACP: a notification that cancels a pending request), and sends a `tool_call_update` for the request's tool call. If the editor answers anyway, its answer is dropped (the agent must not get two) and the editor is told in the session that it was already approved or denied, and by whom. |
 | `settings` | `mode`, `model`, `config` | The host sends the editor `current_mode_update`, or `config_option_update` made from the response's `configOptions`. The agent doesn't: the change was the host's request, and ACP answers the requester (ADR 28). |
 | `close` | `close`, `start --resume --take-over` | Cancel a running turn; tell the editor in the session (a completed tool call, "Session taken over by brnr (process 4466)"); `session/close` to the agent. Afterwards the host answers the editor's requests for that session with an error saying where it continues. |
 
@@ -49,6 +51,11 @@ always allowed.
 - When the editor itself queues prompts, steers (`_session/steering`) or
   cancels, brnr passes it through untouched and only reads it (P1),
   recording `user_message` with `by: editor`.
+- In strict mode none of these actions is available, whatever the profile
+  enables (ADR 41).
+- Refusing an editor's load of a session another process owns isn't one of
+  them: it is process management, with its own feature flag (ADR 3,
+  ADR 42).
 
 ## Consequences
 

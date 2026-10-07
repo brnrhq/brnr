@@ -17,11 +17,12 @@ in every bridge that asks for `acp`, which may forward it anywhere.
 ## Decision
 
 The values of MCP servers' `env` and `headers` are replaced by
-`"<redacted>"` in everything brnr records (host log, transcripts, the
-`started` request of ADR 8) and in `acp` events, whoever sent the request.
-The agent gets them as before, and the editor's bytes pass unchanged (P1).
-This is the one exception to P5's raw ACP: the keys and the structure stay,
-so the interpretation can still be checked.
+`"<redacted>"` in everything brnr records (the host log, the raw ACP file of
+ADR 22, the `started` request of ADR 8) and in `acp` events, whoever sent the
+request. Events never carry them. The agent gets them as before, and the
+editor's bytes pass unchanged (P1). This is the one exception to P5's raw
+ACP: the keys and the structure stay, so the interpretation can still be
+checked.
 
 ## Considered
 

@@ -23,6 +23,8 @@ model.
 
 - `brnr mode <session> [<mode>]` lists or sets the mode: `session/set_mode`,
   or the config option whose category is `mode` when the agent has no modes.
+  `session/set_mode` is ACP v1's; v2 drops it, and a mode is then only the
+  config option with category `mode`.
 - `brnr config <session> [<option>=<value>...]` lists or sets config
   options.
 - `brnr model <session> [<model>]` is `config` for the option whose category

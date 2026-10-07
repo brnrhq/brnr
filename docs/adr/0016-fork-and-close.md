@@ -2,14 +2,17 @@
 
 Accepted (former decision 11); reviewed 2026-10-07. Implemented for
 headless sessions, except cancelling a running turn before closing; `close`
-on an editor's session (ADR 4) and the refused `fork` of ADR 12 are not.
+on an editor's session (ADR 4), the refused `fork` of ADR 12 and strict
+mode's (ADR 41) are not.
 
 ## Decision
 
 - `brnr fork <session>` forks the session (`session/fork`) into a new one in
   the same process and prints its id. Refused on an editor's process
-  (ADR 4). A plain "new session in this process" isn't offered: `brnr start`
-  is the way to get one.
+  (ADR 4). `session/fork` is unstable in ACP v1: a convention both adapters
+  implement, used by default and refused in strict mode (ADR 41). A plain
+  "new session in this process" isn't offered: `brnr start` is the way to get
+  one.
 - `brnr close <session>` cancels a running turn and closes that one session
   (`session/close`); sessions beside it in the process keep running. A
   headless process with no session left stops. On an editor's session it is
