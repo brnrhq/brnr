@@ -298,9 +298,8 @@ struct Host {
     /// Stable ACP to the letter (ADR 41).
     #[expect(dead_code, reason = "carried for strict mode (ADR 41)")]
     strict: bool,
-    /// What to record (ADR 22). `false` turns the logger off; `events` is to
-    /// leave out the raw ACP, once events and ACP are two files.
-    #[expect(dead_code, reason = "carried for ADR 22's two files")]
+    /// What to record (ADR 22): `false` turns the logger off; `events`
+    /// leaves out the sessions' raw ACP.
     logging: Log,
     /// An editor's process: the actions on its session it allows (ADR 4),
     /// and the process-management behaviours it turns on (ADR 42).
@@ -386,7 +385,7 @@ impl Host {
         let log = if logging == Log::Off {
             Logger::disabled()
         } else {
-            Logger::start(ids, proxy_pid).map_err(|e| {
+            Logger::start(ids, proxy_pid, logging == Log::All).map_err(|e| {
                 cleanup();
                 unsafe { libc::kill(agent_pid, libc::SIGKILL) };
                 (format!("log: {e}"), 1)
@@ -756,7 +755,7 @@ impl Host {
     fn editor_eof(&mut self) {
         let rest = take(&mut self.editor_buf);
         if !rest.is_empty() {
-            self.record(None, Dir::EditorToAgent, &rest);
+            self.record_editor_rest(&rest);
             self.write_agent(&rest);
         }
         self.sink.note(None, json!({ "event": "editor-closed-stdin" }));

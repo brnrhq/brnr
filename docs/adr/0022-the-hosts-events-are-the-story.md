@@ -1,8 +1,11 @@
 # 22. The host's events are the story, and transcripts are two files
 
-Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented,
-except: the two files per session (today one file holds both), the `log`
-values, and `session_changed` recording only what changed.
+Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
+Of the config options and the commands, `session_changed` has a JSON merge
+patch (RFC 7396) by id and name: an option's new value (`{"model":
+"opus"}`), a command added (`{"review": {…}}`), `null` for what is gone. An
+answer to `set_config_option` that changes a value makes one too, as an
+agent needn't send an update for it.
 
 ## Context
 

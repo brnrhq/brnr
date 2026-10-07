@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
@@ -600,7 +600,223 @@ fn transcripts_are_private() {
             }
         }
     }
-    assert!(checked >= 6, "only {checked} paths checked");
+    // home, hosts/ and its log, projects/, the folder and its two files
+    assert!(checked >= 7, "only {checked} paths checked");
+}
+
+/// Each record of a JSONL file.
+fn records(path: &Path) -> Vec<Value> {
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// The one project folder, and its files by name.
+fn project(env: &Env) -> (PathBuf, Vec<String>) {
+    let projects: Vec<_> = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten().collect();
+    assert_eq!(projects.len(), 1, "{projects:?}");
+    let dir = projects[0].path();
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|f| f.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    (dir, names)
+}
+
+/// A session's transcript is two files: its events, which `log`, `list` and
+/// `--resume` read, and its raw ACP beside them (ADR 22).
+#[test]
+fn transcripts_are_two_files() {
+    let env = Env::new("twofiles");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let (dir, names) = project(&env);
+    assert_eq!(names, ["sess-1.acp.jsonl", "sess-1.jsonl"]);
+    let (events, acp) =
+        (records(&dir.join("sess-1.jsonl")), records(&dir.join("sess-1.acp.jsonl")));
+    // Events only, from the session's opening, which names the raw file,
+    // to the agent's exit.
+    assert!(events.iter().all(|r| r["event"]["event"].is_string() && r.get("dir").is_none()));
+    let opened = &events[0]["event"];
+    assert_eq!(opened["event"], "session-opened");
+    assert_eq!(opened["acp_log"], dir.join("sess-1.acp.jsonl").to_string_lossy().as_ref());
+    assert_eq!(events.last().unwrap()["event"]["event"], "exited");
+    // ACP only, the session's, with what joins it to the events.
+    assert!(acp.iter().all(|r| r["dir"].is_string() && r.get("event").is_none()), "{acp:?}");
+    let host_id = &events[0]["host_id"];
+    assert!(acp.iter().all(|r| r["session_id"] == "sess-1" && r["host_id"] == *host_id));
+    assert!(acp.iter().any(|r| r["msg"]["method"] == "session/new"));
+    assert!(acp.iter().any(|r| r["msg"]["method"] == "session/prompt"));
+    // What belongs to no session is in the host log.
+    let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
+    assert!(records(&host).iter().any(|r| r["msg"]["method"] == "initialize"));
+    // One session, for list and --resume.
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["session"], "sess-1");
+    let cwd = fs::canonicalize(&env.dir).unwrap();
+    assert_eq!(list[0]["cwd"], cwd.to_string_lossy().as_ref());
+    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    assert_eq!(project(&env).1, names, "resumed into other files");
+    let acp = env.ok(&["log", "sess-1", "--events", "acp", "--json"]);
+    assert_eq!(acp.matches(r#""method":"session/prompt""#).count(), 2, "{acp}");
+}
+
+/// `log = "events"` leaves out the raw ACP file, and `log --events acp`
+/// says there is none; what belongs to no session is still in the host log.
+#[test]
+fn log_events_leaves_out_the_raw_acp() {
+    let env = Env::new("logevents");
+    env.write_config("[profiles.default]\nlog = \"events\"\n");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    for running in [true, false] {
+        let out = env.run(&["log", "sess-1", "--events", "acp,agent_message"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains(r#"no raw ACP for sess-1: log = "events" leaves it out"#), "{err}");
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let lines: Vec<&str> = text.lines().map(|l| &l[10..]).collect();
+        assert_eq!(lines, ["agent: hi"], "running: {running}");
+        if running {
+            env.stop();
+            assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+        }
+    }
+    assert_eq!(project(&env).1, ["sess-1.jsonl"]);
+    let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
+    let host = records(&host);
+    assert!(host.iter().any(|r| r["msg"]["method"] == "initialize"));
+    assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
+}
+
+// ---- secrets -----------------------------------------------------------
+
+/// Everything brnr has recorded: every file under its state directory.
+fn everything_recorded(dir: &Path) -> String {
+    let mut text = String::new();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            text.push_str(&everything_recorded(&path));
+        } else {
+            text.push_str(&fs::read_to_string(&path).unwrap());
+        }
+    }
+    text
+}
+
+/// The first event `watch --json` prints that is the ACP request `method`.
+fn watched_request(watch: &mut Child, method: &str) -> Value {
+    let mut lines = BufReader::new(watch.stdout.as_mut().unwrap()).lines();
+    loop {
+        let line = lines.next().expect("watch ended").unwrap();
+        let event: Value = serde_json::from_str(&line).unwrap();
+        if event["msg"]["method"] == method {
+            return event;
+        }
+    }
+}
+
+/// The values of a profile's MCP servers' `env` and `headers` reach the
+/// agent, and are `<redacted>` in what brnr records (the host log, the raw
+/// ACP, the started request) and in `acp` events (ADR 25).
+#[test]
+fn a_profiles_mcp_secrets_are_redacted() {
+    let env = Env::new("secrets");
+    env.write_config(
+        r#"[[profiles.default.headless.mcp_servers]]
+name = "github"
+command = "true"
+env = { GITHUB_TOKEN = "env-secret" }
+
+[[profiles.default.headless.mcp_servers]]
+name = "web"
+url = "https://example.invalid/mcp"
+headers = { Authorization = "Bearer header-secret" }
+"#,
+    );
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let args = ["watch", "sess-1", "--events", "acp", "--json"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    env.ok(&["fork", "sess-1"]);
+    let redacted = |servers: &Value| {
+        let env = serde_json::json!([{ "name": "GITHUB_TOKEN", "value": "<redacted>" }]);
+        assert_eq!(servers[0]["env"], env);
+        assert_eq!(servers[1]["headers"][0]["name"], "Authorization");
+        assert_eq!(servers[1]["headers"][0]["value"], "<redacted>");
+        assert_eq!(servers[1]["url"], "https://example.invalid/mcp");
+    };
+    redacted(&watched_request(&mut watch, "session/fork")["msg"]["params"]["mcpServers"]);
+    let _ = watch.kill();
+    for method in ["session/new", "session/fork"] {
+        let servers = &env.calls_of(method)[0]["params"]["mcpServers"];
+        assert_eq!(servers[0]["env"][0]["value"], "env-secret", "{method}");
+        assert_eq!(servers[1]["headers"][0]["value"], "Bearer header-secret", "{method}");
+    }
+    redacted(&started_record(&env)["request"]["role"]["headless"]["mcp_servers"]);
+    let acp = env.ok(&["log", "sess-1", "--events", "acp", "--json"]);
+    let new = acp.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    let new = new.into_iter().find(|e| e["msg"]["method"] == "session/new").expect(&acp);
+    redacted(&new["msg"]["params"]["mcpServers"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let all = everything_recorded(&env.dir.join("home"));
+    assert!(!all.contains("env-secret") && !all.contains("header-secret"), "a secret recorded");
+    assert!(all.contains("<redacted>"));
+}
+
+/// An editor's own `session/new` reaches the agent as the editor sent it;
+/// what brnr records of it, and sends to `acp` subscribers, has its MCP
+/// servers' secrets redacted (ADR 25).
+#[test]
+fn an_editors_mcp_secrets_are_redacted() {
+    let env = Env::new("ed-secrets");
+    let mut editor =
+        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let mut answer = |id: u64| -> Value {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+            let msg: Value = serde_json::from_str(&line).unwrap();
+            if msg["id"] == id {
+                return msg;
+            }
+        }
+    };
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    answer(1);
+    let args = ["watch", "--pid", &env.pid(), "--events", "acp", "--json"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    let header = serde_json::json!({ "name": "Authorization", "value": "Bearer editor-secret" });
+    let url = "https://example.invalid";
+    let server =
+        serde_json::json!({ "type": "http", "name": "api", "url": url, "headers": [header] });
+    let params = serde_json::json!({ "cwd": env.dir, "mcpServers": [server] });
+    let new =
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new", "params": params });
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
+    assert_eq!(env.calls_of("session/new")[0], new);
+    let seen = watched_request(&mut watch, "session/new");
+    let server = &seen["msg"]["params"]["mcpServers"][0];
+    let header = serde_json::json!({ "name": "Authorization", "value": "<redacted>" });
+    assert_eq!(server["headers"], serde_json::json!([header]));
+    assert_eq!((&server["name"], &server["url"]), (&"api".into(), &url.into()));
+    let host = env.host_pid();
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)));
+    let _ = watch.kill();
+    let all = everything_recorded(&env.dir.join("home"));
+    assert!(!all.contains("editor-secret"), "a secret recorded");
+    assert_eq!(all.matches(r#""value":"<redacted>""#).count(), 2, "host log and raw file");
 }
 
 /// The runtime directory check doesn't follow a symlink to some other

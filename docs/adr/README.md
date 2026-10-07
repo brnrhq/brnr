@@ -34,7 +34,7 @@ of to-resolve; the map at the end says where each went.
 | [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
 | [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | partly |
 | [7](0007-a-start-is-atomic.md) | A start is atomic and commits at ready | yes |
-| [8](0008-one-resolved-start-request.md) | A process is started with one resolved request | mostly |
+| [8](0008-one-resolved-start-request.md) | A process is started with one resolved request | yes |
 | [9](0009-start-foreground.md) | `start --foreground` | partly |
 | [10](0010-the-agents-stderr.md) | The agent's stderr | partly |
 | [11](0011-a-process-death-is-recorded.md) | A process's own death is recorded | no |
@@ -48,16 +48,16 @@ of to-resolve; the map at the end says where each went.
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
 | [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
 | [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
-| [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | mostly |
+| [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | yes |
 | [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
 | [24](0024-log-last.md) | `log --last <n>` | yes |
-| [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | no |
+| [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | yes |
 | [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | mostly |
 | [27](0027-approvals.md) | Approvals: the agent's mode is the policy | mostly |
 | [28](0028-mode-model-and-config.md) | Mode, model and config options | partly |
 | [29](0029-requests-the-agent-answers.md) | Requests the agent answers | yes |
 | [30](0030-authentication.md) | Authentication | yes |
-| [31](0031-mcp-servers.md) | MCP servers for headless sessions | mostly |
+| [31](0031-mcp-servers.md) | MCP servers for headless sessions | yes |
 | [32](0032-files-and-images.md) | Files and images in a message | yes |
 | [33](0033-profiles.md) | Profiles: shared, headless and editor parts | mostly |
 | [34](0034-same-data-in-text-and-json.md) | Same data in text and JSON; `--json` wherever a command prints data | yes |

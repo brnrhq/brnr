@@ -38,7 +38,7 @@ use serde_json::{Map, Value, json};
 
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
-use crate::log::Dir;
+use crate::log::{self, Dir};
 use crate::{frame, json};
 
 /// Client capabilities removed from the editor's `initialize`. ACP v2 drops
@@ -180,6 +180,7 @@ impl Host {
     fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
         let mut session = None;
         let mut deferred = None;
+        let mut recorded = None;
         if let Some(Value::Object(mut msg)) = msg {
             session = param_session(&msg);
             let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
@@ -212,19 +213,30 @@ impl Host {
                 }
                 _ => {}
             }
+            recorded = log::redacted(&msg);
         }
         line.push(b'\n');
         // A session/new goes in the host log now, so one the agent never
         // answers is still on record, and in the session's file once the
-        // response names it.
+        // response names it. What is recorded keeps the MCP servers' secrets
+        // out (ADR 25 in docs/adr); the agent gets the line as it came.
         let session = if deferred.is_some() { None } else { session };
-        self.record(session.as_deref(), Dir::EditorToAgent, &line);
+        let recorded = recorded.as_deref().unwrap_or(&line);
+        self.record(session.as_deref(), Dir::EditorToAgent, recorded);
         if let Some(Pending::New { request, .. }) =
             deferred.and_then(|key| self.pending.get_mut(&key))
         {
-            *request = Some(line.clone());
+            *request = Some(recorded.to_vec());
         }
         self.write_agent(&line);
+    }
+
+    /// What the editor sent after its last line, as it closed its stdin: it
+    /// goes to the agent as it is, and is recorded as a line would be.
+    pub(super) fn record_editor_rest(&mut self, rest: &[u8]) {
+        let msg = (json::depth(rest) <= self.stack).then(|| json::parse::<Value>(rest)).flatten();
+        let recorded = msg.as_ref().and_then(Value::as_object).and_then(log::redacted);
+        self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));
     }
 
     /// Notes requests that change session state. Returns the message

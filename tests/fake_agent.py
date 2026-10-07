@@ -34,7 +34,9 @@ and by the prompt's text:
   big <n>           answers with one message of n bytes
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
-  settings          reports its config options, then answers
+  settings [<m>]    reports its config options, with model m if given (none:
+                    no options), then answers
+  commands          its commands change: compact goes, review comes
   perm <kind>       asks permission for a tool call of that kind first
   odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
                     surrogate (the title ends in half an emoji), deep (the
@@ -227,7 +229,13 @@ for line in sys.stdin:
             say(sid, "did the tools")
             end_turn(mid)
         elif first == "settings":
-            update(sid, {"sessionUpdate": "config_option_update", "configOptions": config(model)})
+            if words[1:] and words[1] != "none":
+                model = words[1]
+            options = [] if words[1:] == ["none"] else config(model)
+            update(sid, {"sessionUpdate": "config_option_update", "configOptions": options})
+            end_turn(mid)
+        elif first == "commands":
+            update(sid, {"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "review", "description": "Review the changes"}]})
             end_turn(mid)
         elif first == "fail":
             error(mid, -32603, "boom")

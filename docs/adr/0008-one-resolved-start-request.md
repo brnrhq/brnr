@@ -1,7 +1,6 @@
 # 8. A process is started with one resolved request
 
-Accepted 2026-10-07. Implemented, except redacting secrets in the
-`started` record (ADR 25).
+Accepted 2026-10-07. Implemented.
 Amends former decision 45.
 
 ## Context

@@ -60,17 +60,17 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         "session_changed" => match e["what"].as_str() {
             Some("title") => format!("title: {}", s(&e["value"])),
             Some("mode") => format!("mode: {}", s(&e["value"])),
-            // Each option as `brnr config` sets it: `model=opus`.
-            Some("config") => {
-                let options = e["value"].as_array().into_iter().flatten().map(|o| {
-                    let value = &o["currentValue"];
-                    let value = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
-                    format!("{}={value}", s(&o["id"]))
-                });
-                format!("config: {}", options.collect::<Vec<_>>().join(" "))
-            }
-            Some("commands") => {
-                format!("commands: {} available", e["value"].as_array().map_or(0, Vec::len))
+            // What changed: an option as `brnr config` sets it (`model=opus`),
+            // a command added (`+review`), `-<name>` for one gone.
+            Some(what @ ("config" | "commands")) => {
+                let changes =
+                    e["value"].as_object().into_iter().flatten().map(|(name, value)| match value {
+                        Value::Null => format!("-{name}"),
+                        _ if what == "commands" => format!("+{name}"),
+                        Value::String(value) => format!("{name}={value}"),
+                        value => format!("{name}={value}"),
+                    });
+                format!("{what}: {}", changes.collect::<Vec<_>>().join(" "))
             }
             what => format!("{}: {}", what.unwrap_or("?"), e["value"]),
         },
@@ -425,12 +425,12 @@ mod tests {
         assert_eq!(shown(progress), "tool: Run in_progress");
         let usage = json!({ "event": "usage", "usage": { "used": 950, "size": 1_200_000 } });
         assert_eq!(shown(usage), "usage: 950 of 1.2M tokens");
-        let model = json!({ "id": "model", "currentValue": "opus" });
-        let options = json!([model, { "id": "fast", "currentValue": true }]);
-        let config = json!({ "event": "session_changed", "what": "config", "value": options });
-        assert_eq!(shown(config), "config: model=opus fast=true");
-        let commands = json!({ "event": "session_changed", "what": "commands", "value": [{}, {}] });
-        assert_eq!(shown(commands), "commands: 2 available");
+        let changed = json!({ "model": "opus", "fast": true, "effort": null });
+        let config = json!({ "event": "session_changed", "what": "config", "value": changed });
+        assert_eq!(shown(config), "config: model=opus fast=true -effort");
+        let changed = json!({ "review": { "name": "review" }, "compact": null });
+        let commands = json!({ "event": "session_changed", "what": "commands", "value": changed });
+        assert_eq!(shown(commands), "commands: +review -compact");
         let dropped =
             json!({ "event": "message_dropped", "message": "m3", "text": "later", "by": "queue" });
         assert_eq!(shown(dropped), "dropped m3 (queue): later");

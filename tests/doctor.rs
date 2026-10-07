@@ -60,20 +60,23 @@ fn readable_transcripts_are_made_private() {
     mkdir(&home, 0o755);
     mkdir(&home.join("projects"), 0o755);
     mkdir(&project, 0o755);
+    // A session's events and its raw ACP (ADR 22).
     write(&project.join("s.jsonl"), "{}\n", 0o644);
+    write(&project.join("s.acp.jsonl"), "{}\n", 0o644);
 
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "warnings alone don't fail: {text}");
     assert_eq!(lines(&text, "warn").len(), 1, "{text}");
-    assert!(text.contains("4 of 4 paths can be read by others"), "{text}");
+    assert!(text.contains("5 of 5 paths can be read by others"), "{text}");
 
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
-    assert!(text.contains("made 4 paths private"), "{text}");
+    assert!(text.contains("made 5 paths private"), "{text}");
     for dir in [&home, &home.join("projects"), &project] {
         assert_eq!(mode(dir), 0o700, "{}", dir.display());
     }
     assert_eq!(mode(&project.join("s.jsonl")), 0o600);
+    assert_eq!(mode(&project.join("s.acp.jsonl")), 0o600);
     let (_, text) = doctor(&env, &[]);
     assert!(lines(&text, "warn").is_empty(), "{text}");
 }

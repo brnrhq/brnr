@@ -1,7 +1,6 @@
 # 31. MCP servers for headless sessions
 
-Accepted (former decision 13); reviewed 2026-10-07. Implemented, except the
-redaction (ADR 25) and the move to the profile's headless part (ADR 33).
+Accepted (former decision 13); reviewed 2026-10-07. Implemented.
 
 ## Decision
 
