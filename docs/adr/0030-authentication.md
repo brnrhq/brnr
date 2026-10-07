@@ -1,7 +1,6 @@
 # 30. Authentication
 
-Accepted (former decision 16); reviewed 2026-10-07. Failing with a hint is
-implemented; `auth` is not.
+Accepted (former decision 16); reviewed 2026-10-07. Implemented.
 
 ## Context
 

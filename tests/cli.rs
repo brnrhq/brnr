@@ -63,6 +63,16 @@ fn start_wait_prints_the_reply_and_the_turns_result() {
     let out = env.run(&start_args(&["--wait", "--prompt", "fail"]));
     assert_eq!(code(&out), 1);
     assert!(stderr(&out).contains("turn failed: boom"), "{}", stderr(&out));
+
+    // The turn as one object, read on the start channel like the report.
+    let env = Env::new("c-startjson");
+    let out = env.run(&start_args(&["--wait", "--json", "--prompt", "reply done"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((turn["session"].as_str(), turn["reply"].as_str()), (Some("sess-1"), Some("done")));
+    assert_eq!(turn["pid"].as_i64(), Some(i64::from(env.host_pid())), "{turn}");
+    let prompt = &env.calls_of("session/prompt")[0];
+    assert_eq!(prompt["params"]["prompt"][0]["text"], "reply done");
 }
 
 #[test]
@@ -131,7 +141,7 @@ fn huge_timeouts_are_never() {
     let env = Env::new("c-huge");
     let huge = i64::MAX.to_string();
     env.write_config(&format!(
-        "[profiles.default]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
+        "[profiles.default.headless]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
     ));
     let out = env.brnr(&start_args(&[])).env("BRNR_START_TIMEOUT", u64::MAX.to_string()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
@@ -272,12 +282,13 @@ fn log_shows_the_conversation() {
     env.ok(&["send", "sess-1", "--wait", "reply second"]);
     let log = env.ok(&["log", "sess-1"]);
     let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    // The prompt goes as the start commits, before the agent's title.
     assert_eq!(
         lines,
         [
+            "user: tools",
             "commands: 1 available",
             "title: Fake session",
-            "user: tools",
             "plan (0/2):",
             "  [>] Run the tests",
             "  [ ] Fix them",
@@ -692,7 +703,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 #[test]
 fn unanswered_permission_times_out_as_deny() {
     let env = Env::new("c-permtimeout");
-    env.write_config("[profiles.default]\npermission_timeout = 1\n");
+    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
     env.start(&[]);
     env.ok(&["send", "sess-1", "perm edit"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
@@ -802,13 +813,13 @@ fn foreground_start_shows_the_session() {
 fn mcp_servers_reach_the_agent() {
     let env = Env::new("c-mcp");
     env.write_config(
-        r#"[[profiles.default.mcp_servers]]
+        r#"[[profiles.default.headless.mcp_servers]]
 name = "files"
 command = "true"
 args = ["--x"]
 env = { TOKEN = "t" }
 
-[[profiles.default.mcp_servers]]
+[[profiles.default.headless.mcp_servers]]
 name = "web"
 url = "https://example.invalid/mcp"
 headers = { Authorization = "Bearer x" }
@@ -823,7 +834,7 @@ headers = { Authorization = "Bearer x" }
 
     let env = Env::new("c-mcpsse");
     env.write_config(
-        "[[profiles.default.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
+        "[[profiles.default.headless.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
     );
     assert!(env.fails(&start_args(&[])).contains("doesn't support sse"));
 }
@@ -834,6 +845,113 @@ fn login_needed_is_explained() {
     let err = env.fails(&start_args(&[]));
     assert!(err.contains("log in (Log in to the fake)"), "{err}");
     assert!(err.contains("claude"), "{err}");
+    assert!(env.calls_of("authenticate").is_empty(), "authenticated unasked");
+}
+
+/// `--auth` (or the profile's headless `auth`) runs that login method after
+/// `initialize`, before the session opens; its failure fails the start.
+#[test]
+fn auth_runs_the_login_method_named() {
+    let methods = |env: &Env| -> Vec<String> {
+        env.calls().iter().filter_map(|c| c["method"].as_str().map(str::to_owned)).collect()
+    };
+    let env = Env::new("c-authflag").agent("AUTH", "1");
+    env.start(&["--auth", "fake-login"]);
+    assert_eq!(methods(&env), ["initialize", "authenticate", "session/new"]);
+    assert_eq!(
+        env.calls_of("authenticate")[0]["params"],
+        serde_json::json!({ "methodId": "fake-login" })
+    );
+
+    let env = Env::new("c-authprofile").agent("AUTH", "1");
+    env.write_config("[profiles.default.headless]\nauth = \"fake-login\"\n");
+    env.start(&[]);
+    assert_eq!(methods(&env), ["initialize", "authenticate", "session/new"]);
+
+    // One the agent doesn't offer fails up front.
+    let env = Env::new("c-authnone");
+    let err = env.fails(&start_args(&["--auth", "api-key", "--prompt", "hi"]));
+    assert!(
+        err.contains("the agent offers no login method api-key (it offers: fake-login)"),
+        "{err}"
+    );
+    assert_eq!(methods(&env), ["initialize"]);
+
+    // The agent's error, and no prompt.
+    let env = Env::new("c-authfail").agent("AUTH_FAIL", "1");
+    let err = env.fails(&start_args(&["--auth", "fake-login", "--prompt", "hi"]));
+    assert!(err.contains("authenticate fake-login failed: Login failed"), "{err}");
+    assert!(!err.contains("Log in with the agent's own CLI"), "{err}");
+    assert_eq!(methods(&env), ["initialize", "authenticate"]);
+    assert!(env.prompts().is_empty());
+}
+
+// ---- profiles ------------------------------------------------------------
+
+/// A profile has shared, headless and editor parts (ADR 33): a key in the
+/// wrong one, the flat layout of before, an unknown key or name all fail to
+/// load, saying which and where, before any process starts.
+#[test]
+fn profile_layout_errors_say_where() {
+    let env = Env::new("c-layout");
+    for (config, want) in [
+        (
+            "[profiles.default]\ncwd = \"/tmp\"\nmode = \"plan\"\n",
+            "profiles.default: cwd is for brnr start only; it goes under [profiles.default.headless]; \
+             profiles.default: mode is for brnr start only",
+        ),
+        (
+            "[profiles.default.headless]\nagent = [\"x\"]\n",
+            "profiles.default.headless: agent is for every process of the profile; it goes under [profiles.default]",
+        ),
+        (
+            "[profiles.default]\nexperimental = [\"send\"]\n",
+            "profiles.default: experimental is for brnr acp only; it goes under [profiles.default.editor]",
+        ),
+        (
+            "[profiles.default.editor]\nstop_when_idle = 5\n",
+            "profiles.default.editor: stop_when_idle is for brnr start only; it goes under [profiles.default.headless]",
+        ),
+        (
+            "[profiles.default]\nagnet = [\"x\"]\n",
+            "profiles.default: unknown key agnet (keys: agent, log, strict, bridges, headless, editor)",
+        ),
+        (
+            "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
+            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, approve, settings, close)"#,
+        ),
+        (
+            "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
+            r#"profiles.default.editor.features: unknown feature "sharing" (features: shared_sessions)"#,
+        ),
+        (
+            "[profiles.default]\nlog = true\n",
+            r#"profiles.default: log is "all", "events" or false, not true"#,
+        ),
+        (
+            "[profiles.default.headless]\nstop_when_idle = \"soon\"\n",
+            "line 2: invalid type: string",
+        ),
+        (
+            "[profiles.default.headless]\nauth = \"a\"\nmcp_servers = [{ name = \"x\", cmd = \"y\" }]\n",
+            "line 3: unknown field `cmd`",
+        ),
+    ] {
+        env.write_config(config);
+        let err = env.fails(&start_args(&["--prompt", "hi"]));
+        assert!(err.contains(want), "{config}: {err}");
+        assert!(err.contains("none.toml: "), "{err}");
+    }
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
+
+    // The same, laid out right.
+    env.write_config(
+        "[profiles.default]\nlog = false\nstrict = false\n\n[profiles.default.headless]\nstop_when_idle = 600\n\n\
+         [profiles.default.editor]\nexperimental = [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n\
+         features = [\"shared_sessions\"]\n",
+    );
+    env.start(&[]);
+    assert!(!env.dir.join("home").exists(), "log = false wrote transcripts");
 }
 
 // ---- attachments ---------------------------------------------------------

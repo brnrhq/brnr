@@ -4,8 +4,9 @@
 //! - the runtime directory: private to the user, not a symlink, short enough
 //!   for a socket path, and free of metadata left by processes that are gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
-//! - the config file: it parses, and every profile's settings, cwd, agent
-//!   and bridges are valid;
+//! - the config file: it parses, every key is in its part of a profile
+//!   (ADR 33), and every profile's settings, cwd, agent and bridges are
+//!   valid;
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running processes: each answers.
@@ -305,13 +306,18 @@ fn config_file(r: &mut Report) {
             return r.line(Level::Ok, what, format!("{} (none; defaults apply)", path.display()));
         }
         Ok(Some(profiles)) => profiles,
-        Err(err) => return r.line(Level::Fail, what, err),
+        Err(problems) => {
+            for problem in problems {
+                r.line(Level::Fail, what, format!("{}: {problem}", path.display()));
+            }
+            return;
+        }
     };
     r.line(Level::Ok, what, format!("{}: {} profiles", path.display(), profiles.len()));
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
         let mut problems = Vec::new();
-        for server in &profile.mcp_servers {
+        for server in &profile.headless.mcp_servers {
             match server.to_acp() {
                 Err(e) => problems.push(e),
                 Ok(acp) => {
@@ -323,7 +329,7 @@ fn config_file(r: &mut Report) {
                 }
             }
         }
-        if let Some(cwd) = &profile.cwd
+        if let Some(cwd) = &profile.headless.cwd
             && !paths::expand(cwd).is_dir()
         {
             problems.push(format!("cwd {cwd} is not a directory"));
@@ -355,9 +361,19 @@ fn describe_profile(profile: &config::Profile) -> String {
     let agent = profile.agent.as_ref().map_or("given on the command line".into(), |a| a.join(" "));
     let bridges = profile.bridges.len();
     let mut out = format!("agent {agent}, {bridges} bridge{}", plural(bridges));
-    let servers = profile.mcp_servers.len();
+    let servers = profile.headless.mcp_servers.len();
     if servers > 0 {
         out.push_str(&format!(", {servers} MCP server{}", plural(servers)));
+    }
+    if profile.strict {
+        out.push_str(", strict");
+    }
+    let experimental: Vec<&str> = profile.editor.experimental.iter().map(|e| e.name()).collect();
+    let features: Vec<&str> = profile.editor.features.iter().map(|f| f.name()).collect();
+    for (what, names) in [("experimental", experimental), ("features", features)] {
+        if !names.is_empty() {
+            out.push_str(&format!(", {what} {}", names.join(" ")));
+        }
     }
     out
 }

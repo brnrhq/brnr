@@ -24,12 +24,12 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, ExitCode, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use brnr::request::{self, Request, Role};
 use brnr::{config, paths, signals, spawn};
 
 use super::{
@@ -58,6 +58,11 @@ pub(super) struct Conn {
 impl Conn {
     pub(super) fn open(host: &Host) -> Result<Conn, String> {
         let stream = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
+        Conn::new(stream)
+    }
+
+    /// One over `stream`: a control connection, or the start channel.
+    fn new(stream: UnixStream) -> Result<Conn, String> {
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
         Ok(Conn { reader: BufReader::new(stream), writer, events: VecDeque::new(), next_req: 0 })
     }
@@ -309,6 +314,13 @@ fn base64(data: &[u8]) -> String {
 
 // ---- start ---------------------------------------------------------------
 
+// A start is atomic (ADR 7 in docs/adr). Everything it needs is read and
+// resolved before the process is launched, and handed to it in one request
+// on its stdin (ADR 8). The process reports on the start channel, a
+// socketpair at its fd 3: the start commits at its ready report, after which
+// the process sends the prompt itself. Until then, `start` going away (or
+// giving up) stops it, and the prompt is never sent.
+
 #[derive(Default)]
 struct StartArgs {
     profile: Option<String>,
@@ -320,6 +332,7 @@ struct StartArgs {
     set: Vec<String>,
     resume: Option<String>,
     stop_when_idle: Option<u64>,
+    auth: Option<String>,
     wait: bool,
     timeout: Option<u64>,
     foreground: bool,
@@ -343,6 +356,7 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--model" => a.set.push(format!("model={}", value("--model")?)),
             "--set" => a.set.push(value("--set")?),
             "--resume" => a.resume = Some(value("--resume")?),
+            "--auth" => a.auth = Some(value("--auth")?),
             "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--stop-when-idle" => {
                 a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
@@ -417,7 +431,8 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let cfg = config::load(a.profile.as_deref())?;
-    let cwd = match a.cwd.clone().or(resume_cwd).or(cfg.cwd) {
+    let h = &cfg.headless;
+    let cwd = match a.cwd.clone().or(resume_cwd).or(h.cwd.clone()) {
         Some(dir) => paths::expand(&dir),
         None => env::current_dir().map_err(|e| format!("cwd: {e}"))?,
     };
@@ -425,66 +440,70 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     if !cwd.is_dir() {
         return Err(format!("{}: not a directory", cwd.display()));
     }
+    let mcp_servers =
+        h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
+    let mut config = h.config.clone();
+    for (option, value) in a.set.iter().filter_map(|s| s.split_once('=')) {
+        config.insert(option.into(), value.into());
+    }
+    let has_prompt = a.prompt.is_some() || !blocks.is_empty();
+    let prompt = has_prompt.then(|| request::Prompt { text: a.prompt.unwrap_or_default(), blocks });
+    let events =
+        if a.wait { TURN_EVENTS.iter().map(|e| e.to_string()).collect() } else { Vec::new() };
+    let headless = request::Headless {
+        resume: a.resume,
+        mode: a.mode.or(h.mode.clone()),
+        config,
+        mcp_servers,
+        auth: a.auth.or(h.auth.clone()),
+        prompt,
+        start_timeout: timeout,
+        stop_when_idle: a.stop_when_idle.or(h.stop_when_idle),
+        permission_timeout: h.permission_timeout,
+        events,
+        foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
+    };
+    let role = Role::Headless(headless);
+    let request = Request::new(a.profile, &cfg, a.agent, cwd.clone(), role)?;
 
-    let (ready_rx, ready_tx) = io::pipe().map_err(|e| format!("pipe: {e}"))?;
+    let (channel, theirs) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let mut cmd = spawn::host_command().map_err(|e| e.to_string())?;
-    cmd.arg("--ready-fd").arg("3").arg("--start-timeout").arg(timeout.to_string());
-    for (flag, value) in [
-        ("--profile", &a.profile),
-        ("--mode", &a.mode),
-        ("--resume", &a.resume),
-    ] {
-        if let Some(value) = value {
-            cmd.arg(flag).arg(value);
-        }
-    }
-    for set in &a.set {
-        cmd.arg("--set").arg(set);
-    }
-    if let Some(secs) = a.stop_when_idle {
-        cmd.arg("--stop-when-idle").arg(secs.to_string());
-    }
-    if a.prompt.is_some() || !blocks.is_empty() {
-        cmd.arg("--awaiting-prompt");
-    }
-    for (flag, on) in [("--foreground", a.foreground), ("--quiet", a.quiet), ("--json", a.json)] {
-        if on && a.foreground {
-            cmd.arg(flag);
-        }
-    }
-    if !a.agent.is_empty() {
-        cmd.arg("--").args(&a.agent);
-    }
-    cmd.current_dir(&cwd).stdin(Stdio::null());
+    cmd.current_dir(&cwd).stdin(Stdio::piped());
     let mut child = None;
-    if a.foreground {
+    let stdin = if a.foreground {
         // Our child, in a group of its own, printing the session to our
         // stdout; we pass it the signals we get (Ctrl-C), once.
         let signals = signals::install();
-        let started = spawn::child(&mut cmd, ready_tx.as_raw_fd(), 3)
+        let mut started = spawn::child(&mut cmd, theirs.as_raw_fd(), 3)
             .map_err(|e| format!("starting the process: {e}"))?;
         let pid = started.id() as i32;
         thread::spawn(move || forward_signals(signals, pid));
+        let stdin = started.stdin.take();
         child = Some(started);
+        stdin
     } else {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        spawn::detached(&mut cmd, ready_tx.as_raw_fd(), 3)
-            .map_err(|e| format!("starting the process: {e}"))?;
-    }
-    drop(ready_tx);
+        spawn::detached(&mut cmd, theirs.as_raw_fd(), 3)
+            .map_err(|e| format!("starting the process: {e}"))?
+    };
+    drop(theirs);
+    request.send(stdin.expect("piped")).map_err(|e| format!("starting the process: {e}"))?;
 
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(ready_rx).read_line(&mut line);
-        let _ = tx.send(line);
-    });
-    // Exiting closes the pipe, which tells a process that is still starting
-    // that nobody is waiting: it stops instead of carrying on.
-    let line = rx
-        .recv_timeout(Duration::from_secs(timeout).saturating_add(START_GRACE))
-        .map_err(|_| "timed out waiting for the session".to_owned())?;
-    let ready: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+    // Exiting closes the channel, which tells a process that is still
+    // starting that nobody is waiting: it stops instead of carrying on. It
+    // fails the start itself when its timeout passes; this is for a process
+    // stuck too badly to say so.
+    let mut conn = Conn::new(channel)?;
+    let fallback =
+        Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
+    let ready = loop {
+        match conn.read(fallback) {
+            Ok(Some(msg)) if msg.get("event").is_some() => {} // Before the report: not ours.
+            Ok(Some(msg)) => break msg,
+            Ok(None) => return Err("timed out waiting for the session".into()),
+            Err(_) => break Value::Null,
+        }
+    };
     if ready["ok"].as_bool() != Some(true) {
         if let Some(child) = child {
             return Ok(exit_status(child)); // It has said why, on our stderr.
@@ -492,45 +511,25 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         let error = ready["error"].as_str().unwrap_or("the process exited without a session");
         return Err(error.to_owned());
     }
-    let (pid, session) = (text(&ready["id"]), text(&ready["session"]));
-    let about = json!({ "session": session, "pid": pid.parse::<u64>().ok() });
-    if child.is_none() && !a.wait {
+    if let Some(child) = child {
+        return Ok(exit_status(child));
+    }
+    let session = text(&ready["session"]);
+    let about = json!({ "session": session, "pid": ready["pid"] });
+    if !a.wait {
         if a.json {
             print_json(&about)?;
         } else {
             outln!("{}", describe_started(&about));
         }
-    } else if a.wait && !a.json {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !a.json {
         errln!("{}", describe_started(&about));
     }
-
-    let has_prompt = a.prompt.is_some() || !blocks.is_empty();
-    if has_prompt {
-        // The prompt goes over the control socket, as `brnr send` sends it.
-        let hosts = discover()?;
-        let host = hosts.iter().find(|h| h.id() == pid).ok_or("the process went away")?;
-        let sent = (|| {
-            let mut conn = Conn::open(host)?;
-            if a.wait {
-                conn.subscribe(TURN_EVENTS)?;
-            }
-            let req = json!({ "cmd": "send", "session": session, "text": a.prompt, "blocks": blocks });
-            let message = text(&conn.call(req)?["message"]);
-            Ok::<_, String>((conn, message))
-        })();
-        let (mut conn, message) = match sent {
-            Ok(sent) => sent,
-            Err(err) => {
-                let _ = call(host, &json!({ "cmd": "stop" }));
-                return Err(format!("sending the prompt: {err} (the session was stopped)"));
-            }
-        };
-        if a.wait {
-            let json_out = a.json.then_some(about);
-            return wait_for_message(&mut conn, &session, &session, &message, deadline(a.timeout), json_out);
-        }
-    }
-    Ok(child.map_or(ExitCode::SUCCESS, exit_status))
+    // The turn's events follow the report on the same channel.
+    let (message, json_out) = (text(&ready["message"]), a.json.then_some(about));
+    wait_for_message(&mut conn, &session, &session, &message, deadline(a.timeout), json_out)
 }
 
 /// `started sess-1 (process 4466)`.

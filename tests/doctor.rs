@@ -156,6 +156,8 @@ agent = ["true"]
 
 [profiles.bad]
 agent = ["no-such-agent-brnr"]
+
+[profiles.bad.headless]
 cwd = "/no/such/dir"
 
 [[profiles.bad.bridges]]
@@ -172,6 +174,41 @@ events = ["nope"]
     for problem in ["no-such-agent-brnr not found", "/no/such/dir", "nope"] {
         assert!(text.contains(problem), "missing {problem}: {text}");
     }
+}
+
+/// Each problem with the layout is a check of its own, saying where.
+#[test]
+fn misplaced_keys_fail() {
+    let env = Env::new("dr-layout");
+    let config = "[profiles.old]\ncwd = \"/tmp\"\npermission_timeout = 5\n\n[profiles.ok.editor]\nexperimental = [\"nope\"]\n";
+    write(&env.dir.join("none.toml"), config, 0o600);
+    let (ok, text) = doctor(&env, &[]);
+    assert!(!ok, "{text}");
+    let fails = lines(&text, "FAIL  config");
+    assert_eq!(fails.len(), 3, "{text}");
+    assert!(
+        fails[0].contains("profiles.ok.editor.experimental: unknown action \"nope\""),
+        "{text}"
+    );
+    assert!(
+        fails[1].contains(
+            "profiles.old: cwd is for brnr start only; it goes under [profiles.old.headless]"
+        ),
+        "{text}"
+    );
+    assert!(fails[2].contains("profiles.old: permission_timeout is for brnr start only"), "{text}");
+
+    write(
+        &env.dir.join("none.toml"),
+        "[profiles.ok]\nagent = [\"true\"]\nstrict = true\n\n[profiles.ok.editor]\nexperimental = [\"send\", \"approve\"]\nfeatures = [\"shared_sessions\"]\n",
+        0o600,
+    );
+    let (ok, text) = doctor(&env, &[]);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("ok    profile ok: agent true, 0 bridges, strict, experimental send approve, features shared_sessions"),
+        "{text}"
+    );
 }
 
 #[test]

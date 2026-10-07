@@ -1,14 +1,15 @@
 //! Requests the host sends the agent as its client:
 //!
-//! - opening the session of a headless start: `initialize`, then
-//!   `session/new`, `session/resume` or `session/load`, then the mode and
-//!   config options the start asked for, before the first prompt;
+//! - opening the session of a headless start: `initialize`, `authenticate`
+//!   if the start names a login method (ADR 30), then `session/new`,
+//!   `session/resume` or `session/load`, then the mode and config options
+//!   the start asked for; then the start commits (see start.rs), and the
+//!   prompt goes;
 //! - what bridges ask of the agent through the host: set the mode, a config
 //!   option or the model, fork or close a session. The bridge gets its answer
 //!   when the agent's arrives.
 
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
@@ -19,6 +20,7 @@ use crate::log::Dir;
 
 pub(super) enum HostRequest {
     Initialize,
+    Authenticate(String),
     Open(Open),
     Setup(SetupStep),
     Peer { peer: u64, req_id: Option<Value>, op: PeerOp },
@@ -58,8 +60,8 @@ pub(super) enum PeerOp {
 }
 
 impl Host {
-    /// Started with no editor (`brnr start`, `brnr host`): the host opens the
-    /// session itself.
+    /// Started with no editor (`brnr start`): the host opens the session
+    /// itself.
     pub(super) fn begin_headless_start(&mut self) {
         let params = json!({
             "protocolVersion": 1,
@@ -99,6 +101,7 @@ impl Host {
         if let Some(error) = msg.get("error") {
             let what = match &request {
                 HostRequest::Initialize => "initialize".to_owned(),
+                HostRequest::Authenticate(method) => format!("authenticate {method}"),
                 HostRequest::Open(Open::New) => "session/new".to_owned(),
                 HostRequest::Open(Open::Resume(_)) => "session/resume".to_owned(),
                 HostRequest::Open(Open::Load(session)) => {
@@ -111,7 +114,8 @@ impl Host {
                 HostRequest::Peer { .. } => unreachable!(),
             };
             let mut text = format!("{what} failed: {}", error_message(error));
-            if is_auth_error(error) {
+            // The hint is for a login that wasn't asked for.
+            if is_auth_error(error) && !matches!(request, HostRequest::Authenticate(_)) {
                 text.push_str(&self.auth_hint());
             }
             return self.fail_start(&text);
@@ -126,8 +130,16 @@ impl Host {
                 if let Err(err) = self.check_mcp_servers() {
                     return self.fail_start(&err);
                 }
-                self.open_first_session();
+                let checked = self.prompt.as_ref().map_or(Ok(()), |p| self.check_blocks(&p.blocks));
+                if let Err(err) = checked {
+                    return self.fail_start(&err);
+                }
+                match self.auth.clone() {
+                    Some(method) => self.authenticate(method),
+                    None => self.open_first_session(),
+                }
             }
+            HostRequest::Authenticate(_) => self.open_first_session(),
             HostRequest::Open(open) => {
                 let session = match open {
                     Open::New => match result["sessionId"].as_str() {
@@ -190,6 +202,22 @@ impl Host {
         Ok(())
     }
 
+    /// The login method the start names, before the session opens. brnr
+    /// never picks one (P4); one the agent doesn't offer fails the start up
+    /// front (P7).
+    fn authenticate(&mut self, method: String) {
+        let offered: Vec<String> = (self.auth_methods.as_array().into_iter().flatten())
+            .filter_map(|m| m["id"].as_str().map(str::to_owned))
+            .collect();
+        if !offered.contains(&method) {
+            let offered = if offered.is_empty() { "none".to_owned() } else { offered.join(", ") };
+            let error = format!("the agent offers no login method {method} (it offers: {offered})");
+            return self.fail_start(&error);
+        }
+        let params = json!({ "methodId": method });
+        self.host_request("authenticate", params, HostRequest::Authenticate(method));
+    }
+
     fn open_first_session(&mut self) {
         let cwd = self.cwd.to_string_lossy().into_owned();
         let mcp = json!(self.mcp_servers);
@@ -228,31 +256,25 @@ impl Host {
         self.host_request(method, params, HostRequest::Setup(step));
     }
 
+    /// The commit (ADR 7): brnr start hears of the session before the agent
+    /// gets any work, and if it has gone, nobody knows this session exists.
+    /// Then the prompt goes.
     fn finish_start(&mut self, i: usize) {
-        let session = self.sessions[i].id.clone();
-        // brnr start hears of the session before the agent gets any work: if
-        // it has gone, nobody knows this session exists.
-        let ready = json!({
-            "ok": true,
-            "id": self.info["id"],
-            "host_id": self.host_id,
-            "session": session,
-        });
-        if let Some(mut ready_fd) = self.ready.take() {
-            self.start_deadline = None;
-            if writeln!(ready_fd, "{ready}").is_err() {
-                self.sink.note(None, json!({ "event": "start-abandoned" }));
-                return self.begin_stop();
-            }
+        if self.stop_requested {
+            return; // The start already failed (timed out), or was stopped.
         }
+        let session = self.sessions[i].id.clone();
+        let message = self.prompt.is_some().then(|| self.message_id());
+        if !self.report_ready(&session, message.as_deref()) {
+            return;
+        }
+        self.start_deadline = None;
         self.start_done = true;
-        self.started_ok = !self.awaiting_prompt;
         if self.foreground {
             eprintln!("brnr: session {}", crate::render::clean(&session));
         }
-        if let Some(text) = self.first_prompt.take() {
-            let held = Held { id: self.message_id(), text, blocks: Vec::new() };
-            self.send_prompt(i, held);
+        if let (Some(prompt), Some(id)) = (self.prompt.take(), message) {
+            self.send_prompt(i, Held { id, text: prompt.text, blocks: prompt.blocks });
         }
     }
 
@@ -270,9 +292,7 @@ impl Host {
             self.startup_reported = true;
             eprintln!("brnr: {}", crate::render::clean(error));
         }
-        if let Some(mut ready) = self.ready.take() {
-            let _ = writeln!(ready, "{}", json!({ "ok": false, "error": error }));
-        }
+        self.report_failure(error);
     }
 
     /// The agent needs a login, which a headless host can't do: say how.
@@ -364,7 +384,7 @@ impl Host {
     }
 }
 
-/// A queue of setup steps from `--mode` and `--set` (and the profile).
+/// A queue of setup steps from the start's mode and config options.
 pub(super) fn setup_steps(
     mode: Option<String>,
     config: Vec<(String, String)>,

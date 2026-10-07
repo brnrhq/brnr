@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread::sleep;
@@ -19,11 +20,24 @@ use serde_json::Value;
 
 // ---- starting ----------------------------------------------------------
 
-/// A `brnr start` that goes away before the session opens must not leave
-/// the agent working on its prompt.
+/// The process's `started` record: the first in its host log.
+fn started_record(env: &Env) -> Value {
+    let dir = env.dir.join("home/hosts");
+    let wait = || fs::read_dir(&dir).is_ok_and(|mut d| d.next().is_some());
+    assert!(wait_for(Duration::from_secs(5), wait), "no host log");
+    let log = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let text = fs::read_to_string(log).unwrap();
+    let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(record["event"]["event"], "started", "{record}");
+    record["event"].clone()
+}
+
+/// A `brnr start` that goes away before the start commits stops the
+/// process at once, whatever it is doing (here, waiting 30 s for the
+/// session), and the agent never gets the prompt.
 #[test]
 fn abandoned_start_sends_no_prompt() {
-    let env = Env::new("abandon").agent("NEW_DELAY", "2");
+    let env = Env::new("abandon").agent("NEW_DELAY", "30");
     let mut start = env
         .brnr(&start_args(&["--prompt", "run the migration"]))
         .stderr(Stdio::null())
@@ -35,6 +49,81 @@ fn abandoned_start_sends_no_prompt() {
 
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "host kept running");
     assert!(env.prompts().is_empty(), "agent got {:?}", env.prompts());
+    let log = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
+    assert!(fs::read_to_string(log).unwrap().contains("start-abandoned"));
+}
+
+/// Everything the process does is in the one request it was started with,
+/// which its `started` record holds; its argv is only `brnr host`.
+#[test]
+fn start_hands_over_one_request() {
+    let env = Env::new("request");
+    env.write_config(
+        "[profiles.default]\nstrict = true\n\n[profiles.default.headless]\nmode = \"plan\"\n",
+    );
+    env.start(&["--set", "model=large", "--stop-when-idle", "60", "--prompt", "hello"]);
+    let started = started_record(&env);
+    let request = &started["request"];
+    assert_eq!(request["agent"][0], AGENT, "{request}");
+    assert_eq!(request["strict"], true);
+    assert_eq!(request["log"], "all");
+    let headless = &request["role"]["headless"];
+    assert_eq!(headless["mode"], "plan", "{request}");
+    assert_eq!(headless["config"]["model"], "large");
+    assert_eq!(headless["stop_when_idle"], 60);
+    assert_eq!(headless["start_timeout"], 120);
+    assert_eq!(headless["prompt"]["text"], "hello");
+    assert!(headless["events"].as_array().unwrap().is_empty(), "subscribed without --wait");
+    let ps = Command::new("ps").args(["-o", "args=", "-p", &env.host_pid().to_string()]).output();
+    let args = String::from_utf8_lossy(&ps.unwrap().stdout).trim().to_owned();
+    assert!(args.ends_with("brnr host"), "ps: {args}");
+}
+
+/// `brnr host` isn't run by hand, and takes no flags.
+#[test]
+fn host_is_not_run_by_hand() {
+    let env = Env::new("byhand");
+    let err = env.fails(&["host", "--prompt", "hi", "--", AGENT]);
+    assert!(err.contains("not by hand"), "{err}");
+    let err = env.fails(&["host"]);
+    assert!(err.contains("brnr start --foreground"), "{err}");
+    assert!(env.hosts().is_empty());
+}
+
+/// The process reads its request to EOF before doing anything: one cut short
+/// (its starter died writing it) or of the wrong shape is refused, and the
+/// agent never started.
+#[test]
+fn a_bad_request_is_refused() {
+    let env = Env::new("badreq");
+    let host = |request: &[u8]| {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let fd = theirs.as_raw_fd();
+        let mut cmd = env.brnr(&["host"]);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        unsafe {
+            cmd.pre_exec(move || {
+                (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
+            })
+        };
+        let mut child = cmd.spawn().unwrap();
+        drop(theirs);
+        child.stdin.take().unwrap().write_all(request).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let mut report = String::new();
+        BufReader::new(ours).read_line(&mut report).unwrap();
+        (out.status.code(), stderr(&out), report)
+    };
+    let (code, err, report) = host(br#"{"profile":null,"agent":["#);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("invalid start request"), "{err}");
+    assert_eq!(report, "", "nobody to tell");
+    let (code, err, report) = host(br#"{"role":{"headless":{}}}"#);
+    assert_eq!(code, Some(2), "{err}");
+    let report: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report["ok"], false);
+    assert!(report["error"].as_str().unwrap().contains("invalid start request"), "{report}");
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
 }
 
 /// When the session doesn't open in time, `brnr start` says so and the
@@ -65,7 +154,8 @@ fn empty_prompt_is_refused() {
 }
 
 /// The prompt reaches the agent without ever being on a command line, where
-/// `ps` shows it and Linux caps a single argument at 128 KiB.
+/// `ps` shows it and Linux caps a single argument at 128 KiB. Nor is the
+/// agent's command: `pkill -f <adapter>` would take the process with it.
 #[test]
 fn prompt_is_not_on_the_command_line() {
     let env = Env::new("argv");
@@ -74,10 +164,13 @@ fn prompt_is_not_on_the_command_line() {
     let args = String::from_utf8_lossy(&ps.unwrap().stdout).into_owned();
     assert!(args.contains("brnr"), "ps: {args}");
     assert!(!args.contains("sk-SECRET"), "prompt visible in ps: {args}");
+    assert!(!args.contains("fake_agent"), "agent visible in ps: {args}");
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     assert_eq!(env.prompts(), ["deploy with sk-SECRET-123"]);
 }
 
+/// More than Linux takes in one argument, read from start's stdin before it
+/// launches the process, and handed over in the request.
 #[test]
 fn large_prompt_from_stdin() {
     let env = Env::new("bigprompt");
@@ -86,6 +179,11 @@ fn large_prompt_from_stdin() {
     assert!(out.status.success(), "start failed: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     assert_eq!(env.prompts()[0].len(), prompt.len());
+    let started = started_record(&env);
+    assert_eq!(
+        started["request"]["role"]["headless"]["prompt"]["text"].as_str().unwrap().len(),
+        300_000
+    );
 }
 
 // ---- stopping ----------------------------------------------------------
@@ -578,6 +676,47 @@ fn acp_is_what_an_editor_runs() {
 }
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
+
+/// `brnr acp` resolves the profile itself: a config error is the editor's
+/// to see, on its stderr, and no process starts.
+#[test]
+fn acp_reports_a_config_error() {
+    let env = Env::new("ed-config");
+    env.write_config("[profiles.default]\npermission_timeout = 600\n");
+    let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr(&out);
+    assert!(err.starts_with("brnr acp: "), "{err}");
+    assert!(err.contains("profiles.default: permission_timeout is for brnr start only; it goes under [profiles.default.headless]"), "{err}");
+    assert!(env.hosts().is_empty());
+}
+
+/// An editor's process gets the profile's shared and editor parts, and the
+/// editor's process id and signal mask, in its request.
+#[test]
+fn acp_hands_over_one_request() {
+    let env = Env::new("ed-request");
+    env.write_config(
+        "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
+         [profiles.default.editor]\nexperimental = [\"send\", \"approve\"]\nfeatures = [\"shared_sessions\"]\n",
+    );
+    let (mut editor, _to_agent, _from_agent) = open_editor(&env);
+    let request = started_record(&env)["request"].clone();
+    assert_eq!(request["strict"], true, "{request}");
+    assert_eq!(request["log"], "events");
+    let part = &request["role"]["editor"];
+    assert_eq!(part["proxy_pid"], editor.id(), "{request}");
+    assert_eq!(part["experimental"], serde_json::json!(["send", "approve"]));
+    assert_eq!(part["features"], serde_json::json!(["shared_sessions"]));
+    assert!(part["sigmask"].is_array());
+    assert!(request["role"].get("headless").is_none(), "{request}");
+    // No headless setting reaches an editor's session.
+    assert!(env.calls_of("session/set_mode").is_empty());
+    let ps = Command::new("ps").args(["-o", "args=", "-p", &env.host_pid().to_string()]).output();
+    let args = String::from_utf8_lossy(&ps.unwrap().stdout).into_owned();
+    assert!(!args.contains("fake_agent"), "agent visible in ps: {args}");
+    let _ = editor.kill();
+}
 
 /// `brnr acp` with a session open (sess-1), as an editor has it.
 fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {

@@ -2,8 +2,8 @@
 //! editor. One binary:
 //!
 //! - `brnr acp`: what the editor runs as its ACP agent (see proxy.rs);
-//! - `brnr host`: owns the agent; started by `acp` and `start`, or by hand
-//!   for a headless session in the foreground (see host/);
+//! - `brnr host`: owns the agent; started by `acp` and `start` with one
+//!   request on its stdin, never by hand (see host/ and request.rs);
 //! - everything else controls running hosts (see ctl.rs).
 
 mod ctl;
