@@ -815,6 +815,24 @@ fn notify_cuts_what_the_environment_cant_hold() {
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't exit with the host");
 }
 
+// ---- bridges -------------------------------------------------------------
+
+/// A started bridge that closes its stdout has no more requests, and still
+/// gets events until it exits.
+#[test]
+fn a_bridge_that_closes_its_stdout_gets_events() {
+    let env = Env::new("c-bridgecat");
+    let out = env.dir.join("events");
+    let script = format!("exec cat > '{}'", out.display());
+    env.write_config(&format!("[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"));
+    env.start(&[]);
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let ended = || fs::read_to_string(&out).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+}
+
 // ---- processes -----------------------------------------------------------
 
 #[test]

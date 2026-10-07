@@ -1,10 +1,12 @@
 //! Bridges: everything that talks to the host in JSON lines instead of ACP.
 //!
 //! A bridge is a process the host starts from the profile's `bridges`
-//! (requests on its stdout, responses and events on its stdin, and it
-//! should exit when its stdin closes, which happens when the host dies), or
-//! anything that connects to the control socket, such as brnr. Both
-//! speak the same protocol, one JSON object per line.
+//! (requests on its stdout, responses and events on its stdin), or anything
+//! that connects to the control socket, such as brnr. Both speak the same
+//! protocol, one JSON object per line. A started bridge is one until it
+//! exits: its stdout closing only means it has no more requests. It should
+//! exit when its stdin closes, which happens when the host stops; then it
+//! gets SIGTERM.
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
@@ -250,12 +252,10 @@ impl Host {
         let (out_tx, out_rx, queued) = Queue::new();
         let stdin = child.stdin.take().unwrap();
         thread::spawn(move || write_lines(stdin, out_rx, queued));
+        // Its stdout closing ends its requests, not it (see `Ev::BridgeExited`).
         let stdout = child.stdout.take().unwrap();
         let t = tx.clone();
-        thread::spawn(move || {
-            read_requests(stdout, peer, &t);
-            let _ = t.send(Ev::PeerClosed { peer });
-        });
+        thread::spawn(move || read_requests(stdout, peer, &t));
         let stderr = child.stderr.take().unwrap();
         let (t, l) = (tx.clone(), label.clone());
         thread::spawn(move || {
@@ -269,7 +269,7 @@ impl Host {
         drop(child); // Reaped by the host (see `Ev::BridgeExited`).
         thread::spawn(move || {
             if super::wait_exited(pid).is_ok() {
-                let _ = t.send(Ev::BridgeExited { label: l, pid });
+                let _ = t.send(Ev::BridgeExited { label: l, pid, peer });
             }
         });
 

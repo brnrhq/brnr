@@ -76,6 +76,10 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// them; one that stopped reading doesn't hold it up for longer.
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
+/// How long the host, exiting, then gives started bridges to exit on their
+/// own, their stdin closed, so they can act on the last events.
+const BRIDGE_EXIT: Duration = Duration::from_secs(2);
+
 /// How long one write to the proxy may block before the host treats the
 /// link as gone. Only the writer thread waits; the host carries on.
 const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -301,10 +305,12 @@ enum Ev {
         label: String,
         line: String,
     },
-    /// A started bridge has terminated; it has not been reaped yet.
+    /// A started bridge has terminated; it has not been reaped yet. It is a
+    /// peer until then, whether its stdout is open or not.
     BridgeExited {
         label: String,
         pid: pid_t,
+        peer: u64,
     },
     /// A signal sent to the host itself.
     Signal(c_int),
@@ -736,9 +742,18 @@ impl Host {
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         // Bridges also see EOF on their stdin once we exit.
-        // The last events (`exited`) reach the peers before we exit, and only
-        // then do started bridges get SIGTERM.
+        // The last events (`exited`) reach the peers before we exit. Started
+        // bridges, their stdin closed, should exit then; only those that
+        // haven't by BRIDGE_EXIT get SIGTERM.
         self.flush_peers(PEER_FLUSH);
+        let until = Instant::now() + BRIDGE_EXIT;
+        while !self.bridge_pids.is_empty() {
+            match self.rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(ev @ Ev::BridgeExited { .. }) => self.handle(ev),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
         for &pid in &self.bridge_pids {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
@@ -811,10 +826,11 @@ impl Host {
                     .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
             }
             Ev::Signal(sig) => self.host_signal(sig),
-            Ev::BridgeExited { label, pid } => {
+            Ev::BridgeExited { label, pid, peer } => {
                 // Reaped here, once it is out of `bridge_pids`, so a signal to
                 // a bridge can never reach a recycled pid.
                 self.bridge_pids.retain(|&p| p != pid);
+                self.peers.remove(&peer);
                 let status = reap(pid).ok().filter(|&s| libc::WIFEXITED(s));
                 let status = status.map(|s| libc::WEXITSTATUS(s));
                 self.sink.note(
