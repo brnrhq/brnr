@@ -86,8 +86,7 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
             let mut current = current.map(str::to_owned);
             if modes.is_empty() {
                 // An agent with modes only as a config option.
-                let option =
-                    status["config"].as_array().into_iter().flatten().find(|o| o["id"] == "mode");
+                let option = option(&status, "mode");
                 let option = option.ok_or("the agent offers no modes")?;
                 modes = choices(option)
                     .into_iter()
@@ -117,6 +116,12 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
         _ => return Err(USAGE.to_owned()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The config option of ACP's `category` (`mode`, `model`, …), in a
+/// session's status: by category only, never by id (ADR 28).
+fn option<'a>(status: &'a Value, category: &str) -> Option<&'a Value> {
+    status["config"].as_array()?.iter().find(|o| o["category"] == category)
 }
 
 /// A select option's values and their names.
@@ -193,21 +198,11 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
     let id = s(&status["session_id"]).to_owned();
     match &rest[..] {
         [] => {
-            let option = status["config"]
-                .as_array()
+            let option = option(&status, "model").ok_or("the agent offers no model choice")?;
+            let models: Vec<Value> = choices(option)
                 .into_iter()
-                .flatten()
-                .find(|o| o["id"] == "model" || o["category"] == "model");
-            let models: Vec<Value> = if let Some(option) = option {
-                choices(option)
-                    .into_iter()
-                    .map(|(value, name)| json!({ "model": value, "name": name }))
-                    .collect()
-            } else if let Some(models) = status["models"].as_array() {
-                models.iter().map(|m| json!({ "model": m["modelId"], "name": m["name"] })).collect()
-            } else {
-                return Err("the agent offers no model choice".into());
-            };
+                .map(|(value, name)| json!({ "model": value, "name": name }))
+                .collect();
             if json_out {
                 print_json(&json!({ "session": id, "model": status["model"], "models": models }))?;
                 return Ok(ExitCode::SUCCESS);

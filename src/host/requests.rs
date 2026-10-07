@@ -7,7 +7,9 @@
 //!   prompt goes;
 //! - what bridges ask of the agent through the host: set the mode, a config
 //!   option or the model, fork or close a session. The bridge gets its answer
-//!   when the agent's arrives.
+//!   when the agent's arrives;
+//! - steering a message into a running turn (`_session/steering`, see
+//!   acp.rs).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -24,6 +26,8 @@ pub(super) enum HostRequest {
     Open(Open),
     Setup(SetupStep),
     Peer { peer: u64, req_id: Option<Value>, op: PeerOp },
+    /// Message `message`, steered into `session`'s running turn.
+    Steer { session: String, message: String },
 }
 
 /// How a headless start gets its session.
@@ -33,10 +37,12 @@ pub(super) enum Open {
     Load(String),
 }
 
-/// What a headless start applies before the first prompt.
+/// What a headless start applies before the first prompt. The mode and the
+/// model are found as `brnr mode` and `brnr model` find them (ADR 28).
 #[derive(Clone)]
 pub(super) enum SetupStep {
     Mode(String),
+    Model(String),
     Config(String, String),
 }
 
@@ -44,6 +50,7 @@ impl SetupStep {
     fn describe(&self) -> String {
         match self {
             SetupStep::Mode(mode) => format!("setting mode {mode}"),
+            SetupStep::Model(model) => format!("setting model {model}"),
             SetupStep::Config(id, value) => format!("setting {id}={value}"),
         }
     }
@@ -54,7 +61,6 @@ impl SetupStep {
 pub(super) enum PeerOp {
     Mode { session: String, mode: String },
     Config { session: String },
-    Model { session: String, model: String },
     Fork { cwd: PathBuf },
     Close { session: String, by: &'static str },
 }
@@ -98,6 +104,9 @@ impl Host {
         if let HostRequest::Peer { peer, req_id, op } = request {
             return self.peer_done(peer, req_id, op, msg);
         }
+        if let HostRequest::Steer { session, message } = request {
+            return self.steer_answered(&session, &message, msg);
+        }
         if let Some(error) = msg.get("error") {
             let what = match &request {
                 HostRequest::Initialize => "initialize".to_owned(),
@@ -111,7 +120,7 @@ impl Host {
                     "session/load".to_owned()
                 }
                 HostRequest::Setup(step) => step.describe(),
-                HostRequest::Peer { .. } => unreachable!(),
+                HostRequest::Peer { .. } | HostRequest::Steer { .. } => unreachable!(),
             };
             let mut text = format!("{what} failed: {}", error_message(error));
             // The hint is for a login that wasn't asked for.
@@ -124,6 +133,7 @@ impl Host {
         match request {
             HostRequest::Initialize => {
                 self.agent_caps = result["agentCapabilities"].clone();
+                self.agent_meta = result["_meta"].clone();
                 self.auth_methods = result["authMethods"].clone();
                 self.info["capabilities"] = self.capabilities();
                 self.info["agent_info"] = result["agentInfo"].clone();
@@ -159,13 +169,14 @@ impl Host {
             }
             HostRequest::Setup(step) => {
                 let Some(i) = self.starting.clone().and_then(|s| self.find(&s)) else { return };
-                match step {
-                    SetupStep::Mode(mode) => self.sessions[i].state.set_mode(&mode),
-                    SetupStep::Config(..) => self.sessions[i].state.result(&result),
+                if let SetupStep::Mode(mode) = step {
+                    self.sessions[i].state.set_mode(&mode);
                 }
+                // A config option's answer has them all (a mode or model too).
+                self.sessions[i].state.result(&result);
                 self.run_setup(i);
             }
-            HostRequest::Peer { .. } => unreachable!(),
+            HostRequest::Peer { .. } | HostRequest::Steer { .. } => unreachable!(),
         }
     }
 
@@ -180,6 +191,7 @@ impl Host {
             "fork": !session["fork"].is_null(),
             "close": !session["close"].is_null(),
             "image": caps["promptCapabilities"]["image"] == true,
+            "steering": self.agent_meta["steering"]["supported"] == true,
             "mcp_http": caps["mcpCapabilities"]["http"] == true,
             "mcp_sse": caps["mcpCapabilities"]["sse"] == true,
         })
@@ -244,14 +256,32 @@ impl Host {
     fn run_setup(&mut self, i: usize) {
         let session = self.sessions[i].id.clone();
         let Some(step) = self.setup.pop_front() else { return self.finish_start(i) };
+        let state = &self.sessions[i].state;
+        let option = |category| state.option(category).map(|o| o["id"].clone());
+        let set = |id, value| {
+            let params = json!({ "sessionId": session, "configId": id, "value": value });
+            ("session/set_config_option", params)
+        };
         let (method, params) = match &step {
+            // An agent with modes only as a config option.
+            SetupStep::Mode(mode) if state.modes.is_none() => match option("mode") {
+                Some(id) => set(id, mode),
+                None => {
+                    let error = format!("{}: the agent offers no modes", step.describe());
+                    return self.fail_start(&error);
+                }
+            },
             SetupStep::Mode(mode) => {
                 ("session/set_mode", json!({ "sessionId": session, "modeId": mode }))
             }
-            SetupStep::Config(id, value) => (
-                "session/set_config_option",
-                json!({ "sessionId": session, "configId": id, "value": value }),
-            ),
+            SetupStep::Model(model) => match option("model") {
+                Some(id) => set(id, model),
+                None => {
+                    let error = format!("{}: the agent offers no model choice", step.describe());
+                    return self.fail_start(&error);
+                }
+            },
+            SetupStep::Config(id, value) => set(json!(id), value),
         };
         self.host_request(method, params, HostRequest::Setup(step));
     }
@@ -355,14 +385,6 @@ impl Host {
                 });
                 json!({ "ok": true, "session": session, "config": config.flatten() })
             }
-            PeerOp::Model { session, model } => {
-                if let Some(i) = self.find(&session)
-                    && let Some(models) = &mut self.sessions[i].state.models
-                {
-                    models["currentModelId"] = json!(model);
-                }
-                json!({ "ok": true, "session": session, "model": model })
-            }
             PeerOp::Fork { cwd } => {
                 let Some(session) = result["sessionId"].as_str().map(str::to_owned) else {
                     return json!({ "ok": false, "error": "session/fork returned no sessionId" });
@@ -384,12 +406,14 @@ impl Host {
     }
 }
 
-/// A queue of setup steps from the start's mode and config options.
+/// A queue of setup steps from the start's mode, model and config options.
 pub(super) fn setup_steps(
     mode: Option<String>,
+    model: Option<String>,
     config: Vec<(String, String)>,
 ) -> VecDeque<SetupStep> {
     let mut steps: VecDeque<SetupStep> = mode.into_iter().map(SetupStep::Mode).collect();
+    steps.extend(model.map(SetupStep::Model));
     steps.extend(config.into_iter().map(|(k, v)| SetupStep::Config(k, v)));
     steps
 }

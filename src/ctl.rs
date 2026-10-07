@@ -54,12 +54,12 @@ mod show;
 mod talk;
 
 const USAGE: &str = "usage:
-  brnr acp [--profile <p>] [-- <agent> [args...]]
+  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
   brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
              [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--stop-when-idle <s>] [--auth <method>] [--resume <session>]
+             [--stop-when-idle <s>] [--auth <method>] [--resume <session>] [--strict]
              [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
              [-- <agent> [args...]]
              a headless session, in the background (or the foreground)
@@ -69,7 +69,7 @@ processes
   brnr stop <pid>
 
 chat
-  brnr send <session> [--after-turn | --interrupt | --context [--replace]]
+  brnr send <session> [--steer | --interrupt | --context [--replace]]
             [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
             (<text>... | -)
   brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
@@ -109,7 +109,7 @@ brnr
 as brnr pending shows it. <pid> is a brnr process, which runs one agent for one or more
 sessions, as brnr ps shows them.
 --json prints the same data as the text: one JSON value, or one event per line for log, watch
-and start --foreground.";
+and start --foreground. --strict is stable ACP only: no --steer into a running turn, no fork.";
 
 /// How long a start may take until it commits, in seconds, unless
 /// `BRNR_START_TIMEOUT` says otherwise. It goes in the start request: the

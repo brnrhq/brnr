@@ -1,9 +1,8 @@
 # 2. The editor's process: `brnr acp` relays, the host owns the agent
 
 Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented,
-except: passing `fs` and `terminal` through in strict mode (ADR 41), the
-README still giving the old rationale for dropping them, and
-`LINK_WRITE_TIMEOUT` still being there (ADR 6).
+except: the README still giving the old rationale for dropping `fs` and
+`terminal`, and `LINK_WRITE_TIMEOUT` still being there (ADR 6).
 
 ## Context
 

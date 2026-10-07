@@ -295,7 +295,7 @@ fn held_messages_are_reported_on_exit() {
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    let out = env.run(&["send", "sess-1", "--after-turn", "later"]);
+    let out = env.run(&["send", "sess-1", "later"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (message m2)");
     assert!(env.run(&["stop", &env.pid()]).status.success());
 
@@ -330,6 +330,150 @@ fn interrupts_keep_their_order() {
     }
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3), "{:?}", env.prompts());
     assert_eq!(env.prompts(), ["hang on", "first", "second"]);
+}
+
+/// The messages of the turns that ended, in order, as `turn_ended` has them.
+fn turns(env: &Env) -> Vec<Vec<String>> {
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "turn_ended"]);
+    let messages = |l: &str| serde_json::from_str::<Value>(l).unwrap()["messages"].take();
+    log.lines().map(|l| serde_json::from_value(messages(l)).unwrap()).collect()
+}
+
+/// A message sent while a turn runs is held, never a second prompt, and
+/// goes as a turn of its own when that one ends, in the order sent.
+#[test]
+fn send_while_a_turn_runs_is_held() {
+    let env = Env::new("held-order");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    assert_eq!(env.ok(&["send", "sess-1", "reply first"]), "held (message m2)\n");
+    assert_eq!(env.ok(&["send", "sess-1", "reply second"]), "held (message m3)\n");
+    sleep(Duration::from_millis(300));
+    assert_eq!(env.prompts(), ["hang on"], "a second prompt while one ran");
+    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert_eq!(env.run(&["wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
+    assert_eq!(env.prompts(), ["hang on", "reply first", "reply second"]);
+    assert_eq!(turns(&env), [["m1"], ["m2"], ["m3"]]);
+}
+
+/// `--steer` goes into the running turn as `_session/steering`: no prompt of
+/// its own, its id among that turn's messages, and `send --steer --wait`
+/// ends with that turn.
+#[test]
+fn steer_goes_into_the_running_turn() {
+    let env = Env::new("steer");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "reply steered"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "steered\n");
+    assert!(stderr(&out).contains("steered (message m2)"), "{}", stderr(&out));
+    assert_eq!(env.prompts(), ["hang on"], "a prompt of its own");
+    let steer = &env.calls_of("_session/steering")[0]["params"];
+    assert_eq!(steer["prompt"][0]["text"], "reply steered");
+    assert_eq!(steer["_meta"]["steering"]["idleBehavior"], "promptRequired");
+    assert_eq!(turns(&env), [["m1", "m2"]]);
+    let user = env.ok(&["log", "sess-1", "--events", "user_message"]);
+    assert!(user.ends_with("user: reply steered\n"), "{user}");
+}
+
+/// `--steer` with no turn running is a prompt; so is one the agent answers
+/// `promptRequired` (the turn ended before the steer reached it), which goes
+/// ahead of what was held meanwhile, as it would have in the turn.
+#[test]
+fn steer_without_a_turn_is_a_prompt() {
+    let env = Env::new("steer-idle");
+    env.start(&[]);
+    assert_eq!(env.ok(&["send", "sess-1", "--steer", "reply now"]), "delivered (message m1)\n");
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    assert!(env.calls_of("_session/steering").is_empty());
+
+    // The agent reads nothing until this turn has ended.
+    env.ok(&["send", "sess-1", "slow 2"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    assert_eq!(env.ok(&["send", "sess-1", "reply held"]), "held (message m3)\n");
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "reply late"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("steered (message m4)"), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "late\n");
+    assert_eq!(env.calls_of("_session/steering").len(), 1);
+    assert_eq!(env.run(&["wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
+    assert_eq!(env.prompts(), ["reply now", "slow 2", "reply late", "reply held"]);
+    assert_eq!(turns(&env)[2..], [["m4"], ["m3"]]);
+}
+
+/// `--steer` into a running turn needs an agent that advertises steering
+/// (P7). With no turn running it is a prompt, steering or not.
+#[test]
+fn steer_needs_the_agents_steering() {
+    let env = Env::new("steer-none").agent("NO_STEERING", "1");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let err = env.fails(&["send", "sess-1", "--steer", "reply steered"]);
+    let want = "the agent can't steer a running turn: it doesn't advertise _session/steering";
+    assert!(err.contains(want), "{err}");
+    assert!(env.calls_of("_session/steering").is_empty());
+    env.ok(&["cancel", "sess-1"]);
+    env.run(&["wait", "sess-1", "--timeout", "10"]);
+    assert_eq!(env.ok(&["send", "sess-1", "--steer", "reply now"]), "delivered (message m2)\n");
+}
+
+// ---- strict mode -------------------------------------------------------
+
+/// Strict mode (ADR 41), from `--strict` or the profile, is stable ACP
+/// only: steering a running turn and forking are refused, saying why, and
+/// the rest is as without.
+#[test]
+fn strict_mode_refuses_steering_and_fork() {
+    let env = Env::new("strict");
+    env.start(&["--strict", "--prompt", "hang on"]);
+    assert_eq!(started_record(&env)["request"]["strict"], true);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let err = env.fails(&["send", "sess-1", "--steer", "reply steered"]);
+    let want = "--steer uses _session/steering, an ACP extension, which strict mode doesn't";
+    assert!(err.contains(want), "{err}");
+    let err = env.fails(&["fork", "sess-1"]);
+    let want = "fork uses session/fork, unstable in ACP v1, which strict mode doesn't";
+    assert!(err.contains(want), "{err}");
+    assert!(env.calls_of("_session/steering").is_empty());
+    assert!(env.calls_of("session/fork").is_empty());
+    assert_eq!(env.ok(&["send", "sess-1", "reply held"]), "held (message m2)\n");
+    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    env.ok(&["close", "sess-1"]);
+
+    let env = Env::new("strict-profile");
+    env.write_config("[profiles.default]\nstrict = true\n");
+    env.start(&[]);
+    assert!(env.fails(&["fork", "sess-1"]).contains("which strict mode doesn't"));
+}
+
+/// The editor's `fs` and `terminal` capabilities don't reach the agent, as
+/// in ACP v2 (ADR 2), but in strict mode, as stable v1 has them.
+#[test]
+fn fs_and_terminal_pass_through_only_in_strict_mode() {
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+    for (name, strict) in [("ed-caps", false), ("ed-strict", true)] {
+        let env = Env::new(name);
+        let mut args = vec!["acp", "--", AGENT];
+        if strict {
+            args.insert(1, "--strict");
+        }
+        let mut editor =
+            env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut to_agent = editor.stdin.take().unwrap();
+        let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+        writeln!(to_agent, "{initialize}").unwrap();
+        line_with(&mut from_agent, "protocolVersion");
+        assert_eq!(started_record(&env)["request"]["strict"], strict);
+        let caps = &env.calls_of("initialize")[0]["params"]["clientCapabilities"];
+        assert_eq!(caps.get("fs").is_some(), strict, "{name}: {caps}");
+        assert_eq!(caps.get("terminal").is_some(), strict, "{name}: {caps}");
+        let _ = editor.kill();
+        let _ = editor.wait();
+    }
+    let env = Env::new("ed-strictarg");
+    assert!(env.fails(&["acp", "--strict=yes", "--", AGENT]).contains("--strict takes no value"));
 }
 
 // ---- watching ----------------------------------------------------------

@@ -30,8 +30,6 @@ pub(super) struct SessionState {
     pub(super) modes: Option<Value>,
     /// The agent's `configOptions`.
     pub(super) config: Option<Value>,
-    /// `{currentModelId, availableModels}` (an older, unstable ACP API).
-    pub(super) models: Option<Value>,
     pub(super) commands: Vec<Value>,
     pub(super) plan: Option<Value>,
     pub(super) usage: Option<Value>,
@@ -50,9 +48,6 @@ impl SessionState {
         if let Some(config) = result.get("configOptions").filter(|c| c.is_array()) {
             self.config = Some(config.clone());
         }
-        if let Some(models) = result.get("models").filter(|m| m.is_object()) {
-            self.models = Some(models.clone());
-        }
     }
 
     pub(super) fn current_mode(&self) -> Option<&str> {
@@ -65,20 +60,14 @@ impl SessionState {
         }
     }
 
-    /// The config option for the model: id or category `model`.
-    pub(super) fn model_option(&self) -> Option<&Value> {
-        self.config
-            .as_ref()?
-            .as_array()?
-            .iter()
-            .find(|o| o["id"] == "model" || o["category"] == "model")
+    /// The config option of ACP's `category` (`mode`, `model`, …): by
+    /// category only, an option's id being the agent's own (ADR 28).
+    pub(super) fn option(&self, category: &str) -> Option<&Value> {
+        self.config.as_ref()?.as_array()?.iter().find(|o| o["category"] == category)
     }
 
     pub(super) fn current_model(&self) -> Option<String> {
-        match self.model_option() {
-            Some(option) => option["currentValue"].as_str().map(str::to_owned),
-            None => self.models.as_ref()?["currentModelId"].as_str().map(str::to_owned),
-        }
+        self.option("model")?["currentValue"].as_str().map(str::to_owned)
     }
 
     pub(super) fn report(&self) -> Value {
@@ -88,7 +77,6 @@ impl SessionState {
             "modes": self.modes.as_ref().map(|m| m["availableModes"].clone()),
             "model": self.current_model(),
             "config": self.config,
-            "models": self.models.as_ref().map(|m| m["availableModels"].clone()),
             "commands": self.commands,
             "plan": self.plan,
             "usage": self.usage,

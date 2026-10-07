@@ -2,16 +2,16 @@
 //! client when no editor is attached.
 //!
 //! The host reads ACP line by line from both sides. It changes the stream
-//! in four ways; everything else passes through unchanged:
+//! in these ways; everything else passes through unchanged:
 //!
 //! - The editor's `initialize` loses the `fs` and `terminal` client
-//!   capabilities ([`DROPPED_CAPABILITIES`]).
-//! - An injected prompt goes to the agent as a `session/prompt` with a host
-//!   id (`brnr-<n>`). Its response is kept from the editor, and the editor
-//!   is shown the text as it is sent, as a completed tool call (`echo`).
-//!   ACP says nothing about when an agent takes up a prompt sent mid-turn
-//!   (claude-agent-acp folds it into the running turn at its next step), so
-//!   the moment it is sent is the only point the host can show.
+//!   capabilities ([`DROPPED_CAPABILITIES`]), but in strict mode.
+//! - An injected message goes to the agent as a `session/prompt` with a host
+//!   id (`brnr-<n>`), never while a prompt is running: until then it is
+//!   held. With `--steer` it goes into the running turn instead, as
+//!   `_session/steering` (ADR 18 in docs/adr). The responses are kept from
+//!   the editor, and the editor is shown the text as it is sent, as a
+//!   completed tool call (`echo`).
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
 //! - With no editor attached, the host answers what the agent asks of its
@@ -36,6 +36,7 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
+use super::requests::HostRequest;
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
 use crate::log::Dir;
@@ -57,7 +58,7 @@ pub(super) struct Prompt {
     id: String,
     injected: bool,
     /// The `m<n>` ids of the messages its turn carries: the one the host sent
-    /// as the prompt, if it did. A turn can carry more than one (ADR 17).
+    /// as the prompt, if it did, and those steered into it (ADR 17).
     messages: Vec<String>,
 }
 
@@ -71,6 +72,14 @@ pub(super) struct Held {
     pub(super) blocks: Vec<Value>,
 }
 
+impl Held {
+    /// As ACP content: the text, then the other blocks.
+    fn content(&self) -> Vec<Value> {
+        let text = (!self.text.is_empty()).then(|| text_block(&self.text));
+        text.into_iter().chain(self.blocks.iter().cloned()).collect()
+    }
+}
+
 pub(super) struct Session {
     pub(super) id: String,
     pub(super) cwd: PathBuf,
@@ -79,9 +88,13 @@ pub(super) struct Session {
     pub(super) prompts: VecDeque<Prompt>,
     /// Injected messages waiting for the session to go idle.
     pub(super) held: VecDeque<Held>,
-    /// How many of `held`, from the front, are interrupts: a new interrupt
-    /// goes after them, so interrupts keep the order they were sent in.
+    /// How many of `held`, from the front, are interrupts (or steers the
+    /// agent turned back): a new one goes after them, so they keep the order
+    /// they were sent in.
     pub(super) interrupts: usize,
+    /// Messages steered into the running turn whose steer the agent hasn't
+    /// answered, in the order sent. Nothing held goes while there are any.
+    pub(super) steering: VecDeque<Held>,
     /// Context to append to the next prompt.
     pub(super) context: Vec<String>,
     /// The agent message (or thought) so far, for the `agent_message` and
@@ -265,6 +278,9 @@ impl Host {
     }
 
     fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
+        if self.strict {
+            return None; // As stable ACP v1 has them (ADR 41).
+        }
         let caps = msg.get_mut("params")?.get_mut("clientCapabilities")?.as_object_mut()?;
         let dropped: Map<String, Value> = DROPPED_CAPABILITIES
             .iter()
@@ -462,6 +478,7 @@ impl Host {
             Pending::Initialize => {
                 if let Some(result) = result {
                     self.agent_caps = result["agentCapabilities"].clone();
+                    self.agent_meta = result["_meta"].clone();
                     self.auth_methods = result["authMethods"].clone();
                     self.info["capabilities"] = self.capabilities();
                     self.info["agent_info"] = result["agentInfo"].clone();
@@ -689,12 +706,13 @@ impl Host {
         self.emit(json!({ "event": kind, "session": session, "text": text }));
     }
 
-    /// After a prompt is answered: once the session is idle, send the next
-    /// held message.
+    /// After a prompt or a steer is answered: once the session is idle, and
+    /// no steer is waiting for its answer, send the next held message.
     fn next_turn(&mut self, session: &str) {
         let Some(i) = self.find(session) else { return };
         let s = &mut self.sessions[i];
         if s.prompts.is_empty()
+            && s.steering.is_empty()
             && let Some(held) = s.held.pop_front()
         {
             s.interrupts = s.interrupts.saturating_sub(1);
@@ -702,17 +720,19 @@ impl Host {
         }
     }
 
-    /// Drops everything session `i` holds (see `dropped`).
+    /// Drops everything session `i` holds (see `dropped`), and the steers
+    /// the agent hasn't answered: whatever it answers, they don't go out.
     pub(super) fn drop_held(&mut self, i: usize, by: &str) -> Vec<Value> {
         let s = &mut self.sessions[i];
         s.interrupts = 0;
-        let held: Vec<Held> = s.held.drain(..).collect();
+        let held: Vec<Held> = s.steering.drain(..).chain(s.held.drain(..)).collect();
         self.dropped(i, held, by)
     }
 
     /// Messages taken from session `i`'s held ones, never to be sent: each is
     /// a `message_dropped` event, `by` `cancel`, `queue`, `close` or `exit`
-    /// (ADR 20). Returns them as `{message, text}`, for a response.
+    /// (ADR 20), or `steer` for a steer the agent refused. Returns them as
+    /// `{message, text}`, for a response.
     pub(super) fn dropped(&mut self, i: usize, held: Vec<Held>, by: &str) -> Vec<Value> {
         let session = self.sessions[i].id.clone();
         held.into_iter()
@@ -744,6 +764,7 @@ impl Host {
         let s = &self.sessions[i];
         s.prompts.is_empty()
             && s.held.is_empty()
+            && s.steering.is_empty()
             && !self.agent_requests.iter().any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
     }
 
@@ -823,11 +844,7 @@ impl Host {
         let key = id_key(&id);
         let session = self.sessions[i].id.clone();
         let context = take(&mut self.sessions[i].context);
-        let mut blocks: Vec<Value> = Vec::new();
-        if !held.text.is_empty() {
-            blocks.push(text_block(&held.text));
-        }
-        blocks.extend(held.blocks.iter().cloned());
+        let mut blocks = held.content();
         blocks.extend(context.iter().map(|t| text_block(t)));
         let msg = json!({
             "jsonrpc": "2.0",
@@ -853,6 +870,80 @@ impl Host {
         line.push(b'\n');
         self.record(Some(&session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
+    }
+
+    /// `send --steer`: `held` goes into session `i`'s running turn as
+    /// `_session/steering`, asking the agent to answer `promptRequired`
+    /// rather than start a turn of its own if none is running
+    /// (claude-agent-acp's `steer()` has the contract). Held context waits
+    /// for the next prompt.
+    pub(super) fn steer(&mut self, i: usize, held: Held) {
+        let session = self.sessions[i].id.clone();
+        let params = json!({
+            "sessionId": session,
+            "prompt": held.content(),
+            "_meta": { "steering": { "idleBehavior": "promptRequired" } },
+        });
+        let message = held.id.clone();
+        self.sessions[i].steering.push_back(held);
+        self.host_request("_session/steering", params, HostRequest::Steer { session, message });
+    }
+
+    /// The agent's answer to steering `message`. `injected`: it is in the
+    /// running turn, whose `turn_ended` lists it. `promptRequired`: the turn
+    /// ended first, and it goes next as a prompt of its own, ahead of what is
+    /// held as it would have been in the turn (after interrupts, which end
+    /// that turn). Anything else drops it.
+    pub(super) fn steer_answered(
+        &mut self,
+        session: &str,
+        message: &str,
+        msg: &Map<String, Value>,
+    ) {
+        let Some(i) = self.find(session) else { return };
+        let s = &mut self.sessions[i];
+        // Gone meanwhile (a cancel, a close): it doesn't go out.
+        let Some(pos) = s.steering.iter().position(|h| h.id == message) else { return };
+        let held = s.steering.remove(pos).unwrap();
+        match msg.get("result").and_then(|r| r["outcome"].as_str()) {
+            Some("injected") => self.injected(i, held),
+            Some("promptRequired") => {
+                s.held.insert(s.interrupts, held);
+                s.interrupts += 1;
+            }
+            _ => {
+                let answer = msg.get("error").or(msg.get("result"));
+                let event = json!({ "event": "steer-refused", "answer": answer });
+                self.sink.note(Some(session), event);
+                self.dropped(i, vec![held], "steer");
+            }
+        }
+        self.next_turn(session);
+    }
+
+    /// A steered message the agent took into session `i`'s running turn,
+    /// which carries it from now: it is shown as sent, as `send_prompt` shows
+    /// a prompt.
+    fn injected(&mut self, i: usize, held: Held) {
+        let session = self.sessions[i].id.clone();
+        let Some(prompt) = self.sessions[i].prompts.front_mut() else {
+            // Its turn ended before the answer came: no turn to carry it.
+            let event = json!({ "event": "steer-after-turn", "message": held.id });
+            return self.sink.note(Some(&session), event);
+        };
+        prompt.messages.push(held.id.clone());
+        let key = prompt.id.clone();
+        let blocks = held.content();
+        let text = prompt_text(Some(&json!(blocks)));
+        self.echo(&session, "Message via brnr", &blocks);
+        self.emit(json!({
+            "event": "user_message",
+            "session": session,
+            "by": "control",
+            "message": held.id,
+            "prompt": key,
+            "text": text,
+        }));
     }
 
     /// Denies permission requests nobody answered within
@@ -957,6 +1048,7 @@ impl Host {
             held: VecDeque::new(),
             context: Vec::new(),
             interrupts: 0,
+            steering: VecDeque::new(),
             agent_text: String::new(),
             agent_text_kind: "agent_message",
             agent_message_id: None,

@@ -11,8 +11,10 @@
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
-//! - `send` `{session, text?, blocks?, mode?: now|after-turn|interrupt|context,
-//!   replace?}`: the response has the message's id (`m<n>`), which the
+//! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
+//!   replace?}` (ADR 18 in docs/adr): the response's `status` is
+//!   `delivered`, `held` (until the running turn ends), `steered` (into it)
+//!   or `interrupting`, and it has the message's id (`m<n>`), which the
 //!   `user_message` of its turn carries, and the `turn_ended` in `messages`
 //! - `cancel` `{session, keep_held?}`: cancel the running turn; held
 //!   messages are dropped (and listed) unless `keep_held`
@@ -24,7 +26,8 @@
 //! - `approve` / `deny` `{session, request, option?}`; only while no editor
 //!   is attached
 //! - `set_mode` `{session, mode}`, `set_config` `{session, option, value}`,
-//!   `set_model` `{session, model}`: answered once the agent has
+//!   `set_model` `{session, model}` (the config option whose category is
+//!   `model`): answered once the agent has
 //! - `fork` `{session}`, `close` `{session}`: only while no editor is
 //!   attached; a headless process whose last session closes stops
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
@@ -60,6 +63,7 @@ use serde_json::{Value, json};
 
 use super::acp::{Choice, Held};
 use super::requests::PeerOp;
+use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::Bridge;
 use crate::log::{self, Dir};
@@ -546,6 +550,9 @@ impl Host {
         report
     }
 
+    /// `send` (ADR 18): a prompt of its own, held while a turn runs; steered
+    /// into the running turn; interrupting it; or context for the next
+    /// prompt. A second prompt never goes while one runs.
     fn send(&mut self, req: &Value) -> Result<Value, String> {
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
@@ -553,7 +560,10 @@ impl Host {
             Value::Array(blocks) => blocks.clone(),
             _ => return Err("blocks must be a list of ACP content blocks".into()),
         };
-        let mode = req["mode"].as_str().unwrap_or("now");
+        let mode = req["mode"].as_str().unwrap_or("prompt");
+        if !matches!(mode, "prompt" | "steer" | "interrupt" | "context") {
+            return Err(format!("unknown mode: {mode}"));
+        }
         let replace = req["replace"].as_bool().unwrap_or(false);
         if text.trim().is_empty() && blocks.is_empty() {
             return Err("missing text".into());
@@ -579,36 +589,44 @@ impl Host {
             );
             return Ok(json!({ "ok": true, "status": "held", "session": session }));
         }
-        let busy = !self.sessions[i].prompts.is_empty();
+        if !self.start_done {
+            // The start commits before the agent gets any work (ADR 7).
+            return Err("the session is still starting".into());
+        }
+        let s = &self.sessions[i];
+        let busy = !s.prompts.is_empty();
+        // Messages waiting to go (held, or steers the agent hasn't answered)
+        // go first.
+        let waiting = !s.held.is_empty() || !s.steering.is_empty();
+        if mode == "steer" && (busy || waiting) {
+            self.check_strict(Beyond::Steering)?;
+            if self.capabilities()["steering"] != true {
+                let why = "it doesn't advertise _session/steering";
+                return Err(format!("the agent can't steer a running turn: {why}"));
+            }
+        }
         let held = Held { id: self.message_id(), text: text.clone(), blocks };
         let message = held.id.clone();
         let status = match mode {
-            "now" => {
+            "prompt" if busy || waiting => {
+                self.sessions[i].held.push_back(held);
+                "held"
+            }
+            "steer" if busy || waiting => {
+                self.steer(i, held);
+                "steered"
+            }
+            "interrupt" if busy => {
+                let s = &mut self.sessions[i];
+                s.held.insert(s.interrupts, held);
+                s.interrupts += 1;
+                self.cancel(&session);
+                "interrupting"
+            }
+            _ => {
                 self.send_prompt(i, held);
-                if busy { "queued" } else { "delivered" }
+                "delivered"
             }
-            "after-turn" => {
-                if busy || !self.sessions[i].held.is_empty() {
-                    self.sessions[i].held.push_back(held);
-                    "held"
-                } else {
-                    self.send_prompt(i, held);
-                    "delivered"
-                }
-            }
-            "interrupt" => {
-                if busy {
-                    let s = &mut self.sessions[i];
-                    s.held.insert(s.interrupts, held);
-                    s.interrupts += 1;
-                    self.cancel(&session);
-                    "interrupting"
-                } else {
-                    self.send_prompt(i, held);
-                    "delivered"
-                }
-            }
-            other => return Err(format!("unknown mode: {other}")),
         };
         self.sink.note(
             Some(&session),
@@ -702,6 +720,7 @@ impl Host {
                 let mode = text("mode")?;
                 let state = &self.sessions[i].state;
                 let params = json!({ "sessionId": session, "modeId": mode });
+                let option = state.option("mode").map(|o| o["id"].clone());
                 if let Some(modes) = &state.modes {
                     let known = modes["availableModes"]
                         .as_array()
@@ -716,9 +735,9 @@ impl Host {
                         "session/set_mode",
                         params,
                     );
-                } else {
+                } else if let Some(id) = option {
                     // An agent with modes only as a config option.
-                    let params = json!({ "sessionId": session, "configId": "mode", "value": mode });
+                    let params = json!({ "sessionId": session, "configId": id, "value": mode });
                     self.peer_op(
                         peer,
                         req_id,
@@ -726,6 +745,8 @@ impl Host {
                         "session/set_config_option",
                         params,
                     );
+                } else {
+                    return Err("the agent offers no modes".into());
                 }
             }
             "set_config" => {
@@ -740,34 +761,26 @@ impl Host {
                 );
             }
             "set_model" => {
+                // The config option of category `model`; never
+                // `session/set_model` (ADR 28).
                 let model = text("model")?;
-                let state = &self.sessions[i].state;
-                if let Some(option) = state.model_option() {
-                    let id = option["id"].clone();
-                    let params = json!({ "sessionId": session, "configId": id, "value": model });
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Config { session },
-                        "session/set_config_option",
-                        params,
-                    );
-                } else if state.models.is_some() {
-                    let params = json!({ "sessionId": session, "modelId": model });
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Model { session, model },
-                        "session/set_model",
-                        params,
-                    );
-                } else {
-                    return Err("the agent offers no model choice".into());
-                }
+                let option = self.sessions[i].state.option("model");
+                let id = option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
+                let params = json!({ "sessionId": session, "configId": id, "value": model });
+                self.peer_op(
+                    peer,
+                    req_id,
+                    PeerOp::Config { session },
+                    "session/set_config_option",
+                    params,
+                );
             }
             "fork" | "close" => {
                 if self.editor_attached() {
                     return Err(format!("the editor owns this process; {cmd} sessions there"));
+                }
+                if cmd == "fork" {
+                    self.check_strict(Beyond::Fork)?;
                 }
                 if caps[cmd] != true {
                     return Err(format!("the agent can't {cmd} sessions"));

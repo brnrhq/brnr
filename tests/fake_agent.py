@@ -23,13 +23,24 @@ with environment variables:
   PERM_COMMAND=<c>  a permission request is for running command c (kind
                     execute, titled c)
   LEAVE_GROUP=1     move to its parent's process group, out of its own
+  NO_STEERING=1     don't advertise _session/steering, nor answer it
+  MODEL_ID=<id>     the model config option's id (model by default)
+  MODEL_CATEGORY=<c>  its category (model by default; empty for none)
+  MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
+  LEGACY_MODELS=1   also offer the unstable models and session/set_model
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
 
+_session/steering is answered as claude-agent-acp's steer() answers it:
+injected while a turn runs (the turn goes on with the steered text, as it
+would with a prompt's, and ends once that is answered), promptRequired when
+none does and the request's _meta.steering.idleBehavior asks for it.
+
 and by the prompt's text:
 
-  hang ...          runs until cancelled
+  hang ...          runs until cancelled (or steered)
+  slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
   think             thinks, then answers
@@ -61,17 +72,33 @@ MODES = {
 }
 
 
+MODEL_ID = env("MODEL_ID", "model")
+MODE_ID = env("MODE_OPTION")
+
+
 def config(model="small"):
-    return [
-        {
-            "id": "model",
-            "name": "Model",
-            "category": "model",
-            "type": "select",
-            "currentValue": model,
-            "options": [{"value": "small", "name": "Small"}, {"value": "large", "name": "Large"}],
-        }
-    ]
+    options = []
+    if MODE_ID:
+        choices = [{"value": m["id"], "name": m["name"]} for m in MODES["availableModes"]]
+        options.append({"id": MODE_ID, "name": "Mode", "category": "mode", "type": "select", "currentValue": mode, "options": choices})
+    option = {
+        "id": MODEL_ID,
+        "name": "Model",
+        "type": "select",
+        "currentValue": model,
+        "options": [{"value": "small", "name": "Small"}, {"value": "large", "name": "Large"}],
+    }
+    if env("MODEL_CATEGORY", "model"):
+        option["category"] = env("MODEL_CATEGORY", "model")
+    return options + [option]
+
+
+def settings(answer):
+    """The modes (unless MODE_OPTION) and config options, in answer."""
+    if not MODE_ID:
+        answer["modes"] = MODES
+    answer["configOptions"] = config(model)
+    return answer
 
 
 def send(msg):
@@ -108,7 +135,95 @@ def end_turn(mid, reason="end_turn"):
 
 def opened(session):
     """What session/new and session/fork answer with."""
-    return {"sessionId": session, "modes": MODES, "configOptions": config(model)}
+    answer = settings({"sessionId": session})
+    if env("LEGACY_MODELS"):
+        models = [{"modelId": "small", "name": "Small"}, {"modelId": "large", "name": "Large"}]
+        answer["models"] = {"currentModelId": model, "availableModels": models}
+    return answer
+
+
+def text_of(prompt):
+    return "\n".join(b.get("text", "") for b in prompt if b.get("type") == "text")
+
+
+def run(mid, sid, text):
+    """Takes up the text of prompt mid, or of a steer into its turn."""
+    global hanging
+    for _ in range(int(env("FLOOD", "0"))):
+        say(sid, "y" * 500)
+    words = text.split()
+    first = words[0] if words else ""
+    if first == "hang":
+        hanging = mid
+    elif first == "slow":
+        time.sleep(float(words[1]))
+        end_turn(mid)
+    elif first == "reply":
+        say(sid, text[len("reply "):])
+        end_turn(mid)
+    elif first == "big":
+        say(sid, "z" * int(words[1]))
+        end_turn(mid)
+    elif first == "think":
+        say(sid, "pondering", "agent_thought_chunk")
+        say(sid, "thought about it")
+        end_turn(mid)
+    elif first == "tools":
+        plan = [{"content": "Run the tests", "status": "in_progress", "priority": "high"},
+                {"content": "Fix them", "status": "pending", "priority": "high"}]
+        update(sid, {"sessionUpdate": "plan", "entries": plan})
+        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Run the tests", "kind": "execute", "status": "pending"})
+        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"})
+        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})
+        plan[0]["status"] = "completed"
+        update(sid, {"sessionUpdate": "plan", "entries": plan})
+        update(sid, {"sessionUpdate": "usage_update", "used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})
+        say(sid, "did the tools")
+        end_turn(mid)
+    elif first == "settings":
+        update(sid, {"sessionUpdate": "config_option_update", "configOptions": config(model)})
+        end_turn(mid)
+    elif first == "fail":
+        error(mid, -32603, "boom")
+    elif first == "odd":
+        how = words[1] if len(words) > 1 else "surrogate"
+        request = f"perm-{len(asking) + 1}"
+        asking[request] = mid
+        title = "Edit " + chr(0xD83D) if how == "surrogate" else "Edit src/lib.rs"
+        tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
+        options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
+        params = {"sessionId": sid, "toolCall": tool, "options": options}
+        line = json.dumps({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+        if how == "deep":
+            n = int(words[2]) if len(words) > 2 else 10000
+            line = line.replace('"INPUT"', "[" * n + "]" * n)
+        elif how == "garbled":
+            line = line[:-1]
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    elif first == "perm" or env("PERMISSION"):
+        kind = words[1] if first == "perm" and len(words) > 1 else "edit"
+        request = f"perm-{len(asking) + 1}"
+        asking[request] = mid
+        options = [
+            {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+            {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+        ]
+        tool = {
+            "toolCallId": request,
+            "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",
+            "kind": kind,
+            "locations": [{"path": "src/lib.rs", "line": 2}],
+            "rawInput": {"file_path": "src/lib.rs"},
+            "content": [{"type": "diff", "path": "src/lib.rs", "oldText": "one\nold line\nthree\n", "newText": "one\nnew line\nthree\n"}],
+        }
+        if env("PERM_COMMAND"):
+            command = env("PERM_COMMAND")
+            tool = {"toolCallId": request, "title": command, "kind": "execute", "rawInput": {"command": command}}
+        params = {"sessionId": sid, "toolCall": tool, "options": options}
+        send({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+    else:
+        end_turn(mid)
 
 
 if env("LEAVE_GROUP"):
@@ -126,6 +241,7 @@ if stubborn:
         f.write(str(child.pid))
 
 model = "small"
+mode = "default"
 sessions = int(env("FIRST_SESSION") or 0)
 authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
@@ -149,7 +265,10 @@ for line in sys.stdin:
         }
         methods = [{"id": "fake-login", "name": "Log in to the fake"}]
         info = {"name": "fake-agent", "version": "1.2.3"}
-        result(mid, {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods, "agentInfo": info})
+        answer = {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods, "agentInfo": info}
+        if not env("NO_STEERING"):
+            answer["_meta"] = {"steering": {"supported": True}}
+        result(mid, answer)
     elif method == "authenticate":
         if env("AUTH_FAIL") or params.get("methodId") != "fake-login":
             error(mid, -32000, "Login failed")
@@ -173,7 +292,7 @@ for line in sys.stdin:
             update(sid, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old question"}})
             say(sid, "replayed history")
             update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
-        result(mid, {"modes": MODES, "configOptions": config(model)})
+        result(mid, settings({}))
     elif method == "session/fork":
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
@@ -189,87 +308,35 @@ for line in sys.stdin:
             update(sid, {"sessionUpdate": "current_mode_update", "currentModeId": params["modeId"]})
         else:
             error(mid, -32602, f"no mode {params.get('modeId')}")
+    elif method == "session/set_model" and env("LEGACY_MODELS"):
+        model = params["modelId"]
+        result(mid, {})
     elif method == "session/set_config_option":
-        if params.get("configId") == "model" and params.get("value") in ("small", "large"):
+        if params.get("configId") == MODEL_ID and params.get("value") in ("small", "large"):
             model = params["value"]
+            result(mid, {"configOptions": config(model)})
+        elif MODE_ID and params.get("configId") == MODE_ID and params.get("value") in ("default", "plan"):
+            mode = params["value"]
             result(mid, {"configOptions": config(model)})
         else:
             error(mid, -32602, f"bad option {params.get('configId')}={params.get('value')}")
     elif method == "session/prompt":
-        text = "\n".join(b.get("text", "") for b in params["prompt"] if b.get("type") == "text")
+        text = text_of(params["prompt"])
         append("PROMPT_LOG", text)
-        for _ in range(int(env("FLOOD", "0"))):
-            say(sid, "y" * 500)
-        words = text.split()
-        first = words[0] if words else ""
-        if first == "hang":
-            hanging = mid
-        elif first == "reply":
-            say(sid, text[len("reply "):])
-            end_turn(mid)
-        elif first == "big":
-            say(sid, "z" * int(words[1]))
-            end_turn(mid)
-        elif first == "think":
-            say(sid, "pondering", "agent_thought_chunk")
-            say(sid, "thought about it")
-            end_turn(mid)
-        elif first == "tools":
-            plan = [{"content": "Run the tests", "status": "in_progress", "priority": "high"},
-                    {"content": "Fix them", "status": "pending", "priority": "high"}]
-            update(sid, {"sessionUpdate": "plan", "entries": plan})
-            update(sid, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Run the tests", "kind": "execute", "status": "pending"})
-            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"})
-            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})
-            plan[0]["status"] = "completed"
-            update(sid, {"sessionUpdate": "plan", "entries": plan})
-            update(sid, {"sessionUpdate": "usage_update", "used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})
-            say(sid, "did the tools")
-            end_turn(mid)
-        elif first == "settings":
-            update(sid, {"sessionUpdate": "config_option_update", "configOptions": config(model)})
-            end_turn(mid)
-        elif first == "fail":
-            error(mid, -32603, "boom")
-        elif first == "odd":
-            how = words[1] if len(words) > 1 else "surrogate"
-            request = f"perm-{len(asking) + 1}"
-            asking[request] = mid
-            title = "Edit " + chr(0xD83D) if how == "surrogate" else "Edit src/lib.rs"
-            tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
-            options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
-            params = {"sessionId": sid, "toolCall": tool, "options": options}
-            line = json.dumps({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
-            if how == "deep":
-                n = int(words[2]) if len(words) > 2 else 10000
-                line = line.replace('"INPUT"', "[" * n + "]" * n)
-            elif how == "garbled":
-                line = line[:-1]
-            sys.stdout.write(line + "\n")
-            sys.stdout.flush()
-        elif first == "perm" or env("PERMISSION"):
-            kind = words[1] if first == "perm" and len(words) > 1 else "edit"
-            request = f"perm-{len(asking) + 1}"
-            asking[request] = mid
-            options = [
-                {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
-                {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
-            ]
-            tool = {
-                "toolCallId": request,
-                "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",
-                "kind": kind,
-                "locations": [{"path": "src/lib.rs", "line": 2}],
-                "rawInput": {"file_path": "src/lib.rs"},
-                "content": [{"type": "diff", "path": "src/lib.rs", "oldText": "one\nold line\nthree\n", "newText": "one\nnew line\nthree\n"}],
-            }
-            if env("PERM_COMMAND"):
-                command = env("PERM_COMMAND")
-                tool = {"toolCallId": request, "title": command, "kind": "execute", "rawInput": {"command": command}}
-            params = {"sessionId": sid, "toolCall": tool, "options": options}
-            send({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+        run(mid, sid, text)
+    elif method == "_session/steering" and not env("NO_STEERING"):
+        idle = ((params.get("_meta") or {}).get("steering") or {}).get("idleBehavior")
+        if idle not in (None, "promptRequired"):
+            error(mid, -32602, "unsupported steering idleBehavior")
+        elif hanging is not None or asking:
+            result(mid, {"outcome": "injected"})
+            if hanging is not None:
+                turn, hanging = hanging, None
+                run(turn, sid, text_of(params["prompt"]))
+        elif idle == "promptRequired":
+            result(mid, {"outcome": "promptRequired", "reason": "noRunningTurn"})
         else:
-            end_turn(mid)
+            result(mid, {"outcome": "startedNewTurn"})
     elif method == "session/cancel":
         time.sleep(float(env("CANCEL_DELAY", "0")))
         if hanging is not None:
@@ -277,6 +344,8 @@ for line in sys.stdin:
             hanging = None
     elif method is None and mid in asking:
         end_turn(asking.pop(mid))
+    elif method is not None and mid is not None:
+        error(mid, -32601, f"Method not found: {method}")
 
 if stubborn == "all":
     time.sleep(100000)
