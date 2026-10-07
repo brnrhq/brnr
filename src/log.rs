@@ -34,7 +34,7 @@ pub enum Dir {
     /// an answer it gave as the client.
     ControlToAgent,
     /// An injected message shown to the editor, as a completed tool call (see
-    /// 48 in the decision log).
+    /// ADR 5 in docs/adr).
     ControlToEditor,
     /// An agent response meant for the host, which the editor never sees.
     AgentToControl,

@@ -17,7 +17,7 @@
 //! - With no editor attached, the host answers what the agent asks of its
 //!   client. Permission requests wait for an approve or deny from a bridge
 //!   or the CLI, until `permission_timeout` denies them; how much the agent
-//!   asks is the agent's mode (`--mode`, see 47 in the decision log).
+//!   asks is the agent's mode (`--mode`, see ADR 27 in docs/adr).
 //!   Elicitation is declined, and anything else gets "method not found".
 //! - While `session/load` replays a resumed session's history, the replayed
 //!   updates are neither recorded nor turned into events: the transcript has
@@ -37,8 +37,8 @@ use crate::frame;
 use crate::log::Dir;
 
 /// Client capabilities removed from the editor's `initialize`. ACP v2 drops
-/// them, so the host won't implement them for when the editor is gone, and
-/// the agent must not come to rely on them while the editor is there.
+/// them and they add nothing an agent needs, so no agent comes to rely on
+/// them (ADR 2 in docs/adr).
 const DROPPED_CAPABILITIES: &[&str] = &["fs", "terminal"];
 
 /// Session updates that end the agent message (or thought) being assembled
@@ -821,8 +821,8 @@ impl Host {
 
     /// Shows the editor an injected message, as a completed tool call:
     /// the one update an editor renders as a block of its own wherever the
-    /// turn is. A `user_message_chunk` out of turn is not rendered (see 48
-    /// in the decision log).
+    /// turn is. A `user_message_chunk` out of turn is not rendered (see
+    /// ADR 5 in docs/adr).
     fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
         if let Some(i) = self.find(session) {
             self.flush_agent_message(i);

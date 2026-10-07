@@ -652,8 +652,8 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
         "idle" => {
             if let Some(s) = idle(&mut conn, &session)? {
                 done(&idle_now, "idle".into())?;
-                // As if it had waited for that turn (see 5 in the decision
-                // log): how the last one ended, if there was one.
+                // As if it had waited for that turn (see ADR 21 in
+                // docs/adr): how the last one ended, if there was one.
                 return Ok(match &s["last_turn"] {
                     turn if turn.is_object() => turn_status(turn),
                     _ => ExitCode::SUCCESS,
