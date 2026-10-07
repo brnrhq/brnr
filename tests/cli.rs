@@ -615,7 +615,9 @@ fn start_applies_mode_and_model_before_the_prompt() {
             "session/prompt"
         ]
     );
-    let err = env.fails(&start_args(&["--mode", "warp"]));
+    // Another agent, whose sessions aren't the first one's.
+    let out = env.brnr(&start_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
+    let err = stderr(&out.unwrap());
     assert!(err.contains("setting mode warp failed"), "{err}");
 }
 
@@ -743,8 +745,9 @@ fn fork_and_close() {
     );
 }
 
-/// Closing a session drops what it holds, then says it closed; whatever
-/// follows the session ends with it, and the process carries on.
+/// Closing a session drops what it holds and cancels its turn, then says it
+/// closed; whatever follows the session ends with it, and the process
+/// carries on.
 #[test]
 fn close_ends_what_follows_the_session() {
     let env = Env::new("c-closed");
@@ -774,29 +777,35 @@ fn close_ends_what_follows_the_session() {
     assert_eq!(code(&watch), 0, "{}", stderr(&watch));
     let text = stdout(&watch);
     let lines: Vec<&str> = text.lines().map(|l| &l[10..]).collect();
-    let end = ["dropped m3 (close): later", "session closed (close)"];
-    assert_eq!(lines[lines.len() - 2..], end, "{text}");
+    let end =
+        ["dropped m3 (close): later", "turn ended: cancelled (control)", "session closed (close)"];
+    assert_eq!(lines[lines.len() - 3..], end, "{text}");
     let notify = notify.wait_with_output().unwrap();
     assert_eq!(code(&notify), 0, "{}", stderr(&notify));
     assert_eq!(fs::read_to_string(&out).unwrap(), "message_dropped\n");
-    for wait in [turn, permission] {
-        let wait = wait.wait_with_output().unwrap();
-        assert_eq!(code(&wait), 1, "{}", stderr(&wait));
-        assert!(stderr(&wait).contains("the session closed"), "{}", stderr(&wait));
-    }
-    // A closed session counts as idle, and the wait exits as its last turn
-    // ended: that one failed.
+    let turn = turn.wait_with_output().unwrap();
+    assert_eq!(code(&turn), 1, "{}", stderr(&turn));
+    assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
+    let permission = permission.wait_with_output().unwrap();
+    assert_eq!(code(&permission), 1, "{}", stderr(&permission));
+    assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
+    // The session is idle once its turn is cancelled, and the wait exits as
+    // that turn ended.
     let idle = idle.wait_with_output().unwrap();
     assert_eq!(code(&idle), 1, "{}", stderr(&idle));
-    let closed: Value = serde_json::from_slice(&idle.stdout).unwrap();
-    assert_eq!((&closed["event"], &closed["by"]), (&"session_closed".into(), &"close".into()));
+    let ended: Value = serde_json::from_slice(&idle.stdout).unwrap();
+    assert_eq!(
+        (&ended["event"], &ended["stop_reason"]),
+        (&"turn_ended".into(), &"cancelled".into())
+    );
     let sent = sent.wait_with_output().unwrap();
     assert_eq!(code(&sent), 1, "{}", stderr(&sent));
     assert!(stderr(&sent).contains("m3 was dropped (close)"), "{}", stderr(&sent));
 
     let names: Vec<Value> =
         events(&env, "sess-2").into_iter().map(|e| e["event"].clone()).collect();
-    assert_eq!(names[names.len() - 2..], ["message_dropped", "session_closed"], "{names:?}");
+    let end = ["message_dropped", "turn_ended", "session_closed"];
+    assert_eq!(names[names.len() - 3..], end, "{names:?}");
     assert!(env.ok(&["status", "sess-1"]).contains("session sess-1"));
 }
 
@@ -825,7 +834,7 @@ fn resume_continues_a_session() {
     assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "sess-1");
     let log = env.ok(&["log", "sess-1"]);
     assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
-    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("already running"));
+    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("sess-1 is running in process"));
 }
 
 #[test]
@@ -843,6 +852,144 @@ fn resume_by_loading_keeps_the_replay_out_of_the_transcript() {
     assert!(!all.contains("Loaded session"), "replay recorded:\n{all}");
     let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
     assert_eq!(status["title"], "Loaded session");
+}
+
+// ---- ownership -----------------------------------------------------------
+
+/// A session another process holds isn't resumed: brnr says which process
+/// has it, from the session's lock (ADR 3).
+#[test]
+fn resume_of_a_held_session_is_refused() {
+    let env = Env::new("c-held");
+    env.start(&[]);
+    let pid = env.pid();
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let lock: Value = serde_json::from_str(&lock).unwrap();
+    assert_eq!((lock["pid"].to_string(), &lock["session"]), (pid.clone(), &"sess-1".into()));
+    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    assert!(err.contains(&format!("sess-1 is running in process {pid} (--take-over")), "{err}");
+    assert_eq!(env.hosts().len(), 1, "a second process started");
+    assert!(env.calls_of("session/resume").is_empty());
+    assert!(env.fails(&start_args(&["--take-over"])).contains("--take-over goes with --resume"));
+}
+
+/// `--take-over` has the process that holds the session close it,
+/// cancelling its turn, and resumes it in a new one; the session forked
+/// beside it keeps running in the first.
+#[test]
+fn take_over_moves_a_session() {
+    let env = Env::new("c-takeover");
+    env.start(&[]);
+    let first = env.pid();
+    env.ok(&["fork", "sess-1"]);
+    env.ok(&["send", "sess-1", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let args = ["start", "--resume", "sess-1", "--take-over", "--wait", "--prompt", "reply here"];
+    let out = env.run(&args);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "here\n");
+    let said = format!("closed sess-1 in process {first}");
+    assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+    let pid = |session: &str| {
+        let status: Value = serde_json::from_str(&env.ok(&["status", session, "--json"])).unwrap();
+        status["pid"].to_string()
+    };
+    assert_eq!(pid("sess-2"), first);
+    assert_ne!(pid("sess-1"), first);
+    // One transcript: the turn cancelled and the session closed in the first
+    // process, then the prompt in the second.
+    let story = events(&env, "sess-1");
+    let at = |f: &dyn Fn(&Value) -> bool| story.iter().position(f);
+    let cancelled = at(&|e| e["event"] == "turn_ended" && e["stop_reason"] == "cancelled");
+    let closed = at(&|e| e["event"] == "session_closed" && e["by"] == "close");
+    let resumed = at(&|e| e["event"] == "user_message" && e["text"] == "reply here");
+    let order =
+        matches!((cancelled, closed, resumed), (Some(a), Some(b), Some(c)) if a < b && b < c);
+    assert!(order, "{story:?}");
+}
+
+/// A process that doesn't answer still holds its session's lock: it isn't
+/// resumed elsewhere, and list and ps say which process has it without
+/// asking it.
+#[test]
+fn a_silent_process_keeps_its_session() {
+    let env = Env::new("c-silent");
+    env.start(&[]);
+    let pid = env.host_pid();
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    // Each waits for the stopped process to answer, side by side.
+    let spawn = |args: &[&str]| {
+        env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let resume = spawn(&start_args(&["--resume", "sess-1"]));
+    let take_over = spawn(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let list = spawn(&["list", "--all", "--json"]);
+    let ps = spawn(&["ps", "--json"]);
+    let [resume, take_over, list, ps] =
+        [resume, take_over, list, ps].map(|c| c.wait_with_output().unwrap());
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    let refused = format!("sess-1 is running in process {pid}");
+    assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
+    let refused = format!("sess-1 is running in process {pid}, which is not answering");
+    assert!(stderr(&take_over).contains(&refused), "{}", stderr(&take_over));
+    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
+    assert_eq!(list[0]["pid"], pid);
+    let ps: Value = serde_json::from_slice(&ps.stdout).unwrap();
+    assert_eq!(
+        (&ps[0]["owner"], &ps[0]["sessions"]),
+        (&"unreachable".into(), &serde_json::json!(["sess-1"]))
+    );
+    assert_eq!(env.hosts().len(), 1, "a second process started");
+}
+
+/// A process that dies lets go of its sessions with nothing to clean up.
+#[test]
+fn a_dead_process_lets_go() {
+    let env = Env::new("c-dead");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
+    let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "again\n");
+}
+
+/// `close` cancels a running turn first: its pending approval is answered
+/// `cancelled`, the turn ends, then the session closes, and a process left
+/// with no session stops.
+#[test]
+fn close_cancels_the_turn_first() {
+    let env = Env::new("c-closeturn");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending", "sess-1"]).contains("p1")));
+    let host = env.host_pid();
+    assert_eq!(env.ok(&["close", "sess-1"]), "closed sess-1\n");
+    let calls = env.calls();
+    let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what).unwrap();
+    let cancel = at(&|c| c["method"] == "session/cancel");
+    let answer = at(&|c| c["id"] == "perm-1" && c.get("method").is_none());
+    let close = at(&|c| c["method"] == "session/close");
+    assert!(cancel < answer && answer < close, "{calls:?}");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["outcome"], "cancelled");
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "kept running with no session");
+    let names: Vec<Value> =
+        events(&env, "sess-1").into_iter().map(|e| e["event"].clone()).collect();
+    let end = ["permission_resolved", "turn_ended", "session_closed"];
+    assert_eq!(names[names.len() - 3..], end, "{names:?}");
+}
+
+/// With `stop_when_idle`, a fork the agent could never close is refused up
+/// front: the process would never stop (ADR 12).
+#[test]
+fn fork_is_refused_when_it_could_never_close() {
+    let env = Env::new("c-forkidle").agent("NO_CLOSE", "1");
+    env.start(&["--stop-when-idle", "60"]);
+    let err = env.fails(&["fork", "sess-1"]);
+    assert!(err.contains("the agent can't close sessions: with stop_when_idle"), "{err}");
+    assert!(env.calls_of("session/fork").is_empty());
+    env.stop();
 }
 
 // ---- permissions ---------------------------------------------------------

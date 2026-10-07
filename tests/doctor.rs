@@ -133,6 +133,25 @@ fn stale_metadata_is_removed() {
     assert_eq!(fs::read_dir(&run).unwrap().count(), 0, "{text}");
 }
 
+/// A session lock nobody holds was left by a process that died; one held is
+/// a session running.
+#[test]
+fn stale_session_locks_are_removed() {
+    let env = Env::new("dr-locks");
+    env.start(&[]);
+    let sessions = env.dir.join("run/sessions");
+    let stale = sessions.join("old-1.lock");
+    write(&stale, &format!(r#"{{"pid":{},"session":"old-1"}}"#, dead_pid()), 0o600);
+    let (ok, text) = doctor(&env, &[]);
+    assert!(ok, "{text}");
+    assert!(text.contains("left by processes that are gone: sessions/old-1.lock"), "{text}");
+    assert!(!text.contains("sess-1.lock"), "{text}");
+    let (ok, text) = doctor(&env, &["--fix"]);
+    assert!(ok, "{text}");
+    assert!(!stale.exists(), "{text}");
+    assert!(sessions.join("sess-1.lock").exists(), "{text}");
+}
+
 /// A process binds its socket before it writes its metadata: doctor --fix
 /// must leave a process that is starting alone.
 #[test]
@@ -251,7 +270,8 @@ fn unresponsive_host_warns() {
     let (ok, text) = doctor(&env, &[]);
     unsafe { libc::kill(host, libc::SIGCONT) };
     assert!(ok, "{text}");
-    assert!(text.contains(&format!("{host} is running but not answering")), "{text}");
+    let warning = format!("{host} is running but not answering; it serves sess-1");
+    assert!(text.contains(&warning), "{text}");
 }
 
 #[test]

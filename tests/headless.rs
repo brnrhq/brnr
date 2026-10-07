@@ -1078,31 +1078,39 @@ fn acp_hands_over_one_request() {
     let _ = editor.kill();
 }
 
-/// `brnr acp` with a session open (sess-1), as an editor has it.
-fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+/// `brnr acp`, initialized, as an editor starts it.
+fn editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut editor =
         env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
-    let mut answer = |id: u64| -> Value {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
-            let msg: Value = serde_json::from_str(&line).unwrap();
-            if msg["id"] == id {
-                return msg;
-            }
-        }
-    };
     writeln!(to_agent, "{INITIALIZE}").unwrap();
-    answer(1);
+    response(&mut from_agent, 1);
+    (editor, to_agent, from_agent)
+}
+
+/// The editor's answer to its request `id`, past what comes before it.
+fn response(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Value {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        if msg["id"] == id {
+            return msg;
+        }
+    }
+}
+
+/// `brnr acp` with a session open (sess-1), as an editor has it.
+fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let (editor, mut to_agent, mut from_agent) = editor(env);
     let new = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
         env.dir.display().to_string()
     );
     writeln!(to_agent, "{new}").unwrap();
-    assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
+    assert_eq!(response(&mut from_agent, 2)["result"]["sessionId"], "sess-1");
     (editor, to_agent, from_agent)
 }
 
@@ -1178,6 +1186,91 @@ fn non_blocking_stdin_is_waited_on() {
     assert_eq!(answer["id"], 1, "no answer: {line:?}");
     drop(writer);
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
+}
+
+// ---- ownership ----------------------------------------------------------
+
+/// The editor's `session/load` of `session`, with id `id`.
+fn editor_load(env: &Env, id: u64, session: &str) -> String {
+    let params = serde_json::json!({
+        "sessionId": session,
+        "cwd": env.dir.display().to_string(),
+        "mcpServers": [],
+    });
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "session/load", "params": params })
+        .to_string()
+}
+
+/// The editor's process, as `brnr ps` has it.
+fn editor_process(env: &Env) -> Value {
+    env.hosts().into_iter().find(|h| h["proxy_pid"].is_number()).expect("no editor's process")
+}
+
+/// An editor's load of a session a headless process holds is answered by
+/// brnr, with an error saying how to release it, and the agent never hears
+/// of it; once released, it loads (ADR 3).
+#[test]
+fn an_editors_load_of_a_held_session_is_refused() {
+    let env = Env::new("ed-held");
+    env.start(&[]);
+    let headless = env.pid();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
+    assert!(message.contains("`brnr close sess-1`"), "{error}");
+    assert!(env.calls_of("session/load").is_empty());
+    env.ok(&["close", "sess-1"]);
+    writeln!(to_agent, "{}", editor_load(&env, 3, "sess-1")).unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"]);
+    let _ = editor.kill();
+}
+
+/// With `shared_sessions`, the editor's load goes through: its process
+/// serves the session without the lock, records it in its host log only,
+/// and `status` says the session is shared. The headless process stays its
+/// owner (ADR 3, ADR 42).
+#[test]
+fn shared_sessions_let_an_editor_load_a_held_session() {
+    let env = Env::new("ed-shared");
+    env.write_config("[profiles.default.editor]\nfeatures = [\"shared_sessions\"]\n");
+    env.start(&[]);
+    let headless = env.pid();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    writeln!(to_agent, "{}", editor_prompt(3, "reply from the editor")).unwrap();
+    response(&mut from_agent, 3);
+    let shared = editor_process(&env);
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert_eq!(
+        (status["pid"].to_string(), status["held_by"].to_string()),
+        (headless.clone(), headless)
+    );
+    assert_eq!(status["shared_by"], serde_json::json!([shared["host_pid"]]));
+    let text = env.ok(&["status", "sess-1"]);
+    assert!(text.contains(&format!("shared by process {}", shared["host_pid"])), "{text}");
+    // Its turn isn't in the session's transcript, but in its host log.
+    assert!(!env.ok(&["log", "sess-1"]).contains("from the editor"));
+    let host_log = fs::read_to_string(shared["host_log"].as_str().unwrap()).unwrap();
+    assert!(host_log.contains("from the editor") && host_log.contains("session-shared"));
+    let _ = editor.kill();
+}
+
+/// `--take-over` doesn't take a session from an editor: closing an editor's
+/// session from outside is the experimental `close` (ADR 4).
+#[test]
+fn take_over_from_an_editor_is_refused() {
+    let env = Env::new("ed-takeover");
+    let (mut editor, _to_agent, _from_agent) = open_editor(&env);
+    let pid = env.pid();
+    let err = env.fails(&start_args(&["--resume", "sess-1", "--take-over"]));
+    assert!(err.contains(&format!("sess-1 is running in process {pid}, an editor's")), "{err}");
+    assert!(env.calls_of("session/close").is_empty());
+    let _ = editor.kill();
 }
 
 // ---- lines brnr reads --------------------------------------------------

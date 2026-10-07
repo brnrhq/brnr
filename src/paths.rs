@@ -2,8 +2,9 @@
 //!
 //! - Control sockets and metadata: `$BRNR_DIR`, else
 //!   `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>`. Each host
-//!   writes `<id>.sock` and `<id>.json` there; the directory is private to
-//!   the user, which is the access control.
+//!   writes `<id>.sock` and `<id>.json` there, and holds
+//!   `sessions/<session id>.lock` for each session it serves (see lock.rs);
+//!   the directory is private to the user, which is the access control.
 //! - Logs: under `$BRNR_HOME`, else `~/.brnr`, laid out like the
 //!   agents' own transcripts so they can be joined with them:
 //!   `projects/<folder>/<session id>.jsonl` per ACP session, its events,
@@ -72,15 +73,30 @@ pub fn host_log(host_id: &str) -> PathBuf {
 }
 
 pub fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    let mut name: String = session
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
-        .collect();
+    let mut name = file_name(session);
     // `x.acp` would be named like session `x`'s raw ACP.
     if name.ends_with(".acp") {
         name.replace_range(name.len() - 4..name.len() - 3, "_");
     }
     state_dir().join("projects").join(project_key(cwd)).join(format!("{name}.jsonl"))
+}
+
+/// Where the session locks are (see lock.rs).
+pub fn session_locks() -> PathBuf {
+    runtime_dir().join("sessions")
+}
+
+pub fn session_lock(session: &str) -> PathBuf {
+    session_locks().join(format!("{}.lock", file_name(session)))
+}
+
+/// A session id as a file name: anything but ASCII letters, digits, `-`,
+/// `_` and `.` becomes `_` (the agent's text is untrusted).
+fn file_name(session: &str) -> String {
+    session
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
+        .collect()
 }
 
 /// The raw ACP file beside a session's events file (`session_log`).

@@ -2,9 +2,9 @@
 //!
 //! - opening the session of a headless start: `initialize`, `authenticate`
 //!   if the start names a login method (ADR 30), then `session/new`,
-//!   `session/resume` or `session/load`, then the mode and config options
-//!   the start asked for; then the start commits (see start.rs), and the
-//!   prompt goes;
+//!   `session/resume` or `session/load` (a resumed session's lock taken
+//!   first, ADR 3), then the mode and config options the start asked for;
+//!   then the start commits (see start.rs), and the prompt goes;
 //! - what bridges ask of the agent through the host: set the mode, a config
 //!   option or the model, fork or close a session. The bridge gets its answer
 //!   when the agent's arrives;
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
-use super::acp::Held;
+use super::acp::{Held, Hold};
 use super::{Host, id_key};
 use crate::log::{self, Dir};
 
@@ -161,6 +161,13 @@ impl Host {
                     return; // The start already failed (timed out) or was stopped.
                 }
                 let i = self.open_session(&session, None);
+                // A resumed session's lock was taken before the agent was
+                // asked for it; a new one's, as it opened.
+                if let Hold::Shared(pid) = self.sessions[i].hold {
+                    let error =
+                        format!("the agent opened {session}, which is running in process {pid}");
+                    return self.fail_start(&error);
+                }
                 self.sessions[i].replaying = false;
                 self.sessions[i].state.result(&result);
                 self.starting = Some(session);
@@ -239,6 +246,13 @@ impl Host {
         };
         let params = json!({ "sessionId": session, "cwd": cwd, "mcpServers": mcp });
         let caps = self.capabilities();
+        if caps["resume"] == true || caps["load"] == true {
+            // Taken before the agent hears of it: a session another process
+            // holds is refused (ADR 3).
+            if let Err(err) = self.own(&session) {
+                return self.fail_start(&err);
+            }
+        }
         if caps["resume"] == true {
             self.host_request("session/resume", params, HostRequest::Open(Open::Resume(session)));
         } else if caps["load"] == true {
@@ -309,6 +323,7 @@ impl Host {
     }
 
     pub(super) fn fail_start(&mut self, error: &str) {
+        self.claimed.clear(); // Nobody is to know of a session it was opening.
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
@@ -363,7 +378,14 @@ impl Host {
         msg: &Map<String, Value>,
     ) {
         let reply = match msg.get("error") {
-            Some(error) => json!({ "ok": false, "error": error_message(error) }),
+            Some(error) => {
+                if let PeerOp::Close { session, .. } = &op
+                    && let Some(i) = self.find(session)
+                {
+                    self.sessions[i].closing = None; // Still open: it takes requests again.
+                }
+                json!({ "ok": false, "error": error_message(error) })
+            }
             None => self.peer_result(op, msg.get("result").unwrap_or(&Value::Null)),
         };
         self.reply(peer, req_id, reply);
@@ -390,6 +412,15 @@ impl Host {
                     return json!({ "ok": false, "error": "session/fork returned no sessionId" });
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
+                // Its lock, taken as it opened: one another process holds
+                // can't be served here (ADR 3).
+                if let Hold::Shared(pid) = self.sessions[i].hold {
+                    self.sessions.remove(i);
+                    let error = format!(
+                        "the agent forked into {session}, which is running in process {pid}"
+                    );
+                    return json!({ "ok": false, "error": error });
+                }
                 self.sessions[i].state.result(result);
                 json!({ "ok": true, "session": session })
             }

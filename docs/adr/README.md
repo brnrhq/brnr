@@ -29,7 +29,7 @@ of to-resolve; the map at the end says where each went.
 |---|---|---|
 | [1](0001-principles.md) | Principles | — |
 | [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | mostly |
-| [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | no |
+| [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | mostly |
 | [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | no |
 | [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
 | [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | partly |
@@ -38,11 +38,11 @@ of to-resolve; the map at the end says where each went.
 | [9](0009-start-foreground.md) | `start --foreground` | partly |
 | [10](0010-the-agents-stderr.md) | The agent's stderr | partly |
 | [11](0011-a-process-death-is-recorded.md) | A process's own death is recorded | no |
-| [12](0012-stopping-when-idle.md) | Stopping when idle | mostly |
+| [12](0012-stopping-when-idle.md) | Stopping when idle | yes |
 | [13](0013-sessions-are-ids-processes-are-pids.md) | Sessions are the agent's ids, processes are pids | yes |
-| [14](0014-resuming.md) | Resuming | mostly |
+| [14](0014-resuming.md) | Resuming | yes |
 | [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape | yes |
-| [16](0016-fork-and-close.md) | Fork and close | partly |
+| [16](0016-fork-and-close.md) | Fork and close | mostly |
 | [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
 | [18](0018-what-send-does.md) | What `send` does | mostly |
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
@@ -68,7 +68,7 @@ of to-resolve; the map at the end says where each went.
 | [39](0039-adapter-versions.md) | Which adapter version is built, and how it shows | yes |
 | [40](0040-release-sh.md) | `release.sh` | yes |
 | [41](0041-strict-mode.md) | Strict mode | mostly |
-| [42](0042-feature-flags.md) | Feature flags for process management | no |
+| [42](0042-feature-flags.md) | Feature flags for process management | yes |
 | [43](0043-acp-schema-types.md) | ACP types from the official schema crate | no |
 
 ## Where the former entries went

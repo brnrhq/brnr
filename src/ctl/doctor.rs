@@ -2,19 +2,21 @@
 //! what's wrong.
 //!
 //! - the runtime directory: private to the user, not a symlink, short enough
-//!   for a socket path, and free of metadata left by processes that are gone;
+//!   for a socket path, and free of metadata and session locks left by
+//!   processes that are gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
 //!   (ADR 33), and every profile's settings, cwd, agent and bridges are
 //!   valid;
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
-//! - running processes: each answers.
+//! - running processes: each answers; of one that doesn't, the sessions it
+//!   holds the locks of (ADR 3).
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
-//! removes stale metadata. It never touches anything it would refuse to use.
-//! The exit status is non-zero if a check failed. `--json` prints the checks
-//! as a list of `{level, check, message}`.
+//! removes stale metadata and locks. It never touches anything it would
+//! refuse to use. The exit status is non-zero if a check failed. `--json`
+//! prints the checks as a list of `{level, check, message}`.
 
 use std::env;
 use std::ffi::OsStr;
@@ -25,7 +27,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use brnr::host::{alive, check_bridge};
-use brnr::{config, paths, spawn};
+use brnr::{config, lock, paths, spawn};
 
 use super::{Host, USAGE, read_meta, request};
 
@@ -185,13 +187,23 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
     stale.retain(|p| p.exists());
     stale.sort();
     stale.dedup();
-    if stale.is_empty() {
+    // Session locks nobody holds: the kernel let go when their process died,
+    // and the file stayed.
+    let locks: Vec<PathBuf> =
+        lock::all().into_iter().filter(|e| e.pid.is_none()).map(|e| e.path).collect();
+    if stale.is_empty() && locks.is_empty() {
         return hosts;
     }
-    let names: Vec<String> =
+    let mut names: Vec<String> =
         stale.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into()).collect();
+    for p in &locks {
+        names.push(format!("sessions/{}", p.file_name().unwrap_or_default().to_string_lossy()));
+    }
     if r.fix {
         stale.iter().for_each(|p| drop(fs::remove_file(p)));
+        for p in &locks {
+            lock::remove(p);
+        }
         r.line(
             Level::Ok,
             what,
@@ -470,11 +482,20 @@ fn running(r: &mut Report, hosts: &[Host]) {
     if hosts.is_empty() {
         return r.line(Level::Ok, what, "none running");
     }
+    let locks = lock::all();
     let mut answering = 0;
     for host in hosts {
         match request(host, &json!({ "cmd": "status" })) {
             Ok(_) => answering += 1,
-            Err(e) => r.line(Level::Warn, what, format!("{} is running but {e}", host.id())),
+            Err(e) => {
+                let held = host.held(&locks);
+                let serving = if held.is_empty() {
+                    String::new()
+                } else {
+                    format!("; it serves {}", held.join(", "))
+                };
+                r.line(Level::Warn, what, format!("{} is running but {e}{serving}", host.id()));
+            }
         }
     }
     if answering > 0 {

@@ -1,7 +1,7 @@
 # 14. Resuming
 
-Accepted (former decisions 10 and 36); reviewed 2026-10-07. Implemented,
-except the ownership lock and `--take-over` (ADR 3).
+Accepted (former decisions 10 and 36); reviewed 2026-10-07. Implemented
+(`--take-over` from an editor's process waits for ADR 4, as ADR 3 says).
 
 ## Decision
 

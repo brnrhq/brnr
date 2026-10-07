@@ -29,7 +29,9 @@
 //!   `set_model` `{session, model}` (the config option whose category is
 //!   `model`): answered once the agent has
 //! - `fork` `{session}`, `close` `{session}`: only while no editor is
-//!   attached; a headless process whose last session closes stops
+//!   attached. `close` cancels a running turn first, and is answered once
+//!   the agent has closed the session; a headless process whose last
+//!   session closes stops
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
 //!
@@ -541,6 +543,7 @@ impl Host {
                     "held": s.held.len(),
                     "context": s.context.len(),
                     "pending": pending,
+                    "shared": s.shared(),
                     "last_turn": s.last_turn,
                     "log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
                     "acp_log": (self.logging == Log::All).then(|| acp.to_string_lossy()),
@@ -789,18 +792,20 @@ impl Host {
                 if caps[cmd] != true {
                     return Err(format!("the agent can't {cmd} sessions"));
                 }
+                // A second session could never close when idle, and the
+                // process would never stop (ADR 12).
+                if cmd == "fork" && self.stop_when_idle.is_some() && caps["close"] != true {
+                    return Err("the agent can't close sessions: with stop_when_idle, a forked \
+                                session would never close"
+                        .into());
+                }
                 let cwd = self.sessions[i].cwd.clone();
                 if cmd == "fork" {
                     let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
                     let op = PeerOp::Fork { cwd };
                     self.peer_op(peer, req_id, op, "session/fork", params);
                 } else {
-                    // Dropped now: held until the agent answers, they would go out
-                    // as the running turn ends.
-                    self.drop_held(i, "close");
-                    let params = json!({ "sessionId": session });
-                    let op = PeerOp::Close { session, by: "close" };
-                    self.peer_op(peer, req_id, op, "session/close", params);
+                    self.close(i, peer, req_id, "close");
                 }
             }
             _ => unreachable!("checked in command"),
@@ -808,9 +813,14 @@ impl Host {
         Ok(())
     }
 
-    /// The session a request names, by its exact id.
+    /// The session a request names, by its exact id. One that is closing
+    /// takes no more requests.
     fn session_index(&self, req: &Value) -> Result<usize, String> {
         let wanted = req["session"].as_str().ok_or("missing session")?;
-        self.find(wanted).ok_or_else(|| format!("no session {wanted}"))
+        let i = self.find(wanted).ok_or_else(|| format!("no session {wanted}"))?;
+        if self.sessions[i].closing.is_some() {
+            return Err(format!("{wanted} is closing"));
+        }
+        Ok(i)
     }
 }
