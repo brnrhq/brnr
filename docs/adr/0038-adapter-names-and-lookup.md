@@ -15,7 +15,9 @@ Accepted (former decisions 27 and 28); reviewed 2026-10-07. Implemented.
   the link's, so an adapter next to the link is found; on Linux it is the
   link's target in the Cellar, where the adapters aren't. That path is passed
   to the process, which is the one that starts the agent. A fixed rule,
-  documented (P4).
+  documented (P4). A started bridge's bare command is looked for the same
+  way, so `command = ["brnr", "notify", …]` works from an editor whose PATH
+  lacks brnr (ADR 35, 36).
 
 ## Considered
 

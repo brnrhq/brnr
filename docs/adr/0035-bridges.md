@@ -31,8 +31,9 @@ closed, though it was still running and reading: a bridge that ran
   process's sessions come and go, and it has none when its bridges start.
 - A started bridge ends when its process exits. Its stdout closing only means
   it has no more requests; it keeps getting events. When the brnr process
-  stops, the bridge's stdin closes (it should exit then), and it gets
-  SIGTERM.
+  stops, the bridge gets the last events (`exited`), its stdin closes (it
+  should exit then), and one still running 2 s later (`BRIDGE_EXIT`) gets
+  SIGTERM: time for a bridge to act on `exited`, as `notify` does.
 - A bridge has to keep reading: one 16 MiB behind is cut off (ADR 6).
 - On an editor's session, a bridge's actions are experimental, as the CLI's
   are (ADR 4).

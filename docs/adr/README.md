@@ -52,7 +52,7 @@ of to-resolve; the map at the end says where each went.
 | [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
 | [24](0024-log-last.md) | `log --last <n>` | yes |
 | [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | no |
-| [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | no |
+| [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | mostly |
 | [27](0027-approvals.md) | Approvals: the agent's mode is the policy | mostly |
 | [28](0028-mode-model-and-config.md) | Mode, model and config options | partly |
 | [29](0029-requests-the-agent-answers.md) | Requests the agent answers | yes |
@@ -61,8 +61,8 @@ of to-resolve; the map at the end says where each went.
 | [32](0032-files-and-images.md) | Files and images in a message | yes |
 | [33](0033-profiles.md) | Profiles: shared, headless and editor parts | mostly |
 | [34](0034-same-data-in-text-and-json.md) | Same data in text and JSON; `--json` wherever a command prints data | yes |
-| [35](0035-bridges.md) | Bridges | mostly |
-| [36](0036-notify.md) | `notify` | mostly |
+| [35](0035-bridges.md) | Bridges | yes |
+| [36](0036-notify.md) | `notify` | yes |
 | [37](0037-adapters-through-homebrew.md) | Adapters through Homebrew: compiled on the user's machine, one formula each | yes |
 | [38](0038-adapter-names-and-lookup.md) | The adapters' names, and finding them next to brnr | yes |
 | [39](0039-adapter-versions.md) | Which adapter version is built, and how it shows | yes |
