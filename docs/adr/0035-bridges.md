@@ -1,7 +1,7 @@
 # 35. Bridges
 
 Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
-Implemented, except a started bridge ending when its process exits.
+Implemented.
 Resolves review item 4 with ADR 36.
 
 ## Context

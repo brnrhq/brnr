@@ -1059,6 +1059,47 @@ fn notify_works_as_a_bridge() {
     assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended sess-1\n");
 }
 
+/// As a bridge, notify reads the events the process writes to its stdin:
+/// no `--pid`, no shell, and it keeps up however much the process sends.
+#[test]
+fn notify_reads_stdin_as_a_bridge() {
+    let env = Env::new("c-notifystdin");
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT $BRNR_SESSION_ID $BRNR_PID $BRNR_TITLE\" >> '{}'", out.display());
+    let config = format!(
+        "[[profiles.default.bridges]]\ncommand = [\"brnr\", \"notify\", \"--stdin\", \"--\", \"sh\", \"-c\", {script:?}]\n"
+    );
+    env.write_config(&config);
+    env.start(&[]);
+    let pid = env.pid();
+    // More than a bridge that doesn't read may fall behind by.
+    for _ in 0..3 {
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let lines = || fs::read_to_string(&out).unwrap_or_default().lines().count();
+    assert!(wait_for(Duration::from_secs(10), || lines() == 3), "{} notifications", lines());
+    let turns = format!("turn_ended sess-1 {pid} Fake session\n").repeat(3);
+    assert_eq!(fs::read_to_string(&out).unwrap(), turns);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || lines() == 4), "no exited notification");
+    assert_eq!(fs::read_to_string(&out).unwrap(), format!("{turns}exited  {pid} \n"));
+    let err = env.fails(&["notify", "--stdin", "sess-1", "--", "true"]);
+    assert!(err.contains("--stdin takes no <session> or --pid"), "{err}");
+}
+
+/// Reading stdin, notify runs out of events when its stdin ends: without an
+/// `exited` first, it was cut off.
+#[test]
+fn notify_stdin_ends_with_its_input() {
+    let env = Env::new("c-notifystdinend");
+    let exited = r#"{"event":"exited","status":{"code":0}}"#;
+    let out = env.run_with_stdin(&["notify", "--stdin", "--", "true"], format!("not an event\n{exited}\n").as_bytes());
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = env.run_with_stdin(&["notify", "--stdin", "--", "true"], b"{\"event\":\"turn_ended\"}\n");
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("stdin closed; no more notifications"), "{}", stderr(&out));
+}
+
 /// A notifier cut off before the process exits (here, killed) says so and
 /// fails: its notifications have stopped.
 #[test]
@@ -1091,6 +1132,24 @@ fn notify_cuts_what_the_environment_cant_hold() {
     assert_eq!(bytes, (32 << 10) + "…".len());
     env.stop();
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't exit with the host");
+}
+
+// ---- bridges -------------------------------------------------------------
+
+/// A started bridge that closes its stdout has no more requests, and still
+/// gets events until it exits.
+#[test]
+fn a_bridge_that_closes_its_stdout_gets_events() {
+    let env = Env::new("c-bridgecat");
+    let out = env.dir.join("events");
+    let script = format!("exec cat > '{}'", out.display());
+    env.write_config(&format!("[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"));
+    env.start(&[]);
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let ended = || fs::read_to_string(&out).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
 }
 
 // ---- processes -----------------------------------------------------------

@@ -1,6 +1,6 @@
-//! `brnr notify (<session> | --pid <pid>) [--events <a,b,...>] -- <command>
-//! [args...]`: runs a command once per event of a session, or of every
-//! session in a process, for notifications.
+//! `brnr notify (<session> | --pid <pid> | --stdin) [--events <a,b,...>] --
+//! <command> [args...]`: runs a command once per event of a session, or of
+//! every session in a process, for notifications.
 //!
 //! The event is in the command's environment and, as JSON, on its stdin;
 //! nothing is substituted into the command line, so what an agent writes
@@ -15,14 +15,21 @@
 //! The text, title and message have control characters escaped, as `watch`
 //! shows them, and are cut at 32 KiB; the event on stdin has them whole.
 //!
-//! As a bridge in a profile it is given its process in `$BRNR_PID`:
-//! `sh -c 'exec brnr notify --pid "$BRNR_PID" -- …'`. `--events` is read as
-//! for `watch`, but its default (and `default`) is `permission_request`,
-//! `turn_ended`, `exited`. It exits when the process does (or the session
-//! closes), and fails if the process cuts it off first.
+//! `--events` is read as for `watch`, but its default (and `default`) is
+//! `permission_request`, `turn_ended`, `exited`. It exits when the process
+//! does (or the session closes), and fails if the process cuts it off first.
+//!
+//! With `--stdin` it reads the events from its stdin, one per line, instead
+//! of connecting: a started bridge's transport (ADR 35 and 36 in docs/adr).
+//! As a bridge in a profile it is `command = ["brnr", "notify", "--stdin",
+//! "--", …]`, and `BRNR_PID` is the one the process gives it. The bridge's
+//! `events`, if the profile limits them, must include `agent_message`,
+//! `session_changed` and `exited` for the environment and the end. It exits
+//! when its stdin ends; ending before `exited` is being cut off.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::env;
+use std::io::{self, BufRead, StdinLock, Write};
 use std::os::fd::AsFd;
 use std::process::{Command, ExitCode, Stdio};
 
@@ -41,7 +48,7 @@ const DEFAULT_EVENTS: &[&str] = &["permission_request", "turn_ended", "exited"];
 const ENV_TEXT_MAX: usize = 32 << 10;
 
 pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut pid) = (None, None);
+    let (mut session, mut pid, mut stdin) = (None, None, false);
     let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
     let mut events = default.clone();
     let mut command = Vec::new();
@@ -50,6 +57,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         match arg.as_str() {
             "--events" => events = events_arg(it.next(), &default)?,
             "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
+            "--stdin" => stdin = true,
             "--" => {
                 command = it.by_ref().cloned().collect();
                 break;
@@ -62,9 +70,6 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     if command.is_empty() {
         return Err("notify needs a command after --".into());
     }
-    let hosts = discover()?;
-    let (host, only) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
-    let mut conn = Conn::open(host)?;
     // Agent messages and titles are tracked for the environment, and the
     // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
@@ -73,19 +78,12 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
             wanted.push(extra);
         }
     }
-    conn.subscribe(&wanted)?;
+    let Events { mut source, process, only, mut titles } =
+        Events::open(stdin, session.as_deref(), pid.as_deref(), &wanted)?;
     let mut last_message: HashMap<String, String> = HashMap::new();
-    // Titles the agent gave before we subscribed.
-    let status = conn.call(serde_json::json!({ "cmd": "status" }))?;
-    let mut titles: HashMap<String, String> = status["sessions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|s| Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned())))
-        .collect();
     let options = render::Options { session: false, time: false };
     loop {
-        let e = match conn.next_event(None) {
+        let e = match source.next() {
             Ok(Some(e)) => e,
             Ok(None) => continue,
             // Gone without an `exited`: notifications stop, which is a
@@ -121,12 +119,86 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     ("BRNR_SESSION_ID", session.clone()),
                     ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
                     ("BRNR_MESSAGE", env_text(&message)),
-                    ("BRNR_PID", host.id().to_owned()),
+                    ("BRNR_PID", process.clone()),
                 ],
             );
         }
         if name == "exited" || (name == "session_closed" && only.is_some()) {
             return Ok(ExitCode::SUCCESS);
+        }
+    }
+}
+
+/// Where the events come from, and what is known before the first.
+struct Events {
+    source: Source,
+    /// The process, for `BRNR_PID`.
+    process: String,
+    /// The session they are of, if only one's.
+    only: Option<String>,
+    /// Titles the agent gave before.
+    titles: HashMap<String, String>,
+}
+
+enum Source {
+    Socket(Conn),
+    /// A started bridge's (ADR 35 in docs/adr).
+    Stdin(StdinLock<'static>),
+}
+
+impl Events {
+    /// Subscribed to `wanted` on the socket of the process `session` or
+    /// `pid` names; or, with `stdin`, what the process sends a started
+    /// bridge.
+    fn open(
+        stdin: bool,
+        session: Option<&str>,
+        pid: Option<&str>,
+        wanted: &[&str],
+    ) -> Result<Events, String> {
+        if stdin {
+            if session.is_some() || pid.is_some() {
+                return Err("--stdin takes no <session> or --pid".into());
+            }
+            // Subscribed from the process's start, so every title is to come.
+            let process = env::var("BRNR_PID").unwrap_or_default();
+            let source = Source::Stdin(io::stdin().lock());
+            return Ok(Events { source, process, only: None, titles: HashMap::new() });
+        }
+        let hosts = discover()?;
+        let (host, only) = session_or_pid(&hosts, session, pid)?;
+        let mut conn = Conn::open(host)?;
+        conn.subscribe(wanted)?;
+        // Titles the agent gave before we subscribed.
+        let status = conn.call(serde_json::json!({ "cmd": "status" }))?;
+        let titles: HashMap<String, String> = status["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
+            })
+            .collect();
+        Ok(Events { source: Source::Socket(conn), process: host.id().to_owned(), only, titles })
+    }
+}
+
+impl Source {
+    /// The next event; `Ok(None)` for a line that isn't one, `Err` once
+    /// there are no more.
+    fn next(&mut self) -> Result<Option<Value>, String> {
+        match self {
+            Source::Socket(conn) => conn.next_event(None),
+            Source::Stdin(stdin) => {
+                let mut line = Vec::new();
+                match stdin.read_until(b'\n', &mut line) {
+                    Ok(0) => Err("stdin closed".into()),
+                    Ok(_) => Ok(serde_json::from_slice::<Value>(&line)
+                        .ok()
+                        .filter(|e| e.get("event").is_some())),
+                    Err(e) => Err(format!("stdin: {e}")),
+                }
+            }
         }
     }
 }

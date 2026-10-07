@@ -63,7 +63,7 @@ pub struct Ids {
 enum Cmd {
     Open { session: String, cwd: PathBuf },
     Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8> },
-    Note { session: Option<String>, ts: SystemTime, event: Value },
+    Note { session: Option<String>, ts: SystemTime, event: String },
     Finish,
 }
 
@@ -83,9 +83,13 @@ impl Sink {
         self.send(Cmd::Msg { session, ts: SystemTime::now(), dir, bytes: bytes.to_vec() });
     }
 
+    /// The event is written out here, on the caller's stack: it may nest as
+    /// deeply as the ACP it came from (see json.rs).
     pub fn note(&self, session: Option<&str>, event: Value) {
-        let session = session.map(str::to_owned);
-        self.send(Cmd::Note { session, ts: SystemTime::now(), event });
+        if self.0.is_some() {
+            let (session, event) = (session.map(str::to_owned), event.to_string());
+            self.send(Cmd::Note { session, ts: SystemTime::now(), event });
+        }
     }
 
     fn send(&self, cmd: Cmd) {

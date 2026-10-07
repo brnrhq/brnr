@@ -92,7 +92,8 @@ sessions
 events
   brnr log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
   brnr watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
-  brnr notify (<session> | --pid <pid>) [--events <default|all|event>,...] -- <command> [args...]
+  brnr notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
+              -- <command> [args...]
 
 settings
   brnr mode <session> [<mode>] [--json]
