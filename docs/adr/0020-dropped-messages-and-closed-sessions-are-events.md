@@ -17,8 +17,10 @@ an `undelivered` list in `exited`.
 ## Decision
 
 - `message_dropped {session, message, text, by}`, `by` one of `cancel`,
-  `queue`, `close`, `exit`: every way a held message can go unsent (P3).
-  `exited` loses `undelivered` (P5, P9).
+  `queue`, `close`, `exit`, and `steer` (a steer the agent neither took nor
+  sent back, ADR 18): every way a message brnr accepted can go unsent (P3).
+  Unanswered steers are dropped with held messages by `cancel`, a close and
+  the exit. `exited` loses `undelivered` (P5, P9).
 - `session_closed {session, by}`, `by` one of `close` (`brnr close`,
   `--take-over`), `idle` (`stop_when_idle`) and `editor` (the editor's own
   `session/close`). Messages still held in the session are dropped first. A
