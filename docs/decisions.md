@@ -3,7 +3,8 @@
 Decisions made while building out the headless CLI (the functional review:
 seeing what happened, waiting, resuming, steering, approving with
 context). Each entry lists the options considered and what was chosen, so
-they can be revisited.
+they can be revisited. Questions still open are in
+[to-resolve.md](to-resolve.md).
 
 ## 1. Where `log` and `watch` get their story from
 
