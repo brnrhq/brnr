@@ -21,7 +21,8 @@
 //!   Elicitation is declined, and anything else gets "method not found".
 //! - While `session/load` replays a resumed session's history, the replayed
 //!   updates are neither recorded nor turned into events: the transcript has
-//!   them already.
+//!   them already. What they say the session is now (its title, mode, config
+//!   options and commands) is kept.
 
 use std::collections::VecDeque;
 use std::mem::take;
@@ -94,6 +95,8 @@ pub(super) struct Session {
     idle_done: bool,
     /// When it last had an event, or opened.
     pub(super) last_active: SystemTime,
+    /// How the last turn ended: `{stop_reason, error}`, as `turn_ended`.
+    pub(super) last_turn: Option<Value>,
 }
 
 /// A request whose response creates or ends a session.
@@ -139,12 +142,18 @@ impl Host {
     // ---- editor → agent ------------------------------------------------
 
     pub(super) fn editor_bytes(&mut self, bytes: &[u8]) {
+        // Only the new bytes are looked through: a long line arrives in many
+        // reads.
+        let mut from = self.editor_buf.len();
         self.editor_buf.extend_from_slice(bytes);
-        while let Some(i) = self.editor_buf.iter().position(|&b| b == b'\n') {
-            let mut line: Vec<u8> = self.editor_buf.drain(..=i).collect();
-            line.pop();
+        let mut start = 0;
+        while let Some(i) = self.editor_buf[from..].iter().position(|&b| b == b'\n') {
+            let end = from + i;
+            let line = self.editor_buf[start..end].to_vec();
+            (start, from) = (end + 1, end + 1);
             self.editor_line(line);
         }
+        self.editor_buf.drain(..start);
     }
 
     fn editor_line(&mut self, mut line: Vec<u8>) {
@@ -229,7 +238,7 @@ impl Host {
         let caps = msg.get_mut("params")?.get_mut("clientCapabilities")?.as_object_mut()?;
         let dropped: Map<String, Value> = DROPPED_CAPABILITIES
             .iter()
-            .filter_map(|&k| Some((k.to_owned(), caps.remove(k)?)))
+            .filter_map(|&k| Some((k.to_owned(), caps.shift_remove(k)?)))
             .collect();
         if dropped.is_empty() {
             return None;
@@ -307,7 +316,13 @@ impl Host {
                     .and_then(|s| self.find(s))
                     .is_some_and(|i| self.sessions[i].replaying);
                 if replaying {
-                    return; // History the transcript has already; no editor to show it.
+                    // History the transcript has already; no editor to show it.
+                    if method.as_deref() == Some("session/update")
+                        && let Some(i) = session.as_deref().and_then(|s| self.find(s))
+                    {
+                        self.replayed_state(i, &msg["params"]["update"]);
+                    }
+                    return;
                 }
                 if method.as_deref() == Some("session/update")
                     && let Some(session) = &session
@@ -353,8 +368,11 @@ impl Host {
             self.host_request_done(request, msg);
         }
         if let Some((sid, injected, message)) = turn {
+            let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
             if let Some(i) = self.find(&sid) {
                 self.flush_agent_message(i);
+                self.sessions[i].last_turn =
+                    Some(json!({ "stop_reason": stop_reason, "error": msg.get("error") }));
             }
             self.emit(json!({
                 "event": "turn_ended",
@@ -362,7 +380,7 @@ impl Host {
                 "by": if injected { "control" } else { "editor" },
                 "prompt": key,
                 "message": message,
-                "stop_reason": msg.get("result").and_then(|r| r.get("stopReason")),
+                "stop_reason": stop_reason,
                 "error": msg.get("error"),
             }));
             self.next_turn(&sid);
@@ -464,7 +482,8 @@ impl Host {
     fn answer_as_client(&mut self, mut req: AgentRequest) {
         match req.method.as_str() {
             "session/request_permission" => {
-                req.deadline = self.permission_timeout.map(|t| Instant::now() + t);
+                // None, never, for a timeout too far off to say.
+                req.deadline = self.permission_timeout.and_then(|t| Instant::now().checked_add(t));
                 let event = permission_event(&req, "headless");
                 self.agent_requests.push(req);
                 self.emit(event);
@@ -479,9 +498,10 @@ impl Host {
         }
     }
 
-    /// Answers permission request `handle`: with `option` if given, else the
-    /// first allow (or reject) option. Denying a request that offers no
-    /// reject option cancels it.
+    /// Answers permission request `handle`: with `option` if given (not one
+    /// of the other kind: a deny can't pick an allow option), else the first
+    /// allow (or reject) option. Denying a request that offers no reject
+    /// option cancels it.
     pub(super) fn resolve_permission(
         &mut self,
         handle: &str,
@@ -504,13 +524,21 @@ impl Host {
             self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
         let outcome = match option {
             Some(option) => {
-                if !options.iter().any(|o| o["optionId"] == option) {
+                let Some(chosen) = options.iter().find(|o| o["optionId"] == option) else {
                     let ids: Vec<&str> =
                         options.iter().filter_map(|o| o["optionId"].as_str()).collect();
                     return Err(format!(
                         "{handle} has no option {option} (options: {})",
                         ids.join(", ")
                     ));
+                };
+                let kind = chosen["kind"].as_str().unwrap_or_default();
+                let (wrong, verb) = match choice {
+                    Choice::Allow => ("reject_", "deny"),
+                    Choice::Deny => ("allow_", "approve"),
+                };
+                if kind.starts_with(wrong) {
+                    return Err(format!("{handle}: {option} ({kind}) is for brnr {verb}"));
                 }
                 json!({ "outcome": "selected", "optionId": option })
             }
@@ -656,7 +684,8 @@ impl Host {
         }
         let Some(i) = (0..self.sessions.len()).find(|&i| {
             let s = &self.sessions[i];
-            !s.idle_done && s.idle_since.is_some_and(|t| now >= t + limit)
+            let until = s.idle_since.and_then(|t| t.checked_add(limit)); // None: never.
+            !s.idle_done && until.is_some_and(|t| now >= t)
         }) else {
             return;
         };
@@ -683,7 +712,10 @@ impl Host {
         // comes round; this wakes it then.
         (0..self.sessions.len())
             .filter(|&i| !self.sessions[i].idle_done && self.is_idle(i))
-            .map(|i| self.sessions[i].idle_since.map_or_else(Instant::now, |t| t + limit))
+            .filter_map(|i| match self.sessions[i].idle_since {
+                None => Some(Instant::now()),
+                Some(t) => t.checked_add(limit), // None: never.
+            })
             .min()
     }
 
@@ -852,6 +884,7 @@ impl Host {
             idle_since: None,
             idle_done: false,
             last_active: SystemTime::now(),
+            last_turn: None,
         });
         self.sessions.len() - 1
     }

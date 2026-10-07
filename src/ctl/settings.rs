@@ -24,6 +24,10 @@ const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long `brnr sessions` gives the agent to start and list.
 const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long the agent `brnr sessions` started has to exit, after its stdin
+/// closes and it gets SIGTERM, before its process group gets SIGKILL.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+
 /// `<session>`, the other arguments, and whether `--json` was given.
 fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> {
     let mut session = None;
@@ -42,7 +46,7 @@ fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> 
 
 /// The running session `arg` names: its process and its status.
 fn session_status(arg: &str) -> Result<(Host, Value), String> {
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
     let status = host
         .sessions()
@@ -99,7 +103,7 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
                 let mark = if m["mode"].as_str() == current.as_deref() { "*" } else { " " };
                 let about = m["description"].as_str().or(m["name"].as_str());
                 let about = about.map(|d| format!("  {d}")).unwrap_or_default();
-                println!("{mark} {}{about}", s(&m["mode"]));
+                outln!("{mark} {}{about}", s(&m["mode"]));
             }
         }
         [mode] => {
@@ -107,7 +111,7 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
             if json_out {
                 print_json(&json!({ "session": id, "mode": mode }))?;
             } else {
-                println!("mode {mode}");
+                outln!("mode {mode}");
             }
         }
         _ => return Err(USAGE.to_owned()),
@@ -173,7 +177,7 @@ pub(super) fn config(args: &[String]) -> Result<ExitCode, String> {
             &json!({ "cmd": "set_config", "session": id, "option": option, "value": value }),
         )?;
         if !json_out {
-            println!("{option}={value}");
+            outln!("{option}={value}");
         }
         set.push(json!({ "option": option, "value": value }));
     }
@@ -210,7 +214,7 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
             }
             for m in &models {
                 let mark = if m["model"] == status["model"] { "*" } else { " " };
-                println!("{mark} {}  {}", s(&m["model"]), m["name"].as_str().unwrap_or(""));
+                outln!("{mark} {}  {}", s(&m["model"]), m["name"].as_str().unwrap_or(""));
             }
         }
         [model] => {
@@ -218,7 +222,7 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
             if json_out {
                 print_json(&json!({ "session": id, "model": model }))?;
             } else {
-                println!("model {model}");
+                outln!("model {model}");
             }
         }
         _ => return Err(USAGE.to_owned()),
@@ -243,11 +247,11 @@ pub(super) fn commands(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     if commands.is_empty() {
-        println!("the agent has announced no commands");
+        outln!("the agent has announced no commands");
     }
     for c in commands {
         let hint = c["hint"].as_str().map(|h| format!(" <{h}>")).unwrap_or_default();
-        println!("/{}{hint}  {}", s(&c["command"]), c["description"].as_str().unwrap_or(""));
+        outln!("/{}{hint}  {}", s(&c["command"]), c["description"].as_str().unwrap_or(""));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -289,7 +293,7 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     // What brnr knows of each, in brnr list's terms: a running session's
     // state and process, `inactive` for one with a transcript, nothing for
     // one only the agent knows.
-    let hosts = discover();
+    let hosts = discover()?;
     let past = inactive_sessions(&hosts);
     let known = |id: &str| -> (Value, Value, Value) {
         for host in &hosts {
@@ -325,7 +329,7 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     if rows.is_empty() {
-        println!("the agent knows no sessions in {}", cwd.display());
+        outln!("the agent knows no sessions in {}", cwd.display());
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = vec![["SESSION", "TITLE", "STATE", "PID", "LAST ACTIVE", "CWD"].map(String::from)];
@@ -359,9 +363,6 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
         .spawn()
         .map_err(|e| format!("{}: {e}", program.to_string_lossy()))?;
     let pid = child.id() as i32;
-    let stop = || unsafe {
-        libc::kill(-pid, libc::SIGTERM);
-    };
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel::<String>();
@@ -419,8 +420,21 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
         Ok(sessions)
     })();
     drop(ask);
-    stop();
-    let _ = child.wait();
+    drop(stdin);
+    unsafe { libc::kill(-pid, libc::SIGTERM) };
+    let until = Instant::now() + STOP_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(20)),
+            // Not reaped yet, so the group id is still the agent's.
+            Ok(None) => {
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                let _ = child.wait();
+                break;
+            }
+            Ok(Some(_)) | Err(_) => break,
+        }
+    }
     result
 }
 
@@ -431,23 +445,23 @@ pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
     if !rest.is_empty() {
         return Err(USAGE.to_owned());
     }
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, from) = running_session(&hosts, &arg)?;
     let response = agent_call(host, &json!({ "cmd": "fork", "session": from }))?;
     let session = text(&response["session"]);
     if json_out {
         print_json(&json!({ "session": session, "from": from }))?;
     } else {
-        println!("forked {from} into {session}");
+        outln!("forked {from} into {session}");
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     let [arg] = args else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
     agent_call(host, &json!({ "cmd": "close", "session": id }))?;
-    println!("closed {id}");
+    outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
 }

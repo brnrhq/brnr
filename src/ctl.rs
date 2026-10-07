@@ -31,6 +31,21 @@ use serde_json::{Value, json};
 use brnr::host::{EVENTS, QUIET, alive};
 use brnr::{paths, render};
 
+/// `println!` and `print!` for what the commands print: through
+/// [`render::clean`], since so much of it is the agent's (titles, messages,
+/// options), and quietly ending brnr when the reader goes away (`brnr list |
+/// head -1`), as a filter does, rather than panicking.
+macro_rules! outln {
+    ($($arg:tt)*) => { $crate::ctl::out(&format!("{}\n", format_args!($($arg)*))) };
+}
+macro_rules! out {
+    ($($arg:tt)*) => { $crate::ctl::out(&format!($($arg)*)) };
+}
+/// `eprintln!` for messages with the agent's words in them.
+macro_rules! errln {
+    ($($arg:tt)*) => { eprintln!("{}", brnr::render::clean(&format!($($arg)*))) };
+}
+
 mod doctor;
 mod history;
 mod notify;
@@ -131,11 +146,11 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Some("watch") => done(watch(rest)),
         Some("doctor") => done(doctor::main(rest)),
         Some("-h" | "--help") => {
-            println!("{USAGE}");
+            outln!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
         Some("-V" | "--version") => {
-            println!("brnr {}", env!("CARGO_PKG_VERSION"));
+            outln!("brnr {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
         _ => Err(USAGE.to_owned()),
@@ -147,9 +162,19 @@ pub fn main(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
         Err(msg) => {
-            eprintln!("brnr: {msg}");
+            errln!("brnr: {msg}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What [`outln!`] and [`out!`] print with.
+fn out(text: &str) {
+    let mut stdout = io::stdout().lock();
+    match stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => panic!("writing to stdout: {e}"),
     }
 }
 
@@ -260,7 +285,7 @@ fn ps(args: &[String]) -> Result<(), String> {
         [flag] if flag == "--json" => true,
         _ => return Err(USAGE.to_owned()),
     };
-    let hosts = discover();
+    let hosts = discover()?;
     let rows: Vec<Value> = hosts
         .iter()
         .map(|host| {
@@ -280,7 +305,7 @@ fn ps(args: &[String]) -> Result<(), String> {
         return print_json(&json!(rows));
     }
     if rows.is_empty() {
-        println!("no brnr processes");
+        outln!("no brnr processes");
         return Ok(());
     }
     // Each session has a cwd of its own (brnr list); the process's is only
@@ -303,10 +328,10 @@ fn ps(args: &[String]) -> Result<(), String> {
 
 fn stop(args: &[String]) -> Result<(), String> {
     let [pid] = args else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
+    let hosts = discover()?;
     let host = process(&hosts, pid)?;
     let response = call(host, &json!({ "cmd": "stop" }))?;
-    println!("{}", response["status"].as_str().unwrap_or("?"));
+    outln!("{}", response["status"].as_str().unwrap_or("?"));
     Ok(())
 }
 
@@ -322,7 +347,7 @@ fn list(args: &[String]) -> Result<(), String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let hosts = discover();
+    let hosts = discover()?;
     let mut rows = Vec::new();
     if active {
         for host in &hosts {
@@ -358,7 +383,7 @@ fn list(args: &[String]) -> Result<(), String> {
         return print_json(&json!(rows));
     }
     if rows.is_empty() {
-        println!("no {}sessions", if active { "running " } else { "" });
+        outln!("no {}sessions", if active { "running " } else { "" });
         return Ok(());
     }
     let mut table =
@@ -476,7 +501,7 @@ fn status(args: &[String]) -> Result<(), String> {
         [arg, flag] | [flag, arg] if flag == "--json" => (arg, true),
         _ => return Err(USAGE.to_owned()),
     };
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
@@ -515,7 +540,7 @@ fn status(args: &[String]) -> Result<(), String> {
     if json_out {
         return print_json(&report);
     }
-    print!("{}", describe_status(&report, arg));
+    out!("{}", describe_status(&report, arg));
     Ok(())
 }
 
@@ -631,7 +656,7 @@ fn pending(args: &[String]) -> Result<(), String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let hosts = discover();
+    let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
         None => (hosts.iter().collect(), None),
         Some(arg) => {
@@ -667,7 +692,7 @@ fn pending(args: &[String]) -> Result<(), String> {
         return print_json(&json!(rows));
     }
     if rows.is_empty() {
-        println!("nothing waiting");
+        outln!("nothing waiting");
         return Ok(());
     }
     let mut table =
@@ -706,7 +731,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
         }
     }
     let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let req = json!({ "cmd": cmd, "session": session, "request": request_id, "option": option });
     let response = call(host, &req)?;
@@ -715,7 +740,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
         return print_json(&json!({ "session": session, "request": request_id, "outcome": outcome }));
     }
     let what = outcome["optionId"].as_str().or(outcome["outcome"].as_str()).unwrap_or("?");
-    println!("{request_id} {what}");
+    outln!("{request_id} {what}");
     Ok(())
 }
 
@@ -745,7 +770,7 @@ fn watch(args: &[String]) -> Result<(), String> {
     if !show_exited {
         events.push("exited".to_owned());
     }
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, only_session) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
     let mut conn = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
     writeln!(conn, "{}", json!({ "cmd": "subscribe", "events": events }))
@@ -772,7 +797,7 @@ fn watch(args: &[String]) -> Result<(), String> {
         if !exited || show_exited {
             let text = if json_out { Some(line) } else { render::event(&event, &options) };
             if let Some(text) = text
-                && writeln!(out, "{text}").and_then(|()| out.flush()).is_err()
+                && writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()).is_err()
             {
                 return Ok(());
             }
@@ -818,21 +843,25 @@ fn default_events() -> Vec<String> {
 // ---- plumbing ------------------------------------------------------------
 
 /// Every process with a metadata file, asking each for its live status.
-/// Files left by a process that no longer exists are removed.
-fn discover() -> Vec<Host> {
+/// Files left by a process that no longer exists are removed. The runtime
+/// directory must be private, as the processes themselves require: anyone
+/// who could write to it could list a process of their own, and be sent
+/// what brnr sends.
+fn discover() -> Result<Vec<Host>, String> {
     let dir = paths::runtime_dir();
-    let Ok(entries) = fs::read_dir(&dir) else { return Vec::new() };
+    match paths::check_private(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    }
+    let Ok(entries) = fs::read_dir(&dir) else { return Ok(Vec::new()) };
     let mut hosts = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        let Some(meta) =
-            fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        else {
-            continue;
-        };
+        let Some(meta) = read_meta(&path) else { continue };
         let mut host = Host { meta, status: None };
         host.status = request(&host, &json!({ "cmd": "status" })).ok();
         if host.status.is_none() && !alive(host.meta["host_pid"].as_i64().unwrap_or(0)) {
@@ -843,7 +872,15 @@ fn discover() -> Vec<Host> {
         hosts.push(host);
     }
     hosts.sort_by(|a, b| a.meta["started"].as_str().cmp(&b.meta["started"].as_str()));
-    hosts
+    Ok(hosts)
+}
+
+/// A process's metadata file, if it is one: the socket it names must be the
+/// one next to it in the runtime directory.
+fn read_meta(path: &Path) -> Option<Value> {
+    let meta: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let socket = meta["socket"].as_str().map(Path::new);
+    (socket == Some(&path.with_extension("sock"))).then_some(meta)
 }
 
 fn connect(host: &Host) -> io::Result<UnixStream> {
@@ -881,14 +918,14 @@ fn call(host: &Host, req: &Value) -> Result<Value, String> {
 /// `req_id`.
 fn response_json(mut response: Value) -> Value {
     if let Some(map) = response.as_object_mut() {
-        map.remove("ok");
-        map.remove("req_id");
+        map.shift_remove("ok");
+        map.shift_remove("req_id");
     }
     response
 }
 
 fn print_json(value: &Value) -> Result<(), String> {
-    println!("{}", serde_json::to_string_pretty(value).unwrap());
+    outln!("{}", serde_json::to_string_pretty(value).unwrap());
     Ok(())
 }
 
@@ -904,11 +941,14 @@ fn read_stdin() -> Result<String, String> {
 }
 
 fn print_table<const N: usize>(rows: Vec<[String; N]>) {
+    // Escaped first, so the columns line up as shown.
+    let rows: Vec<[String; N]> =
+        rows.into_iter().map(|r| r.map(|cell| render::clean(&cell).into_owned())).collect();
     let widths: Vec<usize> =
         (0..N).map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap()).collect();
     for row in rows {
         let cells: Vec<String> =
             row.iter().zip(&widths).map(|(cell, w)| format!("{cell:<w$}")).collect();
-        println!("{}", cells.join("  ").trim_end());
+        outln!("{}", cells.join("  ").trim_end());
     }
 }

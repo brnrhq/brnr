@@ -110,7 +110,8 @@ brnr start --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-cl
 
 `wait`, `send --wait` and `start --wait` exit 0 when the turn ended normally
 (`end_turn`), 1 when it failed or stopped for another reason, and 124 on
-`--timeout <s>`. While they wait, approvals are announced on stderr.
+`--timeout <s>`; `wait` on a session that is idle already exits as its last
+turn ended. While they wait, approvals are announced on stderr.
 
 ### Approvals
 
@@ -119,6 +120,10 @@ brnr pending                       # approvals waiting, in every session
 brnr show $s p1                    # one in full: the command, paths, the diff
 brnr approve $s p1                 # or: brnr deny $s p1, --option <id>
 ```
+
+Whatever brnr shows of the agent's text has its control characters escaped
+(`\u001b`), so a command can't be dressed up as another; `show` says when a
+command has any. `--json` has the text as the agent sent it.
 
 ### Settings
 
@@ -157,7 +162,10 @@ in a process (`--pid`): by default `permission_request`, `turn_ended` and
 event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`,
 `BRNR_MESSAGE`, `BRNR_SESSION_ID`, `BRNR_REQUEST`,
 `BRNR_PID`) and, as JSON, on its stdin; nothing is put on its command line, so
-what the agent writes can't become arguments.
+what the agent writes can't become arguments. The text, title and message are
+escaped as `watch` shows them and cut at 32 KiB; the event on stdin is whole.
+`notify` exits when the process does, and fails if the process cuts it off
+first.
 
 ```sh
 brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
@@ -190,7 +198,7 @@ approval waiting), counting from the start; `0` is as soon as it is.
 `--foreground` keeps the session in the terminal, for a supervisor such as
 systemd or a container: it shows the session as it goes (`--json`: as JSON
 lines; `--quiet`: not), Ctrl-C stops it (twice kills the agent), and it exits
-as the agent did.
+as the agent did, or 1 if the start failed (setting `--mode`, say).
 
 `--resume` uses the agent's `session/resume` (or `session/load`, without
 recording the replayed history again), in the session's cwd, with the agent it
@@ -291,8 +299,8 @@ commands have names of their own so they don't clash with the npm packages'
 
 They don't include the agents. Each runs the user's own `claude` or `codex`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
-`CODEX_PATH`). `build.sh` copies the license of every package it compiles in to
-`licenses/`. The Claude Agent SDK's license isn't an open-source one; check
+`CODEX_PATH`). `build.sh` copies every package's license file (`LICENSE`,
+`license`, `License.txt`, …), nested packages' too, to `licenses/`. The Claude Agent SDK's license isn't an open-source one; check
 Anthropic's terms before redistributing a build of brnr-claude-adapter.
 
 ## Doctor
@@ -316,7 +324,7 @@ the checks.
 |---|---|
 | `BRNR_HOME` | `~/.brnr` (transcripts) |
 | `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
-| `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata) |
+| `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata; brnr refuses one others can use) |
 | `BRNR_START_TIMEOUT` | `120`: seconds `brnr start` waits for the session |
 
 ## Releasing

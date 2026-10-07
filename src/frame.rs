@@ -22,10 +22,13 @@ pub const EOF: u8 = b'Z';
 /// proxy → host: writing to the proxy's stdout failed.
 pub const STDOUT_CLOSED: u8 = b'C';
 
+/// Fails, writing nothing, for a payload too long for the length field.
 pub fn write(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "frame payload over 4 GiB"))?;
     let mut buf = Vec::with_capacity(5 + payload.len());
     buf.push(kind);
-    buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(payload);
     w.write_all(&buf)
 }

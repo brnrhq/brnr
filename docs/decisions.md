@@ -204,6 +204,11 @@ methods and a hint to log in with the agent's own CLI first.
 command line, so an agent's text can't inject arguments. Default events:
 `permission_request`, `turn_ended`, `exited`.
 
+The variables have since become `BRNR_SESSION_ID`, and `BRNR_PID` for
+`BRNR_HOST` (see 37); `BRNR_MESSAGE` has the session's last agent message.
+The agent's text in them is escaped as `watch` shows it and cut at 32 KiB, so
+the command always starts; the event on stdin is whole.
+
 ## 18. Tool call events
 
 A `tool_call` event goes out when a call starts (`started: true`) and on

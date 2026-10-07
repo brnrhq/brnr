@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use brnr::host::{alive, check_bridge};
 use brnr::{config, paths, spawn};
 
-use super::{Host, USAGE, request};
+use super::{Host, USAGE, read_meta, request};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;
@@ -70,7 +70,7 @@ impl Report {
             };
             self.checks.push(json!({ "level": level, "check": what, "message": msg.as_ref() }));
         } else {
-            println!("{tag:<5} {what}: {}", msg.as_ref());
+            outln!("{tag:<5} {what}: {}", msg.as_ref());
         }
     }
 }
@@ -91,7 +91,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     adapters(&mut r);
     running(&mut r, &hosts);
     if r.json {
-        println!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
+        outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
             0 => Ok(()),
             n => Err(format!("{n} check{} failed", plural(n))),
@@ -100,7 +100,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     match (r.failed, r.warned) {
         (0, 0) => Ok(()),
         (0, n) => {
-            println!("\n{n} warning{}", plural(n));
+            outln!("\n{n} warning{}", plural(n));
             Ok(())
         }
         (n, _) => Err(format!("{n} check{} failed", plural(n))),
@@ -151,30 +151,33 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
         },
     }
 
-    // Metadata of hosts that are gone, and sockets without metadata.
+    // Metadata of hosts that are gone, and sockets without metadata. A
+    // process binds its socket, then writes its metadata (`<pid>.json.tmp`,
+    // renamed): while its pid is alive, those are a process starting.
     let mut hosts = Vec::new();
     let mut stale: Vec<PathBuf> = Vec::new();
     let entries: Vec<PathBuf> =
         fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
     for path in &entries {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let starting = name.split('.').next().and_then(|pid| pid.parse().ok()).is_some_and(alive);
         if name.ends_with(".json.tmp") {
-            stale.push(path.clone());
+            if !starting {
+                stale.push(path.clone());
+            }
             continue;
         }
         match path.extension().and_then(OsStr::to_str) {
-            Some("json") => {
-                let meta =
-                    fs::read(path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-                match meta {
-                    Some(meta) if alive(meta["host_pid"].as_i64().unwrap_or(0)) => {
-                        hosts.push(Host { meta, status: None });
-                    }
-                    // Its socket, if any, goes with it.
-                    _ => stale.extend([path.clone(), path.with_extension("sock")]),
+            Some("json") => match read_meta(path) {
+                Some(meta) if alive(meta["host_pid"].as_i64().unwrap_or(0)) => {
+                    hosts.push(Host { meta, status: None });
                 }
+                // Its socket, if any, goes with it.
+                _ => stale.extend([path.clone(), path.with_extension("sock")]),
+            },
+            Some("sock") if !path.with_extension("json").exists() && !starting => {
+                stale.push(path.clone());
             }
-            Some("sock") if !path.with_extension("json").exists() => stale.push(path.clone()),
             _ => {}
         }
     }

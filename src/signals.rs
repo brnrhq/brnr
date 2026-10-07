@@ -1,11 +1,12 @@
 //! Catching signals sent to the proxy so the host can pass them to the agent,
-//! and carrying the caller's signal mask through to the agent.
+//! and carrying the caller's signal mask through to the agent; letting a
+//! host in the foreground write to its terminal.
 
 use std::io::{self, PipeReader};
 use std::mem::zeroed;
 use std::os::fd::IntoRawFd;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::Relaxed};
 
 use libc::{c_int, sigset_t};
 
@@ -72,6 +73,28 @@ pub fn current_mask() -> Vec<c_int> {
 /// exec.
 pub fn set_mask(sigs: &[c_int]) {
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &sigset(sigs), null_mut()) };
+}
+
+/// SIGTTOU as it was before [`write_from_background`]; `usize::MAX` (also
+/// `SIG_ERR`) for unchanged.
+static TTOU: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Lets this process write to its terminal from a background process group:
+/// under `stty tostop` its first write would otherwise stop it. `brnr start
+/// --foreground` runs the host in a group of its own, writing to the
+/// terminal.
+pub fn write_from_background() {
+    let old = unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
+    TTOU.store(old, Relaxed);
+}
+
+/// Gives a child SIGTTOU back as this process found it (see
+/// [`write_from_background`]). Safe between fork and exec.
+pub fn restore_for_child() {
+    let old = TTOU.load(Relaxed);
+    if old != usize::MAX {
+        unsafe { libc::signal(libc::SIGTTOU, old) };
+    }
 }
 
 /// Kills the whole process with `sig`'s default action.

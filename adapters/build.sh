@@ -28,10 +28,22 @@ for adapter; do
     bun build --compile --minify "$adapter.ts" --outfile "$out/brnr-$adapter-adapter"
 done
 
-# Third-party licenses of everything compiled in.
+# Third-party licenses of everything compiled in: each package's own
+# (LICENSE, license, License.txt, LICENCE, ...), nested packages too, as
+# <package>.txt; a second file of a package's as <package>.<file>.txt.
+rm -rf "$out/licenses"
 mkdir -p "$out/licenses"
-for license in node_modules/*/LICENSE* node_modules/@*/*/LICENSE*; do
-    [ -f "$license" ] || continue
-    package=$(dirname "${license#node_modules/}")
-    cp "$license" "$out/licenses/$(echo "$package" | tr / _).txt"
+find node_modules -type f \( -iname 'licen[cs]e' -o -iname 'licen[cs]e[.-]*' \) | sort |
+while read -r license; do
+    package=${license%/*}
+    parent=${package%/*}
+    case ${parent##*/} in
+        node_modules) ;;
+        @*) grandparent=${parent%/*}; [ "${grandparent##*/}" = node_modules ] || continue ;;
+        *) continue ;; # Somewhere inside a package, not its own.
+    esac
+    name=$(echo "${package#node_modules/}" | tr / _)
+    dest="$out/licenses/$name.txt"
+    [ -e "$dest" ] && dest="$out/licenses/$name.${license##*/}.txt"
+    cp "$license" "$dest"
 done

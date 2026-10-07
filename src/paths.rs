@@ -34,6 +34,13 @@ pub fn runtime_dir() -> PathBuf {
 /// private directory of ours).
 pub fn ensure_private(dir: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    check_private(dir)
+}
+
+/// What [`ensure_private`] checks, for a directory that must already exist:
+/// what brnr reads there (which processes run, where their sockets are) is
+/// only to be trusted if nobody else could have put it there.
+pub fn check_private(dir: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
     if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
         return Err(io::Error::other("not a private directory owned by this user"));

@@ -155,7 +155,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
         };
         match kind {
             frame::DATA => {
-                if stdout_open && stdout.write_all(&payload).is_err() {
+                if stdout_open && write_all(&mut stdout, &payload).is_err() {
                     // The caller stopped reading; the host treats that as the
                     // editor going away.
                     stdout_open = false;
@@ -163,7 +163,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
                 }
             }
             frame::STDERR => {
-                let _ = stderr.write_all(&payload);
+                let _ = write_all(&mut stderr, &payload);
             }
             frame::FAILED => {
                 let failure: Value = serde_json::from_slice(&payload).unwrap_or_default();
@@ -199,6 +199,10 @@ fn relay_stdin(link: Link) {
             Ok(0) => break,
             Ok(n) => n,
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                wait_ready(&*input, libc::POLLIN);
+                continue;
+            }
             Err(_) => break,
         };
         if !send(&link, frame::DATA, &buf[..n]) {
@@ -206,6 +210,30 @@ fn relay_stdin(link: Link) {
         }
     }
     send(&link, frame::EOF, &[]);
+}
+
+/// `write_all` that also works on a non-blocking descriptor, which an
+/// editor may give us: O_NONBLOCK belongs to the open file, which the editor
+/// may share, so it is waited out rather than cleared.
+fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match out.write(bytes) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == ErrorKind::WouldBlock => wait_ready(out, libc::POLLOUT),
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+/// Waits until a non-blocking `fd` can be read or written (`events`).
+fn wait_ready(fd: &impl AsRawFd, events: libc::c_short) {
+    let mut p = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
+    while unsafe { libc::poll(&mut p, 1, -1) } < 0
+        && io::Error::last_os_error().kind() == ErrorKind::Interrupted
+    {}
 }
 
 fn relay_signals(mut signals: PipeReader, link: Link) {

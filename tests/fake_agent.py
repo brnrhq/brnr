@@ -18,9 +18,12 @@ with environment variables:
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required
   FIRST_SESSION=<n> number the sessions it opens from n + 1 (sess-<n+1>)
+  PERM_COMMAND=<c>  a permission request is for running command c (kind
+                    execute, titled c)
+  LEAVE_GROUP=1     move to its parent's process group, out of its own
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
-would.
+would. session/load replays a question, an answer and a title.
 
 and by the prompt's text:
 
@@ -101,6 +104,9 @@ def opened(session):
     return {"sessionId": session, "modes": MODES, "configOptions": config(model)}
 
 
+if env("LEAVE_GROUP"):
+    os.setpgid(0, os.getpgid(os.getppid()))
+
 stubborn = env("STUBBORN")
 if stubborn:
     if stubborn == "all":
@@ -152,6 +158,7 @@ for line in sys.stdin:
         if method == "session/load":
             update(sid, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old question"}})
             say(sid, "replayed history")
+            update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
         result(mid, {"modes": MODES, "configOptions": config(model)})
     elif method == "session/fork":
         sessions += 1
@@ -223,6 +230,9 @@ for line in sys.stdin:
                 "rawInput": {"file_path": "src/lib.rs"},
                 "content": [{"type": "diff", "path": "src/lib.rs", "oldText": "one\nold line\nthree\n", "newText": "one\nnew line\nthree\n"}],
             }
+            if env("PERM_COMMAND"):
+                command = env("PERM_COMMAND")
+                tool = {"toolCallId": request, "title": command, "kind": "execute", "rawInput": {"command": command}}
             params = {"sessionId": sid, "toolCall": tool, "options": options}
             send({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
         else:

@@ -118,7 +118,7 @@ fn stale_metadata_is_removed() {
         0o600,
     );
     write(&run.join(format!("{pid}.sock")), "", 0o600);
-    write(&run.join("1.json.tmp"), "", 0o600);
+    write(&run.join(format!("{pid}.json.tmp")), "", 0o600);
 
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "{text}");
@@ -128,6 +128,23 @@ fn stale_metadata_is_removed() {
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
     assert_eq!(fs::read_dir(&run).unwrap().count(), 0, "{text}");
+}
+
+/// A process binds its socket before it writes its metadata: doctor --fix
+/// must leave a process that is starting alone.
+#[test]
+fn a_starting_process_is_left_alone() {
+    let env = Env::new("dr-start");
+    let run = env.dir.join("run");
+    mkdir(&run, 0o700);
+    let pid = std::process::id();
+    write(&run.join(format!("{pid}.sock")), "", 0o600);
+    write(&run.join(format!("{pid}.json.tmp")), "", 0o600);
+
+    let (ok, text) = doctor(&env, &["--fix"]);
+    assert!(ok, "{text}");
+    assert!(!text.contains("removed"), "{text}");
+    assert_eq!(fs::read_dir(&run).unwrap().count(), 2, "{text}");
 }
 
 #[test]

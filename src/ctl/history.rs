@@ -61,7 +61,11 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
         Some(n) => {
             let starts: Vec<usize> =
                 (0..records.len()).filter(|&i| is_message(&records[i])).collect();
-            starts.len().checked_sub(n).map_or(0, |k| starts[k])
+            match starts.len().checked_sub(n) {
+                // `--last 0`: none of them, only what comes next.
+                Some(k) => starts.get(k).copied().unwrap_or(records.len()),
+                None => 0,
+            }
         }
         None => 0,
     };
@@ -98,7 +102,7 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 /// The transcript of the session `arg` names, and the pid of the process
 /// serving it, if one is.
 fn transcript(arg: &str) -> Result<(PathBuf, Option<i64>), String> {
-    let hosts = discover();
+    let hosts = discover()?;
     match find_session(&hosts, arg)? {
         Found::Running(host, id) => {
             let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
@@ -161,7 +165,7 @@ impl Show {
             if self.json_out { Some(e.to_string()) } else { render::event(&e, &self.options) }
         });
         let Some(text) = text else { return Ok(0) };
-        match writeln!(out, "{text}").and_then(|()| out.flush()) {
+        match writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()) {
             Ok(()) => Ok(1),
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
             Err(e) => Err(e.to_string()),
