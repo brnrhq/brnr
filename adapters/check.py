@@ -8,9 +8,11 @@ which initialize doesn't need).
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 
 here = os.path.dirname(os.path.abspath(__file__))
 out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "target", "release")
@@ -28,6 +30,17 @@ with open(agent, "w") as f:
 os.chmod(agent, 0o755)
 env = dict(os.environ, CLAUDE_CODE_EXECUTABLE=agent, CODEX_PATH=agent)
 
+
+def first_line(p, timeout=30):
+    """p's first line of output, or "" if none comes within timeout seconds."""
+    lines = queue.Queue()
+    threading.Thread(target=lambda: lines.put(p.stdout.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=timeout)
+    except queue.Empty:
+        return ""
+
+
 failed = False
 for name, package in adapters.items():
     path = os.path.join(out, name)
@@ -40,7 +53,7 @@ for name, package in adapters.items():
     p = subprocess.Popen([path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True)
     p.stdin.write(json.dumps(request) + "\n")
     p.stdin.flush()
-    line = p.stdout.readline()
+    line = first_line(p)
     p.kill()
     answer = json.loads(line) if line else {}
     if answer.get("id") != 1:

@@ -21,7 +21,7 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let [arg, request] = positional[..] else { return Err(USAGE.to_owned()) };
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let response = call(host, &json!({ "cmd": "pending" }))?;
     let p: &Value = response["pending"]
@@ -35,8 +35,8 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let by = if p["owner"] == "editor" { ", answered in the editor" } else { "" };
-    println!("{request}, session {session}{by}");
-    print!("{}", render::tool_call(&p["tool_call"]));
+    outln!("{request}, session {session}{by}");
+    out!("{}", render::tool_call(&p["tool_call"]));
     let options: Vec<String> = p["options"]
         .as_array()
         .into_iter()
@@ -49,12 +49,12 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
             )
         })
         .collect();
-    println!("options: {}", options.join(", "));
+    outln!("options: {}", options.join(", "));
     if let Some(secs) = p["timeout_seconds"].as_u64() {
-        println!("denied in {secs}s if nobody answers");
+        outln!("denied in {secs}s if nobody answers");
     }
     if p["owner"] != "editor" {
-        println!("answer: brnr approve {arg} {request}, brnr deny {arg} {request}, or --option <id>");
+        outln!("answer: brnr approve {arg} {request}, brnr deny {arg} {request}, or --option <id>");
     }
     Ok(ExitCode::SUCCESS)
 }

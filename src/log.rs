@@ -5,7 +5,7 @@
 //!
 //! Every record starts with the fields that join files together:
 //! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,
-//! where `proxy_pid` is null while no editor is attached. ACP traffic adds
+//! where `proxy_pid` is null for a headless process. ACP traffic adds
 //! `"dir"` and `"msg"`: ACP frames messages as newline-delimited JSON, so
 //! each line is embedded unchanged, and a line that isn't valid JSON is kept
 //! as a string in `"raw"` instead. Host events add `"event":{…}`.
@@ -33,7 +33,8 @@ pub enum Dir {
     /// Something the host sent the agent: an injected prompt, a cancel, or
     /// an answer it gave as the client.
     ControlToAgent,
-    /// A `user_message_chunk` echoing an injected message to the editor.
+    /// An injected message shown to the editor, as a completed tool call (see
+    /// 48 in the decision log).
     ControlToEditor,
     /// An agent response meant for the host, which the editor never sees.
     AgentToControl,
@@ -63,7 +64,6 @@ enum Cmd {
     Open { session: String, cwd: PathBuf },
     Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8> },
     Note { session: Option<String>, ts: SystemTime, event: Value },
-    Proxy(Option<u32>),
     Finish,
 }
 
@@ -86,11 +86,6 @@ impl Sink {
     pub fn note(&self, session: Option<&str>, event: Value) {
         let session = session.map(str::to_owned);
         self.send(Cmd::Note { session, ts: SystemTime::now(), event });
-    }
-
-    /// The proxy pid stamped on records from now on.
-    pub fn set_proxy(&self, pid: Option<u32>) {
-        self.send(Cmd::Proxy(pid));
     }
 
     fn send(&self, cmd: Cmd) {
@@ -164,7 +159,6 @@ impl Writer {
                     record.extend_from_slice(format!("\"event\":{event}}}\n").as_bytes());
                     self.write(session.as_deref(), record);
                 }
-                Cmd::Proxy(pid) => self.proxy_pid = pid,
                 Cmd::Finish => return,
             }
         }

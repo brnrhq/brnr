@@ -12,10 +12,14 @@
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
 //!
+//! The text, title and message have control characters escaped, as `watch`
+//! shows them, and are cut at 32 KiB; the event on stdin has them whole.
+//!
 //! As a bridge in a profile it is given its process in `$BRNR_PID`:
 //! `sh -c 'exec brnr notify --pid "$BRNR_PID" -- …'`. `--events` is read as
 //! for `watch`, but its default (and `default`) is `permission_request`,
-//! `turn_ended`, `exited`. It exits when the process does.
+//! `turn_ended`, `exited`. It exits when the process does, and fails if the
+//! process cuts it off first.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -30,6 +34,11 @@ use super::talk::Conn;
 use super::{USAGE, discover, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] = &["permission_request", "turn_ended", "exited"];
+
+/// The most of the agent's text one variable gets. Linux refuses to start a
+/// program with a variable over 128 KiB, and macOS one whose environment and
+/// arguments come to over 1 MiB.
+const ENV_TEXT_MAX: usize = 32 << 10;
 
 pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut pid) = (None, None);
@@ -53,7 +62,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     if command.is_empty() {
         return Err("notify needs a command after --".into());
     }
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, only) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
     let mut conn = Conn::open(host)?;
     // Agent messages and titles are tracked for the environment, not run
@@ -79,7 +88,9 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         let e = match conn.next_event(None) {
             Ok(Some(e)) => e,
             Ok(None) => continue,
-            Err(_) => return Ok(ExitCode::SUCCESS), // The process is gone.
+            // Gone without an `exited`: notifications stop, which is a
+            // failure (a notifier that falls behind is disconnected).
+            Err(e) => return Err(format!("{e}; no more notifications")),
         };
         let name = e["event"].as_str().unwrap_or_default().to_owned();
         let session = e["session"].as_str().unwrap_or_default().to_owned();
@@ -99,16 +110,17 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         if events.contains(&name) {
             let text = render::event(&e, &options);
             let title = titles.get(&session).cloned().unwrap_or_else(|| session.clone());
+            let message = last_message.get(&session).cloned().unwrap_or_default();
             run(
                 &command,
                 &e,
                 &[
                     ("BRNR_EVENT", name.clone()),
-                    ("BRNR_TEXT", text.unwrap_or_default()),
-                    ("BRNR_TITLE", title),
+                    ("BRNR_TEXT", env_text(&text.unwrap_or_default())),
+                    ("BRNR_TITLE", env_text(&title)),
                     ("BRNR_SESSION_ID", session.clone()),
                     ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
-                    ("BRNR_MESSAGE", last_message.get(&session).cloned().unwrap_or_default()),
+                    ("BRNR_MESSAGE", env_text(&message)),
                     ("BRNR_PID", host.id().to_owned()),
                 ],
             );
@@ -117,6 +129,21 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
             return Ok(ExitCode::SUCCESS);
         }
     }
+}
+
+/// The agent's text for the environment: as `watch` would show it (see
+/// `render::clean`), and cut at [`ENV_TEXT_MAX`] bytes, with `…`. The
+/// event on stdin has all of it.
+fn env_text(text: &str) -> String {
+    let text = render::clean(text);
+    if text.len() <= ENV_TEXT_MAX {
+        return text.into_owned();
+    }
+    let mut end = ENV_TEXT_MAX;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }
 
 /// Runs the command for one event and waits for it. Its stdout goes to our

@@ -2,6 +2,8 @@
 name = "brnr"
 version = "0.6.0"
 edition = "2024"
+# let chains
+rust-version = "1.88"
 description = "A burner phone for your coding agents: run ACP agents behind a host you can talk to from outside the editor."
 license = "Apache-2.0"
 repository = "https://github.com/brnrhq/brnr"

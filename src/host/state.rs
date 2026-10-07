@@ -10,6 +10,15 @@ use super::Host;
 /// Tool call statuses after which the call is no longer running.
 const FINISHED: &[&str] = &["completed", "failed"];
 
+/// Updates that say how the session is (its title, mode, config options
+/// and commands) rather than what happened in it.
+const STATE_UPDATES: &[&str] = &[
+    "session_info_update",
+    "current_mode_update",
+    "config_option_update",
+    "available_commands_update",
+];
+
 /// How much of the last agent message the status report has; the events
 /// have all of it.
 const LAST_MESSAGE_PREVIEW: usize = 4000;
@@ -93,6 +102,22 @@ impl Host {
     /// Tracks one `session/update` that isn't agent text, emitting the
     /// events that changes to it make.
     pub(super) fn track_state(&mut self, i: usize, kind: &str, update: &Value) {
+        if let Some(event) = self.state_change(i, kind, update) {
+            self.emit(event);
+        }
+    }
+
+    /// What a `session/load` replays: history, which the transcript has
+    /// already, but for what says how the session is now.
+    pub(super) fn replayed_state(&mut self, i: usize, update: &Value) {
+        let kind = update["sessionUpdate"].as_str().unwrap_or_default();
+        if STATE_UPDATES.contains(&kind) {
+            self.state_change(i, kind, update);
+        }
+    }
+
+    /// Takes in one update; returns the event it makes, if any.
+    fn state_change(&mut self, i: usize, kind: &str, update: &Value) -> Option<Value> {
         let session = self.sessions[i].id.clone();
         let state = &mut self.sessions[i].state;
         let event = match kind {
@@ -116,7 +141,7 @@ impl Host {
             "tool_call_update" => {
                 let id = update["toolCallId"].as_str().unwrap_or_default();
                 let Some(pos) = state.tools.iter().position(|(t, _)| t == id) else {
-                    return; // A call we never saw start, or already finished.
+                    return None; // A call we never saw start, or already finished.
                 };
                 let tool = &mut state.tools[pos].1;
                 for (field, key) in
@@ -128,7 +153,7 @@ impl Host {
                 }
                 let Some(status) = update["status"].as_str().filter(|s| *s != tool["status"])
                 else {
-                    return; // Progress, not a change of status.
+                    return None; // Progress, not a change of status.
                 };
                 tool["status"] = json!(status);
                 let event = tool_event(&session, tool);
@@ -147,12 +172,12 @@ impl Host {
                 json!({ "event": "usage", "session": session, "usage": usage })
             }
             "session_info_update" => {
-                let Some(title) = update["title"].as_str() else { return };
+                let title = update["title"].as_str()?;
                 state.title = Some(title.to_owned());
                 changed(&session, "title", json!(title))
             }
             "current_mode_update" => {
-                let Some(mode) = update["currentModeId"].as_str() else { return };
+                let mode = update["currentModeId"].as_str()?;
                 state.set_mode(mode);
                 changed(&session, "mode", json!(mode))
             }
@@ -165,9 +190,9 @@ impl Host {
                 state.commands = commands.clone();
                 changed(&session, "commands", json!(commands))
             }
-            _ => return,
+            _ => return None,
         };
-        self.emit(event);
+        Some(event)
     }
 }
 

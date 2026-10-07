@@ -5,10 +5,12 @@
 mod common;
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -126,6 +128,47 @@ fn stop_kills_children_left_behind() {
     assert!(env.run(&["stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "agent's child survived");
+}
+
+/// An agent that moved out of its own process group is still stopped:
+/// signalling the group alone would miss it.
+#[test]
+fn stop_reaches_an_agent_out_of_its_group() {
+    let env = Env::new("leave").agent("LEAVE_GROUP", "1").agent("STUBBORN", "all");
+    env.start(&[]);
+    let host = env.host_pid();
+    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(wait_for(Duration::from_secs(20), || !alive(host)), "host still running");
+}
+
+/// A start that fails after the session opened (setting its mode) fails in
+/// the foreground too: it says why, and doesn't exit 0.
+#[test]
+fn foreground_start_failure_is_reported() {
+    let env = Env::new("fg-mode");
+    let out = env.run(&start_args(&["--foreground", "--mode", "bogus"]));
+    assert!(!out.status.success(), "exited 0: {}", stderr(&out));
+    assert!(stderr(&out).contains("setting mode bogus failed: no mode bogus"), "{}", stderr(&out));
+}
+
+/// Closing the last session ends a foreground process as it should: no
+/// claim that the session never started.
+#[test]
+fn foreground_close_of_the_last_session() {
+    let env = Env::new("fg-close");
+    let mut fg = env
+        .brnr(&start_args(&["--foreground", "--quiet"]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")), "no session");
+    env.ok(&["close", "sess-1"]);
+    assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop with its last session");
+    let mut err = String::new();
+    fg.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(!err.contains("before the session started"), "{err}");
+    assert!(fg.wait().unwrap().success(), "{err}");
 }
 
 /// Answering a permission request while the agent is being stopped can't
@@ -366,6 +409,65 @@ fn unresponsive_host_is_reported() {
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
 }
 
+/// A line that isn't a request (not even UTF-8) is answered with an error,
+/// and the connection carries on.
+#[test]
+fn bad_request_line_is_answered() {
+    let env = Env::new("badline");
+    env.start(&[]);
+    let socket = env.hosts()[0]["socket"].as_str().unwrap().to_owned();
+    let mut conn = UnixStream::connect(socket).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    conn.write_all(b"\xff\xfe not a request\n{\"cmd\":\"status\",\"req_id\":1}\n").unwrap();
+    let mut lines = BufReader::new(conn).lines();
+    let mut next = || -> Value { serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap() };
+    let bad = next();
+    assert!(bad["error"].as_str().unwrap_or_default().starts_with("bad request"), "{bad}");
+    let status = next();
+    assert_eq!((status["req_id"].as_i64(), status["ok"].as_bool()), (Some(1), Some(true)), "{status}");
+}
+
+/// `brnr list | head -1`: a reader that goes away ends brnr quietly, as it
+/// would a filter.
+#[test]
+fn closed_stdout_ends_quietly() {
+    let env = Env::new("epipe");
+    env.start(&[]);
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = env.brnr(&["list"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "");
+}
+
+// ---- the runtime dir ---------------------------------------------------
+
+/// What brnr finds in the runtime dir is only trusted if it is private, as
+/// the processes require: anyone who can write there could list a process of
+/// their own and be sent what brnr sends.
+#[test]
+fn shared_runtime_dir_is_refused() {
+    let env = Env::new("shared");
+    assert!(env.ok(&["list"]).contains("no running sessions"), "a missing dir is no error");
+    let run = env.dir.join("run");
+    fs::create_dir(&run).unwrap();
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
+    let err = env.fails(&["list"]);
+    assert!(err.contains("not a private directory owned by this user"), "{err}");
+}
+
+/// A metadata file counts only with its own socket, the one next to it.
+#[test]
+fn metadata_names_its_own_socket() {
+    let env = Env::new("impostor");
+    env.start(&[]);
+    let mut meta = env.hosts()[0].clone();
+    meta["id"] = "4242".into();
+    fs::write(env.dir.join("run/4242.json"), meta.to_string()).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+}
+
 // ---- transcripts -------------------------------------------------------
 
 #[test]
@@ -466,4 +568,85 @@ fn acp_is_what_an_editor_runs() {
     assert!(env.ok(&["log", "sess-1"]).contains("title: Fake session"));
     let err = env.fails(&["acp", "--on-disconnect", "headless", "--", AGENT]);
     assert!(err.contains("unknown option: --on-disconnect"), "{err}");
+}
+
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
+
+/// `brnr acp` with a session open (sess-1), as an editor has it.
+fn open_editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let mut editor =
+        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let mut answer = |id: u64| -> Value {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+            let msg: Value = serde_json::from_str(&line).unwrap();
+            if msg["id"] == id {
+                return msg;
+            }
+        }
+    };
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    answer(1);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
+    (editor, to_agent, from_agent)
+}
+
+/// When the editor goes, what the agent started goes too: its process
+/// group, as when it is stopped.
+#[test]
+fn editor_gone_takes_the_agents_children() {
+    let env = Env::new("ed-kids").agent("STUBBORN", "child");
+    let (mut editor, _to_agent, _from_agent) = open_editor(&env);
+    let (host, child) = (env.host_pid(), env.child_pid());
+    editor.kill().unwrap();
+    editor.wait().unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
+    assert!(wait_for(Duration::from_secs(2), || !alive(child)), "its child outlived the editor");
+}
+
+/// An editor that stops reading for LINK_WRITE_TIMEOUT (30 s) is gone, and
+/// the agent with it; until then the editor still owns the session.
+#[test]
+fn editor_that_stops_reading_is_gone() {
+    let env = Env::new("ed-stall").agent("FLOOD", "40000");
+    let (mut editor, mut to_agent, from_agent) = open_editor(&env);
+    let host = env.host_pid();
+    // Some 25 MB of updates, which the editor never reads.
+    let prompt = r#"{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"reply hi"}]}}"#;
+    writeln!(to_agent, "{prompt}").unwrap();
+    sleep(Duration::from_secs(2));
+    assert!(env.ok(&["ps"]).contains("editor"));
+    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
+    assert!(wait_for(Duration::from_secs(60), || !alive(host)), "the agent outlived a stalled editor");
+    drop(from_agent);
+    let _ = editor.kill();
+}
+
+/// An editor may hand over a non-blocking stdin: nothing to read yet is not
+/// the end of it.
+#[test]
+fn non_blocking_stdin_is_waited_on() {
+    let env = Env::new("ed-nonblock");
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let fd = reader.as_raw_fd();
+    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
+    let mut editor =
+        env.brnr(&["acp", "--", AGENT]).stdin(reader).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    writeln!(writer, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    BufReader::new(editor.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap_or_default();
+    assert_eq!(answer["id"], 1, "no answer: {line:?}");
+    drop(writer);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
 }

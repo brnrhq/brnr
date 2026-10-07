@@ -15,8 +15,9 @@
 //!   brnr (see control.rs).
 //!
 //! When the editor goes away, the agent gets what a directly spawned agent
-//! would have: its stdin is closed and it is killed (a signal the proxy
-//! catches reaches the agent as that signal).
+//! would have: its stdin is closed and it is killed, with its process group
+//! (a signal the proxy catches reaches the agent as that signal). An editor
+//! that stops reading for [`LINK_WRITE_TIMEOUT`] counts as gone.
 
 mod acp;
 mod control;
@@ -121,6 +122,10 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.foreground {
+        // In a process group of its own, writing to the terminal.
+        signals::write_from_background();
+    }
     if let Some(dir) = &args.cwd
         && let Err(err) = std::env::set_current_dir(paths::expand(dir))
     {
@@ -257,7 +262,7 @@ struct Failure {
 
 impl Failure {
     fn report(&mut self, msg: &str, code: u8) {
-        eprintln!("brnr: {msg}");
+        eprintln!("brnr: {}", crate::render::clean(msg));
         if let Some(link) = &mut self.link {
             let report = json!({ "error": msg, "code": code }).to_string();
             let _ = frame::write(link, frame::FAILED, report.as_bytes());
@@ -295,9 +300,9 @@ enum Ev {
         label: String,
         line: String,
     },
+    /// A started bridge has terminated; it has not been reaped yet.
     BridgeExited {
         label: String,
-        status: Option<i32>,
         pid: pid_t,
     },
     /// A signal sent to the host itself.
@@ -315,6 +320,10 @@ struct Host {
     foreground: bool,
     /// By hand, a failed start has been reported on stderr.
     startup_reported: bool,
+    /// The start is over: the session is open and set up, and brnr start
+    /// has been told (see `finish_start`), or an editor attached. Until
+    /// then, the process stopping is the start failing.
+    start_done: bool,
     info: Value,
     host_id: String,
     /// How long an unanswered permission request waits before it is denied.
@@ -326,6 +335,9 @@ struct Host {
     agent_in: Option<Sender<Vec<u8>>>,
     /// Dropping this makes the stdout reader close the agent's stdout.
     stop_stdout: Option<PipeWriter>,
+    /// An editor is attached: from the start, until the link is gone (see
+    /// `link_gone`). Not `link.is_some()`: the writer can give up first.
+    editor: bool,
     /// Frames for the link writer while an editor is attached. Writes happen
     /// on their own thread so an editor that stops reading can't stall the
     /// host: signals, the control socket and bridges keep working.
@@ -458,6 +470,7 @@ impl Host {
         unsafe {
             cmd.pre_exec(move || {
                 signals::set_mask(&mask);
+                signals::restore_for_child();
                 Ok(())
             })
         };
@@ -537,17 +550,19 @@ impl Host {
         let foreground = (link.is_none() && ready.is_none()) || a.foreground;
         let start_deadline = (a.start_timeout)
             .filter(|_| ready.is_some())
-            .map(|secs| Instant::now() + Duration::from_secs(secs));
+            .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
         let stop_when_idle = a.stop_when_idle.or(profile.stop_when_idle).map(Duration::from_secs);
         let mut host = Host {
             foreground,
             startup_reported: false,
+            start_done: false,
             info,
             host_id,
             permission_timeout: profile.permission_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: Some(agent_in),
             stop_stdout: Some(stop_tx),
+            editor: link.is_some(),
             link,
             link_writer,
             ready,
@@ -598,8 +613,9 @@ impl Host {
                 return Err((err, 2));
             }
         }
-        if host.link.is_some() {
+        if host.editor {
             host.started_ok = true;
+            host.start_done = true;
             let ready = json!({ "id": id, "host_pid": std::process::id(), "agent_pid": agent_pid });
             host.send_link(frame::READY, ready.to_string().as_bytes());
         } else {
@@ -658,7 +674,9 @@ impl Host {
         if let Some(status) = self.status {
             self.send_link(frame::EXIT, &status.to_be_bytes());
         }
-        self.startup_failed("the agent exited before the session started");
+        if !self.start_done {
+            self.startup_failed("the agent exited before the session started");
+        }
         let status = describe_status(self.status);
         // Held messages that never became a prompt.
         let undelivered: Vec<Value> = self
@@ -690,15 +708,17 @@ impl Host {
             let _ = writer.join();
         }
         self.log.finish();
-        match self.status {
-            // In the foreground, exit as the agent did, like a shell
-            // reports it.
-            Some(s) if self.foreground && libc::WIFEXITED(s) => {
-                ExitCode::from(libc::WEXITSTATUS(s) as u8)
-            }
-            Some(s) if self.foreground => ExitCode::from(128 + libc::WTERMSIG(s) as u8),
-            None if self.foreground => ExitCode::FAILURE,
-            _ => ExitCode::SUCCESS,
+        let code = match self.status {
+            Some(s) if libc::WIFEXITED(s) => libc::WEXITSTATUS(s) as u8,
+            Some(s) => 128 + libc::WTERMSIG(s) as u8,
+            None => 1,
+        };
+        match code {
+            _ if !self.foreground => ExitCode::SUCCESS,
+            // A start that didn't finish failed, however the agent exited.
+            0 if !self.start_done => ExitCode::FAILURE,
+            // Otherwise as the agent did, like a shell reports it.
+            code => ExitCode::from(code),
         }
     }
 
@@ -747,8 +767,12 @@ impl Host {
                     .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
             }
             Ev::Signal(sig) => self.host_signal(sig),
-            Ev::BridgeExited { label, status, pid } => {
+            Ev::BridgeExited { label, pid } => {
+                // Reaped here, once it is out of `bridge_pids`, so a signal to
+                // a bridge can never reach a recycled pid.
                 self.bridge_pids.retain(|&p| p != pid);
+                let status = reap(pid).ok().filter(|&s| libc::WIFEXITED(s));
+                let status = status.map(|s| libc::WEXITSTATUS(s));
                 self.sink.note(
                     None,
                     json!({ "event": "bridge-exited", "bridge": label, "status": status }),
@@ -760,7 +784,7 @@ impl Host {
     // ---- the editor's side of the link --------------------------------
 
     fn editor_attached(&self) -> bool {
-        self.link.is_some()
+        self.editor
     }
 
     /// A signal the proxy caught reaches the agent as that signal.
@@ -787,23 +811,25 @@ impl Host {
         self.stop_stdout = None;
     }
 
-    /// The editor went away: the agent goes too, as if the editor had run it.
+    /// The editor went away, or stopped reading for [`LINK_WRITE_TIMEOUT`]:
+    /// the agent goes too, as if the editor had run it, with whatever it
+    /// started in its process group.
     fn link_gone(&mut self) {
-        if self.link.is_none() || self.status.is_some() {
-            self.link = None;
+        self.link = None;
+        if !take(&mut self.editor) || self.status.is_some() {
             return; // The proxy left after the agent.
         }
-        self.link = None;
         self.sink.note(None, json!({ "event": "editor-disconnected" }));
         self.agent_in = None;
-        unsafe { libc::kill(self.agent_pid, libc::SIGKILL) };
+        self.kill_group(libc::SIGKILL);
     }
 
     fn send_link(&mut self, kind: u8, payload: &[u8]) {
         if let Some(link) = &self.link
             && link.send((kind, payload.to_vec())).is_err()
         {
-            // The writer gave up; the reader thread reports the disconnect.
+            // The writer gave up and shut the link down, so the reader
+            // thread reports it gone (`link_gone`).
             self.link = None;
         }
     }
@@ -885,11 +911,18 @@ impl Host {
         }
     }
 
-    /// Signals the agent's process group (it leads its own; see `start`).
-    /// Only while the agent hasn't been reaped, so the group id is ours.
+    /// Signals the agent's process group (it leads its own; see `start`),
+    /// and the agent itself if it has left the group. Only while the agent
+    /// hasn't been reaped, so the ids are ours.
     fn kill_group(&self, sig: c_int) {
-        if self.status.is_none() {
-            unsafe { libc::kill(-self.agent_pid, sig) };
+        if self.status.is_some() {
+            return;
+        }
+        unsafe {
+            let group = libc::kill(-self.agent_pid, sig) == 0;
+            if !group || libc::getpgid(self.agent_pid) != self.agent_pid {
+                libc::kill(self.agent_pid, sig);
+            }
         }
     }
 
@@ -913,11 +946,13 @@ fn describe_status(status: Option<c_int>) -> Value {
 // ---- threads -----------------------------------------------------------
 
 /// Writes queued frames to the proxy until the queue closes or a write
-/// fails or times out.
+/// fails or times out. Then the link is shut down, so the reader thread
+/// sees it gone too: an editor that stopped reading is an editor gone.
 fn write_link(mut link: UnixStream, frames: Receiver<(u8, Vec<u8>)>) {
     let _ = link.set_write_timeout(Some(LINK_WRITE_TIMEOUT));
     for (kind, payload) in frames {
         if frame::write(&mut link, kind, &payload).is_err() {
+            let _ = link.shutdown(std::net::Shutdown::Both);
             return;
         }
     }

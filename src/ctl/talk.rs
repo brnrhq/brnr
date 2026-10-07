@@ -153,13 +153,13 @@ pub(super) fn wait_for_message(
                 if json.is_some() {
                     reply.push(text.to_owned());
                 } else {
-                    println!("{text}");
+                    outln!("{text}");
                     io::stdout().flush().ok();
                 }
             }
             "permission_request" if ours => {
                 let request = e["request"].as_str().unwrap_or("?");
-                eprintln!(
+                errln!(
                     "brnr: waiting for approval {request}: {} (brnr show {arg} {request}; brnr approve {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
                 );
@@ -188,20 +188,21 @@ pub(super) fn wait_for_message(
 /// 0 for a turn that ended normally, else 1 (and why, on stderr).
 fn turn_status(e: &Value) -> ExitCode {
     if let Some(error) = e["error"].as_object() {
-        eprintln!("brnr: turn failed: {}", error["message"].as_str().unwrap_or("?"));
+        errln!("brnr: turn failed: {}", error["message"].as_str().unwrap_or("?"));
         return ExitCode::FAILURE;
     }
     match e["stop_reason"].as_str() {
         Some("end_turn") => ExitCode::SUCCESS,
         reason => {
-            eprintln!("brnr: turn stopped: {}", reason.unwrap_or("?"));
+            errln!("brnr: turn stopped: {}", reason.unwrap_or("?"));
             ExitCode::FAILURE
         }
     }
 }
 
+/// When `--timeout` runs out; never, for one too far off to say.
 fn deadline(timeout: Option<u64>) -> Option<Instant> {
-    timeout.map(|s| Instant::now() + Duration::from_secs(s))
+    timeout.and_then(|s| Instant::now().checked_add(Duration::from_secs(s)))
 }
 
 fn seconds(flag: &str, value: &str) -> Result<u64, String> {
@@ -350,7 +351,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
         Err(_) => START_TIMEOUT,
     };
-    let hosts = discover();
+    let hosts = discover()?;
     let mut resume_cwd = None;
     if let Some(wanted) = a.resume.clone() {
         // A session brnr has no transcript of (one `brnr sessions` lists)
@@ -442,7 +443,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     // Exiting closes the pipe, which tells a process that is still starting
     // that nobody is waiting: it stops instead of carrying on.
     let line = rx
-        .recv_timeout(Duration::from_secs(timeout) + START_GRACE)
+        .recv_timeout(Duration::from_secs(timeout).saturating_add(START_GRACE))
         .map_err(|_| "timed out waiting for the session".to_owned())?;
     let ready: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
     if ready["ok"].as_bool() != Some(true) {
@@ -458,16 +459,16 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         if a.json {
             print_json(&about)?;
         } else {
-            println!("{}", describe_started(&about));
+            outln!("{}", describe_started(&about));
         }
     } else if a.wait && !a.json {
-        eprintln!("{}", describe_started(&about));
+        errln!("{}", describe_started(&about));
     }
 
     let has_prompt = a.prompt.is_some() || !blocks.is_empty();
     if has_prompt {
         // The prompt goes over the control socket, as `brnr send` sends it.
-        let hosts = discover();
+        let hosts = discover()?;
         let host = hosts.iter().find(|h| h.id() == pid).ok_or("the process went away")?;
         let sent = (|| {
             let mut conn = Conn::open(host)?;
@@ -566,7 +567,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         return Err("nothing to send".into());
     }
 
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let req = json!({
         "cmd": "send",
@@ -581,7 +582,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         if json_out {
             print_json(&response_json(response))?;
         } else {
-            println!("{}", describe_sent(&response));
+            outln!("{}", describe_sent(&response));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -589,7 +590,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
     conn.subscribe(TURN_EVENTS)?;
     let response = conn.call(req)?;
     if !json_out {
-        eprintln!("{}", describe_sent(&response));
+        errln!("{}", describe_sent(&response));
     }
     let message = text(&response["message"]);
     wait_for_message(&mut conn, &arg, &session, &message, deadline(timeout), json_out.then(|| json!({})))
@@ -624,7 +625,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
         return Err(format!("--for idle|turn|permission|exit, not {what}"));
     }
     let arg = arg.ok_or(USAGE)?;
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
@@ -636,7 +637,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
         if json_out {
             return print_json(what);
         }
-        println!("{text}");
+        outln!("{text}");
         Ok(())
     };
     let idle_now = json!({ "event": "idle", "session": session });
@@ -648,9 +649,16 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 return Ok(ExitCode::SUCCESS);
             }
         }
-        "idle" if idle(&mut conn, &session)? => {
-            done(&idle_now, "idle".into())?;
-            return Ok(ExitCode::SUCCESS);
+        "idle" => {
+            if let Some(s) = idle(&mut conn, &session)? {
+                done(&idle_now, "idle".into())?;
+                // As if it had waited for that turn (see 5 in the decision
+                // log): how the last one ended, if there was one.
+                return Ok(match &s["last_turn"] {
+                    turn if turn.is_object() => turn_status(turn),
+                    _ => ExitCode::SUCCESS,
+                });
+            }
         }
         _ => {}
     }
@@ -681,7 +689,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 done(&e, format!("turn ended: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                 return Ok(turn_status(&e));
             }
-            ("turn_ended", "idle") if mine(&e) && idle(&mut conn, &session)? => {
+            ("turn_ended", "idle") if mine(&e) && idle(&mut conn, &session)?.is_some() => {
                 done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                 return Ok(turn_status(&e));
             }
@@ -690,15 +698,16 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// Whether the session has no turn running and nothing held.
-fn idle(conn: &mut Conn, session: &str) -> Result<bool, String> {
+/// The session's status if it has no turn running and nothing held (null
+/// for one that has closed).
+fn idle(conn: &mut Conn, session: &str) -> Result<Option<Value>, String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
-    Ok(status["sessions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|s| s["session_id"] == session)
-        .all(|s| s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0))
+    let sessions = status["sessions"].as_array().map_or(&[][..], Vec::as_slice);
+    Ok(match sessions.iter().find(|s| s["session_id"] == session) {
+        Some(s) if s["busy"] == true || s["held"].as_u64().unwrap_or(0) > 0 => None,
+        Some(s) => Some(s.clone()),
+        None => Some(Value::Null),
+    })
 }
 
 fn describe_permission(p: &Value) -> String {
@@ -720,7 +729,7 @@ pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let arg = arg.ok_or(USAGE)?;
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let req = json!({ "cmd": "cancel", "session": session, "keep_held": keep_held });
     let response = call(host, &req)?;
@@ -728,9 +737,9 @@ pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
         print_json(&response_json(response))?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{}", text(&response["status"]));
+    outln!("{}", text(&response["status"]));
     for held in response["dropped"].as_array().into_iter().flatten() {
-        println!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
+        outln!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -752,7 +761,7 @@ pub(super) fn queue(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let arg = arg.ok_or(USAGE)?;
-    let hosts = discover();
+    let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     req["session"] = json!(session);
     let response = call(host, &req)?;
@@ -761,19 +770,19 @@ pub(super) fn queue(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     for held in response["dropped"].as_array().into_iter().flatten() {
-        println!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
+        outln!("dropped {}: {}", text(&held["message"]), text(&held["text"]));
     }
     let held = response["held"].as_array().map_or(&[][..], Vec::as_slice);
     let context = response["context"].as_array().map_or(&[][..], Vec::as_slice);
     if held.is_empty() && context.is_empty() {
-        println!("nothing held");
+        outln!("nothing held");
     }
     for h in held {
         let how = if h["interrupt"] == true { "interrupt" } else { "after turn" };
-        println!("{} ({how}): {}", text(&h["message"]), text(&h["text"]));
+        outln!("{} ({how}): {}", text(&h["message"]), text(&h["text"]));
     }
     for c in context {
-        println!("context: {}", c.as_str().unwrap_or("?"));
+        outln!("context: {}", c.as_str().unwrap_or("?"));
     }
     Ok(ExitCode::SUCCESS)
 }

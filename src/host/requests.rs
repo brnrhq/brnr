@@ -244,9 +244,10 @@ impl Host {
                 return self.begin_stop();
             }
         }
+        self.start_done = true;
         self.started_ok = !self.awaiting_prompt;
         if self.foreground {
-            eprintln!("brnr: session {session}");
+            eprintln!("brnr: session {}", crate::render::clean(&session));
         }
         if let Some(text) = self.first_prompt.take() {
             let held = Held { id: self.message_id(), text, blocks: Vec::new() };
@@ -260,11 +261,13 @@ impl Host {
         self.begin_stop();
     }
 
-    /// Reports `error` to brnr start if it is still waiting.
+    /// Reports `error` to brnr start if it is still waiting, and in the
+    /// foreground on stderr: a step after the session opened (its mode, a
+    /// config option) fails the start as much as opening it does.
     pub(super) fn startup_failed(&mut self, error: &str) {
-        if self.foreground && self.sessions.is_empty() && !self.startup_reported {
+        if self.foreground && !self.start_done && !self.startup_reported {
             self.startup_reported = true;
-            eprintln!("brnr: {error}");
+            eprintln!("brnr: {}", crate::render::clean(error));
         }
         if let Some(mut ready) = self.ready.take() {
             let _ = writeln!(ready, "{}", json!({ "ok": false, "error": error }));

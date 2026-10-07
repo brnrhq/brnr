@@ -202,12 +202,14 @@ fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicU
     }
 }
 
+/// Requests, one per line, until EOF. A line that isn't JSON (not even
+/// UTF-8) is answered with an error; the peer stays.
 fn read_requests(input: impl Read, peer: u64, tx: &Sender<Ev>) {
     let mut reader = BufReader::new(input);
-    let mut line = String::new();
-    while matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
-        if !line.trim().is_empty() {
-            let req = serde_json::from_str::<Value>(&line)
+    let mut line = Vec::new();
+    while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
+        if !line.trim_ascii().is_empty() {
+            let req = serde_json::from_slice::<Value>(&line)
                 .unwrap_or_else(|e| json!({ "parse_error": e.to_string() }));
             if tx.send(Ev::PeerRequest { peer, req }).is_err() {
                 return;
@@ -236,6 +238,12 @@ impl Host {
             // Out of a terminal's reach when the host is run by hand; it
             // exits when the host closes its stdin.
             .process_group(0);
+        unsafe {
+            cmd.pre_exec(|| {
+                crate::signals::restore_for_child();
+                Ok(())
+            })
+        };
         let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command[0]))?;
         let pid = child.id() as pid_t;
         let peer = NEXT_PEER.fetch_add(1, Relaxed);
@@ -258,9 +266,11 @@ impl Host {
             }
         });
         let (t, l) = (tx.clone(), label.clone());
+        drop(child); // Reaped by the host (see `Ev::BridgeExited`).
         thread::spawn(move || {
-            let status = child.wait().ok().and_then(|s| s.code());
-            let _ = t.send(Ev::BridgeExited { label: l, status, pid });
+            if super::wait_exited(pid).is_ok() {
+                let _ = t.send(Ev::BridgeExited { label: l, pid });
+            }
         });
 
         let mut p = Peer::new(out_tx, label.clone(), Closer::Bridge(pid));
@@ -308,7 +318,7 @@ impl Host {
             }
             if self.show_events && !QUIET.contains(&name.as_str()) {
                 if self.json_events {
-                    println!("{line}");
+                    println!("{}", render::clean(&line));
                 } else if let Some(text) = render::event(&event, &render::Options::foreground()) {
                     println!("{text}");
                 }
@@ -512,6 +522,7 @@ impl Host {
                     "held": s.held.len(),
                     "context": s.context.len(),
                     "pending": pending,
+                    "last_turn": s.last_turn,
                     "log": self.log.host_log().map(|_| paths::session_log(&s.cwd, &s.id).to_string_lossy().into_owned()),
                 });
                 if let (Some(session), Value::Object(fields)) = (session.as_object_mut(), fields) {
