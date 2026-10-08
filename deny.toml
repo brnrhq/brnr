@@ -1,0 +1,29 @@
+# cargo deny check: what brnr's crates may be. CI runs it on every pull
+# request, so a new crate, or a new version of one, is checked as it arrives.
+
+[graph]
+# The platforms brnr runs on; crates only other targets pull in don't count.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+# Every RustSec advisory fails the check, vulnerabilities and unmaintained
+# crates alike; one accepted on purpose goes in `ignore`, with why.
+ignore = []
+
+[licenses]
+# Licenses compatible with distributing brnr under Apache-2.0.
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# crates.io only: no git dependencies, no other registries.
+unknown-registry = "deny"
+unknown-git = "deny"

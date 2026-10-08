@@ -1,8 +1,9 @@
-# Checks the formatting, lints and tests every pull request and every push to main, on Linux and
-# macOS. The integration tests drive the real binary against
-# tests/fake_agent.py, so they need python3 (both runners have it). The
-# adapters are built and checked too, so that a pull request moving their
-# npm versions (Dependabot's) is tested.
+# Checks the formatting, lints and tests every pull request and every push to
+# main, on Linux and macOS. The integration tests drive the real binary
+# against tests/fake_agent.py, so they need python3 (both runners have it).
+# The adapters are built and checked too, so that a pull request moving their
+# npm versions (Dependabot's) is tested; and cargo deny checks the crates
+# (deny.toml).
 name: ci
 
 on:
@@ -49,3 +50,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: adapters/build.sh "$RUNNER_TEMP/adapters"
       - run: adapters/check.py "$RUNNER_TEMP/adapters"
+
+  deny:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
