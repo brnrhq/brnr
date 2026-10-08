@@ -469,6 +469,55 @@ fn a_panic_is_recorded() {
     }
 }
 
+/// A panic as the start is under way, once the agent, the log and a bridge
+/// are there, is recorded as one on the event loop is (ADR 11): `panic` and
+/// `exited` in the host log, so doctor finds no unrecorded death, `exited`
+/// for the bridge, the agent killed and the runtime files removed. brnr
+/// start fails saying why, and an editor's brnr acp too, with 101.
+/// (`BRNR_TEST_PANIC=start` asks for the panic.)
+#[test]
+fn a_panic_while_starting_is_recorded() {
+    let got = |env: &Env| fs::read_to_string(env.dir.join("bridge-events")).unwrap_or_default();
+    for editor in [false, true] {
+        let env = Env::new(if editor { "panic-start-ed" } else { "panic-start" });
+        let script = format!("exec cat > '{}'", env.dir.join("bridge-events").display());
+        env.write_config(&format!(
+            "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+        ));
+        let args = if editor { vec!["acp", "--", AGENT] } else { start_args(&["--prompt", "hi"]) };
+        let out = env
+            .brnr(&args)
+            .env("BRNR_TEST_PANIC", "start")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = stderr(&out);
+        if editor {
+            assert_eq!(out.status.code(), Some(101), "{err}");
+            assert!(err.contains("brnr acp: brnr panicked at src/host/"), "{err}");
+        } else {
+            assert!(!out.status.success(), "it started");
+            assert!(err.contains("brnr: brnr panicked at src/host/"), "{err}");
+        }
+        assert!(err.trim_end().ends_with(": a test asked for it"), "{editor}: {err}");
+
+        let agent = started_record(&env)["info"]["agent_pid"].as_i64().unwrap() as i32;
+        assert!(wait_for(Duration::from_secs(5), || !alive(agent)), "{editor}: the agent lives on");
+        let log = host_logs(&env);
+        assert!(log.contains(r#""event":{"event":"panic""#), "{editor}: {log}");
+        let records = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+        let exited = records.into_iter().find(|r| r["event"]["event"] == "exited");
+        let reason = exited.as_ref().and_then(|r| r["event"]["reason"].as_str());
+        assert!(reason.is_some_and(|r| r.ends_with(": a test asked for it")), "{editor}: {log}");
+        let told = || got(&env).contains(r#""event":"exited""#);
+        assert!(wait_for(Duration::from_secs(5), told), "{editor}: the bridge: {}", got(&env));
+        assert!(runtime_files(&env).is_empty(), "{editor}: {:?}", runtime_files(&env));
+        assert!(env.prompts().is_empty(), "{editor}: the prompt went");
+        let doctor = String::from_utf8_lossy(&env.run(&["doctor"]).stdout).into_owned();
+        assert!(doctor.contains("no process died without recording it"), "{editor}: {doctor}");
+    }
+}
+
 // ---- sending -----------------------------------------------------------
 
 /// Several interrupts sent before the turn stops are delivered in the order

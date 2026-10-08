@@ -44,6 +44,9 @@ impl Host {
         let (writer, reader, closer) =
             (channel.try_clone()?, channel.try_clone()?, channel.try_clone()?);
         let peer = control::NEXT_PEER.fetch_add(1, Relaxed);
+        // Named before it is a peer, so `release_start_channel` finds it
+        // whenever it is one.
+        self.start_channel = Some(StartChannel { peer, stream: channel });
         let (queue, lines, queued) = Queue::new();
         thread::spawn(move || control::write_lines(writer, lines, queued));
         // A socket peer, as brnr's own connections are: not a bridge.
@@ -55,8 +58,16 @@ impl Host {
             read_to_eof(reader);
             let _ = t.send(Ev::StartGone { peer });
         });
-        self.start_channel = Some(StartChannel { peer, stream: channel });
         Ok(())
+    }
+
+    /// The start channel stops being a peer, with nothing written to it:
+    /// how the start ended is `main`'s to tell brnr start, on fd 3, as of a
+    /// start that fails before the event loop (see `Host::died_starting`).
+    pub(super) fn release_start_channel(&mut self) {
+        if let Some(channel) = self.start_channel.take() {
+            self.peers.remove(&channel.peer);
+        }
     }
 
     /// brnr start closed its end of the channel.

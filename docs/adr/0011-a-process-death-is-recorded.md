@@ -3,8 +3,9 @@
 Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
 abort (a stack overflow), which runs no hook. A start that fails as it opens
-the start channel (ADR 7) or its bridges records `exited` too, and the
-logger never skips it (nor `panic`, ADR 6), so a host log without one is a
+the start channel (ADR 7) or its bridges records `exited` too, and so does
+one that panics once the agent is spawned (with `panic`, the agent killed);
+the logger never skips either (ADR 6), so a host log without `exited` is a
 death nothing recorded; `brnr doctor` lists those whose process isn't
 running (how many, and the latest three), with when each last wrote and the
 sessions it had open. Whether metadata in the runtime directory is a
@@ -52,7 +53,14 @@ agent would all die in the same instant, with no record.
   loop, which records the panic in the host log, writes `exited` (with the
   reason) there and in every session's file, sends it to the peers it can
   still reach, removes the `.sock` and `.json` files (P3), and SIGKILLs the
-  agent's process group (P14).
+  agent's process group (P14). Bridges get the time to act on `exited` they
+  get on any exit (ADR 35).
+- A panic as the start is under way, once the agent is spawned and before
+  the event loop runs, is recorded and ends the agent the same way, as far
+  as what the start has made allows (its log, bridges, the display; no
+  sessions yet), and whoever started the process is told on fd 3, as of
+  any start that fails: `brnr start` fails with the reason, an editor's
+  `brnr acp` says it on stderr and exits 101.
 - The agent's command leaves the process's argv with the start request
   (ADR 8).
 
