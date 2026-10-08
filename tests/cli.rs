@@ -1164,7 +1164,8 @@ headers = { Authorization = "Bearer x" }
 fn login_needed_is_explained() {
     let env = Env::new("c-auth").agent("AUTH", "1");
     let err = env.fails(&start_args(&[]));
-    assert!(err.contains("log in (Log in to the fake)"), "{err}");
+    assert!(err.contains("log in (Log in to the fake `fake-login`)"), "{err}");
+    assert!(err.contains("--auth <id>"), "{err}");
     assert!(err.contains("claude"), "{err}");
     assert!(env.calls_of("authenticate").is_empty(), "authenticated unasked");
 }

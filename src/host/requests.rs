@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::acp::{Held, Hold, new_session};
 use super::{Host, id_key};
 use crate::log::{self, Dir};
-use crate::schema::{self, AgentCapabilities, AuthMethod, Error, ErrorCode, error_message};
+use crate::schema::{self, AgentCapabilities, Error, ErrorCode, error_message};
 
 pub(super) enum HostRequest {
     Initialize,
@@ -332,12 +332,15 @@ impl Host {
 
     /// The agent needs a login, which a headless host can't do: say how.
     fn auth_hint(&self) -> String {
-        let methods: Vec<&str> = self.auth_methods.iter().map(AuthMethod::name).collect();
+        // By id too: that is what --auth takes (ADR 30).
+        let methods: Vec<String> =
+            self.auth_methods.iter().map(|m| format!("{} `{}`", m.name(), m.id())).collect();
         let offered =
             if methods.is_empty() { String::new() } else { format!(" ({})", methods.join(", ")) };
         format!(
             ". The agent needs you to log in{offered}; brnr can't do that without a terminal. \
-             Log in with the agent's own CLI first (for example `claude` or `codex login`)"
+             Log in with the agent's own CLI first (for example `claude` or `codex login`), or \
+             name a method that needs no terminal with --auth <id>"
         )
     }
 
