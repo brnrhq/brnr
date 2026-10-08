@@ -1,6 +1,6 @@
 # 3. Ownership is a per-session lock
 
-Amended by 47: a session whose lock can't be taken isn't served headless (the
+Amended by 48: a session whose lock can't be taken isn't served headless (the
 start or fork fails, with the cause); an editor's process passes it through,
 and `status` and `doctor` say it isn't locked.
 

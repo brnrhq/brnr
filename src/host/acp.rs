@@ -149,7 +149,7 @@ pub(super) enum Hold {
     /// process holds it can't be known. A headless process never serves such
     /// a session (P4: the client refuses); an editor's passes it through and
     /// keeps its transcript all the same (P1, P4: the proxy passes on what it
-    /// can't be sure of), and `status` says it isn't locked (ADR 47).
+    /// can't be sure of), and `status` says it isn't locked (ADR 48).
     Unlocked(String),
     /// Process `pid` held the lock when the editor loaded the session here
     /// (`shared_sessions`, ADR 42): that one keeps the transcript, and this
@@ -174,7 +174,7 @@ impl Session {
     }
 
     /// Why this process isn't the session's owner, if it isn't, to follow
-    /// "which": a headless process doesn't serve such a session (ADR 47).
+    /// "which": a headless process doesn't serve such a session (ADR 48).
     pub(super) fn not_owned(&self) -> Option<String> {
         match &self.hold {
             Hold::Owner(_) => None,
@@ -1319,7 +1319,7 @@ impl Host {
     /// `session`'s lock, for a session this process is to serve. One another
     /// process holds is shared, as `attach` lets it be; one that can't be
     /// locked is `Unlocked`, and the host log says why. Whoever opened it
-    /// decides what becomes of either (ADR 3, ADR 47).
+    /// decides what becomes of either (ADR 3, ADR 48).
     fn take_lock(&mut self, session: &str) -> Hold {
         match lock::take(session) {
             Ok(lock) => Hold::Owner(Some(lock)),
@@ -1335,7 +1335,7 @@ impl Host {
 
     /// Takes the lock of `session`, which a headless start resumes, before
     /// the agent is asked for it: one another process holds, or one that
-    /// can't be locked, can't be served here (ADR 3, ADR 47).
+    /// can't be locked, can't be served here (ADR 3, ADR 48).
     pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
         let lock = lock::take(session).map_err(|err| match err {
             lock::Error::Held(pid) => format!("{session} is running in process {pid}"),

@@ -1,4 +1,4 @@
-# 47. A session that can't be locked isn't served headless
+# 48. A session that can't be locked isn't served headless
 
 Accepted 2026-10-08. Implemented. Amends 3; resolves #57.
 

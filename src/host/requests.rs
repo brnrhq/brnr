@@ -168,7 +168,7 @@ impl Host {
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
                 // asked for it; a new one's, as it opened. Without it, the
-                // session gets no work, and nobody is to find it (ADR 47).
+                // session gets no work, and nobody is to find it (ADR 48).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
@@ -412,7 +412,7 @@ impl Host {
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
-                // one that can't be locked, can't be served here (ADR 3, ADR 47).
+                // one that can't be locked, can't be served here (ADR 3, ADR 48).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
                     let error = format!("the agent forked into {session}, which {why}");

@@ -163,7 +163,7 @@ fn stale_session_locks_are_removed() {
 /// A directory or a symlink where a session's lock file goes keeps the
 /// session from being locked: a failure, not a lock left by a process that
 /// is gone, and --fix leaves it to the user. Nor is it locked with sessions/
-/// itself open to others (ADR 47).
+/// itself open to others (ADR 48).
 #[test]
 fn what_keeps_a_session_from_being_locked_fails() {
     let env = Env::new("dr-nolock");

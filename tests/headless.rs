@@ -1695,7 +1695,7 @@ fn an_editors_load_of_a_held_session_is_refused() {
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,
 /// its process keeps the transcript, and `status` says the session isn't
-/// locked. A headless resume of it is still refused (ADR 47).
+/// locked. A headless resume of it is still refused (ADR 48).
 #[test]
 fn an_editors_session_that_cant_be_locked_is_passed_through() {
     use std::os::unix::fs::DirBuilderExt;
