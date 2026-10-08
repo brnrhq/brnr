@@ -229,7 +229,7 @@ impl Sink {
     /// An ACP message: into the session's raw file (none with `log =
     /// "events"`), or the host log.
     pub fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
-        self.record(session, true, |ts| Cmd::Msg {
+        self.record(session, true, false, |ts| Cmd::Msg {
             session: session.map(str::to_owned),
             ts,
             dir,
@@ -241,7 +241,10 @@ impl Sink {
     /// written out here, on the caller's stack: it may nest as deeply as the
     /// ACP it came from (see json.rs).
     pub fn note(&self, session: Option<&str>, event: Value) {
-        self.record(session, false, |ts| Cmd::Note {
+        // How the process ended is never skipped: it is what tells an exit
+        // from a death (`brnr doctor`, ADR 11).
+        let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
+        self.record(session, false, keep, |ts| Cmd::Note {
             session: session.map(str::to_owned),
             ts,
             event: event.to_string(),
@@ -249,16 +252,22 @@ impl Sink {
     }
 
     /// Queues the record `make` makes, or, with the queue full, counts it
-    /// skipped without making it. Never waits for the logger to write: it
-    /// only takes the lock to take the gap.
-    fn record(&self, session: Option<&str>, raw: bool, make: impl FnOnce(SystemTime) -> Cmd) {
+    /// skipped without making it, unless it is one to `keep`. Never waits for
+    /// the logger to write: it only takes the lock to take the gap.
+    fn record(
+        &self,
+        session: Option<&str>,
+        raw: bool,
+        keep: bool,
+        make: impl FnOnce(SystemTime) -> Cmd,
+    ) {
         let Some((tx, queue)) = &self.0 else { return };
         let ts = {
             let mut gap = queue.gap();
             // Read under the lock: a gap the logger ends is before it.
             let ts = SystemTime::now();
             let room = if gap.is_some() { ROOM_BYTES } else { LOG_BYTES };
-            if queue.bytes.load(Relaxed) > room {
+            if !keep && queue.bytes.load(Relaxed) > room {
                 let new = || Gap { all: Lost::none(ts), sessions: HashMap::new() };
                 gap.get_or_insert_with(new).add(session, Lost::one(ts, raw));
                 return;
@@ -744,6 +753,25 @@ mod tests {
 
     fn head() -> Head {
         Head { ids: Ids { host_id: "h".into(), host_pid: 1, agent_pid: 2 }, proxy_pid: None }
+    }
+
+    #[test]
+    fn how_the_process_ended_is_never_skipped() {
+        let (tx, rx) = mpsc::channel();
+        let queue = Arc::new(Queue::default());
+        let sink = Sink(Some((tx, queue.clone())));
+        queue.bytes.store(LOG_BYTES + 1, Relaxed);
+        sink.note(Some("s"), json!({ "event": "a" }));
+        sink.note(Some("s"), json!({ "event": "exited", "status": { "code": 0 } }));
+        let shown: Vec<String> = (rx.try_iter())
+            .map(|cmd| match cmd {
+                Cmd::Note { event, .. } => event,
+                Cmd::Skipped { gap, .. } => format!("skipped {}", gap.all.count),
+                _ => "?".into(),
+            })
+            .collect();
+        // The gap before it is noted first, so the file stays in order.
+        assert_eq!(shown, ["skipped 1", r#"{"event":"exited","status":{"code":0}}"#]);
     }
 
     #[test]
