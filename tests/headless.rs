@@ -805,6 +805,41 @@ fn huge_message_reaches_watchers() {
     let _ = watch.wait();
 }
 
+/// A watcher some way behind when a long message comes, one that takes it
+/// past the 16 MiB a peer may have queued, isn't cut off for it: not by the
+/// message, and not by the `turn_ended` that comes right after it (ADR 49).
+/// Here it is 8 MB behind (stopped, for the test), then a 12 MB message
+/// comes.
+#[test]
+fn a_long_message_doesnt_put_a_watcher_behind() {
+    let env = Env::new("longmsg");
+    env.start(&[]);
+    let mut watch = env
+        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for size in [8_000_000, 12_000_000] {
+        let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    // The watcher's line after the long message, which it is past the limit
+    // with, and a status to make sure.
+    assert!(env.run(&["status", "sess-1"]).status.success());
+    kill(watch.id() as i32, libc::SIGCONT);
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    assert_eq!(lines.join().unwrap(), 4, "two messages and two turn_endeds");
+}
+
 /// Installed the way Homebrew does it: `bin/brnr` and the adapters are
 /// symlinks in the prefix's `bin`, which isn't on the editor's PATH. brnr is
 /// started by that path and finds an adapter by its bare name next to it.
@@ -1001,7 +1036,7 @@ fn transcripts_are_private() {
     let mut checked = 0;
     let mut check = |path: &Path| {
         let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
-    env.ok(&["log", "sess-1"]); // Once the transcript is written.
+        env.ok(&["log", "sess-1"]); // Once the transcript is written.
         let want = if path.is_dir() { 0o700 } else { 0o600 };
         assert_eq!(mode, want, "{} is {mode:o}", path.display());
         checked += 1;

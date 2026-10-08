@@ -52,7 +52,9 @@
 //! up has stopped reading and is dropped rather than buffered for without
 //! limit: a connection is shut down, a started bridge gets SIGTERM. The limit
 //! is in bytes, not lines, so a burst of small events (an agent streaming
-//! fast) doesn't look like a peer that stopped reading.
+//! fast) doesn't look like a peer that stopped reading, and the line that
+//! takes a peer past it doesn't count, so one long message doesn't either
+//! (ADR 49).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -122,6 +124,9 @@ pub(super) enum Closer {
 pub(super) struct Queue {
     tx: Sender<String>,
     queued: Arc<AtomicUsize>,
+    /// While the backlog is past the limit, the size of the line that took
+    /// it past, which doesn't count toward it.
+    past: Arc<AtomicUsize>,
 }
 
 impl Queue {
@@ -129,16 +134,21 @@ impl Queue {
     pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
-        (Queue { tx, queued: queued.clone() }, rx, queued)
+        (Queue { tx, queued: queued.clone(), past: Arc::default() }, rx, queued)
     }
 
-    /// Full once the backlog is past the limit: until then a peer takes the
-    /// next line however big it is (a long agent message, a status), so
-    /// one big line can't make a peer that keeps up look stopped. At most
-    /// the limit plus a line is queued.
+    /// Full once the backlog is past the limit, not counting the line that
+    /// took it past. Until then a peer takes the next line however big it
+    /// is (a long agent message, a status), and that line doesn't make the
+    /// line after it (the `turn_ended` after a turn's long `agent_message`)
+    /// find a peer that keeps up behind. At most the limit, the line that
+    /// took the backlog past it, and one more are queued.
     fn push(&self, line: String) -> Queued {
         let len = line.len() + 1;
-        if self.queued.load(Relaxed) > QUEUE_BYTES {
+        let queued = self.queued.load(Relaxed);
+        if queued <= QUEUE_BYTES {
+            self.past.store(if queued + len > QUEUE_BYTES { len } else { 0 }, Relaxed);
+        } else if queued - self.past.load(Relaxed).min(queued) > QUEUE_BYTES {
             return Queued::Full;
         }
         self.queued.fetch_add(len, Relaxed);

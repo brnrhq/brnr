@@ -489,7 +489,8 @@ meanwhile), and an agent that stops reading its stdin holds back the editor's
 writes. A signal to `brnr acp`, or its stdout closing, doesn't wait behind
 them: it goes to the brnr process on a link of its own, and reaches the agent
 at once. Observers never slow the session: a bridge or watcher 16 MiB behind
-is cut off (a connection closed, a started bridge sent SIGTERM), and the
+is cut off (a connection closed, a started bridge sent SIGTERM), not counting
+the one line, however long, that took it past 16 MiB, and the
 foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
