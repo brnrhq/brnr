@@ -57,8 +57,8 @@ shellcheck release.sh adapters/build.sh
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
 target/release` (`--brnr`: brnr, built there, is checked with them). CI also
-runs `cargo deny check`, the minimum Rust version (`rust-version` in
-Cargo.toml) and actionlint and zizmor on the workflows.
+runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version
+(`rust-version` in Cargo.toml) and actionlint and zizmor on the workflows.
 
 ## Writing code here
 
@@ -69,7 +69,9 @@ Cargo.toml) and actionlint and zizmor on the workflows.
   (clippy denies one without). A call that is sound whatever its arguments
   goes in `sys.rs` as a safe function instead.
 - A new crate needs a reason: there are five, `cargo deny` checks their
-  licenses and advisories, and few is the point.
+  licenses and advisories, `cargo vet` that each crate is audited or exempted
+  (`supply-chain/`; CONTRIBUTING.md has the routine), and few is the point.
+  Never certify an audit you didn't do: an unread crate is an exemption.
 - What brnr prints, it prints the same in text and `--json` (P5). It never
   guesses or picks for the user (P4), and never drops something silently
   (P3): an error, an exit status or an event says so.
