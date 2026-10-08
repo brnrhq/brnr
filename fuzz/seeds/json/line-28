@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":3,"method":"_session/steering","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"steer"}],"_meta":{"steering":{"idleBehavior":"promptRequired"}}}}

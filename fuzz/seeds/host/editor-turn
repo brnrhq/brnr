@@ -1,0 +1,19 @@
+
+E{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true},"terminal":true}}}
+A{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true},"mcpCapabilities":{"http":true,"sse":false},"sessionCapabilities":{"list":{},"fork":{},"close":{},"resume":{}}},"authMethods":[{"id":"fake-login","name":"Log in to the fake"}],"agentInfo":{"name":"fake-agent","version":"1.2.3"},"_meta":{"steering":{"supported":true}}}}
+E{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/w","mcpServers":[{"name":"s","command":"x","args":[],"env":[{"name":"TOKEN","value":"secret"}]}]}}
+A{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess-1","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default","description":"Asks before edits"},{"id":"plan","name":"Plan","description":"Plans, doesn't edit"}]},"configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"small","options":[{"value":"small","name":"Small"},{"value":"large","name":"Large"}]}]}}
+E{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"hello"}]}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"},"messageId":"m1"}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking"}}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"old question"}}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"ls","kind":"execute","status":"pending","rawInput":{"command":"ls"},"locations":[{"path":"/a"}]}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","rawOutput":"ok"}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"plan","entries":[{"content":"Fix it","status":"in_progress","priority":"high"}]}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"review","description":"Review"}]}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"small","options":[{"value":"small","name":"Small"},{"value":"large","name":"Large"}]}]}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"session_info_update","title":"Fake session"}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"usage_update","used":12345,"size":200000,"cost":{"amount":0.42,"currency":"USD"}}}}
+A{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"something_newer","text":"hi"}}}
+A{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}

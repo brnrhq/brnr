@@ -8,6 +8,10 @@
 #   Cargo.toml's rust-version; minor and patch updates come as one pull
 #   request. cargo vet fails it for a new version nobody has audited;
 #   CONTRIBUTING.md says what the maintainer does then.
+#   The fuzz targets' crates (fuzz/) come the same way; they are only built
+#   to fuzz, and cargo vet doesn't check them.
+# - The image the fuzz targets are built in (.clusterfuzzlite/Dockerfile),
+#   pinned by digest.
 # - The actions the workflows use, pinned to commit SHAs with the version in a
 #   comment, which Dependabot moves together: one pull request for all of them.
 #
@@ -28,7 +32,7 @@ updates:
       prefix: adapters
 
   - package-ecosystem: cargo
-    directory: /
+    directories: [/, /fuzz]
     schedule:
       interval: weekly
     cooldown:
@@ -38,6 +42,15 @@ updates:
         update-types: [minor, patch]
     commit-message:
       prefix: crates
+
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: fuzz
 
   - package-ecosystem: github-actions
     directory: /

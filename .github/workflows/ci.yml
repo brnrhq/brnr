@@ -117,7 +117,7 @@ jobs:
           version: 1.30.1
           advanced-security: false
           annotations: true
-      - run: shellcheck release.sh adapters/build.sh .github/scripts/*.sh
+      - run: shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh .github/scripts/*.sh
       - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: 0.15.10

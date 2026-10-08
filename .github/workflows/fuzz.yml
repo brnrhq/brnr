@@ -1,0 +1,77 @@
+# Fuzzes the parsers that read bytes from outside brnr (fuzz/: frames on the
+# link, ACP lines, the host fed ACP from both sides) with ClusterFuzzLite, in
+# the image .clusterfuzzlite/ describes. A pull request that changes Rust gets
+# a few minutes of it; every night, the batch run fuzzes for an hour, growing
+# the corpus that both start from (kept as the runs' artifacts). A crash
+# fails the run, with the input that found it as an artifact; its fix comes
+# with a regression test in the main test suite.
+#
+# The build action clones the repository itself (it is public, so without
+# credentials), so there is no checkout step. The token is for the artifacts
+# of earlier runs: the corpus, and in a pull request the build to compare.
+name: fuzz
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "fuzz/**"
+      - "Cargo.*"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  pull-request:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read # the corpus and builds earlier runs left as artifacts
+      contents: read
+    concurrency:
+      group: fuzz-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+          mode: code-change
+          fuzz-seconds: 300
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  batch:
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read # the corpus and builds earlier runs left as artifacts
+      contents: read
+    concurrency:
+      group: fuzz-batch
+      cancel-in-progress: false
+    steps:
+      - uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+          upload-build: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+          mode: batch
+          fuzz-seconds: 3600
+          minimize-crashes: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
