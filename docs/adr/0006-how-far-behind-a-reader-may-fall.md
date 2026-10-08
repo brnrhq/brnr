@@ -1,7 +1,11 @@
 # 6. How far behind a reader may fall
 
-Accepted 2026-10-07, from former decision 25. Implemented. Resolves review
-item 1, and with ADR 9 review item 3.
+Accepted 2026-10-07, from former decision 25. Implemented. The logger's
+queue is bounded too, and gives way as an observer does: past 64 MiB not yet
+written (a slow or stalled disk), records are skipped and counted, and once
+there is room a `records-skipped` note says how many in the host log and in
+each session's events file that lost some (P3). Resolves review item 1, and
+with ADR 9 review item 3.
 
 ## Context
 
