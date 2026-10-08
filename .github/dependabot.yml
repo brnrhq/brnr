@@ -9,12 +9,18 @@
 #   request.
 # - The actions the workflows use, pinned to commit SHAs with the version in a
 #   comment, which Dependabot moves together: one pull request for all of them.
+#
+# Each waits a week after a release before proposing it (cooldown), so that a
+# compromised release is likelier to be caught and pulled first; security
+# updates don't wait.
 version: 2
 updates:
   - package-ecosystem: bun
     directory: /adapters
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     allow:
       - dependency-name: "@agentclientprotocol/*"
     commit-message:
@@ -24,6 +30,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       crates:
         update-types: [minor, patch]
@@ -34,6 +42,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
