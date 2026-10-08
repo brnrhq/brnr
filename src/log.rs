@@ -21,9 +21,13 @@
 //! counted from when a record is queued until the logger has written it.
 //! Past `LOG_BYTES` (a disk that is slow, or has stopped) records are
 //! skipped rather than queued, and counted; the host never waits for the
-//! logger (P1, P6). Once the queue is down to half that, the gap is over,
-//! and a note says so where the records would have been (P3): in the host
-//! log, and in the events file of each session that lost records,
+//! logger (P1, P6). Never skipped, however full the queue: a session's
+//! opening, which says where its records go, and `exited` and `panic`,
+//! which say how the process ended, so that `brnr doctor` can tell an exit
+//! from a death (ADR 11). Once the queue is down to half `LOG_BYTES`, the
+//! gap is over, and a note says so where the records would have been (P3):
+//! in the host log, and in the events file of each session that lost
+//! records,
 //!
 //! ```text
 //! {"event":"records-skipped","count":120,"acp":100,"since":"…","until":"…"}
