@@ -5,7 +5,7 @@
 //! brnr log <session> [--last <n>] [--follow] [--events <a,b,...>] [--json]
 //! ```
 //!
-//! A session running or not, by id or name. It starts at the beginning of
+//! A session running or not, by its id. It starts at the beginning of
 //! the session, or with `--last <n>` at the n-th last message sent to the
 //! agent; `--follow` keeps printing until the session closes or its
 //! process exits. `--events` and `--json` mean what they do for `watch`.
