@@ -91,6 +91,7 @@ pub const EVENTS: &[&str] = &[
     "permission_resolved",
     "turn_ended",
     "message_dropped",
+    "context_dropped",
     "session_closed",
     "exited",
     "acp",
@@ -718,10 +719,10 @@ impl Host {
             s.interrupts = 0;
             dropped.extend(s.held.drain(..));
         }
-        if req["clear_context"].as_bool() == Some(true) {
-            s.context.clear();
-        }
         let dropped = self.dropped(i, dropped, "queue");
+        if req["clear_context"].as_bool() == Some(true) {
+            self.drop_context(i, "queue");
+        }
         let s = &self.sessions[i];
         let held: Vec<Value> = s
             .held

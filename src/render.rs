@@ -98,6 +98,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         "message_dropped" => {
             format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
         }
+        "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
         // A gap in the transcript: records a slow disk made brnr skip, or a
         // full one failed to take (ADR 6).

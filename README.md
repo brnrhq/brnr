@@ -165,7 +165,10 @@ held. On an idle session each is sent at once. `send` says which: `delivered`,
 
 A message that never goes out is a `message_dropped` event, saying why:
 `cancel` (unless `--keep-held`), `queue --drop` or `--clear`, its session
-closing, the agent exiting, or a steer the agent didn't take.
+closing, the agent exiting, or a steer the agent didn't take. Context that
+never joins a prompt is a `context_dropped` event the same way:
+`queue --clear-context`, its session closing, or the agent exiting (`cancel`
+keeps it for the next prompt).
 
 Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `log`, `watch` and
@@ -269,6 +272,7 @@ live or read back from the transcript:
 | `permission_request`, `permission_resolved` | an approval waiting; its answer, and who gave it |
 | `turn_ended` | its `stop_reason` or `error`, and the `messages` it carried |
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
+| `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |

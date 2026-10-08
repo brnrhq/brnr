@@ -842,9 +842,9 @@ impl Host {
             self.startup_failed("the agent exited before the session started");
         }
         let status = describe_status(self.status);
-        // Held messages that never became a prompt.
+        // Held messages and context that never became a prompt.
         for i in 0..self.sessions.len() {
-            self.drop_held(i, "exit");
+            self.drop_all(i, "exit");
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         // Let go of the sessions as brnr stops listing the process (ADR 3).
@@ -914,7 +914,7 @@ impl Host {
         // (ADR 20); a second panic here mustn't cost the `exited` below.
         let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for i in 0..self.sessions.len() {
-                self.drop_held(i, "exit");
+                self.drop_all(i, "exit");
             }
         }));
         if held.is_err() {

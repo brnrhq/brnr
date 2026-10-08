@@ -857,6 +857,34 @@ fn idle_close_is_an_event() {
     assert_eq!(closed.expect("no session_closed")["by"], "idle");
 }
 
+/// Context held for a next prompt that won't come is told as it goes: by
+/// `queue --clear-context`, a close, or the process exiting (ADR 20).
+#[test]
+fn dropped_context_is_an_event() {
+    let env = Env::new("c-ctxdrop");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "--context", "first"]);
+    env.ok(&["queue", "sess-1", "--clear-context"]);
+    env.ok(&["fork", "sess-1"]);
+    env.ok(&["send", "sess-1", "--context", "second"]);
+    env.ok(&["close", "sess-1"]);
+    env.ok(&["send", "sess-2", "--context", "third"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    let dropped = |session: &str| -> Vec<(Value, Value)> {
+        (events(&env, session).into_iter())
+            .filter(|e| e["event"] == "context_dropped")
+            .map(|e| (e["text"].clone(), e["by"].clone()))
+            .collect()
+    };
+    let in_one: Vec<(Value, Value)> =
+        vec![("first".into(), "queue".into()), ("second".into(), "close".into())];
+    assert_eq!(dropped("sess-1"), in_one);
+    assert_eq!(dropped("sess-2"), vec![("third".into(), "exit".into())]);
+    let log = env.ok(&["log", "sess-2"]);
+    assert!(log.contains("dropped context (exit): third"), "{log}");
+}
+
 #[test]
 fn resume_continues_a_session() {
     let env = Env::new("c-resume");

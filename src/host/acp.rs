@@ -345,7 +345,7 @@ impl Host {
                 // Dropped now: held until the agent answers, they would go out as
                 // the running turn ends.
                 if let Some(i) = self.find(session) {
-                    self.drop_held(i, "close");
+                    self.drop_all(i, "close");
                 }
                 self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
             }
@@ -852,6 +852,30 @@ impl Host {
         }
     }
 
+    /// What a session that is closing or whose process is exiting held,
+    /// messages and context alike, is dropped, each with its event.
+    pub(super) fn drop_all(&mut self, i: usize, by: &str) {
+        self.drop_held(i, by);
+        self.drop_context(i, by);
+    }
+
+    /// Context session `i` held for its next prompt, which won't come: each
+    /// is a `context_dropped` event, `by` `close`, `exit` or `queue` (ADR 20;
+    /// context has no message id, ADR 17). Returns the texts.
+    pub(super) fn drop_context(&mut self, i: usize, by: &str) -> Vec<String> {
+        let context = take(&mut self.sessions[i].context);
+        let session = self.sessions[i].id.clone();
+        for text in &context {
+            self.emit(json!({
+                "event": "context_dropped",
+                "session": session,
+                "text": text,
+                "by": by,
+            }));
+        }
+        context
+    }
+
     /// Drops everything session `i` holds (see `dropped`), and the steers
     /// the agent hasn't answered: whatever it answers, they don't go out.
     pub(super) fn drop_held(&mut self, i: usize, by: &str) -> Vec<Value> {
@@ -888,7 +912,7 @@ impl Host {
     pub(super) fn close(&mut self, i: usize, peer: u64, req_id: Option<Value>, by: &'static str) {
         // Dropped now: held until the agent answers, they would go out as the
         // running turn ends.
-        self.drop_held(i, "close");
+        self.drop_all(i, "close");
         if !self.is_idle(i) {
             let session = self.sessions[i].id.clone();
             self.cancel(&session);
@@ -911,7 +935,7 @@ impl Host {
     /// what it still holds is dropped, then `session_closed` (ADR 20).
     pub(super) fn close_session(&mut self, i: usize, by: &str) {
         self.flush_agent_message(i);
-        self.drop_held(i, "close");
+        self.drop_all(i, "close");
         let session = self.sessions.remove(i).id;
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
     }
