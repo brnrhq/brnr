@@ -49,7 +49,18 @@ says whose they are), and link them next to `brnr`, where brnr finds them
 even when an editor's `PATH` doesn't include Homebrew. Each is versioned by
 the npm package it builds, so `brew upgrade` rebuilds an adapter when that
 package moves. `brnr doctor` shows which version each adapter was built from.
-Or from source, below. More at
+Or from source, below.
+
+The formulae build from the source tarball on each
+[release](https://github.com/brnrhq/brnr/releases), `brnr-X.tar.gz`, which
+the release workflow makes from the tag and attests. To check one you
+downloaded was made that way:
+
+```sh
+gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr
+```
+
+More at
 [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
 ## Build
