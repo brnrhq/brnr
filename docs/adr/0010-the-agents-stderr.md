@@ -30,3 +30,11 @@ only "the agent exited before the session started".
 - The foreground showing it only when the start fails: a supervisor's log
   would lose the agent's diagnostics.
 - Behind a flag.
+
+## Tests
+
+Run `cargo test --release adr_0010_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0010_foreground_passes_the_agents_stderr`.
+  - `adr_0010_failed_start_shows_the_agents_stderr`.

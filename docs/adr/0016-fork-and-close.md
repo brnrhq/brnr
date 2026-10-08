@@ -29,3 +29,11 @@ editor's session `close` is ADR 4's experimental action.
   refused.
 - Closing by stopping the whole process: it would take sibling sessions with
   it.
+
+## Tests
+
+Run `cargo test --release adr_0016_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0016_fork_and_close`.
+  - `adr_0016_close_cancels_the_turn_first`.

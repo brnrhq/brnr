@@ -35,3 +35,10 @@ Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
   decision 8).
 - `--json` on a few commands only (`list`, `status`, `watch`, `log`, as at
   first).
+
+## Tests
+
+Run `cargo test --release adr_0034_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0034_status_summarizes_the_session`.

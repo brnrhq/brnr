@@ -36,3 +36,10 @@ from each other, and from one version to the next, wherever ACP leaves room
 
 - A brnr release for every upstream release: batching them into brnr's
   releases keeps the pace a person's.
+
+## Tests
+
+Run `cargo test --release adr_0039_`. Named claims and their assertions:
+
+- [tests/doctor.rs](../../tests/doctor.rs)
+  - `adr_0039_adapter_versions`.

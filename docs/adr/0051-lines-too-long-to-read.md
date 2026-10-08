@@ -102,3 +102,13 @@ What is bounded, and what isn't (the issue's audit):
   ADR 26 rejected.
 - An event at the line's end with its length: one that never ends would
   never be told.
+
+## Tests
+
+Run `cargo test --release adr_0051_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0051_headless_an_agent_line_past_the_limit_is_dropped_and_said`.
+  - `adr_0051_a_long_line_to_an_editor_that_stops_reading_is_held_back`.
+  - `adr_0051_an_editor_line_past_the_limit_goes_to_the_agent_unread`.
+  - `adr_0051_the_agents_stderr_without_a_newline_is_bounded`.

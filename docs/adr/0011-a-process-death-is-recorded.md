@@ -78,3 +78,13 @@ agent would all die in the same instant, with no record.
   its process" (exit 1), which would mean the host went first.
 - Whether it happens without another run alongside (the review's two cases
   had one).
+
+## Tests
+
+Run `cargo test --release adr_0011_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0011_a_panic_is_recorded`.
+  - `adr_0011_a_panic_while_starting_is_recorded`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0011_how_the_process_ended_is_never_skipped`.
