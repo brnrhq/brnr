@@ -55,6 +55,55 @@ fn abandoned_start_sends_no_prompt() {
     assert!(fs::read_to_string(log).unwrap().contains("start-abandoned"));
 }
 
+/// A `brnr start` that goes once the process has decided to report ready,
+/// but before the report is written, hasn't been told the session: the
+/// write fails, the start is abandoned as before the commit, and the agent
+/// never gets the prompt (ADR 7). (`BRNR_TEST_READY=hold` holds the commit
+/// there until brnr start has gone.)
+#[test]
+fn start_gone_as_ready_is_written_sends_no_prompt() {
+    let env = Env::new("abandon-ready");
+    let mut start = env
+        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .env("BRNR_TEST_READY", "hold")
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let held = || host_logs(&env).contains("test-ready-held");
+    assert!(wait_for(Duration::from_secs(10), held), "never held: {}", host_logs(&env));
+    start.kill().unwrap();
+    start.wait().unwrap();
+
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "host kept running");
+    assert!(env.prompts().is_empty(), "agent got {:?}", env.prompts());
+    assert!(host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
+}
+
+/// A `brnr start --wait` that goes once it has the ready report leaves the
+/// session running, its prompt sent: the start committed (ADR 7, P14).
+#[test]
+fn start_gone_after_ready_leaves_the_session_running() {
+    let env = Env::new("after-ready");
+    let mut start = env
+        .brnr(&start_args(&["--wait", "--prompt", "hang on"]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = String::new();
+    BufReader::new(start.stderr.take().unwrap()).read_line(&mut said).unwrap();
+    assert!(said.starts_with("started sess-1"), "{said}");
+    start.kill().unwrap();
+    start.wait().unwrap();
+
+    assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()), "no prompt");
+    assert_eq!(env.prompts(), ["hang on"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.hosts().len(), 1, "host stopped");
+    assert!(!host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
+    env.stop();
+}
+
 /// Everything the process does is in the one request it was started with,
 /// which its `started` record holds; its argv is only `brnr host`.
 #[test]

@@ -241,7 +241,7 @@ struct Parts {
     agent: Vec<String>,
     proxy_pid: Option<u32>,
     started: SystemTime,
-    /// What the start channel is subscribed to from the start.
+    /// What the start channel is subscribed to once the start commits.
     events: Vec<String>,
     bridges: Vec<Bridge>,
 }
@@ -699,7 +699,7 @@ impl Host {
             self.display = Some(Display::start(self.sink.clone(), self.json_events));
         }
 
-        // The first peer: brnr start hears of whatever happens from here.
+        // brnr start hears how the start ends from here.
         if let Some(channel) = start_channel {
             self.open_start_channel(channel, events, &tx)
                 .map_err(|err| (format!("start channel: {err}"), 1))?;
@@ -745,7 +745,7 @@ impl Host {
     /// are there), and the agent killed with its process group (P14).
     /// brnr start or the editor is told by `main`, on fd 3, as of any start
     /// that fails before the event loop (see `Failure`), so nothing else is
-    /// to write there: the start channel stops being a peer, and what is
+    /// to write there: the start channel is let go of, and what is
     /// queued for the editor (`READY`) goes first. Returns the error and
     /// the exit code.
     fn died_starting(mut self, reason: &str) -> (String, u8) {
