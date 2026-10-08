@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brnr</title>
-<meta name="description" content="A burner phone for your coding agents. Run Claude Code or Codex sessions you can message, watch and approve from outside the editor.">
+<meta name="description" content="A burner phone for your coding agents. Watch Claude Code or Codex sessions from outside the editor, or run them headless and message and approve them from anywhere.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='2' fill='%2324291d'/%3E%3Crect x='4.5' y='3' width='7' height='5' fill='%23b8c795'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -183,7 +183,7 @@
   <div class="hero">
     <div>
       <h1>A burner phone for your coding agents.</h1>
-      <p class="lede">Run Claude Code or Codex from your editor as usual, then message it, watch it and answer its approvals from any terminal. Or run it with no editor at all, and pick up an editor's session after it closes.</p>
+      <p class="lede">Run Claude Code or Codex from your editor as usual, and watch it from any terminal. Or run it with no editor at all, message it and answer its approvals from anywhere, and pick up an editor's session after the editor closes.</p>
       <div class="install">
         <code id="brew">brew install brnrhq/tap/brnr</code>
         <button type="button" id="copy" aria-describedby="brew">Copy</button>
@@ -240,6 +240,7 @@
 <pre>brnr acp -- brnr-claude-adapter
 brnr acp -- brnr-codex-adapter
 brnr acp --profile work          <span class="c"># agent and settings from a profile</span></pre>
+        <p>The editor and the agent talk as before. Watching the editor's sessions from outside always works; acting on them (sending, approving, changing the mode) is experimental, and enabled one action at a time in the profile.</p>
         <p>When the editor goes away, the agent stops the way it would if the editor had started it. <code>brnr start --resume</code> carries on with its session headless.</p>
       </div>
     </div>
@@ -253,14 +254,14 @@ brnr acp --profile work          <span class="c"># agent and settings from a pro
       </div>
       <div class="body">
 <pre>brnr list                          <span class="c"># running sessions; --all: ended ones too</span>
-brnr send $s "also update the changelog"
-brnr send $s --after-turn "then run the tests"
+brnr send $s "also update the changelog"   <span class="c"># waits while a turn runs</span>
+brnr send $s --steer "and the tests too"   <span class="c"># into the running turn</span>
 brnr send $s --interrupt "stop, wrong branch"
 brnr watch $s                      <span class="c"># messages, tools, plan and approvals, live</span>
 brnr pending                       <span class="c"># approvals waiting for an answer</span>
 brnr approve $s p1
 brnr close $s</pre>
-        <p>Messages you send reach the agent as ordinary user messages, and the editor shows them as such.</p>
+        <p>Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs. In an editor's session, <code>send</code> and <code>approve</code> work once its profile enables them.</p>
       </div>
     </div>
   </section>
@@ -277,6 +278,8 @@ brnr close $s</pre>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]
+
+[profiles.work.headless]            <span class="c"># for brnr start</span>
 stop_when_idle = 600                <span class="c"># close a session idle 10 minutes</span>
 mode = "acceptEdits"                <span class="c"># the agent's mode, before the first prompt</span></pre>
       </div>

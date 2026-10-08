@@ -61,7 +61,25 @@ always allowed.
 - What each compensation does in real editors isn't known yet. They are to
   be tried against the editors brnr supports (Zed, IntelliJ's AIR plugin,
   others as they come), and adjusted per editor from what is seen; the README
-  states what is known as caveats. The first case to try is in ADR 11.
+  states what is known as caveats. The first case to try is in ADR 11. To
+  try in each editor:
+  - whether it acts on a `$/cancel_request` from the agent's side (the
+    request withdrawn from its view), and answers it with -32800, as ACP
+    asks;
+  - how it renders a `tool_call_update` with status `in_progress` or
+    `failed` for a tool call whose permission request it is showing;
+  - how it renders the echo form (a completed tool call, ADR 5) when it
+    arrives between turns, not only within one;
+  - how it shows a JSON-RPC error on its `session/prompt` after the session
+    was closed or taken over from outside, and whether loading the session
+    again then works;
+  - whether an unsolicited `current_mode_update` or `config_option_update`
+    moves its mode or model selector;
+  - how it shows a turn it didn't start (`send` while it was idle), and
+    whether it lets the user prompt while that turn runs;
+  - whether it sends `_session/steering` itself;
+  - from ADR 11, IntelliJ restarting its agents: whether the old proxy,
+    host and agent are SIGKILLed, and by whom.
 - Answering approvals from somewhere else, which the README opens with, is
   available for an editor's session only by opt-in. It is the default for
   headless sessions.

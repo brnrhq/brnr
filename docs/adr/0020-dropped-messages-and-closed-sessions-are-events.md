@@ -1,6 +1,6 @@
 # 20. Dropped messages and closed sessions are events
 
-Accepted 2026-10-07. Implemented, except the README's list of events.
+Accepted 2026-10-07. Implemented.
 Resolves review item 5.
 
 ## Context

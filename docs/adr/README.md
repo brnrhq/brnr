@@ -28,7 +28,7 @@ of to-resolve; the map at the end says where each went.
 | | Decision | Implemented |
 |---|---|---|
 | [1](0001-principles.md) | Principles | — |
-| [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | mostly |
+| [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | yes |
 | [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | yes |
 | [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | yes |
 | [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
@@ -46,7 +46,7 @@ of to-resolve; the map at the end says where each went.
 | [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
 | [18](0018-what-send-does.md) | What `send` does | yes |
 | [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
-| [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | mostly |
+| [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | yes |
 | [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
 | [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | yes |
 | [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
@@ -59,7 +59,7 @@ of to-resolve; the map at the end says where each went.
 | [30](0030-authentication.md) | Authentication | yes |
 | [31](0031-mcp-servers.md) | MCP servers for headless sessions | yes |
 | [32](0032-files-and-images.md) | Files and images in a message | yes |
-| [33](0033-profiles.md) | Profiles: shared, headless and editor parts | mostly |
+| [33](0033-profiles.md) | Profiles: shared, headless and editor parts | yes |
 | [34](0034-same-data-in-text-and-json.md) | Same data in text and JSON; `--json` wherever a command prints data | yes |
 | [35](0035-bridges.md) | Bridges | yes |
 | [36](0036-notify.md) | `notify` | yes |

@@ -1,7 +1,6 @@
 # 33. Profiles: shared, headless and editor parts
 
-Accepted 2026-10-07. Implemented, except that the README's note on tool
-kinds is still there.
+Accepted 2026-10-07. Implemented.
 
 ## Context
 
