@@ -74,6 +74,15 @@ downloaded was made that way:
 gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr
 ```
 
+Each release also carries `brnr-X.cdx.json`, an attested CycloneDX SBOM of
+brnr's Rust dependencies across all targets (not the adapters' npm packages).
+CI checks that two clean release builds, in different directories and at
+different times, have the same SHA-256 on each of Linux and macOS. This
+checks reproducibility within one toolchain and runner, not across Rust or
+OS versions. After publishing and updating the tap, a fresh macOS runner
+installs the formula, checks its version against the tag, and runs
+`brnr doctor` ([ADR 52](docs/adr/0052-reproducible-builds-and-sbom.md)).
+
 More at
 [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
 
