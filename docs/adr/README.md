@@ -76,6 +76,8 @@ of to-resolve; the map at the end says where each went.
 | [47](0047-brnr-on-crates-io.md) | brnr on crates.io, published by the release workflow (proposed) | yes |
 | [48](0048-log-waits-for-the-transcript.md) | `log` of a running session waits for its transcript (proposed) | yes |
 | [49](0049-the-line-that-takes-a-peer-past-the-limit.md) | The line that takes a peer past the limit doesn't count toward it (proposed) | yes |
+| [51](0051-lines-too-long-to-read.md) | Lines too long to read | yes |
+| [52](0052-reproducible-builds-and-sbom.md) | Release builds are checked for reproducibility and carry an SBOM | yes |
 
 ## Where the former entries went
 

@@ -9,6 +9,10 @@
 //! is buffered past the cap, nothing is dropped, and nothing times out: a
 //! reader that hangs holds its writer up for as long as it hangs (P1, P6).
 //!
+//! A line is counted once it is whole; until then it is its reader's. One
+//! longer than [`LINE_BYTES`] isn't kept whole: from there it goes on in
+//! pieces as it comes, unread by the host, counted as they go (ADR 51).
+//!
 //! The event loop only counts; it never waits. Headless there is no link,
 //! and the count is what the event loop hasn't handled yet.
 
@@ -18,6 +22,12 @@ use std::time::Duration;
 /// What may be on its way to a pipe: as much as a peer's queue (see
 /// control.rs).
 pub(super) const PIPE_BYTES: usize = 16 << 20;
+
+/// The longest line the host reads, from the agent's stdout or the editor
+/// (ADR 51), and so the most a reader holds of a line still coming. That
+/// isn't counted against the cap: a line longer than the cap would hold its
+/// reader back for room only its newline could make.
+pub(super) const LINE_BYTES: usize = 32 << 20;
 
 /// Bytes on their way through the host to one pipe.
 #[derive(Clone, Default)]

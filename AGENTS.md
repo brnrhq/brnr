@@ -40,7 +40,8 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 - `src/sys.rs`: the system calls that are safe whatever their arguments.
 - `tests/`: integration tests that drive the real binary against
   `tests/fake_agent.py`, whose behaviour is chosen with environment variables
-  (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`).
+  (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`);
+  `tests/security.rs` checks the claims of the threat model.
   `tests/docs.rs` runs the examples in the README, the site and the skill
   (`skills/brnr/`): an example added or changed needs its line in
   `EXAMPLES` there (or `SKIPPED`, with why).
@@ -48,6 +49,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   (frame.rs, json.rs, the host through `host::fuzz::Harness`), a workspace
   of its own on nightly; seeds in `fuzz/seeds/`. CI fuzzes them with
   ClusterFuzzLite (`.clusterfuzzlite/`, `.github/workflows/fuzz.yml`).
+- `docs/threat-model.md`: who can reach what, each claim with what enforces
+  it and its test, and the gaps. A change to a boundary (permissions, the
+  socket, redaction, approvals, what `brnr acp` changes) updates it.
 - `adapters/`: the Claude Code and Codex ACP adapters, built with bun.
 - `docs/adr/`, `README.md`, `site/`: what brnr does, for people.
 

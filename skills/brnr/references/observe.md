@@ -47,8 +47,8 @@ brnr watch $s --events turn_ended,permission_request --json
 
 ## The events
 
-Every event has `event`, `ts` and `host_id`; all but `exited` have
-`session`. As brnr prints them:
+Every event has `event`, `ts` and `host_id`; all but `exited` and
+`line_too_long` have `session`. As brnr prints them:
 
 ```json
 {"event": "user_message", "session": "0f6c…", "by": "control", "message": "m1", "text": "fix the failing tests"}
@@ -80,6 +80,9 @@ Every event has `event`, `ts` and `host_id`; all but `exited` have
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.
 - `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
+  brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
+  said, such as the answer to a turn, is lost. It is the process's.
 - `exited`: the agent's process ended (`status`), with a `reason` when brnr
   itself crashed. It is the process's, not one session's.
 - `acp`: every ACP message, raw; only with `--events all` or by name.
