@@ -17,7 +17,6 @@
 mod common;
 
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -27,10 +26,18 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use common::{AGENT, Env, kill, wait_for};
+use common::{AGENT, Env, kill, script, wait_for};
 
 /// The documents whose examples are tested, from the repository's root.
-const DOCS: &[&str] = &["README.md", "site/index.html"];
+const DOCS: &[&str] = &[
+    "README.md",
+    "site/index.html",
+    "skills/brnr/SKILL.md",
+    "skills/brnr/references/orchestrate.md",
+    "skills/brnr/references/approvals.md",
+    "skills/brnr/references/observe.md",
+    "skills/brnr/references/setup.md",
+];
 
 /// The document that must mention every command and option of `--help`.
 const REFERENCE: &str = "README.md";
@@ -145,6 +152,90 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Doctor
     ("brnr doctor", Nothing, Succeeds),
     ("brnr doctor --fix", Nothing, Succeeds),
+    ("brnr doctor --report", Nothing, Says("brnr doctor --report")),
+    // The skill's core (skills/brnr/SKILL.md)
+    (
+        "brnr start --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md",
+        Nothing,
+        Says(r#""session": "sess-1""#),
+    ),
+    (r#"brnr send $s --json "now add tests for it""#, Idle, Says(r#""status": "delivered""#)),
+    ("brnr wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
+    (
+        r#"brnr send $s --wait --timeout 600 --json "what did you change?""#,
+        Idle,
+        Says(r#""stop_reason": "end_turn""#),
+    ),
+    ("brnr log $s --last 1 --json", Idle, Says(r#""event":"turn_ended""#)),
+    ("brnr status $s --json", Idle, Says(r#""state": "idle""#)),
+    ("brnr list --json", Idle, Says(r#""session": "sess-1""#)),
+    ("brnr pending --json", Approval, Says(r#""request": "p1""#)),
+    ("brnr show $s p1 --json", Approval, Says(r#""oldText""#)),
+    // Its references: orchestrate
+    (
+        "brnr start --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md",
+        Nothing,
+        Says(r#""message": "m1""#),
+    ),
+    (r#"brnr send $s --json "also update the changelog""#, Turn, Says(r#""status": "held""#)),
+    ("brnr wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
+    (
+        r#"brnr send $s --wait --timeout 900 --json "what did you change, and why?""#,
+        Idle,
+        Says(r#""dropped": null"#),
+    ),
+    (
+        "brnr start --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md",
+        Nothing,
+        Says(r#""reply": "readme"#),
+    ),
+    (
+        r#"brnr start --json --stop-when-idle 600 --cwd ~/work/api --prompt "make the api tests pass" -- brnr-claude-adapter"#,
+        Nothing,
+        Says(r#""session": "sess-1""#),
+    ),
+    (
+        r#"brnr start --json --stop-when-idle 600 --cwd ~/work/web --prompt "make the web tests pass" -- brnr-codex-adapter"#,
+        Nothing,
+        Says(r#""session": "sess-1""#),
+    ),
+    (
+        r#"brnr send $s --steer --json "use the existing helper in src/util.rs""#,
+        Turn,
+        Says(r#""status": "steered""#),
+    ),
+    (
+        r#"brnr send $s --interrupt --json "stop: wrong branch, switch to main first""#,
+        Turn,
+        Says(r#""status": "interrupting""#),
+    ),
+    (r#"brnr send $s --context --json "the API key is in .env.local""#, Idle, Succeeds),
+    ("brnr queue $s --json", Turn, Says(r#""held": []"#)),
+    ("brnr cancel $s --json", Turn, Says(r#""status": "cancelling""#)),
+    ("brnr ps --json", Idle, Says(r#""owner": "headless""#)),
+    // approvals
+    ("brnr wait $s --for permission --timeout 600 --json", Approval, Says(r#""request": "p1""#)),
+    ("brnr approve $s p1 --json", Approval, Says(r#""optionId": "allow""#)),
+    ("brnr deny $s p1 --json", Approval, Says(r#""optionId": "reject""#)),
+    ("brnr approve $s p1 --option <option> --json", Approval, Says(r#""optionId": "allow""#)),
+    // observe
+    ("brnr log $s --json", Idle, Says(r#""event":"agent_message""#)),
+    ("brnr watch $s --json", Idle, Follows(r#""event":"agent_message""#)),
+    ("brnr watch --pid 4466 --json", Idle, Follows(r#""event":"agent_message""#)),
+    ("brnr log $s --events default,agent_thought --json", Idle, Says(r#""event":"turn_ended""#)),
+    (
+        "brnr watch $s --events turn_ended,permission_request --json",
+        Idle,
+        Follows(r#""event":"turn_ended""#),
+    ),
+    // setup
+    ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
+    ("brnr start --profile work --json --prompt - < task.md", Nothing, Says(r#""session""#)),
+    ("brnr skill", Nothing, Says("name: brnr")),
+    ("brnr skill orchestrate", Nothing, Says("# Orchestrating workers")),
+    ("brnr skill install", Nothing, Says("installed")),
+    ("brnr skill install --dir .claude/skills", Nothing, Says("installed .claude/skills/brnr")),
 ];
 
 /// The lines of `sh` blocks that don't run here, and why.
@@ -152,6 +243,11 @@ const SKIPPED: &[(&str, &str)] = &[
     ("brew install brnrhq/tap/brnr", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-claude-adapter", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-codex-adapter", "installs from the Homebrew tap"),
+    (
+        "gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr",
+        "verifies a release asset, from GitHub",
+    ),
+    ("cargo install brnr --locked", "installs from crates.io"),
     ("cargo build --release", "the build these tests run"),
     ("adapters/build.sh", "needs bun; CI's adapters job runs it"),
     ("./release.sh minor", "the maintainer's release, on GitHub"),
@@ -167,12 +263,16 @@ const STAND_INS: &[(&str, &str)] = &[
     ("brnr-claude-adapter", "{agent}"),
     ("brnr-codex-adapter", "{agent}"),
     ("~/work/project", "{dir}/project"),
+    ("~/work/api", "{dir}/project"),
+    ("~/work/web", "{dir}/project"),
     // The fake agent's models are small and large; its one config option
     // is model, and its login method fake-login.
     ("opus", "large"),
     ("<model>", "large"),
     ("effort=high", "model=large"),
     ("api-key", "fake-login"),
+    // The fake agent's allow option.
+    ("<option>", "allow"),
     // A session only the agent knows (session/list has it).
     ("<id>", "old-1"),
     ("4466", "{pid}"),
@@ -433,9 +533,7 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
     fs::write(dir.join("task.md"), "reply readme\n").unwrap();
     fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
     fs::write(dir.join("screenshot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-    let curl = dir.join("bin/curl");
-    fs::write(&curl, "#!/bin/sh\necho curl \"$@\"\n").unwrap();
-    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    script(&dir.join("bin/curl"), "#!/bin/sh\necho curl \"$@\"\n");
 
     let s = "sess-1";
     match before {
@@ -476,7 +574,9 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
     let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap());
     let args: Vec<&str> = args[1..].iter().map(String::as_str).collect();
     let mut cmd = env.brnr(&args);
+    // HOME is the scratch directory: `skill install` writes under it.
     cmd.env("PATH", path)
+        .env("HOME", &dir)
         .stdin(match &stdin {
             Some(file) => Stdio::from(File::open(dir.join(file)).unwrap()),
             None => Stdio::null(),

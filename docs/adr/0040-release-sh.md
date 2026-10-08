@@ -1,6 +1,7 @@
 # 40. `release.sh`
 
 Accepted (former decision 31); reviewed 2026-10-07. Implemented.
+Amended by 47: `release.sh tag` also checks crates.io.
 
 ## Decision
 

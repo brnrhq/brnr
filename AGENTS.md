@@ -1,8 +1,9 @@
 # AGENTS.md
 
 For coding agents working on brnr itself. (Agents that *use* brnr to run
-other agents get a skill instead: #26.) People: [CONTRIBUTING.md](CONTRIBUTING.md)
-says the same at more length.
+other agents get a skill instead: [skills/brnr](skills/brnr/SKILL.md),
+ADR 46.) People: [CONTRIBUTING.md](CONTRIBUTING.md) says the same at more
+length.
 
 ## What brnr is
 
@@ -41,9 +42,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   `tests/fake_agent.py`, whose behaviour is chosen with environment variables
   (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`);
   `tests/security.rs` checks the claims of the threat model.
-  `tests/docs.rs` runs the examples in the README and the site: an example
-  added or changed needs its line in `EXAMPLES` there (or `SKIPPED`, with
-  why).
+  `tests/docs.rs` runs the examples in the README, the site and the skill
+  (`skills/brnr/`): an example added or changed needs its line in
+  `EXAMPLES` there (or `SKIPPED`, with why).
 - `docs/threat-model.md`: who can reach what, each claim with what enforces
   it and its test, and the gaps. A change to a boundary (permissions, the
   socket, redaction, approvals, what `brnr acp` changes) updates it.
@@ -63,7 +64,8 @@ shellcheck release.sh adapters/build.sh
 ```
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
-target/release` (`--brnr`: brnr, built there, is checked with them). CI also
+target/release` (`--brnr`: brnr, built there, is checked with them); change
+`check.py`? `adapters/test_check.py`. CI also
 runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version
 (`rust-version` in Cargo.toml) and actionlint and zizmor on the workflows.
 

@@ -10,7 +10,8 @@ repository = "https://github.com/brnrhq/brnr"
 readme = "README.md"
 keywords = ["acp", "agent", "claude", "codex", "editor"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["adapters/"]
+# What `cargo publish` uploads (ADR 47): the source and what it embeds.
+include = ["/src/", "/skills/", "/README.md", "/LICENSE"]
 
 [dependencies]
 # ACP's types (ADR 43 in docs/adr), without schemars and without the
@@ -25,6 +26,9 @@ toml = "1.1.6"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# --cfg sanitized: built under a sanitizer (.github/workflows/sanitizers.yml),
+# whose bigger stack frames src/json.rs makes room for.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(sanitized)"] }
 
 [lints.clippy]
 # Every unsafe block says why it is sound (// SAFETY: …).

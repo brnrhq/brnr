@@ -7,7 +7,6 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -186,7 +185,12 @@ pub fn ghost(env: &Env) -> Child {
     let sleep = Command::new("sleep").arg("60").spawn().unwrap();
     let pid = sleep.id();
     let socket = run.join(format!("{pid}.sock"));
-    drop(UnixListener::bind(&socket).unwrap());
+    // Bound by a child that never listens: a listener of this process's
+    // would be in any child another test's thread forks meanwhile, until it
+    // execs, and a connection made then is reset instead of refused.
+    let bind = "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])";
+    let bound = Command::new("python3").args(["-c", bind]).arg(&socket).status().unwrap();
+    assert!(bound.success(), "binding {}", socket.display());
     let meta = run.join(format!("{pid}.json"));
     let info = json!({
         "id": pid.to_string(),
@@ -202,6 +206,24 @@ pub fn ghost(env: &Env) -> Child {
     let before = SystemTime::now() - Duration::from_secs(3600);
     fs::File::options().write(true).open(&meta).unwrap().set_modified(before).unwrap();
     sleep
+}
+
+/// An executable at `to`, a copy of `from`, copied by `cp`: a file this
+/// process had open for writing is open in any child another test's thread
+/// forks meanwhile, until that child execs, and running the file then fails
+/// with ETXTBSY ("Text file busy") on Linux.
+pub fn install(from: &Path, to: &Path) {
+    let status = Command::new("cp").arg(from).arg(to).status().unwrap();
+    assert!(status.success(), "cp {} {}", from.display(), to.display());
+    fs::set_permissions(to, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// An executable script at `path`, written as `install` copies.
+pub fn script(path: &Path, text: &str) {
+    let draft = path.with_extension("draft");
+    fs::write(&draft, text).unwrap();
+    install(&draft, path);
+    fs::remove_file(&draft).unwrap();
 }
 
 pub fn start_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
