@@ -66,7 +66,8 @@ brnr acp --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
-doesn't need to include it.
+doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
+`brnr notify`.
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
@@ -245,8 +246,9 @@ with `stop_when_idle` when the agent can't close sessions.
 `brnr sessions` starts the agent just to ask it (`session/list`), so it
 includes sessions started outside brnr and needs nothing running; its STATE
 and PID columns say, as `brnr list` would, which are running and in which
-process, which brnr has a transcript of (`inactive`), and which only the
-agent knows (`-`). `--resume` takes an id brnr knows, or any id the
+process (`unreachable` for one whose process holds it but doesn't answer),
+which brnr has a transcript of (`inactive`), and which only the agent knows
+(`-`). `--resume` takes an id brnr knows, or any id the
 agent knows, which it resumes in `--cwd` (or here) with the agent after
 `--` (or the profile's). `brnr stop` signals the agent's whole process group,
 so whatever the agent started goes with it.
@@ -291,8 +293,10 @@ event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`,
 its stdin; nothing is put on its command line, so what the agent writes can't
 become arguments. The text, title and message are escaped as `watch` shows
 them and cut at 32 KiB; the event on stdin is whole. Commands run one at a
-time, in order. `notify` exits when the process does (or the session closes),
-and fails if the process cuts it off first, as it does one that falls behind.
+time, in order, each in a process group of its own. `notify` exits when the
+process does (or the session closes). Cut off first, as one that falls behind
+is, it stops the command it is running, says on stderr that no more
+notifications come, and exits non-zero.
 
 ```sh
 brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
@@ -309,7 +313,8 @@ command = ["brnr", "notify", "--stdin", "--",
 
 If the bridge's `events` limit what it gets, they must include
 `agent_message`, `session_changed` and `exited`, which `notify` needs for its
-environment and to know when to stop.
+environment and to know when to stop. What it says on stderr, that it was cut
+off included, is in the host log (`bridge-stderr`).
 
 ## Headless sessions
 
@@ -413,8 +418,9 @@ the key goes; `brnr doctor` checks every profile.
 
 A bridge is any process that speaks brnr's JSON-lines protocol: one started by
 the brnr process from the profile (requests on its stdout, events on its
-stdin, its stderr in the host log), or anything that connects to the control
-socket. Its environment has `BRNR_PID` and `BRNR_SOCKET`.
+stdin, its stderr in the host log; a bare command found next to `brnr` first,
+as an agent's is), or anything that connects to the control socket. Its
+environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
 `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`, `close`,

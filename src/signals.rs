@@ -1,6 +1,7 @@
-//! Catching signals sent to the proxy so the host can pass them to the agent,
-//! and carrying the caller's signal mask through to the agent; letting a
-//! host in the foreground write to its terminal.
+//! Catching signals sent to the proxy so the host can pass them to the agent
+//! (and those that end `brnr notify`, so it stops its command first), and
+//! carrying the caller's signal mask through to the agent; letting a host in
+//! the foreground write to its terminal.
 
 use std::io::{self, PipeReader};
 use std::mem::zeroed;
@@ -27,6 +28,13 @@ static PIPE: AtomicI32 = AtomicI32::new(-1);
 /// reported on, one byte per signal. Signals the caller ignores stay ignored,
 /// so the host, and through it the agent, inherits SIG_IGN (nohup).
 pub fn install() -> PipeReader {
+    catch(FORWARDED)
+}
+
+/// Installs handlers for `sigs`, as [`install`] does for the forwarded
+/// ones (`brnr notify` stops what it runs first, on those that end it).
+/// One process catches one set.
+pub fn catch(sigs: &[c_int]) -> PipeReader {
     let (rx, tx) = io::pipe().expect("pipe");
     let tx = tx.into_raw_fd();
     unsafe {
@@ -34,7 +42,7 @@ pub fn install() -> PipeReader {
         libc::fcntl(tx, libc::F_SETFL, libc::fcntl(tx, libc::F_GETFL) | libc::O_NONBLOCK);
         PIPE.store(tx, Relaxed);
 
-        for &sig in FORWARDED {
+        for &sig in sigs {
             let mut old: libc::sigaction = zeroed();
             libc::sigaction(sig, null(), &mut old);
             if old.sa_sigaction == libc::SIG_IGN {

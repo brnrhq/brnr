@@ -24,12 +24,23 @@ SIGTERM, and the notifications stopped without a word.
   stdin. Nothing goes on its command line, so the agent's text can't become
   arguments (P8). The text, title and message are escaped as `watch` shows
   them and cut at 32 KiB, so the command always starts.
-- Commands run one at a time, in order, each waited for, with their stdout
-  sent to stderr (as a bridge, `notify`'s stdout is read by the process as
-  requests). A command that hangs makes `notify` fall behind, and the process
-  cuts it off like any slow peer (ADR 6); `notify` then fails, saying so. It
-  exits when the process does, and `notify <session>` also when that session
-  closes (`session_closed`).
+- Commands run one at a time, in order, each waited for, in a process group
+  of its own, with their stdout sent to stderr (as a bridge, `notify`'s
+  stdout is read by the process as requests). No event is read while one
+  runs, so a command that hangs makes `notify` fall behind, and the process
+  cuts it off like any slow peer (ADR 6): a started bridge gets SIGTERM, a
+  connection is closed. It exits when the process does, and
+  `notify <session>` also when that session closes (`session_closed`).
+- Cut off (SIGTERM, its stdin ending before `exited`, its connection closing
+  before `exited`), or stopped by SIGHUP, SIGINT or SIGQUIT, `notify` stops
+  the command it is running (SIGTERM to its process group, then SIGKILL once
+  it has exited, or 2 s later), says on its stderr that it was cut off and
+  that no more notifications come (`brnr: cut off (SIGTERM); stopped sh
+  (turn_ended); no more notifications`), and exits non-zero (P3). A started
+  bridge's stderr is in the host log (`bridge-stderr`). On the socket it
+  watches for the connection closing while a command runs, and reads what
+  was sent before it closed, no more than the socket held, to tell the
+  process's end (`exited` among it) from being cut off.
 - `brnr notify --stdin [--events …] -- <command>` reads its events from its
   stdin, a started bridge's transport (ADR 35), instead of connecting. That is
   how it runs as a bridge: `command = ["brnr", "notify", "--stdin", "--", …]`

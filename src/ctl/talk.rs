@@ -71,6 +71,11 @@ impl Conn {
         Ok(Conn { reader: BufReader::new(stream), writer, events: VecDeque::new(), next_req: 0 })
     }
 
+    /// Its connection, to look at without reading (`brnr notify`).
+    pub(super) fn socket(&self) -> io::Result<UnixStream> {
+        self.writer.try_clone()
+    }
+
     pub(super) fn subscribe(&mut self, events: &[&str]) -> Result<(), String> {
         self.call(json!({ "cmd": "subscribe", "events": events })).map(drop)
     }
@@ -118,7 +123,13 @@ impl Conn {
         if timeout == Some(Duration::ZERO) {
             return Ok(None);
         }
-        self.reader.get_ref().set_read_timeout(timeout).map_err(|e| e.to_string())?;
+        // macOS refuses it on a connection the process has closed (EINVAL),
+        // where reading doesn't wait anyway: it reads what is left, then EOF.
+        if let Err(e) = self.reader.get_ref().set_read_timeout(timeout)
+            && e.raw_os_error() != Some(libc::EINVAL)
+        {
+            return Err(e.to_string());
+        }
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => Err("the process closed the connection".into()),

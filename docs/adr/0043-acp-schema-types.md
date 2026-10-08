@@ -30,8 +30,12 @@ Rust libraries, as of October 2026:
 ## Decision
 
 - brnr keeps its byte relay and its threads, and interprets its copy of each
-  message with `agent-client-protocol-schema`'s types: typed requests,
-  responses and notifications in place of hand-written lookups.
+  message with `agent-client-protocol-schema`'s types where they take what
+  it reads: the parts of messages the status line lists (session updates,
+  `initialize`'s capabilities and login methods, the session opened,
+  permission option kinds, JSON-RPC errors, `session/list`), each read as
+  its type in place of hand-written lookups. The envelope and the rest stay
+  `serde_json::Value`, read as far as brnr can (src/schema.rs).
 - Its stable types are what P1 and strict mode (ADR 41) mean by stable ACP.
 - The crate parses with serde_json too, so reading lone surrogates and deep
   nesting stays brnr's own work (ADR 26).

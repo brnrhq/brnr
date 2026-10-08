@@ -7,12 +7,19 @@
 //! stderr as Rust does, then only takes note of it and wakes the event loop:
 //! it takes no lock of brnr's and waits on no thread, so it can't deadlock
 //! on whatever the panicking thread held, whether that is the event loop or
-//! the logger. The event loop, which holds
-//! what there is to tell (the sessions, the peers), then records the panic
-//! in the host log and `exited`, with the reason, there and in every
-//! session's file, sends `exited` to the peers it can still reach, removes
-//! the `.sock` and `.json` files, and stops the agent (see `Host::died`).
-//! A panic on the event loop itself unwinds to it (see `Host::run`).
+//! the logger. The event loop, which holds what there is to tell (the
+//! sessions, the peers), then records the panic in the host log, SIGKILLs
+//! the agent's process group, writes `exited`, with the reason, there and in
+//! every session's file, sends it to the peers it can still reach (bridges
+//! get the time to act on it they get on any exit), and removes the `.sock`
+//! and `.json` files (see `Host::died`). A panic on the event loop itself
+//! unwinds to it (see `Host::run`).
+//!
+//! A panic on the main thread as the start is under way, before the event
+//! loop runs, unwinds to `Host::start`, which does the same with what the
+//! start has made by then: the agent, the log, bridges, the display; no
+//! sessions yet (see `Host::died_starting`). brnr start, or the editor, is
+//! told on fd 3, as of any start that fails, and the process exits 101.
 //!
 //! What can't be told: a panic on the logger's thread leaves nothing to
 //! record with, and an abort (a stack overflow, a panic while panicking)
@@ -40,13 +47,17 @@ static PANICKED: OnceLock<String> = OnceLock::new();
 /// The event loop's channel, to wake it.
 static WAKE: OnceLock<SyncSender<Ev>> = OnceLock::new();
 
-/// `BRNR_TEST_PANIC` was set (see [`test_panic`]).
+/// `BRNR_TEST_PANIC` was set (see [`test_panic`]), and set to `start` (see
+/// [`test_panic_starting`]).
 static TEST_PANIC: AtomicBool = AtomicBool::new(false);
+static TEST_PANIC_START: AtomicBool = AtomicBool::new(false);
 
 /// Installs the hook. The panic is shown on stderr too, as Rust shows it:
 /// in the foreground on the terminal, detached in the host log.
 pub(super) fn install() {
-    TEST_PANIC.store(env::var_os("BRNR_TEST_PANIC").is_some(), Relaxed);
+    let test = env::var_os("BRNR_TEST_PANIC");
+    TEST_PANIC_START.store(test.as_ref().is_some_and(|v| v == "start"), Relaxed);
+    TEST_PANIC.store(test.is_some(), Relaxed);
     let shown = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         shown(info);
@@ -94,6 +105,16 @@ pub(super) fn test_panic(req: &Value) {
         Some("loop") => panic!("a test asked for it"),
         Some("thread") => drop(thread::spawn(|| panic!("a test asked for it"))),
         _ => {}
+    }
+}
+
+/// For the tests, with `BRNR_TEST_PANIC=start`: a panic on the main thread
+/// as the start is under way, once the agent, the log, the start channel
+/// and the bridges are there, before the editor is told the process is
+/// ready or the headless start begins (see `Host::set_up`).
+pub(super) fn test_panic_starting() {
+    if TEST_PANIC_START.load(Relaxed) {
+        panic!("a test asked for it");
     }
 }
 

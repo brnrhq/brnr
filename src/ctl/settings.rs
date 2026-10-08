@@ -12,11 +12,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, paths, spawn};
+use brnr::{config, json, lock, paths, spawn};
 
 use super::{
     Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
-    running_session, text, when,
+    running_rows, running_session, text, when,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -286,16 +286,23 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
     let listed = list_sessions(&agent, &cwd.to_string_lossy())?;
 
-    // What brnr knows of each, in brnr list's terms: a running session's
-    // state and process, `inactive` for one with a transcript, nothing for
-    // one only the agent knows.
+    // What brnr knows of each, as brnr list says it: a running session's
+    // state and process, from the locks too (`unreachable`, in a process
+    // that doesn't answer), `inactive` for one with a transcript, nothing
+    // for one only the agent knows.
     let hosts = discover()?;
+    let locks = lock::all();
+    let running = running_rows(&hosts, &locks);
     let past = inactive_sessions(&hosts);
     let known = |id: &str| -> (Value, Value, Value) {
-        for host in &hosts {
-            if let Some(x) = host.sessions().iter().find(|x| x["session_id"] == id) {
-                return (x["state"].clone(), json!(host.id().parse::<u64>().ok()), x["last_active"].clone());
-            }
+        // One that two processes serve (`shared_sessions`, ADR 42) is the
+        // lock holder's, as its transcript is.
+        let holder = locks.iter().find(|e| e.pid.is_some() && e.session.as_deref() == Some(id));
+        let holder = holder.and_then(|e| e.pid).map(u64::from);
+        let mut rows = running.iter().filter(|r| r["session"] == id);
+        let row = rows.clone().find(|r| r["pid"].as_u64() == holder).or_else(|| rows.next());
+        if let Some(r) = row {
+            return (r["state"].clone(), r["pid"].clone(), r["last_active"].clone());
         }
         match past.iter().find(|p| p["session_id"] == id) {
             Some(p) => (json!("inactive"), Value::Null, p["last_active"].clone()),

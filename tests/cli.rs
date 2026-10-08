@@ -945,8 +945,8 @@ fn take_over_moves_a_session() {
 }
 
 /// A process that doesn't answer still holds its session's lock: it isn't
-/// resumed elsewhere, and list and ps say which process has it without
-/// asking it.
+/// resumed elsewhere, and list, ps and sessions say which process has it
+/// without asking it.
 #[test]
 fn a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
@@ -961,8 +961,10 @@ fn a_silent_process_keeps_its_session() {
     let take_over = spawn(&start_args(&["--resume", "sess-1", "--take-over"]));
     let list = spawn(&["list", "--all", "--json"]);
     let ps = spawn(&["ps", "--json"]);
-    let [resume, take_over, list, ps] =
-        [resume, take_over, list, ps].map(|c| c.wait_with_output().unwrap());
+    let sessions = spawn(&["sessions", "--json", "--", AGENT]);
+    let table = spawn(&["sessions", "--", AGENT]);
+    let [resume, take_over, list, ps, sessions, table] =
+        [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
     unsafe { libc::kill(pid, libc::SIGCONT) };
     let refused = format!("sess-1 is running in process {pid}");
     assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
@@ -977,6 +979,13 @@ fn a_silent_process_keeps_its_session() {
         (&ps[0]["owner"], &ps[0]["sessions"]),
         (&"unreachable".into(), &serde_json::json!(["sess-1"]))
     );
+    // As list says it, not as one only the agent knows.
+    let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
+    let row = sessions.as_array().unwrap().iter().find(|r| r["session"] == "sess-1").unwrap();
+    assert_eq!((&row["state"], &row["pid"]), (&"unreachable".into(), &pid.into()), "{sessions}");
+    let table = stdout(&table);
+    let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
+    assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
     assert_eq!(env.hosts().len(), 1, "a second process started");
 }
 
@@ -1457,7 +1466,7 @@ fn notify_stdin_ends_with_its_input() {
     assert!(out.status.success(), "{}", stderr(&out));
     let out = env.run_with_stdin(&["notify", "--stdin", "--", "true"], b"{\"event\":\"turn_ended\"}\n");
     assert!(!out.status.success());
-    assert!(stderr(&out).contains("stdin closed; no more notifications"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("cut off (stdin closed); no more notifications"), "{}", stderr(&out));
 }
 
 /// A notifier cut off before the process exits (here, killed) says so and
@@ -1471,6 +1480,104 @@ fn notify_fails_when_cut_off() {
     unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
     assert!(!notify.wait().unwrap().success(), "notify exited 0");
+}
+
+/// The pid a notify command wrote to `file` (`echo $$`), once it has.
+fn command_pid(file: &std::path::Path) -> i32 {
+    let read = || fs::read_to_string(file).ok().and_then(|p| p.trim().parse::<i32>().ok());
+    assert!(wait_for(Duration::from_secs(10), || read().is_some()), "the command didn't run");
+    read().unwrap()
+}
+
+/// A notifier that falls behind while its command runs is cut off. As a
+/// bridge it gets SIGTERM: it stops the command, says so on its stderr,
+/// which is in the host log, and exits non-zero.
+#[test]
+fn notify_cut_off_as_a_bridge_stops_its_command() {
+    let env = Env::new("c-notifyslow");
+    let pids = env.dir.join("pids");
+    let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"brnr\", \"notify\", \"--stdin\", \"--\", \"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    // The turn's end starts the slow command; what follows piles up.
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let command = command_pid(&pids);
+    let log = || {
+        let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+        dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
+    };
+    for _ in 0..8 {
+        if log().contains(r#""event":"peer-dropped""#) {
+            break;
+        }
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let exited = || log().contains(r#""event":"bridge-exited""#);
+    assert!(wait_for(Duration::from_secs(15), exited), "notify kept running: {}", log().len());
+    let records: Vec<Value> = log().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said: Vec<&str> = records
+        .iter()
+        .filter(|r| r["event"]["event"] == "bridge-stderr")
+        .filter_map(|r| r["event"]["text"].as_str())
+        .collect();
+    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    assert!(said.contains(&want), "{said:?}");
+    let exit = records.iter().find(|r| r["event"]["event"] == "bridge-exited").unwrap();
+    assert_eq!(exit["event"]["status"], 1, "{exit}");
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+    // The session carries on without it.
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply still here"]), "still here\n");
+    env.stop();
+}
+
+/// On the socket, a notifier that falls behind while its command runs is
+/// cut off by its connection closing, and does the same; so does one sent
+/// SIGTERM.
+#[test]
+fn notify_cut_off_on_the_socket_stops_its_command() {
+    let env = Env::new("c-notifyslowsock");
+    env.start(&[]);
+    let pids = env.dir.join("pids");
+    let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
+    let notify = || {
+        env.brnr(&["notify", "sess-1", "--", "sh", "-c", &script])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let mut slow = notify();
+    sleep(Duration::from_millis(500));
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let command = command_pid(&pids);
+    for _ in 0..8 {
+        if slow.try_wait().unwrap().is_some() {
+            break;
+        }
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    assert!(wait_exit(&mut slow, Duration::from_secs(15)), "notify kept running");
+    let out = slow.wait_with_output().unwrap();
+    assert!(!out.status.success(), "notify exited 0");
+    let want = "brnr: cut off (the process closed the connection); stopped sh (turn_ended); \
+                no more notifications";
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+
+    fs::remove_file(&pids).unwrap();
+    let mut stopped = notify();
+    sleep(Duration::from_millis(500));
+    env.ok(&["send", "sess-1", "--wait", "reply again"]);
+    let command = command_pid(&pids);
+    unsafe { libc::kill(stopped.id() as i32, libc::SIGTERM) };
+    assert!(wait_exit(&mut stopped, Duration::from_secs(10)), "notify kept running");
+    let out = stopped.wait_with_output().unwrap();
+    assert!(!out.status.success(), "notify exited 0");
+    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+    env.stop();
 }
 
 /// A message too big for a command's environment is cut there (the event on

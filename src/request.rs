@@ -1,7 +1,9 @@
 //! The one request a brnr process is started with (ADR 8 in docs/adr).
 //!
 //! Whoever starts a process, `brnr start` or `brnr acp`, resolves everything
-//! first: the profile, the agent, the cwd, the role and what goes with it.
+//! first: the profile, the agent and the bridges' commands (a bare name
+//! installed next to brnr found there, see spawn.rs), the cwd, the role and
+//! what goes with it.
 //! It writes the request as one JSON value on the process's stdin and closes
 //! it. The process reads its stdin to EOF before doing anything else, and
 //! refuses to start on a request cut short; it reads no config and takes no
@@ -35,6 +37,7 @@ pub struct Request {
     pub strict: bool,
     /// What to record (ADR 22).
     pub log: Log,
+    /// The profile's, each command as it is run, found as the agent's is.
     pub bridges: Vec<Bridge>,
     pub role: Role,
 }
@@ -104,6 +107,14 @@ pub struct Foreground {
     pub json: bool,
 }
 
+/// A bare name installed next to brnr, as that path (see `spawn::bundled`),
+/// so the process runs it whatever its PATH.
+fn next_to_brnr(program: &mut String) {
+    if let Some(found) = spawn::bundled(OsStr::new(program.as_str())) {
+        *program = found.to_string_lossy().into_owned();
+    }
+}
+
 impl Request {
     /// What every process of `profile` (named `name`) is started with, for
     /// `agent` (or the profile's when empty) in `cwd`.
@@ -121,11 +132,15 @@ impl Request {
         let Some(program) = agent.first_mut() else {
             return Err("no agent: give one after -- or set agent in the profile".into());
         };
-        if let Some(bundled) = spawn::bundled(OsStr::new(program.as_str())) {
-            *program = bundled.to_string_lossy().into_owned();
-        }
-        for bridge in &profile.bridges {
+        next_to_brnr(program);
+        // A bridge's command, `~` expanded, is found the same way, here:
+        // the process runs what it is given (ADR 8, ADR 38).
+        let mut bridges = profile.bridges.clone();
+        for bridge in &mut bridges {
             host::check_bridge(bridge)?;
+            let program = &mut bridge.command[0];
+            *program = paths::expand(program).to_string_lossy().into_owned();
+            next_to_brnr(program);
         }
         Ok(Request {
             profile: name,
@@ -133,7 +148,7 @@ impl Request {
             cwd,
             strict: profile.strict,
             log: profile.log,
-            bridges: profile.bridges.clone(),
+            bridges,
             role,
         })
     }

@@ -56,6 +56,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -73,7 +74,7 @@ use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
-use crate::{json, paths, render, spawn};
+use crate::{json, paths, render};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
@@ -245,11 +246,13 @@ impl Host {
         bridge: &Bridge,
         tx: &SyncSender<Ev>,
     ) -> Result<(), String> {
-        let label = format!("{}#{n}", bridge.command[0]);
-        // A bare name is looked for next to brnr first, as an agent's is: so
+        // As the request has it: whoever started the process found a bare
+        // name next to brnr, as they did the agent's (see request.rs), so
         // `brnr` is this brnr, whatever the editor's PATH.
-        let program = paths::expand(&bridge.command[0]);
-        let mut cmd = Command::new(spawn::bundled(program.as_os_str()).unwrap_or(program));
+        let program = Path::new(&bridge.command[0]);
+        let name = program.file_name().unwrap_or(program.as_os_str()).to_string_lossy();
+        let label = format!("{name}#{n}");
+        let mut cmd = Command::new(program);
         cmd.args(&bridge.command[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
