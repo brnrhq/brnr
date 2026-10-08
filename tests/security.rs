@@ -1,0 +1,506 @@
+//! The claims of docs/threat-model.md that no other test checks: who can
+//! reach a process and its files (P13), what the agent's text can't do
+//! (P8), how approvals end unanswered (ADR 27), what is recorded of secrets
+//! (ADR 25), and what `brnr acp` passes unchanged (P1). Against the fake
+//! agent (fake_agent.py), each test in its own directories.
+
+mod common;
+
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{ChildStdout, Command, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
+
+use common::*;
+use serde_json::{Value, json};
+
+fn mode(path: &Path) -> u32 {
+    fs::symlink_metadata(path).unwrap_or_else(|e| panic!("{}: {e}", path.display())).mode() & 0o777
+}
+
+fn chmod(path: &Path, mode: u32) {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Every path under `dir`, `dir` first.
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![dir.to_owned()];
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            paths.extend(tree(&path));
+        } else {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Everything brnr has written under `dir`, as text.
+fn everything_in(dir: &Path) -> String {
+    let files = tree(dir).into_iter().filter(|p| p.is_file());
+    files.map(|p| String::from_utf8_lossy(&fs::read(p).unwrap()).into_owned()).collect()
+}
+
+fn private_dir_error(err: &str) {
+    assert!(err.contains("not a private directory owned by this user"), "{err}");
+}
+
+// ---- the runtime directory and its sockets (P13) ----------------------
+
+/// What brnr makes is private to the user whatever the umask: a umask of 0
+/// would otherwise leave the runtime directory, the socket, the session locks
+/// and the transcripts open to everyone.
+#[test]
+fn what_brnr_makes_is_private_whatever_the_umask() {
+    let env = Env::new("s-umask");
+    let mut start = env.brnr(&start_args(&["--prompt", "hello"]));
+    let out = with_umask(&mut start, 0).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
+    let run = env.dir.join("run");
+    assert_eq!(mode(&run), 0o700);
+    assert_eq!(mode(&run.join(format!("{}.sock", env.pid()))), 0o600);
+    assert_eq!(mode(&run.join("sessions")), 0o700);
+    assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
+    let home = tree(&env.dir.join("home"));
+    assert!(home.len() >= 7, "{home:?}");
+    for path in home {
+        let want = if path.is_dir() { 0o700 } else { 0o600 };
+        assert_eq!(mode(&path), want, "{}", path.display());
+    }
+    env.stop();
+}
+
+/// A runtime directory anyone else can read, search or write is refused by
+/// the process, which then writes nothing there, and by every command that
+/// would read it; brnr doesn't change its mode itself (only `doctor --fix`
+/// does).
+#[test]
+fn a_runtime_dir_others_can_use_is_refused() {
+    for open in [0o701, 0o705, 0o750, 0o770, 0o777] {
+        let env = Env::new(&format!("s-open{open:o}"));
+        let run = env.dir.join("run");
+        fs::create_dir(&run).unwrap();
+        chmod(&run, open);
+        private_dir_error(&stderr(&env.run(&start_args(&[]))));
+        assert!(fs::read_dir(&run).unwrap().next().is_none(), "{open:o}: wrote into it");
+        assert!(env.calls().is_empty(), "{open:o}: an agent was started");
+        for args in [&["list"][..], &["ps"], &["pending"], &["send", "sess-1", "hi"]] {
+            private_dir_error(&env.fails(args));
+        }
+        assert_eq!(mode(&run), open);
+    }
+}
+
+/// A symlinked runtime directory is refused by every command, not only by
+/// the process (`runtime_dir_symlink_is_refused`): it could point at any
+/// private directory of the user's, or at one someone else made it point at.
+#[test]
+fn a_symlinked_runtime_dir_is_refused_by_every_command() {
+    let env = Env::new("s-symlink");
+    let target = env.dir.join("elsewhere");
+    fs::create_dir(&target).unwrap();
+    chmod(&target, 0o700);
+    symlink(&target, env.dir.join("run")).unwrap();
+    for args in [&["list"][..], &["ps"], &["pending"], &["approve", "sess-1", "p1"]] {
+        private_dir_error(&env.fails(args));
+    }
+    assert!(fs::read_dir(&target).unwrap().next().is_none());
+}
+
+/// A private directory of another user's (root's) is refused for being
+/// theirs, mode aside. Skipped where there is none to try, or as root.
+#[test]
+fn a_runtime_dir_of_another_users_is_refused() {
+    let ours = uid();
+    let theirs = ["/root", "/var/audit", "/private/var/backups"].into_iter().find(|dir| {
+        fs::symlink_metadata(dir)
+            .is_ok_and(|m| m.is_dir() && m.uid() != ours && m.mode() & 0o077 == 0)
+    });
+    let Some(dir) = theirs.filter(|_| ours != 0) else {
+        eprintln!("skipped: no private directory of another user's to try");
+        return;
+    };
+    let env = Env::new("s-theirs");
+    let out = env.brnr(&start_args(&[])).env("BRNR_DIR", dir).output().unwrap();
+    private_dir_error(&stderr(&out));
+    let out = env.brnr(&["list"]).env("BRNR_DIR", dir).output().unwrap();
+    assert!(!out.status.success());
+    private_dir_error(&stderr(&out));
+}
+
+/// A runtime directory whose `sessions/` is the given mode, and that.
+fn session_locks(env: &Env, mode: u32) -> PathBuf {
+    let sessions = env.dir.join("run/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    chmod(&env.dir.join("run"), 0o700);
+    chmod(&sessions, mode);
+    sessions
+}
+
+/// Whether the one host log says a session's lock couldn't be taken.
+fn lock_failed(env: &Env) -> bool {
+    let wait = || everything_in(&env.dir.join("home/hosts")).contains(r#""event":"lock-failed""#);
+    wait_for(Duration::from_secs(5), wait)
+}
+
+/// The session locks' directory is held to the runtime directory's terms,
+/// and a lock that is a symlink is never followed. A resume, which must own
+/// its session (ADR 3), is refused; a new session is served without a lock,
+/// as one that can't be locked is, and the host log says why.
+#[test]
+fn session_locks_are_private_and_never_followed() {
+    let env = Env::new("s-locks");
+    let sessions = session_locks(&env, 0o777);
+    private_dir_error(&stderr(&env.run(&start_args(&["--resume", "old-1"]))));
+    assert!(env.calls_of("session/resume").is_empty());
+    env.start(&[]);
+    assert!(lock_failed(&env), "no lock-failed");
+    assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
+    env.stop();
+
+    let env = Env::new("s-locklink");
+    let sessions = session_locks(&env, 0o700);
+    let victim = env.dir.join("victim");
+    fs::write(&victim, "keep me").unwrap();
+    symlink(&victim, sessions.join("old-1.lock")).unwrap();
+    symlink(&victim, sessions.join("sess-1.lock")).unwrap();
+    assert!(!env.run(&start_args(&["--resume", "old-1"])).status.success());
+    env.start(&[]);
+    assert!(lock_failed(&env), "no lock-failed");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+    env.stop();
+}
+
+/// A command doesn't talk to a process through a runtime directory others
+/// can use: an approval isn't sent through one, and the request waits until
+/// it is private again.
+#[test]
+fn no_approval_goes_through_a_dir_others_can_use() {
+    let env = Env::new("s-approve");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    let run = env.dir.join("run");
+    chmod(&run, 0o770);
+    private_dir_error(&env.fails(&["approve", "sess-1", "p1"]));
+    chmod(&run, 0o700);
+    assert!(env.ok(&["pending"]).contains("p1"));
+    assert!(outcome(&env, "perm-1").is_none());
+    env.ok(&["deny", "sess-1", "p1"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
+}
+
+/// Another user can't connect to a process's socket: the runtime directory
+/// is closed to them, and the socket itself too. Needs root, to be someone
+/// else (nobody); skipped otherwise.
+#[test]
+fn another_user_cant_connect() {
+    if uid() != 0 {
+        eprintln!("skipped: needs root to connect as another user");
+        return;
+    }
+    let env = Env::new("s-nobody");
+    chmod(&env.dir, 0o755);
+    env.start(&[]);
+    let run = env.dir.join("run");
+    let socket = run.join(format!("{}.sock", env.pid()));
+    let connect = |socket: &Path| {
+        let script = "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ntry:\n    s.connect(sys.argv[1])\nexcept PermissionError:\n    sys.exit(13)\n";
+        let out = Command::new("python3")
+            .args(["-I", "-c", script])
+            .arg(socket)
+            .uid(65534)
+            .gid(65534)
+            .current_dir("/")
+            .output()
+            .unwrap();
+        out.status.code()
+    };
+    // First, that nobody could connect at all with both open: else what
+    // keeps them out is some directory above this one.
+    chmod(&run, 0o711);
+    chmod(&socket, 0o666);
+    let control = connect(&socket);
+    chmod(&socket, 0o600);
+    if control != Some(0) {
+        eprintln!("skipped: nobody can't reach {} at all", env.dir.display());
+        chmod(&run, 0o700);
+        return env.stop();
+    }
+    // With the directory open for searching, the socket's own mode refuses.
+    assert_eq!(connect(&socket), Some(13), "nobody connected to the socket");
+    chmod(&run, 0o700);
+    assert_eq!(connect(&socket), Some(13), "nobody connected through the directory");
+    env.stop();
+}
+
+/// The process listens on no network: its only sockets are Unix sockets.
+/// Skipped where `lsof` isn't installed.
+#[test]
+fn the_process_listens_on_no_network() {
+    let env = Env::new("s-network");
+    env.start(&["--prompt", "hello"]);
+    assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
+    let Ok(out) = Command::new("lsof").args(["-a", "-n", "-P", "-i", "-p", &env.pid()]).output()
+    else {
+        eprintln!("skipped: no lsof");
+        return env.stop();
+    };
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "internet sockets open");
+    // lsof itself works: it sees the control socket.
+    let all = Command::new("lsof").args(["-a", "-U", "-p", &env.pid()]).output().unwrap();
+    assert!(!all.stdout.is_empty(), "lsof saw no Unix sockets either");
+    env.stop();
+}
+
+// ---- the agent's text (P8) ---------------------------------------------
+
+/// A session id is the agent's text: as a file name it can't leave the
+/// project folder or the locks' directory, and it is shown escaped.
+#[test]
+fn a_session_id_cant_climb_out_of_its_folder() {
+    let id = "../../../\x1b[2J/escape";
+    let env = Env::new("s-climb").agent("SESSION_ID", id);
+    env.start(&["--prompt", "hello"]);
+    assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
+    // As P8 has it: anything but ASCII letters, digits, `-`, `_` and `.`
+    // becomes `_`.
+    let file = ".._.._..___2J_escape";
+    let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
+    assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
+    assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
+    let made = tree(&env.dir);
+    let escaped: Vec<_> = made.iter().filter(|p| p.ends_with("escape")).collect();
+    assert!(escaped.is_empty(), "{escaped:?}");
+    let list = env.ok(&["list"]);
+    assert!(!list.contains('\x1b') && list.contains("escape"), "{list:?}");
+    env.ok(&["send", id, "hi"]);
+    env.stop();
+}
+
+// ---- approvals (ADR 27) ------------------------------------------------
+
+/// What the agent was answered to permission request `request`, if it was.
+fn outcome(env: &Env, request: &str) -> Option<Value> {
+    env.calls()
+        .into_iter()
+        .find(|c| c["id"] == request && c.get("method").is_none())
+        .map(|c| c["result"]["outcome"].clone())
+}
+
+/// Without `permission_timeout` a request waits for an answer for as long as
+/// it takes: nothing answers it for the user.
+#[test]
+fn an_unanswered_request_waits() {
+    let env = Env::new("s-waits");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "perm execute"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    sleep(Duration::from_secs(3));
+    assert!(outcome(&env, "perm-1").is_none(), "answered for the user");
+    assert!(env.ok(&["pending"]).contains("p1"));
+    env.ok(&["approve", "sess-1", "p1"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
+}
+
+/// A timeout only ever denies: a request that offers nothing to reject with
+/// is cancelled, never allowed.
+#[test]
+fn a_timeout_never_allows() {
+    let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
+    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "perm execute"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
+    assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
+    assert!(env.ok(&["log", "sess-1"]).contains("by timeout"));
+    env.stop();
+}
+
+/// A request is answered only as the request of its own session.
+#[test]
+fn a_request_is_answered_only_in_its_session() {
+    let env = Env::new("s-othersession");
+    env.start(&[]);
+    env.ok(&["fork", "sess-1"]);
+    env.ok(&["send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    let err = env.fails(&["approve", "sess-2", "p1"]);
+    assert!(err.contains("no pending request p1 in session sess-2"), "{err}");
+    assert!(outcome(&env, "perm-1").is_none());
+    env.stop();
+}
+
+// ---- secrets (ADR 25) --------------------------------------------------
+
+/// The MCP servers' secrets of a resumed session, by `session/resume` or
+/// `session/load`, reach the agent, and nothing brnr records or shows.
+#[test]
+fn a_resumed_sessions_secrets_are_redacted() {
+    for (name, method, agent) in
+        [("s-resume", "session/resume", None), ("s-load", "session/load", Some("NO_RESUME"))]
+    {
+        let mut env = Env::new(name);
+        if let Some(var) = agent {
+            env = env.agent(var, "1");
+        }
+        env.write_config(
+            r#"[[profiles.default.headless.mcp_servers]]
+name = "github"
+command = "true"
+env = { GITHUB_TOKEN = "resume-secret" }
+"#,
+        );
+        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+        let sent = &env.calls_of(method)[0]["params"]["mcpServers"][0]["env"][0];
+        assert_eq!(sent["value"], "resume-secret", "{name}");
+        for args in [&["status", "old-1", "--json"][..], &["ps", "--json"], &["list", "--json"]] {
+            assert!(!env.ok(args).contains("resume-secret"), "{name}: {args:?}");
+        }
+        let acp = env.ok(&["log", "old-1", "--events", "all", "--json"]);
+        assert!(!acp.contains("resume-secret"), "{name}: {acp}");
+        env.stop();
+        assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+        let all = everything_in(&env.dir.join("home"));
+        assert!(!all.contains("resume-secret") && all.contains("<redacted>"), "{name}");
+    }
+}
+
+// ---- bridges (ADR 35) --------------------------------------------------
+
+/// A started bridge gets the events, but not the raw ACP unless it asks for
+/// it by name; asked for, the MCP servers' secrets in it are redacted.
+#[test]
+fn a_bridge_gets_no_raw_acp_unless_it_asks() {
+    let env = Env::new("s-bridge");
+    let (events, acp) = (env.dir.join("events"), env.dir.join("acp"));
+    env.write_config(&format!(
+        r#"[[profiles.default.bridges]]
+command = ["sh", "-c", {:?}]
+
+[[profiles.default.bridges]]
+command = ["sh", "-c", {:?}]
+events = ["acp", "turn_ended"]
+
+[[profiles.default.headless.mcp_servers]]
+name = "github"
+command = "true"
+env = {{ GITHUB_TOKEN = "bridge-secret" }}
+"#,
+        format!("exec cat > '{}'", events.display()),
+        format!("exec cat > '{}'", acp.display()),
+    ));
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let ended = |path: &Path| {
+        let read = || fs::read_to_string(path).unwrap_or_default().contains("turn_ended");
+        assert!(wait_for(Duration::from_secs(5), read), "{}: no turn_ended", path.display());
+        fs::read_to_string(path).unwrap()
+    };
+    let (events, acp) = (ended(&events), ended(&acp));
+    assert!(!events.contains(r#""event":"acp""#), "{events}");
+    assert!(acp.contains(r#""method":"session/new""#) && acp.contains("<redacted>"), "{acp}");
+    assert!(!acp.contains("bridge-secret") && !events.contains("bridge-secret"));
+    env.stop();
+}
+
+// ---- brnr acp (P1) -----------------------------------------------------
+
+/// `hex` as a JSON `\u` escape.
+fn escaped(hex: &str) -> String {
+    format!("\\{}{hex}", 'u')
+}
+
+/// Lines from the agent, through `brnr acp`, until the response to `id`.
+fn lines_until(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    loop {
+        let mut line = String::new();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+        let msg: Option<Value> = serde_json::from_str(&line).ok();
+        lines.push(line);
+        if msg.is_some_and(|m| m["id"] == id && m.get("method").is_none()) {
+            return lines;
+        }
+    }
+}
+
+/// An editor's lines reach the agent byte for byte, whatever their spacing,
+/// key order and escapes, MCP secrets in them included, and with lines that
+/// aren't JSON among them; the agent's reach the editor the same way. Only
+/// what brnr records has the secrets redacted.
+#[test]
+fn acp_passes_bytes_unchanged() {
+    let env = Env::new("s-bytes");
+    let raw = env.dir.join("raw");
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .env("RAW_LOG", &raw)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let cwd = serde_json::to_string(&env.dir).unwrap();
+    let server = |secret: &str| {
+        format!(
+            r#"[{{"type":"http","name":"api","url":"https://example.invalid","headers":[{{"name":"Authorization","value":"Bearer {secret}"}}]}}, {{"name":"gh","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}-env"}}]}}]"#
+        )
+    };
+    let lines = [
+        (Some(1), r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"_meta":{"note":"cafE9 \/ é"}}}"#.replace("E9", &escaped("00e9"))),
+        (Some(2), format!("{{ \"id\" : 2,\t\"method\":\"session/new\", \"jsonrpc\":\"2.0\",\"params\":{{\"mcpServers\":{},\"cwd\":{cwd}}}}}\r", server("new-secret"))),
+        (None, r#"{"jsonrpc":"2.0","method":"_editor/ping","params":{"n":[1,2.50,1e3]}}"#.to_owned()),
+        (None, "not json, from the editor".to_owned()),
+        (Some(3), r#"{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"sess-1","prompt":[{"type":"text","text":"verbatim"}],"_meta":{"n":2.50}}}"#.to_owned()),
+        (Some(4), format!(r#"{{"jsonrpc":"2.0","id":4,"method":"session/load","params":{{"sessionId":"old-1","cwd":{cwd},"mcpServers":{}}}}}"#, server("load-secret"))),
+        (Some(5), format!(r#"{{"jsonrpc":"2.0","id":5,"method":"session/resume","params":{{"sessionId":"old-2","cwd":{cwd},"mcpServers":{}}}}}"#, server("resume-secret"))),
+        (Some(6), format!(r#"{{"jsonrpc":"2.0","id":6,"method":"session/fork","params":{{"sessionId":"sess-1","cwd":{cwd},"mcpServers":{}}}}}"#, server("fork-secret"))),
+    ];
+    let mut from = Vec::new();
+    for (id, line) in &lines {
+        writeln!(to_agent, "{line}").unwrap();
+        if let Some(id) = id {
+            from.extend(lines_until(&mut from_agent, *id));
+        }
+    }
+    let sent: String = lines.iter().map(|(_, l)| format!("{l}\n")).collect();
+    assert!(
+        wait_for(Duration::from_secs(5), || fs::read(&raw).is_ok_and(|r| r.len() >= sent.len()))
+    );
+    assert_eq!(fs::read_to_string(&raw).unwrap(), sent, "the agent got other bytes");
+    // VERBATIM in fake_agent.py.
+    let verbatim = r#"{ "params" : {"update":{"content":{"text":"cafE9 \/ é SMILE","type":"text"},  "sessionUpdate":"agent_message_chunk"},"sessionId":"sess-1"},"method":"session/update" ,"jsonrpc":"2.0"}"#
+        .replace("E9", &escaped("00e9")).replace("SMILE", &format!("{}{}", escaped("d83d"), escaped("de00")));
+    assert!(from.contains(&format!("{verbatim}\n")), "{from:#?}");
+    assert!(from.contains(&"not json, from the agent\n".to_owned()), "{from:#?}");
+
+    let host = env.host_pid();
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)));
+    let all = everything_in(&env.dir.join("home"));
+    for secret in ["new-secret", "load-secret", "resume-secret", "fork-secret"] {
+        assert!(!all.contains(secret), "{secret} recorded");
+    }
+    assert!(all.contains("not json, from the editor"), "the raw ACP is kept");
+}
+
+/// The agent's stderr comes out of `brnr acp`'s stderr as it was written,
+/// and `brnr acp` exits as the agent did.
+#[test]
+fn acp_passes_stderr_and_the_exit_status() {
+    let text = "agent: \x1b[1mbold\x1b[0m caf\u{e9}";
+    let env = Env::new("s-stderr").agent("STDERR", text).agent("EXIT", "3");
+    let out = env.run_with_stdin(&["acp", "--", AGENT], b"");
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(stderr(&out), format!("{text}\n"));
+    assert!(out.stdout.is_empty());
+}
