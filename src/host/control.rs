@@ -800,7 +800,8 @@ impl Host {
                 // `session/set_model` (ADR 28).
                 let model = text("model")?;
                 let option = self.sessions[i].state.option("model");
-                let id = option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
+                let id =
+                    option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
                 let params = json!({ "sessionId": session, "configId": id, "value": model });
                 self.peer_op(
                     peer,

@@ -947,7 +947,10 @@ impl Host {
         s.prompts.is_empty()
             && s.held.is_empty()
             && s.steering.is_empty()
-            && !self.agent_requests.iter().any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
+            && !self
+                .agent_requests
+                .iter()
+                .any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
     }
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
@@ -1002,7 +1005,6 @@ impl Host {
             })
             .min()
     }
-
 
     /// A new `m<n>` message id.
     pub(super) fn message_id(&mut self) -> String {
@@ -1296,7 +1298,8 @@ impl Host {
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
             Err(lock::Error::Io(err)) => {
                 let error = err.to_string();
-                let event = json!({ "event": "lock-failed", "session_id": session, "error": error });
+                let event =
+                    json!({ "event": "lock-failed", "session_id": session, "error": error });
                 self.sink.note(None, event);
                 Hold::Owner(None)
             }

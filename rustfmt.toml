@@ -1,0 +1,3 @@
+# Short expressions stay on one line, as the code was written before rustfmt
+# checked it.
+use_small_heuristics = "Max"

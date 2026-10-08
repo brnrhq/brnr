@@ -692,12 +692,20 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         errln!("{}", describe_sent(&response));
     }
     let message = text(&response["message"]);
-    wait_for_message(&mut conn, &arg, &session, &message, deadline(timeout), json_out.then(|| json!({})))
+    wait_for_message(
+        &mut conn,
+        &arg,
+        &session,
+        &message,
+        deadline(timeout),
+        json_out.then(|| json!({})),
+    )
 }
 
 /// `delivered (message m1)`, `held`, …
 fn describe_sent(response: &Value) -> String {
-    let message = response["message"].as_str().map(|m| format!(" (message {m})")).unwrap_or_default();
+    let message =
+        response["message"].as_str().map(|m| format!(" (message {m})")).unwrap_or_default();
     format!("{}{message}", text(&response["status"]))
 }
 

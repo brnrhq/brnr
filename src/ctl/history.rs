@@ -95,7 +95,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     }
     let no_events = !records.iter().any(|e| e["event"] != "acp");
     if shown == 0 && no_events && !records.is_empty() && !follow {
-        eprintln!("brnr: no events in {} (an older brnr wrote it); try --events acp", path.display());
+        eprintln!(
+            "brnr: no events in {} (an older brnr wrote it); try --events acp",
+            path.display()
+        );
     }
     if !follow {
         return Ok(ExitCode::SUCCESS);

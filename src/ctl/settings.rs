@@ -91,7 +91,9 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
                 let option = option.ok_or("the agent offers no modes")?;
                 modes = choices(option)
                     .into_iter()
-                    .map(|(value, name)| json!({ "mode": value, "name": name, "description": null }))
+                    .map(
+                        |(value, name)| json!({ "mode": value, "name": name, "description": null }),
+                    )
                     .collect();
                 current = option["currentValue"].as_str().map(str::to_owned);
             }
@@ -335,7 +337,8 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
         outln!("the agent knows no sessions in {}", cwd.display());
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = vec![["SESSION", "TITLE", "STATE", "PID", "LAST ACTIVE", "CWD"].map(String::from)];
+    let mut table =
+        vec![["SESSION", "TITLE", "STATE", "PID", "LAST ACTIVE", "CWD"].map(String::from)];
     for r in &rows {
         table.push([
             text(&r["session"]),
@@ -382,7 +385,8 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String
         writeln!(stdin, "{req}").map_err(|e| format!("the agent: {e}"))?;
         loop {
             let wait = deadline.saturating_duration_since(Instant::now());
-            let line = rx.recv_timeout(wait).map_err(|_| format!("the agent didn't answer {method}"))?;
+            let line =
+                rx.recv_timeout(wait).map_err(|_| format!("the agent didn't answer {method}"))?;
             // As the host reads it (see json.rs): a title cut mid-emoji is no
             // reason to miss the answer.
             let line = line.as_bytes();

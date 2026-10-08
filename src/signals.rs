@@ -12,14 +12,8 @@ use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::Relaxed};
 use libc::{c_int, sigset_t};
 
 /// Signals sent to the proxy that are meant for the program.
-const FORWARDED: &[c_int] = &[
-    libc::SIGHUP,
-    libc::SIGINT,
-    libc::SIGQUIT,
-    libc::SIGTERM,
-    libc::SIGUSR1,
-    libc::SIGUSR2,
-];
+const FORWARDED: &[c_int] =
+    &[libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGUSR1, libc::SIGUSR2];
 
 /// Write end of the pipe the handler reports signals on.
 static PIPE: AtomicI32 = AtomicI32::new(-1);

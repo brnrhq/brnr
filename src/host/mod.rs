@@ -64,8 +64,8 @@ use crate::schema::AuthMethod;
 use crate::signals;
 
 use acp::{AgentRequest, Hold, Pending, Session};
-pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
+pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::Backlog;
 use requests::{Capabilities, HostRequest, SetupStep};

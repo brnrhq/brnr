@@ -136,8 +136,10 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
     let what = "runtime dir";
     let dir = paths::runtime_dir();
     if dir.is_relative() {
-        let msg =
-            format!("BRNR_DIR is relative ({}): processes resolve it in their own cwd", dir.display());
+        let msg = format!(
+            "BRNR_DIR is relative ({}): processes resolve it in their own cwd",
+            dir.display()
+        );
         r.line(Level::Fail, what, msg);
     }
     let room = sun_path_len() - 1;
@@ -235,7 +237,8 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
             format!("removed what processes that are gone left behind: {}", names.join(", ")),
         );
     } else {
-        let msg = format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
+        let msg =
+            format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
         r.line(Level::Warn, what, msg);
     }
     Some(hosts)

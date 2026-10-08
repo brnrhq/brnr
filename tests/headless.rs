@@ -260,7 +260,10 @@ fn foreground_close_of_the_last_session() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    assert!(wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")), "no session");
+    assert!(
+        wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")),
+        "no session"
+    );
     env.ok(&["close", "sess-1"]);
     assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop with its last session");
     let mut err = String::new();
@@ -379,7 +382,8 @@ fn failed_start_shows_the_agents_stderr() {
 fn approve_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
     env.start(&["--prompt", "edit it"]);
-    let waiting = || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
+    let waiting =
+        || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
     assert!(wait_for(Duration::from_secs(5), waiting), "no permission request");
     assert!(env.run(&["stop", &env.pid()]).status.success());
     let out = env.run(&["approve", "sess-1", "p1"]);
@@ -485,12 +489,8 @@ fn a_panic_while_starting_is_recorded() {
             "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
         ));
         let args = if editor { vec!["acp", "--", AGENT] } else { start_args(&["--prompt", "hi"]) };
-        let out = env
-            .brnr(&args)
-            .env("BRNR_TEST_PANIC", "start")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let out =
+            env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
         let err = stderr(&out);
         if editor {
             assert_eq!(out.status.code(), Some(101), "{err}");
@@ -787,8 +787,7 @@ fn adapters_next_to_a_symlinked_brnr() {
     let want = format!("ok    brnr-claude-adapter: {}", bin.join("brnr-claude-adapter").display());
     assert!(doctor.contains(&want), "{doctor}");
 
-    let args =
-        ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
+    let args = ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
@@ -906,7 +905,11 @@ fn bad_request_line_is_answered() {
     let bad = next();
     assert!(bad["error"].as_str().unwrap_or_default().starts_with("bad request"), "{bad}");
     let status = next();
-    assert_eq!((status["req_id"].as_i64(), status["ok"].as_bool()), (Some(1), Some(true)), "{status}");
+    assert_eq!(
+        (status["req_id"].as_i64(), status["ok"].as_bool()),
+        (Some(1), Some(true)),
+        "{status}"
+    );
 }
 
 /// `brnr list | head -1`: a reader that goes away ends brnr quietly, as it
@@ -1219,8 +1222,12 @@ headers = { Authorization = "Bearer header-secret" }
 #[test]
 fn an_editors_mcp_secrets_are_redacted() {
     let env = Env::new("ed-secrets");
-    let mut editor =
-        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let mut answer = |id: u64| -> Value {
@@ -1285,8 +1292,12 @@ fn acp_is_what_an_editor_runs() {
     use std::io::Write;
     let env = Env::new("ed-acp");
     env.write_config("[profiles.default.editor]\nexperimental = [\"send\"]\n");
-    let mut editor =
-        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let mut answer = |id: u64| -> Value {
@@ -2024,7 +2035,11 @@ fn approve_answers_in_the_editors_place() {
     let here = "answer: in the editor, or brnr approve sess-1 p1, brnr deny sess-1 p1";
     assert!(show.contains(here), "{show}");
     let json: Value = serde_json::from_str(&env.ok(&["show", "sess-1", "p1", "--json"])).unwrap();
-    assert_eq!((&json["answerable"], &json["why_not"]), (&Value::Bool(true), &Value::Null), "{json}");
+    assert_eq!(
+        (&json["answerable"], &json["why_not"]),
+        (&Value::Bool(true), &Value::Null),
+        "{json}"
+    );
     assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");
