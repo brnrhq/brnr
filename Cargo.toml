@@ -10,7 +10,8 @@ repository = "https://github.com/brnrhq/brnr"
 readme = "README.md"
 keywords = ["acp", "agent", "claude", "codex", "editor"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["adapters/"]
+# What `cargo publish` uploads (ADR 47): the source and what it embeds.
+include = ["/src/", "/skills/", "/README.md", "/LICENSE"]
 
 [dependencies]
 # ACP's types (ADR 43 in docs/adr), without schemars and without the

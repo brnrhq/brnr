@@ -3,6 +3,7 @@
 [![CI](https://github.com/brnrhq/brnr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brnrhq/brnr/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/brnrhq/brnr)](https://github.com/brnrhq/brnr/releases/latest)
 [![Homebrew](https://img.shields.io/badge/brew-brnrhq%2Ftap%2Fbrnr-orange)](#install)
+[![crates.io](https://img.shields.io/crates/v/brnr)](https://crates.io/crates/brnr)
 [![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#building-and-testing)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
 [![License](https://img.shields.io/github/license/brnrhq/brnr)](LICENSE)
@@ -52,6 +53,14 @@ says whose they are), and link them next to `brnr`, where brnr finds them
 even when an editor's `PATH` doesn't include Homebrew. Each is versioned by
 the npm package it builds, so `brew upgrade` rebuilds an adapter when that
 package moves. `brnr doctor` shows which version each adapter was built from.
+
+Or brnr alone, from [crates.io](https://crates.io/crates/brnr), with the
+adapters from Homebrew or npm:
+
+```sh
+cargo install brnr --locked
+```
+
 Or from source, below.
 
 The formulae build from the source tarball on each
