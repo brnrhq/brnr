@@ -1895,6 +1895,42 @@ fn an_editors_load_of_a_held_session_is_refused() {
     let _ = editor.kill();
 }
 
+/// An editor's session whose lock can't be taken (a directory where its lock
+/// file goes) is passed through, as the proxy passes on what it can't be
+/// sure of: the editor opens and loads sessions as it would without brnr,
+/// its process keeps the transcript, and `status` says the session isn't
+/// locked. A headless resume of it is still refused (ADR 50).
+#[test]
+fn an_editors_session_that_cant_be_locked_is_passed_through() {
+    use std::os::unix::fs::DirBuilderExt;
+    let env = Env::new("ed-nolock");
+    let unlockable = |session: &str| {
+        let lock = env.dir.join(format!("run/sessions/{session}.lock"));
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(&lock).unwrap();
+        lock
+    };
+    let lock = unlockable("sess-1");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "reply from the editor")).unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let why = status["lock_error"].as_str().unwrap_or_default().to_owned();
+    assert!(why.starts_with(&format!("{}: ", lock.display())), "{status}");
+    assert_eq!(status["held_by"], Value::Null);
+    let text = env.ok(&["status", "sess-1"]);
+    assert!(text.contains(&format!("not locked: {why}; nothing stops")), "{text}");
+    assert!(env.ok(&["log", "sess-1"]).contains("from the editor"));
+    let pid = editor_process(&env)["host_pid"].to_string();
+    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    assert!(err.contains(&format!("sess-1 is running in process {pid}")), "{err}");
+    // A load reaches the agent, as it would with the lock taken.
+    unlockable("old-1");
+    writeln!(to_agent, "{}", editor_load(&env, 4, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    assert_eq!(env.calls_of("session/load").len(), 1);
+    let _ = editor.kill();
+}
+
 /// With `shared_sessions`, the editor's load goes through: its process
 /// serves the session without the lock, records it in its host log only,
 /// and `status` says the session is shared. The headless process stays its

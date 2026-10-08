@@ -92,7 +92,7 @@ written for this document.
 | The control socket is 0600, the directory 0700, the session locks' directory 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
 | Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl.rs) | `headless.rs`: `metadata_names_its_own_socket` |
-| Session locks are held to the runtime directory's terms and never followed through a symlink. A resume, which must own its session, is refused; a new session that can't be locked is served without a lock and the host log says so (`lock-failed`). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs) | `security.rs`: `session_locks_are_private_and_never_followed` |
+| Session locks are held to the runtime directory's terms and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused (ADR 50). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_result` (src/host/requests.rs) | `security.rs`: `session_locks_are_private_and_never_followed`; `cli.rs`: `a_new_session_that_cant_be_locked_isnt_started`, `a_resume_that_cant_be_locked_isnt_started`, `a_fork_that_cant_be_owned_is_refused` |
 | brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); ADR 44 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
 | `doctor` fails a runtime directory others can use, and `--fix` tightens it but never through a symlink. | `runtime_dir`, `private_problem`, `fixable` (src/ctl/doctor.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed` |
 
@@ -173,10 +173,11 @@ What brnr doesn't enforce, or doesn't test, today.
   command line, the socket's path) is created with the default mode, so a
   permissive umask leaves it readable by mode; the 0700 directory is what
   keeps it private. Not tested.
-- **A session that can't be locked runs unlocked.** When the session locks'
-  directory is refused, a new session is served without a lock, and only the
-  host log says so (`lock-failed`), not an event; a second process could then
-  resume it (ADR 3).
+- **An editor's session that can't be locked runs unlocked.** The proxy
+  passes it through; `status` reports `lock_error`, and the host log records
+  `lock-failed`. A headless resume is refused while the editor's process
+  reports serving it, but a second process could acquire its lock if that
+  process doesn't answer and the lock failure was transient (ADR 50).
 - **Redaction is by field, not by value.** brnr redacts the MCP servers'
   `env` and `headers` in the requests that open a session (ADR 25). A secret
   elsewhere is recorded as it is: in an MCP server's `args` or `url`, in the

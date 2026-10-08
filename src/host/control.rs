@@ -603,6 +603,7 @@ impl Host {
                     "context": s.context.len(),
                     "pending": pending,
                     "shared": s.shared(),
+                    "lock_error": s.lock_error(),
                     "last_turn": s.last_turn,
                     "log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
                     "acp_log": (self.logging == Log::All).then(|| acp.to_string_lossy()),

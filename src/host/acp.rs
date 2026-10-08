@@ -144,8 +144,14 @@ pub(super) struct Session {
 /// How a process holds a session it serves (ADR 3).
 pub(super) enum Hold {
     /// Its lock: the process is the session's owner, and keeps its
-    /// transcript. `None` if the lock couldn't be taken (see the host log).
+    /// transcript. `None` once it has let go, as the process exits.
     Owner(Option<Lock>),
+    /// The lock couldn't be taken (why, naming its path), so whether another
+    /// process holds it can't be known. A headless process never serves such
+    /// a session (P4: the client refuses); an editor's passes it through and
+    /// keeps its transcript all the same (P1, P4: the proxy passes on what it
+    /// can't be sure of), and `status` says it isn't locked (ADR 50).
+    Unlocked(String),
     /// Process `pid` held the lock when the editor loaded the session here
     /// (`shared_sessions`, ADR 42): that one keeps the transcript, and this
     /// one records the session in its host log only.
@@ -166,6 +172,24 @@ pub(super) enum Close {
 impl Session {
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
+    }
+
+    /// Why this process isn't the session's owner, if it isn't, to follow
+    /// "which": a headless process doesn't serve such a session (ADR 50).
+    pub(super) fn not_owned(&self) -> Option<String> {
+        match &self.hold {
+            Hold::Owner(_) => None,
+            Hold::Shared(pid) => Some(format!("is running in process {pid}")),
+            Hold::Unlocked(why) => Some(format!("can't be locked: {why}")),
+        }
+    }
+
+    /// Why its lock couldn't be taken, for one served without it.
+    pub(super) fn lock_error(&self) -> Option<&str> {
+        match &self.hold {
+            Hold::Unlocked(why) => Some(why),
+            _ => None,
+        }
     }
 }
 
@@ -1306,6 +1330,9 @@ impl Host {
                 self.sink.note(None, event);
             }
             Hold::Owner(_) => self.sink.open_session(session, &cwd),
+            // One the headless process won't serve gets no transcript.
+            Hold::Unlocked(_) if self.editor_attached() => self.sink.open_session(session, &cwd),
+            Hold::Unlocked(_) => {}
         }
         self.sessions.push(Session {
             id: session.to_owned(),
@@ -1333,28 +1360,28 @@ impl Host {
 
     /// `session`'s lock, for a session this process is to serve. One another
     /// process holds is shared, as `attach` lets it be; one that can't be
-    /// locked is served as if it were held, and the host log says why.
+    /// locked is `Unlocked`, and the host log says why. Whoever opened it
+    /// decides what becomes of either (ADR 3, ADR 50).
     fn take_lock(&mut self, session: &str) -> Hold {
         match lock::take(session) {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
-            Err(lock::Error::Io(err)) => {
-                let error = err.to_string();
+            Err(lock::Error::Io(error)) => {
                 let event =
                     json!({ "event": "lock-failed", "session_id": session, "error": error });
                 self.sink.note(None, event);
-                Hold::Owner(None)
+                Hold::Unlocked(error)
             }
         }
     }
 
     /// Takes the lock of `session`, which a headless start resumes, before
-    /// the agent is asked for it: one another process holds can't be served
-    /// here (ADR 3).
+    /// the agent is asked for it: one another process holds, or one that
+    /// can't be locked, can't be served here (ADR 3, ADR 50).
     pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
         let lock = lock::take(session).map_err(|err| match err {
             lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
-            lock::Error::Io(err) => format!("{}: {err}", paths::session_lock(session).display()),
+            lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
         })?;
         self.claimed.insert(session.to_owned(), Hold::Owner(Some(lock)));
         Ok(())

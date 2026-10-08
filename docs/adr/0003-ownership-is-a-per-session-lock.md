@@ -1,5 +1,9 @@
 # 3. Ownership is a per-session lock
 
+Amended by 50: a session whose lock can't be taken isn't served headless (the
+start or fork fails, with the cause); an editor's process passes it through,
+and `status` and `doctor` say it isn't locked.
+
 Accepted 2026-10-07. Implemented. `--take-over` from an editor's process is
 the experimental `close` (ADR 4): `start` launches the process that is to
 resume the session first, so the owner can tell the editor which one has it.

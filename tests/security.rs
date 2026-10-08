@@ -150,19 +150,18 @@ fn lock_failed(env: &Env) -> bool {
 }
 
 /// The session locks' directory is held to the runtime directory's terms,
-/// and a lock that is a symlink is never followed. A resume, which must own
-/// its session (ADR 3), is refused; a new session is served without a lock,
-/// as one that can't be locked is, and the host log says why.
+/// and a lock that is a symlink is never followed. Both a resume and a new
+/// headless session are refused when their lock can't be taken (ADR 50),
+/// and the host log says why the new session failed.
 #[test]
 fn session_locks_are_private_and_never_followed() {
     let env = Env::new("s-locks");
     let sessions = session_locks(&env, 0o777);
     private_dir_error(&stderr(&env.run(&start_args(&["--resume", "old-1"]))));
     assert!(env.calls_of("session/resume").is_empty());
-    env.start(&[]);
+    private_dir_error(&env.fails(&start_args(&[])));
     assert!(lock_failed(&env), "no lock-failed");
     assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
-    env.stop();
 
     let env = Env::new("s-locklink");
     let sessions = session_locks(&env, 0o700);
@@ -171,10 +170,10 @@ fn session_locks_are_private_and_never_followed() {
     symlink(&victim, sessions.join("old-1.lock")).unwrap();
     symlink(&victim, sessions.join("sess-1.lock")).unwrap();
     assert!(!env.run(&start_args(&["--resume", "old-1"])).status.success());
-    env.start(&[]);
+    let err = env.fails(&start_args(&[]));
+    assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
     assert!(lock_failed(&env), "no lock-failed");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
-    env.stop();
 }
 
 /// A command doesn't talk to a process through a runtime directory others

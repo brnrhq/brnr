@@ -47,7 +47,9 @@ impl Drop for Lock {
 pub enum Error {
     /// Another process holds it: its pid.
     Held(u32),
-    Io(io::Error),
+    /// It can't be taken: why, naming the path. Neither held nor free, and
+    /// never taken for either (ADR 3).
+    Io(String),
 }
 
 /// A lock file, what it says, and the process holding it, if one does.
@@ -59,8 +61,10 @@ pub struct Entry {
 
 /// Takes `session`'s lock, or says which process holds it.
 pub fn take(session: &str) -> Result<Lock, Error> {
-    paths::ensure_private(&paths::session_locks()).map_err(Error::Io)?;
+    let dir = paths::session_locks();
+    paths::ensure_private(&dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
     let path = paths::session_lock(session);
+    let failed = |e: io::Error| Error::Io(format!("{}: {e}", path.display()));
     let mut tries = 0;
     loop {
         // What its holder wrote stays until the lock is this process's.
@@ -72,8 +76,8 @@ pub fn take(session: &str) -> Result<Lock, Error> {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
-            .map_err(Error::Io)?;
-        if !flock(&file, libc::LOCK_EX).map_err(Error::Io)? {
+            .map_err(failed)?;
+        if !flock(&file, libc::LOCK_EX).map_err(failed)? {
             tries += 1;
             if tries < TRIES {
                 sleep(PAUSE);
@@ -81,9 +85,7 @@ pub fn take(session: &str) -> Result<Lock, Error> {
             }
             return match read(&mut file) {
                 Some((pid, _)) => Err(Error::Held(pid)),
-                None => {
-                    Err(Error::Io(io::Error::other("held by a process that doesn't say which")))
-                }
+                None => Err(failed(io::Error::other("held by a process that doesn't say which"))),
             };
         }
         if !same(&file, &path) {
@@ -92,7 +94,7 @@ pub fn take(session: &str) -> Result<Lock, Error> {
         let record = json!({ "pid": std::process::id(), "session": session });
         file.set_len(0)
             .and_then(|()| file.write_all(format!("{record}\n").as_bytes()))
-            .map_err(Error::Io)?;
+            .map_err(failed)?;
         return Ok(Lock { path, file });
     }
 }
@@ -112,6 +114,25 @@ pub fn all() -> Vec<Entry> {
         .collect()
 }
 
+/// What is where a lock file goes but isn't a file (a directory, a
+/// symlink): its session can't be locked (ADR 50). Each, and what it is.
+pub fn unusable() -> Vec<(PathBuf, &'static str)> {
+    let Ok(dir) = fs::read_dir(paths::session_locks()) else { return Vec::new() };
+    let what = |kind: fs::FileType| match () {
+        () if kind.is_file() => None,
+        () if kind.is_dir() => Some("a directory"),
+        () if kind.is_symlink() => Some("a symlink"),
+        () => Some("not a file"),
+    };
+    let mut found: Vec<_> = dir
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|e| e == "lock"))
+        .filter_map(|e| Some((e.path(), what(e.file_type().ok()?)?)))
+        .collect();
+    found.sort();
+    found
+}
+
 /// Removes a lock file nobody holds, as its holder would have: one left by a
 /// process that died.
 pub fn remove(path: &Path) -> bool {
@@ -125,6 +146,9 @@ pub fn remove(path: &Path) -> bool {
 /// is gone, or held by a process that doesn't say which.
 fn look(path: PathBuf) -> Option<Entry> {
     let mut file = open(&path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None; // Nobody's lock: see `unusable`.
+    }
     for _ in 0..TRIES {
         let said = read(&mut file);
         if flock(&file, libc::LOCK_SH).ok()? {
@@ -140,9 +164,11 @@ fn look(path: PathBuf) -> Option<Entry> {
     None
 }
 
-/// A lock file, to read: never through a symlink.
+/// A lock file, to read: never through a symlink, nor waiting on a FIFO in
+/// its place.
 fn open(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
+    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    OpenOptions::new().read(true).custom_flags(flags).open(path)
 }
 
 /// The pid and session a lock file names.

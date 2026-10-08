@@ -575,6 +575,8 @@ fn status(args: &[String]) -> Result<(), String> {
         "owner": st["owner"],
         "held_by": lock::holder(&id),
         "shared_by": shared_by,
+        // An editor's session served without its lock (ADR 50).
+        "lock_error": x["lock_error"],
         "cwd": x["cwd"],
         "state": x["state"],
         "turn_seconds": x["turn_seconds"],
@@ -627,6 +629,12 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!(
             "shared by process {}: the transcript is {held}, and has none of what happens there\n",
             shared_by.join(", ")
+        ));
+    }
+    if x["lock_error"].is_string() {
+        out.push_str(&format!(
+            "not locked: {}; nothing stops another process serving it too (brnr doctor)\n",
+            text(&x["lock_error"])
         ));
     }
     out.push_str(&format!("cwd {}\n", text(&x["cwd"])));

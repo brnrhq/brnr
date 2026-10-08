@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{Held, Hold, new_session};
+use super::acp::{Held, new_session};
 use super::{Host, id_key};
 use crate::log::{self, Dir};
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, error_message};
@@ -167,11 +167,11 @@ impl Host {
                 }
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
-                // asked for it; a new one's, as it opened.
-                if let Hold::Shared(pid) = self.sessions[i].hold {
-                    let error =
-                        format!("the agent opened {session}, which is running in process {pid}");
-                    return self.fail_start(&error);
+                // asked for it; a new one's, as it opened. Without it, the
+                // session gets no work, and nobody is to find it (ADR 50).
+                if let Some(why) = self.sessions[i].not_owned() {
+                    self.sessions.remove(i);
+                    return self.fail_start(&format!("the agent opened {session}, which {why}"));
                 }
                 self.sessions[i].replaying = false;
                 self.sessions[i].state.result(&result);
@@ -411,13 +411,11 @@ impl Host {
                     return json!({ "ok": false, "error": "session/fork returned no sessionId" });
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
-                // Its lock, taken as it opened: one another process holds
-                // can't be served here (ADR 3).
-                if let Hold::Shared(pid) = self.sessions[i].hold {
+                // Its lock, taken as it opened: one another process holds, or
+                // one that can't be locked, can't be served here (ADR 3, ADR 50).
+                if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
-                    let error = format!(
-                        "the agent forked into {session}, which is running in process {pid}"
-                    );
+                    let error = format!("the agent forked into {session}, which {why}");
                     return json!({ "ok": false, "error": error });
                 }
                 self.sessions[i].state.result(result);
