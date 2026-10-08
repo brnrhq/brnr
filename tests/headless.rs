@@ -794,6 +794,36 @@ fn adapters_next_to_a_symlinked_brnr() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
 }
 
+/// A started bridge's bare command is found next to a symlinked brnr as an
+/// adapter is, by whoever starts the process (ADR 8, ADR 38): the request
+/// it hands the process has the path, and the bridge runs.
+#[test]
+fn bridges_next_to_a_symlinked_brnr() {
+    let env = Env::new("linkedbridge");
+    let bin = env.dir.join("prefix").join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    symlink(env!("CARGO_BIN_EXE_brnr"), bin.join("brnr")).unwrap();
+    let got = env.dir.join("bridge-events");
+    let bridge = bin.join("brnr-test-bridge");
+    fs::write(&bridge, format!("#!/bin/sh\nexec cat > '{}'\n", got.display())).unwrap();
+    fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+    env.write_config("[[profiles.default.bridges]]\ncommand = [\"brnr-test-bridge\"]\n");
+    // Enough PATH for the fake agent's python3, not the prefix.
+    let python = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();
+    let python = String::from_utf8(python.stdout).unwrap();
+    let path = format!("{}:/usr/bin:/bin", Path::new(python.trim()).parent().unwrap().display());
+
+    let args = start_args(&["--wait", "--prompt", "reply linked"]);
+    let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
+    assert!(out.status.success(), "start: {}", stderr(&out));
+    let request = started_record(&env)["request"].clone();
+    let command = request["bridges"][0]["command"][0].as_str().unwrap_or_default();
+    assert_eq!(fs::canonicalize(command).ok(), fs::canonicalize(&bridge).ok(), "{request}");
+    let ended = || fs::read_to_string(&got).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+}
+
 /// A peer a few MB behind still takes one big message: it is cut off only
 /// once its backlog is past the limit, not because the next line is big.
 #[test]

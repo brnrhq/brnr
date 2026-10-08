@@ -66,7 +66,8 @@ brnr acp --profile work          # agent and settings from a profile
 ```
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
-doesn't need to include it.
+doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
+`brnr notify`.
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
@@ -417,8 +418,9 @@ the key goes; `brnr doctor` checks every profile.
 
 A bridge is any process that speaks brnr's JSON-lines protocol: one started by
 the brnr process from the profile (requests on its stdout, events on its
-stdin, its stderr in the host log), or anything that connects to the control
-socket. Its environment has `BRNR_PID` and `BRNR_SOCKET`.
+stdin, its stderr in the host log; a bare command found next to `brnr` first,
+as an agent's is), or anything that connects to the control socket. Its
+environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
 `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`, `close`,

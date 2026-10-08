@@ -11,7 +11,8 @@ use std::process::{Child, ChildStdin, Command};
 
 /// `brnr host`: the running binary, as the host. Its argv is only that: the
 /// rest, the agent's command among it, goes in the start request (see
-/// request.rs), which has the adapter found already (see [`bundled`]).
+/// request.rs), which has the agent and the bridges' commands found already
+/// (see [`bundled`]).
 pub fn host_command() -> io::Result<Command> {
     let mut cmd = Command::new(env::current_exe()?);
     cmd.arg("host");
@@ -19,8 +20,10 @@ pub fn host_command() -> io::Result<Command> {
 }
 
 /// A bare program name (no `/`) that is installed next to brnr, such as the
-/// adapters `brnr-claude-adapter` and `brnr-codex-adapter`. Found there even when that
-/// directory isn't on the editor's PATH.
+/// adapters `brnr-claude-adapter` and `brnr-codex-adapter`, or `brnr` for a
+/// bridge. Found there even when that directory isn't on the editor's PATH.
+/// Looked for by whoever starts a process, `brnr start` or `brnr acp`, which
+/// ran by the path the user gave (ADR 8, ADR 38).
 ///
 /// "Next to brnr" is the running binary's directory, and the directory of
 /// the path brnr was started by if that differs: started through a symlink

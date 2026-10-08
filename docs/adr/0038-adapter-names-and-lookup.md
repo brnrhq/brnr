@@ -13,11 +13,14 @@ Accepted (former decisions 27 and 28); reviewed 2026-10-07. Implemented.
   by (`argv[0]`, when it is a path): Homebrew links `bin/brnr` and the
   adapters into its prefix's `bin`. On macOS the running binary's path is
   the link's, so an adapter next to the link is found; on Linux it is the
-  link's target in the Cellar, where the adapters aren't. That path is passed
-  to the process, which is the one that starts the agent. A fixed rule,
-  documented (P4). A started bridge's bare command is looked for the same
-  way, so `command = ["brnr", "notify", …]` works from an editor whose PATH
-  lacks brnr (ADR 35, 36).
+  link's target in the Cellar, where the adapters aren't. `brnr start` and
+  `brnr acp`, started by that path, look, as whoever starts a process
+  resolves everything (ADR 8), and pass the path found to the process,
+  which is the one that starts the agent. A fixed rule, documented (P4). A
+  started bridge's bare command (`~` expanded) is looked for the same way,
+  in the same place, so `command = ["brnr", "notify", …]` works from an
+  editor whose PATH lacks brnr, and a bridge linked into Homebrew's `bin` is
+  found on Linux too (ADR 35, 36).
 
 ## Considered
 

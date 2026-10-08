@@ -19,7 +19,9 @@ config.
   profile, agent, cwd, role (editor or headless), strict mode (ADR 41),
   experimental actions and feature flags (ADR 4, 42), mode, model, config
   options, MCP servers, auth method, prompt and attachments, timeouts,
-  `stop_when_idle`, what to log (ADR 22), bridges, the signal mask. It writes
+  `stop_when_idle`, what to log (ADR 22), bridges, the signal mask; the
+  agent's and the bridges' commands as they are run (a bare name installed
+  next to brnr is that path, ADR 38). It writes
   one JSON request on the process's stdin; file descriptors carry only the
   editor link and its signal link (fds 3 and 4, ADR 2) or the start channel
   (fd 3, ADR 7).
