@@ -15,8 +15,9 @@ closed, though it was still running and reading: a bridge that ran
 
 - A bridge is any process that speaks brnr's JSON-lines protocol. Requests:
   `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`, `approve`,
-  `deny`, `set_mode`, `set_config`, `fork`, `close`, `stop`
-  (src/host/control.rs; `set_model` too, until ADR 28 removes it); those
+  `deny`, `set_mode`, `set_config`, `set_model` (the config option of
+  category `model`, ADR 28), `fork`, `close`, `stop` (src/host/control.rs);
+  those
   about a session name it by its exact id. Events: as ADR 20, 22 and 23 list
   them, each naming its session; `exited` is the process's.
 - A request line that isn't valid UTF-8 is answered with an error, and the

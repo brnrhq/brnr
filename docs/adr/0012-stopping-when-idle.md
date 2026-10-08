@@ -11,14 +11,17 @@ without anyone having to stop it.
 
 - `stop_when_idle = <seconds>` in a profile's headless part, or
   `start --stop-when-idle <s>` (also with `--foreground`): a session idle that
-  long closes (`session/close`), and the process stops with its last session.
+  long closes (`session/close`), and the process stops with its last session:
+  the last one isn't closed first, the process just stops.
 - A session is idle while no turn is running, nothing is held and no approval
   is waiting. A message or prompt starts the count again. It counts from the
   start too, so a start without a prompt doesn't run forever; a start with a
   prompt sends it at the commit (ADR 7), so the session is busy at once. `0`
   is as soon as it is idle.
 - Never while an editor is attached.
-- Closing emits `session_closed` with `by: idle` (ADR 20).
+- Closing emits `session_closed` with `by: idle` (ADR 20). The last session,
+  stopping the process, gets `exited` instead, which isn't also
+  `session_closed`.
 - With `stop_when_idle` set and an agent that can't close sessions, `fork` is
   refused (P7): a second session could never close when idle, and the
   process would never stop.

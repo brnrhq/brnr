@@ -38,8 +38,10 @@ editor notices nothing different (P1).
 
 What the editor sees differently, stated in the README:
 
-- A SIGKILL sent to the proxy can't be passed on. The agent gets the graceful
-  stop instead: stdin closed, SIGTERM, SIGKILL.
+- A SIGKILL sent to the proxy can't be passed on as such. The host sees the
+  link go without the editor's stdin ending first, closes the agent's stdin
+  and SIGKILLs its process group itself: the same end, a moment later, from
+  the host (`link_gone`).
 - The editor's child is the proxy, not the agent, so its pid and process tree
   differ. That separation is what lets the side channel exist.
 - Side-channel actions, where a profile enables them: ADR 4.
