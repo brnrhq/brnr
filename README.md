@@ -647,7 +647,8 @@ release; the next brnr release ships it.
 change. brnr has five direct dependencies; CI checks their licenses and
 advisories with cargo deny, and with cargo vet that every crate is audited
 (by Mozilla, Google and others whose audits brnr imports) or listed as an
-exemption still to audit. Report vulnerabilities privately, as
+exemption still to audit. The [audit status](supply-chain/README.md) records
+the remaining work; an exemption is not an audit. Report vulnerabilities privately, as
 [SECURITY.md](SECURITY.md) says.
 
 ## License
