@@ -216,11 +216,11 @@
         <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a process of its own that you can reach from outside.</p>
       </div>
       <div class="body">
-<pre>editor ──stdio── brnr acp ──socketpair── brnr process ──pipes── agent
-                                            │
-                                 control socket ── brnr send / watch / …
-                                            │
-                                         bridges (Slack, push, …)</pre>
+<pre>editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
+                                             │
+                                  control socket ── brnr send / watch / …
+                                             │
+                                          bridges (Slack, push, …)</pre>
       <dl>
         <div><dt>brnr acp</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
         <div><dt>The brnr process</dt><dd>Owns the agent for its whole life, out of the editor's process group. When the editor goes, it stops the agent the way the editor would have. <code>brnr ps</code> lists them.</dd></div>
@@ -254,7 +254,7 @@ brnr acp --profile work          <span class="c"># agent and settings from a pro
       </div>
       <div class="body">
 <pre>brnr list                          <span class="c"># running sessions; --all: ended ones too</span>
-brnr send $s "also update the changelog"   <span class="c"># waits while a turn runs</span>
+brnr send $s "also update the changelog"   <span class="c"># held while a turn runs</span>
 brnr send $s --steer "and the tests too"   <span class="c"># into the running turn</span>
 brnr send $s --interrupt "stop, wrong branch"
 brnr watch $s                      <span class="c"># messages, tools, plan and approvals, live</span>
@@ -274,7 +274,7 @@ brnr close $s</pre>
       </div>
       <div class="body">
 <pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
-        <p>Approvals wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, stored in the same folders as Claude Code's own transcripts.</p>
+        <p>Approvals wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, in folders named like those of Claude Code's own transcripts.</p>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]

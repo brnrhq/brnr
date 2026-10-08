@@ -5,7 +5,8 @@ Accepted (former decision 20); reviewed 2026-10-07. Implemented.
 ## Decision
 
 `--last <n>` counts messages sent to the agent (`user_message` events), and
-shows from the n-th last one on. `--last 0` shows nothing.
+shows from the n-th last one on. `--last 0` shows nothing (with
+`--follow`, only what comes next).
 
 ## Considered
 

@@ -2,10 +2,15 @@
 
 Accepted 2026-10-07, from former decision 25. Implemented. The logger's
 queue is bounded too, and gives way as an observer does: past 64 MiB not yet
-written (a slow or stalled disk), records are skipped and counted, and once
-there is room a `records-skipped` note says how many in the host log and in
-each session's events file that lost some (P3). Resolves review item 1, and
-with ADR 9 review item 3.
+written (a slow or stalled disk), records are skipped and counted, but never
+a session's opening, nor `exited` or `panic`, which say how the process
+ended (ADR 11). Once the queue is down to half that, or the logger has
+caught up, a `records-skipped` note (`count`, `acp`, `since`, `until`) says
+how many in the host log and in each session's events file that lost some
+(P3); records a write fails to put in a file (a full disk) are noted the
+same way, with the `error`, once the file takes records again. `brnr log`
+always shows these notes, whatever `--events` chose. Resolves review item 1,
+and with ADR 9 review item 3.
 
 ## Context
 
@@ -33,8 +38,9 @@ Who gives way depends on who the reader is (P6).
   (`… 120 events not shown`); its stdout closing ends the display, not the
   session (ADR 9). None of them ever slows the session.
 - The session's own pipes get backpressure. The editor link's queue is capped
-  (16 MiB, as peers'); past it the host stops reading the agent's stdout, and
-  the agent blocks on its stdout as it would writing to the editor directly.
+  (16 MiB, as peers'); past it the host stops reading the agent's stdout and
+  stderr, and the agent blocks on its stdout as it would writing to the
+  editor directly.
   The agent's stdin queue likewise: past the cap the host stops reading the
   link, the proxy blocks, and the editor's write blocks. Stdin's EOF waits
   behind what the editor wrote, as on a pipe; a signal to the proxy and its

@@ -5,8 +5,8 @@
 //! that connects to the control socket, such as brnr. Both speak the same
 //! protocol, one JSON object per line. A started bridge is one until it
 //! exits: its stdout closing only means it has no more requests. It should
-//! exit when its stdin closes, which happens when the host stops; then it
-//! gets SIGTERM.
+//! exit when its stdin closes, which happens when the host stops; one still
+//! running 2 s later gets SIGTERM.
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.

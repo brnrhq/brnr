@@ -28,7 +28,8 @@ SIGTERM, and the notifications stopped without a word.
   sent to stderr (as a bridge, `notify`'s stdout is read by the process as
   requests). A command that hangs makes `notify` fall behind, and the process
   cuts it off like any slow peer (ADR 6); `notify` then fails, saying so. It
-  exits when the process does.
+  exits when the process does, and `notify <session>` also when that session
+  closes (`session_closed`).
 - `brnr notify --stdin [--events …] -- <command>` reads its events from its
   stdin, a started bridge's transport (ADR 35), instead of connecting. That is
   how it runs as a bridge: `command = ["brnr", "notify", "--stdin", "--", …]`

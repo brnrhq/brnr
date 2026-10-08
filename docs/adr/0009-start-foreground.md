@@ -15,8 +15,10 @@ container) or a terminal.
   does, as its child, in a process group of its own, passing it the signals
   it gets (Ctrl-C once stops the session, twice kills the agent). It shows
   the session's events on stdout as they come (`--json`: as JSON lines;
-  `--quiet`: not), and exits as the agent did, or 1 if the start failed
-  (setting `--mode`, say).
+  `--quiet`: not), and exits as the agent did (128 + the signal that killed
+  it), but never 0 if the start failed: 1 where the agent then exited 0
+  (setting `--mode` failed, say), 127 or 126 where it couldn't be run, as a
+  shell has it.
 - `--wait` and `--foreground` don't go together: the foreground shows the
   whole session.
 - stdout closed (`brnr start --foreground … | head -1`): the display stops,

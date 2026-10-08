@@ -8,7 +8,9 @@ answer to `set_config_option` that changes a value makes one too, as an
 agent needn't send an update for it. Records the logger skips behind a slow
 disk (ADR 6) leave a gap that a `records-skipped` record counts, in the
 session's events file and the host log; so do records a write fails to put
-in a file, in the file that lost them once it takes records again.
+in a file, in the file that lost them once it takes records again (the raw
+file's in its events file). `log` shows such a gap whatever `--events`
+chose.
 
 ## Context
 

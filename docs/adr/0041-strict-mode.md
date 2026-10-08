@@ -37,8 +37,9 @@ stable in both. Extension methods start with `_` (`_session/steering`).
   ("`--steer` uses `_session/steering`, an ACP extension, which strict mode
   doesn't").
 - Strict mode is about the protocol only. Headless operation, observing a
-  session, brnr's CLI and its process management (ADR 42) are the same with
-  it and without.
+  session, brnr's CLI and its process management (`brnr stop`, which isn't
+  one of ADR 4's actions; the feature flags, ADR 42) are the same with it
+  and without.
 - Stable means what the ACP schema doesn't mark unstable, as
   `agent-client-protocol-schema` builds it without its unstable features
   (ADR 43).

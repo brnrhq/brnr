@@ -11,7 +11,7 @@
 //!
 //! [[profiles.work.bridges]]
 //! command = ["~/bin/slack-bridge", "--channel", "#agents"]
-//! events = ["permission_request", "turn_ended"]   # omit for every event
+//! events = ["permission_request", "turn_ended"]   # omit for every event but acp
 //!
 //! [profiles.work.headless]            # brnr start
 //! cwd = "~/work/project"

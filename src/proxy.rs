@@ -184,8 +184,8 @@ fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
         match kind {
             frame::DATA => {
                 if stdout_open && write_all(&mut stdout, &payload).is_err() {
-                    // The caller stopped reading; the host treats that as the
-                    // editor going away.
+                    // The caller stopped reading: the host closes the
+                    // agent's stdout, as a closed pipe would.
                     stdout_open = false;
                     send(&signal_link, frame::STDOUT_CLOSED, &[]);
                 }

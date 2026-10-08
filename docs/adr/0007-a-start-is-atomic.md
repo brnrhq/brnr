@@ -50,10 +50,11 @@ the ready line failed.
   `start` going away) stops the process, and the prompt is never sent. After
   it the process sends the prompt, and the session runs on its own whatever
   `start` does (P14).
-- Without `--wait`, `start` prints the session and exits after `ready`. With
-  `--wait`, it keeps reading the same channel: the turn's events, until the
-  `turn_ended` that carries its message (ADR 21). There is no reconnect and
-  no race.
+- Without `--wait`, `start` prints the session and its process and exits
+  after `ready` (`--json`: `{session, pid, message}`, `message` null without
+  a prompt). With `--wait`, it keeps reading the same channel: the turn's
+  events, until the `turn_ended` that carries its message (ADR 21). There is
+  no reconnect and no race.
 - The start timeout (`BRNR_START_TIMEOUT`, 120 s) goes in the request and is
   the process's: it fails the start when the time passes. `start` keeps only
   a fallback timer, the timeout plus 10 s, for a process stuck too badly to

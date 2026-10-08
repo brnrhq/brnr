@@ -31,8 +31,10 @@ a session a headless process was running.
 
 - Every process holds an exclusive `flock` on `$BRNR_DIR/sessions/<id>.lock`
   (the id sanitized as for transcripts) for each session it serves, with its
-  pid written inside. Taking a session is taking its lock; a process that
-  dies releases it, with nothing to clean up.
+  pid and the session's id written inside. Taking a session is taking its
+  lock; a process that dies releases it, with nothing to clean up: the file
+  it leaves, held by nobody, is taken as it is (`doctor --fix` removes it).
+  One that closes a session removes the file as it lets go.
 - `start --resume <session>` refuses a session whose lock is held, naming the
   process ("… is running in process 4466"), unless `--take-over`. A process
   that doesn't answer but holds the lock is alive and serving it; nothing has
@@ -45,9 +47,10 @@ a session a headless process was running.
   editor's profile enables it, and compensated for (ADR 4).
 - By default, an editor's `session/load` or `session/resume` of a session
   another process holds is answered by the host with a JSON-RPC error naming
-  the process and how to release it (`brnr close <session>`), and doesn't
-  reach the agent. A caveat under P1: the editor can't pass `--take-over`, so
-  its explicit step is releasing the session first.
+  the process and how to release it (`brnr close <session>`; for a session
+  another editor has open, closing it there), and doesn't reach the agent. A
+  caveat under P1: the editor can't pass `--take-over`, so its explicit step
+  is releasing the session first.
 - The feature flag `shared_sessions` in the editor's profile (ADR 42) lets
   the load through: the agent then serves the session to both processes and
   splits the conversation. The process holding the lock stays the only
