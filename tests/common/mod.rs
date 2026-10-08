@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
@@ -241,6 +242,25 @@ pub fn kill(pid: i32, sig: i32) -> bool {
     // SAFETY: kill(2) takes no pointers; any pid and signal are valid
     // arguments.
     unsafe { libc::kill(pid, sig) == 0 }
+}
+
+/// The user the tests run as.
+pub fn uid() -> u32 {
+    // SAFETY: getuid(2) takes nothing and can't fail.
+    unsafe { libc::getuid() }
+}
+
+/// Has `cmd` run with umask `mask` (and what it starts, which inherits it).
+pub fn with_umask(cmd: &mut Command, mask: libc::mode_t) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec, where only
+    // async-signal-safe calls may be made: umask(2) is one, takes no pointers
+    // and can't fail.
+    unsafe {
+        cmd.pre_exec(move || {
+            libc::umask(mask);
+            Ok(())
+        })
+    }
 }
 
 pub fn alive(pid: i32) -> bool {

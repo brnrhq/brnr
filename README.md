@@ -37,7 +37,9 @@ macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).
 
 brnr never phones home: it makes no network requests of its own and sends
-no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)).
+no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)). Who can
+reach a session, and what keeps others out, is in the
+[threat model](docs/threat-model.md).
 
 ## Install
 
@@ -71,6 +73,15 @@ downloaded was made that way:
 ```sh
 gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr
 ```
+
+Each release also carries `brnr-X.cdx.json`, an attested CycloneDX SBOM of
+brnr's Rust dependencies across all targets (not the adapters' npm packages).
+CI checks that two clean release builds, in different directories and at
+different times, have the same SHA-256 on each of Linux and macOS. This
+checks reproducibility within one toolchain and runner, not across Rust or
+OS versions. After publishing and updating the tap, a fresh macOS runner
+installs the formula, checks its version against the tag, and runs
+`brnr doctor` ([ADR 52](docs/adr/0052-reproducible-builds-and-sbom.md)).
 
 More at
 [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
@@ -311,11 +322,12 @@ live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
+| `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
-Each names its session; `exited` is the process's, and is in every session's
-transcript. For config options and commands, `session_changed` is a JSON merge
+Each names its session; `exited` and `line_too_long` are the process's, and
+are in every session's transcript. For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
 `--events` chooses, for `watch`, `log` and `notify` alike: names, `all`, and
@@ -511,6 +523,13 @@ foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
 
+However long the lines: the session's pipes hold back past 16 MiB queued,
+and brnr reads a line of up to 32 MiB, held beside that while it waits for
+its newline. A longer one goes on as it comes,
+unread and unrecorded, to the editor or the agent unchanged, or is dropped
+headless, and a `line_too_long` event says so. The agent's stderr
+goes on in pieces of 64 KiB at most, every byte.
+
 ## Transcripts
 
 Like the agents' own transcripts, keyed by project folder:
@@ -645,7 +664,8 @@ release; the next brnr release ships it.
 change. brnr has five direct dependencies; CI checks their licenses and
 advisories with cargo deny, and with cargo vet that every crate is audited
 (by Mozilla, Google and others whose audits brnr imports) or listed as an
-exemption still to audit. Report vulnerabilities privately, as
+exemption still to audit. The [audit status](supply-chain/README.md) records
+the remaining work; an exemption is not an audit. Report vulnerabilities privately, as
 [SECURITY.md](SECURITY.md) says.
 
 ## License

@@ -53,6 +53,10 @@ brnr has five direct dependencies, and few is the point. A new one needs:
 Audits are imported from Mozilla, Google, the Bytecode Alliance, Embark,
 ISRG and Zcash (`supply-chain/config.toml`); crates none of them has audited
 at the version brnr uses are exemptions, to be replaced by audits.
+The [audit status](supply-chain/README.md) describes the remaining work and
+the scope of the local reviews. `vet` is a required check on `main`.
+The workspace's `brnr` package is first-party (`audit-as-crates-io = false`),
+even when its version is published; its dependencies still need coverage.
 
 When a pull request moves crate versions (Dependabot's weekly `crates` one,
 say), `vet` fails for each new version nobody has audited. On its branch:

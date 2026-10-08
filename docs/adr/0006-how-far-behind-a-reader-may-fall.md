@@ -15,6 +15,10 @@ same way, with the `error`, once the file takes records again. `brnr log`
 always shows these notes, whatever `--events` chose. Resolves review item 1,
 and with ADR 9 review item 3.
 
+Amended by 51: a line still coming is held by its reader, up to 32 MiB,
+beside the cap; a longer one goes on unread as it comes (or, headless, is
+dropped), said by a `line_too_long` event.
+
 ## Context
 
 Every reader of a session can fall behind: a bridge or a watcher, the

@@ -36,6 +36,10 @@ with environment variables:
                     nothing
   QUIET_MODE=1      session/set_mode sends no current_mode_update: ACP answers
                     only the requester
+  RAW_LOG=<file>    every line it receives is appended to file, byte for byte
+                    (a line that isn't JSON is then skipped)
+  SESSION_ID=<id>   the first session it opens has this id
+  ALLOW_ONLY=1      a permission request offers only an allow option
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
@@ -51,6 +55,9 @@ and by the prompt's text:
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
+  long <n> [stderr] writes one line of n MiB of x, 1 MiB at a time, then
+                    answers; on stdout the line ends in a newline, on stderr
+                    it is left open
   many <n> [<size>] answers with n messages, each of its own (and size bytes
                     longer)
   think             thinks, then answers
@@ -66,6 +73,7 @@ and by the prompt's text:
                     input nests n deep, 10000 by default) or garbled (the
                     line isn't JSON)
   fail              the turn fails
+  verbatim          writes VERBATIM, then a line that isn't JSON, then answers
 """
 
 import json
@@ -76,6 +84,14 @@ import sys
 import time
 
 env = os.environ.get
+
+# An update as no JSON library writes it: spaces, key order, escapes (%s is
+# the session).
+VERBATIM = (
+    '{ "params" : {"update":{"content":{"text":"caf\\u00e9 \\/ é \\ud83d\\ude00",'
+    '"type":"text"},  "sessionUpdate":"agent_message_chunk"},"sessionId":"%s"},'
+    '"method":"session/update" ,"jsonrpc":"2.0"}'
+)
 
 MODES = {
     "currentModeId": "default",
@@ -195,6 +211,14 @@ def run(mid, sid, text):
     elif first == "big":
         say(sid, "z" * int(words[1]))
         end_turn(mid)
+    elif first == "long":
+        out = sys.stderr if words[2:] == ["stderr"] else sys.stdout
+        for _ in range(int(words[1])):
+            out.write("x" * (1 << 20))
+            out.flush()
+        if out is sys.stdout:
+            out.write("\n")
+        end_turn(mid)
     elif first == "many":
         pad = "m" * int(words[2]) if len(words) > 2 else ""
         for i in range(int(words[1])):
@@ -276,6 +300,10 @@ def run(mid, sid, text):
         end_turn(mid)
     elif first == "fail":
         error(mid, -32603, "boom")
+    elif first == "verbatim":
+        sys.stdout.write(VERBATIM % sid + "\n" + "not json, from the agent\n")
+        sys.stdout.flush()
+        end_turn(mid)
     elif first == "odd":
         how = words[1] if len(words) > 1 else "surrogate"
         request = f"perm-{len(asking) + 1}"
@@ -307,6 +335,8 @@ def run(mid, sid, text):
             {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
             {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
         ]
+        if env("ALLOW_ONLY"):
+            options = options[:1]
         tool = {
             "toolCallId": request,
             "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",
@@ -370,8 +400,16 @@ authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
 asking = {}  # permission request id -> (prompt id, session)
 
-for line in sys.stdin:
-    msg = json.loads(line)
+for line in sys.stdin.buffer:
+    if env("RAW_LOG"):
+        with open(env("RAW_LOG"), "ab") as f:
+            f.write(line)
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+    else:
+        msg = json.loads(line)
     append("CALL_LOG", msg)
     method, mid = msg.get("method"), msg.get("id")
     params = msg.get("params") or {}
@@ -412,6 +450,8 @@ for line in sys.stdin:
             continue
         sessions += 1
         session = f"sess-{sessions}"
+        if env("SESSION_ID") and sessions == 1:
+            session = env("SESSION_ID")
         result(mid, opened(session))
         update(
             session,
