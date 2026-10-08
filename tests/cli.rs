@@ -945,8 +945,8 @@ fn take_over_moves_a_session() {
 }
 
 /// A process that doesn't answer still holds its session's lock: it isn't
-/// resumed elsewhere, and list and ps say which process has it without
-/// asking it.
+/// resumed elsewhere, and list, ps and sessions say which process has it
+/// without asking it.
 #[test]
 fn a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
@@ -961,8 +961,10 @@ fn a_silent_process_keeps_its_session() {
     let take_over = spawn(&start_args(&["--resume", "sess-1", "--take-over"]));
     let list = spawn(&["list", "--all", "--json"]);
     let ps = spawn(&["ps", "--json"]);
-    let [resume, take_over, list, ps] =
-        [resume, take_over, list, ps].map(|c| c.wait_with_output().unwrap());
+    let sessions = spawn(&["sessions", "--json", "--", AGENT]);
+    let table = spawn(&["sessions", "--", AGENT]);
+    let [resume, take_over, list, ps, sessions, table] =
+        [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
     unsafe { libc::kill(pid, libc::SIGCONT) };
     let refused = format!("sess-1 is running in process {pid}");
     assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
@@ -977,6 +979,13 @@ fn a_silent_process_keeps_its_session() {
         (&ps[0]["owner"], &ps[0]["sessions"]),
         (&"unreachable".into(), &serde_json::json!(["sess-1"]))
     );
+    // As list says it, not as one only the agent knows.
+    let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
+    let row = sessions.as_array().unwrap().iter().find(|r| r["session"] == "sess-1").unwrap();
+    assert_eq!((&row["state"], &row["pid"]), (&"unreachable".into(), &pid.into()), "{sessions}");
+    let table = stdout(&table);
+    let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
+    assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
     assert_eq!(env.hosts().len(), 1, "a second process started");
 }
 

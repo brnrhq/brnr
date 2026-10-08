@@ -57,8 +57,8 @@ a session a headless process was running.
   writer of the session's transcript; the editor's process records the
   session in its host log only, and says so (P3). This is process
   management, not protocol, so strict mode (ADR 41) doesn't decide it.
-- `list`, `ps` and `doctor` can read the locks to say which process serves a
-  session without asking it.
+- `list`, `ps`, `sessions` and `doctor` read the locks to say which process
+  serves a session without asking it.
 
 ## Considered
 

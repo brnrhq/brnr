@@ -245,8 +245,9 @@ with `stop_when_idle` when the agent can't close sessions.
 `brnr sessions` starts the agent just to ask it (`session/list`), so it
 includes sessions started outside brnr and needs nothing running; its STATE
 and PID columns say, as `brnr list` would, which are running and in which
-process, which brnr has a transcript of (`inactive`), and which only the
-agent knows (`-`). `--resume` takes an id brnr knows, or any id the
+process (`unreachable` for one whose process holds it but doesn't answer),
+which brnr has a transcript of (`inactive`), and which only the agent knows
+(`-`). `--resume` takes an id brnr knows, or any id the
 agent knows, which it resumes in `--cwd` (or here) with the agent after
 `--` (or the profile's). `brnr stop` signals the agent's whole process group,
 so whatever the agent started goes with it.

@@ -1,6 +1,9 @@
 # 15. `list` and `sessions`, and one row shape
 
-Accepted (former decisions 36, 43 and 46); reviewed 2026-10-07. Implemented.
+Accepted (former decisions 36, 43 and 46); reviewed 2026-10-07. Implemented:
+`sessions` takes a running session's STATE and PID from the rows `list`
+makes, so one whose process holds its lock but doesn't answer is
+`unreachable` there too, with the holder's pid, not `-`.
 
 ## Context
 

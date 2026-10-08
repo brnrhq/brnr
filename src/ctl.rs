@@ -369,37 +369,7 @@ fn list(args: &[String]) -> Result<(), String> {
         }
     }
     let hosts = discover()?;
-    let locks = lock::all();
-    let mut rows = Vec::new();
-    if active {
-        for host in &hosts {
-            for s in host.sessions() {
-                rows.push(json!({
-                    "session": s["session_id"],
-                    "title": s["title"],
-                    "state": s["state"],
-                    "pid": host.id().parse::<u64>().ok(),
-                    "agent": agent_name(&host.info()["agent"]),
-                    "cwd": s["cwd"],
-                    "last_active": s["last_active"],
-                }));
-            }
-            // One that doesn't answer: what it holds the locks of, and no more.
-            if host.status.is_none() {
-                for session in host.held(&locks) {
-                    rows.push(json!({
-                        "session": session,
-                        "title": null,
-                        "state": "unreachable",
-                        "pid": host.id().parse::<u64>().ok(),
-                        "agent": agent_name(&host.info()["agent"]),
-                        "cwd": null,
-                        "last_active": null,
-                    }));
-                }
-            }
-        }
-    }
+    let mut rows = if active { running_rows(&hosts, &lock::all()) } else { Vec::new() };
     if inactive {
         for p in inactive_sessions(&hosts) {
             rows.push(json!({
@@ -437,6 +407,42 @@ fn list(args: &[String]) -> Result<(), String> {
     }
     print_table(table);
     Ok(())
+}
+
+/// The running sessions, a row each, as `list` shows them: those each
+/// process that answers says it serves, and those one that doesn't answer
+/// holds the locks of (ADR 3), `unreachable`. `sessions` takes its STATE and
+/// PID from these too (ADR 15).
+fn running_rows(hosts: &[Host], locks: &[lock::Entry]) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for host in hosts {
+        for s in host.sessions() {
+            rows.push(json!({
+                "session": s["session_id"],
+                "title": s["title"],
+                "state": s["state"],
+                "pid": host.id().parse::<u64>().ok(),
+                "agent": agent_name(&host.info()["agent"]),
+                "cwd": s["cwd"],
+                "last_active": s["last_active"],
+            }));
+        }
+        // One that doesn't answer: what it holds the locks of, and no more.
+        if host.status.is_none() {
+            for session in host.held(locks) {
+                rows.push(json!({
+                    "session": session,
+                    "title": null,
+                    "state": "unreachable",
+                    "pid": host.id().parse::<u64>().ok(),
+                    "agent": agent_name(&host.info()["agent"]),
+                    "cwd": null,
+                    "last_active": null,
+                }));
+            }
+        }
+    }
+    rows
 }
 
 /// Sessions with a transcript that no running process is serving, most
