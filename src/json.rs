@@ -19,8 +19,16 @@ use serde::de::DeserializeOwned;
 pub const SHALLOW: usize = 128;
 
 /// Stack per level of nesting. The deepest use is parsing an object: about
-/// 1 KiB a level, 3 KiB in a debug build.
-const FRAME: usize = if cfg!(debug_assertions) { 8 << 10 } else { 4 << 10 };
+/// 1 KiB a level, 3 KiB in a debug build. Built under a sanitizer (`--cfg
+/// sanitized`), frames are bigger: 5 KiB under AddressSanitizer, whose
+/// redzones pad every one.
+const FRAME: usize = if cfg!(sanitized) {
+    24 << 10
+} else if cfg!(debug_assertions) {
+    8 << 10
+} else {
+    4 << 10
+};
 
 /// Stack for everything else a thread does: a spawned thread's default.
 const BASE: usize = 2 << 20;

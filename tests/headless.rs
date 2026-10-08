@@ -1134,8 +1134,7 @@ fn a_stalled_disk_skips_records_and_says_so() {
     let out = env.run(&["wait", "sess-1", "--timeout", "60"]);
     assert!(out.status.success(), "the session waited for the logger: {}", stderr(&out));
     // The logger's 64 MiB, and the agent's 16 MiB on its way, with room.
-    let held = rss(host);
-    assert!(held < 160 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 160 << 20);
 
     fs::remove_file(&stall).unwrap();
     let noted = || fs::read_to_string(&events).is_ok_and(|t| t.contains("records-skipped"));
@@ -1511,10 +1510,14 @@ fn editor_gone_takes_the_agents_children() {
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "its child outlived the editor");
 }
 
-/// The memory process `pid` holds, in bytes.
-fn rss(pid: i32) -> u64 {
+/// That the host, `pid`, holds less than `limit` bytes of memory, unless it
+/// is built under a sanitizer (`--cfg sanitized`): its memory is then mostly
+/// the sanitizer's, such as the freed memory AddressSanitizer holds back to
+/// catch a use after free (256 MB on Linux), and its shadow.
+fn assert_holds_less(pid: i32, limit: u64) {
     let ps = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().unwrap();
-    String::from_utf8_lossy(&ps.stdout).trim().parse::<u64>().unwrap_or(0) << 10
+    let held = String::from_utf8_lossy(&ps.stdout).trim().parse::<u64>().unwrap_or(0) << 10;
+    assert!(cfg!(sanitized) || held < limit, "the host holds {} MB", held >> 20);
 }
 
 /// An editor that stops reading holds its agent back, as a pipe would: the
@@ -1530,8 +1533,7 @@ fn editor_that_stops_reading_holds_the_agent_back() {
     writeln!(to_agent, "{}", editor_prompt(3, "reply done")).unwrap();
     sleep(Duration::from_secs(32));
     assert!(alive(host), "a stalled editor ended its agent");
-    let held = rss(host);
-    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 64 << 20);
     assert!(env.ok(&["ps"]).contains("editor"));
     // The agent went on: its answer comes after everything it wrote.
     line_with(&mut from_agent, "end_turn");
@@ -1549,8 +1551,7 @@ fn a_stalled_agent_holds_the_editor_back() {
     let writer = flood(to_agent);
     sleep(Duration::from_secs(5));
     assert!(!writer.is_finished(), "the editor's writes didn't wait");
-    let held = rss(host);
-    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 64 << 20);
     editor.kill().unwrap();
     editor.wait().unwrap();
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
