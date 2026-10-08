@@ -84,7 +84,9 @@ prepare() {
 
 # What the release pull request says: the changes since <last>, and the
 # adapters, flagging an adapter build that changed without a new npm version
-# (Homebrew wouldn't rebuild it; bump the formula's revision in $tap).
+# (Homebrew wouldn't rebuild it; bump the formula's revision in $tap):
+# anything in adapters/ but the pins, or with no pin moved, the pins' files
+# too (bun.lock alone: a dependency of a pinned package moved).
 release_notes() {
     local version=$1 last=$2 range=HEAD
     [ -n "$last" ] && range="$last..HEAD"
@@ -94,7 +96,7 @@ release_notes() {
     git log --no-merges --format='- %s' "$range" | grep -v "^- Release " || echo "- (none)"
     echo
     echo "## Adapters (Homebrew formula versions)"
-    local name package now before
+    local name package now before moved=
     for name in claude codex; do
         case $name in
             claude) package=@agentclientprotocol/claude-agent-acp ;;
@@ -103,12 +105,15 @@ release_notes() {
         now=$(adapter_version "$package")
         before=$([ -n "$last" ] && adapter_version "$package" "$last" || echo "-")
         if [ "$now" != "$before" ]; then
+            moved=1
             echo "- brnr-$name-adapter: $before -> $now (\`brew upgrade\` rebuilds it)"
         else
             echo "- brnr-$name-adapter: $now, unchanged"
         fi
     done
-    if [ -n "$last" ] && ! git diff --quiet "$last" HEAD -- adapters ':!adapters/package.json' ':!adapters/bun.lock'; then
+    local built=(adapters ':!adapters/package.json' ':!adapters/bun.lock')
+    [ -n "$moved" ] || built=(adapters)
+    if [ -n "$last" ] && ! git diff --quiet "$last" HEAD -- "${built[@]}"; then
         echo
         echo "**adapters/ changed without a new npm version**, so Homebrew won't rebuild the adapters: bump \`revision\` in the formulae in $tap if users need the new build."
     fi

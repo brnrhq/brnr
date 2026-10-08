@@ -11,11 +11,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::{config, paths, spawn};
+use brnr::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
+use brnr::{config, json, lock, paths, spawn};
 
 use super::{
     Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
-    running_session, text, when,
+    running_rows, running_session, text, when,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -86,8 +87,7 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
             let mut current = current.map(str::to_owned);
             if modes.is_empty() {
                 // An agent with modes only as a config option.
-                let option =
-                    status["config"].as_array().into_iter().flatten().find(|o| o["id"] == "mode");
+                let option = option(&status, "mode");
                 let option = option.ok_or("the agent offers no modes")?;
                 modes = choices(option)
                     .into_iter()
@@ -117,6 +117,12 @@ pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
         _ => return Err(USAGE.to_owned()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The config option of ACP's `category` (`mode`, `model`, …), in a
+/// session's status: by category only, never by id (ADR 28).
+fn option<'a>(status: &'a Value, category: &str) -> Option<&'a Value> {
+    status["config"].as_array()?.iter().find(|o| o["category"] == category)
 }
 
 /// A select option's values and their names.
@@ -193,21 +199,11 @@ pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
     let id = s(&status["session_id"]).to_owned();
     match &rest[..] {
         [] => {
-            let option = status["config"]
-                .as_array()
+            let option = option(&status, "model").ok_or("the agent offers no model choice")?;
+            let models: Vec<Value> = choices(option)
                 .into_iter()
-                .flatten()
-                .find(|o| o["id"] == "model" || o["category"] == "model");
-            let models: Vec<Value> = if let Some(option) = option {
-                choices(option)
-                    .into_iter()
-                    .map(|(value, name)| json!({ "model": value, "name": name }))
-                    .collect()
-            } else if let Some(models) = status["models"].as_array() {
-                models.iter().map(|m| json!({ "model": m["modelId"], "name": m["name"] })).collect()
-            } else {
-                return Err("the agent offers no model choice".into());
-            };
+                .map(|(value, name)| json!({ "model": value, "name": name }))
+                .collect();
             if json_out {
                 print_json(&json!({ "session": id, "model": status["model"], "models": models }))?;
                 return Ok(ExitCode::SUCCESS);
@@ -290,16 +286,23 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
     let listed = list_sessions(&agent, &cwd.to_string_lossy())?;
 
-    // What brnr knows of each, in brnr list's terms: a running session's
-    // state and process, `inactive` for one with a transcript, nothing for
-    // one only the agent knows.
+    // What brnr knows of each, as brnr list says it: a running session's
+    // state and process, from the locks too (`unreachable`, in a process
+    // that doesn't answer), `inactive` for one with a transcript, nothing
+    // for one only the agent knows.
     let hosts = discover()?;
+    let locks = lock::all();
+    let running = running_rows(&hosts, &locks);
     let past = inactive_sessions(&hosts);
     let known = |id: &str| -> (Value, Value, Value) {
-        for host in &hosts {
-            if let Some(x) = host.sessions().iter().find(|x| x["session_id"] == id) {
-                return (x["state"].clone(), json!(host.id().parse::<u64>().ok()), x["last_active"].clone());
-            }
+        // One that two processes serve (`shared_sessions`, ADR 42) is the
+        // lock holder's, as its transcript is.
+        let holder = locks.iter().find(|e| e.pid.is_some() && e.session.as_deref() == Some(id));
+        let holder = holder.and_then(|e| e.pid).map(u64::from);
+        let mut rows = running.iter().filter(|r| r["session"] == id);
+        let row = rows.clone().find(|r| r["pid"].as_u64() == holder).or_else(|| rows.next());
+        if let Some(r) = row {
+            return (r["state"].clone(), r["pid"].clone(), r["last_active"].clone());
         }
         match past.iter().find(|p| p["session_id"] == id) {
             Some(p) => (json!("inactive"), Value::Null, p["last_active"].clone()),
@@ -309,16 +312,16 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let mut rows: Vec<Value> = listed
         .iter()
         .map(|x| {
-            let id = s(&x["sessionId"]);
-            let (state, pid, active) = known(id);
+            let id = x.session_id.to_string();
+            let (state, pid, active) = known(&id);
             json!({
                 "session": id,
-                "title": x["title"],
+                "title": x.title,
                 "state": state,
                 "pid": pid,
                 // The agent's updatedAt; brnr's own when it has none.
-                "last_active": if x["updatedAt"].is_string() { x["updatedAt"].clone() } else { active },
-                "cwd": x["cwd"],
+                "last_active": x.updated_at.as_ref().map_or(active, |t| json!(t)),
+                "cwd": x.cwd,
             })
         })
         .collect();
@@ -349,7 +352,7 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
 
 /// Starts `agent`, asks it for its sessions in `cwd` (`initialize`, then
 /// `session/list` page by page) and stops it.
-fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
+fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String> {
     let mut program = paths::expand(&agent[0]).into_os_string();
     if let Some(bundled) = spawn::bundled(&program) {
         program = bundled.into_os_string();
@@ -380,11 +383,16 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
         loop {
             let wait = deadline.saturating_duration_since(Instant::now());
             let line = rx.recv_timeout(wait).map_err(|_| format!("the agent didn't answer {method}"))?;
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            // As the host reads it (see json.rs): a title cut mid-emoji is no
+            // reason to miss the answer.
+            let line = line.as_bytes();
+            let Some(Some(msg)) = json::on_stack(json::depth(line), || json::parse::<Value>(line))
+            else {
+                continue;
+            };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
-                    let what = error["message"].as_str().map_or(error.to_string(), str::to_owned);
-                    return Err(format!("{method} failed: {what}"));
+                    return Err(format!("{method} failed: {}", schema::error_message(error)));
                 }
                 return Ok(msg["result"].clone());
             }
@@ -400,7 +408,8 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
                 "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
             }),
         )?;
-        if init["agentCapabilities"]["sessionCapabilities"]["list"].is_null() {
+        let caps: AgentCapabilities = schema::read(&init["agentCapabilities"]).unwrap_or_default();
+        if caps.session_capabilities.list.is_none() {
             return Err("the agent doesn't list its sessions".to_owned());
         }
         let mut sessions = Vec::new();
@@ -411,9 +420,11 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
                 params["cursor"] = json!(cursor);
             }
             let page = ask(id, "session/list", params)?;
-            sessions.extend(page["sessions"].as_array().cloned().unwrap_or_default());
-            match page["nextCursor"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
+            let page = schema::read::<ListSessionsResponse>(&page)
+                .ok_or("session/list failed: the agent's answer isn't a list of sessions")?;
+            sessions.extend(page.sessions);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
                 None => break,
             }
         }
@@ -464,4 +475,51 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     agent_call(host, &json!({ "cmd": "close", "session": id }))?;
     outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// `start --resume --take-over`: process `pid`, which holds `session`'s
+/// lock, and the session as its transcript has it once closed there (its
+/// cwd, the process's agent and profile), for the process that resumes it.
+pub(super) fn held<'a>(
+    hosts: &'a [Host],
+    session: &str,
+    pid: u32,
+) -> Result<(&'a Host, Value), String> {
+    let running = format!("{session} is running in process {pid}");
+    let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
+        return Err(format!("{running}, which brnr doesn't list"));
+    };
+    let Some(status) = &host.status else {
+        return Err(format!("{running}, which is not answering"));
+    };
+    let Some(s) = host.sessions().iter().find(|s| s["session_id"] == session) else {
+        return Err(format!("{session} is opening in process {pid}"));
+    };
+    let past = json!({
+        "session_id": session,
+        "cwd": s["cwd"],
+        "agent": status["agent"],
+        "profile": status["profile"],
+    });
+    Ok((host, past))
+}
+
+/// `start --resume --take-over`: `owner`, which holds `session`'s lock,
+/// closes it as `brnr close` does, cancelling a running turn, and so lets go
+/// of it (ADR 3) for process `to` to resume. An editor's process does only
+/// if its profile enables the experimental `close`, and tells the editor
+/// where the session went (ADR 4).
+pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), String> {
+    let pid = owner.id();
+    let running = format!("{session} is running in process {pid}");
+    let req = json!({ "cmd": "close", "session": session, "take_over": to });
+    agent_call(owner, &req).map_err(|e| {
+        if owner.info()["owner"] == "editor" {
+            format!("{running}, an editor's: {e}")
+        } else {
+            format!("{running}, which didn't close it: {e}")
+        }
+    })?;
+    errln!("brnr: closed {session} in process {pid}");
+    Ok(())
 }

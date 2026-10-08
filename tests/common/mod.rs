@@ -6,12 +6,14 @@
 
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub const AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
 
@@ -167,6 +169,35 @@ impl Drop for Env {
         }
         let _ = fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Metadata and a socket left by a brnr process that is gone, whose pid is
+/// another process's now, as after a reboot or pids wrapping around: a
+/// `sleep`'s. Nobody listens on the socket, and the metadata was written
+/// before the sleep started. The sleep is the caller's to kill.
+pub fn ghost(env: &Env) -> Child {
+    let run = env.dir.join("run");
+    fs::create_dir_all(&run).unwrap();
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+    let sleep = Command::new("sleep").arg("60").spawn().unwrap();
+    let pid = sleep.id();
+    let socket = run.join(format!("{pid}.sock"));
+    drop(UnixListener::bind(&socket).unwrap());
+    let meta = run.join(format!("{pid}.json"));
+    let info = json!({
+        "id": pid.to_string(),
+        "host_id": format!("20260101T000000-{pid}"),
+        "host_pid": pid,
+        "agent_pid": null,
+        "agent": [AGENT],
+        "cwd": env.dir,
+        "socket": socket,
+        "started": "2026-01-01T00:00:00.000000Z",
+    });
+    fs::write(&meta, info.to_string()).unwrap();
+    let before = SystemTime::now() - Duration::from_secs(3600);
+    fs::File::options().write(true).open(&meta).unwrap().set_modified(before).unwrap();
+    sleep
 }
 
 pub fn start_args<'a>(args: &[&'a str]) -> Vec<&'a str> {

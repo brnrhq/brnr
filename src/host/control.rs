@@ -1,17 +1,21 @@
 //! Bridges: everything that talks to the host in JSON lines instead of ACP.
 //!
 //! A bridge is a process the host starts from the profile's `bridges`
-//! (requests on its stdout, responses and events on its stdin, and it
-//! should exit when its stdin closes, which happens when the host dies), or
-//! anything that connects to the control socket, such as brnr. Both
-//! speak the same protocol, one JSON object per line.
+//! (requests on its stdout, responses and events on its stdin), or anything
+//! that connects to the control socket, such as brnr. Both speak the same
+//! protocol, one JSON object per line. A started bridge is one until it
+//! exits: its stdout closing only means it has no more requests. It should
+//! exit when its stdin closes, which happens when the host stops; one still
+//! running 2 s later gets SIGTERM.
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
-//! - `send` `{session, text?, blocks?, mode?: now|after-turn|interrupt|context,
-//!   replace?}`: the response has the message's id (`m<n>`), which the
-//!   `user_message` and `turn_ended` events of its turn carry
+//! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
+//!   replace?}` (ADR 18 in docs/adr): the response's `status` is
+//!   `delivered`, `held` (until the running turn ends), `steered` (into it)
+//!   or `interrupting`, and it has the message's id (`m<n>`), which the
+//!   `user_message` of its turn carries, and the `turn_ended` in `messages`
 //! - `cancel` `{session, keep_held?}`: cancel the running turn; held
 //!   messages are dropped (and listed) unless `keep_held`
 //! - `queue` `{session, drop?, clear?, clear_context?}`: the held messages
@@ -19,19 +23,28 @@
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
-//! - `approve` / `deny` `{session, request, option?}`; only while no editor
-//!   is attached
+//! - `approve` / `deny` `{session, request, option?}`
 //! - `set_mode` `{session, mode}`, `set_config` `{session, option, value}`,
-//!   `set_model` `{session, model}`: answered once the agent has
-//! - `fork` `{session}`, `close` `{session}`: only while no editor is
-//!   attached; a headless process whose last session closes stops
+//!   `set_model` `{session, model}` (the config option whose category is
+//!   `model`): answered once the agent has
+//! - `fork` `{session}`: never in an editor's process
+//! - `close` `{session, take_over?}`: cancels a running turn first, and is
+//!   answered once the agent has closed the session; a headless process
+//!   whose last session closes stops. `take_over` is the pid of the process
+//!   `start --resume --take-over` resumes it in
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
 //!
+//! On an editor's session every command that acts on it (`send`, `cancel`,
+//! `queue --clear-context`, `approve`, `deny`, the settings and `close`) is
+//! experimental: refused unless the editor's profile enables it (ADR 4, see
+//! experimental.rs). Bridges observe it freely.
+//!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
-//! streamed chunk) and must be asked for by name. While an editor is
-//! attached, bridges observe; the editor answers the agent.
+//! streamed chunk) and must be asked for by name. A held message that goes
+//! unsent (`cancel`, `queue`, its session closing, the agent exiting) is a
+//! `message_dropped`; a session that closes, `session_closed`.
 //!
 //! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
 //! up has stopped reading and is dropped rather than buffered for without
@@ -43,11 +56,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread;
 use std::time::{Instant, SystemTime};
 
@@ -56,10 +70,11 @@ use serde_json::{Value, json};
 
 use super::acp::{Choice, Held};
 use super::requests::PeerOp;
+use super::strict::Beyond;
 use super::{Ev, Host};
-use crate::config::Bridge;
+use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
-use crate::{paths, render};
+use crate::{json, paths, render};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
@@ -68,25 +83,30 @@ pub const EVENTS: &[&str] = &[
     "agent_message",
     "agent_thought",
     "tool_call",
+    "tool_progress",
     "plan",
     "usage",
     "session_changed",
     "permission_request",
     "permission_resolved",
     "turn_ended",
+    "message_dropped",
+    "context_dropped",
+    "session_closed",
     "exited",
     "acp",
 ];
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
-/// ACP messages and the agent's thoughts. `watch` and `log` without
-/// `--events`, and a session in the foreground.
-pub const QUIET: &[&str] = &["acp", "agent_thought"];
+/// ACP messages, the agent's thoughts, usage and tool calls' progress.
+/// `watch` and `log` without `--events`, and a session in the foreground,
+/// in text and JSON alike.
+pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
 
-static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
+pub(super) static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
 /// How to cut a peer off.
 pub(super) enum Closer {
@@ -103,7 +123,7 @@ pub(super) struct Queue {
 
 impl Queue {
     /// The queue, and the writer's end of it.
-    fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
+    pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
         (Queue { tx, queued: queued.clone() }, rx, queued)
@@ -136,9 +156,9 @@ pub(super) struct Peer {
     tx: Queue,
     label: String,
     closer: Closer,
-    subscribed: bool,
+    pub(super) subscribed: bool,
     /// `None`: every event.
-    events: Option<Vec<String>>,
+    pub(super) events: Option<Vec<String>>,
 }
 
 impl Peer {
@@ -171,7 +191,7 @@ fn check_events(events: &[String]) -> Result<(), String> {
 
 // ---- connections ---------------------------------------------------------
 
-pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
+pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let tx = tx.clone();
@@ -179,7 +199,7 @@ pub(super) fn serve(listener: UnixListener, tx: Sender<Ev>) {
     }
 }
 
-fn connection(conn: UnixStream, tx: Sender<Ev>) {
+fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
     let (out_tx, out_rx, queued) = Queue::new();
@@ -193,7 +213,7 @@ fn connection(conn: UnixStream, tx: Sender<Ev>) {
     let _ = tx.send(Ev::PeerClosed { peer });
 }
 
-fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
+pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
     for line in lines {
         if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
             return;
@@ -204,7 +224,7 @@ fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicU
 
 /// Requests, one per line, until EOF. A line that isn't JSON (not even
 /// UTF-8) is answered with an error; the peer stays.
-fn read_requests(input: impl Read, peer: u64, tx: &Sender<Ev>) {
+fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
     while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
@@ -225,10 +245,15 @@ impl Host {
         &mut self,
         n: usize,
         bridge: &Bridge,
-        tx: &Sender<Ev>,
+        tx: &SyncSender<Ev>,
     ) -> Result<(), String> {
-        let label = format!("{}#{n}", bridge.command[0]);
-        let mut cmd = Command::new(paths::expand(&bridge.command[0]));
+        // As the request has it: whoever started the process found a bare
+        // name next to brnr, as they did the agent's (see request.rs), so
+        // `brnr` is this brnr, whatever the editor's PATH.
+        let program = Path::new(&bridge.command[0]);
+        let name = program.file_name().unwrap_or(program.as_os_str()).to_string_lossy();
+        let label = format!("{name}#{n}");
+        let mut cmd = Command::new(program);
         cmd.args(&bridge.command[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -250,12 +275,10 @@ impl Host {
         let (out_tx, out_rx, queued) = Queue::new();
         let stdin = child.stdin.take().unwrap();
         thread::spawn(move || write_lines(stdin, out_rx, queued));
+        // Its stdout closing ends its requests, not it (see `Ev::BridgeExited`).
         let stdout = child.stdout.take().unwrap();
         let t = tx.clone();
-        thread::spawn(move || {
-            read_requests(stdout, peer, &t);
-            let _ = t.send(Ev::PeerClosed { peer });
-        });
+        thread::spawn(move || read_requests(stdout, peer, &t));
         let stderr = child.stderr.take().unwrap();
         let (t, l) = (tx.clone(), label.clone());
         thread::spawn(move || {
@@ -269,7 +292,7 @@ impl Host {
         drop(child); // Reaped by the host (see `Ev::BridgeExited`).
         thread::spawn(move || {
             if super::wait_exited(pid).is_ok() {
-                let _ = t.send(Ev::BridgeExited { label: l, pid });
+                let _ = t.send(Ev::BridgeExited { label: l, pid, peer });
             }
         });
 
@@ -287,8 +310,11 @@ impl Host {
         self.sink.msg(session, dir, bytes);
         if self.peers.values().any(|p| p.wants("acp")) {
             let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-            let msg = serde_json::from_slice::<Value>(body)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(body).into_owned()));
+            // As the host reads it, where this stack takes it (see json.rs).
+            let msg = (json::depth(body) <= self.stack)
+                .then(|| json::parse::<Value>(body))
+                .flatten()
+                .unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
             self.emit(json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg }));
         }
     }
@@ -316,12 +342,19 @@ impl Host {
             if let Some(i) = event["session"].as_str().and_then(|s| self.find(s)) {
                 self.sessions[i].last_active = SystemTime::now();
             }
-            if self.show_events && !QUIET.contains(&name.as_str()) {
-                if self.json_events {
-                    println!("{}", render::clean(&line));
-                } else if let Some(text) = render::event(&event, &render::Options::foreground()) {
-                    println!("{text}");
-                }
+            if self.show_events
+                && !QUIET.contains(&name.as_str())
+                && let Some(display) = &self.display
+            {
+                // On the display's thread, which never holds the host up
+                // (ADR 9).
+                display.event(|| {
+                    if self.json_events {
+                        Some(render::clean(&line).into_owned())
+                    } else {
+                        render::event(&event, &render::Options::foreground())
+                    }
+                });
             }
         }
         let peers: Vec<u64> =
@@ -448,6 +481,7 @@ impl Host {
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        self.check_experimental(Experimental::Approve)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let ours = self
@@ -464,6 +498,8 @@ impl Host {
 
     fn pending_permissions(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
+        // Whether `brnr approve` would be taken, and if not, why (ADR 4).
+        let why_not = self.check_experimental(Experimental::Approve).err();
         self.agent_requests
             .iter()
             .filter(|r| r.handle.is_some())
@@ -472,6 +508,8 @@ impl Host {
                     "request": r.handle,
                     "session": r.session,
                     "owner": owner,
+                    "answerable": why_not.is_none(),
+                    "why_not": why_not,
                     "title": r.params["toolCall"]["title"],
                     "kind": r.params["toolCall"]["kind"],
                     "tool_call": r.params["toolCall"],
@@ -511,6 +549,9 @@ impl Host {
                     (_, false) => "busy",
                     _ => "idle",
                 };
+                // Its transcript: events, and raw ACP (ADR 22).
+                let events = paths::session_log(&s.cwd, &s.id);
+                let acp = paths::acp_log(&events);
                 let fields = json!({
                     "session_id": s.id,
                     "state": state,
@@ -522,8 +563,10 @@ impl Host {
                     "held": s.held.len(),
                     "context": s.context.len(),
                     "pending": pending,
+                    "shared": s.shared(),
                     "last_turn": s.last_turn,
-                    "log": self.log.host_log().map(|_| paths::session_log(&s.cwd, &s.id).to_string_lossy().into_owned()),
+                    "log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
+                    "acp_log": (self.logging == Log::All).then(|| acp.to_string_lossy()),
                 });
                 if let (Some(session), Value::Object(fields)) = (session.as_object_mut(), fields) {
                     session.extend(fields);
@@ -534,6 +577,9 @@ impl Host {
         report
     }
 
+    /// `send` (ADR 18): a prompt of its own, held while a turn runs; steered
+    /// into the running turn; interrupting it; or context for the next
+    /// prompt. A second prompt never goes while one runs.
     fn send(&mut self, req: &Value) -> Result<Value, String> {
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
@@ -541,7 +587,10 @@ impl Host {
             Value::Array(blocks) => blocks.clone(),
             _ => return Err("blocks must be a list of ACP content blocks".into()),
         };
-        let mode = req["mode"].as_str().unwrap_or("now");
+        let mode = req["mode"].as_str().unwrap_or("prompt");
+        if !matches!(mode, "prompt" | "steer" | "interrupt" | "context") {
+            return Err(format!("unknown mode: {mode}"));
+        }
         let replace = req["replace"].as_bool().unwrap_or(false);
         if text.trim().is_empty() && blocks.is_empty() {
             return Err("missing text".into());
@@ -551,6 +600,7 @@ impl Host {
         }
         self.check_blocks(&blocks)?;
         let i = self.session_index(req)?;
+        self.check_editor_send(i, mode)?;
         let session = self.sessions[i].id.clone();
         if mode == "context" {
             if !blocks.is_empty() {
@@ -567,36 +617,44 @@ impl Host {
             );
             return Ok(json!({ "ok": true, "status": "held", "session": session }));
         }
-        let busy = !self.sessions[i].prompts.is_empty();
+        if !self.start_done {
+            // The start commits before the agent gets any work (ADR 7).
+            return Err("the session is still starting".into());
+        }
+        let s = &self.sessions[i];
+        let busy = !s.prompts.is_empty();
+        // Messages waiting to go (held, or steers the agent hasn't answered)
+        // go first.
+        let waiting = !s.held.is_empty() || !s.steering.is_empty();
+        if mode == "steer" && (busy || waiting) {
+            self.check_strict(Beyond::Steering)?;
+            if !self.caps.steering {
+                let why = "it doesn't advertise _session/steering";
+                return Err(format!("the agent can't steer a running turn: {why}"));
+            }
+        }
         let held = Held { id: self.message_id(), text: text.clone(), blocks };
         let message = held.id.clone();
         let status = match mode {
-            "now" => {
+            "prompt" if busy || waiting => {
+                self.sessions[i].held.push_back(held);
+                "held"
+            }
+            "steer" if busy || waiting => {
+                self.steer(i, held);
+                "steered"
+            }
+            "interrupt" if busy => {
+                let s = &mut self.sessions[i];
+                s.held.insert(s.interrupts, held);
+                s.interrupts += 1;
+                self.cancel(&session);
+                "interrupting"
+            }
+            _ => {
                 self.send_prompt(i, held);
-                if busy { "queued" } else { "delivered" }
+                "delivered"
             }
-            "after-turn" => {
-                if busy || !self.sessions[i].held.is_empty() {
-                    self.sessions[i].held.push_back(held);
-                    "held"
-                } else {
-                    self.send_prompt(i, held);
-                    "delivered"
-                }
-            }
-            "interrupt" => {
-                if busy {
-                    let s = &mut self.sessions[i];
-                    s.held.insert(s.interrupts, held);
-                    s.interrupts += 1;
-                    self.cancel(&session);
-                    "interrupting"
-                } else {
-                    self.send_prompt(i, held);
-                    "delivered"
-                }
-            }
-            other => return Err(format!("unknown mode: {other}")),
         };
         self.sink.note(
             Some(&session),
@@ -606,12 +664,12 @@ impl Host {
     }
 
     /// Content blocks a bridge may add to a prompt.
-    fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
+    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
         for block in blocks {
             match block["type"].as_str() {
                 Some("resource_link") if block["uri"].is_string() => {}
                 Some("image") if block["data"].is_string() && block["mimeType"].is_string() => {
-                    if self.capabilities()["image"] != true {
+                    if !self.caps.image {
                         return Err("the agent doesn't take images".into());
                     }
                 }
@@ -626,28 +684,27 @@ impl Host {
     /// the next turn, so they are dropped unless `keep_held`.
     fn cancel_turn(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        self.check_experimental(Experimental::Cancel)?;
         let session = self.sessions[i].id.clone();
         let dropped: Vec<Value> = if req["keep_held"].as_bool() == Some(true) {
             Vec::new()
         } else {
-            let s = &mut self.sessions[i];
-            s.interrupts = 0;
-            s.held.drain(..).map(|h| json!({ "message": h.id, "text": h.text })).collect()
+            self.drop_held(i, "cancel")
         };
         let busy = !self.sessions[i].prompts.is_empty();
         if busy {
             self.cancel(&session);
         }
         let status = if busy { "cancelling" } else { "idle" };
-        self.sink.note(
-            Some(&session),
-            json!({ "event": "cancel", "status": status, "dropped": dropped }),
-        );
+        self.sink.note(Some(&session), json!({ "event": "cancel", "status": status }));
         Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
     }
 
     fn queue(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        if req["clear_context"].as_bool() == Some(true) {
+            self.check_experimental(Experimental::Context)?;
+        }
         let s = &mut self.sessions[i];
         let mut dropped = Vec::new();
         if let Some(id) = req["drop"].as_str() {
@@ -662,17 +719,17 @@ impl Host {
             s.interrupts = 0;
             dropped.extend(s.held.drain(..));
         }
+        let dropped = self.dropped(i, dropped, "queue");
         if req["clear_context"].as_bool() == Some(true) {
-            s.context.clear();
+            self.drop_context(i, "queue");
         }
+        let s = &self.sessions[i];
         let held: Vec<Value> = s
             .held
             .iter()
             .enumerate()
             .map(|(n, h)| json!({ "message": h.id, "text": h.text, "interrupt": n < s.interrupts, "attachments": h.blocks.len() }))
             .collect();
-        let dropped: Vec<Value> =
-            dropped.into_iter().map(|h| json!({ "message": h.id, "text": h.text })).collect();
         Ok(
             json!({ "ok": true, "session": s.id, "held": held, "context": s.context, "dropped": dropped }),
         )
@@ -686,15 +743,19 @@ impl Host {
         }
         let cmd = req["cmd"].as_str().unwrap_or_default();
         let req_id = req.get("req_id").cloned();
-        let caps = self.capabilities();
+        let caps = self.caps;
         let i = self.session_index(req)?;
         let session = self.sessions[i].id.clone();
         let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
+        if cmd.starts_with("set_") {
+            self.check_experimental(Experimental::Settings)?;
+        }
         match cmd {
             "set_mode" => {
                 let mode = text("mode")?;
                 let state = &self.sessions[i].state;
                 let params = json!({ "sessionId": session, "modeId": mode });
+                let option = state.option("mode").map(|o| o["id"].clone());
                 if let Some(modes) = &state.modes {
                     let known = modes["availableModes"]
                         .as_array()
@@ -709,9 +770,9 @@ impl Host {
                         "session/set_mode",
                         params,
                     );
-                } else {
+                } else if let Some(id) = option {
                     // An agent with modes only as a config option.
-                    let params = json!({ "sessionId": session, "configId": "mode", "value": mode });
+                    let params = json!({ "sessionId": session, "configId": id, "value": mode });
                     self.peer_op(
                         peer,
                         req_id,
@@ -719,6 +780,8 @@ impl Host {
                         "session/set_config_option",
                         params,
                     );
+                } else {
+                    return Err("the agent offers no modes".into());
                 }
             }
             "set_config" => {
@@ -733,56 +796,63 @@ impl Host {
                 );
             }
             "set_model" => {
+                // The config option of category `model`; never
+                // `session/set_model` (ADR 28).
                 let model = text("model")?;
-                let state = &self.sessions[i].state;
-                if let Some(option) = state.model_option() {
-                    let id = option["id"].clone();
-                    let params = json!({ "sessionId": session, "configId": id, "value": model });
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Config { session },
-                        "session/set_config_option",
-                        params,
-                    );
-                } else if state.models.is_some() {
-                    let params = json!({ "sessionId": session, "modelId": model });
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Model { session, model },
-                        "session/set_model",
-                        params,
-                    );
-                } else {
-                    return Err("the agent offers no model choice".into());
-                }
+                let option = self.sessions[i].state.option("model");
+                let id = option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
+                let params = json!({ "sessionId": session, "configId": id, "value": model });
+                self.peer_op(
+                    peer,
+                    req_id,
+                    PeerOp::Config { session },
+                    "session/set_config_option",
+                    params,
+                );
             }
-            "fork" | "close" => {
+            "fork" => {
+                // A forked session would be a headless one in a process that
+                // ends with the editor, which ACP can't tell of it (ADR 4).
                 if self.editor_attached() {
-                    return Err(format!("the editor owns this process; {cmd} sessions there"));
+                    return Err("the editor owns this process; fork sessions there".into());
                 }
-                if caps[cmd] != true {
-                    return Err(format!("the agent can't {cmd} sessions"));
+                self.check_strict(Beyond::Fork)?;
+                if !caps.fork {
+                    return Err("the agent can't fork sessions".into());
+                }
+                // A second session could never close when idle, and the
+                // process would never stop (ADR 12).
+                if self.stop_when_idle.is_some() && !caps.close {
+                    return Err("the agent can't close sessions: with stop_when_idle, a forked \
+                                session would never close"
+                        .into());
                 }
                 let cwd = self.sessions[i].cwd.clone();
-                if cmd == "fork" {
-                    let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
-                    let op = PeerOp::Fork { cwd };
-                    self.peer_op(peer, req_id, op, "session/fork", params);
-                } else {
-                    let params = json!({ "sessionId": session });
-                    self.peer_op(peer, req_id, PeerOp::Close { session }, "session/close", params);
+                let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
+                self.peer_op(peer, req_id, PeerOp::Fork { cwd }, "session/fork", params);
+            }
+            "close" => {
+                self.check_experimental(Experimental::Close)?;
+                if !caps.close {
+                    return Err("the agent can't close sessions".into());
                 }
+                let taken_by = req["take_over"].as_u64().and_then(|pid| u32::try_from(pid).ok());
+                self.close(i, peer, req_id, "close");
+                self.closing_under_editor(&session, taken_by);
             }
             _ => unreachable!("checked in command"),
         }
         Ok(())
     }
 
-    /// The session a request names, by its exact id.
+    /// The session a request names, by its exact id. One that is closing
+    /// takes no more requests.
     fn session_index(&self, req: &Value) -> Result<usize, String> {
         let wanted = req["session"].as_str().ok_or("missing session")?;
-        self.find(wanted).ok_or_else(|| format!("no session {wanted}"))
+        let i = self.find(wanted).ok_or_else(|| format!("no session {wanted}"))?;
+        if self.sessions[i].closing.is_some() {
+            return Err(format!("{wanted} is closing"));
+        }
+        Ok(i)
     }
 }

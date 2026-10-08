@@ -13,8 +13,12 @@ categories = ["command-line-utilities", "development-tools"]
 exclude = ["adapters/"]
 
 [dependencies]
+# ACP's types (ADR 43 in docs/adr), without schemars and without the
+# unstable features: its methods and types are what strict mode calls stable.
+agent-client-protocol-schema = { version = "1.10.2", default-features = false }
 libc = "0.2.189"
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order: a prompt the host rewrites keeps the editor's key order.
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
+# unbounded_depth: ACP lines are read however deeply they nest (src/json.rs).
+serde_json = { version = "1.0.151", features = ["preserve_order", "unbounded_depth"] }
 toml = "1.1.6"

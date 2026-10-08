@@ -1,15 +1,21 @@
 //! The editor-facing process: `brnr acp [options] [-- <program> [args...]]`,
 //! a proxy between the editor and the host.
 //!
-//! The editor launches this as if it were the agent. It starts a host (see
-//! host/) in a session of its own, which runs the agent, and from then on
-//! only relays: stdin and stdout carry ACP to and from the host, the agent's
-//! stderr comes out of the proxy's stderr, signals the proxy receives are
-//! handed to the host, and the proxy exits with the agent's exact wait
-//! status. The agent never holds the editor's file descriptors and is out of
-//! reach of the editor's process group and process tree; when the proxy
-//! goes, the host stops it as if the editor had run it.
+//! The editor launches this as if it were the agent. It resolves the
+//! profile and the agent into the host's start request (see request.rs),
+//! starts the host (see host/) in a session of its own, which runs the
+//! agent, and from then on only relays: stdin and stdout carry ACP to and
+//! from the host, the agent's stderr comes out of the proxy's stderr,
+//! signals the proxy receives are handed to the host, and the proxy exits
+//! with the agent's exact wait status. Signals, and its stdout failing, go
+//! on a socket of their own, the signal link (see frame.rs): they don't wait
+//! behind the editor's input while the agent isn't reading it, as they
+//! wouldn't with the agent run directly. The agent never holds the editor's
+//! file descriptors and is out of reach of the editor's process group and
+//! process tree; when the proxy goes, the host stops it as if the editor had
+//! run it.
 
+use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufReader, ErrorKind, PipeReader, Read, Write};
@@ -23,9 +29,10 @@ use std::thread;
 use libc::c_int;
 use serde_json::Value;
 
-use crate::{frame, signals, spawn};
+use crate::request::{self, Request, Role};
+use crate::{config, frame, signals, spawn};
 
-const USAGE: &str = "usage: brnr acp [--profile <name>] [-- <program> [args...]]";
+const USAGE: &str = "usage: brnr acp [--profile <name>] [--strict] [-- <program> [args...]]";
 
 /// `brnr acp --help`: the usage, and what it is.
 const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
@@ -33,15 +40,21 @@ const HELP: &str = "What an editor runs as its ACP agent, in place of the agent 
 The agent runs in a process of its own, which brnr's other commands can
 reach (brnr list, send, watch, approve, ...); it stops when the editor goes.";
 
-/// The fd the host finds its end of the link on.
+/// The fds the host finds its end of the link and of the signal link on.
 const HOST_LINK_FD: c_int = 3;
+const HOST_SIGNAL_LINK_FD: c_int = 4;
 
 #[derive(Default)]
 struct Options {
     profile: Option<String>,
+    /// `--strict`: stable ACP to the letter (ADR 41), as `strict = true` in
+    /// the profile.
+    strict: bool,
 }
 
-type Link = Arc<Mutex<UnixStream>>;
+/// The signal link, written from the thread relaying signals and from the
+/// one relaying the host's frames.
+type SignalLink = Arc<Mutex<UnixStream>>;
 
 pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
@@ -57,26 +70,35 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
 
-    let mask = signals::current_mask();
-    let signals = signals::install();
-    let (link, theirs) = match UnixStream::pair() {
-        Ok(pair) => pair,
-        Err(err) => {
-            eprintln!("brnr acp: socketpair: {err}");
-            return ExitCode::FAILURE;
+    // A config error is the editor's to see, as the process's own failures
+    // are.
+    let request = match resolve(opts, program, signals::current_mask()) {
+        Ok(request) => request,
+        Err(msg) => {
+            eprintln!("brnr acp: {msg}");
+            return ExitCode::from(2);
         }
     };
-    if let Err(err) = start_host(&opts, &mask, theirs, program) {
+    let signals = signals::install();
+    let ((link, theirs), (signal_link, their_signal_link)) =
+        match UnixStream::pair().and_then(|link| Ok((link, UnixStream::pair()?))) {
+            Ok(pairs) => pairs,
+            Err(err) => {
+                eprintln!("brnr acp: socketpair: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(err) = start_host(&request, theirs, their_signal_link) {
         eprintln!("brnr acp: starting its process: {err}");
         return ExitCode::FAILURE;
     }
 
-    let writer: Link = Arc::new(Mutex::new(link.try_clone().expect("clone socket")));
-    let w = writer.clone();
-    thread::spawn(move || relay_stdin(w));
-    let w = writer.clone();
-    thread::spawn(move || relay_signals(signals, w));
-    run(link, writer)
+    let input = link.try_clone().expect("clone socket");
+    thread::spawn(move || relay_stdin(input));
+    let signal_link: SignalLink = Arc::new(Mutex::new(signal_link));
+    let s = signal_link.clone();
+    thread::spawn(move || relay_signals(signals, s));
+    run(link, signal_link)
 }
 
 /// Splits `[options] [-- <program> [args...]]`.
@@ -105,42 +127,48 @@ fn parse_args(
         };
         match key.as_str() {
             "--profile" => opts.profile = Some(value()?),
+            "--strict" if inline.is_none() => opts.strict = true,
+            "--strict" => return Err("--strict takes no value".into()),
             _ => return Err(format!("unknown option: {key}")),
         }
     }
     Ok((opts, args.collect()))
 }
 
-/// Starts the host detached (see spawn.rs) with its stdio on /dev/null; its
-/// only connection to us is `theirs`, moved to fd 3.
-fn start_host(
-    opts: &Options,
-    mask: &[c_int],
-    theirs: UnixStream,
-    program: Vec<OsString>,
-) -> io::Result<()> {
+/// The editor's process, as its start request has it: the profile's shared
+/// and editor parts, the agent, our cwd, the editor's signal mask.
+fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Request, String> {
+    let profile = config::load(opts.profile.as_deref())?;
+    let agent = (program.into_iter())
+        .map(|a| a.into_string().map_err(|a| format!("the agent's command isn't UTF-8: {a:?}")))
+        .collect::<Result<Vec<String>, String>>()?;
+    let cwd = env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let editor = request::Editor {
+        proxy_pid: std::process::id(),
+        sigmask: mask,
+        experimental: profile.editor.experimental.clone(),
+        features: profile.editor.features.clone(),
+    };
+    let mut request = Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))?;
+    request.strict |= opts.strict;
+    Ok(request)
+}
+
+/// Starts the host detached (see spawn.rs) with its stdout and stderr on
+/// /dev/null, writes it the request on its stdin, and closes that; its only
+/// connections to us are then its ends of the link and the signal link,
+/// moved to fds 3 and 4.
+fn start_host(request: &Request, link: UnixStream, signal_link: UnixStream) -> io::Result<()> {
     let mut cmd = spawn::host_command()?;
-    cmd.arg("--link-fd")
-        .arg(HOST_LINK_FD.to_string())
-        .arg("--proxy-pid")
-        .arg(std::process::id().to_string());
-    if let Some(profile) = &opts.profile {
-        cmd.arg("--profile").arg(profile);
-    }
-    if !mask.is_empty() {
-        let list: Vec<String> = mask.iter().map(c_int::to_string).collect();
-        cmd.arg("--sigmask").arg(list.join(","));
-    }
-    if !program.is_empty() {
-        cmd.arg("--").args(program);
-    }
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD).map(drop)
+    cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    let fds = [(link.as_raw_fd(), HOST_LINK_FD), (signal_link.as_raw_fd(), HOST_SIGNAL_LINK_FD)];
+    let (stdin, _) = spawn::detached(&mut cmd, &fds)?;
+    request.send(stdin.expect("piped"))
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit
 /// status arrives.
-fn run(link: UnixStream, writer: Link) -> ExitCode {
+fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
     let mut reader = BufReader::new(link);
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let mut stderr = ManuallyDrop::new(unsafe { File::from_raw_fd(2) });
@@ -156,10 +184,10 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
         match kind {
             frame::DATA => {
                 if stdout_open && write_all(&mut stdout, &payload).is_err() {
-                    // The caller stopped reading; the host treats that as the
-                    // editor going away.
+                    // The caller stopped reading: the host closes the
+                    // agent's stdout, as a closed pipe would.
                     stdout_open = false;
-                    send(&writer, frame::STDOUT_CLOSED, &[]);
+                    send(&signal_link, frame::STDOUT_CLOSED, &[]);
                 }
             }
             frame::STDERR => {
@@ -190,8 +218,8 @@ fn mirror(status: c_int) -> ExitCode {
 }
 
 /// Our stdin → the host, then EOF so the host knows exactly when the caller
-/// closed ours.
-fn relay_stdin(link: Link) {
+/// closed ours. The only writer of the link.
+fn relay_stdin(mut link: UnixStream) {
     let mut input = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
     let mut buf = vec![0; 64 * 1024];
     loop {
@@ -205,17 +233,17 @@ fn relay_stdin(link: Link) {
             }
             Err(_) => break,
         };
-        if !send(&link, frame::DATA, &buf[..n]) {
+        if frame::write(&mut link, frame::DATA, &buf[..n]).is_err() {
             return;
         }
     }
-    send(&link, frame::EOF, &[]);
+    let _ = frame::write(&mut link, frame::EOF, &[]);
 }
 
 /// `write_all` that also works on a non-blocking descriptor, which an
 /// editor may give us: O_NONBLOCK belongs to the open file, which the editor
 /// may share, so it is waited out rather than cleared.
-fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
     while !bytes.is_empty() {
         match out.write(bytes) {
             Ok(0) => return Err(ErrorKind::WriteZero.into()),
@@ -236,7 +264,8 @@ fn wait_ready(fd: &impl AsRawFd, events: libc::c_short) {
     {}
 }
 
-fn relay_signals(mut signals: PipeReader, link: Link) {
+/// The signals we get → the host, on the signal link: never behind our stdin.
+fn relay_signals(mut signals: PipeReader, signal_link: SignalLink) {
     let mut sig = [0];
     loop {
         match signals.read(&mut sig) {
@@ -244,12 +273,12 @@ fn relay_signals(mut signals: PipeReader, link: Link) {
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             _ => return,
         }
-        if !send(&link, frame::SIGNAL, &(sig[0] as i32).to_be_bytes()) {
+        if !send(&signal_link, frame::SIGNAL, &(sig[0] as i32).to_be_bytes()) {
             return;
         }
     }
 }
 
-fn send(link: &Link, kind: u8, payload: &[u8]) -> bool {
-    frame::write(&mut *link.lock().unwrap(), kind, payload).is_ok()
+fn send(signal_link: &SignalLink, kind: u8, payload: &[u8]) -> bool {
+    frame::write(&mut *signal_link.lock().unwrap(), kind, payload).is_ok()
 }

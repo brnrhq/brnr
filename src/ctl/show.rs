@@ -34,7 +34,8 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         print_json(p)?;
         return Ok(ExitCode::SUCCESS);
     }
-    let by = if p["owner"] == "editor" { ", answered in the editor" } else { "" };
+    let editor = p["owner"] == "editor";
+    let by = if editor { ", waiting in the editor" } else { "" };
     outln!("{request}, session {session}{by}");
     out!("{}", render::tool_call(&p["tool_call"]));
     let options: Vec<String> = p["options"]
@@ -53,8 +54,11 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
     if let Some(secs) = p["timeout_seconds"].as_u64() {
         outln!("denied in {secs}s if nobody answers");
     }
-    if p["owner"] != "editor" {
-        outln!("answer: brnr approve {arg} {request}, brnr deny {arg} {request}, or --option <id>");
+    let here = format!("brnr approve {arg} {request}, brnr deny {arg} {request}, or --option <id>");
+    match (editor, p["why_not"].as_str()) {
+        (false, _) => outln!("answer: {here}"),
+        (true, None) => outln!("answer: in the editor, or {here} (experimental)"),
+        (true, Some(why)) => outln!("answer it in the editor ({why})"),
     }
     Ok(ExitCode::SUCCESS)
 }

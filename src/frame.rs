@@ -1,11 +1,21 @@
-//! Framing on the proxy ↔ host link: `[kind: u8][len: u32 BE][payload]`.
+//! Framing between the proxy and the host: `[kind: u8][len: u32 BE][payload]`.
 //!
-//! ACP bytes travel in `DATA` frames exactly as read; the other kinds carry
-//! what plain stdio carries out of band (stderr, signals, exit status).
+//! They are joined by two socketpairs. The link carries ACP bytes in `DATA`
+//! frames exactly as read, both ways, and what has its place among them: the
+//! proxy's stdin ending (`EOF`), which comes after what the editor wrote
+//! before it, as it does on a pipe; and everything else the host sends, what
+//! plain stdio carries out of band (stderr, the exit status).
+//!
+//! The signal link, proxy → host only, carries what has no place among the
+//! editor's input: a signal (`SIGNAL`) and the proxy's stdout failing
+//! (`STDOUT_CLOSED`), which a directly run agent gets at once, however far
+//! behind it is reading its stdin. The host reads it on a thread of its own
+//! and never stops reading it, even while it holds the link back for the
+//! agent's stdin (ADR 6).
 
 use std::io::{self, ErrorKind, Read, Write};
 
-/// ACP bytes, either direction.
+/// ACP bytes, either direction, on the link.
 pub const DATA: u8 = b'D';
 /// host → proxy: bytes the agent wrote to its stderr.
 pub const STDERR: u8 = b'E';
@@ -15,11 +25,11 @@ pub const READY: u8 = b'R';
 pub const FAILED: u8 = b'F';
 /// host → proxy: the agent's raw wait status, i32 BE.
 pub const EXIT: u8 = b'X';
-/// proxy → host: a signal the proxy received, i32 BE.
+/// proxy → host, on the signal link: a signal the proxy received, i32 BE.
 pub const SIGNAL: u8 = b'S';
-/// proxy → host: the proxy's stdin reached EOF.
+/// proxy → host, on the link: the proxy's stdin reached EOF.
 pub const EOF: u8 = b'Z';
-/// proxy → host: writing to the proxy's stdout failed.
+/// proxy → host, on the signal link: writing to the proxy's stdout failed.
 pub const STDOUT_CLOSED: u8 = b'C';
 
 /// Fails, writing nothing, for a payload too long for the length field.

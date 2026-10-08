@@ -63,6 +63,32 @@ fn start_wait_prints_the_reply_and_the_turns_result() {
     let out = env.run(&start_args(&["--wait", "--prompt", "fail"]));
     assert_eq!(code(&out), 1);
     assert!(stderr(&out).contains("turn failed: boom"), "{}", stderr(&out));
+
+    // The turn as one object, read on the start channel like the report.
+    let env = Env::new("c-startjson");
+    let out = env.run(&start_args(&["--wait", "--json", "--prompt", "reply done"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((turn["session"].as_str(), turn["reply"].as_str()), (Some("sess-1"), Some("done")));
+    assert_eq!(turn["pid"].as_i64(), Some(i64::from(env.host_pid())), "{turn}");
+    let prompt = &env.calls_of("session/prompt")[0];
+    assert_eq!(prompt["params"]["prompt"][0]["text"], "reply done");
+}
+
+/// `start --json` gives the prompt's message id, as `send --json` does, or
+/// null without a prompt (ADR 17).
+#[test]
+fn start_json_gives_the_prompts_message() {
+    let env = Env::new("c-startmsg");
+    let out = env.run(&start_args(&["--json", "--prompt", "reply done"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let about: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((about["session"].as_str(), about["message"].as_str()), (Some("sess-1"), Some("m1")));
+
+    let env = Env::new("c-startnomsg");
+    let out = env.run(&start_args(&["--json"]));
+    let about: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(about["message"].is_null(), "{about}");
 }
 
 #[test]
@@ -131,7 +157,7 @@ fn huge_timeouts_are_never() {
     let env = Env::new("c-huge");
     let huge = i64::MAX.to_string();
     env.write_config(&format!(
-        "[profiles.default]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
+        "[profiles.default.headless]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
     ));
     let out = env.brnr(&start_args(&[])).env("BRNR_START_TIMEOUT", u64::MAX.to_string()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
@@ -174,12 +200,58 @@ fn cancel_drops_held_messages_and_says_so() {
     let env = Env::new("c-cancel");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    env.ok(&["send", "sess-1", "--after-turn", "later"]);
+    env.ok(&["send", "sess-1", "later"]);
     let out = env.ok(&["cancel", "sess-1"]);
     assert!(out.contains("cancelling"), "{out}");
     assert!(out.contains("dropped m2: later"), "{out}");
     settled(&env);
     assert_eq!(env.prompts(), ["hang on"]);
+    // And so do the events, for whoever relied on it.
+    let dropped: Vec<Value> =
+        events(&env, "sess-1").into_iter().filter(|e| e["event"] == "message_dropped").collect();
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert_eq!((&dropped[0]["message"], &dropped[0]["text"]), (&"m2".into(), &"later".into()));
+    assert_eq!(dropped[0]["by"], "cancel");
+    assert!(env.ok(&["log", "sess-1"]).contains("dropped m2 (cancel): later"));
+}
+
+/// `send --wait` for a message that is dropped before it is sent exits 1
+/// and says so, rather than waiting for the process to exit.
+#[test]
+fn send_wait_on_a_dropped_message() {
+    let env = Env::new("c-dropwait");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let send = |json: bool| {
+        let mut args = vec!["send", "sess-1", "--wait", "later"];
+        if json {
+            args.push("--json");
+        }
+        env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let (text, json) = (send(false), send(true));
+    let held = || env.ok(&["queue", "sess-1"]).lines().count() == 2;
+    assert!(wait_for(Duration::from_secs(5), held), "{}", env.ok(&["queue", "sess-1"]));
+    env.ok(&["cancel", "sess-1"]);
+    let (text, json) = (text.wait_with_output().unwrap(), json.wait_with_output().unwrap());
+    assert_eq!(code(&text), 1, "{}", stderr(&text));
+    assert_eq!(stdout(&text), "");
+    let message = if stderr(&text).contains("m2") { "m2" } else { "m3" };
+    assert!(
+        stderr(&text).contains(&format!("brnr: {message} was dropped (cancel)")),
+        "{}",
+        stderr(&text)
+    );
+    assert_eq!(code(&json), 1, "{}", stderr(&json));
+    let turn: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(turn["dropped"], "cancel");
+    assert_eq!(turn["session"], "sess-1");
+    assert!(turn["stop_reason"].is_null() && turn["error"].is_null(), "{turn}");
+    assert_ne!(turn["message"], message);
+    // A turn that ran says it wasn't dropped.
+    let out = env.ok(&["send", "sess-1", "--wait", "--json", "reply fine"]);
+    let turn: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((&turn["stop_reason"], &turn["dropped"]), (&"end_turn".into(), &Value::Null));
 }
 
 #[test]
@@ -187,7 +259,7 @@ fn cancel_can_keep_held_messages() {
     let env = Env::new("c-keep");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    env.ok(&["send", "sess-1", "--after-turn", "later"]);
+    env.ok(&["send", "sess-1", "later"]);
     env.ok(&["cancel", "sess-1", "--keep-held"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
     assert_eq!(env.prompts(), ["hang on", "later"]);
@@ -197,8 +269,8 @@ fn cancel_can_keep_held_messages() {
 fn queue_lists_and_drops() {
     let env = Env::new("c-queue");
     env.start(&["--prompt", "hang on"]);
-    env.ok(&["send", "sess-1", "--after-turn", "first"]);
-    env.ok(&["send", "sess-1", "--after-turn", "second"]);
+    env.ok(&["send", "sess-1", "first"]);
+    env.ok(&["send", "sess-1", "second"]);
     env.ok(&["send", "sess-1", "--context", "some context"]);
     let out = env.ok(&["queue", "sess-1"]);
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
@@ -207,6 +279,13 @@ fn queue_lists_and_drops() {
     let json: Value = serde_json::from_str(&env.ok(&["queue", "sess-1", "--json"])).unwrap();
     assert_eq!(json["held"][0]["message"], "m3");
     assert!(env.fails(&["queue", "sess-1", "--drop", "m9"]).contains("no held message m9"));
+    assert_eq!(env.ok(&["queue", "sess-1", "--clear"]), "dropped m3: second\nnothing held\n");
+    let dropped: Vec<(Value, Value)> = events(&env, "sess-1")
+        .into_iter()
+        .filter(|e| e["event"] == "message_dropped")
+        .map(|e| (e["message"].clone(), e["by"].clone()))
+        .collect();
+    assert_eq!(dropped, [("m2".into(), "queue".into()), ("m3".into(), "queue".into())]);
 }
 
 // ---- seeing --------------------------------------------------------------
@@ -219,11 +298,13 @@ fn log_shows_the_conversation() {
     env.ok(&["send", "sess-1", "--wait", "reply second"]);
     let log = env.ok(&["log", "sess-1"]);
     let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    // The prompt goes as the start commits, before the agent's title.
     assert_eq!(
         lines,
         [
-            "title: Fake session",
             "user: tools",
+            "commands: +compact",
+            "title: Fake session",
             "plan (0/2):",
             "  [>] Run the tests",
             "  [ ] Fix them",
@@ -257,12 +338,105 @@ fn log_shows_the_conversation() {
     assert!(acp.iter().all(|e| e["session"] == "sess-1" && e["ts"].is_string()));
     let names: Vec<String> =
         events(&env, "sess-1").iter().map(|e| e["event"].as_str().unwrap().to_owned()).collect();
-    assert!(
-        names.contains(&"usage".to_owned()) && names.contains(&"tool_call".to_owned()),
-        "{names:?}"
-    );
+    assert!(names.contains(&"tool_call".to_owned()), "{names:?}");
+    // Quiet in JSON as in text: usage and tool progress only when asked for.
+    for quiet in ["usage", "tool_progress"] {
+        assert!(!names.contains(&quiet.to_owned()), "{quiet} by default: {names:?}");
+    }
     let turn = events(&env, "sess-1").into_iter().find(|e| e["event"] == "turn_ended").unwrap();
-    assert_eq!(turn["message"], "m1");
+    assert_eq!(turn["messages"], serde_json::json!(["m1"]));
+    assert!(turn.get("message").is_none(), "{turn}");
+}
+
+/// The quiet events, and what `session_changed` says of config and
+/// commands, each have a line of text, as they have JSON.
+#[test]
+fn every_event_chosen_is_shown_in_text() {
+    let env = Env::new("c-quiet");
+    env.start(&["--wait", "--prompt", "tools"]);
+    env.ok(&["send", "sess-1", "--wait", "settings large"]);
+    let shown = |events: &str| -> Vec<String> {
+        env.ok(&["log", "sess-1", "--events", events]).lines().map(|l| l[10..].to_owned()).collect()
+    };
+    assert_eq!(
+        shown("tool_call,tool_progress"),
+        [
+            "tool: Run the tests (execute)",
+            "tool: Run the tests in_progress",
+            "tool done: Run the tests",
+        ]
+    );
+    assert_eq!(shown("usage"), ["usage: 12.3k of 200.0k tokens, cost 0.42 USD"]);
+    assert_eq!(
+        shown("session_changed"),
+        ["commands: +compact", "title: Fake session", "config: model=large"]
+    );
+    let json = env.ok(&["log", "sess-1", "--events", "default,usage,tool_progress", "--json"]);
+    let names: Vec<Value> =
+        json.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone()).collect();
+    assert!(names.contains(&"usage".into()) && names.contains(&"tool_progress".into()), "{json}");
+    let progress = json.lines().find(|l| l.contains(r#""event":"tool_progress""#)).unwrap();
+    let progress: Value = serde_json::from_str(progress).unwrap();
+    assert_eq!(
+        (&progress["status"], &progress["tool_call_id"]),
+        (&"in_progress".into(), &"t1".into())
+    );
+}
+
+/// An update of a kind ACP's schema doesn't have (ADR 43) is recorded as
+/// it came, and changes nothing: the message around it stays one.
+#[test]
+fn an_update_the_schema_doesnt_know_changes_nothing() {
+    let env = Env::new("c-unknown");
+    env.start(&["--wait", "--prompt", "unknown"]);
+    let all: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let update = |e: &Value| e["msg"]["params"]["update"]["sessionUpdate"].clone();
+    let spawned = all.iter().find(|e| update(e) == "subagent_spawned").expect("not recorded");
+    assert_eq!(spawned["dir"], "agent->editor");
+    assert_eq!(spawned["msg"]["params"]["update"]["subagentSessionId"], "sub-1");
+    let said: Vec<&Value> = all.iter().filter(|e| e["event"] == "agent_message").collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0]["text"], "one message");
+}
+
+/// With `acp` events chosen, `log` reads the session's raw ACP file too,
+/// merged with its events in the order they happened (ADR 22).
+#[test]
+fn log_merges_the_raw_acp_in_time() {
+    let env = Env::new("c-merge");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.ok(&["send", "sess-1", "--wait", "reply second"]);
+    let all: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let at = all.iter().position(|e| e["text"] == "reply second").expect("no second message");
+    let seen: Vec<String> = all[at..]
+        .iter()
+        .map(|e| match e["event"].as_str().unwrap() {
+            "acp" => format!("acp {}", e["dir"].as_str().unwrap()),
+            name => name.to_owned(),
+        })
+        .collect();
+    // The message, the prompt it went as, the agent's reply and its answer,
+    // then what the host made of them.
+    assert_eq!(
+        seen,
+        [
+            "user_message",
+            "acp control->agent",
+            "acp agent->editor",
+            "acp agent->control",
+            "agent_message",
+            "turn_ended",
+        ]
+    );
+    assert_eq!(all[at + 1]["msg"]["method"], "session/prompt");
 }
 
 #[test]
@@ -302,6 +476,28 @@ fn log_follows_until_the_host_exits() {
         line.clear();
         assert!(out.read_line(&mut line).unwrap() > 0, "log ended early");
     }
+    env.stop();
+    assert!(wait_exit(&mut follow, Duration::from_secs(15)), "log --follow didn't end");
+}
+
+/// `log --follow` with `acp` chosen follows the raw ACP file as well.
+#[test]
+fn log_follows_the_raw_acp_too() {
+    let env = Env::new("c-followacp");
+    env.start(&[]);
+    let args = ["log", "sess-1", "--follow", "--events", "acp,agent_message", "--json"];
+    let mut follow = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = BufReader::new(follow.stdout.take().unwrap());
+    env.ok(&["send", "sess-1", "reply live"]);
+    let mut seen: Vec<Value> = Vec::new();
+    while !seen.last().is_some_and(|e| e["event"] == "agent_message") {
+        let mut line = String::new();
+        assert!(out.read_line(&mut line).unwrap() > 0, "log ended early");
+        seen.push(serde_json::from_str(&line).unwrap());
+    }
+    assert_eq!(seen.last().unwrap()["text"], "live");
+    let chunk = |e: &Value| e["msg"]["params"]["update"]["content"]["text"] == "live";
+    assert!(seen.iter().any(|e| e["event"] == "acp" && chunk(e)), "{seen:?}");
     env.stop();
     assert!(wait_exit(&mut follow, Duration::from_secs(15)), "log --follow didn't end");
 }
@@ -391,6 +587,54 @@ fn model_and_config() {
     assert!(env.fails(&["config", "sess-1", "model=huge"]).contains("bad option"));
 }
 
+/// `brnr model` is `config` for the option whose category is `model`,
+/// whatever its id, and so is `start --model`. Without one the agent offers
+/// no model choice, an option that is only called `model` and the unstable
+/// `session/set_model` notwithstanding (ADR 28).
+#[test]
+fn model_is_the_option_of_category_model() {
+    let env = Env::new("c-modelcat").agent("MODEL_ID", "llm");
+    env.start(&["--model", "large"]);
+    let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
+    assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"llm".into(), &"large".into()));
+    assert!(env.ok(&["model", "sess-1"]).contains("* large"));
+    env.ok(&["model", "sess-1", "small"]);
+    assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"llm".into(), &"small".into()));
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["model"], "small");
+
+    let env = Env::new("c-modelnone").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
+    env.start(&[]);
+    for args in [&["model", "sess-1"][..], &["model", "sess-1", "large"]] {
+        let err = env.fails(args);
+        assert!(err.contains("the agent offers no model choice"), "{err}");
+    }
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    assert!(status["model"].is_null(), "{status}");
+    // `config` is by id, as ever.
+    env.ok(&["config", "sess-1", "model=large"]);
+    assert!(env.calls_of("session/set_model").is_empty());
+
+    let env = Env::new("c-modelstart").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
+    let err = env.fails(&start_args(&["--model", "large", "--prompt", "hi"]));
+    assert!(err.contains("setting model large: the agent offers no model choice"), "{err}");
+    assert!(env.calls_of("session/set_model").is_empty() && env.prompts().is_empty());
+}
+
+/// An agent with no modes, but a config option of category `mode`: that is
+/// its mode, for `brnr mode` and `start --mode`.
+#[test]
+fn mode_as_a_config_option() {
+    let env = Env::new("c-modeopt").agent("MODE_OPTION", "approvals");
+    env.start(&["--mode", "plan"]);
+    let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
+    assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"approvals".into(), &"plan".into()));
+    assert!(env.ok(&["mode", "sess-1"]).contains("* plan"));
+    assert_eq!(env.ok(&["mode", "sess-1", "default"]), "mode default\n");
+    assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"approvals".into(), &"default".into()));
+    assert!(env.calls_of("session/set_mode").is_empty());
+}
+
 #[test]
 fn start_applies_mode_and_model_before_the_prompt() {
     let env = Env::new("c-startmode");
@@ -407,8 +651,58 @@ fn start_applies_mode_and_model_before_the_prompt() {
             "session/prompt"
         ]
     );
-    let err = env.fails(&start_args(&["--mode", "warp"]));
+    // Another agent, whose sessions aren't the first one's.
+    let out = env.brnr(&start_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
+    let err = stderr(&out.unwrap());
     assert!(err.contains("setting mode warp failed"), "{err}");
+}
+
+/// `session_changed` says what changed of the config options and the
+/// commands, live and in the transcript alike; `brnr config` and `brnr
+/// commands` have them in full (ADR 22).
+#[test]
+fn session_changed_says_what_changed() {
+    let env = Env::new("c-changed");
+    env.start(&[]);
+    let args = ["watch", "sess-1", "--events", "session_changed", "--json"];
+    let watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    // The agent's answer to brnr config changes the model; saying so again
+    // changes nothing.
+    env.ok(&["config", "sess-1", "model=large"]);
+    env.ok(&["send", "sess-1", "--wait", "settings large"]);
+    assert!(env.ok(&["config", "sess-1"]).contains("small large"));
+    env.ok(&["send", "sess-1", "--wait", "commands"]);
+    let commands = env.ok(&["commands", "sess-1"]);
+    assert!(commands.contains("/review") && !commands.contains("/compact"), "{commands}");
+    env.ok(&["send", "sess-1", "--wait", "settings none"]);
+
+    let log = env.ok(&["log", "sess-1", "--events", "session_changed"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(
+        lines,
+        [
+            "commands: +compact",
+            "title: Fake session",
+            "config: model=large",
+            "commands: +review -compact",
+            "config: -model",
+        ]
+    );
+    let recorded: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "session_changed", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let review = serde_json::json!({ "name": "review", "description": "Review the changes" });
+    assert_eq!(recorded[2]["value"], serde_json::json!({ "model": "large" }));
+    assert_eq!(recorded[3]["value"], serde_json::json!({ "review": review, "compact": null }));
+    assert_eq!(recorded[4]["value"], serde_json::json!({ "model": null }));
+    env.stop();
+    let live = watch.wait_with_output().unwrap();
+    let live: Vec<Value> =
+        stdout(&live).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(live[live.len() - 3..], recorded[2..], "live: {live:?}");
 }
 
 #[test]
@@ -487,6 +781,110 @@ fn fork_and_close() {
     );
 }
 
+/// Closing a session drops what it holds and cancels its turn, then says it
+/// closed; whatever follows the session ends with it, and the process
+/// carries on.
+#[test]
+fn close_ends_what_follows_the_session() {
+    let env = Env::new("c-closed");
+    env.start(&[]);
+    env.ok(&["fork", "sess-1"]);
+    assert_eq!(code(&env.run(&["send", "sess-2", "--wait", "fail"])), 1);
+    env.ok(&["send", "sess-2", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT\" >> '{}'", out.display());
+    let spawn = |args: &[&str]| {
+        env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let watch = spawn(&["watch", "sess-2"]);
+    let notify =
+        spawn(&["notify", "sess-2", "--events", "message_dropped", "--", "sh", "-c", &script]);
+    let turn = spawn(&["wait", "sess-2", "--for", "turn"]);
+    let permission = spawn(&["wait", "sess-2", "--for", "permission"]);
+    let idle = spawn(&["wait", "sess-2", "--json"]);
+    let sent = spawn(&["send", "sess-2", "--wait", "later"]);
+    let held = || env.ok(&["queue", "sess-2"]).contains("later");
+    assert!(wait_for(Duration::from_secs(5), held), "not held");
+    sleep(Duration::from_millis(300));
+    env.ok(&["close", "sess-2"]);
+
+    let watch = watch.wait_with_output().unwrap();
+    assert_eq!(code(&watch), 0, "{}", stderr(&watch));
+    let text = stdout(&watch);
+    let lines: Vec<&str> = text.lines().map(|l| &l[10..]).collect();
+    let end =
+        ["dropped m3 (close): later", "turn ended: cancelled (control)", "session closed (close)"];
+    assert_eq!(lines[lines.len() - 3..], end, "{text}");
+    let notify = notify.wait_with_output().unwrap();
+    assert_eq!(code(&notify), 0, "{}", stderr(&notify));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "message_dropped\n");
+    let turn = turn.wait_with_output().unwrap();
+    assert_eq!(code(&turn), 1, "{}", stderr(&turn));
+    assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
+    let permission = permission.wait_with_output().unwrap();
+    assert_eq!(code(&permission), 1, "{}", stderr(&permission));
+    assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
+    // The session is idle once its turn is cancelled, and the wait exits as
+    // that turn ended.
+    let idle = idle.wait_with_output().unwrap();
+    assert_eq!(code(&idle), 1, "{}", stderr(&idle));
+    let ended: Value = serde_json::from_slice(&idle.stdout).unwrap();
+    assert_eq!(
+        (&ended["event"], &ended["stop_reason"]),
+        (&"turn_ended".into(), &"cancelled".into())
+    );
+    let sent = sent.wait_with_output().unwrap();
+    assert_eq!(code(&sent), 1, "{}", stderr(&sent));
+    assert!(stderr(&sent).contains("m3 was dropped (close)"), "{}", stderr(&sent));
+
+    let names: Vec<Value> =
+        events(&env, "sess-2").into_iter().map(|e| e["event"].clone()).collect();
+    let end = ["message_dropped", "turn_ended", "session_closed"];
+    assert_eq!(names[names.len() - 3..], end, "{names:?}");
+    assert!(env.ok(&["status", "sess-1"]).contains("session sess-1"));
+}
+
+/// A session that `stop_when_idle` closes, while the process has others,
+/// says so; the process stops with its last one.
+#[test]
+fn idle_close_is_an_event() {
+    let env = Env::new("c-idleclose");
+    env.start(&["--stop-when-idle", "2"]);
+    env.ok(&["fork", "sess-1"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    let closed = events(&env, "sess-1").into_iter().find(|e| e["event"] == "session_closed");
+    assert_eq!(closed.expect("no session_closed")["by"], "idle");
+}
+
+/// Context held for a next prompt that won't come is told as it goes: by
+/// `queue --clear-context`, a close, or the process exiting (ADR 20).
+#[test]
+fn dropped_context_is_an_event() {
+    let env = Env::new("c-ctxdrop");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "--context", "first"]);
+    env.ok(&["queue", "sess-1", "--clear-context"]);
+    env.ok(&["fork", "sess-1"]);
+    env.ok(&["send", "sess-1", "--context", "second"]);
+    env.ok(&["close", "sess-1"]);
+    env.ok(&["send", "sess-2", "--context", "third"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    let dropped = |session: &str| -> Vec<(Value, Value)> {
+        (events(&env, session).into_iter())
+            .filter(|e| e["event"] == "context_dropped")
+            .map(|e| (e["text"].clone(), e["by"].clone()))
+            .collect()
+    };
+    let in_one: Vec<(Value, Value)> =
+        vec![("first".into(), "queue".into()), ("second".into(), "close".into())];
+    assert_eq!(dropped("sess-1"), in_one);
+    assert_eq!(dropped("sess-2"), vec![("third".into(), "exit".into())]);
+    let log = env.ok(&["log", "sess-2"]);
+    assert!(log.contains("dropped context (exit): third"), "{log}");
+}
+
 #[test]
 fn resume_continues_a_session() {
     let env = Env::new("c-resume");
@@ -500,7 +898,7 @@ fn resume_continues_a_session() {
     assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "sess-1");
     let log = env.ok(&["log", "sess-1"]);
     assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
-    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("already running"));
+    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("sess-1 is running in process"));
 }
 
 #[test]
@@ -520,6 +918,175 @@ fn resume_by_loading_keeps_the_replay_out_of_the_transcript() {
     assert_eq!(status["title"], "Loaded session");
 }
 
+// ---- ownership -----------------------------------------------------------
+
+/// A session another process holds isn't resumed: brnr says which process
+/// has it, from the session's lock (ADR 3).
+#[test]
+fn resume_of_a_held_session_is_refused() {
+    let env = Env::new("c-held");
+    env.start(&[]);
+    let pid = env.pid();
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let lock: Value = serde_json::from_str(&lock).unwrap();
+    assert_eq!((lock["pid"].to_string(), &lock["session"]), (pid.clone(), &"sess-1".into()));
+    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    assert!(err.contains(&format!("sess-1 is running in process {pid} (--take-over")), "{err}");
+    assert_eq!(env.hosts().len(), 1, "a second process started");
+    assert!(env.calls_of("session/resume").is_empty());
+    assert!(env.fails(&start_args(&["--take-over"])).contains("--take-over goes with --resume"));
+}
+
+/// `--take-over` has the process that holds the session close it,
+/// cancelling its turn, and resumes it in a new one; the session forked
+/// beside it keeps running in the first.
+#[test]
+fn take_over_moves_a_session() {
+    let env = Env::new("c-takeover");
+    env.start(&[]);
+    let first = env.pid();
+    env.ok(&["fork", "sess-1"]);
+    env.ok(&["send", "sess-1", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let args = ["start", "--resume", "sess-1", "--take-over", "--wait", "--prompt", "reply here"];
+    let out = env.run(&args);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "here\n");
+    let said = format!("closed sess-1 in process {first}");
+    assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+    let pid = |session: &str| {
+        let status: Value = serde_json::from_str(&env.ok(&["status", session, "--json"])).unwrap();
+        status["pid"].to_string()
+    };
+    assert_eq!(pid("sess-2"), first);
+    assert_ne!(pid("sess-1"), first);
+    // One transcript: the turn cancelled and the session closed in the first
+    // process, then the prompt in the second.
+    let story = events(&env, "sess-1");
+    let at = |f: &dyn Fn(&Value) -> bool| story.iter().position(f);
+    let cancelled = at(&|e| e["event"] == "turn_ended" && e["stop_reason"] == "cancelled");
+    let closed = at(&|e| e["event"] == "session_closed" && e["by"] == "close");
+    let resumed = at(&|e| e["event"] == "user_message" && e["text"] == "reply here");
+    let order =
+        matches!((cancelled, closed, resumed), (Some(a), Some(b), Some(c)) if a < b && b < c);
+    assert!(order, "{story:?}");
+}
+
+/// A process that doesn't answer still holds its session's lock: it isn't
+/// resumed elsewhere, and list, ps and sessions say which process has it
+/// without asking it.
+#[test]
+fn a_silent_process_keeps_its_session() {
+    let env = Env::new("c-silent");
+    env.start(&[]);
+    let pid = env.host_pid();
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    // Each waits for the stopped process to answer, side by side.
+    let spawn = |args: &[&str]| {
+        env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let resume = spawn(&start_args(&["--resume", "sess-1"]));
+    let take_over = spawn(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let list = spawn(&["list", "--all", "--json"]);
+    let ps = spawn(&["ps", "--json"]);
+    let sessions = spawn(&["sessions", "--json", "--", AGENT]);
+    let table = spawn(&["sessions", "--", AGENT]);
+    let [resume, take_over, list, ps, sessions, table] =
+        [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    let refused = format!("sess-1 is running in process {pid}");
+    assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
+    let refused = format!("sess-1 is running in process {pid}, which is not answering");
+    assert!(stderr(&take_over).contains(&refused), "{}", stderr(&take_over));
+    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
+    assert_eq!(list[0]["pid"], pid);
+    let ps: Value = serde_json::from_slice(&ps.stdout).unwrap();
+    assert_eq!(
+        (&ps[0]["owner"], &ps[0]["sessions"]),
+        (&"unreachable".into(), &serde_json::json!(["sess-1"]))
+    );
+    // As list says it, not as one only the agent knows.
+    let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
+    let row = sessions.as_array().unwrap().iter().find(|r| r["session"] == "sess-1").unwrap();
+    assert_eq!((&row["state"], &row["pid"]), (&"unreachable".into(), &pid.into()), "{sessions}");
+    let table = stdout(&table);
+    let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
+    assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
+    assert_eq!(env.hosts().len(), 1, "a second process started");
+}
+
+/// A process that dies lets go of its sessions with nothing to clean up.
+#[test]
+fn a_dead_process_lets_go() {
+    let env = Env::new("c-dead");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
+    let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "again\n");
+}
+
+/// A process that is gone isn't listed, even when its pid is another
+/// process's now: its socket refuses. What it left is removed.
+#[test]
+fn a_gone_process_whose_pid_is_taken_is_not_listed() {
+    let env = Env::new("c-ghost");
+    env.start(&[]);
+    let real = env.host_pid();
+    let mut sleep = ghost(&env);
+    let ps: Value = serde_json::from_str(&env.ok(&["ps", "--json"])).unwrap();
+    let pids: Vec<&Value> = ps.as_array().unwrap().iter().map(|p| &p["pid"]).collect();
+    assert_eq!(pids, [&Value::from(real)], "{ps}");
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["pid"]), (&"sess-1".into(), &Value::from(real)));
+    let pid = sleep.id();
+    let left = ["json", "sock"].map(|ext| env.dir.join(format!("run/{pid}.{ext}")).exists());
+    assert_eq!(left, [false, false], "not removed");
+    assert!(!env.ok(&["ps"]).contains(&pid.to_string()));
+    let _ = sleep.kill();
+    let _ = sleep.wait();
+}
+
+/// `close` cancels a running turn first: its pending approval is answered
+/// `cancelled`, the turn ends, then the session closes, and a process left
+/// with no session stops.
+#[test]
+fn close_cancels_the_turn_first() {
+    let env = Env::new("c-closeturn");
+    env.start(&[]);
+    env.ok(&["send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending", "sess-1"]).contains("p1")));
+    let host = env.host_pid();
+    assert_eq!(env.ok(&["close", "sess-1"]), "closed sess-1\n");
+    let calls = env.calls();
+    let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what).unwrap();
+    let cancel = at(&|c| c["method"] == "session/cancel");
+    let answer = at(&|c| c["id"] == "perm-1" && c.get("method").is_none());
+    let close = at(&|c| c["method"] == "session/close");
+    assert!(cancel < answer && answer < close, "{calls:?}");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["outcome"], "cancelled");
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "kept running with no session");
+    let names: Vec<Value> =
+        events(&env, "sess-1").into_iter().map(|e| e["event"].clone()).collect();
+    let end = ["permission_resolved", "turn_ended", "session_closed"];
+    assert_eq!(names[names.len() - 3..], end, "{names:?}");
+}
+
+/// With `stop_when_idle`, a fork the agent could never close is refused up
+/// front: the process would never stop (ADR 12).
+#[test]
+fn fork_is_refused_when_it_could_never_close() {
+    let env = Env::new("c-forkidle").agent("NO_CLOSE", "1");
+    env.start(&["--stop-when-idle", "60"]);
+    let err = env.fails(&["fork", "sess-1"]);
+    assert!(err.contains("the agent can't close sessions: with stop_when_idle"), "{err}");
+    assert!(env.calls_of("session/fork").is_empty());
+    env.stop();
+}
+
 // ---- permissions ---------------------------------------------------------
 
 fn outcome(env: &Env, request: &str) -> Option<Value> {
@@ -532,7 +1099,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 #[test]
 fn unanswered_permission_times_out_as_deny() {
     let env = Env::new("c-permtimeout");
-    env.write_config("[profiles.default]\npermission_timeout = 1\n");
+    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
     env.start(&[]);
     env.ok(&["send", "sess-1", "perm edit"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
@@ -642,13 +1209,13 @@ fn foreground_start_shows_the_session() {
 fn mcp_servers_reach_the_agent() {
     let env = Env::new("c-mcp");
     env.write_config(
-        r#"[[profiles.default.mcp_servers]]
+        r#"[[profiles.default.headless.mcp_servers]]
 name = "files"
 command = "true"
 args = ["--x"]
 env = { TOKEN = "t" }
 
-[[profiles.default.mcp_servers]]
+[[profiles.default.headless.mcp_servers]]
 name = "web"
 url = "https://example.invalid/mcp"
 headers = { Authorization = "Bearer x" }
@@ -663,7 +1230,7 @@ headers = { Authorization = "Bearer x" }
 
     let env = Env::new("c-mcpsse");
     env.write_config(
-        "[[profiles.default.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
+        "[[profiles.default.headless.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
     );
     assert!(env.fails(&start_args(&[])).contains("doesn't support sse"));
 }
@@ -672,8 +1239,116 @@ headers = { Authorization = "Bearer x" }
 fn login_needed_is_explained() {
     let env = Env::new("c-auth").agent("AUTH", "1");
     let err = env.fails(&start_args(&[]));
-    assert!(err.contains("log in (Log in to the fake)"), "{err}");
+    assert!(err.contains("log in (Log in to the fake `fake-login`)"), "{err}");
+    assert!(err.contains("--auth <id>"), "{err}");
     assert!(err.contains("claude"), "{err}");
+    assert!(env.calls_of("authenticate").is_empty(), "authenticated unasked");
+}
+
+/// `--auth` (or the profile's headless `auth`) runs that login method after
+/// `initialize`, before the session opens; its failure fails the start.
+#[test]
+fn auth_runs_the_login_method_named() {
+    let methods = |env: &Env| -> Vec<String> {
+        env.calls().iter().filter_map(|c| c["method"].as_str().map(str::to_owned)).collect()
+    };
+    let env = Env::new("c-authflag").agent("AUTH", "1");
+    env.start(&["--auth", "fake-login"]);
+    assert_eq!(methods(&env), ["initialize", "authenticate", "session/new"]);
+    assert_eq!(
+        env.calls_of("authenticate")[0]["params"],
+        serde_json::json!({ "methodId": "fake-login" })
+    );
+
+    let env = Env::new("c-authprofile").agent("AUTH", "1");
+    env.write_config("[profiles.default.headless]\nauth = \"fake-login\"\n");
+    env.start(&[]);
+    assert_eq!(methods(&env), ["initialize", "authenticate", "session/new"]);
+
+    // One the agent doesn't offer fails up front.
+    let env = Env::new("c-authnone");
+    let err = env.fails(&start_args(&["--auth", "api-key", "--prompt", "hi"]));
+    assert!(
+        err.contains("the agent offers no login method api-key (it offers: fake-login)"),
+        "{err}"
+    );
+    assert_eq!(methods(&env), ["initialize"]);
+
+    // The agent's error, and no prompt.
+    let env = Env::new("c-authfail").agent("AUTH_FAIL", "1");
+    let err = env.fails(&start_args(&["--auth", "fake-login", "--prompt", "hi"]));
+    assert!(err.contains("authenticate fake-login failed: Login failed"), "{err}");
+    assert!(!err.contains("Log in with the agent's own CLI"), "{err}");
+    assert_eq!(methods(&env), ["initialize", "authenticate"]);
+    assert!(env.prompts().is_empty());
+}
+
+// ---- profiles ------------------------------------------------------------
+
+/// A profile has shared, headless and editor parts (ADR 33): a key in the
+/// wrong one, the flat layout of before, an unknown key or name all fail to
+/// load, saying which and where, before any process starts.
+#[test]
+fn profile_layout_errors_say_where() {
+    let env = Env::new("c-layout");
+    for (config, want) in [
+        (
+            "[profiles.default]\ncwd = \"/tmp\"\nmode = \"plan\"\n",
+            "profiles.default: cwd is for brnr start only; it goes under [profiles.default.headless]; \
+             profiles.default: mode is for brnr start only",
+        ),
+        (
+            "[profiles.default.headless]\nagent = [\"x\"]\n",
+            "profiles.default.headless: agent is for every process of the profile; it goes under [profiles.default]",
+        ),
+        (
+            "[profiles.default]\nexperimental = [\"send\"]\n",
+            "profiles.default: experimental is for brnr acp only; it goes under [profiles.default.editor]",
+        ),
+        (
+            "[profiles.default.editor]\nstop_when_idle = 5\n",
+            "profiles.default.editor: stop_when_idle is for brnr start only; it goes under [profiles.default.headless]",
+        ),
+        (
+            "[profiles.default]\nagnet = [\"x\"]\n",
+            "profiles.default: unknown key agnet (keys: agent, log, strict, bridges, headless, editor)",
+        ),
+        (
+            "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
+            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, approve, settings, close)"#,
+        ),
+        (
+            "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
+            r#"profiles.default.editor.features: unknown feature "sharing" (features: shared_sessions)"#,
+        ),
+        (
+            "[profiles.default]\nlog = true\n",
+            r#"profiles.default: log is "all", "events" or false, not true"#,
+        ),
+        (
+            "[profiles.default.headless]\nstop_when_idle = \"soon\"\n",
+            "line 2: invalid type: string",
+        ),
+        (
+            "[profiles.default.headless]\nauth = \"a\"\nmcp_servers = [{ name = \"x\", cmd = \"y\" }]\n",
+            "line 3: unknown field `cmd`",
+        ),
+    ] {
+        env.write_config(config);
+        let err = env.fails(&start_args(&["--prompt", "hi"]));
+        assert!(err.contains(want), "{config}: {err}");
+        assert!(err.contains("none.toml: "), "{err}");
+    }
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
+
+    // The same, laid out right.
+    env.write_config(
+        "[profiles.default]\nlog = false\nstrict = false\n\n[profiles.default.headless]\nstop_when_idle = 600\n\n\
+         [profiles.default.editor]\nexperimental = [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n\
+         features = [\"shared_sessions\"]\n",
+    );
+    env.start(&[]);
+    assert!(!env.dir.join("home").exists(), "log = false wrote transcripts");
 }
 
 // ---- attachments ---------------------------------------------------------
@@ -781,6 +1456,47 @@ fn notify_works_as_a_bridge() {
     assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended sess-1\n");
 }
 
+/// As a bridge, notify reads the events the process writes to its stdin:
+/// no `--pid`, no shell, and it keeps up however much the process sends.
+#[test]
+fn notify_reads_stdin_as_a_bridge() {
+    let env = Env::new("c-notifystdin");
+    let out = env.dir.join("notified");
+    let script = format!("echo \"$BRNR_EVENT $BRNR_SESSION_ID $BRNR_PID $BRNR_TITLE\" >> '{}'", out.display());
+    let config = format!(
+        "[[profiles.default.bridges]]\ncommand = [\"brnr\", \"notify\", \"--stdin\", \"--\", \"sh\", \"-c\", {script:?}]\n"
+    );
+    env.write_config(&config);
+    env.start(&[]);
+    let pid = env.pid();
+    // More than a bridge that doesn't read may fall behind by.
+    for _ in 0..3 {
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let lines = || fs::read_to_string(&out).unwrap_or_default().lines().count();
+    assert!(wait_for(Duration::from_secs(10), || lines() == 3), "{} notifications", lines());
+    let turns = format!("turn_ended sess-1 {pid} Fake session\n").repeat(3);
+    assert_eq!(fs::read_to_string(&out).unwrap(), turns);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || lines() == 4), "no exited notification");
+    assert_eq!(fs::read_to_string(&out).unwrap(), format!("{turns}exited  {pid} \n"));
+    let err = env.fails(&["notify", "--stdin", "sess-1", "--", "true"]);
+    assert!(err.contains("--stdin takes no <session> or --pid"), "{err}");
+}
+
+/// Reading stdin, notify runs out of events when its stdin ends: without an
+/// `exited` first, it was cut off.
+#[test]
+fn notify_stdin_ends_with_its_input() {
+    let env = Env::new("c-notifystdinend");
+    let exited = r#"{"event":"exited","status":{"code":0}}"#;
+    let out = env.run_with_stdin(&["notify", "--stdin", "--", "true"], format!("not an event\n{exited}\n").as_bytes());
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = env.run_with_stdin(&["notify", "--stdin", "--", "true"], b"{\"event\":\"turn_ended\"}\n");
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("cut off (stdin closed); no more notifications"), "{}", stderr(&out));
+}
+
 /// A notifier cut off before the process exits (here, killed) says so and
 /// fails: its notifications have stopped.
 #[test]
@@ -792,6 +1508,104 @@ fn notify_fails_when_cut_off() {
     unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
     assert!(!notify.wait().unwrap().success(), "notify exited 0");
+}
+
+/// The pid a notify command wrote to `file` (`echo $$`), once it has.
+fn command_pid(file: &std::path::Path) -> i32 {
+    let read = || fs::read_to_string(file).ok().and_then(|p| p.trim().parse::<i32>().ok());
+    assert!(wait_for(Duration::from_secs(10), || read().is_some()), "the command didn't run");
+    read().unwrap()
+}
+
+/// A notifier that falls behind while its command runs is cut off. As a
+/// bridge it gets SIGTERM: it stops the command, says so on its stderr,
+/// which is in the host log, and exits non-zero.
+#[test]
+fn notify_cut_off_as_a_bridge_stops_its_command() {
+    let env = Env::new("c-notifyslow");
+    let pids = env.dir.join("pids");
+    let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"brnr\", \"notify\", \"--stdin\", \"--\", \"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    // The turn's end starts the slow command; what follows piles up.
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let command = command_pid(&pids);
+    let log = || {
+        let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+        dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
+    };
+    for _ in 0..8 {
+        if log().contains(r#""event":"peer-dropped""#) {
+            break;
+        }
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let exited = || log().contains(r#""event":"bridge-exited""#);
+    assert!(wait_for(Duration::from_secs(15), exited), "notify kept running: {}", log().len());
+    let records: Vec<Value> = log().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said: Vec<&str> = records
+        .iter()
+        .filter(|r| r["event"]["event"] == "bridge-stderr")
+        .filter_map(|r| r["event"]["text"].as_str())
+        .collect();
+    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    assert!(said.contains(&want), "{said:?}");
+    let exit = records.iter().find(|r| r["event"]["event"] == "bridge-exited").unwrap();
+    assert_eq!(exit["event"]["status"], 1, "{exit}");
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+    // The session carries on without it.
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply still here"]), "still here\n");
+    env.stop();
+}
+
+/// On the socket, a notifier that falls behind while its command runs is
+/// cut off by its connection closing, and does the same; so does one sent
+/// SIGTERM.
+#[test]
+fn notify_cut_off_on_the_socket_stops_its_command() {
+    let env = Env::new("c-notifyslowsock");
+    env.start(&[]);
+    let pids = env.dir.join("pids");
+    let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
+    let notify = || {
+        env.brnr(&["notify", "sess-1", "--", "sh", "-c", &script])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let mut slow = notify();
+    sleep(Duration::from_millis(500));
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let command = command_pid(&pids);
+    for _ in 0..8 {
+        if slow.try_wait().unwrap().is_some() {
+            break;
+        }
+        env.ok(&["send", "sess-1", "--wait", "big 6000000"]);
+    }
+    assert!(wait_exit(&mut slow, Duration::from_secs(15)), "notify kept running");
+    let out = slow.wait_with_output().unwrap();
+    assert!(!out.status.success(), "notify exited 0");
+    let want = "brnr: cut off (the process closed the connection); stopped sh (turn_ended); \
+                no more notifications";
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+
+    fs::remove_file(&pids).unwrap();
+    let mut stopped = notify();
+    sleep(Duration::from_millis(500));
+    env.ok(&["send", "sess-1", "--wait", "reply again"]);
+    let command = command_pid(&pids);
+    unsafe { libc::kill(stopped.id() as i32, libc::SIGTERM) };
+    assert!(wait_exit(&mut stopped, Duration::from_secs(10)), "notify kept running");
+    let out = stopped.wait_with_output().unwrap();
+    assert!(!out.status.success(), "notify exited 0");
+    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    assert!(stderr(&out).contains(want), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
+    env.stop();
 }
 
 /// A message too big for a command's environment is cut there (the event on
@@ -813,6 +1627,24 @@ fn notify_cuts_what_the_environment_cant_hold() {
     assert_eq!(bytes, (32 << 10) + "…".len());
     env.stop();
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't exit with the host");
+}
+
+// ---- bridges -------------------------------------------------------------
+
+/// A started bridge that closes its stdout has no more requests, and still
+/// gets events until it exits.
+#[test]
+fn a_bridge_that_closes_its_stdout_gets_events() {
+    let env = Env::new("c-bridgecat");
+    let out = env.dir.join("events");
+    let script = format!("exec cat > '{}'", out.display());
+    env.write_config(&format!("[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"));
+    env.start(&[]);
+    sleep(Duration::from_millis(300));
+    env.ok(&["send", "sess-1", "--wait", "reply hi"]);
+    let ended = || fs::read_to_string(&out).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
 }
 
 // ---- processes -----------------------------------------------------------

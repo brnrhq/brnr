@@ -1,71 +1,81 @@
 //! `brnr host`: owns the agent process and its pipes for the agent's whole
 //! life. brnr calls it a process (`brnr ps`, `--pid`); it isn't a command
-//! of its own in the usage.
+//! of its own in the usage, and isn't run by hand.
 //!
-//! Started detached by `brnr acp` for an editor (with `--link-fd`), by `brnr
-//! start` for a headless session (with `--ready-fd`; detached, or with
-//! `--foreground` as its child), or by hand (see [`USAGE`]). It is the hub
-//! between three kinds of peer:
+//! Started detached by `brnr acp` for an editor, or by `brnr start` for a
+//! headless session (detached, or with `--foreground` as its child), with
+//! the one request that says everything on its stdin (see request.rs) and
+//! fd 3: the editor link, or the start channel (see start.rs). An editor's
+//! process also has the proxy's signal link on fd 4 (see frame.rs). It is
+//! the hub between three kinds of peer:
 //!
 //! - the agent, over its stdio;
 //! - the ACP owner: the editor, through the proxy on the link, or the host
 //!   itself when no editor is attached (see acp.rs);
 //! - any number of bridges, speaking JSON lines rather than ACP: children
-//!   started from the profile, and processes on the control socket such as
-//!   brnr (see control.rs).
+//!   started from the profile, processes on the control socket such as
+//!   brnr (see control.rs), and `brnr start` on its start channel.
 //!
 //! When the editor goes away, the agent gets what a directly spawned agent
 //! would have: its stdin is closed and it is killed, with its process group
-//! (a signal the proxy catches reaches the agent as that signal). An editor
-//! that stops reading for [`LINK_WRITE_TIMEOUT`] counts as gone.
+//! (a signal the proxy catches reaches the agent as that signal, at once:
+//! the signal link is read whatever holds the link back). An editor that is
+//! slow, or stops reading, holds the agent back as a pipe would, for as long
+//! as it does, and an agent that stops reading its stdin holds the editor
+//! back likewise (see flow.rs).
 
 mod acp;
 mod control;
+mod death;
+mod display;
+mod experimental;
+mod flow;
 mod requests;
+mod start;
 mod state;
+mod strict;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
-use std::mem::{take, zeroed};
+use std::mem::{ManuallyDrop, take, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use libc::{c_int, pid_t};
 use serde_json::{Value, json};
 
-use crate::config;
+use crate::config::{Bridge, Experimental, Feature, Log};
 use crate::frame;
+use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
+use crate::request::{Prompt, Request, Role};
+use crate::schema::AuthMethod;
 use crate::signals;
-use crate::spawn;
 
-use acp::{AgentRequest, Pending, Session};
+use acp::{AgentRequest, Hold, Pending, Session};
 pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
-use requests::{HostRequest, SetupStep};
+use display::Display;
+use flow::Backlog;
+use requests::{Capabilities, HostRequest, SetupStep};
+use start::StartChannel;
 
-/// The options for running it by hand; `brnr start --foreground` is the
-/// way the usage offers. `brnr acp` and `brnr start` also pass --link-fd,
-/// --ready-fd, --proxy-pid, --start-timeout and --sigmask.
-const USAGE: &str = "usage: brnr host [--profile <name>] [--cwd <dir>] \
-[--prompt <text> | --prompt -] [--resume <session id>] [--mode <mode>] [--set <option>=<value>]... \
-[--stop-when-idle <seconds>] [--quiet] [--json] [-- <agent> [args...]]
+/// Where the editor link or the start channel is: a socket either way.
+const CHANNEL_FD: RawFd = 3;
 
-Runs a headless ACP session in the foreground (as brnr start --foreground
-does): starts the agent, opens a session in the current directory (or
---cwd), or resumes one, and sends --prompt if given. It shows the session as
-it goes (--json: as JSON lines; --quiet: not). Ctrl-C stops it gracefully;
-press it again to kill the agent. Exits with the agent's exit status.";
+/// Where an editor's process has the proxy's signal link (see frame.rs).
+const SIGNAL_LINK_FD: RawFd = 4;
 
 /// How long to keep forwarding output after the agent exits, in case
 /// something it started still holds its stdout open.
@@ -75,207 +85,158 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// them; one that stopped reading doesn't hold it up for longer.
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
-/// How long one write to the proxy may block before the host treats the
-/// link as gone. Only the writer thread waits; the host carries on.
-const LINK_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the host, exiting, then gives started bridges to exit on their
+/// own, their stdin closed, so they can act on the last events.
+const BRIDGE_EXIT: Duration = Duration::from_secs(2);
+
+/// Events the reader threads may have queued for the event loop before
+/// they wait for it (ADR 6). The agent's output and the editor's input are
+/// held to a number of bytes as well (see flow.rs).
+const EVENTS_QUEUED: usize = 1024;
+
+/// The agent's last lines on stderr, for a failed start (ADR 10), and how
+/// much of each is kept.
+const STDERR_TAIL: usize = 20;
+const STDERR_LINE: usize = 2000;
 
 /// `brnr stop`: stdin is closed once what is queued for it is written, then
 /// the agent's process group gets SIGTERM, then SIGKILL.
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
-/// Passed by `brnr acp` or `brnr start`; not a user interface.
-#[derive(Default)]
-struct Args {
-    link_fd: Option<RawFd>,
-    ready_fd: Option<RawFd>,
-    proxy_pid: Option<u32>,
-    profile: Option<String>,
-    sigmask: Vec<c_int>,
-    prompt: Option<String>,
-    cwd: Option<String>,
-    /// Seconds `brnr start` waits for the session.
-    start_timeout: Option<u64>,
-    resume: Option<String>,
-    mode: Option<String>,
-    set: Vec<(String, String)>,
-    stop_when_idle: Option<u64>,
-    /// Run for `brnr start --foreground`: as by hand, with brnr waiting.
-    foreground: bool,
-    quiet: bool,
-    json: bool,
-    /// brnr start sends a prompt once the session is open: idle time only
-    /// counts from then.
-    awaiting_prompt: bool,
-    program: Vec<OsString>,
-}
-
-pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let mut args = match parse_args(args) {
-        Ok(args) => args,
-        Err(None) => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
-        Err(Some(msg)) => {
-            eprintln!("brnr host: {msg}\n{USAGE}");
+pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
+    // It takes no flags and reads no config: everything is in the request.
+    if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
+        eprintln!(
+            "brnr host is started by brnr start and brnr acp, not by hand \
+             (brnr start --foreground runs a session in a terminal)"
+        );
+        return ExitCode::from(2);
+    }
+    death::install();
+    // A socket on fd 4 is kept until the request says whose process this
+    // is: the signal link, if it is an editor's.
+    let signal_link = is_socket(SIGNAL_LINK_FD);
+    close_inherited_fds(if signal_link { &[CHANNEL_FD, SIGNAL_LINK_FD] } else { &[CHANNEL_FD] });
+    set_cloexec(CHANNEL_FD);
+    let channel = unsafe { UnixStream::from_raw_fd(CHANNEL_FD) };
+    let signal_link = signal_link.then(|| {
+        set_cloexec(SIGNAL_LINK_FD);
+        unsafe { UnixStream::from_raw_fd(SIGNAL_LINK_FD) }
+    });
+    let request = match read_request() {
+        Ok(request) => request,
+        Err((msg, editor)) => {
+            let channel = editor.map(|editor| (channel, editor));
+            Failure { channel }.report(&msg, 2);
             return ExitCode::from(2);
         }
     };
-    if args.foreground {
+    if request.headless().is_some_and(|h| h.foreground.is_some()) {
         // In a process group of its own, writing to the terminal.
         signals::write_from_background();
     }
-    if let Some(dir) = &args.cwd
-        && let Err(err) = std::env::set_current_dir(paths::expand(dir))
-    {
-        eprintln!("brnr host: {dir}: {err}");
-        return ExitCode::from(2);
-    }
-    if args.prompt.as_deref() == Some("-") {
-        let mut text = String::new();
-        if let Err(err) = io::stdin().read_to_string(&mut text) {
-            eprintln!("brnr host: stdin: {err}");
+    let editor = matches!(request.role, Role::Editor(_));
+    // An editor's process doesn't start without its signal link, as it
+    // doesn't without the link; a headless one's fd 4 isn't brnr's, and is
+    // closed.
+    let signal_link = match signal_link {
+        None if editor => {
+            Failure { channel: Some((channel, true)) }.report("no signal link on fd 4", 2);
             return ExitCode::from(2);
         }
-        args.prompt = Some(text);
-    }
-    let keep: Vec<RawFd> = [args.link_fd, args.ready_fd].into_iter().flatten().collect();
-    close_inherited_fds(&keep);
-    keep.iter().for_each(|&fd| set_cloexec(fd));
-    let link = args.link_fd.map(|fd| unsafe { UnixStream::from_raw_fd(fd) });
-    let ready = args.ready_fd.map(|fd| unsafe { File::from_raw_fd(fd) });
-    let mut failure = Failure {
-        link: link.as_ref().and_then(|l| l.try_clone().ok()),
-        ready: ready.as_ref().and_then(|r| r.try_clone().ok()),
+        link => link.filter(|_| editor),
     };
-
-    match Host::start(args, link, ready) {
-        Ok(host) => host.run(),
-        Err((msg, code)) => {
+    let mut failure = Failure { channel: channel.try_clone().ok().map(|c| (c, editor)) };
+    match panic::catch_unwind(AssertUnwindSafe(|| Host::start(request, channel, signal_link))) {
+        Ok(Ok(host)) => host.run(),
+        Ok(Err((msg, code))) => {
             failure.report(&msg, code);
             ExitCode::from(code)
         }
-    }
-}
-
-const OPTIONS: &[&str] = &[
-    "--link-fd",
-    "--ready-fd",
-    "--proxy-pid",
-    "--profile",
-    "--prompt",
-    "--cwd",
-    "--sigmask",
-    "--start-timeout",
-    "--resume",
-    "--mode",
-    "--set",
-    "--stop-when-idle",
-];
-
-/// Options without a value.
-const FLAGS: &[&str] = &["--foreground", "--quiet", "--json", "--awaiting-prompt"];
-
-fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, Option<String>> {
-    value.parse().map_err(|_| Some(format!("{key}: not a number: {value}")))
-}
-
-/// `Err(None)` asks for the usage.
-fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Args, Option<String>> {
-    let mut a = Args::default();
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            a.program = args.collect();
-            break;
-        }
-        let arg = arg.into_string().map_err(|a| Some(format!("unknown option: {a:?}")))?;
-        if arg == "-h" || arg == "--help" {
-            return Err(None);
-        }
-        match arg.as_str() {
-            "--foreground" => {
-                a.foreground = true;
-                continue;
+        // A panic before the agent was spawned (later ones are the host's
+        // to record, see `died_starting`): there is no log yet, and nobody
+        // knows of the process but whoever started it (ADR 11).
+        Err(_) => {
+            let id = std::process::id();
+            for file in [format!("{id}.sock"), format!("{id}.json")] {
+                let _ = fs::remove_file(paths::runtime_dir().join(file));
             }
-            "--quiet" => {
-                a.quiet = true;
-                continue;
-            }
-            "--json" => {
-                a.json = true;
-                continue;
-            }
-            "--awaiting-prompt" => {
-                a.awaiting_prompt = true;
-                continue;
-            }
-            _ => {}
-        }
-        debug_assert!(!FLAGS.contains(&arg.as_str()));
-        let (key, inline) = match arg.split_once('=') {
-            Some((key, value)) if OPTIONS.contains(&key) => {
-                (key.to_owned(), Some(value.to_owned()))
-            }
-            _ => (arg, None),
-        };
-        if !OPTIONS.contains(&key.as_str()) {
-            return Err(Some(format!("unknown option: {key}")));
-        }
-        let value = match inline {
-            Some(value) => value,
-            None => args
-                .next()
-                .ok_or_else(|| format!("{key} needs a value"))?
-                .into_string()
-                .map_err(|_| format!("bad value for {key}"))?,
-        };
-        match key.as_str() {
-            "--link-fd" => a.link_fd = Some(number(&key, &value)?),
-            "--ready-fd" => a.ready_fd = Some(number(&key, &value)?),
-            "--proxy-pid" => a.proxy_pid = Some(number(&key, &value)?),
-            "--profile" => a.profile = Some(value),
-            "--stop-when-idle" => a.stop_when_idle = Some(number(&key, &value)?),
-            "--prompt" => a.prompt = Some(value),
-            "--cwd" => a.cwd = Some(value),
-            "--start-timeout" => a.start_timeout = Some(number(&key, &value)?),
-            "--resume" => a.resume = Some(value),
-            "--mode" => a.mode = Some(value),
-            "--set" => match value.split_once('=') {
-                Some((k, v)) => a.set.push((k.to_owned(), v.to_owned())),
-                None => return Err(Some(format!("--set takes <option>=<value>, not {value}"))),
-            },
-            "--sigmask" => {
-                a.sigmask = value.split(',').filter_map(|s| s.parse().ok()).collect();
-            }
-            _ => unreachable!("checked against OPTIONS"),
+            failure.report(death::panicked().unwrap_or("brnr panicked"), 101);
+            ExitCode::from(101)
         }
     }
-    Ok(a)
 }
 
-/// Where a startup failure is reported: the proxy, or brnr start.
+/// The request on stdin, read to EOF. One cut short (whoever started us
+/// died writing it) or that doesn't parse is refused; the error goes on fd 3
+/// if the request says what is there (`Some(editor)`).
+fn read_request() -> Result<Request, (String, Option<bool>)> {
+    let mut bytes = Vec::new();
+    io::stdin().lock().read_to_end(&mut bytes).map_err(|e| (format!("stdin: {e}"), None))?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        let raw: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        let role = raw["role"].as_object();
+        let editor = role.filter(|r| r.len() == 1).map(|r| r.contains_key("editor"));
+        (format!("invalid start request: {e}"), editor)
+    })
+}
+
+fn is_socket(fd: RawFd) -> bool {
+    let mut st: libc::stat = unsafe { zeroed() };
+    unsafe { libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == libc::S_IFSOCK }
+}
+
+/// Where a startup failure is reported, besides stderr: fd 3, as a frame
+/// for the proxy on an editor's link (`true`), or as a line for brnr start
+/// on the start channel.
 struct Failure {
-    link: Option<UnixStream>,
-    ready: Option<File>,
+    channel: Option<(UnixStream, bool)>,
 }
 
 impl Failure {
     fn report(&mut self, msg: &str, code: u8) {
         eprintln!("brnr: {}", crate::render::clean(msg));
-        if let Some(link) = &mut self.link {
-            let report = json!({ "error": msg, "code": code }).to_string();
-            let _ = frame::write(link, frame::FAILED, report.as_bytes());
-        }
-        if let Some(ready) = &mut self.ready {
-            let _ = writeln!(ready, "{}", json!({ "ok": false, "error": msg }));
+        match &mut self.channel {
+            Some((link, true)) => {
+                let report = json!({ "error": msg, "code": code }).to_string();
+                let _ = frame::write(link, frame::FAILED, report.as_bytes());
+            }
+            Some((start, false)) => {
+                let _ = writeln!(start, "{}", json!({ "ok": false, "error": msg }));
+            }
+            None => {}
         }
     }
 }
 
+/// What `Host::set_up` makes the rest of the host from: the agent spawned,
+/// the control socket bound, fd 3 and fd 4, and what the request says.
+struct Parts {
+    child: Child,
+    listener: UnixListener,
+    /// The editor link, or the start channel.
+    channel: UnixStream,
+    signal_link: Option<UnixStream>,
+    /// The event loop's channel, for the threads to send on.
+    tx: SyncSender<Ev>,
+    /// The request, for the `started` record.
+    recorded: Value,
+    profile: Option<String>,
+    agent: Vec<String>,
+    proxy_pid: Option<u32>,
+    started: SystemTime,
+    /// What the start channel is subscribed to from the start.
+    events: Vec<String>,
+    bridges: Vec<Bridge>,
+}
+
 enum Ev {
-    /// A frame from the proxy; `None` once the link is gone.
+    /// A frame from the proxy on the link; `None` once the link is gone.
     Link(Option<(u8, Vec<u8>)>),
+    /// A frame from the proxy on the signal link, which nothing holds back;
+    /// `None` once it is gone.
+    SignalLink(Option<(u8, Vec<u8>)>),
     /// One line of agent stdout, with its `\n` unless it was the last bytes.
     AgentLine(Vec<u8>),
     AgentStdoutEof,
@@ -300,13 +261,21 @@ enum Ev {
         label: String,
         line: String,
     },
-    /// A started bridge has terminated; it has not been reaped yet.
+    /// A started bridge has terminated; it has not been reaped yet. It is a
+    /// peer until then, whether its stdout is open or not.
     BridgeExited {
         label: String,
         pid: pid_t,
+        peer: u64,
     },
     /// A signal sent to the host itself.
     Signal(c_int),
+    /// brnr start closed its end of the start channel.
+    StartGone {
+        peer: u64,
+    },
+    /// A thread panicked (see death.rs).
+    Panicked,
 }
 
 enum StopStage {
@@ -315,14 +284,14 @@ enum StopStage {
 }
 
 struct Host {
-    /// In a terminal, by hand or for `brnr start --foreground`: it says on
-    /// stderr how things go, and exits with the agent's status.
+    /// For `brnr start --foreground`, in a terminal: it says on stderr how
+    /// things go, and exits with the agent's status.
     foreground: bool,
-    /// By hand, a failed start has been reported on stderr.
+    /// In the foreground, a failed start has been reported on stderr.
     startup_reported: bool,
-    /// The start is over: the session is open and set up, and brnr start
-    /// has been told (see `finish_start`), or an editor attached. Until
-    /// then, the process stopping is the start failing.
+    /// The start is over: it has committed (the session is open and set up,
+    /// and brnr start has been told, see `finish_start`), or an editor
+    /// attached. Until then, the process stopping is the start failing.
     start_done: bool,
     info: Value,
     host_id: String,
@@ -333,6 +302,13 @@ struct Host {
     /// that stops reading can't stall the host; dropping this closes the
     /// agent's stdin once what's queued is written.
     agent_in: Option<Sender<Vec<u8>>>,
+    /// The editor's input on its way to the agent's stdin, and the agent's
+    /// output on its way to the editor: past a cap, the link or the agent's
+    /// stdout and stderr aren't read (see flow.rs).
+    to_agent: Backlog,
+    from_agent: Backlog,
+    /// The agent's last lines on stderr (ADR 10).
+    stderr_tail: VecDeque<String>,
     /// Dropping this makes the stdout reader close the agent's stdout.
     stop_stdout: Option<PipeWriter>,
     /// An editor is attached: from the start, until the link is gone (see
@@ -342,13 +318,17 @@ struct Host {
     /// on their own thread so an editor that stops reading can't stall the
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
-    link_writer: Option<thread::JoinHandle<()>>,
-    /// brnr start waits on this for the first session.
-    ready: Option<File>,
-    /// When brnr start gives up waiting for the session.
+    link_writer: Option<JoinHandle<()>>,
+    /// brnr start's start channel, until the start commits or fails.
+    start_channel: Option<StartChannel>,
+    /// When the start fails if it hasn't committed: the request's start
+    /// timeout.
     start_deadline: Option<Instant>,
     log: Logger,
     sink: Sink,
+    /// Detached: the thread taking what the process writes on stderr to the
+    /// host log (see death.rs).
+    own_stderr: Option<JoinHandle<()>>,
     rx: Receiver<Ev>,
     sock_path: PathBuf,
     meta_path: PathBuf,
@@ -358,25 +338,37 @@ struct Host {
     sessions: Vec<Session>,
     /// Requests whose response creates or ends a session.
     pending: HashMap<String, Pending>,
+    /// Sessions this process has taken (or failed to take) the lock of
+    /// before the agent opened them: a resume or a load not yet answered.
+    claimed: HashMap<String, Hold>,
     /// Every unanswered request to the agent → the session it is about.
     client_requests: HashMap<String, Option<String>>,
     /// Requests the host itself sent the agent as its client.
     host_requests: HashMap<String, HostRequest>,
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
+    /// Agent requests the host answered itself while the editor may answer
+    /// them too (a cancel, an approve): its late answers are dropped (see
+    /// experimental.rs).
+    answered: HashMap<String, experimental::Answered>,
+    /// Sessions brnr closed under the editor (ADR 4) → the process that took
+    /// each over, if one did: the editor's requests for them are answered
+    /// here.
+    closed: HashMap<String, Option<u32>>,
     /// Request id of every unanswered prompt → its session.
     prompt_session: HashMap<String, String>,
     next_id: u64,
     next_permission: u64,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
-    /// Headless start: the first prompt, sent once the session exists.
-    first_prompt: Option<String>,
-    /// Headless start: the session is open and set up (or there is an
-    /// editor), and has had brnr start's prompt if one is coming; idle
-    /// sessions only count from then.
-    started_ok: bool,
-    awaiting_prompt: bool,
+    /// How deeply what the host holds may nest, and how deeply the stack it
+    /// is running on takes (see `deep`).
+    deepest: usize,
+    stack: usize,
+    /// Headless start: the prompt, sent once the start has committed.
+    prompt: Option<Prompt>,
+    /// Headless start: the login method to run before the session opens.
+    auth: Option<String>,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
     /// Headless start: mode and config options to set before the prompt.
@@ -388,14 +380,27 @@ struct Host {
     /// Close a session idle this long (see `fire_idle_timers`).
     stop_when_idle: Option<Duration>,
     /// In the foreground: show the session's events on stdout, as text or
-    /// (`--json`) JSON lines.
+    /// (`--json`) JSON lines, and brnr's messages on stderr.
     show_events: bool,
     json_events: bool,
-    /// What the agent said it can do in `initialize`.
-    agent_caps: Value,
-    auth_methods: Value,
+    display: Option<Display>,
+    /// What the agent said it can do in `initialize`, and the login methods
+    /// it offers.
+    caps: Capabilities,
+    auth_methods: Vec<AuthMethod>,
     next_message: u64,
     started: Instant,
+
+    // What the request carries for what enforces it.
+    /// Stable ACP to the letter (see strict.rs).
+    strict: bool,
+    /// What to record (ADR 22): `false` turns the logger off; `events`
+    /// leaves out the sessions' raw ACP.
+    logging: Log,
+    /// An editor's process: the actions on its session it allows (ADR 4),
+    /// and the process-management behaviours it turns on (ADR 42).
+    experimental: BTreeSet<Experimental>,
+    features: BTreeSet<Feature>,
 
     // Bridges; see control.rs.
     peers: HashMap<u64, Peer>,
@@ -412,35 +417,22 @@ struct Host {
 }
 
 impl Host {
-    fn start(a: Args, link: Option<UnixStream>, ready: Option<File>) -> Result<Host, (String, u8)> {
-        let profile = config::load(a.profile.as_deref()).map_err(|e| (e, 2))?;
-        let mcp_servers = profile
-            .mcp_servers
-            .iter()
-            .map(config::McpServer::to_acp)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| (e, 2))?;
-        let mut config_options: std::collections::BTreeMap<String, String> =
-            profile.config.clone().unwrap_or_default();
-        config_options.extend(a.set.iter().cloned());
-        let setup = requests::setup_steps(
-            a.mode.clone().or(profile.mode.clone()),
-            config_options.into_iter().collect(),
-        );
-        for bridge in &profile.bridges {
-            control::check_bridge(bridge).map_err(|e| (e, 2))?;
-        }
-        if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
-            return Err(("--prompt is empty".into(), 2));
-        }
-        let mut program = a.program.clone();
+    /// `channel` is fd 3; `signal_link`, fd 4, is an editor's process's.
+    fn start(
+        req: Request,
+        channel: UnixStream,
+        signal_link: Option<UnixStream>,
+    ) -> Result<Host, (String, u8)> {
+        let recorded = req.recorded();
+        let Request { profile, agent, cwd, strict, log: logging, bridges, role } = req;
+        let (editor, headless) = match role {
+            Role::Editor(editor) => (Some(editor), None),
+            Role::Headless(headless) => (None, Some(headless)),
+        };
+        let program: Vec<OsString> = agent.iter().map(OsString::from).collect();
         if program.is_empty() {
-            program = profile.agent.iter().flatten().map(|s| paths::expand(s).into()).collect();
+            return Err(("no agent".into(), 2));
         }
-        if program.is_empty() {
-            return Err(("no agent: give one after -- or set agent in the profile".into(), 2));
-        }
-        let cwd = std::env::current_dir().map_err(|e| (format!("cwd: {e}"), 1))?;
 
         let dir = paths::runtime_dir();
         paths::ensure_private(&dir).map_err(|e| (format!("{}: {e}", dir.display()), 1))?;
@@ -457,15 +449,16 @@ impl Host {
             let _ = fs::remove_file(&sock_path);
         };
 
-        if let Some(bundled) = spawn::bundled(&program[0]) {
-            program[0] = bundled.into();
-        }
         let mut cmd = Command::new(&program[0]);
-        cmd.args(&program[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        // Its own process group: a terminal's Ctrl-C (when run by hand) is
+        cmd.args(&program[1..])
+            .current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Its own process group: a terminal's Ctrl-C (in the foreground) is
         // for the host, which stops the agent its own way.
         cmd.process_group(0);
-        let mask = a.sigmask.clone();
+        let mask = editor.as_ref().map(|e| e.sigmask.clone()).unwrap_or_default();
         // std resets the mask in the child; give the agent the editor's.
         unsafe {
             cmd.pre_exec(move || {
@@ -474,7 +467,7 @@ impl Host {
                 Ok(())
             })
         };
-        let mut child = cmd.spawn().map_err(|err| {
+        let child = cmd.spawn().map_err(|err| {
             cleanup();
             // Same codes a shell uses for "not found" / "not executable".
             let code = if err.kind() == ErrorKind::PermissionDenied { 126 } else { 127 };
@@ -482,120 +475,82 @@ impl Host {
         })?;
         let agent_pid = child.id() as pid_t;
 
-        let ids = Ids {
-            host_id: host_id.clone(),
-            host_pid: std::process::id(),
-            agent_pid: agent_pid as u32,
+        // From here there is an agent, and a host to hold it and what the
+        // rest of the start makes, as it is made (see `set_up`): whatever
+        // ends the start early, an error or a panic, finds them there, kills
+        // the agent with them (P14) and records how it ended (ADR 11).
+        let (tx, rx) = mpsc::sync_channel(EVENTS_QUEUED);
+        let foreground = headless.as_ref().is_some_and(|h| h.foreground.is_some());
+        // An editor's process has no start deadline, and none of the rest.
+        let start_deadline = (headless.as_ref())
+            .and_then(|h| Instant::now().checked_add(Duration::from_secs(h.start_timeout)));
+        let h = headless.unwrap_or_default();
+        let shown = h.foreground.as_ref();
+        let show_events = shown.is_some_and(|f| !f.quiet);
+        let json_events = shown.is_some_and(|f| f.json);
+        let (experimental, features) = match &editor {
+            Some(e) => (e.experimental.clone(), e.features.clone()),
+            None => (BTreeSet::new(), BTreeSet::new()),
         };
-        let log = if profile.log.unwrap_or(true) {
-            Logger::start(ids, a.proxy_pid).map_err(|e| {
-                cleanup();
-                unsafe { libc::kill(agent_pid, libc::SIGKILL) };
-                (format!("log: {e}"), 1)
-            })?
-        } else {
-            Logger::disabled()
-        };
-        let sink = log.sink();
-
-        let argv: Vec<String> = program.iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        let info = json!({
-            "id": id,
-            "host_id": host_id,
-            "profile": a.profile,
-            "host_pid": std::process::id(),
-            "proxy_pid": a.proxy_pid,
-            "agent_pid": agent_pid,
-            "agent": argv,
-            "cwd": cwd.to_string_lossy(),
-            "host_log": log.host_log().map(|p| p.to_string_lossy().into_owned()),
-            "socket": sock_path.to_string_lossy(),
-            "started": log::rfc3339(started),
-        });
-        write_atomic(&meta_path, format!("{info:#}\n").as_bytes());
-        sink.note(None, json!({ "event": "started", "info": info }));
-
-        let (tx, rx) = mpsc::channel();
-        let (agent_in, agent_queue) = mpsc::channel();
-        let stdin = child.stdin.take().unwrap();
-        thread::spawn(move || write_agent_stdin(stdin, agent_queue));
-        let (stop_rx, stop_tx) = io::pipe().expect("pipe");
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let t = tx.clone();
-        thread::spawn(move || read_agent_stdout(stdout, stop_rx, t));
-        let t = tx.clone();
-        thread::spawn(move || read_agent_stderr(stderr, t));
-        let t = tx.clone();
-        thread::spawn(move || {
-            if wait_exited(agent_pid).is_ok() {
-                let _ = t.send(Ev::AgentExited);
-            }
-        });
-        let mut link_writer = None;
-        let link = link.map(|link| {
-            let reader = link.try_clone().expect("clone link");
-            let t = tx.clone();
-            thread::spawn(move || read_link(reader, t));
-            let (frames, rx) = mpsc::channel();
-            link_writer = Some(thread::spawn(move || write_link(link, rx)));
-            frames
-        });
-        let t = tx.clone();
-        thread::spawn(move || control::serve(listener, t));
-        let signals = signals::install();
-        let t = tx.clone();
-        thread::spawn(move || read_signals(signals, t));
-
-        let foreground = (link.is_none() && ready.is_none()) || a.foreground;
-        let start_deadline = (a.start_timeout)
-            .filter(|_| ready.is_some())
-            .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
-        let stop_when_idle = a.stop_when_idle.or(profile.stop_when_idle).map(Duration::from_secs);
+        // No log until `set_up` starts it.
+        let log = Logger::disabled();
         let mut host = Host {
             foreground,
             startup_reported: false,
             start_done: false,
-            info,
+            info: Value::Null,
             host_id,
-            permission_timeout: profile.permission_timeout.map(Duration::from_secs),
+            permission_timeout: h.permission_timeout.map(Duration::from_secs),
             agent_pid,
-            agent_in: Some(agent_in),
-            stop_stdout: Some(stop_tx),
-            editor: link.is_some(),
-            link,
-            link_writer,
-            ready,
+            agent_in: None,
+            to_agent: Backlog::default(),
+            from_agent: Backlog::default(),
+            stderr_tail: VecDeque::new(),
+            stop_stdout: None,
+            editor: editor.is_some(),
+            link: None,
+            link_writer: None,
+            start_channel: None,
             start_deadline,
+            sink: log.sink(),
             log,
-            sink,
+            own_stderr: None,
             rx,
             sock_path,
             meta_path,
-            cwd: cwd.clone(),
+            cwd,
             sessions: Vec::new(),
             pending: HashMap::new(),
+            claimed: HashMap::new(),
             client_requests: HashMap::new(),
             host_requests: HashMap::new(),
             agent_requests: Vec::new(),
+            answered: HashMap::new(),
+            closed: HashMap::new(),
             prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,
             editor_buf: Vec::new(),
-            first_prompt: a.prompt,
-            started_ok: false,
-            awaiting_prompt: a.awaiting_prompt,
-            resume: a.resume,
-            setup,
+            deepest: 0,
+            stack: json::SHALLOW,
+            prompt: h.prompt,
+            auth: h.auth,
+            resume: h.resume,
+            setup: requests::setup_steps(h.mode, h.model, h.config.into_iter().collect()),
             starting: None,
-            mcp_servers,
-            stop_when_idle,
-            show_events: foreground && !a.quiet,
-            json_events: a.json,
-            agent_caps: Value::Null,
-            auth_methods: Value::Null,
+            mcp_servers: h.mcp_servers,
+            stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
+            show_events,
+            json_events,
+            display: None,
+            caps: Capabilities::default(),
+            auth_methods: Vec::new(),
             next_message: 0,
             started: Instant::now(),
+            strict,
+            logging,
+            experimental,
+            features,
             peers: HashMap::new(),
             bridge_pids: Vec::new(),
             status: None,
@@ -605,40 +560,218 @@ impl Host {
             stop_requested: false,
             stopping: None,
         };
-        for (n, bridge) in profile.bridges.iter().enumerate() {
-            if let Err(err) = host.start_bridge(n, bridge, &tx) {
-                host.kill_all();
-                let _ = fs::remove_file(&host.sock_path);
-                let _ = fs::remove_file(&host.meta_path);
-                return Err((err, 2));
+        let parts = Parts {
+            child,
+            listener,
+            channel,
+            signal_link,
+            tx,
+            recorded,
+            profile,
+            agent,
+            proxy_pid: editor.map(|e| e.proxy_pid),
+            started,
+            events: h.events,
+            bridges,
+        };
+        match panic::catch_unwind(AssertUnwindSafe(|| host.set_up(parts))) {
+            Ok(Ok(())) => Ok(host),
+            Ok(Err((error, code))) => Err(host.abandon(error, code)),
+            Err(_) => Err(host.died_starting(death::panicked().unwrap_or("brnr panicked"))),
+        }
+    }
+
+    /// The rest of the start, once the agent is spawned: the log and the
+    /// metadata, the threads on the agent's pipes, the editor's links or the
+    /// start channel, the control socket, signals, the display, bridges;
+    /// then the editor is told the process is ready, or the headless start
+    /// begins. Each is the host's as soon as it is made, for `abandon` or
+    /// `died_starting` to undo if the start ends here.
+    fn set_up(&mut self, parts: Parts) -> Result<(), (String, u8)> {
+        let Parts {
+            mut child,
+            listener,
+            channel,
+            signal_link,
+            tx,
+            recorded,
+            profile,
+            agent,
+            proxy_pid,
+            started,
+            events,
+            bridges,
+        } = parts;
+        let id = std::process::id().to_string();
+        if self.logging != Log::Off {
+            let ids = Ids {
+                host_id: self.host_id.clone(),
+                host_pid: std::process::id(),
+                agent_pid: self.agent_pid as u32,
+            };
+            self.log = Logger::start(ids, proxy_pid, self.logging == Log::All)
+                .map_err(|e| (format!("log: {e}"), 1))?;
+            self.sink = self.log.sink();
+        }
+        self.info = json!({
+            "id": id,
+            "host_id": self.host_id,
+            "profile": profile,
+            "host_pid": std::process::id(),
+            "proxy_pid": proxy_pid,
+            "agent_pid": self.agent_pid,
+            "agent": agent,
+            "cwd": self.cwd.to_string_lossy(),
+            "host_log": self.log.host_log().map(|p| p.to_string_lossy().into_owned()),
+            "socket": self.sock_path.to_string_lossy(),
+            "started": log::rfc3339(started),
+        });
+        write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
+        // Every process records what it was asked to do (ADR 8).
+        let info = self.info.clone();
+        self.sink.note(None, json!({ "event": "started", "info": info, "request": recorded }));
+        // A detached process's stderr is /dev/null until here (ADR 11).
+        if !self.foreground && self.log.host_log().is_some() {
+            self.own_stderr = death::capture_stderr(self.sink.clone());
+        }
+
+        death::wake(tx.clone());
+        let (agent_in, agent_queue) = mpsc::channel();
+        let stdin = child.stdin.take().unwrap();
+        let b = self.to_agent.clone();
+        thread::spawn(move || write_agent_stdin(stdin, agent_queue, b));
+        self.agent_in = Some(agent_in);
+        let (stop_rx, stop_tx) = io::pipe().expect("pipe");
+        self.stop_stdout = Some(stop_tx);
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (t, b) = (tx.clone(), self.from_agent.clone());
+        thread::spawn(move || read_agent_stdout(stdout, stop_rx, t, b));
+        let (t, b, shown) = (tx.clone(), self.from_agent.clone(), self.foreground);
+        thread::spawn(move || read_agent_stderr(stderr, t, b, shown));
+        let (t, agent_pid) = (tx.clone(), self.agent_pid);
+        thread::spawn(move || {
+            if wait_exited(agent_pid).is_ok() {
+                let _ = t.send(Ev::AgentExited);
+            }
+        });
+        let (link, start_channel) =
+            if self.editor { (Some(channel), None) } else { (None, Some(channel)) };
+        if let Some(link) = link {
+            let reader = link.try_clone().expect("clone link");
+            let (t, b) = (tx.clone(), self.to_agent.clone());
+            thread::spawn(move || read_link(reader, t, b));
+            let (frames, rx) = mpsc::channel();
+            let b = self.from_agent.clone();
+            self.link_writer = Some(thread::spawn(move || write_link(link, rx, b)));
+            self.link = Some(frames);
+        }
+        if let Some(signal_link) = signal_link {
+            let t = tx.clone();
+            thread::spawn(move || read_signal_link(signal_link, t));
+        }
+        let t = tx.clone();
+        thread::spawn(move || control::serve(listener, t));
+        let signals = signals::install();
+        let t = tx.clone();
+        thread::spawn(move || read_signals(signals, t));
+        if self.foreground {
+            self.display = Some(Display::start(self.sink.clone(), self.json_events));
+        }
+
+        // The first peer: brnr start hears of whatever happens from here.
+        if let Some(channel) = start_channel {
+            self.open_start_channel(channel, events, &tx)
+                .map_err(|err| (format!("start channel: {err}"), 1))?;
+        }
+        for (n, bridge) in bridges.iter().enumerate() {
+            self.start_bridge(n, bridge, &tx).map_err(|err| (err, 2))?;
+        }
+        death::test_panic_starting();
+        if self.editor {
+            self.start_done = true;
+            let ready =
+                json!({ "id": id, "host_pid": std::process::id(), "agent_pid": self.agent_pid });
+            self.send_link(frame::READY, ready.to_string().as_bytes());
+        } else {
+            self.begin_headless_start();
+        }
+        if self.foreground {
+            self.say(format!(
+                "brnr: process {id}: started {} in {}; Ctrl-C to stop",
+                agent.join(" "),
+                self.cwd.display()
+            ));
+        }
+        Ok(())
+    }
+
+    /// A start that fails before the event loop runs: what it started goes,
+    /// and its host log records the end, as `finish` does, so a log without
+    /// `exited` is a process that died (ADR 11). Returns `error` and `code`.
+    fn abandon(mut self, error: String, code: u8) -> (String, u8) {
+        self.kill_all();
+        let _ = fs::remove_file(&self.sock_path);
+        let _ = fs::remove_file(&self.meta_path);
+        self.sink.note(None, json!({ "event": "exited", "status": null, "reason": error }));
+        self.release_stderr();
+        std::mem::replace(&mut self.log, Logger::disabled()).finish();
+        (error, code)
+    }
+
+    /// A panic as the start is under way, before the event loop (ADR 11):
+    /// recorded as `died` records one, as far as what the start has made
+    /// allows (no sessions yet; the log, the display and bridges once they
+    /// are there), and the agent killed with its process group (P14).
+    /// brnr start or the editor is told by `main`, on fd 3, as of any start
+    /// that fails before the event loop (see `Failure`), so nothing else is
+    /// to write there: the start channel stops being a peer, and what is
+    /// queued for the editor (`READY`) goes first. Returns the error and
+    /// the exit code.
+    fn died_starting(mut self, reason: &str) -> (String, u8) {
+        self.record_panic(reason);
+        self.release_start_channel();
+        self.link = None;
+        if let Some(writer) = self.link_writer.take() {
+            let until = Instant::now() + PEER_FLUSH;
+            while !writer.is_finished() && Instant::now() < until {
+                thread::sleep(Duration::from_millis(10));
             }
         }
-        if host.editor {
-            host.started_ok = true;
-            host.start_done = true;
-            let ready = json!({ "id": id, "host_pid": std::process::id(), "agent_pid": agent_pid });
-            host.send_link(frame::READY, ready.to_string().as_bytes());
-        } else {
-            host.begin_headless_start();
-        }
-        if host.foreground {
-            eprintln!(
-                "brnr: process {id}: started {} in {}; Ctrl-C to stop",
-                argv.join(" "),
-                cwd.display()
-            );
-        }
-        Ok(host)
+        self.wind_up(reason);
+        (reason.to_owned(), 101)
     }
 
     fn run(mut self) -> ExitCode {
+        // A panic on the event loop ends it here; on another thread, at the
+        // next turn of the loop (see death.rs).
+        let looped = panic::catch_unwind(AssertUnwindSafe(|| self.event_loop()));
+        let died = death::panicked().or(looped.err().map(|_| "brnr panicked"));
+        // One in `deep` leaves the stack it took.
+        self.stack = json::SHALLOW;
+        // Finishing drops what the host holds: on a stack that takes it too.
+        let deepest = self.deepest;
+        let mut host = Some(self);
+        json::on_stack(deepest, || host.take().unwrap().finish(died))
+            .unwrap_or_else(|| host.take().unwrap().finish(died))
+    }
+
+    fn event_loop(&mut self) {
         loop {
             if self.status.is_some() && !self.stdout_open && !self.stderr_open {
                 break;
             }
+            if death::panicked().is_some() {
+                break;
+            }
             let now = Instant::now();
             if self.drain_until.is_some_and(|t| now >= t) {
-                break;
+                // The agent's last output, held back for the editor, is
+                // still to come, at the editor's pace (ADR 6).
+                if !self.from_agent.full() {
+                    break;
+                }
+                self.drain_until = Some(now + DRAIN);
             }
             self.fire_start_timer(now);
             self.fire_stop_timer(now);
@@ -662,12 +795,43 @@ impl Host {
                     Err(RecvTimeoutError::Disconnected) => break,
                 },
             };
-            self.handle(ev);
+            let mut ev = Some(ev);
+            if self.deep(0, |host| host.handle(ev.take().unwrap())).is_none() {
+                // No stack to be had for what the host holds: this one, then.
+                self.handle(ev.take().unwrap());
+            }
         }
-        self.finish()
     }
 
-    fn finish(mut self) -> ExitCode {
+    /// Runs `f` on a stack that takes values `depth` deep, and what the host
+    /// holds: this one, or a thread's of its own (see json.rs). `None` if
+    /// there is no such stack to be had.
+    fn deep<R: Send>(&mut self, depth: usize, f: impl FnOnce(&mut Host) -> R + Send) -> Option<R> {
+        let need = depth.max(self.deepest);
+        if need <= self.stack {
+            return Some(f(self));
+        }
+        let outer = self.stack;
+        let result = json::on_stack(need, || {
+            self.stack = need;
+            f(self)
+        });
+        self.stack = outer;
+        result
+    }
+
+    /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
+    /// `deep`). What the host keeps of it may now nest that deep.
+    fn read(&mut self, line: &[u8], depth: usize) -> Option<Value> {
+        let msg = json::parse(line)?;
+        self.deepest = self.deepest.max(depth);
+        Some(msg)
+    }
+
+    fn finish(mut self, died: Option<&str>) -> ExitCode {
+        if let Some(reason) = died {
+            return self.died(reason);
+        }
         for i in 0..self.sessions.len() {
             self.flush_agent_message(i);
         }
@@ -678,35 +842,32 @@ impl Host {
             self.startup_failed("the agent exited before the session started");
         }
         let status = describe_status(self.status);
-        // Held messages that never became a prompt.
-        let undelivered: Vec<Value> = self
-            .sessions
-            .iter()
-            .flat_map(|s| {
-                s.held.iter().map(|h| json!({ "session": s.id, "message": h.id, "text": h.text }))
-            })
-            .collect();
-        self.emit_to_sessions(
-            json!({ "event": "exited", "status": status, "undelivered": undelivered }),
-        );
+        // Held messages and context that never became a prompt.
+        for i in 0..self.sessions.len() {
+            self.drop_all(i, "exit");
+        }
+        self.emit_to_sessions(json!({ "event": "exited", "status": status }));
+        // Let go of the sessions as brnr stops listing the process (ADR 3).
+        self.claimed.clear();
+        for s in &mut self.sessions {
+            if let Hold::Owner(lock) = &mut s.hold {
+                lock.take();
+            }
+        }
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
-        // Bridges also see EOF on their stdin once we exit.
-        // The last events (`exited`) reach the peers before we exit, and only
-        // then do started bridges get SIGTERM.
-        self.flush_peers(PEER_FLUSH);
-        for &pid in &self.bridge_pids {
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-        }
+        self.let_peers_go();
         if self.foreground {
-            eprintln!("brnr: agent exited: {status}");
+            self.say(format!("brnr: agent exited: {status}"));
         }
-        // Let the writer deliver what's queued (it gives up on a proxy that
-        // stopped reading; see LINK_WRITE_TIMEOUT).
+        self.close_display();
+        // Let the writer deliver what's queued, at the editor's pace (ADR 6);
+        // a proxy that has gone fails the write.
         self.link = None;
         if let Some(writer) = self.link_writer.take() {
-            let _ = writer.join();
+            self.wait_out(|| writer.is_finished());
         }
+        self.release_stderr();
         self.log.finish();
         let code = match self.status {
             Some(s) if libc::WIFEXITED(s) => libc::WEXITSTATUS(s) as u8,
@@ -722,23 +883,137 @@ impl Host {
         }
     }
 
+    /// A panic (ADR 11): told wherever it still can be, and the agent goes,
+    /// as it does when its owner goes (P14).
+    fn died(mut self, reason: &str) -> ExitCode {
+        self.record_panic(reason);
+        if !self.start_done {
+            self.startup_failed(reason);
+        }
+        self.wind_up(reason);
+        ExitCode::from(101)
+    }
+
+    /// A panic, in the host log, and the agent killed with its process
+    /// group.
+    fn record_panic(&mut self, reason: &str) {
+        self.sink.note(None, json!({ "event": "panic", "error": reason }));
+        if self.status.is_none() && self.foreground {
+            self.say("brnr: killing the agent".into());
+        }
+        self.kill_group(libc::SIGKILL);
+    }
+
+    /// The rest of a death, once the agent is killed and whoever waits for
+    /// the start told: `exited`, with the reason, in the host log, every
+    /// session's file and to the peers still reached; the `.sock` and
+    /// `.json` files removed; bridges given the time to act on `exited`
+    /// they get on any exit; the display, stderr and the log let go of.
+    fn wind_up(&mut self, reason: &str) {
+        // Held messages that never became a prompt, as on a normal exit
+        // (ADR 20); a second panic here mustn't cost the `exited` below.
+        let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for i in 0..self.sessions.len() {
+                self.drop_all(i, "exit");
+            }
+        }));
+        if held.is_err() {
+            self.sink.note(None, json!({ "event": "drop-held-failed" }));
+        }
+        let status = describe_status(self.status);
+        self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
+        let _ = fs::remove_file(&self.sock_path);
+        let _ = fs::remove_file(&self.meta_path);
+        self.let_peers_go();
+        self.close_display();
+        self.release_stderr();
+        std::mem::replace(&mut self.log, Logger::disabled()).finish();
+    }
+
+    /// Exiting: the last events (`exited`) reach the peers, within
+    /// PEER_FLUSH; then started bridges, their stdin closed, should exit,
+    /// and those that haven't by BRIDGE_EXIT get SIGTERM. Bridges also see
+    /// EOF on their stdin once we exit.
+    fn let_peers_go(&mut self) {
+        self.flush_peers(PEER_FLUSH);
+        let until = Instant::now() + BRIDGE_EXIT;
+        while !self.bridge_pids.is_empty() {
+            match self.rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(ev @ Ev::BridgeExited { .. }) => self.handle(ev),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        for &pid in &self.bridge_pids {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+    }
+
+    /// One of brnr's own messages, on the foreground's stderr.
+    pub(super) fn say(&self, text: String) {
+        if let Some(display) = &self.display {
+            display.note(text);
+        }
+    }
+
+    /// The display ends once its reader has taken what is queued.
+    fn close_display(&mut self) {
+        if let Some(display) = self.display.take() {
+            display.finish();
+            self.wait_out(|| display.done());
+        }
+    }
+
+    /// Exiting, waits until `done`: until a reader has taken what is queued
+    /// for it, however long that takes, as a pipe's writer would. A signal
+    /// to the process (Ctrl-C, `kill`) gives up on it.
+    fn wait_out(&self, done: impl Fn() -> bool) {
+        let tick = Duration::from_millis(10);
+        while !done() {
+            match self.rx.recv_timeout(tick) {
+                Ok(Ev::Signal(_)) => return,
+                Err(RecvTimeoutError::Disconnected) => thread::sleep(tick),
+                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    /// What the process wrote on stderr is in the host log before it closes.
+    fn release_stderr(&mut self) {
+        if let Some(reader) = self.own_stderr.take() {
+            death::release_stderr(reader, PEER_FLUSH);
+        }
+    }
+
     fn handle(&mut self, ev: Ev) {
         match ev {
             Ev::Link(Some((kind, payload))) => match kind {
-                frame::DATA => self.editor_bytes(&payload),
+                frame::DATA => {
+                    self.editor_bytes(&payload);
+                    self.to_agent.done(payload.len());
+                }
                 frame::EOF => self.editor_eof(),
+                _ => {}
+            },
+            Ev::SignalLink(Some((kind, payload))) => match kind {
                 frame::SIGNAL if payload.len() == 4 => {
                     self.signal(i32::from_be_bytes(payload.try_into().unwrap()));
                 }
                 frame::STDOUT_CLOSED => self.editor_stopped_reading(),
                 _ => {}
             },
-            Ev::Link(None) => self.link_gone(),
-            Ev::AgentLine(line) => self.agent_line(&line),
+            // The proxy has gone: whichever link says so first.
+            Ev::Link(None) | Ev::SignalLink(None) => self.link_gone(),
+            Ev::AgentLine(line) => {
+                self.agent_line(&line);
+                self.from_agent.done(line.len());
+            }
             Ev::AgentStdoutEof => self.stdout_open = false,
             Ev::AgentStderr(bytes) => {
                 self.sink.msg(None, Dir::AgentStderr, &bytes);
                 self.send_link(frame::STDERR, &bytes);
+                self.from_agent.done(bytes.len());
+                self.keep_stderr(&bytes);
             }
             Ev::AgentStderrEof => self.stderr_open = false,
             Ev::AgentExited => {
@@ -758,7 +1033,10 @@ impl Host {
             Ev::PeerOpened { peer, tx, label, closer } => {
                 self.peers.insert(peer, Peer::new(tx, label, closer));
             }
-            Ev::PeerRequest { peer, req } => self.peer_request(peer, req),
+            Ev::PeerRequest { peer, req } => {
+                death::test_panic(&req);
+                self.peer_request(peer, req);
+            }
             Ev::PeerClosed { peer } => {
                 self.peers.remove(&peer);
             }
@@ -767,10 +1045,13 @@ impl Host {
                     .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
             }
             Ev::Signal(sig) => self.host_signal(sig),
-            Ev::BridgeExited { label, pid } => {
+            Ev::StartGone { peer } => self.start_gone(peer),
+            Ev::Panicked => {} // See `event_loop`.
+            Ev::BridgeExited { label, pid, peer } => {
                 // Reaped here, once it is out of `bridge_pids`, so a signal to
                 // a bridge can never reach a recycled pid.
                 self.bridge_pids.retain(|&p| p != pid);
+                self.peers.remove(&peer);
                 let status = reap(pid).ok().filter(|&s| libc::WIFEXITED(s));
                 let status = status.map(|s| libc::WEXITSTATUS(s));
                 self.sink.note(
@@ -779,6 +1060,30 @@ impl Host {
                 );
             }
         }
+    }
+
+    /// Until the start is over, the agent's last lines on stderr, for the
+    /// error if it fails (ADR 10).
+    fn keep_stderr(&mut self, bytes: &[u8]) {
+        if self.start_done {
+            return;
+        }
+        let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if self.stderr_tail.len() == STDERR_TAIL {
+            self.stderr_tail.pop_front();
+        }
+        let line = &line[..line.len().min(STDERR_LINE)];
+        self.stderr_tail.push_back(String::from_utf8_lossy(line).into_owned());
+    }
+
+    /// `error`, ending with the agent's last lines on stderr if it wrote any.
+    pub(super) fn with_stderr(&self, error: &str) -> String {
+        if self.stderr_tail.is_empty() {
+            return error.to_owned();
+        }
+        let lines: String = self.stderr_tail.iter().map(|l| format!("\n  {l}")).collect();
+        format!("{error}. The agent's last lines on stderr:{lines}")
     }
 
     // ---- the editor's side of the link --------------------------------
@@ -798,7 +1103,7 @@ impl Host {
     fn editor_eof(&mut self) {
         let rest = take(&mut self.editor_buf);
         if !rest.is_empty() {
-            self.record(None, Dir::EditorToAgent, &rest);
+            self.record_editor_rest(&rest);
             self.write_agent(&rest);
         }
         self.sink.note(None, json!({ "event": "editor-closed-stdin" }));
@@ -811,7 +1116,7 @@ impl Host {
         self.stop_stdout = None;
     }
 
-    /// The editor went away, or stopped reading for [`LINK_WRITE_TIMEOUT`]:
+    /// The editor went away (the proxy did, which either of its links says):
     /// the agent goes too, as if the editor had run it, with whatever it
     /// started in its process group.
     fn link_gone(&mut self) {
@@ -825,19 +1130,20 @@ impl Host {
     }
 
     fn send_link(&mut self, kind: u8, payload: &[u8]) {
-        if let Some(link) = &self.link
-            && link.send((kind, payload.to_vec())).is_err()
-        {
-            // The writer gave up and shut the link down, so the reader
-            // thread reports it gone (`link_gone`).
+        let Some(link) = &self.link else { return };
+        self.from_agent.add(payload.len());
+        if link.send((kind, payload.to_vec())).is_err() {
+            // The writer failed and shut the link down: the proxy has gone,
+            // which the reader thread or the signal link reports
+            // (`link_gone`).
             self.link = None;
         }
     }
 
     fn write_agent(&mut self, bytes: &[u8]) {
-        if let Some(agent) = &self.agent_in
-            && agent.send(bytes.to_vec()).is_err()
-        {
+        let Some(agent) = &self.agent_in else { return };
+        self.to_agent.add(bytes.len());
+        if agent.send(bytes.to_vec()).is_err() {
             self.agent_in = None; // The agent closed its stdin.
         }
     }
@@ -858,13 +1164,13 @@ impl Host {
             },
             _ if self.stop_requested => {
                 if self.foreground {
-                    eprintln!("brnr: killing the agent");
+                    self.say("brnr: killing the agent".into());
                 }
                 self.kill_group(libc::SIGKILL);
             }
             _ => {
                 if self.foreground {
-                    eprintln!("brnr: stopping (again to kill)");
+                    self.say("brnr: stopping (again to kill)".into());
                 }
                 self.begin_stop();
             }
@@ -900,12 +1206,13 @@ impl Host {
         }
     }
 
-    /// brnr start stops waiting for the session at the deadline, so the
-    /// host gives up too rather than carry on where nobody knows about it.
+    /// The start fails when its timeout passes before the commit, rather
+    /// than carry on where nobody knows about it (brnr start gives up
+    /// waiting a little later).
     fn fire_start_timer(&mut self, now: Instant) {
         if self.start_deadline.is_some_and(|t| now >= t) {
             self.start_deadline = None;
-            if self.ready.is_some() {
+            if !self.start_done && !self.stop_requested {
                 self.fail_start("timed out waiting for the session");
             }
         }
@@ -945,30 +1252,34 @@ fn describe_status(status: Option<c_int>) -> Value {
 
 // ---- threads -----------------------------------------------------------
 
-/// Writes queued frames to the proxy until the queue closes or a write
-/// fails or times out. Then the link is shut down, so the reader thread
-/// sees it gone too: an editor that stopped reading is an editor gone.
-fn write_link(mut link: UnixStream, frames: Receiver<(u8, Vec<u8>)>) {
-    let _ = link.set_write_timeout(Some(LINK_WRITE_TIMEOUT));
+/// Writes queued frames to the proxy, as fast as it reads them, until the
+/// queue closes or a write fails: the proxy has gone. Then the link is shut
+/// down, so the reader thread sees it gone too.
+fn write_link(mut link: UnixStream, frames: Receiver<(u8, Vec<u8>)>, from_agent: Backlog) {
     for (kind, payload) in frames {
         if frame::write(&mut link, kind, &payload).is_err() {
             let _ = link.shutdown(std::net::Shutdown::Both);
-            return;
+            break;
         }
+        from_agent.done(payload.len());
     }
+    from_agent.close();
 }
 
-/// Writes queued bytes to the agent's stdin until the queue closes or the
-/// agent closes its end. Dropping `stdin` on the way out closes it.
-fn write_agent_stdin(mut stdin: ChildStdin, queue: Receiver<Vec<u8>>) {
+/// Writes queued bytes to the agent's stdin, as fast as it reads them, until
+/// the queue closes or the agent closes its end. Dropping `stdin` on the way
+/// out closes it.
+fn write_agent_stdin(mut stdin: ChildStdin, queue: Receiver<Vec<u8>>, to_agent: Backlog) {
     for bytes in queue {
         if stdin.write_all(&bytes).is_err() {
-            return;
+            break;
         }
+        to_agent.done(bytes.len());
     }
+    to_agent.close();
 }
 
-fn read_signals(mut signals: PipeReader, tx: Sender<Ev>) {
+fn read_signals(mut signals: PipeReader, tx: SyncSender<Ev>) {
     let mut sig = [0];
     loop {
         match signals.read(&mut sig) {
@@ -982,11 +1293,20 @@ fn read_signals(mut signals: PipeReader, tx: Sender<Ev>) {
     }
 }
 
-fn read_link(link: UnixStream, tx: Sender<Ev>) {
+/// Frames from the proxy until the link is gone. While the agent's stdin is
+/// a cap behind, the link isn't read: what the editor writes waits in it,
+/// and the proxy, then the editor, block writing; stdin's EOF waits behind
+/// it, as it would on a pipe. Signals don't, nor does the proxy going away:
+/// they come on the signal link (see `read_signal_link`).
+fn read_link(link: UnixStream, tx: SyncSender<Ev>, to_agent: Backlog) {
     let mut reader = BufReader::new(link);
     loop {
+        to_agent.room(None);
         match frame::read(&mut reader) {
             Ok(Some(frame)) => {
+                if frame.0 == frame::DATA {
+                    to_agent.add(frame.1.len());
+                }
                 if tx.send(Ev::Link(Some(frame))).is_err() {
                     return;
                 }
@@ -999,9 +1319,36 @@ fn read_link(link: UnixStream, tx: Sender<Ev>) {
     }
 }
 
+/// Frames from the proxy on the signal link until it is gone. Never held
+/// back: a signal reaches the agent at once, and the proxy going away is
+/// heard, however far behind the agent is reading its stdin.
+fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
+    let mut reader = BufReader::new(link);
+    loop {
+        match frame::read(&mut reader) {
+            Ok(Some(frame)) => {
+                if tx.send(Ev::SignalLink(Some(frame))).is_err() {
+                    return;
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = tx.send(Ev::SignalLink(None));
+                return;
+            }
+        }
+    }
+}
+
 /// Splits the agent's stdout into lines until EOF, or until `stop` closes,
-/// which drops our end so the agent gets EPIPE like it would directly.
-fn read_agent_stdout(mut out: ChildStdout, stop: PipeReader, tx: Sender<Ev>) {
+/// which drops our end so the agent gets EPIPE like it would directly. Past
+/// the cap of what is on its way to the editor (or the event loop) it waits,
+/// and the agent blocks writing, as it would to the editor directly.
+fn read_agent_stdout(
+    mut out: ChildStdout,
+    stop: PipeReader,
+    tx: SyncSender<Ev>,
+    from_agent: Backlog,
+) {
     let mut fds = [
         libc::pollfd { fd: out.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -1009,6 +1356,7 @@ fn read_agent_stdout(mut out: ChildStdout, stop: PipeReader, tx: Sender<Ev>) {
     let mut buf = vec![0; 64 * 1024];
     let mut line = Vec::new();
     loop {
+        from_agent.room(None);
         if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
             if io::Error::last_os_error().kind() == ErrorKind::Interrupted {
                 continue;
@@ -1029,22 +1377,41 @@ fn read_agent_stdout(mut out: ChildStdout, stop: PipeReader, tx: Sender<Ev>) {
         };
         for &b in &buf[..n] {
             line.push(b);
-            if b == b'\n' && tx.send(Ev::AgentLine(take(&mut line))).is_err() {
-                return;
+            if b == b'\n' {
+                from_agent.add(line.len());
+                if tx.send(Ev::AgentLine(take(&mut line))).is_err() {
+                    return;
+                }
             }
         }
     }
     if !line.is_empty() {
+        from_agent.add(line.len());
         let _ = tx.send(Ev::AgentLine(line));
     }
     let _ = tx.send(Ev::AgentStdoutEof);
 }
 
-fn read_agent_stderr(err: ChildStderr, tx: Sender<Ev>) {
+/// The agent's stderr, line by line, held back as its stdout is. In the
+/// foreground (`shown`) it also goes to stderr as it comes, unchanged
+/// (ADR 10): written from here, the agent blocks on a terminal that does.
+fn read_agent_stderr(err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
+    let mut terminal = shown.then(|| ManuallyDrop::new(unsafe { File::from_raw_fd(2) }));
     let mut reader = BufReader::new(err);
     let mut line = Vec::new();
-    while let Ok(n) = reader.read_until(b'\n', &mut line) {
-        if n == 0 || tx.send(Ev::AgentStderr(take(&mut line))).is_err() {
+    loop {
+        from_agent.room(None);
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if let Some(out) = &mut terminal
+            && crate::proxy::write_all(out, &line).is_err()
+        {
+            terminal = None;
+        }
+        from_agent.add(line.len());
+        if tx.send(Ev::AgentStderr(take(&mut line))).is_err() {
             break;
         }
     }
@@ -1079,8 +1446,9 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// Blocks until `pid` has terminated, without reaping it.
-fn wait_exited(pid: pid_t) -> io::Result<()> {
+/// Blocks until `pid`, a child, has terminated, without reaping it: until
+/// it is reaped, its pid (and process group id) can't be another's.
+pub fn wait_exited(pid: pid_t) -> io::Result<()> {
     unsafe {
         let mut info: libc::siginfo_t = zeroed();
         let flags = libc::WEXITED | libc::WNOWAIT;
@@ -1105,11 +1473,12 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
     Ok(status)
 }
 
-/// Whether process `pid` exists (it may belong to someone else).
+/// Whether `pid` is a process of the user's, as every brnr process of
+/// theirs is. One that is someone else's (`kill` says EPERM) isn't brnr's,
+/// whatever pid a file of brnr's recorded. That a pid is alive doesn't say
+/// it is still the process that recorded it: see `gone` in ctl.rs.
 pub fn alive(pid: i64) -> bool {
-    pid > 0
-        && (unsafe { libc::kill(pid as pid_t, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+    pid > 0 && unsafe { libc::kill(pid as pid_t, 0) } == 0
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.
