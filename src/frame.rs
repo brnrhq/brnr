@@ -34,7 +34,7 @@ pub const STDOUT_CLOSED: u8 = b'C';
 
 /// Fails, writing nothing, for a payload too long for the length field. A
 /// payload of more than 64 KiB is written as it is, after the head, not
-/// copied: the line the host relays can be 32 MiB (ADR 49).
+/// copied: the line the host relays can be 32 MiB (ADR 51).
 pub fn write(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "frame payload over 4 GiB"))?;

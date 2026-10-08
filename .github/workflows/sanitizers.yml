@@ -1,0 +1,96 @@
+# Every week, runs the tests with brnr built under AddressSanitizer and
+# under MemorySanitizer, on Linux, so that what the SAFETY comments on its
+# unsafe blocks say is checked while the code runs: Miri can't follow real
+# system calls, the sanitizers can. ASan finds bad reads and writes, a use
+# after free and leaks; MSan reads of memory never written. Not
+# ThreadSanitizer: its runtime crashes (SEGV) on the stacks of hundreds of
+# MB json.rs gives a deeply nested value, in some runs and not others, more
+# often the bigger the stack.
+#
+# Nightly Rust, as -Zsanitizer needs, with std rebuilt instrumented
+# (-Zbuild-std, which needs an explicit --target): the tests and the brnr
+# they drive (CARGO_BIN_EXE_brnr, under target/<triple>) are both built that
+# way, with --cfg sanitized, which gives json.rs's deep stacks room for the
+# bigger frames and skips the tests' memory caps, which the sanitizer's own
+# memory would break.
+#
+# A report in brnr's own process fails its test, but most of brnr runs in
+# processes the tests only see the output of: the host is a grandchild that
+# outlives the command that started it, and what goes wrong in it shows as a
+# test timing out, or as nothing (a leak is reported, and changes no test's
+# result). So every process writes its report to a file (log_path, one per
+# pid) and the run fails if there is any, printing them.
+#
+# Leaks are looked for (detect_leaks=1) in what exits normally: the tests,
+# the commands they run, and hosts ended by brnr stop. Not in the
+# intermediate child that detaches the host (it leaves by _exit), a child
+# that execs, or a host the tests kill when they are done (SIGKILL). macOS
+# has AddressSanitizer but neither leak detection nor MemorySanitizer.
+name: sanitizers
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers
+  cancel-in-progress: false
+
+jobs:
+  test:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, memory]
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized
+      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: nightly
+          components: rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.sanitizer }}
+      # Reports name functions and lines, not addresses: the runner's LLVM
+      # has llvm-symbolizer (Rust's llvm-tools doesn't), and the sanitizers
+      # find it on PATH. The newest, if there is one.
+      - run: |
+          symbolizer=$(compgen -G '/usr/lib/llvm-*/bin/llvm-symbolizer' | sort -V | tail -n 1 || true)
+          if [ -n "$symbolizer" ]; then
+            dirname "$symbolizer" >> "$GITHUB_PATH"
+          fi
+      # Release, as in ci.yml: some tests stream tens of thousands of events.
+      # Each sanitizer reads its own options. ASan's quarantine of freed
+      # memory stays at its default (256 MB): it is what finds a use after
+      # free.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --release
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:log_path=${{ runner.temp }}/reports/asan
+          MSAN_OPTIONS: log_path=${{ runner.temp }}/reports/msan
+      # Also after a failed test: a report says why it failed.
+      - if: ${{ !cancelled() }}
+        run: |
+          shopt -s nullglob
+          reports=("$RUNNER_TEMP"/reports/*)
+          for report in "${reports[@]}"; do
+            echo "::group::$report"
+            cat "$report"
+            echo "::endgroup::"
+          done
+          if [ ${#reports[@]} -gt 0 ]; then
+            echo "::error::${#reports[@]} sanitizer report(s), printed above"
+            exit 1
+          fi

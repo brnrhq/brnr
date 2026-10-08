@@ -86,6 +86,10 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// them; one that stopped reading doesn't hold it up for longer.
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
+/// How long the host, exiting, waits for its logger to have written what
+/// it recorded before it lets go of its sessions (`wait_logged`).
+const LOG_FLUSH: Duration = Duration::from_secs(2);
+
 /// How long the host, exiting, then gives started bridges to exit on their
 /// own, their stdin closed, so they can act on the last events.
 const BRIDGE_EXIT: Duration = Duration::from_secs(2);
@@ -101,7 +105,7 @@ const STDERR_TAIL: usize = 20;
 const STDERR_LINE: usize = 2000;
 
 /// The most of a line of the agent's stderr the host holds: a longer one
-/// goes on in pieces of this, as it comes (ADR 49). Nobody reads stderr as
+/// goes on in pieces of this, as it comes (ADR 51). Nobody reads stderr as
 /// lines but people, and the host log.
 const PIECE: usize = 64 << 10;
 
@@ -242,7 +246,7 @@ struct Parts {
     agent: Vec<String>,
     proxy_pid: Option<u32>,
     started: SystemTime,
-    /// What the start channel is subscribed to from the start.
+    /// What the start channel is subscribed to once the start commits.
     events: Vec<String>,
     bridges: Vec<Bridge>,
 }
@@ -256,13 +260,13 @@ enum Ev {
     /// One line of agent stdout, with its `\n` unless it was the last bytes.
     AgentLine(Vec<u8>),
     /// A piece of a line of agent stdout past `LINE_BYTES`, as it came;
-    /// `end` if the line ends with it (ADR 49).
+    /// `end` if the line ends with it (ADR 51).
     AgentPiece {
         bytes: Vec<u8>,
         end: bool,
     },
     AgentStdoutEof,
-    /// Agent stderr: a line, or a piece of a long one (ADR 49).
+    /// Agent stderr: a line, or a piece of a long one (ADR 51).
     AgentStderr(Vec<u8>),
     AgentStderrEof,
     /// The agent has terminated; it has not been reaped yet.
@@ -385,7 +389,7 @@ struct Host {
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
     /// A line past `LINE_BYTES` is going through unread, from the editor or
-    /// from the agent, until its newline (ADR 49).
+    /// from the agent, until its newline (ADR 51).
     editor_long: bool,
     agent_long: bool,
     /// The last piece of the agent's stderr didn't end its line.
@@ -716,7 +720,7 @@ impl Host {
             self.display = Some(Display::start(self.sink.clone(), self.json_events));
         }
 
-        // The first peer: brnr start hears of whatever happens from here.
+        // brnr start hears how the start ends from here.
         if let Some(channel) = start_channel {
             self.open_start_channel(channel, events, &tx)
                 .map_err(|err| (format!("start channel: {err}"), 1))?;
@@ -762,7 +766,7 @@ impl Host {
     /// are there), and the agent killed with its process group (P14).
     /// brnr start or the editor is told by `main`, on fd 3, as of any start
     /// that fails before the event loop (see `Failure`), so nothing else is
-    /// to write there: the start channel stops being a peer, and what is
+    /// to write there: the start channel is let go of, and what is
     /// queued for the editor (`READY`) goes first. Returns the error and
     /// the exit code.
     fn died_starting(mut self, reason: &str) -> (String, u8) {
@@ -884,6 +888,7 @@ impl Host {
             self.drop_all(i, "exit");
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
+        self.wait_logged();
         // Let go of the sessions as brnr stops listing the process (ADR 3).
         self.claimed.clear();
         for s in &mut self.sessions {
@@ -959,12 +964,26 @@ impl Host {
         }
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
+        self.wait_logged();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
         self.close_display();
         self.release_stderr();
         std::mem::replace(&mut self.log, Logger::disabled()).finish();
+    }
+
+    /// Exiting, before brnr stops listing the process and its sessions are
+    /// let go of: waits up to LOG_FLUSH for its transcript to have what was
+    /// recorded, `exited` last, so that `log`, `list --all` and `--resume`
+    /// of a session that isn't running read it whole (ADR 48). A stalled
+    /// disk holds the sessions no longer.
+    fn wait_logged(&self) {
+        let (tx, rx) = mpsc::channel();
+        self.sink.when_written(move || {
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(LOG_FLUSH);
     }
 
     /// Exiting: the last events (`exited`) reach the peers, within
@@ -1107,7 +1126,7 @@ impl Host {
     /// Until the start is over, the agent's last lines on stderr, for the
     /// error if it fails (ADR 10).
     fn keep_stderr(&mut self, bytes: &[u8]) {
-        // The rest of a long line, whose start is kept already (ADR 49).
+        // The rest of a long line, whose start is kept already (ADR 51).
         let rest = std::mem::replace(&mut self.stderr_mid_line, !bytes.ends_with(b"\n"));
         if self.start_done || rest {
             return;
@@ -1180,7 +1199,7 @@ impl Host {
     }
 
     /// As `send_link`, with no copy made of `payload`: a piece of a long
-    /// line can be 32 MiB (ADR 49).
+    /// line can be 32 MiB (ADR 51).
     fn send_link_owned(&mut self, kind: u8, payload: Vec<u8>) {
         let Some(link) = &self.link else { return };
         self.from_agent.add(payload.len());
@@ -1394,7 +1413,7 @@ fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
 /// which drops our end so the agent gets EPIPE like it would directly. Past
 /// the cap of what is on its way to the editor (or the event loop) it waits,
 /// and the agent blocks writing, as it would to the editor directly. A line
-/// past `LINE_BYTES` goes on in pieces as they come (ADR 49).
+/// past `LINE_BYTES` goes on in pieces as they come (ADR 51).
 fn read_agent_stdout(
     mut out: ChildStdout,
     stop: PipeReader,
@@ -1462,7 +1481,7 @@ fn read_agent_stdout(
 
 /// The agent's stderr, line by line, held back as its stdout is; a line
 /// longer than `PIECE` goes on in pieces of that, as it comes
-/// (ADR 49). In the foreground (`shown`) it also goes to stderr as it comes,
+/// (ADR 51). In the foreground (`shown`) it also goes to stderr as it comes,
 /// unchanged (ADR 10): written from here, the agent blocks on a terminal
 /// that does.
 fn read_agent_stderr(err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {

@@ -219,7 +219,7 @@ impl Host {
     // ---- editor → agent ------------------------------------------------
 
     /// Splits what the editor writes into lines. One longer than
-    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 49).
+    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 51).
     pub(super) fn editor_bytes(&mut self, mut bytes: &[u8]) {
         if self.editor_long {
             let Some(i) = bytes.iter().position(|&b| b == b'\n') else {
@@ -255,7 +255,7 @@ impl Host {
         }
     }
 
-    /// A line past `LINE_BYTES` from `from` (ADR 49): with an editor it goes
+    /// A line past `LINE_BYTES` from `from` (ADR 51): with an editor it goes
     /// on unread, headless (from the agent) it is dropped.
     fn too_long(&mut self, from: &str) {
         let relayed = from == "editor" || self.link.is_some();

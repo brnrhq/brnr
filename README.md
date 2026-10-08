@@ -3,6 +3,7 @@
 [![CI](https://github.com/brnrhq/brnr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brnrhq/brnr/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/brnrhq/brnr)](https://github.com/brnrhq/brnr/releases/latest)
 [![Homebrew](https://img.shields.io/badge/brew-brnrhq%2Ftap%2Fbrnr-orange)](#install)
+[![crates.io](https://img.shields.io/crates/v/brnr)](https://crates.io/crates/brnr)
 [![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#building-and-testing)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
 [![License](https://img.shields.io/github/license/brnrhq/brnr)](LICENSE)
@@ -52,6 +53,14 @@ says whose they are), and link them next to `brnr`, where brnr finds them
 even when an editor's `PATH` doesn't include Homebrew. Each is versioned by
 the npm package it builds, so `brew upgrade` rebuilds an adapter when that
 package moves. `brnr doctor` shows which version each adapter was built from.
+
+Or brnr alone, from [crates.io](https://crates.io/crates/brnr), with the
+adapters from Homebrew or npm:
+
+```sh
+cargo install brnr --locked
+```
+
 Or from source, below.
 
 The formulae build from the source tarball on each
@@ -468,10 +477,10 @@ stdin, its stderr in the host log; a bare command found next to `brnr` first,
 as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
-Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
-`approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`, `close`,
-`stop` (see `src/host/control.rs`); those about a session name it by its exact
-id, and those that act on an editor's session are
+Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
+`pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
+`close`, `stop` (see `src/host/control.rs`); those about a session name it by
+its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
 
@@ -490,7 +499,8 @@ meanwhile), and an agent that stops reading its stdin holds back the editor's
 writes. A signal to `brnr acp`, or its stdout closing, doesn't wait behind
 them: it goes to the brnr process on a link of its own, and reaches the agent
 at once. Observers never slow the session: a bridge or watcher 16 MiB behind
-is cut off (a connection closed, a started bridge sent SIGTERM), and the
+is cut off (a connection closed, a started bridge sent SIGTERM), not counting
+the one line, however long, that took it past 16 MiB, and the
 foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
@@ -517,9 +527,15 @@ by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
 file has the same folder and name as Claude Code's own transcript. The events
 are the ones bridges get, `exited` included, and are what `brnr log`,
 `list --all` and `--resume` read; `log` reads the raw file too when `acp`
-events are chosen. Every record carries `host_id`, `host_pid`, `proxy_pid`
-and `agent_pid` for joining. `log = "events"` leaves out the raw file, most of
-the space; `log = false` writes nothing.
+events are chosen. A thread of the process's own writes them, so the session
+never waits for the disk; `log` of a running session first waits until its
+process has written what it recorded until then (up to 5 s, then it says so
+and shows what is there), so a turn `start --wait` just reported is in it,
+and a process that exits is listed until its transcript has its `exited` (2 s
+at most). A process killed (SIGKILL) loses what it hadn't written yet. Every record
+carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
+`log = "events"` leaves out the raw file, most of the space; `log = false`
+writes nothing.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host

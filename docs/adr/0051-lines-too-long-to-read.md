@@ -1,4 +1,4 @@
-# 49. Lines too long to read
+# 51. Lines too long to read
 
 Accepted 2026-10-08. Implemented. Amends 6 (what a reader holds beside the
 cap), 10 (the agent's stderr goes on in pieces) and 26 (a line too long to
@@ -55,7 +55,7 @@ What is bounded, and what isn't (the issue's audit):
 - Bounded: the agent's stdout and the editor's input (16 MiB queued, and
   up to 32 MiB of a line still coming, each); the agent's stderr (the same
   cap, plus a piece of 64 KiB); the link (16 MiB, and a frame is at most a
-  line the host read or a piece); each peer's queue (16 MiB, ADR 6); the
+  line the host read or a piece); each peer's queue (16 MiB, plus the line that takes it past the cap and one more, ADR 6 and 49); the
   logger's queue (64 MiB, ADR 6); the foreground's display (ADR 9). The proxy
   reads the editor 64 KiB at a time.
 - Not bounded by a count of bytes: the agent's message or thought being

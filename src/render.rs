@@ -100,7 +100,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
-        // A line too long to read: passed on unread, or dropped (ADR 49).
+        // A line too long to read: passed on unread, or dropped (ADR 51).
         "line_too_long" => {
             let what = if e["relayed"] == true { "passed on unread" } else { "dropped" };
             format!("a line from the {} over {} bytes, {what}", s(&e["from"]), e["limit"])
