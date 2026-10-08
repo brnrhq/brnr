@@ -2,7 +2,11 @@
 
 Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
-abort (a stack overflow), which runs no hook.
+abort (a stack overflow), which runs no hook. A start that fails as it opens
+the start channel (ADR 7) or its bridges records `exited` too, so a host log
+without one is a death nothing recorded; `brnr doctor` lists those whose
+process isn't running, with when each last wrote and the sessions it had
+open.
 From the review's "to investigate".
 
 ## Context

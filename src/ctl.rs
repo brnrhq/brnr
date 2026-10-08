@@ -888,10 +888,10 @@ fn default_events() -> Vec<String> {
 // ---- plumbing ------------------------------------------------------------
 
 /// Every process with a metadata file, asking each for its live status.
-/// Files left by a process that no longer exists are removed. The runtime
-/// directory must be private, as the processes themselves require: anyone
-/// who could write to it could list a process of their own, and be sent
-/// what brnr sends.
+/// Files left by a process that is gone are removed, even when its pid is
+/// another process's now (see `gone`). The runtime directory must be
+/// private, as the processes themselves require: anyone who could write to
+/// it could list a process of their own, and be sent what brnr sends.
 fn discover() -> Result<Vec<Host>, String> {
     let dir = paths::runtime_dir();
     match paths::check_private(&dir) {
@@ -908,16 +908,110 @@ fn discover() -> Result<Vec<Host>, String> {
         }
         let Some(meta) = read_meta(&path) else { continue };
         let mut host = Host { meta, status: None };
-        host.status = request(&host, &json!({ "cmd": "status" })).ok();
-        if host.status.is_none() && !alive(host.meta["host_pid"].as_i64().unwrap_or(0)) {
-            let _ = fs::remove_file(&path);
-            let _ = fs::remove_file(path.with_extension("sock"));
-            continue;
+        match probe(&path, &host) {
+            Probe::Answered(status) => host.status = Some(status),
+            Probe::Silent(_) => {}
+            Probe::Gone => {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(path.with_extension("sock"));
+                continue;
+            }
         }
         hosts.push(host);
     }
     hosts.sort_by(|a, b| a.meta["started"].as_str().cmp(&b.meta["started"].as_str()));
     Ok(hosts)
+}
+
+/// What a process whose metadata is at `path` turned out to be, asked for
+/// its status.
+enum Probe {
+    /// Running and answering: its status.
+    Answered(Value),
+    /// Running but not answering (ADR 3): why.
+    Silent(String),
+    /// Gone, whatever process has its pid now.
+    Gone,
+}
+
+/// Asks the process whose metadata is at `path` for its status, and says
+/// what it is.
+fn probe(path: &Path, host: &Host) -> Probe {
+    let pid = host.meta["host_pid"].as_i64().unwrap_or(0);
+    let socket = path.with_extension("sock");
+    match request(host, &json!({ "cmd": "status" })) {
+        Ok(status) => Probe::Answered(status),
+        Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
+        // Running, but accepting nothing: its backlog is full (`made`).
+        Err(e) if refused(&e) => Probe::Silent("not answering".into()),
+        Err(e) => Probe::Silent(e.to_string()),
+    }
+}
+
+/// How long a refused connection waits to be tried again: a process that
+/// is starting binds its socket a moment before it listens on it.
+const REFUSED_AGAIN: Duration = Duration::from_millis(20);
+
+/// Whether the brnr process with `pid` that made `file` in the runtime
+/// directory (its metadata, or its socket) is gone, a connection to its
+/// `socket` having failed with `err`.
+///
+/// A brnr process binds its socket and listens on it before it writes
+/// anything else there, and listens until it removes it as it ends. While
+/// it lives, connecting succeeds, whether it answers or not (SIGSTOPped
+/// too: the kernel queues the connection). A socket nobody listens on
+/// refuses, as one that isn't there does: the process that made it is
+/// gone, even when another process has its pid now (a reboot, or pids
+/// wrapping around). A pid that isn't the user's isn't brnr's (`alive`).
+fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> bool {
+    if !alive(pid) {
+        return true;
+    }
+    if !refused(err) {
+        return false;
+    }
+    std::thread::sleep(REFUSED_AGAIN);
+    match UnixStream::connect(socket) {
+        Err(e) if refused(&e) => !made(pid, file),
+        _ => false,
+    }
+}
+
+/// Whether a connection failed because nobody listens: refused, or no
+/// socket there.
+fn refused(err: &io::Error) -> bool {
+    matches!(err.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
+}
+
+/// Whether the process with `pid` now may be the one that made `file`,
+/// though its socket refuses: macOS also refuses a connection to a socket
+/// whose backlog is full, as a stopped process's fills up with every
+/// `brnr list` that waited on it. One that started after `file` was
+/// written is another process. What can't be told counts as "may be":
+/// nothing is removed on a guess (P4).
+#[cfg(target_vendor = "apple")]
+fn made(pid: i64, file: &Path) -> bool {
+    use std::time::UNIX_EPOCH;
+    let Ok(written) = fs::metadata(file).and_then(|m| m.modified()) else { return true };
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let buffer = (&raw mut info).cast();
+    let got =
+        unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, buffer, size) };
+    if got != size {
+        return true;
+    }
+    let started = UNIX_EPOCH
+        + Duration::from_secs(info.pbi_start_tvsec)
+        + Duration::from_micros(info.pbi_start_tvusec);
+    started <= written
+}
+
+/// Linux refuses a connection only when nobody listens: a full backlog
+/// makes it wait.
+#[cfg(not(target_vendor = "apple"))]
+fn made(_pid: i64, _file: &Path) -> bool {
+    false
 }
 
 /// A process's metadata file, if it is one: the socket it names must be the
