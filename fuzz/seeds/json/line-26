@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"method":"session/set_mode","params":{"sessionId":"sess-1","modeId":"plan"}}

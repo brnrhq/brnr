@@ -1,0 +1,41 @@
+# The fuzz targets (cargo fuzz, on nightly): the parsers that read bytes from
+# outside brnr. A workspace of its own, so `cargo build` and `cargo test` in
+# the repository never build it; CONTRIBUTING.md says how to run it.
+[package]
+name = "brnr-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+brnr = { path = ".." }
+libfuzzer-sys = "0.4.13"
+serde_json = "1.0.151"
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host"
+path = "fuzz_targets/host.rs"
+test = false
+doc = false
+bench = false

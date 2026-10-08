@@ -20,6 +20,13 @@ pass before a pull request can merge. The integration tests (`tests/`) drive
 the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it.
 
+The parsers that read bytes from outside brnr have fuzz targets in `fuzz/`
+(frames, ACP lines, the host fed ACP from both sides), which CI fuzzes
+with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:
+`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run host corpus/host
+seeds/host` (`cargo fuzz list` has the others). A crash it finds is fixed
+with a regression test in the main test suite.
+
 The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
 the pull request.
