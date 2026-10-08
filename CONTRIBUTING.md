@@ -24,6 +24,35 @@ The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
 the pull request.
 
+## Dependencies
+
+brnr has five direct dependencies, and few is the point. A new one needs:
+
+- a reason, in the pull request: what it does that brnr shouldn't do itself;
+- licenses and advisories that pass `cargo deny check` (`deny.toml`);
+- a [cargo vet](https://mozilla.github.io/cargo-vet/) audit for it and each
+  crate it brings, or an exemption saying it isn't audited yet
+  (`supply-chain/`). CI runs `cargo vet --locked`.
+
+Audits are imported from Mozilla, Google, the Bytecode Alliance, Embark,
+ISRG and Zcash (`supply-chain/config.toml`); crates none of them has audited
+at the version brnr uses are exemptions, to be replaced by audits.
+
+When a pull request moves crate versions (Dependabot's weekly `crates` one,
+say), `vet` fails for each new version nobody has audited. On its branch:
+
+```sh
+cargo vet                       # fetches the importers' latest audits; often enough
+cargo vet suggest               # what is left, smallest diff first
+cargo vet diff serde 1.0.228 1.0.229   # read it, then:
+cargo vet certify serde 1.0.228 1.0.229
+cargo vet prune                 # drops exemptions and imports nothing needs now
+```
+
+and push the changes in `supply-chain/` to the branch. A version not worth
+reading yet becomes an exemption instead (`cargo vet regenerate exemptions`),
+said in the pull request.
+
 ## Decisions
 
 [ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14, and P15

@@ -6,7 +6,8 @@
 #   formula is versioned by its npm package).
 # - brnr's crates. Edition 2024's resolver keeps to versions that build on
 #   Cargo.toml's rust-version; minor and patch updates come as one pull
-#   request.
+#   request. cargo vet fails it for a new version nobody has audited;
+#   CONTRIBUTING.md says what the maintainer does then.
 # - The actions the workflows use, pinned to commit SHAs with the version in a
 #   comment, which Dependabot moves together: one pull request for all of them.
 #

@@ -571,7 +571,11 @@ release; the next brnr release ships it.
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and propose a
-change. Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) says.
+change. brnr has five direct dependencies; CI checks their licenses and
+advisories with cargo deny, and with cargo vet that every crate is audited
+(by Mozilla, Google and others whose audits brnr imports) or listed as an
+exemption still to audit. Report vulnerabilities privately, as
+[SECURITY.md](SECURITY.md) says.
 
 ## License
 
