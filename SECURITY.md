@@ -25,6 +25,9 @@ Before 1.0, only the latest release gets fixes; upgrading is the fix
 
 ## In scope
 
+[docs/threat-model.md](docs/threat-model.md) says who can reach what, how
+brnr keeps it so, the test for each claim, and the known gaps.
+
 - Reaching a session from outside: another user connecting to a control
   socket, reading or writing the runtime directory, metadata or session
   locks.
