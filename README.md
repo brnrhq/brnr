@@ -420,9 +420,11 @@ Nothing is buffered without limit, and who gives way depends on who is
 reading. The session's own pipes get backpressure, as a direct pipe would give
 them: an editor that stops reading holds the agent back on its stdout for as
 long as it does, with no timeout of brnr's own (and observers see nothing new
-meanwhile). Observers never slow the session: a bridge or watcher 16 MiB
-behind is cut off (a connection closed, a started bridge sent SIGTERM), and the
-foreground's display skips events.
+meanwhile), and an agent that stops reading its stdin holds back the editor's
+writes; a signal to `brnr acp` still reaches the agent at once. Observers never
+slow the session: a bridge or watcher 16 MiB behind is cut off (a connection
+closed, a started bridge sent SIGTERM), and the foreground's display skips
+events.
 
 ## Transcripts
 

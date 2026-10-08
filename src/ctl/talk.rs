@@ -512,7 +512,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         // Our child, in a group of its own, printing the session to our
         // stdout; we pass it the signals we get (Ctrl-C), once.
         let signals = signals::install();
-        let mut started = spawn::child(&mut cmd, theirs.as_raw_fd(), 3)
+        let mut started = spawn::child(&mut cmd, &[(theirs.as_raw_fd(), 3)])
             .map_err(|e| format!("starting the process: {e}"))?;
         let pid = started.id();
         thread::spawn(move || forward_signals(signals, pid as i32));
@@ -521,7 +521,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         (stdin, pid)
     } else {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        spawn::detached(&mut cmd, theirs.as_raw_fd(), 3)
+        spawn::detached(&mut cmd, &[(theirs.as_raw_fd(), 3)])
             .map_err(|e| format!("starting the process: {e}"))?
     };
     drop(theirs);

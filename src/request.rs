@@ -6,7 +6,8 @@
 //! it. The process reads its stdin to EOF before doing anything else, and
 //! refuses to start on a request cut short; it reads no config and takes no
 //! flags. Its fd 3 carries the editor link (`acp`) or the start channel
-//! (`start`, ADR 7).
+//! (`start`, ADR 7); an editor's process has the proxy's signal link on fd 4
+//! as well (see frame.rs), and doesn't start without it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -45,7 +46,8 @@ pub enum Role {
     Headless(Headless),
 }
 
-/// `brnr acp`: the editor's process, linked to the proxy on fd 3.
+/// `brnr acp`: the editor's process, joined to the proxy by the link on
+/// fd 3 and the signal link on fd 4.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Editor {

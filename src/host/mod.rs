@@ -5,8 +5,9 @@
 //! Started detached by `brnr acp` for an editor, or by `brnr start` for a
 //! headless session (detached, or with `--foreground` as its child), with
 //! the one request that says everything on its stdin (see request.rs) and
-//! fd 3: the editor link, or the start channel (see start.rs). It is the hub
-//! between three kinds of peer:
+//! fd 3: the editor link, or the start channel (see start.rs). An editor's
+//! process also has the proxy's signal link on fd 4 (see frame.rs). It is
+//! the hub between three kinds of peer:
 //!
 //! - the agent, over its stdio;
 //! - the ACP owner: the editor, through the proxy on the link, or the host
@@ -17,9 +18,11 @@
 //!
 //! When the editor goes away, the agent gets what a directly spawned agent
 //! would have: its stdin is closed and it is killed, with its process group
-//! (a signal the proxy catches reaches the agent as that signal). An editor
-//! that is slow, or stops reading, holds the agent back as a pipe would, for
-//! as long as it does (see flow.rs).
+//! (a signal the proxy catches reaches the agent as that signal, at once:
+//! the signal link is read whatever holds the link back). An editor that is
+//! slow, or stops reading, holds the agent back as a pipe would, for as long
+//! as it does, and an agent that stops reading its stdin holds the editor
+//! back likewise (see flow.rs).
 
 mod acp;
 mod control;
@@ -71,6 +74,9 @@ use start::StartChannel;
 /// Where the editor link or the start channel is: a socket either way.
 const CHANNEL_FD: RawFd = 3;
 
+/// Where an editor's process has the proxy's signal link (see frame.rs).
+const SIGNAL_LINK_FD: RawFd = 4;
+
 /// How long to keep forwarding output after the agent exits, in case
 /// something it started still holds its stdout open.
 const DRAIN: Duration = Duration::from_millis(500);
@@ -87,10 +93,6 @@ const BRIDGE_EXIT: Duration = Duration::from_secs(2);
 /// they wait for it (ADR 6). The agent's output and the editor's input are
 /// held to a number of bytes as well (see flow.rs).
 const EVENTS_QUEUED: usize = 1024;
-
-/// While the agent's stdin holds the link back, how often the link reader
-/// looks whether the proxy has gone.
-const HELD_CHECK: Duration = Duration::from_millis(200);
 
 /// The agent's last lines on stderr, for a failed start (ADR 10), and how
 /// much of each is kept.
@@ -112,9 +114,16 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
         return ExitCode::from(2);
     }
     death::install();
-    close_inherited_fds(&[CHANNEL_FD]);
+    // A socket on fd 4 is kept until the request says whose process this
+    // is: the signal link, if it is an editor's.
+    let signal_link = is_socket(SIGNAL_LINK_FD);
+    close_inherited_fds(if signal_link { &[CHANNEL_FD, SIGNAL_LINK_FD] } else { &[CHANNEL_FD] });
     set_cloexec(CHANNEL_FD);
     let channel = unsafe { UnixStream::from_raw_fd(CHANNEL_FD) };
+    let signal_link = signal_link.then(|| {
+        set_cloexec(SIGNAL_LINK_FD);
+        unsafe { UnixStream::from_raw_fd(SIGNAL_LINK_FD) }
+    });
     let request = match read_request() {
         Ok(request) => request,
         Err((msg, editor)) => {
@@ -128,8 +137,18 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
         signals::write_from_background();
     }
     let editor = matches!(request.role, Role::Editor(_));
+    // An editor's process doesn't start without its signal link, as it
+    // doesn't without the link; a headless one's fd 4 isn't brnr's, and is
+    // closed.
+    let signal_link = match signal_link {
+        None if editor => {
+            Failure { channel: Some((channel, true)) }.report("no signal link on fd 4", 2);
+            return ExitCode::from(2);
+        }
+        link => link.filter(|_| editor),
+    };
     let mut failure = Failure { channel: channel.try_clone().ok().map(|c| (c, editor)) };
-    match panic::catch_unwind(AssertUnwindSafe(|| Host::start(request, channel))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| Host::start(request, channel, signal_link))) {
         Ok(Ok(host)) => host.run(),
         Ok(Err((msg, code))) => {
             failure.report(&msg, code);
@@ -190,8 +209,11 @@ impl Failure {
 }
 
 enum Ev {
-    /// A frame from the proxy; `None` once the link is gone.
+    /// A frame from the proxy on the link; `None` once the link is gone.
     Link(Option<(u8, Vec<u8>)>),
+    /// A frame from the proxy on the signal link, which nothing holds back;
+    /// `None` once it is gone.
+    SignalLink(Option<(u8, Vec<u8>)>),
     /// One line of agent stdout, with its `\n` unless it was the last bytes.
     AgentLine(Vec<u8>),
     AgentStdoutEof,
@@ -372,7 +394,12 @@ struct Host {
 }
 
 impl Host {
-    fn start(req: Request, channel: UnixStream) -> Result<Host, (String, u8)> {
+    /// `channel` is fd 3; `signal_link`, fd 4, is an editor's process's.
+    fn start(
+        req: Request,
+        channel: UnixStream,
+        signal_link: Option<UnixStream>,
+    ) -> Result<Host, (String, u8)> {
         let recorded = req.recorded();
         let Request { profile, agent, cwd, strict, log: logging, bridges, role } = req;
         let (editor, headless) = match role {
@@ -498,6 +525,10 @@ impl Host {
             link_writer = Some(thread::spawn(move || write_link(link, rx, b)));
             frames
         });
+        if let Some(signal_link) = signal_link {
+            let t = tx.clone();
+            thread::spawn(move || read_signal_link(signal_link, t));
+        }
         let t = tx.clone();
         thread::spawn(move || control::serve(listener, t));
         let signals = signals::install();
@@ -851,13 +882,17 @@ impl Host {
                     self.to_agent.done(payload.len());
                 }
                 frame::EOF => self.editor_eof(),
+                _ => {}
+            },
+            Ev::SignalLink(Some((kind, payload))) => match kind {
                 frame::SIGNAL if payload.len() == 4 => {
                     self.signal(i32::from_be_bytes(payload.try_into().unwrap()));
                 }
                 frame::STDOUT_CLOSED => self.editor_stopped_reading(),
                 _ => {}
             },
-            Ev::Link(None) => self.link_gone(),
+            // The proxy has gone: whichever link says so first.
+            Ev::Link(None) | Ev::SignalLink(None) => self.link_gone(),
             Ev::AgentLine(line) => {
                 self.agent_line(&line);
                 self.from_agent.done(line.len());
@@ -970,8 +1005,9 @@ impl Host {
         self.stop_stdout = None;
     }
 
-    /// The editor went away: the agent goes too, as if the editor had run
-    /// it, with whatever it started in its process group.
+    /// The editor went away (the proxy did, which either of its links says):
+    /// the agent goes too, as if the editor had run it, with whatever it
+    /// started in its process group.
     fn link_gone(&mut self) {
         self.link = None;
         if !take(&mut self.editor) || self.status.is_some() {
@@ -986,8 +1022,9 @@ impl Host {
         let Some(link) = &self.link else { return };
         self.from_agent.add(payload.len());
         if link.send((kind, payload.to_vec())).is_err() {
-            // The writer failed and shut the link down, so the reader
-            // thread reports it gone (`link_gone`).
+            // The writer failed and shut the link down: the proxy has gone,
+            // which the reader thread or the signal link reports
+            // (`link_gone`).
             self.link = None;
         }
     }
@@ -1147,17 +1184,13 @@ fn read_signals(mut signals: PipeReader, tx: SyncSender<Ev>) {
 
 /// Frames from the proxy until the link is gone. While the agent's stdin is
 /// a cap behind, the link isn't read: what the editor writes waits in it,
-/// and the proxy, then the editor, block writing. What the proxy sends after
-/// that (a signal, stdin's EOF) waits too; the proxy going away doesn't.
+/// and the proxy, then the editor, block writing; stdin's EOF waits behind
+/// it, as it would on a pipe. Signals don't, nor does the proxy going away:
+/// they come on the signal link (see `read_signal_link`).
 fn read_link(link: UnixStream, tx: SyncSender<Ev>, to_agent: Backlog) {
     let mut reader = BufReader::new(link);
     loop {
-        while !to_agent.room(Some(HELD_CHECK)) {
-            if hung_up(reader.get_ref()) {
-                let _ = tx.send(Ev::Link(None));
-                return;
-            }
-        }
+        to_agent.room(None);
         match frame::read(&mut reader) {
             Ok(Some(frame)) => {
                 if frame.0 == frame::DATA {
@@ -1175,10 +1208,24 @@ fn read_link(link: UnixStream, tx: SyncSender<Ev>, to_agent: Backlog) {
     }
 }
 
-/// Whether the other end of `link` has closed, or this one was shut down.
-fn hung_up(link: &UnixStream) -> bool {
-    let mut p = libc::pollfd { fd: link.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    unsafe { libc::poll(&mut p, 1, 0) > 0 && p.revents & (libc::POLLHUP | libc::POLLERR) != 0 }
+/// Frames from the proxy on the signal link until it is gone. Never held
+/// back: a signal reaches the agent at once, and the proxy going away is
+/// heard, however far behind the agent is reading its stdin.
+fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
+    let mut reader = BufReader::new(link);
+    loop {
+        match frame::read(&mut reader) {
+            Ok(Some(frame)) => {
+                if tx.send(Ev::SignalLink(Some(frame))).is_err() {
+                    return;
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = tx.send(Ev::SignalLink(None));
+                return;
+            }
+        }
+    }
 }
 
 /// Splits the agent's stdout into lines until EOF, or until `stop` closes,
