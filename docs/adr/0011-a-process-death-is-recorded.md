@@ -49,6 +49,11 @@ agent would all die in the same instant, with no record.
 
 ## Decision
 
+- On any agent exit, including a spontaneous crash during setup or a turn,
+  the host SIGKILLs what remains in the agent's process group before reaping
+  it (P14). Until then its pid and group id cannot be reused. Cleanup must
+  not depend on a stop request having arrived first.
+
 - A detached process's stderr goes to its host log (`host-stderr`), not
   `/dev/null` (with `log = false` there is no host log, and it stays
   `/dev/null`).
@@ -66,6 +71,23 @@ agent would all die in the same instant, with no record.
   `brnr acp` says it on stderr and exits 101.
 - The agent's command leaves the process's argv with the start request
   (ADR 8).
+
+## Failure testing
+
+`tests/chaos.rs` injects seeded agent failures and kills the host, proxy or
+bridge during a turn. A killed host cannot write `exited`: doctor reports
+its incomplete log and repairs stale runtime files, and the session lock
+can be taken again (ADR 3). A killed proxy leaves the host alive to record
+its death and stop even a blocked agent. A killed bridge leaves the session
+and its ownership intact (ADR 35). Setup faults never commit the prompt
+(ADR 7).
+
+The host is the only supervisor. SIGKILL closes its pipes but cannot make
+it signal its children: a blocked agent, an EOF-ignoring bridge or their
+descendants can outlive it. The host-SIGKILL test checks a flooding agent
+that exits on its broken pipe, not unconditional child cleanup. A separate
+supervisor and a decision about its own lifetime are needed for that
+stronger promise; doctor does not kill processes inferred from stale pids.
 
 ## To find out
 
