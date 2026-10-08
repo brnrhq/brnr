@@ -94,7 +94,16 @@ def config(model="small"):
     options = []
     if MODE_ID:
         choices = [{"value": m["id"], "name": m["name"]} for m in MODES["availableModes"]]
-        options.append({"id": MODE_ID, "name": "Mode", "category": "mode", "type": "select", "currentValue": mode, "options": choices})
+        options.append(
+            {
+                "id": MODE_ID,
+                "name": "Mode",
+                "category": "mode",
+                "type": "select",
+                "currentValue": mode,
+                "options": choices,
+            }
+        )
     option = {
         "id": MODEL_ID,
         "name": "Model",
@@ -136,7 +145,13 @@ def error(mid, code, message):
 
 
 def update(session, value):
-    send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session, "update": value}})
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session, "update": value},
+        }
+    )
 
 
 def say(session, text, kind="agent_message_chunk"):
@@ -175,7 +190,7 @@ def run(mid, sid, text):
         time.sleep(float(words[1]))
         end_turn(mid)
     elif first == "reply":
-        say(sid, text[len("reply "):])
+        say(sid, text[len("reply ") :])
         end_turn(mid)
     elif first == "big":
         say(sid, "z" * int(words[1]))
@@ -183,22 +198,52 @@ def run(mid, sid, text):
     elif first == "many":
         pad = "m" * int(words[2]) if len(words) > 2 else ""
         for i in range(int(words[1])):
-            update(sid, {"sessionUpdate": "agent_message_chunk", "messageId": f"msg-{i}", "content": {"type": "text", "text": f"message {i}{pad}"}})
+            update(
+                sid,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "messageId": f"msg-{i}",
+                    "content": {"type": "text", "text": f"message {i}{pad}"},
+                },
+            )
         end_turn(mid)
     elif first == "think":
         say(sid, "pondering", "agent_thought_chunk")
         say(sid, "thought about it")
         end_turn(mid)
     elif first == "tools":
-        plan = [{"content": "Run the tests", "status": "in_progress", "priority": "high"},
-                {"content": "Fix them", "status": "pending", "priority": "high"}]
+        plan = [
+            {"content": "Run the tests", "status": "in_progress", "priority": "high"},
+            {"content": "Fix them", "status": "pending", "priority": "high"},
+        ]
         update(sid, {"sessionUpdate": "plan", "entries": plan})
-        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Run the tests", "kind": "execute", "status": "pending"})
-        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"})
-        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})
+        update(
+            sid,
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "t1",
+                "title": "Run the tests",
+                "kind": "execute",
+                "status": "pending",
+            },
+        )
+        update(
+            sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"}
+        )
+        update(
+            sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"}
+        )
         plan[0]["status"] = "completed"
         update(sid, {"sessionUpdate": "plan", "entries": plan})
-        update(sid, {"sessionUpdate": "usage_update", "used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})
+        update(
+            sid,
+            {
+                "sessionUpdate": "usage_update",
+                "used": 12345,
+                "size": 200000,
+                "cost": {"amount": 0.42, "currency": "USD"},
+            },
+        )
         say(sid, "did the tools")
         end_turn(mid)
     elif first == "settings":
@@ -208,12 +253,24 @@ def run(mid, sid, text):
         update(sid, {"sessionUpdate": "config_option_update", "configOptions": options})
         end_turn(mid)
     elif first == "commands":
-        update(sid, {"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "review", "description": "Review the changes"}]})
+        update(
+            sid,
+            {
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [{"name": "review", "description": "Review the changes"}],
+            },
+        )
         end_turn(mid)
     elif first == "unknown":
         chunk = {"sessionUpdate": "agent_message_chunk", "messageId": "u1"}
         update(sid, {**chunk, "content": {"type": "text", "text": "one "}})
-        spawned = {"sessionUpdate": "subagent_spawned", "subagentSessionId": "sub-1", "name": "helper", "task": "look", "capabilities": {}}
+        spawned = {
+            "sessionUpdate": "subagent_spawned",
+            "subagentSessionId": "sub-1",
+            "name": "helper",
+            "task": "look",
+            "capabilities": {},
+        }
         update(sid, spawned)
         update(sid, {**chunk, "content": {"type": "text", "text": "message"}})
         end_turn(mid)
@@ -227,7 +284,14 @@ def run(mid, sid, text):
         tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
         options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
         params = {"sessionId": sid, "toolCall": tool, "options": options}
-        line = json.dumps({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+        line = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": request,
+                "method": "session/request_permission",
+                "params": params,
+            }
+        )
         if how == "deep":
             n = int(words[2]) if len(words) > 2 else 10000
             line = line.replace('"INPUT"', "[" * n + "]" * n)
@@ -249,13 +313,32 @@ def run(mid, sid, text):
             "kind": kind,
             "locations": [{"path": "src/lib.rs", "line": 2}],
             "rawInput": {"file_path": "src/lib.rs"},
-            "content": [{"type": "diff", "path": "src/lib.rs", "oldText": "one\nold line\nthree\n", "newText": "one\nnew line\nthree\n"}],
+            "content": [
+                {
+                    "type": "diff",
+                    "path": "src/lib.rs",
+                    "oldText": "one\nold line\nthree\n",
+                    "newText": "one\nnew line\nthree\n",
+                }
+            ],
         }
         if env("PERM_COMMAND"):
             command = env("PERM_COMMAND")
-            tool = {"toolCallId": request, "title": command, "kind": "execute", "rawInput": {"command": command}}
+            tool = {
+                "toolCallId": request,
+                "title": command,
+                "kind": "execute",
+                "rawInput": {"command": command},
+            }
         params = {"sessionId": sid, "toolCall": tool, "options": options}
-        send({"jsonrpc": "2.0", "id": request, "method": "session/request_permission", "params": params})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": request,
+                "method": "session/request_permission",
+                "params": params,
+            }
+        )
     else:
         end_turn(mid)
 
@@ -307,7 +390,12 @@ for line in sys.stdin:
         }
         methods = [{"id": "fake-login", "name": "Log in to the fake"}]
         info = {"name": "fake-agent", "version": "1.2.3"}
-        answer = {"protocolVersion": 1, "agentCapabilities": caps, "authMethods": methods, "agentInfo": info}
+        answer = {
+            "protocolVersion": 1,
+            "agentCapabilities": caps,
+            "authMethods": methods,
+            "agentInfo": info,
+        }
         if not env("NO_STEERING"):
             answer["_meta"] = {"steering": {"supported": True}}
         result(mid, answer)
@@ -325,13 +413,27 @@ for line in sys.stdin:
         sessions += 1
         session = f"sess-{sessions}"
         result(mid, opened(session))
-        update(session, {"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "compact", "description": "Compact the conversation"}]})
+        update(
+            session,
+            {
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [
+                    {"name": "compact", "description": "Compact the conversation"}
+                ],
+            },
+        )
         update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
         if env("STALL"):
             time.sleep(100000)
     elif method in ("session/resume", "session/load"):
         if method == "session/load":
-            update(sid, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "old question"}})
+            update(
+                sid,
+                {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "old question"},
+                },
+            )
             say(sid, "replayed history")
             update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
         result(mid, settings({}))
@@ -341,14 +443,21 @@ for line in sys.stdin:
     elif method == "session/close":
         result(mid, {})
     elif method == "session/list":
-        old = {"sessionId": "old-1", "cwd": params.get("cwd"), "title": "An old session", "updatedAt": "2026-10-01T10:00:00Z"}
+        old = {
+            "sessionId": "old-1",
+            "cwd": params.get("cwd"),
+            "title": "An old session",
+            "updatedAt": "2026-10-01T10:00:00Z",
+        }
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
         result(mid, {"sessions": [old, known]})
     elif method == "session/set_mode":
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})
             if not env("QUIET_MODE"):
-                update(sid, {"sessionUpdate": "current_mode_update", "currentModeId": params["modeId"]})
+                update(
+                    sid, {"sessionUpdate": "current_mode_update", "currentModeId": params["modeId"]}
+                )
         else:
             error(mid, -32602, f"no mode {params.get('modeId')}")
     elif method == "session/set_model" and env("LEGACY_MODELS"):
@@ -358,7 +467,11 @@ for line in sys.stdin:
         if params.get("configId") == MODEL_ID and params.get("value") in ("small", "large"):
             model = params["value"]
             result(mid, {"configOptions": config(model)})
-        elif MODE_ID and params.get("configId") == MODE_ID and params.get("value") in ("default", "plan"):
+        elif (
+            MODE_ID
+            and params.get("configId") == MODE_ID
+            and params.get("value") in ("default", "plan")
+        ):
             mode = params["value"]
             result(mid, {"configOptions": config(model)})
         else:
