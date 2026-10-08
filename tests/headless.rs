@@ -833,7 +833,13 @@ fn a_long_message_doesnt_put_a_watcher_behind() {
         .spawn()
         .unwrap();
     let stdout = watch.stdout.take().unwrap();
-    let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
+    let read = Arc::new(AtomicUsize::new(0));
+    let counted = read.clone();
+    let lines = std::thread::spawn(move || {
+        for _ in BufReader::new(stdout).lines() {
+            counted.fetch_add(1, Relaxed);
+        }
+    });
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [8_000_000, 12_000_000] {
@@ -844,12 +850,17 @@ fn a_long_message_doesnt_put_a_watcher_behind() {
     // with, and a status to make sure.
     assert!(env.run(&["status", "sess-1"]).status.success());
     kill(watch.id() as i32, libc::SIGCONT);
+    // Two messages and two turn_endeds, read before the process exits: an
+    // exit waits only so long for a peer to be sent what is queued for it.
+    let all = || read.load(Relaxed) == 4 || watch.try_wait().unwrap().is_some();
+    assert!(wait_for(Duration::from_secs(60), all), "watch read {} lines", read.load(Relaxed));
     env.stop();
     assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
     let mut err = String::new();
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(watch.wait().unwrap().success(), "watch failed: {err}");
-    assert_eq!(lines.join().unwrap(), 4, "two messages and two turn_endeds");
+    lines.join().unwrap();
+    assert_eq!(read.load(Relaxed), 4, "two messages and two turn_endeds");
 }
 
 /// Installed the way Homebrew does it: `bin/brnr` and the adapters are
