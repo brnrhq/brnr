@@ -445,3 +445,104 @@ fn adapter_versions() {
     assert!(line("codex-acp").ends_with("(@agentclientprotocol/codex-acp 2.1.1)"), "{text}");
     assert!(line("claude-agent-acp").starts_with("--"), "{text}");
 }
+
+/// `doctor --report` (ADR 45): the version, the OS, the adapters, the checks
+/// that aren't ok, and the end of the latest host log and of the latest of a
+/// process that panicked or died without recording it, with secrets
+/// redacted, even where an older brnr didn't, and the home directory as `~`.
+/// `--json` has the same data.
+#[test]
+fn the_report_is_what_to_paste() {
+    let env = Env::new("dr-report");
+    let secret = "s3cret-token-value";
+    env.write_config(&format!(
+        "[[profiles.default.headless.mcp_servers]]\nname = \"files\"\ncommand = \"true\"\nenv = {{ TOKEN = \"{secret}\" }}\n"
+    ));
+    let hosts = env.dir.join("home/hosts");
+    mkdir(&env.dir.join("home"), 0o700);
+    mkdir(&hosts, 0o700);
+    // An older brnr's log of a panic, its secret not redacted, and a log of
+    // a process that exited, older still: not shown.
+    let opened = format!(
+        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"{}","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}]}}}}}}"#,
+        env.dir.display()
+    );
+    let panicked = format!(
+        "{opened}\n{}\n{}\n",
+        r#"{"ts":"t","event":{"event":"panic","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
+        r#"{"ts":"t","event":{"event":"exited","status":null,"reason":"brnr panicked at src/x.rs:1:1: oops"}}"#
+    );
+    write(&hosts.join("20260101T000000-1.jsonl"), &panicked, 0o600);
+    write(&hosts.join("20250101T000000-2.jsonl"), "{\"event\":{\"event\":\"exited\"}}\n", 0o600);
+    let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for (name, age) in [("20260101T000000-1", 1), ("20250101T000000-2", 2)] {
+        let file = fs::File::options().write(true).open(hosts.join(format!("{name}.jsonl")));
+        file.unwrap().set_modified(old - Duration::from_secs(age * 60)).unwrap();
+    }
+    env.start(&[]);
+    let running = env.hosts().remove(0)["host_id"].as_str().unwrap().to_owned();
+    // Something not ok.
+    write(&hosts.join("open.txt"), "", 0o644);
+
+    let home = env.dir.to_str().unwrap();
+    let out = env.brnr(&["doctor", "--report"]).env("HOME", home).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(text.starts_with("<!-- brnr doctor --report: read it before you paste it"), "{text}");
+    let version = format!("**brnr {}** on ", env!("CARGO_PKG_VERSION"));
+    assert!(text.contains(&version), "{text}");
+    assert!(text.contains("- brnr-claude-adapter: "), "{text}");
+    assert!(text.contains("- warn transcripts: 1 of "), "{text}");
+    assert!(!text.contains("- ok "), "{text}");
+    assert!(text.contains(&format!("**Host log `{running}`**: running; its last ")), "{text}");
+    let panic = "**Host log `20260101T000000-1`**: brnr panicked; its last 3 lines";
+    assert!(text.contains(panic), "{text}");
+    assert!(!text.contains("20250101T000000-2"), "{text}");
+    assert!(text.contains("```jsonl\n"), "{text}");
+    assert!(!text.contains(secret), "{text}");
+    // The older brnr's session/new, and the running one's and its started
+    // request.
+    assert_eq!(text.matches(r#""value":"<redacted>""#).count(), 3, "{text}");
+    assert!(!text.contains(home) && text.contains(r#""cwd":"~""#), "{text}");
+
+    let out = env.brnr(&["doctor", "--report", "--json"]).env("HOME", home).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["brnr"], env!("CARGO_PKG_VERSION"));
+    assert!(text.contains(&format!(" on {}\n", report["os"].as_str().unwrap())), "{report}");
+    assert_eq!(report["adapters"].as_array().unwrap().len(), 4, "{report}");
+    assert_eq!(report["checks"][0]["level"], "warn", "{report}");
+    let logs = report["host_logs"].as_array().unwrap();
+    assert_eq!(logs.len(), 2, "{report}");
+    assert_eq!((&logs[0]["run"], &logs[0]["ended"]), (&running.as_str().into(), &"running".into()));
+    assert_eq!(logs[1]["ended"], "brnr panicked", "{report}");
+    for log in logs {
+        for line in log["lines"].as_array().unwrap() {
+            assert!(text.contains(line.as_str().unwrap()), "{line}");
+        }
+    }
+
+    assert!(env.fails(&["doctor", "--fix", "--report"]).contains("don't go together"));
+}
+
+/// A process killed without a word is the one the report shows, besides
+/// the latest.
+#[test]
+fn the_report_shows_a_death_without_a_record() {
+    let env = Env::new("dr-rdied");
+    env.start(&[]);
+    let killed = env.hosts().remove(0);
+    let pid = |key: &str| killed[key].as_i64().unwrap() as i32;
+    kill(-pid("agent_pid"), libc::SIGKILL);
+    kill(pid("host_pid"), libc::SIGKILL);
+    assert!(wait_for(Duration::from_secs(10), || !alive(pid("host_pid"))), "it didn't die");
+    let out = env.run(&["doctor", "--report", "--json"]);
+    let report: Value = serde_json::from_slice(&out.stdout).expect("a report");
+    let logs = report["host_logs"].as_array().unwrap();
+    assert_eq!(logs.len(), 1, "the latest is the one that died: {report}");
+    assert_eq!(logs[0]["run"], killed["host_id"], "{report}");
+    assert_eq!(logs[0]["ended"], "died without recording it", "{report}");
+    let checks = report["checks"].as_array().unwrap();
+    let check = checks.iter().find(|c| c["check"] == "host logs").expect("host logs");
+    assert_eq!(check["level"], "info", "{report}");
+}

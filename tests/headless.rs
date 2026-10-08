@@ -494,14 +494,20 @@ fn a_panic_while_starting_is_recorded() {
         let out =
             env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
         let err = stderr(&out);
-        if editor {
+        let said = if editor {
             assert_eq!(out.status.code(), Some(101), "{err}");
-            assert!(err.contains("brnr acp: brnr panicked at src/host/"), "{err}");
+            "brnr acp: brnr panicked at src/host/"
         } else {
             assert!(!out.status.success(), "it started");
-            assert!(err.contains("brnr: brnr panicked at src/host/"), "{err}");
-        }
-        assert!(err.trim_end().ends_with(": a test asked for it"), "{editor}: {err}");
+            "brnr: brnr panicked at src/host/"
+        };
+        let line = err.lines().find(|l| l.starts_with(said)).unwrap_or_default();
+        assert!(line.ends_with(": a test asked for it"), "{editor}: {err}");
+        // Then the link to report it (ADR 45), once.
+        let command = if editor { "acp" } else { "start" };
+        let link = format!("&what=%60brnr%20{command}%60%20panicked");
+        assert_eq!(err.matches(&link).count(), 1, "{editor}: {err}");
+        assert!(err.trim_end().lines().last().unwrap().starts_with(ISSUE_LINK), "{err}");
 
         let agent = started_record(&env)["info"]["agent_pid"].as_i64().unwrap() as i32;
         assert!(wait_for(Duration::from_secs(5), || !alive(agent)), "{editor}: the agent lives on");
@@ -518,6 +524,36 @@ fn a_panic_while_starting_is_recorded() {
         let doctor = String::from_utf8_lossy(&env.run(&["doctor"]).stdout).into_owned();
         assert!(doctor.contains("no process died without recording it"), "{editor}: {doctor}");
     }
+}
+
+/// A panic prints a link to a pre-filled bug report where its user sees it
+/// (ADR 45): the CLI's own, on its stderr, after Rust's message; a
+/// foreground process's, on its stderr, once. `BRNR_TEST_PANIC=cli` makes
+/// the CLI panic.
+#[test]
+fn a_panic_prints_a_link_to_report_it() {
+    let env = Env::new("panic-link");
+    let out = env.brnr(&["list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(101), "{err}");
+    let shown = err.find("a test asked for it").expect("Rust's message");
+    let link = err.find(ISSUE_LINK).expect("the link");
+    assert!(shown < link, "{err}");
+    let url = err[link..].lines().next().unwrap();
+    assert!(url.starts_with(&format!("{ISSUE_LINK}Panic%20at%20src%2Fbug.rs%3A")), "{url}");
+    let version = format!("&version=brnr%20{}&setup=", env!("CARGO_PKG_VERSION"));
+    assert!(url.contains(&version), "{url}");
+    assert!(url.contains("&what=%60brnr%20list%60%20panicked%3A"), "{url}");
+    assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
+    assert!(!url.contains(' '), "{url}");
+
+    let args = start_args(&["--foreground", "--prompt", "hi"]);
+    let out =
+        env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(101), "{err}");
+    assert_eq!(err.matches(ISSUE_LINK).count(), 1, "{err}");
+    assert!(err.contains("&what=%60brnr%20start%20--foreground%60%20panicked"), "{err}");
 }
 
 // ---- sending -----------------------------------------------------------

@@ -32,3 +32,19 @@ pub fn stdio(fd: RawFd) -> ManuallyDrop<File> {
     // keeps this File from closing one: it only borrows it.
     ManuallyDrop::new(unsafe { File::from_raw_fd(fd) })
 }
+
+/// The kernel's name, release and machine (`uname -srm`).
+pub fn uname() -> Option<(String, String, String)> {
+    // SAFETY: utsname is plain data, for which all zeros is a valid value.
+    let mut name: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: uname(3) fills the utsname it is given, which is ours and
+    // large enough, with NUL-terminated strings.
+    if unsafe { libc::uname(&mut name) } != 0 {
+        return None;
+    }
+    let field = |chars: &[libc::c_char]| {
+        let bytes: Vec<u8> = chars.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    Some((field(&name.sysname), field(&name.release), field(&name.machine)))
+}

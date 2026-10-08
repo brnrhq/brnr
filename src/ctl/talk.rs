@@ -569,6 +569,12 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
             return Ok(exit_status(child)); // It has said why, on our stderr.
         }
         let error = ready["error"].as_str().unwrap_or("the process exited without a session");
+        if brnr::bug::is_panic(error) {
+            // A detached process has no terminal to say where to report it.
+            errln!("brnr: {error}");
+            eprintln!("{}", brnr::bug::link(error, "start"));
+            return Ok(ExitCode::FAILURE);
+        }
         return Err(error.to_owned());
     }
     if let Some(child) = child {

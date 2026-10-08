@@ -669,6 +669,22 @@ pub fn redact_mcp_servers(servers: &mut Value) -> bool {
     any
 }
 
+/// A record of a host log or transcript with what [`redacted`] and
+/// `Request::recorded` redact redacted (ADR 25 in docs/adr), as brnr
+/// records it now: for one an older brnr wrote, shown again.
+pub fn redact_record(record: &mut Value) {
+    if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
+        && let Ok(msg) = serde_json::from_slice(&bytes)
+    {
+        record["msg"] = msg;
+    }
+    if record["event"]["event"] == "started"
+        && let Some(servers) = record.pointer_mut("/event/request/role/headless/mcp_servers")
+    {
+        redact_mcp_servers(servers);
+    }
+}
+
 /// Opens `path` for appending, creating its directory, so a session's file
 /// grows across hosts that serve it. Transcripts hold prompts and tool
 /// output, so what this creates is private to the user.

@@ -21,6 +21,12 @@
 //! sessions yet (see `Host::died_starting`). brnr start, or the editor, is
 //! told on fd 3, as of any start that fails, and the process exits 101.
 //!
+//! In the foreground, the hook also prints the link to report the panic
+//! (ADR 45), as the CLI does: there, stderr is the user's terminal or a
+//! supervisor's journal. Detached, stderr is the host log, and the link is
+//! for whoever is told of the panic: `brnr start` or `brnr acp`, for a
+//! start that fails with it.
+//!
 //! What can't be told: a panic on the logger's thread leaves nothing to
 //! record with, and an abort (a stack overflow, a panic while panicking)
 //! runs no hook at all.
@@ -29,7 +35,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader};
 use std::os::fd::AsRawFd;
-use std::panic::{self, PanicHookInfo};
+use std::panic;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::SyncSender;
@@ -39,6 +45,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::Ev;
+use crate::bug;
 use crate::log::Sink;
 
 /// Why the process is dying: the first panic.
@@ -46,6 +53,10 @@ static PANICKED: OnceLock<String> = OnceLock::new();
 
 /// The event loop's channel, to wake it.
 static WAKE: OnceLock<SyncSender<Ev>> = OnceLock::new();
+
+/// The process runs in the foreground (ADR 9): its stderr is where its user
+/// looks, so a panic's report link goes there too (ADR 45).
+static FOREGROUND: AtomicBool = AtomicBool::new(false);
 
 /// `BRNR_TEST_PANIC` was set (see [`test_panic`]), and set to `start` (see
 /// [`test_panic_starting`]).
@@ -61,13 +72,22 @@ pub(super) fn install() {
     let shown = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         shown(info);
-        if PANICKED.set(describe(info)).is_ok()
+        let panic = bug::describe(info);
+        if FOREGROUND.load(Relaxed) {
+            eprintln!("{}", bug::link(&panic, "start --foreground"));
+        }
+        if PANICKED.set(panic).is_ok()
             && let Some(wake) = WAKE.get()
         {
             // Full, the event loop is busy and sees it next time round.
             let _ = wake.try_send(Ev::Panicked);
         }
     }));
+}
+
+/// The process runs in the foreground: a panic prints the link to report it.
+pub(super) fn foreground() {
+    FOREGROUND.store(true, Relaxed);
 }
 
 /// From now on a panic wakes the event loop on `wake`.
@@ -78,20 +98,6 @@ pub(super) fn wake(wake: SyncSender<Ev>) {
 /// Why the process is dying, if it is.
 pub(super) fn panicked() -> Option<&'static str> {
     PANICKED.get().map(String::as_str)
-}
-
-/// `brnr panicked at src/host/acp.rs:120:5: <message>`.
-fn describe(info: &PanicHookInfo) -> String {
-    let payload = info.payload();
-    let message = (payload.downcast_ref::<&str>().copied())
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("?");
-    match info.location() {
-        Some(at) => {
-            format!("brnr panicked at {}:{}:{}: {message}", at.file(), at.line(), at.column())
-        }
-        None => format!("brnr panicked: {message}"),
-    }
 }
 
 /// For the tests, with `BRNR_TEST_PANIC` in the process's environment: a

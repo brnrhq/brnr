@@ -27,16 +27,17 @@ body:
     validations:
       required: true
   - type: textarea
-    id: doctor
+    id: report
     attributes:
-      label: brnr doctor --json
-      description: It names paths and sessions; remove what you'd rather not share.
-      render: json
+      label: brnr doctor --report
+      description: >-
+        Its output, as it is (it is Markdown). Read it first: it names paths and sessions,
+        and ends with host log lines; remove what you'd rather not share.
   - type: textarea
     id: log
     attributes:
-      label: Log
+      label: Session log
       description: >-
-        `brnr log <session> --last 2 --events all`, or the host log in ~/.brnr/hosts/.
+        If it's about a session: `brnr log <session> --last 2 --events all`.
         Transcripts can hold your prompts and code: trim them to what shows the bug.
       render: text

@@ -12,6 +12,7 @@
 //! session, reparented to launchd/init, and is the only process that ever
 //! touches the agent's stdin, stdout and stderr.
 
+pub mod bug;
 pub mod config;
 pub mod frame;
 pub mod host;

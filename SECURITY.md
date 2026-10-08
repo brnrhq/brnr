@@ -12,7 +12,8 @@ discussion for it.
 
 Say what an attacker can do, and how: the brnr version (`brnr --version`), the
 OS, the agent and adapter, and steps or a proof of concept. `brnr doctor
---json` helps, but read it first: it names paths and sessions.
+--report` has most of that, but read it first: it names paths and sessions,
+and has the end of a host log.
 
 You'll get a reply within a week. Once a fix is released, the advisory is
 published with credit to you, unless you'd rather not be named.

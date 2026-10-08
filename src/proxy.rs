@@ -196,6 +196,9 @@ fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
                 let failure: Value = serde_json::from_slice(&payload).unwrap_or_default();
                 let msg = failure["error"].as_str().unwrap_or("its process failed to start");
                 eprintln!("brnr acp: {msg}");
+                if crate::bug::is_panic(msg) {
+                    eprintln!("{}", crate::bug::link(msg, "acp"));
+                }
                 return ExitCode::from(failure["code"].as_u64().unwrap_or(1) as u8);
             }
             frame::EXIT if payload.len() == 4 => {
