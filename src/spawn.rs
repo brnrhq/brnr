@@ -77,6 +77,11 @@ pub fn detached(
     let mut pid_fd = pid_writer.as_raw_fd();
     let mut fds = fds.to_vec();
     unsafe {
+        // SAFETY: the closure runs in the child between fork and exec, so it
+        // makes only async-signal-safe calls (fcntl, dup2, setsid, fork,
+        // write, _exit) and allocates nothing: fds was copied before, and
+        // move_fds works on it in place. The intermediate child leaves by
+        // _exit, running none of the parent's code.
         cmd.pre_exec(move || {
             move_fds(&mut fds, Some(&mut pid_fd))?;
             if libc::setsid() < 0 {
@@ -113,6 +118,8 @@ pub fn detached(
 /// it once.
 pub fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
     let mut fds = fds.to_vec();
+    // SAFETY: as in detached: move_fds makes only async-signal-safe calls
+    // (fcntl, dup2) and allocates nothing.
     unsafe { cmd.pre_exec(move || move_fds(&mut fds, None)) };
     cmd.process_group(0);
     let program = PathBuf::from(cmd.get_program());
@@ -128,6 +135,8 @@ fn move_fds(fds: &mut [(RawFd, RawFd)], keep: Option<&mut RawFd>) -> io::Result<
     let movable = fds.iter_mut().map(|(fd, _)| fd).chain(keep);
     for fd in movable {
         if *fd < above {
+            // SAFETY: fcntl(2) F_DUPFD_CLOEXEC copies a descriptor number and
+            // touches no memory.
             *fd = unsafe { libc::fcntl(*fd, libc::F_DUPFD_CLOEXEC, above) };
             if *fd < 0 {
                 return Err(io::Error::last_os_error());
@@ -136,6 +145,9 @@ fn move_fds(fds: &mut [(RawFd, RawFd)], keep: Option<&mut RawFd>) -> io::Result<
     }
     // dup2 clears FD_CLOEXEC on the copy.
     for &mut (fd, target) in fds {
+        // SAFETY: between fork and exec, dup2(2) puts fd on target, as the new
+        // program is to have it; nothing in this short-lived child holds
+        // target.
         if unsafe { libc::dup2(fd, target) } < 0 {
             return Err(io::Error::last_os_error());
         }

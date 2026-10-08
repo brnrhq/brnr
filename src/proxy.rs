@@ -19,8 +19,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufReader, ErrorKind, PipeReader, Read, Write};
-use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::{ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
@@ -30,7 +29,7 @@ use libc::c_int;
 use serde_json::Value;
 
 use crate::request::{self, Request, Role};
-use crate::{config, frame, signals, spawn};
+use crate::{config, frame, signals, spawn, sys};
 
 const USAGE: &str = "usage: brnr acp [--profile <name>] [--strict] [-- <program> [args...]]";
 
@@ -170,8 +169,8 @@ fn start_host(request: &Request, link: UnixStream, signal_link: UnixStream) -> i
 /// status arrives.
 fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
     let mut reader = BufReader::new(link);
-    let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
-    let mut stderr = ManuallyDrop::new(unsafe { File::from_raw_fd(2) });
+    let mut stdout = sys::stdio(1);
+    let mut stderr = sys::stdio(2);
     let mut stdout_open = true;
     loop {
         let (kind, payload) = match frame::read(&mut reader) {
@@ -220,7 +219,7 @@ fn mirror(status: c_int) -> ExitCode {
 /// Our stdin → the host, then EOF so the host knows exactly when the caller
 /// closed ours. The only writer of the link.
 fn relay_stdin(mut link: UnixStream) {
-    let mut input = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
+    let mut input = sys::stdio(0);
     let mut buf = vec![0; 64 * 1024];
     loop {
         let n = match input.read(&mut buf) {
@@ -259,6 +258,7 @@ pub(crate) fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
 /// Waits until a non-blocking `fd` can be read or written (`events`).
 fn wait_ready(fd: &impl AsRawFd, events: libc::c_short) {
     let mut p = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
+    // SAFETY: p is a valid pollfd, and the count says there is one.
     while unsafe { libc::poll(&mut p, 1, -1) } < 0
         && io::Error::last_os_error().kind() == ErrorKind::Interrupted
     {}

@@ -1,5 +1,12 @@
 # brnr
 
+[![CI](https://github.com/brnrhq/brnr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brnrhq/brnr/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/brnrhq/brnr)](https://github.com/brnrhq/brnr/releases/latest)
+[![Homebrew](https://img.shields.io/badge/brew-brnrhq%2Ftap%2Fbrnr-orange)](#install)
+[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#building-and-testing)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
+[![License](https://img.shields.io/github/license/brnrhq/brnr)](LICENSE)
+
 A burner phone for your coding agents.
 
 brnr sits between your editor and an [ACP](https://agentclientprotocol.com/)
@@ -557,6 +564,11 @@ gone left behind; it leaves logs alone. It exits non-zero if a check fails;
 
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and propose a
+change. Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) says.
 
 ## License
 

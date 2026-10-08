@@ -1,0 +1,17 @@
+name: Idea
+description: Something brnr could do, or do differently.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and where brnr gets in the way or falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What brnr could do
+      description: >-
+        Commands, flags or config, if you have them in mind. If it touches a decision
+        (docs/adr), say which.

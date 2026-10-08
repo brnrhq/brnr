@@ -1,15 +1,51 @@
-# A pull request when the ACP adapters brnr builds (adapters/) have a new
-# release, so the pins move when someone decides, not silently. CI tests the
-# pull request; the next release ships it, and Homebrew users see the new
-# version in `brew outdated` (each adapter formula is versioned by its npm
-# package).
+# Pull requests when what brnr is built from has a new release, so pins move
+# when someone decides, not silently; CI tests each one.
+#
+# - The ACP adapters brnr builds (adapters/). The next release ships them, and
+#   Homebrew users see the new version in `brew outdated` (each adapter
+#   formula is versioned by its npm package).
+# - brnr's crates. Edition 2024's resolver keeps to versions that build on
+#   Cargo.toml's rust-version; minor and patch updates come as one pull
+#   request.
+# - The actions the workflows use, pinned to commit SHAs with the version in a
+#   comment, which Dependabot moves together: one pull request for all of them.
+#
+# Each waits a week after a release before proposing it (cooldown), so that a
+# compromised release is likelier to be caught and pulled first; security
+# updates don't wait.
 version: 2
 updates:
   - package-ecosystem: bun
     directory: /adapters
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     allow:
       - dependency-name: "@agentclientprotocol/*"
     commit-message:
       prefix: adapters
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      crates:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: crates
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: actions

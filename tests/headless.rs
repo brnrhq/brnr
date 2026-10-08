@@ -101,6 +101,8 @@ fn a_bad_request_is_refused() {
         let fd = theirs.as_raw_fd();
         let mut cmd = env.brnr(&["host"]);
         cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        // SAFETY: between fork and exec the closure only calls dup2(2), which is
+        // async-signal-safe, and allocates nothing.
         unsafe {
             cmd.pre_exec(move || {
                 (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
@@ -260,7 +262,10 @@ fn foreground_close_of_the_last_session() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    assert!(wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")), "no session");
+    assert!(
+        wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")),
+        "no session"
+    );
     env.ok(&["close", "sess-1"]);
     assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop with its last session");
     let mut err = String::new();
@@ -379,7 +384,8 @@ fn failed_start_shows_the_agents_stderr() {
 fn approve_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
     env.start(&["--prompt", "edit it"]);
-    let waiting = || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
+    let waiting =
+        || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
     assert!(wait_for(Duration::from_secs(5), waiting), "no permission request");
     assert!(env.run(&["stop", &env.pid()]).status.success());
     let out = env.run(&["approve", "sess-1", "p1"]);
@@ -485,12 +491,8 @@ fn a_panic_while_starting_is_recorded() {
             "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
         ));
         let args = if editor { vec!["acp", "--", AGENT] } else { start_args(&["--prompt", "hi"]) };
-        let out = env
-            .brnr(&args)
-            .env("BRNR_TEST_PANIC", "start")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let out =
+            env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
         let err = stderr(&out);
         if editor {
             assert_eq!(out.status.code(), Some(101), "{err}");
@@ -695,11 +697,11 @@ fn slow_watcher_is_disconnected() {
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
+    kill(watch.id() as i32, libc::SIGSTOP);
     assert!(env.run(&["send", "sess-1", "go"]).status.success());
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
     sleep(Duration::from_secs(3));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
+    kill(watch.id() as i32, libc::SIGCONT);
 
     assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
     assert!(!watch.wait().unwrap().success());
@@ -787,8 +789,7 @@ fn adapters_next_to_a_symlinked_brnr() {
     let want = format!("ok    brnr-claude-adapter: {}", bin.join("brnr-claude-adapter").display());
     assert!(doctor.contains(&want), "{doctor}");
 
-    let args =
-        ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
+    let args = ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
@@ -837,12 +838,12 @@ fn big_message_to_a_lagging_watcher() {
         .unwrap();
     let stdout = watch.stdout.take().unwrap();
     sleep(Duration::from_millis(300));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
+    kill(watch.id() as i32, libc::SIGSTOP);
     for size in [6_000_000, 12_000_000] {
         let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
-    unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
+    kill(watch.id() as i32, libc::SIGCONT);
     let lines = std::thread::spawn(move || {
         BufReader::new(stdout).lines().take(2).map(|l| l.unwrap().len()).collect::<Vec<_>>()
     });
@@ -884,9 +885,9 @@ fn unresponsive_host_is_reported() {
     let env = Env::new("unresp");
     env.start(&[]);
     let host = env.host_pid();
-    unsafe { libc::kill(host, libc::SIGSTOP) };
+    kill(host, libc::SIGSTOP);
     let out = env.run(&["send", "sess-1", "hello"]);
-    unsafe { libc::kill(host, libc::SIGCONT) };
+    kill(host, libc::SIGCONT);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
 }
@@ -906,7 +907,11 @@ fn bad_request_line_is_answered() {
     let bad = next();
     assert!(bad["error"].as_str().unwrap_or_default().starts_with("bad request"), "{bad}");
     let status = next();
-    assert_eq!((status["req_id"].as_i64(), status["ok"].as_bool()), (Some(1), Some(true)), "{status}");
+    assert_eq!(
+        (status["req_id"].as_i64(), status["ok"].as_bool()),
+        (Some(1), Some(true)),
+        "{status}"
+    );
 }
 
 /// `brnr list | head -1`: a reader that goes away ends brnr quietly, as it
@@ -1219,8 +1224,12 @@ headers = { Authorization = "Bearer header-secret" }
 #[test]
 fn an_editors_mcp_secrets_are_redacted() {
     let env = Env::new("ed-secrets");
-    let mut editor =
-        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let mut answer = |id: u64| -> Value {
@@ -1285,8 +1294,12 @@ fn acp_is_what_an_editor_runs() {
     use std::io::Write;
     let env = Env::new("ed-acp");
     env.write_config("[profiles.default.editor]\nexperimental = [\"send\"]\n");
-    let mut editor =
-        env.brnr(&["acp", "--", AGENT]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let mut answer = |id: u64| -> Value {
@@ -1530,7 +1543,7 @@ fn a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
     let writer = flood(to_agent);
     sleep(Duration::from_secs(3));
     assert!(!writer.is_finished(), "the editor's writes didn't wait");
-    unsafe { libc::kill(editor.id() as i32, libc::SIGTERM) };
+    kill(editor.id() as i32, libc::SIGTERM);
     assert!(wait_exit(&mut editor, Duration::from_secs(5)), "the agent didn't get the signal");
     let status = editor.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM), "acp: {status}");
@@ -1548,6 +1561,8 @@ fn an_editors_process_needs_its_signal_link() {
     let fd = theirs.as_raw_fd();
     let mut cmd = env.brnr(&["host"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    // SAFETY: between fork and exec the closure only calls dup2(2), which is
+    // async-signal-safe, and allocates nothing.
     unsafe {
         cmd.pre_exec(move || {
             (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
@@ -1584,6 +1599,8 @@ fn non_blocking_stdin_is_waited_on() {
     let env = Env::new("ed-nonblock");
     let (reader, mut writer) = std::io::pipe().unwrap();
     let fd = reader.as_raw_fd();
+    // SAFETY: fcntl(2) on reader's descriptor, open while reader is; no memory
+    // is touched.
     unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
     let mut editor =
         env.brnr(&["acp", "--", AGENT]).stdin(reader).stdout(Stdio::piped()).spawn().unwrap();
@@ -2024,7 +2041,11 @@ fn approve_answers_in_the_editors_place() {
     let here = "answer: in the editor, or brnr approve sess-1 p1, brnr deny sess-1 p1";
     assert!(show.contains(here), "{show}");
     let json: Value = serde_json::from_str(&env.ok(&["show", "sess-1", "p1", "--json"])).unwrap();
-    assert_eq!((&json["answerable"], &json["why_not"]), (&Value::Bool(true), &Value::Null), "{json}");
+    assert_eq!(
+        (&json["answerable"], &json["why_not"]),
+        (&Value::Bool(true), &Value::Null),
+        "{json}"
+    );
     assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");

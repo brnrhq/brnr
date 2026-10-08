@@ -27,9 +27,16 @@ pub(super) enum HostRequest {
     Authenticate(String),
     Open(Open),
     Setup(SetupStep),
-    Peer { peer: u64, req_id: Option<Value>, op: PeerOp },
+    Peer {
+        peer: u64,
+        req_id: Option<Value>,
+        op: PeerOp,
+    },
     /// Message `message`, steered into `session`'s running turn.
-    Steer { session: String, message: String },
+    Steer {
+        session: String,
+        message: String,
+    },
 }
 
 /// How a headless start gets its session.

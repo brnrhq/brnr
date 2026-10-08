@@ -276,9 +276,9 @@ fn unresponsive_host_warns() {
     let env = Env::new("dr-stuck");
     env.start(&[]);
     let host = env.host_pid();
-    unsafe { libc::kill(host, libc::SIGSTOP) };
+    kill(host, libc::SIGSTOP);
     let (ok, text) = doctor(&env, &["--fix"]);
-    unsafe { libc::kill(host, libc::SIGCONT) };
+    kill(host, libc::SIGCONT);
     assert!(ok, "{text}");
     let warning = format!("{host} is running but not answering; it serves sess-1");
     assert!(text.contains(&warning), "{text}");
@@ -298,7 +298,7 @@ fn a_stopped_host_with_a_full_backlog_is_running() {
     env.start(&[]);
     let host = env.host_pid();
     let socket = env.dir.join(format!("run/{host}.sock"));
-    unsafe { libc::kill(host, libc::SIGSTOP) };
+    kill(host, libc::SIGSTOP);
     let mut queued = Vec::new();
     while let Ok(conn) = UnixStream::connect(&socket) {
         queued.push(conn);
@@ -306,7 +306,7 @@ fn a_stopped_host_with_a_full_backlog_is_running() {
     }
     let (ok, text) = doctor(&env, &["--fix"]);
     let list = env.run(&["list", "--json"]);
-    unsafe { libc::kill(host, libc::SIGCONT) };
+    kill(host, libc::SIGCONT);
     assert!(ok, "{text}");
     let warning = format!("{host} is running but not answering; it serves sess-1");
     assert!(text.contains(&warning), "{text}");
@@ -362,10 +362,8 @@ fn a_death_without_a_record_is_reported() {
     let killed = env.hosts().remove(0);
     let (host, agent) =
         (killed["host_pid"].as_i64().unwrap(), killed["agent_pid"].as_i64().unwrap());
-    unsafe {
-        libc::kill(-(agent as i32), libc::SIGKILL);
-        libc::kill(host as i32, libc::SIGKILL);
-    }
+    kill(-(agent as i32), libc::SIGKILL);
+    kill(host as i32, libc::SIGKILL);
     assert!(wait_for(Duration::from_secs(10), || !alive(host as i32)), "it didn't die");
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");

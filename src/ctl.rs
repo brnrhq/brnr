@@ -334,7 +334,8 @@ fn ps(args: &[String]) -> Result<(), String> {
     // --json.
     let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
-        let sessions: Vec<String> = r["sessions"].as_array().into_iter().flatten().map(text).collect();
+        let sessions: Vec<String> =
+            r["sessions"].as_array().into_iter().flatten().map(text).collect();
         table.push([
             r["pid"].to_string(),
             text(&r["owner"]),
@@ -782,7 +783,9 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let response = call(host, &req)?;
     let outcome = &response["outcome"];
     if json_out {
-        return print_json(&json!({ "session": session, "request": request_id, "outcome": outcome }));
+        return print_json(
+            &json!({ "session": session, "request": request_id, "outcome": outcome }),
+        );
     }
     let what = outcome["optionId"].as_str().or(outcome["outcome"].as_str()).unwrap_or("?");
     outln!("{request_id} {what}");
@@ -999,9 +1002,13 @@ fn refused(err: &io::Error) -> bool {
 fn made(pid: i64, file: &Path) -> bool {
     use std::time::UNIX_EPOCH;
     let Ok(written) = fs::metadata(file).and_then(|m| m.modified()) else { return true };
+    // SAFETY: proc_bsdinfo is plain data, for which all zeros is a valid
+    // value.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let buffer = (&raw mut info).cast();
+    // SAFETY: buffer points at info, and size is its size, as proc_pidinfo
+    // fills it.
     let got =
         unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, buffer, size) };
     if got != size {

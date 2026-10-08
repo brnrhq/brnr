@@ -122,6 +122,9 @@ pub(super) fn test_panic_starting() {
 /// Returns the thread reading it, for [`release_stderr`].
 pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
     let (reader, writer) = io::pipe().ok()?;
+    // SAFETY: dup2(2) points fd 2 at the pipe, which writer holds open
+    // meanwhile. Whatever writes to stderr (eprintln!, sys::stdio(2)) goes on
+    // using fd 2, now the pipe; no File of ours owns fd 2.
     if unsafe { libc::dup2(writer.as_raw_fd(), 2) } < 0 {
         return None;
     }
@@ -140,6 +143,8 @@ pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
 /// written, then EOF; waits for it to be through, for up to `timeout`.
 pub(super) fn release_stderr(reader: JoinHandle<()>, timeout: Duration) {
     if let Ok(null) = OpenOptions::new().write(true).open("/dev/null") {
+        // SAFETY: as in capture_stderr: fd 2 now refers to /dev/null, which
+        // null holds open meanwhile.
         unsafe { libc::dup2(null.as_raw_fd(), 2) };
     }
     let until = Instant::now() + timeout;

@@ -157,15 +157,15 @@ impl Drop for Env {
         for host in self.hosts() {
             for key in ["agent_pid", "host_pid"] {
                 if let Some(pid) = host[key].as_i64() {
-                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    kill(-(pid as i32), libc::SIGKILL);
+                    kill(pid as i32, libc::SIGKILL);
                 }
             }
         }
         if let Ok(pid) = fs::read_to_string(self.dir.join("child.pid"))
             && let Ok(pid) = pid.trim().parse::<i32>()
         {
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            kill(pid, libc::SIGKILL);
         }
         let _ = fs::remove_dir_all(&self.dir);
     }
@@ -211,8 +211,15 @@ pub fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// Sends `sig` to `pid` (negative: its process group); whether it was.
+pub fn kill(pid: i32, sig: i32) -> bool {
+    // SAFETY: kill(2) takes no pointers; any pid and signal are valid
+    // arguments.
+    unsafe { libc::kill(pid, sig) == 0 }
+}
+
 pub fn alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
+    kill(pid, 0)
 }
 
 pub fn wait_for(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {

@@ -21,8 +21,12 @@ adapters = {
     "brnr-claude-adapter": "@agentclientprotocol/claude-agent-acp",
     "brnr-codex-adapter": "@agentclientprotocol/codex-acp",
 }
-request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-           "params": {"protocolVersion": 1, "clientCapabilities": {}}}
+request = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {"protocolVersion": 1, "clientCapabilities": {}},
+}
 
 agent = os.path.join(tempfile.mkdtemp(), "agent")
 with open(agent, "w") as f:
@@ -45,7 +49,9 @@ failed = False
 for name, package in adapters.items():
     path = os.path.join(out, name)
     want = f"{name} {pins[package]} ({package})"
-    got = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+    got = subprocess.run(
+        [path, "--version"], capture_output=True, text=True, timeout=30
+    ).stdout.strip()
     if got != want:
         print(f"FAIL {name} --version: {got!r}, not {want!r}")
         failed = True
@@ -60,5 +66,7 @@ for name, package in adapters.items():
         print(f"FAIL {name} initialize: {line!r}")
         failed = True
     else:
-        print(f"ok   {got}: initialize {'answered' if 'result' in answer else 'answered with an error'}")
+        print(
+            f"ok   {got}: initialize {'answered' if 'result' in answer else 'answered with an error'}"
+        )
 sys.exit(1 if failed else 0)

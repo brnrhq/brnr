@@ -1,0 +1,42 @@
+name: Bug
+description: brnr did something it shouldn't, or didn't do what the README says.
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what brnr did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The commands, the editor's agent command or the config (profiles), as few steps as you can.
+  - type: input
+    id: version
+    attributes:
+      label: brnr --version
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: OS, agent, adapter and editor
+      placeholder: macOS 26.1, Claude Code via brnr-claude-adapter, Zed
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: brnr doctor --json
+      description: It names paths and sessions; remove what you'd rather not share.
+      render: json
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: >-
+        `brnr log <session> --last 2 --events all`, or the host log in ~/.brnr/hosts/.
+        Transcripts can hold your prompts and code: trim them to what shows the bug.
+      render: text

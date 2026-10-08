@@ -37,7 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use brnr::host::check_bridge;
-use brnr::{config, lock, log, paths, spawn};
+use brnr::{config, lock, log, paths, spawn, sys};
 
 use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, when};
 
@@ -136,8 +136,10 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
     let what = "runtime dir";
     let dir = paths::runtime_dir();
     if dir.is_relative() {
-        let msg =
-            format!("BRNR_DIR is relative ({}): processes resolve it in their own cwd", dir.display());
+        let msg = format!(
+            "BRNR_DIR is relative ({}): processes resolve it in their own cwd",
+            dir.display()
+        );
         r.line(Level::Fail, what, msg);
     }
     let room = sun_path_len() - 1;
@@ -235,7 +237,8 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
             format!("removed what processes that are gone left behind: {}", names.join(", ")),
         );
     } else {
-        let msg = format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
+        let msg =
+            format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
         r.line(Level::Warn, what, msg);
     }
     Some(hosts)
@@ -256,6 +259,7 @@ fn starting(path: &Path) -> bool {
 }
 
 fn sun_path_len() -> usize {
+    // SAFETY: sockaddr_un is plain data, for which all zeros is a valid value.
     let addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     addr.sun_path.len()
 }
@@ -327,7 +331,7 @@ fn private_problem(meta: &fs::Metadata, dir: bool) -> Option<String> {
         Some("is a symlink".into())
     } else if dir && !meta.is_dir() {
         Some("is not a directory".into())
-    } else if meta.uid() != unsafe { libc::getuid() } {
+    } else if meta.uid() != sys::uid() {
         Some(format!("is owned by uid {}", meta.uid()))
     } else if mode & 0o077 != 0 {
         Some(format!("has mode {mode:o}"))
@@ -338,9 +342,7 @@ fn private_problem(meta: &fs::Metadata, dir: bool) -> Option<String> {
 
 /// Only what is ours and what it claims to be gets chmod'ed.
 fn fixable(meta: &fs::Metadata, dir: bool) -> bool {
-    !meta.file_type().is_symlink()
-        && meta.is_dir() == dir
-        && meta.uid() == unsafe { libc::getuid() }
+    !meta.file_type().is_symlink() && meta.is_dir() == dir && meta.uid() == sys::uid()
 }
 
 fn chmod(path: &Path, mode: u32) -> bool {

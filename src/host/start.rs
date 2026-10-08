@@ -115,6 +115,9 @@ impl Host {
 fn closed(stream: &UnixStream) -> bool {
     let mut byte = 0u8;
     let flags = libc::MSG_PEEK | libc::MSG_DONTWAIT;
+    // SAFETY: byte is a valid one-byte buffer for recv(2), and stream's
+    // descriptor is open while it is borrowed; MSG_PEEK leaves what it reads
+    // in the stream.
     unsafe { libc::recv(stream.as_raw_fd(), (&raw mut byte).cast(), 1, flags) == 0 }
 }
 
