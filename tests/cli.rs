@@ -999,7 +999,7 @@ fn a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
     env.start(&[]);
     let pid = env.host_pid();
-    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    kill(pid, libc::SIGSTOP);
     // Each waits for the stopped process to answer, side by side.
     let spawn = |args: &[&str]| {
         env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
@@ -1012,7 +1012,7 @@ fn a_silent_process_keeps_its_session() {
     let table = spawn(&["sessions", "--", AGENT]);
     let [resume, take_over, list, ps, sessions, table] =
         [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
-    unsafe { libc::kill(pid, libc::SIGCONT) };
+    kill(pid, libc::SIGCONT);
     let refused = format!("sess-1 is running in process {pid}");
     assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
     let refused = format!("sess-1 is running in process {pid}, which is not answering");
@@ -1041,7 +1041,7 @@ fn a_silent_process_keeps_its_session() {
 fn a_dead_process_lets_go() {
     let env = Env::new("c-dead");
     env.start(&["--wait", "--prompt", "reply first"]);
-    unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
+    kill(env.host_pid(), libc::SIGKILL);
     let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "again\n");
@@ -1546,7 +1546,7 @@ fn notify_fails_when_cut_off() {
     let mut notify =
         env.brnr(&["notify", "sess-1", "--", "true"]).stderr(Stdio::piped()).spawn().unwrap();
     sleep(Duration::from_millis(500));
-    unsafe { libc::kill(env.host_pid(), libc::SIGKILL) };
+    kill(env.host_pid(), libc::SIGKILL);
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
     assert!(!notify.wait().unwrap().success(), "notify exited 0");
 }
@@ -1639,7 +1639,7 @@ fn notify_cut_off_on_the_socket_stops_its_command() {
     sleep(Duration::from_millis(500));
     env.ok(&["send", "sess-1", "--wait", "reply again"]);
     let command = command_pid(&pids);
-    unsafe { libc::kill(stopped.id() as i32, libc::SIGTERM) };
+    kill(stopped.id() as i32, libc::SIGTERM);
     assert!(wait_exit(&mut stopped, Duration::from_secs(10)), "notify kept running");
     let out = stopped.wait_with_output().unwrap();
     assert!(!out.status.success(), "notify exited 0");

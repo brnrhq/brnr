@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 use libc::c_int;
 use serde_json::Value;
 
-use brnr::{host, render, signals};
+use brnr::{host, render, signals, sys};
 
 use super::talk::Conn;
 use super::{USAGE, discover, events_arg, session_or_pid};
@@ -309,6 +309,7 @@ fn forward_signals(mut caught: PipeReader, tx: Sender<Msg>) {
 /// unread.
 fn hung_up(socket: &UnixStream) -> bool {
     let mut p = libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    // SAFETY: p is a valid pollfd, and the count says there is one.
     unsafe { libc::poll(&mut p, 1, 0) > 0 && p.revents & libc::POLLHUP != 0 }
 }
 
@@ -481,7 +482,7 @@ impl Running {
     /// what it was.
     fn stop(mut self, rx: &Receiver<Msg>) -> String {
         let pid = self.pid();
-        unsafe { libc::kill(-pid, libc::SIGTERM) };
+        sys::kill(-pid, libc::SIGTERM);
         let until = Instant::now() + STOP_WAIT;
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
@@ -490,7 +491,7 @@ impl Running {
                 Err(_) => break,
             }
         }
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
+        sys::kill(-pid, libc::SIGKILL);
         let _ = self.child.wait();
         self.what
     }

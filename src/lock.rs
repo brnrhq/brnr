@@ -158,6 +158,8 @@ fn read(file: &mut File) -> Option<(u32, String)> {
 /// `flock(op | LOCK_NB)`: false if someone else holds it.
 fn flock(file: &File, op: libc::c_int) -> io::Result<bool> {
     loop {
+        // SAFETY: flock(2) takes file's descriptor, open while file is
+        // borrowed, and touches no memory.
         if unsafe { libc::flock(file.as_raw_fd(), op | libc::LOCK_NB) } == 0 {
             return Ok(true);
         }

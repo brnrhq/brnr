@@ -39,7 +39,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
-use std::mem::{ManuallyDrop, take, zeroed};
+use std::mem::{take, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -62,6 +62,7 @@ use crate::paths;
 use crate::request::{Prompt, Request, Role};
 use crate::schema::AuthMethod;
 use crate::signals;
+use crate::sys;
 
 use acp::{AgentRequest, Hold, Pending, Session};
 use control::{Closer, Peer};
@@ -106,6 +107,7 @@ const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
 pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     // It takes no flags and reads no config: everything is in the request.
+    // SAFETY: isatty(3) takes a descriptor number and touches no memory.
     if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
         eprintln!(
             "brnr host is started by brnr start and brnr acp, not by hand \
@@ -119,9 +121,14 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     let signal_link = is_socket(SIGNAL_LINK_FD);
     close_inherited_fds(if signal_link { &[CHANNEL_FD, SIGNAL_LINK_FD] } else { &[CHANNEL_FD] });
     set_cloexec(CHANNEL_FD);
+    // SAFETY: is_socket checked CHANNEL_FD is an open socket,
+    // close_inherited_fds kept it, and nothing else in the process holds it:
+    // the UnixStream takes it over.
     let channel = unsafe { UnixStream::from_raw_fd(CHANNEL_FD) };
     let signal_link = signal_link.then(|| {
         set_cloexec(SIGNAL_LINK_FD);
+        // SAFETY: as for CHANNEL_FD: an open socket (is_socket), kept, and
+        // held by nothing else.
         unsafe { UnixStream::from_raw_fd(SIGNAL_LINK_FD) }
     });
     let request = match read_request() {
@@ -183,7 +190,10 @@ fn read_request() -> Result<Request, (String, Option<bool>)> {
 }
 
 fn is_socket(fd: RawFd) -> bool {
+    // SAFETY: stat is plain data, for which all zeros is a valid value.
     let mut st: libc::stat = unsafe { zeroed() };
+    // SAFETY: st is a valid stat for fstat(2) to fill; any fd is a valid
+    // argument (a bad one is EBADF).
     unsafe { libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == libc::S_IFSOCK }
 }
 
@@ -461,6 +471,11 @@ impl Host {
         let mask = editor.as_ref().map(|e| e.sigmask.clone()).unwrap_or_default();
         // std resets the mask in the child; give the agent the editor's.
         unsafe {
+            // SAFETY: the closure runs in the child between fork and exec,
+            // where only async-signal-safe calls may be made: set_mask is
+            // pthread_sigmask(3) on a sigset built on the stack from mask,
+            // which was moved in and isn't reallocated, and restore_for_child
+            // is an atomic load and signal(2).
             cmd.pre_exec(move || {
                 signals::set_mask(&mask);
                 signals::restore_for_child();
@@ -945,7 +960,7 @@ impl Host {
             }
         }
         for &pid in &self.bridge_pids {
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            sys::kill(pid, libc::SIGTERM);
         }
     }
 
@@ -1096,7 +1111,7 @@ impl Host {
     fn signal(&mut self, sig: c_int) {
         if self.status.is_none() {
             self.sink.note(None, json!({ "event": "signal", "signal": sig }));
-            unsafe { libc::kill(self.agent_pid, sig) };
+            sys::kill(self.agent_pid, sig);
         }
     }
 
@@ -1159,9 +1174,9 @@ impl Host {
         }
         self.sink.note(None, json!({ "event": "host-signal", "signal": sig }));
         match sig {
-            libc::SIGUSR1 | libc::SIGUSR2 => unsafe {
-                libc::kill(self.agent_pid, sig);
-            },
+            libc::SIGUSR1 | libc::SIGUSR2 => {
+                sys::kill(self.agent_pid, sig);
+            }
             _ if self.stop_requested => {
                 if self.foreground {
                     self.say("brnr: killing the agent".into());
@@ -1225,11 +1240,10 @@ impl Host {
         if self.status.is_some() {
             return;
         }
-        unsafe {
-            let group = libc::kill(-self.agent_pid, sig) == 0;
-            if !group || libc::getpgid(self.agent_pid) != self.agent_pid {
-                libc::kill(self.agent_pid, sig);
-            }
+        let group = sys::kill(-self.agent_pid, sig);
+        // SAFETY: getpgid(2) takes a pid and touches no memory of ours.
+        if !group || unsafe { libc::getpgid(self.agent_pid) } != self.agent_pid {
+            sys::kill(self.agent_pid, sig);
         }
     }
 
@@ -1237,7 +1251,7 @@ impl Host {
     fn kill_all(&mut self) {
         self.kill_group(libc::SIGKILL);
         for &pid in &self.bridge_pids {
-            unsafe { libc::kill(pid, libc::SIGTERM) };
+            sys::kill(pid, libc::SIGTERM);
         }
     }
 }
@@ -1357,6 +1371,7 @@ fn read_agent_stdout(
     let mut line = Vec::new();
     loop {
         from_agent.room(None);
+        // SAFETY: fds is an array of two valid pollfds, and the count says so.
         if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
             if io::Error::last_os_error().kind() == ErrorKind::Interrupted {
                 continue;
@@ -1396,7 +1411,7 @@ fn read_agent_stdout(
 /// foreground (`shown`) it also goes to stderr as it comes, unchanged
 /// (ADR 10): written from here, the agent blocks on a terminal that does.
 fn read_agent_stderr(err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
-    let mut terminal = shown.then(|| ManuallyDrop::new(unsafe { File::from_raw_fd(2) }));
+    let mut terminal = shown.then(|| sys::stdio(2));
     let mut reader = BufReader::new(err);
     let mut line = Vec::new();
     loop {
@@ -1429,12 +1444,18 @@ fn close_inherited_fds(keep: &[RawFd]) {
     };
     for fd in fds {
         if fd > 2 && !keep.contains(&fd) {
+            // SAFETY: this runs first thing in the host, before anything opens
+            // a descriptor or starts a thread: every fd above 2 is one it
+            // inherited, and no File of its own holds one. That of /dev/fd,
+            // listed too, is closed already (EBADF).
             unsafe { libc::close(fd) };
         }
     }
 }
 
 fn set_cloexec(fd: RawFd) {
+    // SAFETY: fcntl(2) F_SETFD takes a descriptor number and a flag, and
+    // touches no memory.
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 }
 
@@ -1450,6 +1471,8 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
 /// it is reaped, its pid (and process group id) can't be another's.
 pub fn wait_exited(pid: pid_t) -> io::Result<()> {
     unsafe {
+        // SAFETY: info is a siginfo_t (all zeros is a valid one) for waitid(2)
+        // to fill.
         let mut info: libc::siginfo_t = zeroed();
         let flags = libc::WEXITED | libc::WNOWAIT;
         while libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) < 0 {
@@ -1464,6 +1487,7 @@ pub fn wait_exited(pid: pid_t) -> io::Result<()> {
 
 fn reap(pid: pid_t) -> io::Result<c_int> {
     let mut status = 0;
+    // SAFETY: status is a valid int for waitpid(2) to fill.
     while unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
         let err = io::Error::last_os_error();
         if err.kind() != ErrorKind::Interrupted {
@@ -1478,7 +1502,7 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
 /// whatever pid a file of brnr's recorded. That a pid is alive doesn't say
 /// it is still the process that recorded it: see `gone` in ctl.rs.
 pub fn alive(pid: i64) -> bool {
-    pid > 0 && unsafe { libc::kill(pid as pid_t, 0) } == 0
+    pid > 0 && sys::kill(pid as pid_t, 0)
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.

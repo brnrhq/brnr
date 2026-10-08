@@ -12,9 +12,7 @@
 //! way: its reader writes it to stderr as it comes (ADR 10).
 
 use std::collections::VecDeque;
-use std::fs::File;
-use std::mem::{ManuallyDrop, take};
-use std::os::fd::FromRawFd;
+use std::mem::take;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 
@@ -22,6 +20,7 @@ use serde_json::json;
 
 use crate::log::Sink;
 use crate::proxy::write_all;
+use crate::sys;
 
 /// Events queued for the display before the next are skipped.
 const DISPLAY_BYTES: usize = 1 << 20;
@@ -110,8 +109,8 @@ impl Display {
 
 /// The display's thread: writes what is queued until the display finishes.
 fn write(shared: &(Mutex<Queue>, Condvar), sink: &Sink, json: bool) {
-    let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
-    let mut stderr = ManuallyDrop::new(unsafe { File::from_raw_fd(2) });
+    let mut stdout = sys::stdio(1);
+    let mut stderr = sys::stdio(2);
     let lock = || shared.0.lock().unwrap_or_else(PoisonError::into_inner);
     loop {
         let line = {

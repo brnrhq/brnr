@@ -74,7 +74,7 @@ use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
-use crate::{json, paths, render};
+use crate::{json, paths, render, sys};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
@@ -264,6 +264,10 @@ impl Host {
             // exits when the host closes its stdin.
             .process_group(0);
         unsafe {
+            // SAFETY: the closure runs in the child between fork and exec,
+            // where only async-signal-safe calls may be made:
+            // restore_for_child is an atomic load and signal(2), and allocates
+            // nothing.
             cmd.pre_exec(|| {
                 crate::signals::restore_for_child();
                 Ok(())
@@ -399,9 +403,9 @@ impl Host {
             Closer::Socket(conn) => {
                 let _ = conn.shutdown(Shutdown::Both);
             }
-            Closer::Bridge(pid) if self.bridge_pids.contains(&pid) => unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            },
+            Closer::Bridge(pid) if self.bridge_pids.contains(&pid) => {
+                sys::kill(pid, libc::SIGTERM);
+            }
             Closer::Bridge(_) => {}
         }
     }

@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::request::{self, Request, Role};
-use brnr::{config, lock, paths, signals, spawn};
+use brnr::{config, lock, paths, signals, spawn, sys};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
@@ -541,7 +541,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     if let Some((owner, session)) = owner
         && let Err(err) = settings::take_over(owner, &session, pid)
     {
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        sys::kill(pid as i32, libc::SIGKILL);
         if let Some(mut child) = child {
             let _ = child.wait();
         }
@@ -603,7 +603,7 @@ fn forward_signals(mut signals: io::PipeReader, pid: i32) {
     use std::io::Read;
     let mut sig = [0];
     while matches!(signals.read(&mut sig), Ok(1)) {
-        unsafe { libc::kill(pid, sig[0] as i32) };
+        sys::kill(pid, sig[0] as i32);
     }
 }
 

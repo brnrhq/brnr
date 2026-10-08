@@ -21,6 +21,8 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
+use crate::sys;
+
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = env::var_os("BRNR_DIR") {
         return dir.into();
@@ -28,7 +30,7 @@ pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
         return PathBuf::from(dir).join("brnr");
     }
-    env::temp_dir().join(format!("brnr-{}", unsafe { libc::getuid() }))
+    env::temp_dir().join(format!("brnr-{}", sys::uid()))
 }
 
 /// Creates `dir` (mode 0700) if needed and refuses one that someone else
@@ -44,7 +46,7 @@ pub fn ensure_private(dir: &Path) -> io::Result<()> {
 /// only to be trusted if nobody else could have put it there.
 pub fn check_private(dir: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
-    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
+    if !meta.is_dir() || meta.uid() != sys::uid() || meta.mode() & 0o077 != 0 {
         return Err(io::Error::other("not a private directory owned by this user"));
     }
     Ok(())

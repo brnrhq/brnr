@@ -1002,9 +1002,13 @@ fn refused(err: &io::Error) -> bool {
 fn made(pid: i64, file: &Path) -> bool {
     use std::time::UNIX_EPOCH;
     let Ok(written) = fs::metadata(file).and_then(|m| m.modified()) else { return true };
+    // SAFETY: proc_bsdinfo is plain data, for which all zeros is a valid
+    // value.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let buffer = (&raw mut info).cast();
+    // SAFETY: buffer points at info, and size is its size, as proc_pidinfo
+    // fills it.
     let got =
         unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, buffer, size) };
     if got != size {

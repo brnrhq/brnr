@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, lock, paths, spawn};
+use brnr::{config, json, lock, paths, spawn, sys};
 
 use super::{
     Host, USAGE, discover, inactive_sessions, print_json, print_table, request_timeout,
@@ -436,14 +436,14 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String
     })();
     drop(ask);
     drop(stdin);
-    unsafe { libc::kill(-pid, libc::SIGTERM) };
+    sys::kill(-pid, libc::SIGTERM);
     let until = Instant::now() + STOP_WAIT;
     loop {
         match child.try_wait() {
             Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(20)),
             // Not reaped yet, so the group id is still the agent's.
             Ok(None) => {
-                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                sys::kill(-pid, libc::SIGKILL);
                 let _ = child.wait();
                 break;
             }

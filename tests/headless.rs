@@ -101,6 +101,8 @@ fn a_bad_request_is_refused() {
         let fd = theirs.as_raw_fd();
         let mut cmd = env.brnr(&["host"]);
         cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        // SAFETY: between fork and exec the closure only calls dup2(2), which is
+        // async-signal-safe, and allocates nothing.
         unsafe {
             cmd.pre_exec(move || {
                 (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
@@ -695,11 +697,11 @@ fn slow_watcher_is_disconnected() {
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
+    kill(watch.id() as i32, libc::SIGSTOP);
     assert!(env.run(&["send", "sess-1", "go"]).status.success());
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
     sleep(Duration::from_secs(3));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
+    kill(watch.id() as i32, libc::SIGCONT);
 
     assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
     assert!(!watch.wait().unwrap().success());
@@ -836,12 +838,12 @@ fn big_message_to_a_lagging_watcher() {
         .unwrap();
     let stdout = watch.stdout.take().unwrap();
     sleep(Duration::from_millis(300));
-    unsafe { libc::kill(watch.id() as i32, libc::SIGSTOP) };
+    kill(watch.id() as i32, libc::SIGSTOP);
     for size in [6_000_000, 12_000_000] {
         let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
-    unsafe { libc::kill(watch.id() as i32, libc::SIGCONT) };
+    kill(watch.id() as i32, libc::SIGCONT);
     let lines = std::thread::spawn(move || {
         BufReader::new(stdout).lines().take(2).map(|l| l.unwrap().len()).collect::<Vec<_>>()
     });
@@ -883,9 +885,9 @@ fn unresponsive_host_is_reported() {
     let env = Env::new("unresp");
     env.start(&[]);
     let host = env.host_pid();
-    unsafe { libc::kill(host, libc::SIGSTOP) };
+    kill(host, libc::SIGSTOP);
     let out = env.run(&["send", "sess-1", "hello"]);
-    unsafe { libc::kill(host, libc::SIGCONT) };
+    kill(host, libc::SIGCONT);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
 }
@@ -1541,7 +1543,7 @@ fn a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
     let writer = flood(to_agent);
     sleep(Duration::from_secs(3));
     assert!(!writer.is_finished(), "the editor's writes didn't wait");
-    unsafe { libc::kill(editor.id() as i32, libc::SIGTERM) };
+    kill(editor.id() as i32, libc::SIGTERM);
     assert!(wait_exit(&mut editor, Duration::from_secs(5)), "the agent didn't get the signal");
     let status = editor.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM), "acp: {status}");
@@ -1559,6 +1561,8 @@ fn an_editors_process_needs_its_signal_link() {
     let fd = theirs.as_raw_fd();
     let mut cmd = env.brnr(&["host"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    // SAFETY: between fork and exec the closure only calls dup2(2), which is
+    // async-signal-safe, and allocates nothing.
     unsafe {
         cmd.pre_exec(move || {
             (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
@@ -1595,6 +1599,8 @@ fn non_blocking_stdin_is_waited_on() {
     let env = Env::new("ed-nonblock");
     let (reader, mut writer) = std::io::pipe().unwrap();
     let fd = reader.as_raw_fd();
+    // SAFETY: fcntl(2) on reader's descriptor, open while reader is; no memory
+    // is touched.
     unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
     let mut editor =
         env.brnr(&["acp", "--", AGENT]).stdin(reader).stdout(Stdio::piped()).spawn().unwrap();
