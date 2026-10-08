@@ -124,6 +124,30 @@ fn send_wait_reports_a_permission_request() {
     assert!(send.wait().unwrap().success());
 }
 
+/// `wait` that is behind the session, reading a turn's end when the turns
+/// after it have ended too, exits as the last of them ended, not as that
+/// one: here a cancelled turn, then two held messages' turns that end
+/// normally, while `wait` is stopped.
+#[test]
+fn wait_behind_exits_as_the_last_turn_ended() {
+    let env = Env::new("c-waitlate");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["send", "sess-1", "reply first"]);
+    env.ok(&["send", "sess-1", "reply second"]);
+    let mut wait = env.brnr(&["wait", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3));
+    settled(&env);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(wait_exit(&mut wait, Duration::from_secs(10)), "wait didn't end");
+    let out = wait.wait_with_output().unwrap();
+    assert_eq!(stdout(&out), "idle: end_turn\n");
+    assert_eq!(out.status.code(), Some(0));
+}
+
 #[test]
 fn wait_returns_when_the_session_goes_idle() {
     let env = Env::new("c-wait");

@@ -594,7 +594,9 @@ fn send_while_a_turn_runs_is_held() {
     sleep(Duration::from_millis(300));
     assert_eq!(env.prompts(), ["hang on"], "a second prompt while one ran");
     env.ok(&["cancel", "sess-1", "--keep-held"]);
-    assert_eq!(env.run(&["wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
+    let out = env.run(&["wait", "sess-1", "--timeout", "10"]);
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}{}", env.ok(&["log", "sess-1"]));
     assert_eq!(env.prompts(), ["hang on", "reply first", "reply second"]);
     assert_eq!(turns(&env), [["m1"], ["m2"], ["m3"]]);
 }
