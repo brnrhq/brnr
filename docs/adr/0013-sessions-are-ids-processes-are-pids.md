@@ -27,11 +27,12 @@ unless in use, and an index of it all under `~/.brnr`.
   (`session_info_update`) is shown in `list` and `status` to tell sessions
   apart, and is never something to type.
 - `brnr ps` lists brnr's processes: pid, agent, owner (`editor` or
-  `headless`), uptime and their sessions. `brnr stop <pid>` stops a process
-  and its agent: the agent's stdin closed, then SIGTERM to its process group
-  after 5 s, then SIGKILL after 5 more. Ending one session is
-  `brnr close <session>` (ADR 16). `list` is about sessions, `ps` about
-  processes.
+  `headless`, or `unreachable` for one that doesn't answer, whose sessions
+  are those it holds the locks of, ADR 3), uptime and their sessions.
+  `brnr stop <pid>` stops a process and its agent: the agent's stdin
+  closed, then SIGTERM to its process group after 5 s, then SIGKILL after
+  5 more. Ending one session is `brnr close <session>` (ADR 16). `list` is
+  about sessions, `ps` about processes.
 - "Host" isn't in the CLI or its help; it stays the name of the process
   inside brnr.
 

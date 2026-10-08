@@ -3,6 +3,8 @@
 Accepted (former decisions 2, 18, 19 and 34); reviewed 2026-10-07.
 Implemented. `usage` has the context window and the cost, not tokens in and
 out, so its line is `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
+Whatever `--events` chose, `log` also shows a gap in the transcript
+(`records-skipped`, ADR 22), which isn't an event.
 
 ## Context
 
@@ -10,10 +12,10 @@ out, so its line is `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
 streamed chunk. Then `log --raw` meant something other than for `watch`,
 `--thoughts` chose an event that was already chosen, and text dropped events
 JSON had (`--events agent_thought` printed nothing without `--thoughts`).
-Some still do: `render::event` prints nothing for `usage`, for
+Some still did: `render::event` printed nothing for `usage`, for
 `session_changed` about config or commands, or for `tool_call` status
 changes between the start and the end, so `brnr watch $s --events usage`
-prints nothing while `--json` has them.
+printed nothing while `--json` had them.
 
 ## Decision
 
@@ -34,10 +36,11 @@ prints nothing while `--json` has them.
   in between (`in_progress`), quiet, shown as `tool: … in_progress` when
   chosen. Progress that doesn't change the status (streamed output) is not
   an event.
-- `usage` (one per turn; `status` has the latest) is quiet, and shown as a
-  line (`usage: 12k in, 3k out`) when chosen. `session_changed` is shown for
-  everything it reports: title, mode, config (`config: model=opus`) and
-  commands (`commands: 14 available`).
+- `usage` (one per `usage_update` the agent sends; `status` has the latest)
+  is quiet, and shown as a line (`usage: 12k in, 3k out`) when chosen.
+  `session_changed` is shown for everything it reports: title, mode, config
+  (`config: model=opus`) and commands (`commands: +review -compact`, those
+  added or changed and those gone, as ADR 22's patch has them).
 
 ## Considered
 

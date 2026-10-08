@@ -17,12 +17,12 @@ config.
 
 - Whoever starts a process (`start`, `acp`) resolves everything first:
   profile, agent, cwd, role (editor or headless), strict mode (ADR 41),
-  experimental actions and feature flags (ADR 4, 42), mode, config options,
-  MCP servers, auth method, prompt and attachments, timeouts,
+  experimental actions and feature flags (ADR 4, 42), mode, model, config
+  options, MCP servers, auth method, prompt and attachments, timeouts,
   `stop_when_idle`, what to log (ADR 22), bridges, the signal mask. It writes
-  one JSON request on the process's
-  stdin; file descriptors carry only the editor link or the start channel
-  (ADR 7).
+  one JSON request on the process's stdin; file descriptors carry only the
+  editor link and its signal link (fds 3 and 4, ADR 2) or the start channel
+  (fd 3, ADR 7).
 - The process reads no config and takes no flags. `brnr host` is no longer
   run by hand; `start --foreground` is the way to run a session in a
   terminal (ADR 9).

@@ -21,6 +21,7 @@ agent's, for one folder.
   the same way: SESSION, TITLE, STATE, PID, (AGENT,) LAST ACTIVE, CWD;
   `sessions` drops AGENT, which it was given on the command line. STATE is a
   running session's live state (`idle`, `busy`, `waiting` for an approval),
+  `unreachable` for one whose process doesn't answer (ADR 3),
   `inactive` for a transcript, `-` for one only the agent knows. LAST ACTIVE
   is the agent's `updatedAt`, or brnr's own when the agent gives none. Rows
   are ordered most recently active first, everywhere.

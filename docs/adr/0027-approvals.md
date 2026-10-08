@@ -2,7 +2,8 @@
 
 Accepted (former decisions 7, 12, 45 and 47); reviewed 2026-10-07.
 Implemented; approvals on an editor's session are ADR 4's experimental
-`approve`.
+`approve`, and `show` says of an editor's request that it is waiting in the
+editor, and whether it can be answered here (`answerable`, `why_not`).
 
 ## Context
 

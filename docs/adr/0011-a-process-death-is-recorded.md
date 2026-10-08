@@ -3,10 +3,20 @@
 Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
 abort (a stack overflow), which runs no hook. A start that fails as it opens
-the start channel (ADR 7) or its bridges records `exited` too, so a host log
-without one is a death nothing recorded; `brnr doctor` lists those whose
-process isn't running, with when each last wrote and the sessions it had
-open.
+the start channel (ADR 7) or its bridges records `exited` too, and the
+logger never skips it (nor `panic`, ADR 6), so a host log without one is a
+death nothing recorded; `brnr doctor` lists those whose process isn't
+running (how many, and the latest three), with when each last wrote and the
+sessions it had open. Whether metadata in the runtime directory is a
+process's that is gone is told by its socket, not its pid, which may be
+another process's by then (a reboot, pids wrapping around): one whose pid
+isn't a live process of the user's, or whose socket refuses a connection
+twice (nobody listens, or it isn't there), is gone. macOS also refuses a
+stopped process's socket once its backlog is full, so there a refusal counts
+only if the process with that pid started after the file was written.
+`doctor --fix` removes what processes that are gone left behind; `list`,
+`ps`, `status`, `start --resume` and every other command that looks
+processes up drop them, removing their metadata and socket.
 From the review's "to investigate".
 
 ## Context
@@ -35,10 +45,14 @@ agent would all die in the same instant, with no record.
 
 ## Decision
 
-- A detached process's stderr goes to its host log, not `/dev/null`.
-- A panic hook records the panic in the host log, writes `exited` (with the
+- A detached process's stderr goes to its host log (`host-stderr`), not
+  `/dev/null` (with `log = false` there is no host log, and it stays
+  `/dev/null`).
+- A panic, on any thread, is recorded: the hook notes it and wakes the event
+  loop, which records the panic in the host log, writes `exited` (with the
   reason) there and in every session's file, sends it to the peers it can
-  still reach, and removes the `.sock` and `.json` files (P3).
+  still reach, removes the `.sock` and `.json` files (P3), and SIGKILLs the
+  agent's process group (P14).
 - The agent's command leaves the process's argv with the start request
   (ADR 8).
 

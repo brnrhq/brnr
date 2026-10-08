@@ -13,9 +13,10 @@ ADR 3 says.
   say the session is now (its title, mode, config options and commands) is
   kept. `session/load` is ACP v1's; v2 drops it, leaving `session/resume`.
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
-  the session's own record (P4); `--cwd` or `-- <agent>` override. An id
-  brnr doesn't know (one `brnr sessions` lists) goes to the agent as given,
-  in `--cwd` (or here), with the agent after `--` (or the profile's).
+  the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
+  override. An id brnr doesn't know (one `brnr sessions` lists) goes to the
+  agent as given, in `--cwd` (or the profile's `cwd`, or here), with the
+  agent after `--` (or the profile's).
 - A session another process holds is refused, unless `--take-over` (ADR 3).
 - It appends to the same transcript.
 

@@ -37,7 +37,9 @@ closed, though it was still running and reading: a bridge that ran
   SIGTERM: time for a bridge to act on `exited`, as `notify` does.
 - A bridge has to keep reading: one 16 MiB behind is cut off (ADR 6).
 - On an editor's session, a bridge's actions are experimental, as the CLI's
-  are (ADR 4).
+  are (ADR 4). `stop` isn't one: stopping the process is process
+  management, never experimental and not refused in strict mode (`command`
+  in src/host/control.rs).
 
 ## Considered
 
