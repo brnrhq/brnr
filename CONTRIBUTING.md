@@ -26,8 +26,9 @@ the pull request.
 
 ## Decisions
 
-[ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14) every
-decision is measured against. A pull request that changes what brnr does
+[ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14, and P15
+in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)) every decision is
+measured against. A pull request that changes what brnr does
 either follows an ADR or adds one, as [docs/adr](docs/adr/README.md)
 describes; one that breaks a principle says which, and why. Before 1.0 there
 is no backwards compatibility: a change replaces what it changes, with no
