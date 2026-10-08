@@ -292,8 +292,10 @@ event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`,
 its stdin; nothing is put on its command line, so what the agent writes can't
 become arguments. The text, title and message are escaped as `watch` shows
 them and cut at 32 KiB; the event on stdin is whole. Commands run one at a
-time, in order. `notify` exits when the process does (or the session closes),
-and fails if the process cuts it off first, as it does one that falls behind.
+time, in order, each in a process group of its own. `notify` exits when the
+process does (or the session closes). Cut off first, as one that falls behind
+is, it stops the command it is running, says on stderr that no more
+notifications come, and exits non-zero.
 
 ```sh
 brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
@@ -310,7 +312,8 @@ command = ["brnr", "notify", "--stdin", "--",
 
 If the bridge's `events` limit what it gets, they must include
 `agent_message`, `session_changed` and `exited`, which `notify` needs for its
-environment and to know when to stop.
+environment and to know when to stop. What it says on stderr, that it was cut
+off included, is in the host log (`bridge-stderr`).
 
 ## Headless sessions
 

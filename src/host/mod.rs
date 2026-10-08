@@ -1446,8 +1446,9 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// Blocks until `pid` has terminated, without reaping it.
-fn wait_exited(pid: pid_t) -> io::Result<()> {
+/// Blocks until `pid`, a child, has terminated, without reaping it: until
+/// it is reaped, its pid (and process group id) can't be another's.
+pub fn wait_exited(pid: pid_t) -> io::Result<()> {
     unsafe {
         let mut info: libc::siginfo_t = zeroed();
         let flags = libc::WEXITED | libc::WNOWAIT;
