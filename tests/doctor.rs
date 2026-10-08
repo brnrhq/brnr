@@ -341,6 +341,17 @@ fn a_pid_taken_by_another_process_is_gone() {
     let _ = sleep.wait();
 }
 
+/// Kills the process `info` describes, and its agent, with SIGKILL: the
+/// process first, and once it is gone, the agent's group. The other way
+/// round, the process can see its agent die and record its own exit
+/// (`exited`) before its SIGKILL lands.
+fn kill_unrecorded(info: &Value) {
+    let pid = |key: &str| info[key].as_i64().unwrap() as i32;
+    kill(pid("host_pid"), libc::SIGKILL);
+    assert!(wait_for(Duration::from_secs(10), || !alive(pid("host_pid"))), "it didn't die");
+    kill(-pid("agent_pid"), libc::SIGKILL);
+}
+
 /// A process killed without a word (SIGKILL) leaves a host log without
 /// `exited` (ADR 11): doctor says so, with the sessions it had open, and
 /// --fix leaves the record. One that stopped recorded it.
@@ -360,11 +371,9 @@ fn a_death_without_a_record_is_reported() {
 
     env.start(&[]);
     let killed = env.hosts().remove(0);
-    let (host, agent) =
-        (killed["host_pid"].as_i64().unwrap(), killed["agent_pid"].as_i64().unwrap());
-    kill(-(agent as i32), libc::SIGKILL);
-    kill(host as i32, libc::SIGKILL);
-    assert!(wait_for(Duration::from_secs(10), || !alive(host as i32)), "it didn't die");
+    // Once its log has the session (`log` waits for its logger to write).
+    env.ok(&["log", "sess-1"]);
+    kill_unrecorded(&killed);
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
     let run = killed["host_id"].as_str().unwrap();
@@ -532,10 +541,7 @@ fn the_report_shows_a_death_without_a_record() {
     let env = Env::new("dr-rdied");
     env.start(&[]);
     let killed = env.hosts().remove(0);
-    let pid = |key: &str| killed[key].as_i64().unwrap() as i32;
-    kill(-pid("agent_pid"), libc::SIGKILL);
-    kill(pid("host_pid"), libc::SIGKILL);
-    assert!(wait_for(Duration::from_secs(10), || !alive(pid("host_pid"))), "it didn't die");
+    kill_unrecorded(&killed);
     let out = env.run(&["doctor", "--report", "--json"]);
     let report: Value = serde_json::from_slice(&out.stdout).expect("a report");
     let logs = report["host_logs"].as_array().unwrap();
