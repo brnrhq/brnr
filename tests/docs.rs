@@ -247,6 +247,7 @@ const SKIPPED: &[(&str, &str)] = &[
         "gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr",
         "verifies a release asset, from GitHub",
     ),
+    ("cargo install brnr --locked", "installs from crates.io"),
     ("cargo build --release", "the build these tests run"),
     ("adapters/build.sh", "needs bun; CI's adapters job runs it"),
     ("./release.sh minor", "the maintainer's release, on GitHub"),

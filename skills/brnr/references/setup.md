@@ -13,6 +13,9 @@ brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on you
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
 ```
 
+Without Homebrew, `cargo install brnr --locked` installs brnr; the adapters
+then come from npm (`claude-agent-acp`, `codex-acp`).
+
 The adapters run the user's own `claude` or `codex` CLI, which must be
 installed and logged in already; brnr doesn't log in for the user. Then check:
 
