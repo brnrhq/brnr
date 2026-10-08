@@ -64,7 +64,7 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" "$TARBALL" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
 
       # Its credentials (the deploy key) stay, for the push below.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           repository: brnrhq/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
