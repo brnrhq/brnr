@@ -1,6 +1,6 @@
 //! The headless CLI end to end against the fake agent: waiting for
 //! replies, the log, status, settings, sessions and processes, approvals,
-//! attachments, notifications and resuming.
+//! attachments, notifications, resuming, and the skill.
 
 mod common;
 
@@ -122,6 +122,30 @@ fn send_wait_reports_a_permission_request() {
     env.ok(&["approve", "sess-1", "p1"]);
     assert!(wait_exit(&mut send, Duration::from_secs(10)));
     assert!(send.wait().unwrap().success());
+}
+
+/// `wait` that is behind the session, reading a turn's end when the turns
+/// after it have ended too, exits as the last of them ended, not as that
+/// one: here a cancelled turn, then two held messages' turns that end
+/// normally, while `wait` is stopped.
+#[test]
+fn wait_behind_exits_as_the_last_turn_ended() {
+    let env = Env::new("c-waitlate");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["send", "sess-1", "reply first"]);
+    env.ok(&["send", "sess-1", "reply second"]);
+    let mut wait = env.brnr(&["wait", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3));
+    settled(&env);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(wait_exit(&mut wait, Duration::from_secs(10)), "wait didn't end");
+    let out = wait.wait_with_output().unwrap();
+    assert_eq!(stdout(&out), "idle: end_turn\n");
+    assert_eq!(out.status.code(), Some(0));
 }
 
 #[test]
@@ -473,6 +497,33 @@ fn log_reads_an_inactive_session() {
     assert!(log.contains("agent: bye"), "{log}");
     let exited = log.lines().find(|l| l.contains("agent exited")).expect(&log);
     assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
+}
+
+/// `log` shows a running session as far as its process has recorded it
+/// when asked, though a thread of the process's own writes the transcript:
+/// the turn `start --wait` just reported is there (ADR 48). A process that
+/// hasn't written it in 5 s (a stalled disk: `BRNR_TEST_LOG_STALL` holds
+/// its logger) is shown as far as it has, and `log` says so.
+#[test]
+fn log_shows_what_the_process_has_recorded() {
+    let env = Env::new("c-logged");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&["--wait", "--prompt", "reply first"]);
+    let started = Instant::now();
+    let out = env.run(&["log", "sess-1"]);
+    assert!(started.elapsed() >= Duration::from_secs(5), "log didn't wait for the logger");
+    assert!(stderr(&out).contains("may not be written yet"), "{}", stderr(&out));
+
+    let mut log = env.brnr(&["log", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    assert!(log.try_wait().unwrap().is_none(), "log read before the logger wrote");
+    fs::remove_file(&stall).unwrap();
+    let out = log.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("agent: first"), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
 }
 
 #[test]
@@ -1041,6 +1092,10 @@ fn a_silent_process_keeps_its_session() {
 fn a_dead_process_lets_go() {
     let env = Env::new("c-dead");
     env.start(&["--wait", "--prompt", "reply first"]);
+    // Killed once its transcript, which the resume reads, is written (`log`
+    // waits for that): what a thread of its own hadn't written yet when it
+    // was killed is gone, and the session with it.
+    env.ok(&["log", "sess-1"]);
     kill(env.host_pid(), libc::SIGKILL);
     let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -1720,4 +1775,63 @@ fn ps_lists_the_processes() {
     assert!(env.fails(&["watch"]).contains("<session> or --pid"));
     assert!(env.fails(&["stop", "sess-1"]).contains("no brnr process sess-1"));
     env.stop();
+}
+
+// ---- the skill (ADR 46) --------------------------------------------------
+
+const REFERENCES: [&str; 4] = ["orchestrate", "approvals", "observe", "setup"];
+
+/// A file of the skill, as the repository has it.
+fn skill_file(path: &str) -> String {
+    fs::read_to_string(format!("{}/skills/brnr/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+#[test]
+fn skill_prints_the_skill_and_its_references() {
+    let env = Env::new("c-skill");
+    assert_eq!(env.ok(&["skill"]), skill_file("SKILL.md"));
+    for name in REFERENCES {
+        assert_eq!(env.ok(&["skill", name]), skill_file(&format!("references/{name}.md")));
+    }
+    let err = env.fails(&["skill", "nope"]);
+    assert!(err.contains("no reference nope (references: orchestrate, approvals"), "{err}");
+    assert!(env.fails(&["skill", "--json"]).contains("brnr skill [<reference>"));
+}
+
+#[test]
+fn skill_install_writes_it_for_claude_code_and_codex() {
+    let env = Env::new("c-skillinst");
+    let home = env.dir.join("home-dir");
+    fs::create_dir_all(&home).unwrap();
+    let out = env.brnr(&["skill", "install"]).env("HOME", &home).output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    for dir in [".claude/skills/brnr", ".agents/skills/brnr"] {
+        let skill = home.join(dir);
+        assert!(stdout(&out).contains(&format!("installed {}", skill.display())), "{out:?}");
+        let read = |path: &str| fs::read_to_string(skill.join(path)).unwrap();
+        assert_eq!(read("SKILL.md"), skill_file("SKILL.md"));
+        for name in REFERENCES {
+            let path = format!("references/{name}.md");
+            assert_eq!(read(&path), skill_file(&path));
+        }
+    }
+
+    // --dir instead, as many as given; an earlier install's references that
+    // this one doesn't have go, and nothing else does.
+    let (a, b) = (env.dir.join("a"), env.dir.join("b"));
+    fs::create_dir_all(a.join("brnr/references")).unwrap();
+    fs::write(a.join("brnr/references/gone.md"), "old").unwrap();
+    fs::write(a.join("brnr/references/notes.txt"), "mine").unwrap();
+    let (a_arg, b_arg) = (a.to_string_lossy(), b.to_string_lossy());
+    let printed = env.ok(&["skill", "install", "--dir", &a_arg, "--dir", &b_arg]);
+    assert_eq!(printed.lines().count(), 2, "{printed}");
+    assert!(!a.join("brnr/references/gone.md").exists());
+    assert!(a.join("brnr/references/notes.txt").exists());
+    assert!(b.join("brnr/references/setup.md").exists());
+
+    // One it can't write fails, naming it.
+    fs::write(env.dir.join("file"), "").unwrap();
+    let err = env.fails(&["skill", "install", "--dir", &env.dir.join("file").to_string_lossy()]);
+    assert!(err.contains("file/brnr"), "{err}");
+    assert!(env.fails(&["skill", "install", "--dir"]).contains("--dir needs a directory"));
 }

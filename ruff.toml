@@ -1,3 +1,3 @@
-# The Python here: adapters/check.py and tests/fake_agent.py. The width
-# rustfmt uses.
+# The Python here: adapters/check.py, its test_check.py and
+# tests/fake_agent.py. The width rustfmt uses.
 line-length = 100

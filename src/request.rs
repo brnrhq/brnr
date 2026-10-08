@@ -84,8 +84,8 @@ pub struct Headless {
     pub start_timeout: u64,
     pub stop_when_idle: Option<u64>,
     pub permission_timeout: Option<u64>,
-    /// What the start channel is subscribed to from the start: the events
-    /// `start --wait` follows its turn by; none without `--wait`.
+    /// What the start channel is subscribed to once the start commits: the
+    /// events `start --wait` follows its turn by; none without `--wait`.
     pub events: Vec<String>,
     /// `start --foreground`: the process is `start`'s child, and shows the
     /// session on its stdout.
