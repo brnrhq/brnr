@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use brnr::host::alive;
 use brnr::{paths, render};
 
-use super::{Found, USAGE, call, default_events, discover, events_arg, find_session};
+use super::{Found, Host, USAGE, call, default_events, discover, events_arg, find_session};
 
 const POLL: Duration = Duration::from_millis(200);
 
@@ -126,28 +126,37 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 
 /// The files of the session `arg` names, its events and its raw ACP (none
 /// if its process records none), and the pid of the process serving it, if
-/// one is. A running session's process is asked to have written what it
-/// recorded until now first: a thread of its own writes it, and what was
-/// just seen happen (a turn `start --wait` reported) may not be there yet
-/// (ADR 48).
+/// one is. A thread of its own writes what a process records, and what was
+/// just seen happen (a turn `start --wait` reported, a session closed) may
+/// not be there yet: a running session's process is asked to have written
+/// what it recorded until now first, and for one that isn't running, every
+/// process that answers is, before its transcript is looked for (ADR 48).
 fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
     let hosts = discover()?;
+    if let Ok(Found::Running(host, id)) = find_session(&hosts, arg) {
+        let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
+        let path = s
+            .and_then(|s| s["log"].as_str())
+            .ok_or("this process keeps no transcript (log = false)")?;
+        let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
+        logged(host);
+        return Ok((PathBuf::from(path), acp, host.meta["host_pid"].as_i64()));
+    }
+    hosts.iter().filter(|h| h.status.is_some()).for_each(logged);
     match find_session(&hosts, arg)? {
-        Found::Running(host, id) => {
-            let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
-            let path = s
-                .and_then(|s| s["log"].as_str())
-                .ok_or("this process keeps no transcript (log = false)")?;
-            let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
-            if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
-                errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
-            }
-            Ok((PathBuf::from(path), acp, host.meta["host_pid"].as_i64()))
-        }
+        Found::Running(..) => Err(format!("{arg} started meanwhile: try again")),
         Found::Inactive(past) => {
             let path = PathBuf::from(past["log"].as_str().unwrap_or_default());
             Ok((path.clone(), Some(paths::acp_log(&path)), None))
         }
+    }
+}
+
+/// Asks `host` to answer once what it recorded until now is written, and
+/// says so if it doesn't.
+fn logged(host: &Host) {
+    if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
+        errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
     }
 }
 

@@ -40,7 +40,10 @@ process was gone, in a Linux container under load.
   answered: what `start --wait`, `send --wait` or `wait` has reported is in
   what it shows. A process that doesn't answer within 5 s (a stalled disk)
   is shown as far as it has written, and `log` says so on its stderr (P3).
-  `--follow` waits the same way before its first read.
+  `--follow` waits the same way before its first read. For a session that
+  isn't running it sends it to every process that answers, before it looks
+  for the transcript: one closed in a process that goes on (an editor's) may
+  still be written.
 - A process that exits waits, before brnr stops listing it and it lets go
   of its sessions, until its logger has written what it recorded, `exited`
   last, for 2 s at most: once it is gone, `log`, `list --all` and
