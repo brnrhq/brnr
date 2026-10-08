@@ -1144,6 +1144,25 @@ fn log_events_leaves_out_the_raw_acp() {
     assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
 }
 
+/// A process that exits is listed, and holds its sessions, until its
+/// transcript has `exited`, so that what reads it once the process has gone
+/// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled
+/// disk holds it up for 2 s at most.
+#[test]
+fn an_exit_is_written_before_the_process_goes() {
+    let env = Env::new("exitlog");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.ok(&["log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    env.stop();
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    fs::remove_file(&stall).unwrap();
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says

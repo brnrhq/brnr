@@ -24,6 +24,11 @@ hadn't written is lost, `list --all` doesn't have the session, and
 to the agent given). That can't be helped without writing on the session's
 own thread.
 
+A process that exited stopped being listed, and let go of its sessions,
+before its logger had written its last records, `exited` among them:
+`transcripts_are_two_files` found a transcript without `exited` once the
+process was gone, in a Linux container under load.
+
 ## Decision
 
 - A request, `logged`, is answered once the process's logger has written
@@ -36,6 +41,11 @@ own thread.
   what it shows. A process that doesn't answer within 5 s (a stalled disk)
   is shown as far as it has written, and `log` says so on its stderr (P3).
   `--follow` waits the same way before its first read.
+- A process that exits waits, before brnr stops listing it and it lets go
+  of its sessions, until its logger has written what it recorded, `exited`
+  last, for 2 s at most: once it is gone, `log`, `list --all` and
+  `--resume` read its sessions' transcripts whole, and a resume doesn't
+  start appending to one before its `exited`.
 - What a process killed with SIGKILL hadn't written is lost, as before.
 
 ## Consequences

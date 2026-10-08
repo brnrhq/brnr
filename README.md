@@ -513,8 +513,9 @@ are the ones bridges get, `exited` included, and are what `brnr log`,
 events are chosen. A thread of the process's own writes them, so the session
 never waits for the disk; `log` of a running session first waits until its
 process has written what it recorded until then (up to 5 s, then it says so
-and shows what is there), so a turn `start --wait` just reported is in it. A
-process killed (SIGKILL) loses what it hadn't written yet. Every record
+and shows what is there), so a turn `start --wait` just reported is in it,
+and a process that exits is listed until its transcript has its `exited` (2 s
+at most). A process killed (SIGKILL) loses what it hadn't written yet. Every record
 carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
 `log = "events"` leaves out the raw file, most of the space; `log = false`
 writes nothing.
