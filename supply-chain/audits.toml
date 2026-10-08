@@ -1,4 +1,80 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.android_system_properties]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "0.1.5 -> 0.1.6"
+notes = "Automated review of the complete crates.io delta and callback caller. The callback now has the C ABI, receives a pointer to a live Option<String>, returns None for invalid UTF-8 and uses the actual void-returning read_callback signature from Android bionic sys/system_properties.h. The result stays alive for the synchronous callback call; existing CStr/dynamic-library boundaries are unchanged. The old getter only gains a safety comment. Metadata changes add no build script. Header checked at https://android.googlesource.com/platform/bionic/+/4782b4e08510d709a0e2867fc86c2f99ca776490/libc/include/sys/system_properties.h ."
+
+[[audits.anyhow]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.103 -> 1.0.104"
+notes = "Automated review of the complete crates.io delta. Only the package/doc version and a dev-only syn dependency change; deployed source and build.rs are unchanged."
+
+[[audits.autocfg]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.5.0 -> 1.5.1"
+notes = "Automated review of the complete crates.io delta. Library code is unchanged. The shell-based no-op compiler-wrapper test is replaced by the harness-free Rust test executable, which only emits a fake version or drains stdin. Package metadata and README follow the test change; no new build-time or deployed behavior."
+
+[[audits.cfg-if]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.4 -> 1.0.5"
+notes = "Automated review of the complete crates.io delta. The macro implementation is unchanged. Changes are deprecation documentation, version metadata and upstream CI action versions; no new executable build or runtime code."
+
+[[audits.indexmap]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "2.14.0 -> 2.14.2"
+notes = "Reviewed the compiled source and manifest delta against the imported audited version. Both disjoint mutable-access helpers validate all bounds and duplicate indices before deriving references from the exclusive slice pointer; no mutation occurs between checks and pointer use. Optional missing keys produce None. Bucket projections split distinct key/value fields. Index operations retain explicit checked bounds; same-key equality uses Eq. Empty-map macros use the existing safe const constructor. No new ambient I/O. Dependencies require separate coverage."
+
+[[audits.proc-macro2]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.106 -> 1.0.107"
+notes = "Automated review of the complete crates.io delta. map_or(false, predicate) becomes is_some_and(predicate); the fallback span invalidation call moves past an if whose other branch always panics, preserving its guard. Runtime unsafe code and the build script are unchanged. Remaining changes raise MSRV to 1.71 and update docs/CI/lints."
+
+[[audits.rustversion]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.22 -> 1.0.23"
+notes = "Automated review of the complete crates.io delta and the surrounding build script. The only new executable behavior sets RUSTVERSION=1 on the existing rustc/wrapper --version child command. It does not change the selected executable, arguments, version parsing or OUT_DIR writes. Remaining changes are metadata, lint and upstream CI updates."
+
+[[audits.serde]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.228 -> 1.0.229"
+notes = "Automated review of the complete crates.io delta. The sequence visitor reborrows its existing mutable collection, as in the separately reviewed serde_core delta. The pinned core dependency and minimum derive compiler cfg are updated; the never_type feature gate is restricted to docsrs. Other changes are docs/lints. No new unsafe code or ambient capabilities. Dependency coverage is required separately."
+
+[[audits.serde_core]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.228 -> 1.0.229"
+notes = "Automated review of the complete crates.io delta. Sequence deserialization reborrows the same mutable collection through &mut *self.0, preserving clear/reserve/insert behavior and cautious size hints. Build cfg only raises the derive compiler threshold to 1.71; remaining changes are version/lint metadata. No new unsafe code or ambient capabilities."
+
+[[audits.serde_derive]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.0.228 -> 1.0.229"
+notes = "Reviewed the source and manifest delta against the imported audited version. The syn 3 migration supplies the new AST fields and preserves generated trait bounds, field numbering and error propagation. Iterator rewrites preserve filtering and order; field_i is shared without changing its generated identifier. No new unsafe code or ambient I/O. Dependencies require separate coverage."
+
+[[audits.strum]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "0.27.2 -> 0.28.0"
+notes = "Automated review of the complete crates.io delta. ParseError Display uses core::fmt and is available without std; its fixed message is unchanged. Other source changes are documentation. Optional phf/strum_macros versions and MSRV are updated; dependencies require their own coverage. No new unsafe code, filesystem access or process execution."
+
+[[audits.strum_macros]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "0.27.2 -> 0.28.0"
+notes = "Reviewed the compiled source and manifest delta against the imported audited version. Discriminant attributes remain compile-time supplied metadata; default variants receive the corresponding Default derive. String conversion generates safe match/default construction, with explicit custom-error validation and the existing PHF fallback. Iterator traits are core-qualified; character classification uses ASCII digits. No new unsafe code or ambient I/O. Dependencies require separate coverage."
+
+[[audits.toml_writer]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "1.1.1+spec-1.1.0 -> 1.1.2+spec-1.1.0"
+notes = "Automated review of the complete crates.io delta and string metrics. Quote-run counters now use Saturating<u8>, preventing overflow on long runs while preserving delimiter decisions. No unsafe code or new I/O; remaining changes are package include patterns, lint and version metadata."
