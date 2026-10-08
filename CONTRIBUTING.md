@@ -21,6 +21,35 @@ pass before a pull request can merge. The integration tests (`tests/`) drive
 the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it.
 
+`.github/workflows/coverage.yml` also runs the Rust unit and integration
+tests on Linux with `cargo llvm-cov`. Its job summary lists each source
+file's coverage, including files with no hits; its `coverage` artifact has
+the same summary and an HTML report of uncovered lines, kept for 90 days.
+The table reports line, region, and function coverage, with an overall
+`TOTAL`; it does not measure branch coverage.
+Compare successive `main` runs in Actions for the trend. Coverage is
+informational: the job is allowed to fail, has no percentage threshold,
+and does not replace the required tests above. There is no badge yet.
+
+To produce the report locally:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install --locked cargo-llvm-cov --version 0.9.1
+cargo llvm-cov --locked --release --all-targets --no-report
+cargo llvm-cov report --release --ignore-filename-regex '/tests/'
+cargo llvm-cov report --release --ignore-filename-regex '/tests/' --html
+```
+
+Open `target/llvm-cov/html/index.html`. The integration tests launch the
+instrumented `CARGO_BIN_EXE_brnr` and preserve `LLVM_PROFILE_FILE` for its
+children, so their execution contributes too. Tests are excluded from the
+report, not from the run. Profiles are written on normal exit: work in
+processes killed by a signal (including test cleanup's SIGKILL), or leaving
+through `_exit`, can be missing. This is an execution baseline, not proof
+that every behaviour is asserted; it also excludes doc tests and macOS-only
+paths in CI.
+
 Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
 built under AddressSanitizer and under MemorySanitizer, on Linux. To run
 them yourself (nightly Rust, with `rust-src`), and see any
