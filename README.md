@@ -467,10 +467,10 @@ stdin, its stderr in the host log; a bare command found next to `brnr` first,
 as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
-Requests: `status`, `send`, `cancel`, `queue`, `subscribe`, `pending`,
-`approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`, `close`,
-`stop` (see `src/host/control.rs`); those about a session name it by its exact
-id, and those that act on an editor's session are
+Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
+`pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
+`close`, `stop` (see `src/host/control.rs`); those about a session name it by
+its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
 
@@ -509,9 +509,14 @@ by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
 file has the same folder and name as Claude Code's own transcript. The events
 are the ones bridges get, `exited` included, and are what `brnr log`,
 `list --all` and `--resume` read; `log` reads the raw file too when `acp`
-events are chosen. Every record carries `host_id`, `host_pid`, `proxy_pid`
-and `agent_pid` for joining. `log = "events"` leaves out the raw file, most of
-the space; `log = false` writes nothing.
+events are chosen. A thread of the process's own writes them, so the session
+never waits for the disk; `log` of a running session first waits until its
+process has written what it recorded until then (up to 5 s, then it says so
+and shows what is there), so a turn `start --wait` just reported is in it. A
+process killed (SIGKILL) loses what it hadn't written yet. Every record
+carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
+`log = "events"` leaves out the raw file, most of the space; `log = false`
+writes nothing.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host

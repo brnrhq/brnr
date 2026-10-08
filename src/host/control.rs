@@ -11,6 +11,8 @@
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
+//! - `logged`: answered once what the process recorded before it was asked
+//!   is in its transcript, which a logger thread writes (`brnr log`, ADR 48)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
 //!   replace?}` (ADR 18 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
@@ -116,6 +118,7 @@ pub(super) enum Closer {
 
 /// Lines for one peer, and how many bytes of them its writer hasn't written
 /// yet.
+#[derive(Clone)]
 pub(super) struct Queue {
     tx: Sender<String>,
     queued: Arc<AtomicUsize>,
@@ -436,6 +439,10 @@ impl Host {
         let now = |v: Result<Value, String>| v.map(Some);
         match req["cmd"].as_str() {
             Some("status") => Ok(Some(self.status_report())),
+            Some("logged") => {
+                self.when_logged(peer, req.get("req_id").cloned());
+                Ok(None)
+            }
             Some("send") => now(self.send(req)),
             Some("cancel") => now(self.cancel_turn(req)),
             Some("queue") => now(self.queue(req)),
@@ -458,6 +465,23 @@ impl Host {
             Some(other) => Err(format!("unknown command: {other}")),
             None => Err("missing cmd".into()),
         }
+    }
+
+    /// `logged`: answered from the logger's thread once it has written what
+    /// the process recorded before it was asked, so that what a peer has
+    /// seen happen is in the transcript (ADR 48). The event loop doesn't
+    /// wait for it (P1); a peer gone meanwhile isn't answered.
+    fn when_logged(&mut self, peer: u64, req_id: Option<Value>) {
+        let Some(p) = self.peers.get(&peer) else { return };
+        let queue = p.tx.clone();
+        let mut response = json!({ "ok": true });
+        if let Some(req_id) = req_id {
+            response["req_id"] = req_id;
+        }
+        // A peer that is full is cut off by the event loop's next line to it.
+        self.sink.when_written(move || {
+            let _ = queue.push(response.to_string());
+        });
     }
 
     fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {

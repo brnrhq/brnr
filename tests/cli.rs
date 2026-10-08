@@ -475,6 +475,33 @@ fn log_reads_an_inactive_session() {
     assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
 }
 
+/// `log` shows a running session as far as its process has recorded it
+/// when asked, though a thread of the process's own writes the transcript:
+/// the turn `start --wait` just reported is there (ADR 48). A process that
+/// hasn't written it in 5 s (a stalled disk: `BRNR_TEST_LOG_STALL` holds
+/// its logger) is shown as far as it has, and `log` says so.
+#[test]
+fn log_shows_what_the_process_has_recorded() {
+    let env = Env::new("c-logged");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&["--wait", "--prompt", "reply first"]);
+    let started = Instant::now();
+    let out = env.run(&["log", "sess-1"]);
+    assert!(started.elapsed() >= Duration::from_secs(5), "log didn't wait for the logger");
+    assert!(stderr(&out).contains("may not be written yet"), "{}", stderr(&out));
+
+    let mut log = env.brnr(&["log", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    assert!(log.try_wait().unwrap().is_none(), "log read before the logger wrote");
+    fs::remove_file(&stall).unwrap();
+    let out = log.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("agent: first"), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
 #[test]
 fn log_follows_until_the_host_exits() {
     let env = Env::new("c-follow");
@@ -1041,6 +1068,10 @@ fn a_silent_process_keeps_its_session() {
 fn a_dead_process_lets_go() {
     let env = Env::new("c-dead");
     env.start(&["--wait", "--prompt", "reply first"]);
+    // Killed once its transcript, which the resume reads, is written (`log`
+    // waits for that): what a thread of its own hadn't written yet when it
+    // was killed is gone, and the session with it.
+    env.ok(&["log", "sess-1"]);
     kill(env.host_pid(), libc::SIGKILL);
     let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));

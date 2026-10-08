@@ -1002,6 +1002,7 @@ fn transcripts_are_private() {
     let mut checked = 0;
     let mut check = |path: &Path| {
         let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    env.ok(&["log", "sess-1"]); // Once the transcript is written.
         let want = if path.is_dir() { 0o700 } else { 0o600 };
         assert_eq!(mode, want, "{} is {mode:o}", path.display());
         checked += 1;
