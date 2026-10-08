@@ -93,6 +93,7 @@ pub const EVENTS: &[&str] = &[
     "message_dropped",
     "context_dropped",
     "session_closed",
+    "line_too_long",
     "exited",
     "acp",
 ];

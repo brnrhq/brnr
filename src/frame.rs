@@ -32,10 +32,18 @@ pub const EOF: u8 = b'Z';
 /// proxy → host, on the signal link: writing to the proxy's stdout failed.
 pub const STDOUT_CLOSED: u8 = b'C';
 
-/// Fails, writing nothing, for a payload too long for the length field.
+/// Fails, writing nothing, for a payload too long for the length field. A
+/// payload of more than 64 KiB is written as it is, after the head, not
+/// copied: the line the host relays can be 32 MiB (ADR 49).
 pub fn write(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "frame payload over 4 GiB"))?;
+    if payload.len() > 64 << 10 {
+        let mut head = [kind, 0, 0, 0, 0];
+        head[1..].copy_from_slice(&len.to_be_bytes());
+        w.write_all(&head)?;
+        return w.write_all(payload);
+    }
     let mut buf = Vec::with_capacity(5 + payload.len());
     buf.push(kind);
     buf.extend_from_slice(&len.to_be_bytes());

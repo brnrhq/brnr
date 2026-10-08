@@ -1568,6 +1568,96 @@ fn flood(mut to_agent: ChildStdin) -> std::thread::JoinHandle<bool> {
     })
 }
 
+/// The `line_too_long` events in sess-1's transcript (ADR 49).
+fn too_long(env: &Env) -> Vec<Value> {
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "line_too_long"]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// Headless, a line from the agent past the limit isn't read, whether it is
+/// one message of 40 MB or 40 MiB of no JSON at all: it is dropped, an event
+/// says so, and the session goes on (ADR 49).
+#[test]
+fn headless_an_agent_line_past_the_limit_is_dropped_and_said() {
+    let env = Env::new("toolong");
+    env.start(&[]);
+    for prompt in ["big 40000000", "long 40"] {
+        let out = env.run(&["send", "sess-1", "--wait", prompt]);
+        assert!(out.status.success(), "send {prompt}: {}", stderr(&out));
+        assert!(out.stdout.is_empty(), "send {prompt} printed {} bytes", out.stdout.len());
+    }
+    let events = too_long(&env);
+    assert_eq!(events.len(), 2, "{events:?}");
+    let dropped = |e: &Value| e["from"] == "agent" && e["relayed"] == false;
+    assert!(events.iter().all(dropped), "{events:?}");
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply after"]), "after\n");
+    env.stop();
+}
+
+/// A line from the agent with no newline in sight is held back as any other
+/// output is when the editor stops reading: the host keeps no more of it
+/// than its cap and the most of a line it reads, 48 MiB in all (128 MiB
+/// comes, its newline last), and the editor gets it unchanged once it reads
+/// again (ADR 49).
+#[test]
+fn a_long_line_to_an_editor_that_stops_reading_is_held_back() {
+    let env = Env::new("ed-long");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let host = env.host_pid();
+    writeln!(to_agent, "{}", editor_prompt(3, "long 128")).unwrap();
+    let said = wait_for(Duration::from_secs(15), || !too_long(&env).is_empty());
+    assert!(said, "no line_too_long");
+    sleep(Duration::from_secs(1));
+    let held = rss(host);
+    assert!(held < 96 << 20, "the host holds {} MB", held >> 20);
+    let mut line = Vec::new();
+    while !line.starts_with(b"x") {
+        line.clear();
+        assert!(from_agent.read_until(b'\n', &mut line).unwrap() > 0, "no long line");
+    }
+    assert_eq!(line.len(), (128 << 20) + 1);
+    assert!(line[..128 << 20].iter().all(|&b| b == b'x') && line.ends_with(b"\n"));
+    line_with(&mut from_agent, "end_turn");
+    let events = too_long(&env);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!((&events[0]["from"], &events[0]["relayed"]), (&"agent".into(), &true.into()));
+}
+
+/// A line from the editor past the limit goes to the agent as it came,
+/// unread by the host, and an event says so (ADR 49).
+#[test]
+fn an_editor_line_past_the_limit_goes_to_the_agent_unread() {
+    let env = Env::new("ed-longin");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let params = serde_json::json!({ "pad": "e".repeat(40 << 20) });
+    let line = serde_json::json!({ "jsonrpc": "2.0", "method": "_noise", "params": params });
+    writeln!(to_agent, "{line}").unwrap();
+    writeln!(to_agent, "{}", editor_prompt(3, "reply after")).unwrap();
+    line_with(&mut from_agent, "end_turn");
+    let noise = env.calls_of("_noise");
+    assert_eq!(noise.len(), 1);
+    assert_eq!(noise[0]["params"]["pad"].as_str().unwrap().len(), 40 << 20);
+    let events = too_long(&env);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!((&events[0]["from"], &events[0]["relayed"]), (&"editor".into(), &true.into()));
+}
+
+/// The agent's stderr is passed on in pieces, not whole lines: 96 MiB of it
+/// with no newline leaves the host holding none of it (ADR 49). (No
+/// transcripts: the host log's queue isn't what is measured.)
+#[test]
+fn the_agents_stderr_without_a_newline_is_bounded() {
+    let env = Env::new("errlong");
+    env.write_config("[profiles.default]\nlog = false\n");
+    env.start(&[]);
+    let host = env.host_pid();
+    let out = env.run(&["send", "sess-1", "--wait", "long 96 stderr"]);
+    assert!(out.status.success(), "send: {}", stderr(&out));
+    let held = rss(host);
+    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    env.stop();
+}
+
 /// A signal to `brnr acp` reaches the agent at once, as it would the agent
 /// run directly, while the agent's stdin holds back what the editor writes:
 /// it doesn't wait behind it. The agent dies of it, and so `brnr acp` does.

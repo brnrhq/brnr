@@ -3,6 +3,9 @@
 Accepted 2026-10-07. Implemented.
 Resolves review item 9.
 
+Amended by 49: a line longer than 64 KiB goes on in pieces of that, every
+byte, as it comes.
+
 ## Context
 
 The agent's stderr went to the host log, and with an editor through the
