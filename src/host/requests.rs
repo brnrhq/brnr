@@ -14,11 +14,13 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{Held, Hold};
+use super::acp::{Held, Hold, new_session};
 use super::{Host, id_key};
 use crate::log::{self, Dir};
+use crate::schema::{self, AgentCapabilities, AuthMethod, Error, ErrorCode, error_message};
 
 pub(super) enum HostRequest {
     Initialize,
@@ -131,11 +133,7 @@ impl Host {
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         match request {
             HostRequest::Initialize => {
-                self.agent_caps = result["agentCapabilities"].clone();
-                self.agent_meta = result["_meta"].clone();
-                self.auth_methods = result["authMethods"].clone();
-                self.info["capabilities"] = self.capabilities();
-                self.info["agent_info"] = result["agentInfo"].clone();
+                self.initialized(&result);
                 if let Err(err) = self.check_mcp_servers() {
                     return self.fail_start(&err);
                 }
@@ -151,8 +149,8 @@ impl Host {
             HostRequest::Authenticate(_) => self.open_first_session(),
             HostRequest::Open(open) => {
                 let session = match open {
-                    Open::New => match result["sessionId"].as_str() {
-                        Some(session) => session.to_owned(),
+                    Open::New => match new_session(&result) {
+                        Some(session) => session,
                         None => return self.fail_start("session/new returned no sessionId"),
                     },
                     Open::Resume(session) | Open::Load(session) => session,
@@ -187,30 +185,22 @@ impl Host {
         }
     }
 
-    /// What the agent can do, for status and for brnr to check up front.
-    pub(super) fn capabilities(&self) -> Value {
-        let caps = &self.agent_caps;
-        let session = &caps["sessionCapabilities"];
-        json!({
-            "resume": !session["resume"].is_null(),
-            "load": caps["loadSession"] == true,
-            "list": !session["list"].is_null(),
-            "fork": !session["fork"].is_null(),
-            "close": !session["close"].is_null(),
-            "image": caps["promptCapabilities"]["image"] == true,
-            "steering": self.agent_meta["steering"]["supported"] == true,
-            "mcp_http": caps["mcpCapabilities"]["http"] == true,
-            "mcp_sse": caps["mcpCapabilities"]["sse"] == true,
-        })
+    /// The agent's answer to `initialize`, the host's own or the editor's:
+    /// what it can do, and the login methods it offers.
+    pub(super) fn initialized(&mut self, result: &Value) {
+        self.caps = Capabilities::of(result);
+        let methods = result["authMethods"].as_array().map_or(&[][..], Vec::as_slice);
+        self.auth_methods = methods.iter().filter_map(schema::read).collect();
+        self.info["capabilities"] = json!(self.caps);
+        self.info["agent_info"] = result["agentInfo"].clone();
     }
 
     fn check_mcp_servers(&self) -> Result<(), String> {
-        let caps = self.capabilities();
         for server in &self.mcp_servers {
             let kind = server["type"].as_str().unwrap_or("stdio");
             let supported = match kind {
-                "http" => caps["mcp_http"] == true,
-                "sse" => caps["mcp_sse"] == true,
+                "http" => self.caps.mcp_http,
+                "sse" => self.caps.mcp_sse,
                 _ => true,
             };
             if !supported {
@@ -225,9 +215,7 @@ impl Host {
     /// never picks one (P4); one the agent doesn't offer fails the start up
     /// front (P7).
     fn authenticate(&mut self, method: String) {
-        let offered: Vec<String> = (self.auth_methods.as_array().into_iter().flatten())
-            .filter_map(|m| m["id"].as_str().map(str::to_owned))
-            .collect();
+        let offered: Vec<String> = self.auth_methods.iter().map(|m| m.id().to_string()).collect();
         if !offered.contains(&method) {
             let offered = if offered.is_empty() { "none".to_owned() } else { offered.join(", ") };
             let error = format!("the agent offers no login method {method} (it offers: {offered})");
@@ -245,17 +233,17 @@ impl Host {
             return self.host_request("session/new", params, HostRequest::Open(Open::New));
         };
         let params = json!({ "sessionId": session, "cwd": cwd, "mcpServers": mcp });
-        let caps = self.capabilities();
-        if caps["resume"] == true || caps["load"] == true {
+        let caps = self.caps;
+        if caps.resume || caps.load {
             // Taken before the agent hears of it: a session another process
             // holds is refused (ADR 3).
             if let Err(err) = self.own(&session) {
                 return self.fail_start(&err);
             }
         }
-        if caps["resume"] == true {
+        if caps.resume {
             self.host_request("session/resume", params, HostRequest::Open(Open::Resume(session)));
-        } else if caps["load"] == true {
+        } else if caps.load {
             // The agent replays the history; it is in the transcript already.
             let i = self.open_session(&session, None);
             self.sessions[i].replaying = true;
@@ -344,13 +332,7 @@ impl Host {
 
     /// The agent needs a login, which a headless host can't do: say how.
     fn auth_hint(&self) -> String {
-        let methods: Vec<&str> = self
-            .auth_methods
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m["name"].as_str().or(m["id"].as_str()))
-            .collect();
+        let methods: Vec<&str> = self.auth_methods.iter().map(AuthMethod::name).collect();
         let offered =
             if methods.is_empty() { String::new() } else { format!(" ({})", methods.join(", ")) };
         format!(
@@ -415,7 +397,7 @@ impl Host {
                 json!({ "ok": true, "session": session, "config": config.flatten() })
             }
             PeerOp::Fork { cwd } => {
-                let Some(session) = result["sessionId"].as_str().map(str::to_owned) else {
+                let Some(session) = new_session(result) else {
                     return json!({ "ok": false, "error": "session/fork returned no sessionId" });
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
@@ -444,6 +426,43 @@ impl Host {
     }
 }
 
+/// What the agent can do, as it said in `initialize`: for status, and for
+/// brnr to check up front. What is stable ACP is read as the schema has it;
+/// `fork` is unstable, and `steering` a convention advertised in `_meta`
+/// (ADR 41), so both are read from the result as it came.
+#[derive(Clone, Copy, Default, Serialize)]
+pub(super) struct Capabilities {
+    pub(super) resume: bool,
+    pub(super) load: bool,
+    pub(super) list: bool,
+    pub(super) fork: bool,
+    pub(super) close: bool,
+    pub(super) image: bool,
+    pub(super) steering: bool,
+    pub(super) mcp_http: bool,
+    pub(super) mcp_sse: bool,
+}
+
+impl Capabilities {
+    /// From the result of `initialize`.
+    fn of(result: &Value) -> Capabilities {
+        let raw = &result["agentCapabilities"];
+        let caps: AgentCapabilities = schema::read(raw).unwrap_or_default();
+        let session = &caps.session_capabilities;
+        Capabilities {
+            resume: session.resume.is_some(),
+            load: caps.load_session,
+            list: session.list.is_some(),
+            fork: !raw["sessionCapabilities"]["fork"].is_null(),
+            close: session.close.is_some(),
+            image: caps.prompt_capabilities.image,
+            steering: result["_meta"]["steering"]["supported"] == true,
+            mcp_http: caps.mcp_capabilities.http,
+            mcp_sse: caps.mcp_capabilities.sse,
+        }
+    }
+}
+
 /// A queue of setup steps from the start's mode, model and config options.
 pub(super) fn setup_steps(
     mode: Option<String>,
@@ -456,12 +475,56 @@ pub(super) fn setup_steps(
     steps
 }
 
-pub(super) fn error_message(error: &Value) -> String {
-    error["message"].as_str().map_or_else(|| error.to_string(), str::to_owned)
+/// ACP's `auth_required`, or an agent that says as much.
+fn is_auth_error(error: &Value) -> bool {
+    schema::read::<Error>(error).is_some_and(|e| {
+        e.code == ErrorCode::AuthRequired || e.message.to_lowercase().contains("auth")
+    })
 }
 
-/// ACP's `auth_required` (-32000), or an agent that says as much.
-fn is_auth_error(error: &Value) -> bool {
-    error["code"] == -32000
-        || error["message"].as_str().is_some_and(|m| m.to_lowercase().contains("auth"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_as_the_adapters_advertise_them() {
+        let session = json!({
+            "additionalDirectories": {}, "close": {}, "delete": {}, "fork": {},
+            "list": {}, "resume": {}, "subagents": {},
+        });
+        // claude-agent-acp 0.85.1.
+        let claude = json!({
+            "protocolVersion": 1,
+            "agentCapabilities": {
+                "_meta": { "claudeCode": { "promptQueueing": true }, "authStatus": {} },
+                "promptCapabilities": { "image": true, "embeddedContext": true },
+                "mcpCapabilities": { "http": true, "sse": true },
+                "auth": { "logout": {} },
+                "providers": {},
+                "loadSession": true,
+                "sessionCapabilities": session,
+            },
+            "agentInfo": { "name": "@agentclientprotocol/claude-agent-acp", "version": "0.85.1" },
+            "authMethods": [],
+            "_meta": { "steering": { "supported": true } },
+        });
+        let caps = json!(Capabilities::of(&claude));
+        let all = json!({
+            "resume": true, "load": true, "list": true, "fork": true, "close": true,
+            "image": true, "steering": true, "mcp_http": true, "mcp_sse": true,
+        });
+        assert_eq!(caps, all);
+        // codex-acp 2.1.1: no SSE, and an unstable MCP capability.
+        let mut codex = claude.clone();
+        codex["agentCapabilities"]["mcpCapabilities"] =
+            json!({ "acp": false, "http": true, "sse": false });
+        assert_eq!(json!(Capabilities::of(&codex))["mcp_sse"], false);
+        // Nothing said, nothing assumed; `fork` is read where the schema
+        // doesn't have it (unstable), steering in `_meta`.
+        let none = json!(Capabilities::default());
+        assert_eq!(json!(Capabilities::of(&json!({ "protocolVersion": 1 }))), none);
+        let forks = json!({ "agentCapabilities": { "sessionCapabilities": { "fork": {} } } });
+        let forks = Capabilities::of(&forks);
+        assert!(forks.fork && !forks.resume && !forks.steering);
+    }
 }

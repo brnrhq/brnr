@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use brnr::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
 use brnr::{config, json, paths, spawn};
 
 use super::{
@@ -304,16 +305,16 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
     let mut rows: Vec<Value> = listed
         .iter()
         .map(|x| {
-            let id = s(&x["sessionId"]);
-            let (state, pid, active) = known(id);
+            let id = x.session_id.to_string();
+            let (state, pid, active) = known(&id);
             json!({
                 "session": id,
-                "title": x["title"],
+                "title": x.title,
                 "state": state,
                 "pid": pid,
                 // The agent's updatedAt; brnr's own when it has none.
-                "last_active": if x["updatedAt"].is_string() { x["updatedAt"].clone() } else { active },
-                "cwd": x["cwd"],
+                "last_active": x.updated_at.as_ref().map_or(active, |t| json!(t)),
+                "cwd": x.cwd,
             })
         })
         .collect();
@@ -344,7 +345,7 @@ pub(super) fn sessions(args: &[String]) -> Result<ExitCode, String> {
 
 /// Starts `agent`, asks it for its sessions in `cwd` (`initialize`, then
 /// `session/list` page by page) and stops it.
-fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
+fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String> {
     let mut program = paths::expand(&agent[0]).into_os_string();
     if let Some(bundled) = spawn::bundled(&program) {
         program = bundled.into_os_string();
@@ -384,8 +385,7 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
             };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
-                    let what = error["message"].as_str().map_or(error.to_string(), str::to_owned);
-                    return Err(format!("{method} failed: {what}"));
+                    return Err(format!("{method} failed: {}", schema::error_message(error)));
                 }
                 return Ok(msg["result"].clone());
             }
@@ -401,7 +401,8 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
                 "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
             }),
         )?;
-        if init["agentCapabilities"]["sessionCapabilities"]["list"].is_null() {
+        let caps: AgentCapabilities = schema::read(&init["agentCapabilities"]).unwrap_or_default();
+        if caps.session_capabilities.list.is_none() {
             return Err("the agent doesn't list its sessions".to_owned());
         }
         let mut sessions = Vec::new();
@@ -412,9 +413,11 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<Value>, String> {
                 params["cursor"] = json!(cursor);
             }
             let page = ask(id, "session/list", params)?;
-            sessions.extend(page["sessions"].as_array().cloned().unwrap_or_default());
-            match page["nextCursor"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
+            let page = schema::read::<ListSessionsResponse>(&page)
+                .ok_or("session/list failed: the agent's answer isn't a list of sessions")?;
+            sessions.extend(page.sessions);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
                 None => break,
             }
         }

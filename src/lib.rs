@@ -22,5 +22,6 @@ pub mod paths;
 pub mod proxy;
 pub mod render;
 pub mod request;
+pub mod schema;
 pub mod signals;
 pub mod spawn;

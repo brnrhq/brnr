@@ -57,6 +57,8 @@ and by the prompt's text:
   settings [<m>]    reports its config options, with model m if given (none:
                     no options), then answers
   commands          its commands change: compact goes, review comes
+  unknown           an update of a kind ACP's schema doesn't have (an
+                    adapter's own) in the middle of a message, then answers
   perm <kind>       asks permission for a tool call of that kind first
   odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
                     surrogate (the title ends in half an emoji), deep (the
@@ -205,6 +207,13 @@ def run(mid, sid, text):
         end_turn(mid)
     elif first == "commands":
         update(sid, {"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "review", "description": "Review the changes"}]})
+        end_turn(mid)
+    elif first == "unknown":
+        chunk = {"sessionUpdate": "agent_message_chunk", "messageId": "u1"}
+        update(sid, {**chunk, "content": {"type": "text", "text": "one "}})
+        spawned = {"sessionUpdate": "subagent_spawned", "subagentSessionId": "sub-1", "name": "helper", "task": "look", "capabilities": {}}
+        update(sid, spawned)
+        update(sid, {**chunk, "content": {"type": "text", "text": "message"}})
         end_turn(mid)
     elif first == "fail":
         error(mid, -32603, "boom")

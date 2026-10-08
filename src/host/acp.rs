@@ -43,6 +43,8 @@
 //! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
 //! docs/adr): an editor's answer to an id the host doesn't know goes on to
 //! the agent, but for its late answers to requests the host answered itself.
+//! What the host acts on in a line is read with ACP's schema types, and
+//! what they don't take as far as the host can (ADR 43, see schema.rs).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -58,18 +60,15 @@ use super::{Host, id_key, text_block};
 use crate::config::Feature;
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
+use crate::schema::{
+    self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
+};
 use crate::{frame, json, paths};
 
 /// Client capabilities removed from the editor's `initialize`. ACP v2 drops
 /// them and they add nothing an agent needs, so no agent comes to rely on
 /// them (ADR 2 in docs/adr).
 const DROPPED_CAPABILITIES: &[&str] = &["fs", "terminal"];
-
-/// Session updates that end the agent message (or thought) being assembled
-/// for the `agent_message` event. Bookkeeping updates (usage, commands,
-/// mode) don't.
-const ENDS_AGENT_MESSAGE: &[&str] =
-    &["user_message_chunk", "tool_call", "tool_call_update", "plan"];
 
 /// A `session/prompt` the agent hasn't answered yet.
 pub(super) struct Prompt {
@@ -119,7 +118,7 @@ pub(super) struct Session {
     /// `agent_thought` events.
     agent_text: String,
     agent_text_kind: &'static str,
-    agent_message_id: Option<Value>,
+    agent_message_id: Option<MessageId>,
     /// What the agent has said about the session (see state.rs).
     pub(super) state: SessionState,
     /// When the running turn started.
@@ -571,7 +570,7 @@ impl Host {
     fn session_changed(&mut self, pending: Pending, result: Option<&Value>) -> Option<String> {
         match pending {
             Pending::New { cwd, request, dir } => {
-                let session = result.and_then(|r| r["sessionId"].as_str()).map(str::to_owned);
+                let session = result.and_then(new_session);
                 if let Some(session) = &session {
                     let i = self.open_session(session, cwd.as_deref());
                     self.sessions[i].state.result(result.unwrap_or(&Value::Null));
@@ -600,11 +599,7 @@ impl Host {
             }
             Pending::Initialize => {
                 if let Some(result) = result {
-                    self.agent_caps = result["agentCapabilities"].clone();
-                    self.agent_meta = result["_meta"].clone();
-                    self.auth_methods = result["authMethods"].clone();
-                    self.info["capabilities"] = self.capabilities();
-                    self.info["agent_info"] = result["agentInfo"].clone();
+                    self.initialized(result);
                 }
                 None
             }
@@ -709,6 +704,9 @@ impl Host {
         }
         let options =
             self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
+        // An option's kind, if the schema knows it.
+        let kind = |o: &Value| schema::read::<PermissionOptionKind>(&o["kind"]);
+        let allow = matches!(choice, Choice::Allow);
         let outcome = match option {
             Some(option) => {
                 let Some(chosen) = options.iter().find(|o| o["optionId"] == option) else {
@@ -719,22 +717,18 @@ impl Host {
                         ids.join(", ")
                     ));
                 };
-                let kind = chosen["kind"].as_str().unwrap_or_default();
-                let (wrong, verb) = match choice {
-                    Choice::Allow => ("reject_", "deny"),
-                    Choice::Deny => ("allow_", "approve"),
-                };
-                if kind.starts_with(wrong) {
+                if kind(chosen).is_some_and(|k| allows(k) != allow) {
+                    let kind = chosen["kind"].as_str().unwrap_or_default();
+                    let verb = if allow { "deny" } else { "approve" };
                     return Err(format!("{handle}: {option} ({kind}) is for brnr {verb}"));
                 }
                 json!({ "outcome": "selected", "optionId": option })
             }
             None => {
-                let kinds = match choice {
-                    Choice::Allow => ["allow_once", "allow_always"],
-                    Choice::Deny => ["reject_once", "reject_always"],
-                };
-                match kinds.iter().find_map(|k| options.iter().find(|o| o["kind"] == *k)) {
+                use PermissionOptionKind::{AllowAlways, AllowOnce, RejectAlways, RejectOnce};
+                let kinds =
+                    if allow { [AllowOnce, AllowAlways] } else { [RejectOnce, RejectAlways] };
+                match kinds.iter().find_map(|k| options.iter().find(|o| kind(o) == Some(*k))) {
                     Some(o) => json!({ "outcome": "selected", "optionId": o["optionId"] }),
                     None if matches!(choice, Choice::Deny) => json!({ "outcome": "cancelled" }),
                     None => return Err(format!("{handle} offers no allow option")),
@@ -793,33 +787,35 @@ impl Host {
     // ---- turns and injection -------------------------------------------
 
     /// Collects agent message and thought text for the `agent_message` and
-    /// `agent_thought` events, and passes everything else to state.rs.
-    fn track_update(&mut self, session: &str, update: &Value) {
+    /// `agent_thought` events, and passes everything else to state.rs. An
+    /// update the schema doesn't take changes nothing (see schema.rs).
+    fn track_update(&mut self, session: &str, raw: &Value) {
         let Some(i) = self.find(session) else { return };
-        let kind = update["sessionUpdate"].as_str().unwrap_or_default();
-        let text_kind = match kind {
-            "agent_message_chunk" => Some("agent_message"),
-            "agent_thought_chunk" => Some("agent_thought"),
-            _ => None,
-        };
-        if let Some(text_kind) = text_kind {
-            let id = update.get("messageId").cloned();
-            let s = &self.sessions[i];
-            if s.agent_message_id != id || s.agent_text_kind != text_kind {
+        let Some(update) = schema::read::<SessionUpdate>(raw) else { return };
+        let (text_kind, chunk) = match &update {
+            SessionUpdate::AgentMessageChunk(chunk) => ("agent_message", chunk),
+            SessionUpdate::AgentThoughtChunk(chunk) => ("agent_thought", chunk),
+            // These end the agent message (or thought) being assembled;
+            // bookkeeping updates (usage, commands, mode) don't.
+            SessionUpdate::UserMessageChunk(_)
+            | SessionUpdate::ToolCall(_)
+            | SessionUpdate::ToolCallUpdate(_)
+            | SessionUpdate::Plan(_) => {
                 self.flush_agent_message(i);
+                return self.track_state(i, &update, raw);
             }
-            let s = &mut self.sessions[i];
-            s.agent_message_id = id;
-            s.agent_text_kind = text_kind;
-            if let Some(text) = update["content"]["text"].as_str() {
-                s.agent_text.push_str(text);
-            }
-            return;
-        }
-        if ENDS_AGENT_MESSAGE.contains(&kind) {
+            _ => return self.track_state(i, &update, raw),
+        };
+        let s = &self.sessions[i];
+        if s.agent_message_id != chunk.message_id || s.agent_text_kind != text_kind {
             self.flush_agent_message(i);
         }
-        self.track_state(i, kind, update);
+        let s = &mut self.sessions[i];
+        s.agent_message_id = chunk.message_id.clone();
+        s.agent_text_kind = text_kind;
+        if let ContentBlock::Text(text) = &chunk.content {
+            s.agent_text.push_str(&text.text);
+        }
     }
 
     pub(super) fn flush_agent_message(&mut self, i: usize) {
@@ -960,7 +956,7 @@ impl Host {
         self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
         if self.sessions.len() == 1 {
             self.begin_stop();
-        } else if self.capabilities()["close"] == true {
+        } else if self.caps.close {
             // As `brnr close` would, with nobody to answer (peer 0).
             self.close(i, 0, None, "idle");
         }
@@ -1332,8 +1328,21 @@ pub(super) fn prompt_text(blocks: Option<&Value>) -> String {
     parts.join("\n")
 }
 
+/// The session a `session/new` result opened, or a `session/fork` one:
+/// fork answers as new does, and the schema has its own type only among
+/// its unstable ones (see schema.rs).
+pub(super) fn new_session(result: &Value) -> Option<String> {
+    schema::read::<NewSessionResponse>(result).map(|r| r.session_id.to_string())
+}
+
 fn param_session(msg: &Map<String, Value>) -> Option<String> {
     msg.get("params")?.get("sessionId")?.as_str().map(str::to_owned)
+}
+
+/// Whether a permission option of `kind` allows the tool call, rather than
+/// rejecting it.
+fn allows(kind: PermissionOptionKind) -> bool {
+    matches!(kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)
 }
 
 fn permission_event(req: &AgentRequest, owner: &str) -> Value {

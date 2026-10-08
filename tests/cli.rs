@@ -367,6 +367,26 @@ fn every_event_chosen_is_shown_in_text() {
     );
 }
 
+/// An update of a kind ACP's schema doesn't have (ADR 43) is recorded as
+/// it came, and changes nothing: the message around it stays one.
+#[test]
+fn an_update_the_schema_doesnt_know_changes_nothing() {
+    let env = Env::new("c-unknown");
+    env.start(&["--wait", "--prompt", "unknown"]);
+    let all: Vec<Value> = env
+        .ok(&["log", "sess-1", "--events", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let update = |e: &Value| e["msg"]["params"]["update"]["sessionUpdate"].clone();
+    let spawned = all.iter().find(|e| update(e) == "subagent_spawned").expect("not recorded");
+    assert_eq!(spawned["dir"], "agent->editor");
+    assert_eq!(spawned["msg"]["params"]["update"]["subagentSessionId"], "sub-1");
+    let said: Vec<&Value> = all.iter().filter(|e| e["event"] == "agent_message").collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0]["text"], "one message");
+}
+
 /// With `acp` events chosen, `log` reads the session's raw ACP file too,
 /// merged with its events in the order they happened (ADR 22).
 #[test]
