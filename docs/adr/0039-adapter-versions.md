@@ -10,7 +10,10 @@ Accepted (former decision 30); reviewed 2026-10-07. Implemented.
   the formula's source but not its version, so nobody rebuilds for nothing;
   `brew outdated` shows an adapter when its package does move. When
   `adapters/` changes without a new npm version, `release.sh` says so: bump
-  the formula's `revision` by hand if users need the new build. The release
+  the formula's `revision` by hand if users need the new build. That is any
+  change in `adapters/` but the pins' files (`package.json`, `bun.lock`),
+  and theirs too when no pin moved: `bun.lock` alone moving is a dependency
+  of a pinned package moving, which changes the build as much. The release
   workflow drops the revision when the npm version next moves, since a new
   version starts the count over.
 - The adapters say what they were built from (`--version`, compiled in), and
