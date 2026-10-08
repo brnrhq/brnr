@@ -145,6 +145,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Doctor
     ("brnr doctor", Nothing, Succeeds),
     ("brnr doctor --fix", Nothing, Succeeds),
+    ("brnr doctor --report", Nothing, Succeeds),
 ];
 
 /// The lines of `sh` blocks that don't run here, and why.
@@ -153,6 +154,7 @@ const SKIPPED: &[(&str, &str)] = &[
     ("brew install brnrhq/tap/brnr-claude-adapter", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-codex-adapter", "installs from the Homebrew tap"),
     ("cargo build --release", "the build these tests run"),
+    ("gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr", "needs a release"),
     ("adapters/build.sh", "needs bun; CI's adapters job runs it"),
     ("./release.sh minor", "the maintainer's release, on GitHub"),
     ("./release.sh tag", "the maintainer's release, on GitHub"),
