@@ -224,7 +224,9 @@ A process holds a lock for each session it serves
 without asking it. A process that doesn't answer still has its sessions:
 `list` and `ps` show them `unreachable`, commands on them say the process isn't
 answering, and `start --resume` refuses them, naming the process, as it does
-any session that is running. `--take-over` asks the owner to close the session
+any session that is running. A process that is gone isn't shown, even when
+another process has its pid now (nobody listens on its socket), and what it
+left is removed. `--take-over` asks the owner to close the session
 (an editor's process does only if its profile enables `close`) and resumes it
 in a new headless process; sessions beside it keep running.
 
@@ -491,14 +493,22 @@ brnr doctor --fix                  # … and repairs what it safely can
 
 It checks that the runtime directory is private, isn't a symlink, is short
 enough for socket paths, and holds nothing left by processes that are gone
-(their metadata, their session locks); that transcripts are readable only by
-you; that the config parses, with every key in its part, and each profile's
-agent, cwd, MCP servers and bridges are valid; where the adapters are found;
-and that every running process answers, naming the sessions one that doesn't
-still serves. `--fix` makes the runtime directory and transcripts private
-(only what you own, never through a symlink) and removes what processes that
-are gone left behind. It exits non-zero if a check fails; `--json` prints the
-checks.
+(their metadata, sockets and session locks); that transcripts are readable
+only by you; that the config parses, with every key in its part, and each
+profile's agent, cwd, MCP servers and bridges are valid; where the adapters
+are found; and that every running process answers, naming the sessions one
+that doesn't still serves. A process is gone when nobody listens on its
+socket, even if its pid now belongs to another process (after a reboot, say);
+one that is stopped is running but not answering.
+
+It also lists the host logs (`~/.brnr/hosts/`) of processes that died
+without recording it, killed by SIGKILL for instance: logs without `exited`
+whose process isn't running. The line says how many, and for the latest few
+when each last wrote and the sessions it had open; it is information, not a
+warning. `--fix` makes the runtime directory and transcripts private (only
+what you own, never through a symlink) and removes what processes that are
+gone left behind; it leaves logs alone. It exits non-zero if a check fails;
+`--json` prints the checks, each a `level`, `check` and `message`.
 
 ## Environment
 

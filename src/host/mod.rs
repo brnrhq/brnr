@@ -617,17 +617,11 @@ impl Host {
         if let Some(channel) = start_channel
             && let Err(err) = host.open_start_channel(channel, h.events, &tx)
         {
-            host.kill_all();
-            let _ = fs::remove_file(&host.sock_path);
-            let _ = fs::remove_file(&host.meta_path);
-            return Err((format!("start channel: {err}"), 1));
+            return Err(host.abandon(format!("start channel: {err}"), 1));
         }
         for (n, bridge) in bridges.iter().enumerate() {
             if let Err(err) = host.start_bridge(n, bridge, &tx) {
-                host.kill_all();
-                let _ = fs::remove_file(&host.sock_path);
-                let _ = fs::remove_file(&host.meta_path);
-                return Err((err, 2));
+                return Err(host.abandon(err, 2));
             }
         }
         if host.editor {
@@ -645,6 +639,19 @@ impl Host {
             ));
         }
         Ok(host)
+    }
+
+    /// A start that fails before the event loop runs: what it started goes,
+    /// and its host log records the end, as `finish` does, so a log without
+    /// `exited` is a process that died (ADR 11). Returns `error` and `code`.
+    fn abandon(mut self, error: String, code: u8) -> (String, u8) {
+        self.kill_all();
+        let _ = fs::remove_file(&self.sock_path);
+        let _ = fs::remove_file(&self.meta_path);
+        self.sink.note(None, json!({ "event": "exited", "status": null, "reason": error }));
+        self.release_stderr();
+        std::mem::replace(&mut self.log, Logger::disabled()).finish();
+        (error, code)
     }
 
     fn run(mut self) -> ExitCode {
@@ -1361,11 +1368,12 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
     Ok(status)
 }
 
-/// Whether process `pid` exists (it may belong to someone else).
+/// Whether `pid` is a process of the user's, as every brnr process of
+/// theirs is. One that is someone else's (`kill` says EPERM) isn't brnr's,
+/// whatever pid a file of brnr's recorded. That a pid is alive doesn't say
+/// it is still the process that recorded it: see `gone` in ctl.rs.
 pub fn alive(pid: i64) -> bool {
-    pid > 0
-        && (unsafe { libc::kill(pid as pid_t, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+    pid > 0 && unsafe { libc::kill(pid as pid_t, 0) } == 0
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.

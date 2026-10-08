@@ -4,10 +4,13 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 use common::*;
+use serde_json::Value;
 
 fn doctor(env: &Env, args: &[&str]) -> (bool, String) {
     let mut all = vec!["doctor"];
@@ -50,6 +53,11 @@ fn a_used_setup_is_healthy() {
     assert!(ok, "{text}");
     assert!(lines(&text, "warn").is_empty() && lines(&text, "FAIL").is_empty(), "{text}");
     assert!(text.contains("1 running and answering"), "{text}");
+    // Its host log has no `exited` yet: it is running.
+    assert!(
+        text.contains("ok    host logs: no process died without recording it (1 log)"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -152,15 +160,16 @@ fn stale_session_locks_are_removed() {
     assert!(sessions.join("sess-1.lock").exists(), "{text}");
 }
 
-/// A process binds its socket before it writes its metadata: doctor --fix
-/// must leave a process that is starting alone.
+/// A process binds its socket and listens before it writes its metadata:
+/// doctor --fix must leave a process that is starting alone.
 #[test]
 fn a_starting_process_is_left_alone() {
     let env = Env::new("dr-start");
     let run = env.dir.join("run");
     mkdir(&run, 0o700);
+    // This test, starting.
     let pid = std::process::id();
-    write(&run.join(format!("{pid}.sock")), "", 0o600);
+    let _listening = UnixListener::bind(run.join(format!("{pid}.sock"))).unwrap();
     write(&run.join(format!("{pid}.json.tmp")), "", 0o600);
 
     let (ok, text) = doctor(&env, &["--fix"]);
@@ -261,17 +270,134 @@ fn relative_runtime_dir_fails() {
     assert!(text.contains("BRNR_DIR is relative"), "{text}");
 }
 
+/// A process that doesn't answer is running, and what it has is left alone.
 #[test]
 fn unresponsive_host_warns() {
     let env = Env::new("dr-stuck");
     env.start(&[]);
     let host = env.host_pid();
     unsafe { libc::kill(host, libc::SIGSTOP) };
-    let (ok, text) = doctor(&env, &[]);
+    let (ok, text) = doctor(&env, &["--fix"]);
     unsafe { libc::kill(host, libc::SIGCONT) };
     assert!(ok, "{text}");
     let warning = format!("{host} is running but not answering; it serves sess-1");
     assert!(text.contains(&warning), "{text}");
+    assert!(!text.contains("removed"), "{text}");
+    assert!(env.dir.join(format!("run/{host}.sock")).exists(), "{text}");
+    assert_eq!(env.hosts().len(), 1, "{text}");
+}
+
+/// macOS refuses connections to a stopped process once its backlog is
+/// full, as every command that waited on it leaves one queued: it is still
+/// running, and not answering.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_stopped_host_with_a_full_backlog_is_running() {
+    use std::os::unix::net::UnixStream;
+    let env = Env::new("dr-full");
+    env.start(&[]);
+    let host = env.host_pid();
+    let socket = env.dir.join(format!("run/{host}.sock"));
+    unsafe { libc::kill(host, libc::SIGSTOP) };
+    let mut queued = Vec::new();
+    while let Ok(conn) = UnixStream::connect(&socket) {
+        queued.push(conn);
+        assert!(queued.len() < 10_000, "never refused");
+    }
+    let (ok, text) = doctor(&env, &["--fix"]);
+    let list = env.run(&["list", "--json"]);
+    unsafe { libc::kill(host, libc::SIGCONT) };
+    assert!(ok, "{text}");
+    let warning = format!("{host} is running but not answering; it serves sess-1");
+    assert!(text.contains(&warning), "{text}");
+    assert!(!text.contains("removed"), "{text}");
+    assert!(socket.exists() && env.hosts().len() == 1, "{text}");
+    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
+}
+
+/// Metadata and a socket whose pid is alive, but another process's now:
+/// nobody listens on the socket, so the process that left them is gone.
+#[test]
+fn a_pid_taken_by_another_process_is_gone() {
+    let env = Env::new("dr-ghost");
+    let mut sleep = ghost(&env);
+    let pid = sleep.id();
+    let (ok, text) = doctor(&env, &[]);
+    assert!(ok, "{text}");
+    let left =
+        format!("left by processes that are gone: {pid}.json, {pid}.sock (brnr doctor --fix)");
+    assert!(text.contains(&left), "{text}");
+    assert!(text.contains("ok    processes: none running"), "{text}");
+    assert_eq!(fs::read_dir(env.dir.join("run")).unwrap().count(), 2, "{text}");
+
+    let (ok, text) = doctor(&env, &["--fix"]);
+    assert!(ok, "{text}");
+    let removed =
+        format!("removed what processes that are gone left behind: {pid}.json, {pid}.sock");
+    assert!(text.contains(&removed), "{text}");
+    assert_eq!(fs::read_dir(env.dir.join("run")).unwrap().count(), 0, "{text}");
+    let _ = sleep.kill();
+    let _ = sleep.wait();
+}
+
+/// A process killed without a word (SIGKILL) leaves a host log without
+/// `exited` (ADR 11): doctor says so, with the sessions it had open, and
+/// --fix leaves the record. One that stopped recorded it.
+#[test]
+fn a_death_without_a_record_is_reported() {
+    let env = Env::new("dr-died");
+    env.start(&[]);
+    let stopped = env.hosts().remove(0);
+    env.stop();
+    let pid = stopped["host_pid"].as_i64().unwrap() as i32;
+    assert!(wait_for(Duration::from_secs(10), || !alive(pid)), "it didn't stop");
+    let (_, text) = doctor(&env, &[]);
+    assert!(
+        text.contains("ok    host logs: no process died without recording it (1 log)"),
+        "{text}"
+    );
+
+    env.start(&[]);
+    let killed = env.hosts().remove(0);
+    let (host, agent) =
+        (killed["host_pid"].as_i64().unwrap(), killed["agent_pid"].as_i64().unwrap());
+    unsafe {
+        libc::kill(-(agent as i32), libc::SIGKILL);
+        libc::kill(host as i32, libc::SIGKILL);
+    }
+    assert!(wait_for(Duration::from_secs(10), || !alive(host as i32)), "it didn't die");
+    let (ok, text) = doctor(&env, &["--fix"]);
+    assert!(ok, "{text}");
+    let run = killed["host_id"].as_str().unwrap();
+    let line = lines(&text, "--    host logs");
+    let start =
+        format!("--    host logs: 1 process died without recording it: {run} (last record ");
+    assert!(line.len() == 1 && line[0].starts_with(&start), "{text}");
+    assert!(line[0].ends_with("; session sess-1)"), "{text}");
+    assert!(!text.contains(stopped["host_id"].as_str().unwrap()), "{text}");
+    assert!(env.dir.join(format!("home/hosts/{run}.jsonl")).exists(), "--fix removed it");
+
+    // The same check in JSON.
+    let out = env.run(&["doctor", "--json"]);
+    let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    assert_eq!(check["level"], "info", "{check}");
+    assert!(check["message"].as_str().unwrap().contains(run), "{check}");
+}
+
+/// A start that fails as its bridges start records its end too.
+#[test]
+fn a_failed_start_is_no_death() {
+    let env = Env::new("dr-failed");
+    env.write_config("[[profiles.b.bridges]]\ncommand = [\"/no/such/brnr-bridge\"]\n");
+    let out = env.run(&start_args(&["--profile", "b"]));
+    assert!(!out.status.success(), "it started");
+    let (_, text) = doctor(&env, &[]);
+    assert!(
+        text.contains("ok    host logs: no process died without recording it (1 log)"),
+        "{text}"
+    );
 }
 
 #[test]

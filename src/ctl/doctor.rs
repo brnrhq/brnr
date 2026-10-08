@@ -2,8 +2,10 @@
 //! what's wrong.
 //!
 //! - the runtime directory: private to the user, not a symlink, short enough
-//!   for a socket path, and free of metadata and session locks left by
-//!   processes that are gone;
+//!   for a socket path, and free of metadata, sockets and session locks left
+//!   by processes that are gone. Gone is what a process's socket says (see
+//!   `gone` in ctl.rs): one nobody listens on was left by a process that is
+//!   gone, even when its pid is another process's now;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
 //!   (ADR 33), and every profile's settings, cwd, agent and bridges are
@@ -11,25 +13,33 @@
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running processes: each answers; of one that doesn't, the sessions it
-//!   holds the locks of (ADR 3).
+//!   holds the locks of (ADR 3);
+//! - host logs: those of processes that died without recording it (no
+//!   `exited`, and not running), the cases ADR 11 can't record, with when
+//!   each last wrote and the sessions it had open. Info, not a warning:
+//!   they are a record, and nothing is to be repaired.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
-//! removes stale metadata and locks. It never touches anything it would
-//! refuse to use. The exit status is non-zero if a check failed. `--json`
-//! prints the checks as a list of `{level, check, message}`.
+//! removes stale metadata, sockets and locks. It never touches anything it
+//! would refuse to use, nor any log. The exit status is non-zero if a check
+//! failed. `--json` prints the checks as a list of `{level, check,
+//! message}`.
 
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use brnr::host::{alive, check_bridge};
-use brnr::{config, lock, paths, spawn};
+use brnr::host::check_bridge;
+use brnr::{config, lock, log, paths, spawn};
 
-use super::{Host, USAGE, read_meta, request};
+use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;
@@ -92,7 +102,8 @@ pub fn main(args: &[String]) -> Result<(), String> {
     transcripts(&mut r);
     config_file(&mut r);
     adapters(&mut r);
-    running(&mut r, &hosts);
+    running(&mut r, hosts.as_deref().unwrap_or_default());
+    host_logs(&mut r, hosts.as_deref());
     if r.json {
         outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
@@ -116,8 +127,12 @@ fn plural(n: usize) -> &'static str {
 
 // ---- runtime directory ---------------------------------------------------
 
-/// Checks the directory and returns the hosts whose metadata is current.
-fn runtime_dir(r: &mut Report) -> Vec<Host> {
+/// A running process, and why it didn't answer if it didn't.
+type Running = (Host, Option<String>);
+
+/// Checks the directory and returns the processes running, or `None` if it
+/// can't be trusted to say.
+fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
     let what = "runtime dir";
     let dir = paths::runtime_dir();
     if dir.is_relative() {
@@ -137,7 +152,7 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
     match fs::symlink_metadata(&dir) {
         Err(_) => {
             r.line(Level::Ok, what, format!("{} (created on first use)", dir.display()));
-            return Vec::new();
+            return Some(Vec::new());
         }
         Ok(meta) => match private_problem(&meta, true) {
             None => r.line(Level::Ok, what, format!("{}: private", dir.display())),
@@ -148,37 +163,47 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
                     let hint = if fixable(&meta, true) { " (brnr doctor --fix)" } else { "" };
                     let msg = format!("{}: {problem}; brnr won't use it{hint}", dir.display());
                     r.line(Level::Fail, what, msg);
-                    return Vec::new();
+                    return None;
                 }
             }
         },
     }
 
-    // Metadata of hosts that are gone, and sockets without metadata. A
-    // process binds its socket, then writes its metadata (`<pid>.json.tmp`,
-    // renamed): while its pid is alive, those are a process starting.
+    // Metadata of processes that are gone, and sockets without metadata. A
+    // process binds its socket and listens, then writes its metadata
+    // (`<pid>.json.tmp`, renamed): while that socket accepts, those are a
+    // process starting. Whether a process is gone is what its socket says,
+    // not its pid alone, which may be another process's now (`gone`).
     let mut hosts = Vec::new();
     let mut stale: Vec<PathBuf> = Vec::new();
     let entries: Vec<PathBuf> =
         fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
     for path in &entries {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let starting = name.split('.').next().and_then(|pid| pid.parse().ok()).is_some_and(alive);
         if name.ends_with(".json.tmp") {
-            if !starting {
+            if !starting(path) {
                 stale.push(path.clone());
             }
             continue;
         }
         match path.extension().and_then(OsStr::to_str) {
-            Some("json") => match read_meta(path) {
-                Some(meta) if alive(meta["host_pid"].as_i64().unwrap_or(0)) => {
-                    hosts.push(Host { meta, status: None });
+            Some("json") => {
+                let Some(meta) = read_meta(path) else {
+                    stale.extend([path.clone(), path.with_extension("sock")]);
+                    continue;
+                };
+                let mut host = Host { meta, status: None };
+                match probe(path, &host) {
+                    Probe::Answered(status) => {
+                        host.status = Some(status);
+                        hosts.push((host, None));
+                    }
+                    Probe::Silent(why) => hosts.push((host, Some(why))),
+                    // Its socket goes with it.
+                    Probe::Gone => stale.extend([path.clone(), path.with_extension("sock")]),
                 }
-                // Its socket, if any, goes with it.
-                _ => stale.extend([path.clone(), path.with_extension("sock")]),
-            },
-            Some("sock") if !path.with_extension("json").exists() && !starting => {
+            }
+            Some("sock") if !path.with_extension("json").exists() && !starting(path) => {
                 stale.push(path.clone());
             }
             _ => {}
@@ -192,7 +217,7 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
     let locks: Vec<PathBuf> =
         lock::all().into_iter().filter(|e| e.pid.is_none()).map(|e| e.path).collect();
     if stale.is_empty() && locks.is_empty() {
-        return hosts;
+        return Some(hosts);
     }
     let mut names: Vec<String> =
         stale.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into()).collect();
@@ -213,7 +238,21 @@ fn runtime_dir(r: &mut Report) -> Vec<Host> {
         let msg = format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
         r.line(Level::Warn, what, msg);
     }
-    hosts
+    Some(hosts)
+}
+
+/// Whether what a process left without its metadata (`<pid>.sock`,
+/// `<pid>.json.tmp`) is a process's that is starting: its socket accepts.
+fn starting(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let Some(pid) = name.split('.').next().and_then(|pid| pid.parse::<i64>().ok()) else {
+        return false;
+    };
+    let socket = path.with_file_name(format!("{pid}.sock"));
+    match UnixStream::connect(&socket) {
+        Ok(_) => true,
+        Err(e) => !gone(pid, &socket, path, &e),
+    }
 }
 
 fn sun_path_len() -> usize {
@@ -477,28 +516,145 @@ fn executable(path: &Path) -> bool {
 
 // ---- running processes ---------------------------------------------------
 
-fn running(r: &mut Report, hosts: &[Host]) {
+fn running(r: &mut Report, hosts: &[Running]) {
     let what = "processes";
     if hosts.is_empty() {
         return r.line(Level::Ok, what, "none running");
     }
     let locks = lock::all();
     let mut answering = 0;
-    for host in hosts {
-        match request(host, &json!({ "cmd": "status" })) {
-            Ok(_) => answering += 1,
-            Err(e) => {
-                let held = host.held(&locks);
-                let serving = if held.is_empty() {
-                    String::new()
-                } else {
-                    format!("; it serves {}", held.join(", "))
-                };
-                r.line(Level::Warn, what, format!("{} is running but {e}{serving}", host.id()));
-            }
-        }
+    for (host, silent) in hosts {
+        let Some(why) = silent else {
+            answering += 1;
+            continue;
+        };
+        let held = host.held(&locks);
+        let serving = if held.is_empty() {
+            String::new()
+        } else {
+            format!("; it serves {}", held.join(", "))
+        };
+        r.line(Level::Warn, what, format!("{} is running but {why}{serving}", host.id()));
     }
     if answering > 0 {
         r.line(Level::Ok, what, format!("{answering} running and answering"));
     }
+}
+
+// ---- host logs -----------------------------------------------------------
+
+/// How many of the processes that died the line names, the latest first.
+const DIED_SHOWN: usize = 3;
+
+/// How much of a host log's end is read for its `exited`.
+const LOG_TAIL: u64 = 64 * 1024;
+
+/// Host logs (`~/.brnr/hosts/<run id>.jsonl`) of processes that died
+/// without recording it, the cases ADR 11 couldn't record: the log has no
+/// `exited`, and no process running has its run id. For each, when its last
+/// record was written and the sessions it had open. Only the ends of files
+/// are read: of each host log, and of each session's events file for the
+/// run it was last written by. `hosts` is `None` when which processes are
+/// running can't be known.
+fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
+    let what = "host logs";
+    let Some(hosts) = hosts else {
+        return r.line(Level::Info, what, "not checked: which processes are running is unknown");
+    };
+    let running: Vec<&str> =
+        hosts.iter().filter_map(|(host, _)| host.meta["host_id"].as_str()).collect();
+    let dir = paths::state_dir().join("hosts");
+    let mut logs = 0;
+    let mut died: Vec<(SystemTime, String)> = Vec::new();
+    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "jsonl") {
+            continue;
+        }
+        let Some(run) = path.file_stem().and_then(OsStr::to_str) else { continue };
+        logs += 1;
+        if running.contains(&run) || recorded_exit(&path) != Some(false) {
+            continue;
+        }
+        // Appended to only: when it was last modified is its last record.
+        let written = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+        died.push((written, run.to_owned()));
+    }
+    if died.is_empty() {
+        let msg = format!("no process died without recording it ({logs} log{})", plural(logs));
+        return r.line(Level::Ok, what, msg);
+    }
+    died.sort_by(|a, b| b.cmp(a));
+    let open = open_sessions();
+    let latest: Vec<String> = died
+        .iter()
+        .take(DIED_SHOWN)
+        .map(|(written, run)| {
+            let sessions = match open.get(run) {
+                Some(ids) => format!("session{} {}", plural(ids.len()), ids.join(", ")),
+                None => "no sessions".to_owned(),
+            };
+            format!("{run} (last record {}; {sessions})", when(&log::rfc3339(*written)))
+        })
+        .collect();
+    let n = died.len();
+    let which = if n > DIED_SHOWN { "; the latest" } else { "" };
+    let msg = format!(
+        "{n} process{} died without recording it{which}: {}",
+        if n == 1 { "" } else { "es" },
+        latest.join(", ")
+    );
+    // Nothing to repair: what is left is a record (ADR 11).
+    r.line(Level::Info, what, msg);
+}
+
+/// Whether a host log records its process's end, `None` if it can't be
+/// read. `exited` is the last thing a process writes but for what follows
+/// as it lets go (a bridge's exit, its own stderr), so it is in the end of
+/// the file.
+fn recorded_exit(path: &Path) -> Option<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(LOG_TAIL);
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.read_to_end(&mut tail).ok()?;
+    let mut lines = tail.split(|&b| b == b'\n');
+    if start > 0 {
+        lines.next(); // Cut off.
+    }
+    let exited = lines.filter(|line| line.windows(8).any(|w| w == b"\"exited\"")).any(|line| {
+        serde_json::from_slice::<Value>(line)
+            .is_ok_and(|record| record["event"]["event"] == "exited")
+    });
+    Some(exited)
+}
+
+/// The sessions each run had open when it last wrote to them, by run id:
+/// from the last record of every session's events file, but for those it
+/// closed.
+fn open_sessions() -> HashMap<String, Vec<String>> {
+    let mut open: HashMap<String, Vec<String>> = HashMap::new();
+    let projects = paths::state_dir().join("projects");
+    let files = fs::read_dir(&projects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| paths::is_events_log(p));
+    for file in files {
+        let Some(last) = last_record(&file) else { continue };
+        let (Some(run), Some(session)) = (last["host_id"].as_str(), last["session_id"].as_str())
+        else {
+            continue;
+        };
+        if last["event"]["event"] != "session_closed" {
+            open.entry(run.to_owned()).or_default().push(session.to_owned());
+        }
+    }
+    for ids in open.values_mut() {
+        ids.sort();
+    }
+    open
 }

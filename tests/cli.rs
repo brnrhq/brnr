@@ -991,6 +991,28 @@ fn a_dead_process_lets_go() {
     assert_eq!(stdout(&out), "again\n");
 }
 
+/// A process that is gone isn't listed, even when its pid is another
+/// process's now: its socket refuses. What it left is removed.
+#[test]
+fn a_gone_process_whose_pid_is_taken_is_not_listed() {
+    let env = Env::new("c-ghost");
+    env.start(&[]);
+    let real = env.host_pid();
+    let mut sleep = ghost(&env);
+    let ps: Value = serde_json::from_str(&env.ok(&["ps", "--json"])).unwrap();
+    let pids: Vec<&Value> = ps.as_array().unwrap().iter().map(|p| &p["pid"]).collect();
+    assert_eq!(pids, [&Value::from(real)], "{ps}");
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["pid"]), (&"sess-1".into(), &Value::from(real)));
+    let pid = sleep.id();
+    let left = ["json", "sock"].map(|ext| env.dir.join(format!("run/{pid}.{ext}")).exists());
+    assert_eq!(left, [false, false], "not removed");
+    assert!(!env.ok(&["ps"]).contains(&pid.to_string()));
+    let _ = sleep.kill();
+    let _ = sleep.wait();
+}
+
 /// `close` cancels a running turn first: its pending approval is answered
 /// `cancelled`, the turn ends, then the session closes, and a process left
 /// with no session stops.
