@@ -490,6 +490,8 @@ fn the_report_is_what_to_paste() {
     }
     env.start(&[]);
     let running = env.hosts().remove(0)["host_id"].as_str().unwrap().to_owned();
+    // Once its log has its start (`log` waits for its logger to write it).
+    env.ok(&["log", "sess-1"]);
     // Something not ok.
     write(&hosts.join("open.txt"), "", 0o644);
 
