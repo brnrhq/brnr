@@ -3,3 +3,6 @@
 
 # rustfmt formats the code
 25e9d8d07288abdb4c308caa0cfe7054f2007352
+
+# ruff formats the Python
+99090234e1612f123e32eccce5d45227e3cd0e40
