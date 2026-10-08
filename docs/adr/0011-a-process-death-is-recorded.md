@@ -1,5 +1,8 @@
 # 11. A process's own death is recorded
 
+Amended by 45: a panic also prints a link to report it, in the foreground
+from the hook, and from `brnr start` or `brnr acp` when it fails a start.
+
 Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
 abort (a stack overflow), which runs no hook. A start that fails as it opens

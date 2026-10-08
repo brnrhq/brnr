@@ -1,5 +1,5 @@
-//! `brnr doctor [--fix] [--json]`: checks what brnr depends on and says
-//! what's wrong.
+//! `brnr doctor [--fix | --report] [--json]`: checks what brnr depends on
+//! and says what's wrong.
 //!
 //! - the runtime directory: private to the user, not a symlink, short enough
 //!   for a socket path, and free of metadata, sockets and session locks left
@@ -24,6 +24,12 @@
 //! would refuse to use, nor any log. The exit status is non-zero if a check
 //! failed. `--json` prints the checks as a list of `{level, check,
 //! message}`.
+//!
+//! `--report` prints, instead of the checks, a bug report to read and then
+//! paste into an issue (ADR 45): brnr's version, the OS, the adapters, the
+//! checks that aren't ok, and the end of the most relevant host logs, with
+//! secrets redacted as brnr records them (ADR 25) and the home directory as
+//! `~`. As Markdown, or with `--json` as one object with the same data.
 
 use std::collections::HashMap;
 use std::env;
@@ -37,9 +43,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use brnr::host::check_bridge;
-use brnr::{config, lock, log, paths, spawn, sys};
+use brnr::{bug, config, lock, log, paths, spawn, sys};
 
-use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, when};
+use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, text, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;
@@ -55,6 +61,8 @@ enum Level {
 struct Report {
     fix: bool,
     json: bool,
+    /// `--report`: the checks are kept for the report, not printed.
+    report: bool,
     checks: Vec<Value>,
     failed: usize,
     warned: usize,
@@ -74,36 +82,46 @@ impl Report {
                 "FAIL"
             }
         };
-        if self.json {
-            let level = match level {
-                Level::Ok => "ok",
-                Level::Info => "info",
-                Level::Warn => "warn",
-                Level::Fail => "fail",
-            };
-            self.checks.push(json!({ "level": level, "check": what, "message": msg.as_ref() }));
-        } else {
+        let name = match level {
+            Level::Ok => "ok",
+            Level::Info => "info",
+            Level::Warn => "warn",
+            Level::Fail => "fail",
+        };
+        self.checks.push(json!({ "level": name, "check": what, "message": msg.as_ref() }));
+        if !self.json && !self.report {
             outln!("{tag:<5} {what}: {}", msg.as_ref());
         }
     }
 }
 
 pub fn main(args: &[String]) -> Result<(), String> {
-    let (mut fix, mut json_out) = (false, false);
+    let (mut fix, mut json_out, mut report) = (false, false, false);
     for arg in args {
         match arg.as_str() {
             "--fix" => fix = true,
             "--json" => json_out = true,
+            "--report" => report = true,
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let mut r = Report { fix, json: json_out, checks: Vec::new(), failed: 0, warned: 0 };
+    if fix && report {
+        return Err("--fix and --report don't go together".into());
+    }
+    let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
     transcripts(&mut r);
     config_file(&mut r);
     adapters(&mut r);
     running(&mut r, hosts.as_deref().unwrap_or_default());
     host_logs(&mut r, hosts.as_deref());
+    if r.report {
+        bug_report(&r, hosts.as_deref());
+        return match r.failed {
+            0 => Ok(()),
+            n => Err(format!("{n} check{} failed", plural(n))),
+        };
+    }
     if r.json {
         outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
@@ -433,16 +451,19 @@ fn describe_profile(profile: &config::Profile) -> String {
 
 // ---- adapters ------------------------------------------------------------
 
+/// The adapters doctor looks for, and the npm package each is (or is built
+/// from).
+const ADAPTERS: [(&str, &str); 4] = [
+    ("brnr-claude-adapter", "@agentclientprotocol/claude-agent-acp"),
+    ("brnr-codex-adapter", "@agentclientprotocol/codex-acp"),
+    ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
+    ("codex-acp", "@agentclientprotocol/codex-acp"),
+];
+
 /// brnr's adapters and the npm packages', where they are and the version of
 /// the npm package each is (or was built from).
 fn adapters(r: &mut Report) {
-    let adapters = [
-        ("brnr-claude-adapter", "@agentclientprotocol/claude-agent-acp"),
-        ("brnr-codex-adapter", "@agentclientprotocol/codex-acp"),
-        ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
-        ("codex-acp", "@agentclientprotocol/codex-acp"),
-    ];
-    for (name, package) in adapters {
+    for (name, package) in ADAPTERS {
         let Some(path) = find_program(name) else {
             r.line(Level::Info, name, "not found next to brnr or on PATH");
             continue;
@@ -615,6 +636,21 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
 /// as it lets go (a bridge's exit, its own stderr), so it is in the end of
 /// the file.
 fn recorded_exit(path: &Path) -> Option<bool> {
+    Some(recorded(&tail(path)?, "exited"))
+}
+
+/// Whether one of `lines` is a host event `event`.
+fn recorded(lines: &[Vec<u8>], event: &str) -> bool {
+    let quoted = format!("\"{event}\"");
+    let quoted = quoted.as_bytes();
+    lines.iter().filter(|line| line.windows(quoted.len()).any(|w| w == quoted)).any(|line| {
+        serde_json::from_slice::<Value>(line).is_ok_and(|record| record["event"]["event"] == event)
+    })
+}
+
+/// The whole lines in the last [`LOG_TAIL`] bytes of a file, `None` if it
+/// can't be read.
+fn tail(path: &Path) -> Option<Vec<Vec<u8>>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = fs::File::open(path).ok()?;
     let start = file.metadata().ok()?.len().saturating_sub(LOG_TAIL);
@@ -625,11 +661,7 @@ fn recorded_exit(path: &Path) -> Option<bool> {
     if start > 0 {
         lines.next(); // Cut off.
     }
-    let exited = lines.filter(|line| line.windows(8).any(|w| w == b"\"exited\"")).any(|line| {
-        serde_json::from_slice::<Value>(line)
-            .is_ok_and(|record| record["event"]["event"] == "exited")
-    });
-    Some(exited)
+    Some(lines.filter(|l| !l.is_empty()).map(<[u8]>::to_vec).collect())
 }
 
 /// The sessions each run had open when it last wrote to them, by run id:
@@ -659,4 +691,169 @@ fn open_sessions() -> HashMap<String, Vec<String>> {
         ids.sort();
     }
     open
+}
+
+// ---- the report ----------------------------------------------------------
+
+/// How many of a host log's last lines the report shows.
+const REPORT_LINES: usize = 20;
+
+/// How much of a line the report shows: a line can be an agent's whole
+/// `initialize` answer.
+const REPORT_LINE_CHARS: usize = 4000;
+
+/// A host log in the report: its run, how it ended, and its last lines.
+struct HostLog {
+    run: String,
+    ended: &'static str,
+    lines: Vec<String>,
+}
+
+/// `brnr doctor --report` (ADR 45): what to paste into an issue, printed
+/// for the user to read first.
+fn bug_report(r: &Report, hosts: Option<&[Running]>) {
+    let (adapters, checks): (Vec<&Value>, Vec<&Value>) =
+        r.checks.iter().partition(|c| ADAPTERS.iter().any(|(name, _)| c["check"] == *name));
+    let checks: Vec<&Value> = checks.into_iter().filter(|c| c["level"] != "ok").collect();
+    let logs = relevant_logs(hosts);
+    if r.json {
+        let logs: Vec<Value> = logs
+            .iter()
+            .map(|l| json!({ "run": l.run, "ended": l.ended, "lines": l.lines }))
+            .collect();
+        let report = json!({
+            "brnr": env!("CARGO_PKG_VERSION"),
+            "os": bug::os(),
+            "adapters": adapters,
+            "checks": checks,
+            "host_logs": logs,
+        });
+        return outln!("{}", tilde(&serde_json::to_string_pretty(&report).unwrap()));
+    }
+    let mut out = String::from(
+        "<!-- brnr doctor --report: read it before you paste it, and remove what you'd rather \
+         not share. -->\n\n",
+    );
+    out.push_str(&format!("**{}** on {}\n\n**Adapters**\n\n", bug::version(), bug::os()));
+    for c in &adapters {
+        out.push_str(&format!("- {}: {}\n", text(&c["check"]), text(&c["message"])));
+    }
+    out.push_str("\n**Checks that aren't ok**\n\n");
+    if checks.is_empty() {
+        out.push_str("none\n");
+    }
+    for c in &checks {
+        let (level, check, message) = (text(&c["level"]), text(&c["check"]), text(&c["message"]));
+        out.push_str(&format!("- {level} {check}: {message}\n"));
+    }
+    if logs.is_empty() {
+        out.push_str("\n**Host logs**: none\n");
+    }
+    for log in &logs {
+        let n = log.lines.len();
+        out.push_str(&format!(
+            "\n**Host log `{}`**: {}; its last {n} line{}\n\n",
+            log.run,
+            log.ended,
+            plural(n)
+        ));
+        // A fence no line can end.
+        let longest = log.lines.iter().map(|l| longest_run(l, '`')).max().unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
+        out.push_str(&format!("{fence}jsonl\n"));
+        for line in &log.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str(&format!("{fence}\n"));
+    }
+    out!("{}", tilde(&out));
+}
+
+/// The host logs a report shows: the latest, and the latest of a process
+/// that panicked or died without recording it (ADR 11), if that is another.
+fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
+    let running: Option<Vec<&str>> =
+        hosts.map(|h| h.iter().filter_map(|(host, _)| host.meta["host_id"].as_str()).collect());
+    let dir = paths::state_dir().join("hosts");
+    let mut logs: Vec<(SystemTime, String, PathBuf)> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|e| {
+            let run = e.path().file_stem()?.to_str()?.to_owned();
+            let written = e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            Some((written, run, e.path()))
+        })
+        .collect();
+    // The latest first; of two written in the same instant, the later run.
+    logs.sort_by(|a, b| b.cmp(a));
+    let mut shown: Vec<HostLog> = Vec::new();
+    for (i, (_, run, path)) in logs.iter().enumerate() {
+        let Some(lines) = tail(path) else { continue };
+        let ended = if recorded(&lines, "panic") {
+            "brnr panicked"
+        } else if recorded(&lines, "exited") {
+            "exited"
+        } else {
+            match &running {
+                Some(running) if running.contains(&run.as_str()) => "running",
+                Some(_) => "died without recording it",
+                None => "no exit recorded (whether it runs is unknown)",
+            }
+        };
+        let bad = matches!(ended, "brnr panicked" | "died without recording it");
+        if i == 0 || bad {
+            let start = lines.len().saturating_sub(REPORT_LINES);
+            let lines = lines[start..].iter().map(|l| report_line(l)).collect();
+            shown.push(HostLog { run: run.clone(), ended, lines });
+        }
+        if bad {
+            break;
+        }
+    }
+    shown
+}
+
+/// A host log's line as the report shows it: with what brnr redacts
+/// redacted again (a log written before it did), cut short if it is long.
+fn report_line(line: &[u8]) -> String {
+    let text = match serde_json::from_slice::<Value>(line) {
+        Ok(mut record) => {
+            log::redact_record(&mut record);
+            record.to_string()
+        }
+        Err(_) => String::from_utf8_lossy(line).into_owned(),
+    };
+    let chars = text.chars().count();
+    if chars <= REPORT_LINE_CHARS {
+        return text;
+    }
+    let kept: String = text.chars().take(REPORT_LINE_CHARS).collect();
+    format!("{kept}… ({} more characters)", chars - REPORT_LINE_CHARS)
+}
+
+/// The longest run of `c` in `text`.
+fn longest_run(text: &str, c: char) -> usize {
+    let (mut longest, mut run) = (0, 0);
+    for x in text.chars() {
+        run = if x == c { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest
+}
+
+/// `text` with the user's home directory as `~`, as a path and as the start
+/// of a project folder's name (`-Users-me-src` for `/Users/me/src`, see
+/// paths.rs).
+fn tilde(text: &str) -> String {
+    let Ok(home) = env::var("HOME") else { return text.to_owned() };
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return text.to_owned();
+    }
+    let folder: String =
+        home.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    text.replace(home, "~").replace(&format!("{folder}-"), "~-")
 }

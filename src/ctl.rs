@@ -104,7 +104,7 @@ settings
   brnr commands <session> [--json]
 
 brnr
-  brnr doctor [--fix] [--json]
+  brnr doctor [--fix | --report] [--json]
   brnr --version
 
 <session> is a session's id, as brnr list shows it. <request> is a pending approval's handle,

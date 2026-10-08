@@ -142,6 +142,7 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     if request.headless().is_some_and(|h| h.foreground.is_some()) {
         // In a process group of its own, writing to the terminal.
         signals::write_from_background();
+        death::foreground();
     }
     let editor = matches!(request.role, Role::Editor(_));
     // An editor's process doesn't start without its signal link, as it
