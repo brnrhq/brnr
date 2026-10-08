@@ -59,7 +59,8 @@ shellcheck release.sh adapters/build.sh
 ```
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
-target/release` (`--brnr`: brnr, built there, is checked with them). CI also
+target/release` (`--brnr`: brnr, built there, is checked with them); change
+`check.py`? `adapters/test_check.py`. CI also
 runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version
 (`rust-version` in Cargo.toml) and actionlint and zizmor on the workflows.
 
