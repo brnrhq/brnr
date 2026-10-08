@@ -1,7 +1,17 @@
 # 43. ACP types from the official schema crate
 
-Accepted 2026-10-07. Not yet implemented: brnr reads ACP as
-`serde_json::Value`.
+Accepted 2026-10-07. Implemented with `agent-client-protocol-schema`
+1.10.2, without schemars and without its unstable features (src/schema.rs).
+Read with its types: session updates, the capabilities and login methods in
+`initialize`'s answer, the session `session/new` or `session/fork` opened,
+permission option kinds, JSON-RPC errors, and `brnr sessions`' `session/list`.
+Strict mode's stable methods are the crate's. Left to `serde_json::Value`,
+as the types don't take them or brnr passes them on as they were said: the
+JSON-RPC envelope and the editor's requests, extension methods and `_meta`,
+the unstable `fork` capability, update kinds the schema lacks, what brnr
+rewrites, and what events and the status carry as it was said (a prompt's
+content, a permission request's tool call and options, locations, plan
+entries, config options, commands, modes, stop reasons).
 
 ## Context
 

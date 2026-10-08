@@ -57,6 +57,7 @@ use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
 use crate::request::{Prompt, Request, Role};
+use crate::schema::AuthMethod;
 use crate::signals;
 
 use acp::{AgentRequest, Hold, Pending, Session};
@@ -64,7 +65,7 @@ pub use control::{EVENTS, QUIET, check_bridge};
 use control::{Closer, Peer};
 use display::Display;
 use flow::Backlog;
-use requests::{HostRequest, SetupStep};
+use requests::{Capabilities, HostRequest, SetupStep};
 use start::StartChannel;
 
 /// Where the editor link or the start channel is: a socket either way.
@@ -338,11 +339,10 @@ struct Host {
     show_events: bool,
     json_events: bool,
     display: Option<Display>,
-    /// What the agent said it can do in `initialize`, and the `_meta` of
-    /// its answer, where conventions ahead of the spec are advertised.
-    agent_caps: Value,
-    agent_meta: Value,
-    auth_methods: Value,
+    /// What the agent said it can do in `initialize`, and the login methods
+    /// it offers.
+    caps: Capabilities,
+    auth_methods: Vec<AuthMethod>,
     next_message: u64,
     started: Instant,
 
@@ -565,9 +565,8 @@ impl Host {
             show_events,
             json_events,
             display,
-            agent_caps: Value::Null,
-            agent_meta: Value::Null,
-            auth_methods: Value::Null,
+            caps: Capabilities::default(),
+            auth_methods: Vec::new(),
             next_message: 0,
             started: Instant::now(),
             strict,

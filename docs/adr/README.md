@@ -69,7 +69,7 @@ of to-resolve; the map at the end says where each went.
 | [40](0040-release-sh.md) | `release.sh` | yes |
 | [41](0041-strict-mode.md) | Strict mode | yes |
 | [42](0042-feature-flags.md) | Feature flags for process management | yes |
-| [43](0043-acp-schema-types.md) | ACP types from the official schema crate | no |
+| [43](0043-acp-schema-types.md) | ACP types from the official schema crate | yes |
 
 ## Where the former entries went
 

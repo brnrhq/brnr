@@ -620,7 +620,7 @@ impl Host {
         let waiting = !s.held.is_empty() || !s.steering.is_empty();
         if mode == "steer" && (busy || waiting) {
             self.check_strict(Beyond::Steering)?;
-            if self.capabilities()["steering"] != true {
+            if !self.caps.steering {
                 let why = "it doesn't advertise _session/steering";
                 return Err(format!("the agent can't steer a running turn: {why}"));
             }
@@ -661,7 +661,7 @@ impl Host {
             match block["type"].as_str() {
                 Some("resource_link") if block["uri"].is_string() => {}
                 Some("image") if block["data"].is_string() && block["mimeType"].is_string() => {
-                    if self.capabilities()["image"] != true {
+                    if !self.caps.image {
                         return Err("the agent doesn't take images".into());
                     }
                 }
@@ -735,7 +735,7 @@ impl Host {
         }
         let cmd = req["cmd"].as_str().unwrap_or_default();
         let req_id = req.get("req_id").cloned();
-        let caps = self.capabilities();
+        let caps = self.caps;
         let i = self.session_index(req)?;
         let session = self.sessions[i].id.clone();
         let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
@@ -809,12 +809,12 @@ impl Host {
                     return Err("the editor owns this process; fork sessions there".into());
                 }
                 self.check_strict(Beyond::Fork)?;
-                if caps["fork"] != true {
+                if !caps.fork {
                     return Err("the agent can't fork sessions".into());
                 }
                 // A second session could never close when idle, and the
                 // process would never stop (ADR 12).
-                if self.stop_when_idle.is_some() && caps["close"] != true {
+                if self.stop_when_idle.is_some() && !caps.close {
                     return Err("the agent can't close sessions: with stop_when_idle, a forked \
                                 session would never close"
                         .into());
@@ -825,7 +825,7 @@ impl Host {
             }
             "close" => {
                 self.check_experimental(Experimental::Close)?;
-                if caps["close"] != true {
+                if !caps.close {
                     return Err("the agent can't close sessions".into());
                 }
                 let taken_by = req["take_over"].as_u64().and_then(|pid| u32::try_from(pid).ok());

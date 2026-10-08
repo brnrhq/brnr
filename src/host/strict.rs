@@ -8,11 +8,16 @@
 //! `fs` and `terminal` capabilities pass through (see acp.rs). The only
 //! `_meta` brnr acts on is steering's, so in strict mode none is.
 //!
+//! Which methods are stable is the schema's to say (see schema.rs): the
+//! one a convention uses is refused unless the schema crate, built without
+//! its unstable features, has it.
+//!
 //! It is about the protocol only: headless operation, observing a session,
 //! the CLI and process management are the same with it and without.
 
 use super::Host;
 use crate::config::Experimental;
+use crate::schema;
 
 /// What brnr does beyond stable ACP, which strict mode doesn't. A
 /// convention is added to brnr by adding it here, and to ADR 41's list.
@@ -33,17 +38,20 @@ impl Host {
         if !self.strict {
             return Ok(());
         }
-        Err(match what {
-            Beyond::Steering => {
-                "--steer uses _session/steering, an ACP extension, which strict mode doesn't".into()
+        let (what, method) = match what {
+            Beyond::Steering => ("--steer", "_session/steering"),
+            Beyond::Fork => ("fork", "session/fork"),
+            Beyond::Experimental(action) => {
+                return Err(format!(
+                    "{} on an editor's session is an experimental action, and strict mode has none",
+                    action.name()
+                ));
             }
-            Beyond::Fork => {
-                "fork uses session/fork, unstable in ACP v1, which strict mode doesn't".into()
-            }
-            Beyond::Experimental(action) => format!(
-                "{} on an editor's session is an experimental action, and strict mode has none",
-                action.name()
-            ),
-        })
+        };
+        if schema::stable(method) {
+            return Ok(()); // The schema has made it stable since.
+        }
+        let why = if method.starts_with('_') { "an ACP extension" } else { "unstable in ACP v1" };
+        Err(format!("{what} uses {method}, {why}, which strict mode doesn't"))
     }
 }
