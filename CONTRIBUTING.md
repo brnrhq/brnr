@@ -13,6 +13,7 @@ cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release, as CI: some tests stream tens of thousands of events
 adapters/build.sh              # only if you change adapters/ (needs bun)
 adapters/check.py --brnr target/release
+adapters/test_check.py         # only if you change adapters/check.py
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to
@@ -26,6 +27,21 @@ with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:
 `cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run host corpus/host
 seeds/host` (`cargo fuzz list` has the others). A crash it finds is fixed
 with a regression test in the main test suite.
+
+Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
+built under AddressSanitizer and under MemorySanitizer, on Linux. To run
+them yourself (nightly Rust, with `rust-src`), and see any
+report, also the host's, in `/tmp/reports`:
+
+```sh
+mkdir -p /tmp/reports
+RUSTFLAGS="-Zsanitizer=address --cfg sanitized" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
+  cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu --release
+ls /tmp/reports                # empty: nothing was found
+```
+
+MemorySanitizer is `-Zsanitizer=memory`, with `MSAN_OPTIONS`. On a Mac: `--target aarch64-apple-darwin` and
+`detect_leaks=0` (macOS has no leak detection, and no MemorySanitizer).
 
 The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
@@ -76,9 +92,10 @@ aliases or shims.
 - Commits say what is now true, in a sentence (`notify, cut off, stops its
   command and says so`), with the why in the body. The ADR a commit
   implements goes in brackets: `(ADR 36)`.
-- The README and the ADRs change with the code they describe. The README's
-  and the site's examples run as tests (`tests/docs.rs`): a new one needs a
-  line there saying how it runs, or why it can't.
+- The README, the skill (`skills/brnr/`) and the ADRs change with the code
+  they describe. Their examples, and the site's, run as tests
+  (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
+  it can't.
 - Releases are the maintainers' (`release.sh`, in the README).
 
 ## Security

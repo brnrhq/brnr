@@ -1,5 +1,8 @@
 # 35. Bridges
 
+Amended by 48: a request, `logged`, answered once the process has written
+what it recorded until then.
+
 Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
 Implemented.
 Resolves review item 4 with ADR 36.

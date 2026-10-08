@@ -10,8 +10,8 @@
 #   ./release.sh tag
 #       Once that is merged: checks CI passed on main, tags v<version>, follows
 #       the release workflow (GitHub release, source tarball, Homebrew
-#       formulae), verifies the tarball's attestation and checks the tap
-#       points at the tarball.
+#       formulae, crates.io), verifies the tarball's attestation, checks the
+#       tap points at the tarball and crates.io has the version.
 #
 #   ./release.sh notes [<version | major | minor | patch>]
 #       Prints what the release pull request would say, changing nothing.
@@ -152,8 +152,12 @@ tag() {
     gh api "repos/$tap/contents/Formula/brnr.rb" --jq .content | base64 --decode |
         grep -qF "https://github.com/$repo/releases/download/v$version/$tarball" ||
         die "$tap's brnr formula doesn't point at v$version's $tarball"
+
+    say "checking crates.io"
+    curl -fsS -A "brnr release.sh (https://github.com/$repo)" "https://crates.io/api/v1/crates/brnr/$version" >/dev/null ||
+        die "crates.io doesn't have brnr $version"
     gh release view "v$version" -R "$repo" --json url --jq .url
-    echo "brnr $version is out: brew upgrade brnr"
+    echo "brnr $version is out: brew upgrade brnr, or cargo install brnr --locked"
 }
 
 case ${1:-} in

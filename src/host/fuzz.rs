@@ -1,7 +1,8 @@
 //! The host's ACP stream without its processes, for the fuzz targets
 //! (fuzz/ in the repository) and tests: lines from the editor and the agent
 //! go through the host's own handling (see acp.rs), and what it writes to
-//! each side is collected instead of sent.
+//! each side is collected instead of sent. Headless start reports are
+//! collected too, so the start commits before its prompt goes (ADR 7).
 //!
 //! There is no agent, no link, no log and no peer: nothing is spawned or
 //! signalled (the stop timer, the one thing that signals the agent, never
@@ -14,7 +15,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+
 use super::Host;
+use super::start::StartChannel;
 use crate::config::{Experimental, Feature, Log};
 use crate::request::{Editor, Headless, Prompt, Role};
 
@@ -26,6 +30,7 @@ pub struct Harness {
     host: Host,
     agent: Receiver<Vec<u8>>,
     editor: Receiver<(u8, Vec<u8>)>,
+    start: Receiver<Value>,
     now: Instant,
 }
 
@@ -36,6 +41,8 @@ pub struct Sent {
     pub agent: Vec<Vec<u8>>,
     /// Frames for the proxy: kind and payload (see frame.rs).
     pub editor: Vec<(u8, Vec<u8>)>,
+    /// Reports for the headless start channel, including the commit.
+    pub start: Vec<Value>,
 }
 
 impl Harness {
@@ -82,7 +89,11 @@ impl Harness {
             (host.link, host.start_done, editor) = (Some(link), true, Some(rx));
         }
         let editor = editor.unwrap_or_else(|| mpsc::channel().1);
-        Harness { host, agent, editor, now: Instant::now() }
+        let (tx, start) = mpsc::channel();
+        if !host.editor {
+            host.start_channel = Some(StartChannel::Collected(tx));
+        }
+        Harness { host, agent, editor, start, now: Instant::now() }
     }
 
     /// Bytes from the editor, as the link delivers them: lines may be split
@@ -119,7 +130,7 @@ impl Harness {
         for bytes in &agent {
             self.host.to_agent.done(bytes.len());
         }
-        Sent { agent, editor }
+        Sent { agent, editor, start: self.start.try_iter().collect() }
     }
 }
 
@@ -151,5 +162,25 @@ mod tests {
         );
         assert!(h.sent().agent[0].windows(11).any(|w| w == b"session/new"));
         h.tick();
+    }
+
+    #[test]
+    fn a_headless_start_commits_before_its_prompt() {
+        let mut h = Harness::headless(false, None);
+        h.sent();
+        // No real session lock in this unit test. The fuzz targets use their
+        // own runtime directory for the locks they exercise.
+        h.host.claimed.insert("fuzz-start".into(), super::super::acp::Hold::Owner(None));
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1}}"#);
+        h.sent();
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-start","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
+        assert!(h.sent().agent[0].windows(16).any(|w| w == b"session/set_mode"));
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-3","result":{}}"#);
+        let sent = h.sent();
+        assert_eq!(sent.start.len(), 1);
+        assert_eq!(sent.start[0]["ok"], true);
+        assert_eq!(sent.start[0]["session"], "fuzz-start");
+        assert!(h.host.start_done);
+        assert!(sent.agent[0].windows(14).any(|w| w == b"session/prompt"));
     }
 }

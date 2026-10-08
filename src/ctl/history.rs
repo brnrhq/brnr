@@ -11,7 +11,8 @@
 //! process exits. `--events` and `--json` mean what they do for `watch`.
 //! It reads the session's events file; with `acp` events chosen, the raw
 //! ACP file beside it too, each message an `acp` event, merged in time
-//! order (ADR 22 in docs/adr).
+//! order (ADR 22 in docs/adr). A running session's, once its process has
+//! written what it recorded until then (ADR 48).
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -26,7 +27,7 @@ use serde_json::{Value, json};
 use brnr::host::alive;
 use brnr::{paths, render};
 
-use super::{Found, USAGE, default_events, discover, events_arg, find_session};
+use super::{Found, USAGE, call, default_events, discover, events_arg, find_session};
 
 const POLL: Duration = Duration::from_millis(200);
 
@@ -125,7 +126,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 
 /// The files of the session `arg` names, its events and its raw ACP (none
 /// if its process records none), and the pid of the process serving it, if
-/// one is.
+/// one is. A running session's process is asked to have written what it
+/// recorded until now first: a thread of its own writes it, and what was
+/// just seen happen (a turn `start --wait` reported) may not be there yet
+/// (ADR 48).
 fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
     let hosts = discover()?;
     match find_session(&hosts, arg)? {
@@ -135,6 +139,9 @@ fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), Stri
                 .and_then(|s| s["log"].as_str())
                 .ok_or("this process keeps no transcript (log = false)")?;
             let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
+            if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
+                errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
+            }
             Ok((PathBuf::from(path), acp, host.meta["host_pid"].as_i64()))
         }
         Found::Inactive(past) => {
