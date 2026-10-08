@@ -39,7 +39,9 @@ aliases or shims.
 - Commits say what is now true, in a sentence (`notify, cut off, stops its
   command and says so`), with the why in the body. The ADR a commit
   implements goes in brackets: `(ADR 36)`.
-- The README and the ADRs change with the code they describe.
+- The README and the ADRs change with the code they describe. The README's
+  and the site's examples run as tests (`tests/docs.rs`): a new one needs a
+  line there saying how it runs, or why it can't.
 - Releases are the maintainers' (`release.sh`, in the README).
 
 ## Security
