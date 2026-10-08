@@ -59,34 +59,23 @@ fn started_as() -> Option<PathBuf> {
 
 /// Starts `cmd` as a grandchild in a new session, so that once the
 /// intermediate child exits it is reparented to launchd/init: out of our
-/// process group and out from under us in the process tree. `fd` is moved
-/// to `target` in the new process, the only descriptor it gets from us
-/// besides what `cmd` sets up for stdio. Returns the new process's stdin if
-/// `cmd` asked for a pipe (the host's, for its start request), and its pid.
+/// process group and out from under us in the process tree. Each of `fds`,
+/// `(fd, target)`, is moved to `target` in the new process: the only
+/// descriptors it gets from us besides what `cmd` sets up for stdio. Returns
+/// the new process's stdin if `cmd` asked for a pipe (the host's, for its
+/// start request), and its pid.
 pub fn detached(
     cmd: &mut Command,
-    fd: RawFd,
-    target: RawFd,
+    fds: &[(RawFd, RawFd)],
 ) -> io::Result<(Option<ChildStdin>, u32)> {
     // The intermediate child writes the new process's pid here as it goes;
     // the new process doesn't keep it past exec.
     let (mut pid_reader, pid_writer) = io::pipe()?;
-    let pid_fd = pid_writer.as_raw_fd();
+    let mut pid_fd = pid_writer.as_raw_fd();
+    let mut fds = fds.to_vec();
     unsafe {
         cmd.pre_exec(move || {
-            // Out of the way of `target`, should the pipe be there.
-            let pid_fd = if pid_fd == target {
-                libc::fcntl(pid_fd, libc::F_DUPFD_CLOEXEC, target + 1)
-            } else {
-                pid_fd
-            };
-            // dup2 clears FD_CLOEXEC on the copy, except when the fd is
-            // already `target` and dup2 does nothing.
-            if fd == target {
-                libc::fcntl(fd, libc::F_SETFD, 0);
-            } else if libc::dup2(fd, target) < 0 {
-                return Err(io::Error::last_os_error());
-            }
+            move_fds(&mut fds, Some(&mut pid_fd))?;
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -115,22 +104,38 @@ pub fn detached(
     Ok((stdin, libc::pid_t::from_ne_bytes(pid) as u32))
 }
 
-/// Starts `cmd` as our child in a process group of its own, with `fd` moved
-/// to `target`: `brnr start --foreground`, which waits for it and passes it
-/// the signals it gets, so a terminal's Ctrl-C reaches it once.
-pub fn child(cmd: &mut Command, fd: RawFd, target: RawFd) -> io::Result<Child> {
-    unsafe {
-        cmd.pre_exec(move || {
-            if fd == target {
-                libc::fcntl(fd, libc::F_SETFD, 0);
-            } else if libc::dup2(fd, target) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        })
-    };
+/// Starts `cmd` as our child in a process group of its own, with each of
+/// `fds` moved as for [`detached`]: `brnr start --foreground`, which waits
+/// for it and passes it the signals it gets, so a terminal's Ctrl-C reaches
+/// it once.
+pub fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
+    let mut fds = fds.to_vec();
+    unsafe { cmd.pre_exec(move || move_fds(&mut fds, None)) };
     cmd.process_group(0);
     let program = PathBuf::from(cmd.get_program());
     cmd.spawn().map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))
 }
 
+/// Between fork and exec: moves each `(fd, target)` to `target`, open
+/// across exec there, and `keep` out of the targets' way. Each is first
+/// copied above every target, so none is overwritten before it has moved,
+/// whichever targets the fds are on; the copies close at exec.
+fn move_fds(fds: &mut [(RawFd, RawFd)], keep: Option<&mut RawFd>) -> io::Result<()> {
+    let above = fds.iter().map(|&(_, target)| target + 1).max().unwrap_or(0);
+    let movable = fds.iter_mut().map(|(fd, _)| fd).chain(keep);
+    for fd in movable {
+        if *fd < above {
+            *fd = unsafe { libc::fcntl(*fd, libc::F_DUPFD_CLOEXEC, above) };
+            if *fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+    }
+    // dup2 clears FD_CLOEXEC on the copy.
+    for &mut (fd, target) in fds {
+        if unsafe { libc::dup2(fd, target) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}

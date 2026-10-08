@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread::sleep;
@@ -1348,15 +1348,9 @@ fn editor_that_stops_reading_holds_the_agent_back() {
 #[test]
 fn a_stalled_agent_holds_the_editor_back() {
     let env = Env::new("ed-full").agent("STALL", "1");
-    let (mut editor, mut to_agent, _from_agent) = open_editor(&env);
+    let (mut editor, to_agent, _from_agent) = open_editor(&env);
     let host = env.host_pid();
-    // 200 MB of notifications, which the agent never reads.
-    let writer = std::thread::spawn(move || {
-        let params = serde_json::json!({ "pad": "x".repeat(100_000) });
-        let line = serde_json::json!({ "jsonrpc": "2.0", "method": "_noise", "params": params });
-        let line = format!("{line}\n");
-        (0..2000).all(|_| to_agent.write_all(line.as_bytes()).is_ok())
-    });
+    let writer = flood(to_agent);
     sleep(Duration::from_secs(5));
     assert!(!writer.is_finished(), "the editor's writes didn't wait");
     let held = rss(host);
@@ -1365,6 +1359,75 @@ fn a_stalled_agent_holds_the_editor_back() {
     editor.wait().unwrap();
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
     assert!(!writer.join().unwrap(), "the editor's writes all went through");
+}
+
+/// 200 MB of notifications from the editor, on their own thread: whether
+/// they all went through.
+fn flood(mut to_agent: ChildStdin) -> std::thread::JoinHandle<bool> {
+    std::thread::spawn(move || {
+        let params = serde_json::json!({ "pad": "x".repeat(100_000) });
+        let line = serde_json::json!({ "jsonrpc": "2.0", "method": "_noise", "params": params });
+        let line = format!("{line}\n");
+        (0..2000).all(|_| to_agent.write_all(line.as_bytes()).is_ok())
+    })
+}
+
+/// A signal to `brnr acp` reaches the agent at once, as it would the agent
+/// run directly, while the agent's stdin holds back what the editor writes:
+/// it doesn't wait behind it. The agent dies of it, and so `brnr acp` does.
+#[test]
+fn a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
+    let env = Env::new("ed-signal").agent("STALL", "1");
+    let (mut editor, to_agent, _from_agent) = open_editor(&env);
+    let host = env.host_pid();
+    let writer = flood(to_agent);
+    sleep(Duration::from_secs(3));
+    assert!(!writer.is_finished(), "the editor's writes didn't wait");
+    unsafe { libc::kill(editor.id() as i32, libc::SIGTERM) };
+    assert!(wait_exit(&mut editor, Duration::from_secs(5)), "the agent didn't get the signal");
+    let status = editor.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "acp: {status}");
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the host lives on");
+    assert!(!writer.join().unwrap(), "the editor's writes all went through");
+}
+
+/// An editor's process doesn't start without the proxy's signal link on its
+/// fd 4, as it doesn't without the link: it tells the proxy so on the link,
+/// and the agent never started.
+#[test]
+fn an_editors_process_needs_its_signal_link() {
+    let env = Env::new("ed-nosig");
+    let (mut ours, theirs) = UnixStream::pair().unwrap();
+    let fd = theirs.as_raw_fd();
+    let mut cmd = env.brnr(&["host"]);
+    cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    unsafe {
+        cmd.pre_exec(move || {
+            (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
+        })
+    };
+    let mut child = cmd.spawn().unwrap();
+    drop(theirs);
+    let editor = serde_json::json!({
+        "proxy_pid": std::process::id(), "sigmask": [], "experimental": [], "features": [],
+    });
+    let request = serde_json::json!({
+        "profile": null, "agent": [AGENT], "cwd": env.dir, "strict": false, "log": "all",
+        "bridges": [], "role": { "editor": editor },
+    });
+    child.stdin.take().unwrap().write_all(request.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("no signal link on fd 4"), "{}", stderr(&out));
+    // A FAILED frame: kind, length (u32 BE), payload.
+    let mut head = [0; 5];
+    ours.read_exact(&mut head).unwrap();
+    assert_eq!(head[0], b'F', "{head:?}");
+    let mut payload = vec![0; u32::from_be_bytes(head[1..].try_into().unwrap()) as usize];
+    ours.read_exact(&mut payload).unwrap();
+    let failure: Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(failure["code"], 2, "{failure}");
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
 }
 
 /// An editor may hand over a non-blocking stdin: nothing to read yet is not

@@ -12,12 +12,14 @@ editor notices nothing different (P1).
 
 - `brnr acp [--profile <p>] [-- <agent> [args...]]` is the proxy. It starts a
   brnr process (the host) detached (a new session, double fork, reparented to
-  init or launchd), with one end of a socketpair, and from then on only
-  relays: stdin and stdout as frames, the agent's stderr to its stderr, every
-  signal it receives to the host, stdin EOF; at the end it exits with the
-  agent's exact wait status, re-raising the signal that killed it. The host
-  starts the agent in a process group of its own, with the editor's signal
-  mask.
+  init or launchd), with one end of each of two socketpairs, and from then on
+  only relays. On the link: stdin and stdout as frames, the agent's stderr to
+  its stderr, stdin EOF after what came before it. On the signal link, which
+  the host never stops reading, so that nothing on it waits behind the
+  editor's input (ADR 6): every signal it receives, and its stdout failing.
+  At the end it exits with the agent's exact wait status, re-raising the
+  signal that killed it. The host starts the agent in a process group of its
+  own, with the editor's signal mask.
 - It is named for what it is to the editor, an ACP agent command
   (`brnr acp -- brnr-claude-adapter`). It was `brnr proxy`; that name is gone,
   not kept as an alias (P9). Inside, it is still the proxy (`proxy.rs`,
@@ -38,8 +40,8 @@ editor notices nothing different (P1).
 
 What the editor sees differently, stated in the README:
 
-- A SIGKILL sent to the proxy can't be passed on as such. The host sees the
-  link go without the editor's stdin ending first, closes the agent's stdin
+- A SIGKILL sent to the proxy can't be passed on as such. The host sees its
+  links go without the editor's stdin ending first, closes the agent's stdin
   and SIGKILLs its process group itself: the same end, a moment later, from
   the host (`link_gone`).
 - The editor's child is the proxy, not the agent, so its pid and process tree

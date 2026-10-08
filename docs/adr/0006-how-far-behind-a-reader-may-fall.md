@@ -1,9 +1,7 @@
 # 6. How far behind a reader may fall
 
-Accepted 2026-10-07, from former decision 25. Implemented. While the
-agent's stdin holds the link back, what the proxy sends behind the editor's
-input (a signal, stdin's EOF) waits with it; the proxy going away doesn't.
-Resolves review item 1, and with ADR 9 review item 3.
+Accepted 2026-10-07, from former decision 25. Implemented. Resolves review
+item 1, and with ADR 9 review item 3.
 
 ## Context
 
@@ -34,11 +32,14 @@ Who gives way depends on who the reader is (P6).
   (16 MiB, as peers'); past it the host stops reading the agent's stdout, and
   the agent blocks on its stdout as it would writing to the editor directly.
   The agent's stdin queue likewise: past the cap the host stops reading the
-  link, the proxy blocks, and the editor's write blocks. No timeout of
-  brnr's own: an editor that hangs stalls its agent for as long as it hangs,
-  as a direct pipe would (P1). `LINK_WRITE_TIMEOUT` goes. An editor that is
-  gone needs no timeout: its pipe closes, the proxy's write fails, and the
-  host hears the editor has gone.
+  link, the proxy blocks, and the editor's write blocks. Stdin's EOF waits
+  behind what the editor wrote, as on a pipe; a signal to the proxy and its
+  stdout failing don't: they go on a socket of their own, the signal link,
+  which the host never stops reading, and on which it hears the proxy go
+  (ADR 2). No timeout of brnr's own: an editor that hangs stalls its agent
+  for as long as it hangs, as a direct pipe would (P1). `LINK_WRITE_TIMEOUT`
+  goes. An editor that is gone needs no timeout: its pipe closes, the
+  proxy's write fails, and the host hears the editor has gone.
 - The host's own channels are bounded too: a reader thread (the agent's
   stdout, the link) blocks when the event loop is that far behind, so
   "stops reading" really holds the bytes in the pipe, not in memory.

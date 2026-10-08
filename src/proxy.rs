@@ -7,7 +7,10 @@
 //! agent, and from then on only relays: stdin and stdout carry ACP to and
 //! from the host, the agent's stderr comes out of the proxy's stderr,
 //! signals the proxy receives are handed to the host, and the proxy exits
-//! with the agent's exact wait status. The agent never holds the editor's
+//! with the agent's exact wait status. Signals, and its stdout failing, go
+//! on a socket of their own, the signal link (see frame.rs): they don't wait
+//! behind the editor's input while the agent isn't reading it, as they
+//! wouldn't with the agent run directly. The agent never holds the editor's
 //! file descriptors and is out of reach of the editor's process group and
 //! process tree; when the proxy goes, the host stops it as if the editor had
 //! run it.
@@ -37,8 +40,9 @@ const HELP: &str = "What an editor runs as its ACP agent, in place of the agent 
 The agent runs in a process of its own, which brnr's other commands can
 reach (brnr list, send, watch, approve, ...); it stops when the editor goes.";
 
-/// The fd the host finds its end of the link on.
+/// The fds the host finds its end of the link and of the signal link on.
 const HOST_LINK_FD: c_int = 3;
+const HOST_SIGNAL_LINK_FD: c_int = 4;
 
 #[derive(Default)]
 struct Options {
@@ -48,7 +52,9 @@ struct Options {
     strict: bool,
 }
 
-type Link = Arc<Mutex<UnixStream>>;
+/// The signal link, written from the thread relaying signals and from the
+/// one relaying the host's frames.
+type SignalLink = Arc<Mutex<UnixStream>>;
 
 pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
@@ -74,24 +80,25 @@ pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     let signals = signals::install();
-    let (link, theirs) = match UnixStream::pair() {
-        Ok(pair) => pair,
-        Err(err) => {
-            eprintln!("brnr acp: socketpair: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(err) = start_host(&request, theirs) {
+    let ((link, theirs), (signal_link, their_signal_link)) =
+        match UnixStream::pair().and_then(|link| Ok((link, UnixStream::pair()?))) {
+            Ok(pairs) => pairs,
+            Err(err) => {
+                eprintln!("brnr acp: socketpair: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+    if let Err(err) = start_host(&request, theirs, their_signal_link) {
         eprintln!("brnr acp: starting its process: {err}");
         return ExitCode::FAILURE;
     }
 
-    let writer: Link = Arc::new(Mutex::new(link.try_clone().expect("clone socket")));
-    let w = writer.clone();
-    thread::spawn(move || relay_stdin(w));
-    let w = writer.clone();
-    thread::spawn(move || relay_signals(signals, w));
-    run(link, writer)
+    let input = link.try_clone().expect("clone socket");
+    thread::spawn(move || relay_stdin(input));
+    let signal_link: SignalLink = Arc::new(Mutex::new(signal_link));
+    let s = signal_link.clone();
+    thread::spawn(move || relay_signals(signals, s));
+    run(link, signal_link)
 }
 
 /// Splits `[options] [-- <program> [args...]]`.
@@ -149,17 +156,19 @@ fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Re
 
 /// Starts the host detached (see spawn.rs) with its stdout and stderr on
 /// /dev/null, writes it the request on its stdin, and closes that; its only
-/// connection to us is then `theirs`, moved to fd 3.
-fn start_host(request: &Request, theirs: UnixStream) -> io::Result<()> {
+/// connections to us are then its ends of the link and the signal link,
+/// moved to fds 3 and 4.
+fn start_host(request: &Request, link: UnixStream, signal_link: UnixStream) -> io::Result<()> {
     let mut cmd = spawn::host_command()?;
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
-    let (stdin, _) = spawn::detached(&mut cmd, theirs.as_raw_fd(), HOST_LINK_FD)?;
+    let fds = [(link.as_raw_fd(), HOST_LINK_FD), (signal_link.as_raw_fd(), HOST_SIGNAL_LINK_FD)];
+    let (stdin, _) = spawn::detached(&mut cmd, &fds)?;
     request.send(stdin.expect("piped"))
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit
 /// status arrives.
-fn run(link: UnixStream, writer: Link) -> ExitCode {
+fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
     let mut reader = BufReader::new(link);
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let mut stderr = ManuallyDrop::new(unsafe { File::from_raw_fd(2) });
@@ -178,7 +187,7 @@ fn run(link: UnixStream, writer: Link) -> ExitCode {
                     // The caller stopped reading; the host treats that as the
                     // editor going away.
                     stdout_open = false;
-                    send(&writer, frame::STDOUT_CLOSED, &[]);
+                    send(&signal_link, frame::STDOUT_CLOSED, &[]);
                 }
             }
             frame::STDERR => {
@@ -209,8 +218,8 @@ fn mirror(status: c_int) -> ExitCode {
 }
 
 /// Our stdin → the host, then EOF so the host knows exactly when the caller
-/// closed ours.
-fn relay_stdin(link: Link) {
+/// closed ours. The only writer of the link.
+fn relay_stdin(mut link: UnixStream) {
     let mut input = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
     let mut buf = vec![0; 64 * 1024];
     loop {
@@ -224,11 +233,11 @@ fn relay_stdin(link: Link) {
             }
             Err(_) => break,
         };
-        if !send(&link, frame::DATA, &buf[..n]) {
+        if frame::write(&mut link, frame::DATA, &buf[..n]).is_err() {
             return;
         }
     }
-    send(&link, frame::EOF, &[]);
+    let _ = frame::write(&mut link, frame::EOF, &[]);
 }
 
 /// `write_all` that also works on a non-blocking descriptor, which an
@@ -255,7 +264,8 @@ fn wait_ready(fd: &impl AsRawFd, events: libc::c_short) {
     {}
 }
 
-fn relay_signals(mut signals: PipeReader, link: Link) {
+/// The signals we get → the host, on the signal link: never behind our stdin.
+fn relay_signals(mut signals: PipeReader, signal_link: SignalLink) {
     let mut sig = [0];
     loop {
         match signals.read(&mut sig) {
@@ -263,12 +273,12 @@ fn relay_signals(mut signals: PipeReader, link: Link) {
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             _ => return,
         }
-        if !send(&link, frame::SIGNAL, &(sig[0] as i32).to_be_bytes()) {
+        if !send(&signal_link, frame::SIGNAL, &(sig[0] as i32).to_be_bytes()) {
             return;
         }
     }
 }
 
-fn send(link: &Link, kind: u8, payload: &[u8]) -> bool {
-    frame::write(&mut *link.lock().unwrap(), kind, payload).is_ok()
+fn send(signal_link: &SignalLink, kind: u8, payload: &[u8]) -> bool {
+    frame::write(&mut *signal_link.lock().unwrap(), kind, payload).is_ok()
 }
