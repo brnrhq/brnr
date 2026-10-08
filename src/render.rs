@@ -99,6 +99,22 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
         }
         "session_closed" => format!("session closed ({})", s(&e["by"])),
+        // A gap in the transcript: records a slow disk made brnr skip, or a
+        // full one failed to take (ADR 6).
+        "records-skipped" => {
+            let at = |v: &Value| v.as_str().and_then(|t| t.get(11..19)).unwrap_or("?").to_owned();
+            let mut what = format!(
+                "{} records not written ({} of them raw ACP), {} to {}",
+                e["count"],
+                e["acp"].as_u64().unwrap_or(0),
+                at(&e["since"]),
+                at(&e["until"]),
+            );
+            if let Some(error) = e["error"].as_str() {
+                what.push_str(&format!(": {error}"));
+            }
+            what
+        }
         // With a reason when brnr itself died (a panic, ADR 11).
         "exited" => match e["reason"].as_str() {
             Some(reason) => format!("agent exited: {}; {reason}", e["status"]),

@@ -451,7 +451,8 @@ joining. `log = "events"` leaves out the raw file, most of the space;
 counted, and a `records-skipped` record (`count`, `acp` of them raw ACP,
 `since`, `until`) in the host log and the session's events file marks the gap;
 records a full disk didn't take are noted likewise, in the file that lost them,
-once it takes records again.
+once it takes records again. `brnr log` always shows such a gap, whatever
+`--events` chose.
 
 The values of MCP servers' `env` and `headers` are recorded as
 `"<redacted>"`, in the raw ACP, the host log and `acp` events alike; the agent

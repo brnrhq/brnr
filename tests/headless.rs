@@ -1050,6 +1050,11 @@ fn a_stalled_disk_skips_records_and_says_so() {
     let host = records(&host);
     let host_note = host.iter().find(|r| r["event"]["event"] == "records-skipped").unwrap();
     assert!(host_note["event"]["count"].as_u64().unwrap() >= count, "{host_note}");
+    // log tells its reader of the gap, whatever --events chose.
+    let log = env.ok(&["log", "sess-1", "--events", "user_message"]);
+    assert!(log.contains(&format!("{count} records not written ({acp} of them raw ACP)")), "{log}");
+    let json = env.ok(&["log", "sess-1", "--json", "--events", "user_message"]);
+    assert!(json.contains(r#""event":"records-skipped""#), "{json}");
 }
 
 // ---- secrets -----------------------------------------------------------

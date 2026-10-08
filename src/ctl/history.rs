@@ -50,7 +50,11 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let wanted = |e: &Value| events.iter().any(|name| e["event"] == name.as_str());
+    // A gap in the transcript (`records-skipped`, ADR 6) is always told: it
+    // is what this reader relied on (P3).
+    let wanted = |e: &Value| {
+        e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
+    };
     let show = Show { options: render::Options { session: false, time: true }, json_out };
     let target = target.ok_or(USAGE)?;
     let (path, acp_path, host_pid) = transcript(&target)?;
