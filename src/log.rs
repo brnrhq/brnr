@@ -2,7 +2,9 @@
 //! events and its raw ACP, plus one per host for what belongs to no session
 //! (see paths.rs for where they go). `log = "events"` leaves out the raw
 //! ACP; `log = false` is no logger at all. Records are written by a
-//! background thread so logging can never slow down or break forwarding.
+//! background thread so logging can never slow down or break forwarding;
+//! [`Sink::when_written`] says when what was recorded is written, for
+//! `brnr log` (ADR 48).
 //!
 //! Every record starts with the fields that join files together:
 //! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,
@@ -114,6 +116,8 @@ enum Cmd {
     Note { session: Option<String>, ts: SystemTime, event: String },
     // The queue has room again after `gap`.
     Skipped { ts: SystemTime, gap: Gap },
+    // Called once what was queued before it is written.
+    Written(Box<dyn FnOnce() + Send>),
     Finish,
 }
 
@@ -227,6 +231,16 @@ impl Sink {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: it says where the session's records go.
             let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
+        }
+    }
+
+    /// Calls `then` once everything recorded before it is written, with the
+    /// note of a gap that ends there (at once when not logging). Never
+    /// skipped, and never waited for: `then` runs on the logger's thread.
+    pub fn when_written(&self, then: impl FnOnce() + Send + 'static) {
+        let Some((tx, _)) = &self.0 else { return then() };
+        if let Err(mpsc::SendError(Cmd::Written(then))) = tx.send(Cmd::Written(Box::new(then))) {
+            then();
         }
     }
 
@@ -403,6 +417,12 @@ impl Writer {
                 self.write(ts, session.as_deref(), false, &event_body(event));
             }
             Cmd::Skipped { ts, gap } => self.skipped(ts, gap),
+            Cmd::Written(then) => {
+                if let Some((ts, gap)) = self.queue.end_gap() {
+                    self.skipped(ts, gap);
+                }
+                then();
+            }
             Cmd::Finish => {
                 if let Some((ts, gap)) = self.queue.end_gap() {
                     self.skipped(ts, gap);

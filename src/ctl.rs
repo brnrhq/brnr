@@ -575,7 +575,7 @@ fn status(args: &[String]) -> Result<(), String> {
         "owner": st["owner"],
         "held_by": lock::holder(&id),
         "shared_by": shared_by,
-        // An editor's session served without its lock (ADR 48).
+        // An editor's session served without its lock (ADR 50).
         "lock_error": x["lock_error"],
         "cwd": x["cwd"],
         "state": x["state"],

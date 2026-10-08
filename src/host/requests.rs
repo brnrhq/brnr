@@ -168,7 +168,7 @@ impl Host {
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
                 // asked for it; a new one's, as it opened. Without it, the
-                // session gets no work, and nobody is to find it (ADR 48).
+                // session gets no work, and nobody is to find it (ADR 50).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
@@ -296,8 +296,8 @@ impl Host {
     }
 
     /// The commit (ADR 7): brnr start hears of the session before the agent
-    /// gets any work, and if it has gone, nobody knows this session exists.
-    /// Then the prompt goes.
+    /// gets any work, and if the report can't be written to it, nobody knows
+    /// this session exists. Then the prompt goes.
     fn finish_start(&mut self, i: usize) {
         if self.stop_requested {
             return; // The start already failed (timed out), or was stopped.
@@ -412,7 +412,7 @@ impl Host {
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
-                // one that can't be locked, can't be served here (ADR 3, ADR 48).
+                // one that can't be locked, can't be served here (ADR 3, ADR 50).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
                     let error = format!("the agent forked into {session}, which {why}");

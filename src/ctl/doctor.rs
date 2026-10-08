@@ -6,7 +6,7 @@
 //!   by processes that are gone. Gone is what a process's socket says (see
 //!   `gone` in ctl.rs): one nobody listens on was left by a process that is
 //!   gone, even when its pid is another process's now;
-//! - session locks: that each session can be locked (ADR 48), `sessions/`
+//! - session locks: that each session can be locked (ADR 50), `sessions/`
 //!   being a private directory with nothing but files where lock files go;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
@@ -267,7 +267,7 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
     Some(hosts)
 }
 
-/// What keeps sessions from being locked (ADR 48): a `sessions/` that isn't
+/// What keeps sessions from being locked (ADR 50): a `sessions/` that isn't
 /// a private directory, or something other than a file where a session's
 /// lock file goes. A headless start of such a session fails, and an editor's
 /// process serves it without the lock. Said only when there is something to

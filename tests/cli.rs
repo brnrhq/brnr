@@ -124,6 +124,30 @@ fn send_wait_reports_a_permission_request() {
     assert!(send.wait().unwrap().success());
 }
 
+/// `wait` that is behind the session, reading a turn's end when the turns
+/// after it have ended too, exits as the last of them ended, not as that
+/// one: here a cancelled turn, then two held messages' turns that end
+/// normally, while `wait` is stopped.
+#[test]
+fn wait_behind_exits_as_the_last_turn_ended() {
+    let env = Env::new("c-waitlate");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["send", "sess-1", "reply first"]);
+    env.ok(&["send", "sess-1", "reply second"]);
+    let mut wait = env.brnr(&["wait", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3));
+    settled(&env);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(wait_exit(&mut wait, Duration::from_secs(10)), "wait didn't end");
+    let out = wait.wait_with_output().unwrap();
+    assert_eq!(stdout(&out), "idle: end_turn\n");
+    assert_eq!(out.status.code(), Some(0));
+}
+
 #[test]
 fn wait_returns_when_the_session_goes_idle() {
     let env = Env::new("c-wait");
@@ -473,6 +497,33 @@ fn log_reads_an_inactive_session() {
     assert!(log.contains("agent: bye"), "{log}");
     let exited = log.lines().find(|l| l.contains("agent exited")).expect(&log);
     assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
+}
+
+/// `log` shows a running session as far as its process has recorded it
+/// when asked, though a thread of the process's own writes the transcript:
+/// the turn `start --wait` just reported is there (ADR 48). A process that
+/// hasn't written it in 5 s (a stalled disk: `BRNR_TEST_LOG_STALL` holds
+/// its logger) is shown as far as it has, and `log` says so.
+#[test]
+fn log_shows_what_the_process_has_recorded() {
+    let env = Env::new("c-logged");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&["--wait", "--prompt", "reply first"]);
+    let started = Instant::now();
+    let out = env.run(&["log", "sess-1"]);
+    assert!(started.elapsed() >= Duration::from_secs(5), "log didn't wait for the logger");
+    assert!(stderr(&out).contains("may not be written yet"), "{}", stderr(&out));
+
+    let mut log = env.brnr(&["log", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    assert!(log.try_wait().unwrap().is_none(), "log read before the logger wrote");
+    fs::remove_file(&stall).unwrap();
+    let out = log.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("agent: first"), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
 }
 
 #[test]
@@ -1158,6 +1209,10 @@ fn a_silent_process_keeps_its_session() {
 fn a_dead_process_lets_go() {
     let env = Env::new("c-dead");
     env.start(&["--wait", "--prompt", "reply first"]);
+    // Killed once its transcript, which the resume reads, is written (`log`
+    // waits for that): what a thread of its own hadn't written yet when it
+    // was killed is gone, and the session with it.
+    env.ok(&["log", "sess-1"]);
     kill(env.host_pid(), libc::SIGKILL);
     let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));

@@ -3,6 +3,10 @@
 Accepted 2026-10-07. Implemented.
 Replaces former decision 4; amends former decisions 21 and 41; resolves
 review item 7.
+Made exact 2026-10-08 (#67): the process used to queue the report for a
+writer thread and send the prompt at once, so a `start` gone between the
+two went unnoticed and the session ran unseen. The commit is now the
+report's write succeeding, below.
 
 ## Context
 
@@ -39,10 +43,9 @@ the ready line failed.
   socketpair, as fd 3; it writes one start request on the pipe and closes
   it. The process reads its stdin to EOF before doing anything else; cut
   short (`start` died mid-write), it refuses to start.
-- The start channel is the process's first peer, subscribed from birth. The
-  host reads it on a thread like every other source: EOF on it before the
-  commit means `start` has gone, and the process stops at once, whatever it
-  was doing (`start-abandoned`).
+- The host reads the start channel on a thread like every other source:
+  EOF on it before the commit means `start` has gone, and the process stops
+  at once, whatever it was doing (`start-abandoned`).
 - The commit is the ready report, `{pid, session, message}`, written on the
   start channel once the session is open and its mode and config options are
   set, and before the agent gets the prompt (`message` is the prompt's
@@ -50,6 +53,15 @@ the ready line failed.
   `start` going away) stops the process, and the prompt is never sent. After
   it the process sends the prompt, and the session runs on its own whatever
   `start` does (P14).
+- The commit is the report's write succeeding. Nothing else is written on
+  the channel before it, so the event loop writes the report itself, in one
+  write that doesn't wait; one that fails (`start` has gone, its EOF perhaps
+  not read yet) abandons the start as EOF does. A write that succeeds is all
+  the process can know: `start` may still go before it reads the report,
+  and the session then runs on, as after any commit, in `list` and its
+  logs.
+- Committed, the start channel becomes a peer, subscribed (with `--wait`) to
+  the turn's events before the prompt goes, so it misses none of them.
 - Without `--wait`, `start` prints the session and its process and exits
   after `ready` (`--json`: `{session, pid, message}`, `message` null without
   a prompt). With `--wait`, it keeps reading the same channel: the turn's

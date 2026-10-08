@@ -115,7 +115,7 @@ pub fn all() -> Vec<Entry> {
 }
 
 /// What is where a lock file goes but isn't a file (a directory, a
-/// symlink): its session can't be locked (ADR 48). Each, and what it is.
+/// symlink): its session can't be locked (ADR 50). Each, and what it is.
 pub fn unusable() -> Vec<(PathBuf, &'static str)> {
     let Ok(dir) = fs::read_dir(paths::session_locks()) else { return Vec::new() };
     let what = |kind: fs::FileType| match () {

@@ -12,6 +12,8 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -51,6 +53,55 @@ fn abandoned_start_sends_no_prompt() {
     assert!(env.prompts().is_empty(), "agent got {:?}", env.prompts());
     let log = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
     assert!(fs::read_to_string(log).unwrap().contains("start-abandoned"));
+}
+
+/// A `brnr start` that goes once the process has decided to report ready,
+/// but before the report is written, hasn't been told the session: the
+/// write fails, the start is abandoned as before the commit, and the agent
+/// never gets the prompt (ADR 7). (`BRNR_TEST_READY=hold` holds the commit
+/// there until brnr start has gone.)
+#[test]
+fn start_gone_as_ready_is_written_sends_no_prompt() {
+    let env = Env::new("abandon-ready");
+    let mut start = env
+        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .env("BRNR_TEST_READY", "hold")
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let held = || host_logs(&env).contains("test-ready-held");
+    assert!(wait_for(Duration::from_secs(10), held), "never held: {}", host_logs(&env));
+    start.kill().unwrap();
+    start.wait().unwrap();
+
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "host kept running");
+    assert!(env.prompts().is_empty(), "agent got {:?}", env.prompts());
+    assert!(host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
+}
+
+/// A `brnr start --wait` that goes once it has the ready report leaves the
+/// session running, its prompt sent: the start committed (ADR 7, P14).
+#[test]
+fn start_gone_after_ready_leaves_the_session_running() {
+    let env = Env::new("after-ready");
+    let mut start = env
+        .brnr(&start_args(&["--wait", "--prompt", "hang on"]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = String::new();
+    BufReader::new(start.stderr.take().unwrap()).read_line(&mut said).unwrap();
+    assert!(said.starts_with("started sess-1"), "{said}");
+    start.kill().unwrap();
+    start.wait().unwrap();
+
+    assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()), "no prompt");
+    assert_eq!(env.prompts(), ["hang on"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.hosts().len(), 1, "host stopped");
+    assert!(!host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
+    env.stop();
 }
 
 /// Everything the process does is in the one request it was started with,
@@ -592,7 +643,9 @@ fn send_while_a_turn_runs_is_held() {
     sleep(Duration::from_millis(300));
     assert_eq!(env.prompts(), ["hang on"], "a second prompt while one ran");
     env.ok(&["cancel", "sess-1", "--keep-held"]);
-    assert_eq!(env.run(&["wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
+    let out = env.run(&["wait", "sess-1", "--timeout", "10"]);
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}{}", env.ok(&["log", "sess-1"]));
     assert_eq!(env.prompts(), ["hang on", "reply first", "reply second"]);
     assert_eq!(turns(&env), [["m1"], ["m2"], ["m3"]]);
 }
@@ -750,7 +803,8 @@ fn slow_watcher_is_disconnected() {
 }
 
 /// A watcher that keeps reading stays connected through a burst, and ends
-/// cleanly when the host exits.
+/// cleanly when the host exits. Stopped once it has read the burst: an
+/// exit waits only so long for a peer to be sent what is queued for it.
 #[test]
 fn reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
@@ -762,18 +816,25 @@ fn reading_watcher_stays_connected() {
         .spawn()
         .unwrap();
     let stdout = watch.stdout.take().unwrap();
-    let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
+    let read = Arc::new(AtomicUsize::new(0));
+    let counted = read.clone();
+    let lines = std::thread::spawn(move || {
+        for _ in BufReader::new(stdout).lines() {
+            counted.fetch_add(1, Relaxed);
+        }
+    });
     sleep(Duration::from_millis(300));
     assert!(env.run(&["send", "sess-1", "go"]).status.success());
-    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
-    sleep(Duration::from_secs(2));
+    let burst = || read.load(Relaxed) > 20000 || watch.try_wait().unwrap().is_some();
+    assert!(wait_for(Duration::from_secs(60), burst), "watch read {} lines", read.load(Relaxed));
     assert!(env.run(&["stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let mut err = String::new();
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(watch.wait().unwrap().success(), "watch failed: {err}");
-    assert!(lines.join().unwrap() > 20000, "watch missed events");
+    lines.join().unwrap();
+    assert!(read.load(Relaxed) > 20000, "watch missed events");
 }
 
 /// One message bigger than a peer's whole queue still reaches a peer that
@@ -803,6 +864,41 @@ fn huge_message_reaches_watchers() {
     assert!(preview.chars().count() <= 4001, "status quotes {} chars", preview.chars().count());
     let _ = watch.kill();
     let _ = watch.wait();
+}
+
+/// A watcher some way behind when a long message comes, one that takes it
+/// past the 16 MiB a peer may have queued, isn't cut off for it: not by the
+/// message, and not by the `turn_ended` that comes right after it (ADR 49).
+/// Here it is 8 MB behind (stopped, for the test), then a 12 MB message
+/// comes.
+#[test]
+fn a_long_message_doesnt_put_a_watcher_behind() {
+    let env = Env::new("longmsg");
+    env.start(&[]);
+    let mut watch = env
+        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for size in [8_000_000, 12_000_000] {
+        let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    // The watcher's line after the long message, which it is past the limit
+    // with, and a status to make sure.
+    assert!(env.run(&["status", "sess-1"]).status.success());
+    kill(watch.id() as i32, libc::SIGCONT);
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    assert_eq!(lines.join().unwrap(), 4, "two messages and two turn_endeds");
 }
 
 /// Installed the way Homebrew does it: `bin/brnr` and the adapters are
@@ -842,8 +938,7 @@ fn bridges_next_to_a_symlinked_brnr() {
     symlink(env!("CARGO_BIN_EXE_brnr"), bin.join("brnr")).unwrap();
     let got = env.dir.join("bridge-events");
     let bridge = bin.join("brnr-test-bridge");
-    fs::write(&bridge, format!("#!/bin/sh\nexec cat > '{}'\n", got.display())).unwrap();
-    fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+    script(&bridge, &format!("#!/bin/sh\nexec cat > '{}'\n", got.display()));
     env.write_config("[[profiles.default.bridges]]\ncommand = [\"brnr-test-bridge\"]\n");
     // Enough PATH for the fake agent's python3, not the prefix.
     let python = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();
@@ -1002,6 +1097,7 @@ fn transcripts_are_private() {
     let mut checked = 0;
     let mut check = |path: &Path| {
         let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        env.ok(&["log", "sess-1"]); // Once the transcript is written.
         let want = if path.is_dir() { 0o700 } else { 0o600 };
         assert_eq!(mode, want, "{} is {mode:o}", path.display());
         checked += 1;
@@ -1109,6 +1205,25 @@ fn log_events_leaves_out_the_raw_acp() {
     assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
 }
 
+/// A process that exits is listed, and holds its sessions, until its
+/// transcript has `exited`, so that what reads it once the process has gone
+/// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled
+/// disk holds it up for 2 s at most.
+#[test]
+fn an_exit_is_written_before_the_process_goes() {
+    let env = Env::new("exitlog");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.ok(&["log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    env.stop();
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    fs::remove_file(&stall).unwrap();
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says
@@ -1134,8 +1249,7 @@ fn a_stalled_disk_skips_records_and_says_so() {
     let out = env.run(&["wait", "sess-1", "--timeout", "60"]);
     assert!(out.status.success(), "the session waited for the logger: {}", stderr(&out));
     // The logger's 64 MiB, and the agent's 16 MiB on its way, with room.
-    let held = rss(host);
-    assert!(held < 160 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 160 << 20);
 
     fs::remove_file(&stall).unwrap();
     let noted = || fs::read_to_string(&events).is_ok_and(|t| t.contains("records-skipped"));
@@ -1511,10 +1625,14 @@ fn editor_gone_takes_the_agents_children() {
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "its child outlived the editor");
 }
 
-/// The memory process `pid` holds, in bytes.
-fn rss(pid: i32) -> u64 {
+/// That the host, `pid`, holds less than `limit` bytes of memory, unless it
+/// is built under a sanitizer (`--cfg sanitized`): its memory is then mostly
+/// the sanitizer's, such as the freed memory AddressSanitizer holds back to
+/// catch a use after free (256 MB on Linux), and its shadow.
+fn assert_holds_less(pid: i32, limit: u64) {
     let ps = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().unwrap();
-    String::from_utf8_lossy(&ps.stdout).trim().parse::<u64>().unwrap_or(0) << 10
+    let held = String::from_utf8_lossy(&ps.stdout).trim().parse::<u64>().unwrap_or(0) << 10;
+    assert!(cfg!(sanitized) || held < limit, "the host holds {} MB", held >> 20);
 }
 
 /// An editor that stops reading holds its agent back, as a pipe would: the
@@ -1530,8 +1648,7 @@ fn editor_that_stops_reading_holds_the_agent_back() {
     writeln!(to_agent, "{}", editor_prompt(3, "reply done")).unwrap();
     sleep(Duration::from_secs(32));
     assert!(alive(host), "a stalled editor ended its agent");
-    let held = rss(host);
-    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 64 << 20);
     assert!(env.ok(&["ps"]).contains("editor"));
     // The agent went on: its answer comes after everything it wrote.
     line_with(&mut from_agent, "end_turn");
@@ -1549,8 +1666,7 @@ fn a_stalled_agent_holds_the_editor_back() {
     let writer = flood(to_agent);
     sleep(Duration::from_secs(5));
     assert!(!writer.is_finished(), "the editor's writes didn't wait");
-    let held = rss(host);
-    assert!(held < 64 << 20, "the host holds {} MB", held >> 20);
+    assert_holds_less(host, 64 << 20);
     editor.kill().unwrap();
     editor.wait().unwrap();
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
@@ -1695,7 +1811,7 @@ fn an_editors_load_of_a_held_session_is_refused() {
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,
 /// its process keeps the transcript, and `status` says the session isn't
-/// locked. A headless resume of it is still refused (ADR 48).
+/// locked. A headless resume of it is still refused (ADR 50).
 #[test]
 fn an_editors_session_that_cant_be_locked_is_passed_through() {
     use std::os::unix::fs::DirBuilderExt;

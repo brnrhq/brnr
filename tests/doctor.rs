@@ -163,7 +163,7 @@ fn stale_session_locks_are_removed() {
 /// A directory or a symlink where a session's lock file goes keeps the
 /// session from being locked: a failure, not a lock left by a process that
 /// is gone, and --fix leaves it to the user. Nor is it locked with sessions/
-/// itself open to others (ADR 48).
+/// itself open to others (ADR 50).
 #[test]
 fn what_keeps_a_session_from_being_locked_fails() {
     let env = Env::new("dr-nolock");
@@ -370,6 +370,17 @@ fn a_pid_taken_by_another_process_is_gone() {
     let _ = sleep.wait();
 }
 
+/// Kills the process `info` describes, and its agent, with SIGKILL: the
+/// process first, and once it is gone, the agent's group. The other way
+/// round, the process can see its agent die and record its own exit
+/// (`exited`) before its SIGKILL lands.
+fn kill_unrecorded(info: &Value) {
+    let pid = |key: &str| info[key].as_i64().unwrap() as i32;
+    kill(pid("host_pid"), libc::SIGKILL);
+    assert!(wait_for(Duration::from_secs(10), || !alive(pid("host_pid"))), "it didn't die");
+    kill(-pid("agent_pid"), libc::SIGKILL);
+}
+
 /// A process killed without a word (SIGKILL) leaves a host log without
 /// `exited` (ADR 11): doctor says so, with the sessions it had open, and
 /// --fix leaves the record. One that stopped recorded it.
@@ -389,11 +400,9 @@ fn a_death_without_a_record_is_reported() {
 
     env.start(&[]);
     let killed = env.hosts().remove(0);
-    let (host, agent) =
-        (killed["host_pid"].as_i64().unwrap(), killed["agent_pid"].as_i64().unwrap());
-    kill(-(agent as i32), libc::SIGKILL);
-    kill(host as i32, libc::SIGKILL);
-    assert!(wait_for(Duration::from_secs(10), || !alive(host as i32)), "it didn't die");
+    // Once its log has the session (`log` waits for its logger to write).
+    env.ok(&["log", "sess-1"]);
+    kill_unrecorded(&killed);
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
     let run = killed["host_id"].as_str().unwrap();
@@ -434,9 +443,9 @@ fn adapter_versions() {
     mkdir(&bin, 0o755);
     // A brnr adapter that knows --version.
     let claude = "#!/bin/sh\n[ \"$1\" = --version ] && echo 'brnr-claude-adapter 0.85.1 (@agentclientprotocol/claude-agent-acp)'\n";
-    write(&bin.join("brnr-claude-adapter"), claude, 0o755);
+    script(&bin.join("brnr-claude-adapter"), claude);
     // One built before --version: it waits for an editor instead.
-    write(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n", 0o755);
+    script(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n");
     // codex-acp from npm: a bin link into the package.
     let package = env.dir.join("lib/node_modules/@agentclientprotocol/codex-acp");
     mkdir(&package.join("dist"), 0o755);
@@ -445,7 +454,7 @@ fn adapter_versions() {
         r#"{"name":"@agentclientprotocol/codex-acp","version":"2.1.1"}"#,
         0o644,
     );
-    write(&package.join("dist/index.js"), "#!/usr/bin/env node\n", 0o755);
+    script(&package.join("dist/index.js"), "#!/usr/bin/env node\n");
     symlink(
         "../lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
         bin.join("codex-acp"),
@@ -456,7 +465,7 @@ fn adapter_versions() {
     // build, the adapters may well be next to the real one).
     let alone = env.dir.join("alone");
     mkdir(&alone, 0o755);
-    fs::copy(env!("CARGO_BIN_EXE_brnr"), alone.join("brnr")).unwrap();
+    install(Path::new(env!("CARGO_BIN_EXE_brnr")), &alone.join("brnr"));
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = env.brnr_at(&alone.join("brnr"), &["doctor"]).env("PATH", path).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -510,6 +519,8 @@ fn the_report_is_what_to_paste() {
     }
     env.start(&[]);
     let running = env.hosts().remove(0)["host_id"].as_str().unwrap().to_owned();
+    // Once its log has its start (`log` waits for its logger to write it).
+    env.ok(&["log", "sess-1"]);
     // Something not ok.
     write(&hosts.join("open.txt"), "", 0o644);
 
@@ -561,10 +572,7 @@ fn the_report_shows_a_death_without_a_record() {
     let env = Env::new("dr-rdied");
     env.start(&[]);
     let killed = env.hosts().remove(0);
-    let pid = |key: &str| killed[key].as_i64().unwrap() as i32;
-    kill(-pid("agent_pid"), libc::SIGKILL);
-    kill(pid("host_pid"), libc::SIGKILL);
-    assert!(wait_for(Duration::from_secs(10), || !alive(pid("host_pid"))), "it didn't die");
+    kill_unrecorded(&killed);
     let out = env.run(&["doctor", "--report", "--json"]);
     let report: Value = serde_json::from_slice(&out.stdout).expect("a report");
     let logs = report["host_logs"].as_array().unwrap();

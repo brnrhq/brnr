@@ -11,6 +11,8 @@
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
+//! - `logged`: answered once what the process recorded before it was asked
+//!   is in its transcript, which a logger thread writes (`brnr log`, ADR 48)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
 //!   replace?}` (ADR 18 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
@@ -50,7 +52,9 @@
 //! up has stopped reading and is dropped rather than buffered for without
 //! limit: a connection is shut down, a started bridge gets SIGTERM. The limit
 //! is in bytes, not lines, so a burst of small events (an agent streaming
-//! fast) doesn't look like a peer that stopped reading.
+//! fast) doesn't look like a peer that stopped reading, and the line that
+//! takes a peer past it doesn't count, so one long message doesn't either
+//! (ADR 49).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -116,9 +120,13 @@ pub(super) enum Closer {
 
 /// Lines for one peer, and how many bytes of them its writer hasn't written
 /// yet.
+#[derive(Clone)]
 pub(super) struct Queue {
     tx: Sender<String>,
     queued: Arc<AtomicUsize>,
+    /// While the backlog is past the limit, the size of the line that took
+    /// it past, which doesn't count toward it.
+    past: Arc<AtomicUsize>,
 }
 
 impl Queue {
@@ -126,16 +134,21 @@ impl Queue {
     pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
-        (Queue { tx, queued: queued.clone() }, rx, queued)
+        (Queue { tx, queued: queued.clone(), past: Arc::default() }, rx, queued)
     }
 
-    /// Full once the backlog is past the limit: until then a peer takes the
-    /// next line however big it is (a long agent message, a status), so
-    /// one big line can't make a peer that keeps up look stopped. At most
-    /// the limit plus a line is queued.
+    /// Full once the backlog is past the limit, not counting the line that
+    /// took it past. Until then a peer takes the next line however big it
+    /// is (a long agent message, a status), and that line doesn't make the
+    /// line after it (the `turn_ended` after a turn's long `agent_message`)
+    /// find a peer that keeps up behind. At most the limit, the line that
+    /// took the backlog past it, and one more are queued.
     fn push(&self, line: String) -> Queued {
         let len = line.len() + 1;
-        if self.queued.load(Relaxed) > QUEUE_BYTES {
+        let queued = self.queued.load(Relaxed);
+        if queued <= QUEUE_BYTES {
+            self.past.store(if queued + len > QUEUE_BYTES { len } else { 0 }, Relaxed);
+        } else if queued - self.past.load(Relaxed).min(queued) > QUEUE_BYTES {
             return Queued::Full;
         }
         self.queued.fetch_add(len, Relaxed);
@@ -436,6 +449,10 @@ impl Host {
         let now = |v: Result<Value, String>| v.map(Some);
         match req["cmd"].as_str() {
             Some("status") => Ok(Some(self.status_report())),
+            Some("logged") => {
+                self.when_logged(peer, req.get("req_id").cloned());
+                Ok(None)
+            }
             Some("send") => now(self.send(req)),
             Some("cancel") => now(self.cancel_turn(req)),
             Some("queue") => now(self.queue(req)),
@@ -458,6 +475,23 @@ impl Host {
             Some(other) => Err(format!("unknown command: {other}")),
             None => Err("missing cmd".into()),
         }
+    }
+
+    /// `logged`: answered from the logger's thread once it has written what
+    /// the process recorded before it was asked, so that what a peer has
+    /// seen happen is in the transcript (ADR 48). The event loop doesn't
+    /// wait for it (P1); a peer gone meanwhile isn't answered.
+    fn when_logged(&mut self, peer: u64, req_id: Option<Value>) {
+        let Some(p) = self.peers.get(&peer) else { return };
+        let queue = p.tx.clone();
+        let mut response = json!({ "ok": true });
+        if let Some(req_id) = req_id {
+            response["req_id"] = req_id;
+        }
+        // A peer that is full is cut off by the event loop's next line to it.
+        self.sink.when_written(move || {
+            let _ = queue.push(response.to_string());
+        });
     }
 
     fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
