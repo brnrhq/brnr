@@ -1,21 +1,28 @@
-# On a version tag: publish a GitHub release and point the Homebrew formulae
-# in brnrhq/homebrew-tap at it: brnr, and one formula per adapter, which
-# builds adapters/ from the same source. An adapter formula's version is its
-# npm package's (from adapters/package.json), so `brew upgrade` rebuilds an
-# adapter when that changes, not on every brnr release. The tap is pushed to with a deploy key whose
-# private half is the HOMEBREW_TAP_DEPLOY_KEY secret.
+# On a version tag: publish a GitHub release with the source as an asset
+# (brnr-X.tar.gz, made with git archive and attested with build provenance),
+# and point the Homebrew formulae in brnrhq/homebrew-tap at that asset: brnr,
+# and one formula per adapter, which builds adapters/ from the same source.
+# The asset rather than GitHub's generated archive, so what users build from
+# is attested and its downloads are counted. An adapter formula's version is
+# its npm package's (from adapters/package.json), so `brew upgrade` rebuilds
+# an adapter when that changes, not on every brnr release. The tap is pushed
+# to with a deploy key whose private half is the HOMEBREW_TAP_DEPLOY_KEY
+# secret.
 name: release
 
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # the release and its asset
+      id-token: write # the attestation's signing certificate
+      attestations: write # storing the attestation
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,22 +44,38 @@ jobs:
       - name: Build and test
         run: cargo test --release && cargo build --release
 
+      # Under brnr-X/, the prefix GitHub's archive has, which the formulae
+      # were written against.
+      - name: Make the source tarball
+        id: tarball
+        run: |
+          name="brnr-${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" HEAD
+          echo "path=$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.tarball.outputs.path }}
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          TARBALL: ${{ steps.tarball.outputs.path }}
+        run: gh release create "$GITHUB_REF_NAME" "$TARBALL" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
 
       # Its credentials (the deploy key) stay, for the push below.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           repository: brnrhq/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
 
       - name: Update the formulae
+        env:
+          TARBALL: ${{ steps.tarball.outputs.path }}
         run: |
-          url="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$GITHUB_REF_NAME.tar.gz"
-          sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$TARBALL"
+          sha256=$(sha256sum "$TARBALL" | cut -d' ' -f1)
           python3 - "$url" "$sha256" <<'PY'
           import json, re, sys
           url, sha256 = sys.argv[1:]

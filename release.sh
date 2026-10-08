@@ -9,8 +9,9 @@
 #
 #   ./release.sh tag
 #       Once that is merged: checks CI passed on main, tags v<version>, follows
-#       the release workflow (GitHub release, Homebrew formulae) and checks the
-#       tap has the new version.
+#       the release workflow (GitHub release, source tarball, Homebrew
+#       formulae), verifies the tarball's attestation and checks the tap
+#       points at the tarball.
 #
 #   ./release.sh notes [<version | major | minor | patch>]
 #       Prints what the release pull request would say, changing nothing.
@@ -140,9 +141,17 @@ tag() {
     [ -n "$run" ] || die "no release run for v$version yet; see https://github.com/$repo/actions"
     gh run watch "$run" -R "$repo" --exit-status
 
+    local tarball=brnr-$version.tar.gz dir
+    say "verifying $tarball's attestation"
+    dir=$(mktemp -d)
+    gh release download "v$version" -R "$repo" -p "$tarball" -D "$dir"
+    gh attestation verify "$dir/$tarball" -R "$repo" >/dev/null || die "$tarball's attestation doesn't verify"
+    rm -r "$dir"
+
     say "checking the tap"
-    gh api "repos/$tap/contents/Formula/brnr.rb" --jq .content | base64 --decode | grep -q "v$version.tar.gz" ||
-        die "$tap's brnr formula doesn't point at v$version"
+    gh api "repos/$tap/contents/Formula/brnr.rb" --jq .content | base64 --decode |
+        grep -qF "https://github.com/$repo/releases/download/v$version/$tarball" ||
+        die "$tap's brnr formula doesn't point at v$version's $tarball"
     gh release view "v$version" -R "$repo" --json url --jq .url
     echo "brnr $version is out: brew upgrade brnr"
 }
