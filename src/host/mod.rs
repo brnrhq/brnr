@@ -784,6 +784,16 @@ impl Host {
         if !self.start_done {
             self.startup_failed(reason);
         }
+        // Held messages that never became a prompt, as on a normal exit
+        // (ADR 20); a second panic here mustn't cost the `exited` below.
+        let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for i in 0..self.sessions.len() {
+                self.drop_held(i, "exit");
+            }
+        }));
+        if held.is_err() {
+            self.sink.note(None, json!({ "event": "drop-held-failed" }));
+        }
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         let _ = fs::remove_file(&self.sock_path);

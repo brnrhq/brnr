@@ -430,8 +430,11 @@ fn held_messages_are_reported_on_exit() {
 fn a_panic_is_recorded() {
     for on in ["loop", "thread"] {
         let env = Env::new(&format!("panic-{on}"));
-        let out = env.brnr(&start_args(&[])).env("BRNR_TEST_PANIC", "1").output().unwrap();
+        let args = start_args(&["--prompt", "hang on"]);
+        let out = env.brnr(&args).env("BRNR_TEST_PANIC", "1").output().unwrap();
         assert!(out.status.success(), "{}", stderr(&out));
+        // Held behind the hanging turn, so dropped when the process dies.
+        assert!(env.ok(&["send", "sess-1", "later"]).contains("held"));
         let host = env.hosts().remove(0);
         let pid = |key: &str| host[key].as_i64().unwrap() as i32;
         let (host_pid, agent_pid) = (pid("host_pid"), pid("agent_pid"));
@@ -454,6 +457,8 @@ fn a_panic_is_recorded() {
         assert!(reason.ends_with(": a test asked for it"), "{on}: {exited}");
         let logged = env.ok(&["log", "sess-1", "--json", "--events", "exited"]);
         assert!(logged.contains(reason), "{on}: {logged}");
+        let dropped = env.ok(&["log", "sess-1", "--json", "--events", "message_dropped"]);
+        assert!(dropped.contains(r#""by":"exit""#), "{on}: {dropped}");
         let shown = env.ok(&["log", "sess-1", "--events", "exited"]);
         assert!(shown.contains(&format!("agent exited: null; {reason}")), "{on}: {shown}");
         let log = host_logs(&env);
