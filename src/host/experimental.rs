@@ -90,14 +90,16 @@ impl Host {
     /// `denied` or `cancelled`), which the editor was shown too: it is
     /// withdrawn from the editor. An approved tool call is in progress, a
     /// denied one has failed: the status the agent's own updates take it
-    /// on from, so neither contradicts the other.
+    /// on from, so neither contradicts the other. An approval or denial is
+    /// also told in the session, saying by whom.
     pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &str) {
         if !self.editor_attached() {
             return;
         }
         let tool = &req.params["toolCall"];
         let title = tool["title"].as_str().unwrap_or("the request").to_owned();
-        let answered = Answered { session: req.session.clone(), title, how, by: by.to_owned() };
+        let answered =
+            Answered { session: req.session.clone(), title: title.clone(), how, by: by.to_owned() };
         self.answered.insert(req.key.clone(), answered);
         let params = json!({ "requestId": req.id });
         let msg = json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": params });
@@ -107,11 +109,15 @@ impl Host {
             "denied" => "failed",
             _ => return,
         };
-        if let (Some(session), Some(id)) = (&req.session, tool["toolCallId"].as_str()) {
+        let Some(session) = &req.session else { return };
+        if let Some(id) = tool["toolCallId"].as_str() {
             let update =
                 json!({ "sessionUpdate": "tool_call_update", "toolCallId": id, "status": status });
             self.update_editor(session, update);
         }
+        let text = format!("\"{title}\" was {how} {}.", who(by));
+        let note = if how == "approved" { "Approved via brnr" } else { "Denied via brnr" };
+        self.echo(session, note, &[text_block(&text)]);
     }
 
     /// The editor answered `key` (`msg`), a request the host answered
@@ -127,13 +133,9 @@ impl Host {
         if msg.contains_key("result")
             && let Some(session) = session.filter(|s| self.find(s).is_some())
         {
-            let who = match by.as_str() {
-                "cancel" => "through brnr, with its turn".to_owned(),
-                _ if by.starts_with("socket#") => format!("through brnr's control socket ({by})"),
-                _ => format!("by brnr's bridge {by}"),
-            };
             let text = format!(
-                "\"{title}\" was already {how} {who}; your answer wasn't passed on to the agent."
+                "\"{title}\" was already {how} {}; your answer wasn't passed on to the agent.",
+                who(&by)
             );
             self.echo(&session, &format!("Already {how} via brnr"), &[text_block(&text)]);
         }
@@ -217,5 +219,14 @@ impl Host {
             None => error.push_str("; load it again to continue it here"),
         }
         Some(error)
+    }
+}
+
+/// Who answered a request outside the editor, as the editor is told it.
+fn who(by: &str) -> String {
+    match by {
+        "cancel" => "through brnr, with its turn".to_owned(),
+        _ if by.starts_with("socket#") => format!("through brnr's control socket ({by})"),
+        _ => format!("by brnr's bridge {by}"),
     }
 }

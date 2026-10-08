@@ -1796,8 +1796,9 @@ fn cancel_withdraws_the_editors_requests() {
 }
 
 /// `approve` and `deny` answer the agent in the editor's place: the request
-/// is withdrawn from the editor and its tool call updated. The editor's own
-/// answer after that is dropped, and it is told who answered first.
+/// is withdrawn from the editor, its tool call updated, and the editor told
+/// who answered. The editor's own answer after that is dropped, and it is
+/// told who answered first.
 #[test]
 fn approve_answers_in_the_editors_place() {
     let env = Env::new("ex-approve");
@@ -1809,6 +1810,11 @@ fn approve_answers_in_the_editors_place() {
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"in_progress".into()));
+    let told = update(&mut from_agent, "tool_call");
+    assert_eq!(told["title"], "Approved via brnr", "{told}");
+    let text = told["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    let says = "\"Edit src/lib.rs\" was approved through brnr's control socket";
+    assert!(text.contains(says), "{text}");
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
     writeln!(to_agent, "{ALLOW}").unwrap();
     let note = update(&mut from_agent, "tool_call");
@@ -1822,6 +1828,7 @@ fn approve_answers_in_the_editors_place() {
     assert_eq!(env.ok(&["deny", "sess-1", "p2"]), "p2 reject\n");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"failed".into()));
+    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Denied via brnr");
     response(&mut from_agent, 4);
     let answers: Vec<Value> = (env.calls().into_iter())
         .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())

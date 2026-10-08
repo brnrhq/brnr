@@ -94,7 +94,7 @@ experimental = ["send", "approve"]
 | `send` | `send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
 | `context` | `send --context`, `queue --clear-context` | Added to the editor's next prompt, shown as "Context via brnr". |
 | `cancel` | `cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
-| `approve` | `approve`, `deny` | The request is withdrawn from the editor, and its tool call set `in_progress` or `failed`. If the editor answers anyway, its answer is dropped and it is told who answered first. |
+| `approve` | `approve`, `deny` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told who approved or denied it ("Approved via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `settings` | `mode`, `model`, `config` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `close`, `start --resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
 
