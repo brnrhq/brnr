@@ -21,7 +21,10 @@ Accepted (former decision 30); reviewed 2026-10-07. Implemented.
   `package.json` their bin link leads to). `brnr status` shows what the agent
   says it is in `initialize` (`agentInfo`).
 - Dependabot opens a pull request for new releases of the two packages,
-  weekly; the next brnr release ships them.
+  weekly; the next brnr release ships them. A nightly workflow
+  (`canary.yml`) builds the newest releases first, without moving the pins,
+  checks them with brnr and opens an issue when they fail, so a breaking
+  release is known before Dependabot proposes it.
 
 ## Consequences
 

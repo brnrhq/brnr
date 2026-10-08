@@ -12,7 +12,7 @@ cargo fmt --check
 cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release, as CI: some tests stream tens of thousands of events
 adapters/build.sh              # only if you change adapters/ (needs bun)
-adapters/check.py target/release
+adapters/check.py --brnr target/release
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to

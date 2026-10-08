@@ -1,0 +1,122 @@
+# Every night, builds the adapters from the newest npm releases of their
+# packages rather than the pins in adapters/package.json, on Linux and macOS,
+# and checks them with brnr. Dependabot proposes a release a week after it
+# ships (cooldown); a release that breaks brnr's build or brnr should be found
+# before then, and before users of the npm packages find it. The pins move in
+# the runner only; nothing is committed.
+#
+# Without API credentials the agents can't run, so this checks what needs
+# none: adapters/check.py --brnr (each adapter's version and initialize, brnr
+# doctor finding them, and brnr sessions through the Claude adapter). A
+# failure opens an issue, or comments on the open one (found by its title),
+# with the versions and a link to the run; a pass after one closes it.
+name: canary
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  # The newest versions once, so both runners build the same ones and the
+  # report can say which they were.
+  latest:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      claude: ${{ steps.npm.outputs.claude }}
+      codex: ${{ steps.npm.outputs.codex }}
+      pins: ${{ steps.npm.outputs.pins }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: npm
+        run: |
+          for adapter in claude:claude-agent-acp codex:codex-acp; do
+            version=$(curl -fsS "https://registry.npmjs.org/@agentclientprotocol/${adapter#*:}/latest" | jq -r .version)
+            # It goes into commands and an issue: a version, nothing else.
+            if ! echo "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*'; then
+              echo "@agentclientprotocol/${adapter#*:}: no version from npm: $version" >&2
+              exit 1
+            fi
+            echo "${adapter%%:*}=$version" >> "$GITHUB_OUTPUT"
+          done
+          echo "pins=$(jq -r '.dependencies | to_entries | map("\(.key) \(.value)") | join(", ")' adapters/package.json)" >> "$GITHUB_OUTPUT"
+
+  adapters:
+    needs: latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CLAUDE_ACP: ${{ needs.latest.outputs.claude }}
+      CODEX_ACP: ${{ needs.latest.outputs.codex }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # What a Dependabot pull request would change: the pins, and bun.lock
+      # with them. check.py then expects the versions built.
+      - name: Pin the newest releases
+        working-directory: adapters
+        run: >-
+          bun add --exact --lockfile-only
+          "@agentclientprotocol/claude-agent-acp@$CLAUDE_ACP"
+          "@agentclientprotocol/codex-acp@$CODEX_ACP"
+      - run: cargo build --release
+      # Next to brnr, as Homebrew installs them, outside target/ (cached).
+      - run: |
+          adapters/build.sh "$RUNNER_TEMP/canary"
+          cp target/release/brnr "$RUNNER_TEMP/canary/"
+      - run: adapters/check.py --brnr "$RUNNER_TEMP/canary"
+
+  report:
+    needs: [latest, adapters]
+    if: always()
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LATEST: ${{ needs.latest.result }}
+      RESULT: ${{ needs.adapters.result }}
+      CLAUDE_ACP: ${{ needs.latest.outputs.claude }}
+      CODEX_ACP: ${{ needs.latest.outputs.codex }}
+      PINS: ${{ needs.latest.outputs.pins }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TITLE: The nightly canary fails with the newest adapters
+    steps:
+      - run: |
+          issue=$(gh issue list --state open --label testing --search "in:title \"$TITLE\"" \
+            --json number,title --jq "map(select(.title == env.TITLE)) | first | .number // empty")
+          versions="@agentclientprotocol/claude-agent-acp ${CLAUDE_ACP:-?}, @agentclientprotocol/codex-acp ${CODEX_ACP:-?}"
+          if [ "$LATEST" = failure ] || [ "$RESULT" = failure ]; then
+            body="Fails with $versions (pinned: ${PINS:-?}): $RUN"
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$TITLE" --label testing --body "$body
+
+          From .github/workflows/canary.yml, which builds the adapters from the newest npm releases every night and runs adapters/check.py --brnr on Linux and macOS. It comments here while they fail, and closes this when they pass."
+            fi
+          elif [ "$RESULT" = success ] && [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "Passes again with $versions: $RUN"
+          fi
