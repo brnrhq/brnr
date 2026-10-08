@@ -20,6 +20,21 @@ pass before a pull request can merge. The integration tests (`tests/`) drive
 the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it.
 
+Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
+built under AddressSanitizer and under MemorySanitizer, on Linux. To run
+them yourself (nightly Rust, with `rust-src`), and see any
+report, also the host's, in `/tmp/reports`:
+
+```sh
+mkdir -p /tmp/reports
+RUSTFLAGS="-Zsanitizer=address --cfg sanitized" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
+  cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu --release
+ls /tmp/reports                # empty: nothing was found
+```
+
+MemorySanitizer is `-Zsanitizer=memory`, with `MSAN_OPTIONS`. On a Mac: `--target aarch64-apple-darwin` and
+`detect_leaks=0` (macOS has no leak detection, and no MemorySanitizer).
+
 The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
 the pull request.
