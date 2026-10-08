@@ -449,9 +449,10 @@ fn acp_passes_bytes_unchanged() {
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     let cwd = serde_json::to_string(&env.dir).unwrap();
-    let server = |secret: &str| {
+    // Each request's MCP values, marked with its name.
+    let server = |marker: &str| {
         format!(
-            r#"[{{"type":"http","name":"api","url":"https://example.invalid","headers":[{{"name":"Authorization","value":"Bearer {secret}"}}]}}, {{"name":"gh","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}-env"}}]}}]"#
+            r#"[{{"type":"http","name":"api","url":"https://example.invalid","headers":[{{"name":"Authorization","value":"Bearer {marker}"}}]}}, {{"name":"gh","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{marker}-env"}}]}}]"#
         )
     };
     let lines = [
@@ -487,8 +488,13 @@ fn acp_passes_bytes_unchanged() {
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
     assert!(wait_for(Duration::from_secs(15), || !alive(host)));
     let all = everything_in(&env.dir.join("home"));
-    for secret in ["new-secret", "load-secret", "resume-secret", "fork-secret"] {
-        assert!(!all.contains(secret), "{secret} recorded");
+    for (method, marker) in [
+        ("session/new", "new-secret"),
+        ("session/load", "load-secret"),
+        ("session/resume", "resume-secret"),
+        ("session/fork", "fork-secret"),
+    ] {
+        assert!(!all.contains(marker), "the editor's {method} recorded unredacted");
     }
     assert!(all.contains("not json, from the editor"), "the raw ACP is kept");
 }

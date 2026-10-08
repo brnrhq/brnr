@@ -140,6 +140,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `a_profiles_mcp_secrets_are_redacted`, `an_editors_mcp_secrets_are_redacted`; `security.rs`: `a_resumed_sessions_secrets_are_redacted`, `acp_passes_bytes_unchanged`, `a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `secrets_are_redacted_keys_and_structure_stay` |
+| `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `the_report_is_what_to_paste` |
 | `status`, `ps` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `a_resumed_sessions_secrets_are_redacted` |
 
 ### The adapters and the release
