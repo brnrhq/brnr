@@ -160,6 +160,35 @@ fn stale_session_locks_are_removed() {
     assert!(sessions.join("sess-1.lock").exists(), "{text}");
 }
 
+/// A directory or a symlink where a session's lock file goes keeps the
+/// session from being locked: a failure, not a lock left by a process that
+/// is gone, and --fix leaves it to the user. Nor is it locked with sessions/
+/// itself open to others (ADR 47).
+#[test]
+fn what_keeps_a_session_from_being_locked_fails() {
+    let env = Env::new("dr-nolock");
+    let sessions = env.dir.join("run/sessions");
+    mkdir(&sessions.join("sess-1.lock"), 0o700);
+    symlink("/dev/null", sessions.join("sess-2.lock")).unwrap();
+    for dir in ["run", "run/sessions"] {
+        fs::set_permissions(env.dir.join(dir), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for args in [&[][..], &["--fix"]] {
+        let (ok, text) = doctor(&env, args);
+        assert!(!ok, "{text}");
+        let fails = lines(&text, "FAIL");
+        assert_eq!(fails.len(), 2, "{text}");
+        assert!(fails[0].contains("session locks: sessions/sess-1.lock is a directory, not a lock file: its session can't be locked or started headless; remove it"), "{text}");
+        assert!(fails[1].contains("sessions/sess-2.lock is a symlink"), "{text}");
+        assert!(!text.contains("left by processes that are gone"), "{text}");
+    }
+    assert!(sessions.join("sess-1.lock").is_dir());
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755)).unwrap();
+    let (ok, text) = doctor(&env, &[]);
+    assert!(!ok, "{text}");
+    assert!(text.contains("no session can be locked or started headless"), "{text}");
+}
+
 /// A process binds its socket and listens before it writes its metadata:
 /// doctor --fix must leave a process that is starting alone.
 #[test]

@@ -6,6 +6,8 @@
 //!   by processes that are gone. Gone is what a process's socket says (see
 //!   `gone` in ctl.rs): one nobody listens on was left by a process that is
 //!   gone, even when its pid is another process's now;
+//! - session locks: that each session can be locked (ADR 47), `sessions/`
+//!   being a private directory with nothing but files where lock files go;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
 //!   (ADR 33), and every profile's settings, cwd, agent and bridges are
@@ -110,6 +112,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
     }
     let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
+    if hosts.is_some() {
+        session_locks(&mut r);
+    }
     transcripts(&mut r);
     config_file(&mut r);
     adapters(&mut r);
@@ -260,6 +265,32 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
         r.line(Level::Warn, what, msg);
     }
     Some(hosts)
+}
+
+/// What keeps sessions from being locked (ADR 47): a `sessions/` that isn't
+/// a private directory, or something other than a file where a session's
+/// lock file goes. A headless start of such a session fails, and an editor's
+/// process serves it without the lock. Said only when there is something to
+/// say, and never fixed: brnr didn't make them, and they may hold the user's
+/// files.
+fn session_locks(r: &mut Report) {
+    let what = "session locks";
+    let dir = paths::session_locks();
+    if fs::symlink_metadata(&dir).is_ok()
+        && let Err(e) = paths::check_private(&dir)
+    {
+        let msg = format!("{}: {e}; no session can be locked or started headless", dir.display());
+        return r.line(Level::Fail, what, msg);
+    }
+    for (path, kind) in lock::unusable() {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let msg = format!(
+            "sessions/{name} is {kind}, not a lock file: its session can't be locked or started \
+             headless; remove it ({})",
+            path.display()
+        );
+        r.line(Level::Fail, what, msg);
+    }
 }
 
 /// Whether what a process left without its metadata (`<pid>.sock`,
