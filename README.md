@@ -422,7 +422,9 @@ them: an editor that stops reading holds the agent back on its stdout for as
 long as it does, with no timeout of brnr's own (and observers see nothing new
 meanwhile). Observers never slow the session: a bridge or watcher 16 MiB
 behind is cut off (a connection closed, a started bridge sent SIGTERM), and the
-foreground's display skips events.
+foreground's display skips events. Nor does brnr's own record: past 64 MiB
+waiting for a slow disk, records are skipped, and [the transcript](#transcripts)
+says so.
 
 ## Transcripts
 
@@ -441,7 +443,11 @@ ones bridges get, `exited` included, and are what `brnr log`, `list --all` and
 `--resume` read; `log` reads the raw file too when `acp` events are chosen.
 Every record carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for
 joining. `log = "events"` leaves out the raw file, most of the space;
-`log = false` writes nothing.
+`log = false` writes nothing. Records skipped behind a slow disk are
+counted, and a `records-skipped` record (`count`, `acp` of them raw ACP,
+`since`, `until`) in the host log and the session's events file marks the gap;
+records a full disk didn't take are noted likewise, in the file that lost them,
+once it takes records again.
 
 The values of MCP servers' `env` and `headers` are recorded as
 `"<redacted>"`, in the raw ACP, the host log and `acp` events alike; the agent

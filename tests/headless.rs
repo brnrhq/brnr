@@ -989,6 +989,69 @@ fn log_events_leaves_out_the_raw_acp() {
     assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
 }
 
+/// A disk too slow for brnr's own record neither slows the session nor
+/// fills the host's memory: past 64 MiB queued for the logger, records are
+/// skipped and counted, and once it catches up a `records-skipped` note says
+/// how many, in the session's events file and the host log (ADR 6). What was
+/// queued is all written. (`BRNR_TEST_LOG_STALL` holds the logger while the
+/// file it names exists.)
+#[test]
+fn a_stalled_disk_skips_records_and_says_so() {
+    let env = Env::new("logstall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let host = env.host_pid();
+    let projects = env.dir.join("home/projects");
+    let opened = || fs::read_dir(&projects).is_ok_and(|mut d| d.next().is_some());
+    assert!(wait_for(Duration::from_secs(5), opened), "no transcript");
+    let events = project(&env).0.join("sess-1.jsonl");
+    fs::write(&stall, "").unwrap();
+    // Some 400 MB for the logger: 4000 messages of 50 kB, each an event and
+    // raw ACP. The turn runs to its end while nothing is written. (`wait`,
+    // as `send --wait` would take every message.)
+    env.ok(&["send", "sess-1", "many 4000 50000"]);
+    let out = env.run(&["wait", "sess-1", "--timeout", "60"]);
+    assert!(out.status.success(), "the session waited for the logger: {}", stderr(&out));
+    // The logger's 64 MiB, and the agent's 16 MiB on its way, with room.
+    let held = rss(host);
+    assert!(held < 160 << 20, "the host holds {} MB", held >> 20);
+
+    fs::remove_file(&stall).unwrap();
+    let noted = || fs::read_to_string(&events).is_ok_and(|t| t.contains("records-skipped"));
+    assert!(wait_for(Duration::from_secs(30), noted), "no records-skipped note");
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply after"]), "after\n");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+
+    let events: Vec<Value> = records(&events).into_iter().map(|r| r["event"].clone()).collect();
+    let at = |name: &str| events.iter().position(|e| e["event"] == name).unwrap();
+    let note = &events[at("records-skipped")];
+    let (count, acp) = (note["count"].as_u64().unwrap(), note["acp"].as_u64().unwrap());
+    assert!(acp > 0 && count > acp, "{note}");
+    assert!(note["since"].as_str().unwrap() <= note["until"].as_str().unwrap(), "{note}");
+    // The turn's messages up to the gap, in order, none missing, then the
+    // note; what came later was written again.
+    let turn: Vec<&str> = events[..at("records-skipped")]
+        .iter()
+        .filter(|e| e["event"] == "agent_message")
+        .map(|e| e["text"].as_str().unwrap())
+        .collect();
+    assert!(!turn.is_empty() && turn.len() < 4000, "{} messages written", turn.len());
+    for (i, text) in turn.iter().enumerate() {
+        assert!(text.starts_with(&format!("message {i}m")), "message {i}: {}", &text[..20]);
+    }
+    assert!(turn.len() as u64 + (count - acp) >= 4000, "{} written, {note}", turn.len());
+    let after = events.iter().rposition(|e| e["event"] == "agent_message").unwrap();
+    assert!(after > at("records-skipped") && events[after]["text"] == "after");
+    assert_eq!(events.iter().filter(|e| e["event"] == "records-skipped").count(), 1);
+    // The host log counts every record the gap skipped.
+    let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
+    let host = records(&host);
+    let host_note = host.iter().find(|r| r["event"]["event"] == "records-skipped").unwrap();
+    assert!(host_note["event"]["count"].as_u64().unwrap() >= count, "{host_note}");
+}
+
 // ---- secrets -----------------------------------------------------------
 
 /// Everything brnr has recorded: every file under its state directory.

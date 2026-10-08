@@ -3,6 +3,10 @@
 Accepted 2026-10-07, from former decision 25. Implemented. While the
 agent's stdin holds the link back, what the proxy sends behind the editor's
 input (a signal, stdin's EOF) waits with it; the proxy going away doesn't.
+The logger's queue is bounded too, and gives way as an observer does: past
+64 MiB not yet written (a slow or stalled disk), records are skipped and
+counted, and once there is room a `records-skipped` note says how many in
+the host log and in each session's events file that lost some (P3).
 Resolves review item 1, and with ADR 9 review item 3.
 
 ## Context

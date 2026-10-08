@@ -51,7 +51,8 @@ and by the prompt's text:
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
-  many <n>          answers with n messages, each of its own
+  many <n> [<size>] answers with n messages, each of its own (and size bytes
+                    longer)
   think             thinks, then answers
   tools             runs a tool call, with a plan and usage, then answers
   settings [<m>]    reports its config options, with model m if given (none:
@@ -180,8 +181,9 @@ def run(mid, sid, text):
         say(sid, "z" * int(words[1]))
         end_turn(mid)
     elif first == "many":
+        pad = "m" * int(words[2]) if len(words) > 2 else ""
         for i in range(int(words[1])):
-            update(sid, {"sessionUpdate": "agent_message_chunk", "messageId": f"msg-{i}", "content": {"type": "text", "text": f"message {i}"}})
+            update(sid, {"sessionUpdate": "agent_message_chunk", "messageId": f"msg-{i}", "content": {"type": "text", "text": f"message {i}{pad}"}})
         end_turn(mid)
     elif first == "think":
         say(sid, "pondering", "agent_thought_chunk")
