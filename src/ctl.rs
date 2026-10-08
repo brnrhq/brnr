@@ -6,7 +6,8 @@
 //! - history.rs: `log`
 //! - settings.rs: `mode`, `config`, `model`, `commands`, `sessions`, `fork`,
 //!   `close`
-//! - show.rs: `show`; notify.rs: `notify`; doctor.rs: `doctor`
+//! - show.rs: `show`; notify.rs: `notify`; doctor.rs: `doctor`; skill.rs:
+//!   `skill`
 //! - here: `ps`, `stop`, `list`, `status`, `pending`, `approve`, `deny`,
 //!   `watch`
 //!
@@ -53,6 +54,7 @@ mod history;
 mod notify;
 mod settings;
 mod show;
+mod skill;
 mod talk;
 
 const USAGE: &str = "usage:
@@ -105,6 +107,8 @@ settings
 
 brnr
   brnr doctor [--fix | --report] [--json]
+  brnr skill [<reference> | install [--dir <dir>]...]
+             the skill for agents that use brnr: print it, or install it
   brnr --version
 
 <session> is a session's id, as brnr list shows it. <request> is a pending approval's handle,
@@ -149,6 +153,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Some("deny") => done(answer(rest, "deny")),
         Some("watch") => done(watch(rest)),
         Some("doctor") => done(doctor::main(rest)),
+        Some("skill") => done(skill::skill(rest)),
         Some("-h" | "--help") => {
             outln!("{USAGE}");
             Ok(ExitCode::SUCCESS)

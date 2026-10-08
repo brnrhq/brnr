@@ -1,8 +1,9 @@
 # AGENTS.md
 
 For coding agents working on brnr itself. (Agents that *use* brnr to run
-other agents get a skill instead: #26.) People: [CONTRIBUTING.md](CONTRIBUTING.md)
-says the same at more length.
+other agents get a skill instead: [skills/brnr](skills/brnr/SKILL.md),
+ADR 46.) People: [CONTRIBUTING.md](CONTRIBUTING.md) says the same at more
+length.
 
 ## What brnr is
 
@@ -40,9 +41,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 - `tests/`: integration tests that drive the real binary against
   `tests/fake_agent.py`, whose behaviour is chosen with environment variables
   (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`).
-  `tests/docs.rs` runs the examples in the README and the site: an example
-  added or changed needs its line in `EXAMPLES` there (or `SKIPPED`, with
-  why).
+  `tests/docs.rs` runs the examples in the README, the site and the skill
+  (`skills/brnr/`): an example added or changed needs its line in
+  `EXAMPLES` there (or `SKIPPED`, with why).
 - `adapters/`: the Claude Code and Codex ACP adapters, built with bun.
 - `docs/adr/`, `README.md`, `site/`: what brnr does, for people.
 
