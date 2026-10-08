@@ -20,7 +20,14 @@ on:
 permissions: {}
 
 jobs:
+  reproducible:
+    permissions:
+      contents: read
+    # actionlint 1.7.12 doesn't yet accept GitHub's $/ workflow references.
+    uses: ./.github/workflows/reproducible.yml # zizmor: ignore[self-repository]
+
   release:
+    needs: reproducible
     runs-on: ubuntu-latest
     permissions:
       contents: write # the release and its asset
@@ -45,7 +52,15 @@ jobs:
           fi
 
       - name: Build and test
-        run: cargo test --release && cargo build --release
+        run: cargo test --release --locked && cargo build --release --locked
+
+      - name: Make the Rust SBOM
+        run: |
+          cargo install --locked cargo-cyclonedx --version 0.5.9
+          cargo cyclonedx --format json --spec-version 1.5 --target all
+          # cyclonedx has no --locked flag: refuse a changed dependency graph.
+          git diff --exit-code -- Cargo.lock
+          mv brnr.cdx.json "brnr-${GITHUB_REF_NAME#v}.cdx.json"
 
       # Before anything is public: a published version can't be replaced.
       - name: Check the crate packages
@@ -62,13 +77,18 @@ jobs:
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.tarball.outputs.path }}
+          subject-path: |
+            ${{ steps.tarball.outputs.path }}
+            brnr-*.cdx.json
 
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ steps.tarball.outputs.path }}
-        run: gh release create "$GITHUB_REF_NAME" "$TARBALL" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: >-
+          gh release create "$GITHUB_REF_NAME" "$TARBALL"
+          "brnr-${GITHUB_REF_NAME#v}.cdx.json"
+          --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
 
       # Its credentials (the deploy key) stay, for the push below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
@@ -112,6 +132,23 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "brnr ${GITHUB_REF_NAME#v}"
           git push
+
+  homebrew-smoke:
+    needs: release
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      # A fresh runner, after the tap push, using the public install path.
+      - name: Install the released formula and run doctor
+        run: |
+          brew install brnrhq/tap/brnr
+          expected="brnr ${GITHUB_REF_NAME#v}"
+          actual=$(brnr --version)
+          if [ "$actual" != "$expected" ]; then
+            echo "expected $expected, installed $actual" >&2
+            exit 1
+          fi
+          brnr doctor
 
   crates:
     needs: release

@@ -149,6 +149,8 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 |---|---|---|
 | The adapters are built from pinned npm versions with a frozen lockfile, without optional dependencies (the agents themselves aren't bundled). | `adapters/package.json`, `adapters/bun.lock`, `bun install --frozen-lockfile --omit=optional` in `adapters/build.sh` | CI builds them and runs `adapters/check.py` |
 | The workflows pin actions by commit and are checked by zizmor; crates by `cargo deny`. | `.github/workflows/`, `deny.toml` | CI |
+| Release binaries rebuild identically within the same toolchain and OS, in separate directories at different times. | `.github/scripts/reproducible.sh`, a prerequisite of publication | `reproducible.yml`, on Linux and macOS |
+| The release inventories brnr's locked Rust dependencies; the public Homebrew install is checked after the tap update. This does not establish that dependencies are safe. | `release.yml`: CycloneDX SBOM and `homebrew-smoke` job (ADR 52) | SBOM generation must succeed without changing `Cargo.lock`; a fresh macOS runner checks the installed version and runs doctor |
 
 ## Gaps
 

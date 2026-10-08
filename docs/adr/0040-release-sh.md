@@ -2,6 +2,7 @@
 
 Accepted (former decision 31); reviewed 2026-10-07. Implemented.
 Amended by 47: `release.sh tag` also checks crates.io.
+Amended by 52: the workflow checks reproducibility, attaches an SBOM and tests Homebrew after publication.
 
 ## Decision
 

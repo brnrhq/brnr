@@ -3,6 +3,7 @@
 Proposed 2026-10-08. Implemented, once the first version is published by
 hand (trusted publishing can only be set up for a crate that exists).
 Amends 40: `release.sh tag` also checks crates.io.
+Amended by 52: reproducibility and SBOM checks precede publication; a fresh runner tests the updated tap.
 
 ## Context
 
