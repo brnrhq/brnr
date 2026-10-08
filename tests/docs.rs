@@ -245,6 +245,7 @@ const SKIPPED: &[(&str, &str)] = &[
     ("brew install brnrhq/tap/brnr-claude-adapter", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-codex-adapter", "installs from the Homebrew tap"),
     (
+        "gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr",
         "verifies a release asset, from GitHub",
     ),
     ("cargo build --release", "the build these tests run"),
