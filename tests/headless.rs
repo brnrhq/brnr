@@ -12,6 +12,8 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -750,7 +752,8 @@ fn slow_watcher_is_disconnected() {
 }
 
 /// A watcher that keeps reading stays connected through a burst, and ends
-/// cleanly when the host exits.
+/// cleanly when the host exits. Stopped once it has read the burst: an
+/// exit waits only so long for a peer to be sent what is queued for it.
 #[test]
 fn reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
@@ -762,18 +765,25 @@ fn reading_watcher_stays_connected() {
         .spawn()
         .unwrap();
     let stdout = watch.stdout.take().unwrap();
-    let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
+    let read = Arc::new(AtomicUsize::new(0));
+    let counted = read.clone();
+    let lines = std::thread::spawn(move || {
+        for _ in BufReader::new(stdout).lines() {
+            counted.fetch_add(1, Relaxed);
+        }
+    });
     sleep(Duration::from_millis(300));
     assert!(env.run(&["send", "sess-1", "go"]).status.success());
-    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
-    sleep(Duration::from_secs(2));
+    let burst = || read.load(Relaxed) > 20000 || watch.try_wait().unwrap().is_some();
+    assert!(wait_for(Duration::from_secs(60), burst), "watch read {} lines", read.load(Relaxed));
     assert!(env.run(&["stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let mut err = String::new();
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(watch.wait().unwrap().success(), "watch failed: {err}");
-    assert!(lines.join().unwrap() > 20000, "watch missed events");
+    lines.join().unwrap();
+    assert!(read.load(Relaxed) > 20000, "watch missed events");
 }
 
 /// One message bigger than a peer's whole queue still reaches a peer that
