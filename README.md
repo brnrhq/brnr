@@ -304,11 +304,12 @@ live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
+| `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
-Each names its session; `exited` is the process's, and is in every session's
-transcript. For config options and commands, `session_changed` is a JSON merge
+Each names its session; `exited` and `line_too_long` are the process's, and
+are in every session's transcript. For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
 `--events` chooses, for `watch`, `log` and `notify` alike: names, `all`, and
@@ -503,6 +504,13 @@ the one line, however long, that took it past 16 MiB, and the
 foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
+
+However long the lines: the session's pipes hold back past 16 MiB queued,
+and brnr reads a line of up to 32 MiB, held beside that while it waits for
+its newline. A longer one goes on as it comes,
+unread and unrecorded, to the editor or the agent unchanged, or is dropped
+headless, and a `line_too_long` event says so. The agent's stderr
+goes on in pieces of 64 KiB at most, every byte.
 
 ## Transcripts
 

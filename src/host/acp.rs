@@ -54,6 +54,7 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
+use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp};
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
@@ -217,7 +218,17 @@ pub(super) enum Choice {
 impl Host {
     // ---- editor → agent ------------------------------------------------
 
-    pub(super) fn editor_bytes(&mut self, bytes: &[u8]) {
+    /// Splits what the editor writes into lines. One longer than
+    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 51).
+    pub(super) fn editor_bytes(&mut self, mut bytes: &[u8]) {
+        if self.editor_long {
+            let Some(i) = bytes.iter().position(|&b| b == b'\n') else {
+                return self.write_agent(bytes);
+            };
+            self.write_agent(&bytes[..=i]);
+            self.editor_long = false;
+            bytes = &bytes[i + 1..];
+        }
         // Only the new bytes are looked through: a long line arrives in many
         // reads.
         let mut from = self.editor_buf.len();
@@ -225,11 +236,42 @@ impl Host {
         let mut start = 0;
         while let Some(i) = self.editor_buf[from..].iter().position(|&b| b == b'\n') {
             let end = from + i;
-            let line = self.editor_buf[start..end].to_vec();
+            let line = start..end;
             (start, from) = (end + 1, end + 1);
-            self.editor_line(line);
+            if start - line.start > LINE_BYTES {
+                self.too_long("editor");
+                let piece = self.editor_buf[line.start..start].to_vec();
+                self.write_agent(&piece);
+            } else {
+                self.editor_line(self.editor_buf[line].to_vec());
+            }
         }
         self.editor_buf.drain(..start);
+        if self.editor_buf.len() > LINE_BYTES {
+            self.too_long("editor");
+            self.editor_long = true;
+            let piece = take(&mut self.editor_buf);
+            self.write_agent(&piece);
+        }
+    }
+
+    /// A line past `LINE_BYTES` from `from` (ADR 51): with an editor it goes
+    /// on unread, headless (from the agent) it is dropped.
+    fn too_long(&mut self, from: &str) {
+        let relayed = from == "editor" || self.link.is_some();
+        self.emit_to_sessions(json!({
+            "event": "line_too_long", "from": from, "limit": LINE_BYTES, "relayed": relayed,
+        }));
+    }
+
+    /// A piece of a line from the agent past `LINE_BYTES`, `end` if the line
+    /// ends with it: as `too_long` says.
+    pub(super) fn agent_piece(&mut self, bytes: Vec<u8>, end: bool) {
+        if !take(&mut self.agent_long) {
+            self.too_long("agent");
+        }
+        self.agent_long = !end;
+        self.send_link_owned(frame::DATA, bytes);
     }
 
     fn editor_line(&mut self, line: Vec<u8>) {

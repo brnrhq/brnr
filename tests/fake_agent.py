@@ -51,6 +51,9 @@ and by the prompt's text:
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
+  long <n> [stderr] writes one line of n MiB of x, 1 MiB at a time, then
+                    answers; on stdout the line ends in a newline, on stderr
+                    it is left open
   many <n> [<size>] answers with n messages, each of its own (and size bytes
                     longer)
   think             thinks, then answers
@@ -194,6 +197,14 @@ def run(mid, sid, text):
         end_turn(mid)
     elif first == "big":
         say(sid, "z" * int(words[1]))
+        end_turn(mid)
+    elif first == "long":
+        out = sys.stderr if words[2:] == ["stderr"] else sys.stdout
+        for _ in range(int(words[1])):
+            out.write("x" * (1 << 20))
+            out.flush()
+        if out is sys.stdout:
+            out.write("\n")
         end_turn(mid)
     elif first == "many":
         pad = "m" * int(words[2]) if len(words) > 2 else ""

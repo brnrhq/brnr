@@ -4,6 +4,9 @@ Accepted 2026-10-07. Implemented. The editor is told in the session that
 its late answer was dropped, and who answered first (ADR 4).
 Resolves review item 2.
 
+Amended by 51: a line past 32 MiB isn't read either; with an editor it goes
+on as it comes, headless it is dropped, and a `line_too_long` event says so.
+
 ## Context
 
 `agent_line` (src/host/acp.rs) forwarded a line serde_json rejected as it

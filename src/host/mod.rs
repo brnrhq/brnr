@@ -68,7 +68,7 @@ use acp::{AgentRequest, Hold, Pending, Session};
 use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
-use flow::Backlog;
+use flow::{Backlog, LINE_BYTES};
 use requests::{Capabilities, HostRequest, SetupStep};
 use start::StartChannel;
 
@@ -103,6 +103,11 @@ const EVENTS_QUEUED: usize = 1024;
 /// much of each is kept.
 const STDERR_TAIL: usize = 20;
 const STDERR_LINE: usize = 2000;
+
+/// The most of a line of the agent's stderr the host holds: a longer one
+/// goes on in pieces of this, as it comes (ADR 51). Nobody reads stderr as
+/// lines but people, and the host log.
+const PIECE: usize = 64 << 10;
 
 /// `brnr stop`: stdin is closed once what is queued for it is written, then
 /// the agent's process group gets SIGTERM, then SIGKILL.
@@ -254,7 +259,14 @@ enum Ev {
     SignalLink(Option<(u8, Vec<u8>)>),
     /// One line of agent stdout, with its `\n` unless it was the last bytes.
     AgentLine(Vec<u8>),
+    /// A piece of a line of agent stdout past `LINE_BYTES`, as it came;
+    /// `end` if the line ends with it (ADR 51).
+    AgentPiece {
+        bytes: Vec<u8>,
+        end: bool,
+    },
     AgentStdoutEof,
+    /// Agent stderr: a line, or a piece of a long one (ADR 51).
     AgentStderr(Vec<u8>),
     AgentStderrEof,
     /// The agent has terminated; it has not been reaped yet.
@@ -376,6 +388,12 @@ struct Host {
     next_permission: u64,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
+    /// A line past `LINE_BYTES` is going through unread, from the editor or
+    /// from the agent, until its newline (ADR 51).
+    editor_long: bool,
+    agent_long: bool,
+    /// The last piece of the agent's stderr didn't end its line.
+    stderr_mid_line: bool,
     /// How deeply what the host holds may nest, and how deeply the stack it
     /// is running on takes (see `deep`).
     deepest: usize,
@@ -551,6 +569,9 @@ impl Host {
             next_id: 0,
             next_permission: 0,
             editor_buf: Vec::new(),
+            editor_long: false,
+            agent_long: false,
+            stderr_mid_line: false,
             deepest: 0,
             stack: json::SHALLOW,
             prompt: h.prompt,
@@ -1043,6 +1064,11 @@ impl Host {
                 self.agent_line(&line);
                 self.from_agent.done(line.len());
             }
+            Ev::AgentPiece { bytes, end } => {
+                let n = bytes.len();
+                self.agent_piece(bytes, end);
+                self.from_agent.done(n);
+            }
             Ev::AgentStdoutEof => self.stdout_open = false,
             Ev::AgentStderr(bytes) => {
                 self.sink.msg(None, Dir::AgentStderr, &bytes);
@@ -1100,7 +1126,9 @@ impl Host {
     /// Until the start is over, the agent's last lines on stderr, for the
     /// error if it fails (ADR 10).
     fn keep_stderr(&mut self, bytes: &[u8]) {
-        if self.start_done {
+        // The rest of a long line, whose start is kept already (ADR 51).
+        let rest = std::mem::replace(&mut self.stderr_mid_line, !bytes.ends_with(b"\n"));
+        if self.start_done || rest {
             return;
         }
         let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
@@ -1165,9 +1193,17 @@ impl Host {
     }
 
     fn send_link(&mut self, kind: u8, payload: &[u8]) {
+        if self.link.is_some() {
+            self.send_link_owned(kind, payload.to_vec());
+        }
+    }
+
+    /// As `send_link`, with no copy made of `payload`: a piece of a long
+    /// line can be 32 MiB (ADR 51).
+    fn send_link_owned(&mut self, kind: u8, payload: Vec<u8>) {
         let Some(link) = &self.link else { return };
         self.from_agent.add(payload.len());
-        if link.send((kind, payload.to_vec())).is_err() {
+        if link.send((kind, payload)).is_err() {
             // The writer failed and shut the link down: the proxy has gone,
             // which the reader thread or the signal link reports
             // (`link_gone`).
@@ -1376,7 +1412,8 @@ fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
 /// Splits the agent's stdout into lines until EOF, or until `stop` closes,
 /// which drops our end so the agent gets EPIPE like it would directly. Past
 /// the cap of what is on its way to the editor (or the event loop) it waits,
-/// and the agent blocks writing, as it would to the editor directly.
+/// and the agent blocks writing, as it would to the editor directly. A line
+/// past `LINE_BYTES` goes on in pieces as they come (ADR 51).
 fn read_agent_stdout(
     mut out: ChildStdout,
     stop: PipeReader,
@@ -1389,6 +1426,8 @@ fn read_agent_stdout(
     ];
     let mut buf = vec![0; 64 * 1024];
     let mut line = Vec::new();
+    // Inside a line past LINE_BYTES.
+    let mut long = false;
     loop {
         from_agent.room(None);
         // SAFETY: fds is an array of two valid pollfds, and the count says so.
@@ -1410,35 +1449,63 @@ fn read_agent_stdout(
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
-        for &b in &buf[..n] {
-            line.push(b);
-            if b == b'\n' {
+        let mut read = &buf[..n];
+        while !read.is_empty() {
+            let end = read.iter().position(|&b| b == b'\n');
+            let (now, rest) = read.split_at(end.map_or(read.len(), |i| i + 1));
+            line.extend_from_slice(now);
+            read = rest;
+            let sent = if long || line.len() > LINE_BYTES {
+                long = end.is_none();
                 from_agent.add(line.len());
-                if tx.send(Ev::AgentLine(take(&mut line))).is_err() {
-                    return;
-                }
+                tx.send(Ev::AgentPiece { bytes: take(&mut line), end: end.is_some() }).is_ok()
+            } else if end.is_some() {
+                from_agent.add(line.len());
+                tx.send(Ev::AgentLine(take(&mut line))).is_ok()
+            } else {
+                continue;
+            };
+            if !sent {
+                return;
             }
         }
     }
-    if !line.is_empty() {
-        from_agent.add(line.len());
+    from_agent.add(line.len());
+    if long {
+        let _ = tx.send(Ev::AgentPiece { bytes: line, end: true });
+    } else if !line.is_empty() {
         let _ = tx.send(Ev::AgentLine(line));
     }
     let _ = tx.send(Ev::AgentStdoutEof);
 }
 
-/// The agent's stderr, line by line, held back as its stdout is. In the
-/// foreground (`shown`) it also goes to stderr as it comes, unchanged
-/// (ADR 10): written from here, the agent blocks on a terminal that does.
+/// The agent's stderr, line by line, held back as its stdout is; a line
+/// longer than `PIECE` goes on in pieces of that, as it comes
+/// (ADR 51). In the foreground (`shown`) it also goes to stderr as it comes,
+/// unchanged (ADR 10): written from here, the agent blocks on a terminal
+/// that does.
 fn read_agent_stderr(err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
     let mut terminal = shown.then(|| sys::stdio(2));
     let mut reader = BufReader::new(err);
     let mut line = Vec::new();
-    loop {
+    let mut open = true;
+    while open {
         from_agent.room(None);
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        let read = match reader.fill_buf() {
+            Ok(read) => read,
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => &[],
+        };
+        let room = PIECE - line.len();
+        let (n, end) = match read[..read.len().min(room)].iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (read.len().min(room), false),
+        };
+        open = !read.is_empty();
+        line.extend_from_slice(&read[..n]);
+        reader.consume(n);
+        if line.is_empty() || (open && !end && line.len() < PIECE) {
+            continue;
         }
         if let Some(out) = &mut terminal
             && crate::proxy::write_all(out, &line).is_err()
