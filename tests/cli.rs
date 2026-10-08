@@ -956,6 +956,123 @@ fn resume_of_a_held_session_is_refused() {
     assert!(env.fails(&start_args(&["--take-over"])).contains("--take-over goes with --resume"));
 }
 
+/// A directory where `session`'s lock file goes, so its lock can't be taken:
+/// opening the file fails.
+fn unlockable(env: &Env, session: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    let lock = env.dir.join(format!("run/sessions/{session}.lock"));
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&lock).unwrap();
+    lock
+}
+
+/// A headless start whose session can't be locked fails, with the cause:
+/// no prompt reaches the agent, and nothing is left running or listed, every
+/// time it is tried (ADR 3, ADR 7).
+#[test]
+fn a_new_session_that_cant_be_locked_isnt_started() {
+    let env = Env::new("c-nolock");
+    let lock = unlockable(&env, "sess-1");
+    for _ in 0..2 {
+        let out = env.run(&start_args(&["--json", "--prompt", "reply hi"]));
+        assert_eq!(code(&out), 1, "{}", stdout(&out));
+        assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+        let said = format!("the agent opened sess-1, which can't be locked: {}: ", lock.display());
+        assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "left running");
+    }
+    assert!(env.prompts().is_empty());
+    let agents = agent_pids(&env);
+    assert_eq!(agents.len(), 2, "{agents:?}");
+    for pid in agents {
+        assert!(wait_for(Duration::from_secs(5), || !alive(pid)), "agent {pid} lives on");
+    }
+    assert_eq!(env.ok(&["list"]), "no running sessions\n");
+}
+
+/// The agent's pid in each host log: one for every process started here.
+fn agent_pids(env: &Env) -> Vec<i32> {
+    let first = |path: std::path::PathBuf| {
+        let text = fs::read_to_string(path).ok()?;
+        let record: Value = serde_json::from_str(text.lines().next()?).ok()?;
+        Some(record["event"]["info"]["agent_pid"].as_i64()? as i32)
+    };
+    let logs = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+    logs.flatten().filter_map(|e| first(e.path())).collect()
+}
+
+/// Nor is a session resumed, by session/resume or session/load, whose lock
+/// can't be taken: the agent never hears of it.
+#[test]
+fn a_resume_that_cant_be_locked_isnt_started() {
+    for (name, how) in [("c-nolock-resume", "session/resume"), ("c-nolock-load", "session/load")] {
+        let mut env = Env::new(name);
+        if how == "session/load" {
+            env = env.agent("NO_RESUME", "1");
+        }
+        env.start(&["--wait", "--prompt", "reply first"]);
+        env.stop();
+        assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+        let lock = unlockable(&env, "sess-1");
+        let out = env.run(&start_args(&["--resume", "sess-1", "--prompt", "reply again"]));
+        assert_eq!(code(&out), 1, "{}", stdout(&out));
+        let said = format!("sess-1 can't be locked: {}: ", lock.display());
+        assert!(stderr(&out).contains(&said), "{how}: {}", stderr(&out));
+        assert!(env.calls_of(how).is_empty(), "{how} sent");
+        assert_eq!(env.prompts(), ["reply first"]);
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "left running");
+    }
+}
+
+/// A fork the agent opens into a session that can't be locked, or that
+/// another process holds, is refused, and the session forked from goes on
+/// (ADR 3, ADR 16).
+#[test]
+fn a_fork_that_cant_be_owned_is_refused() {
+    let env = Env::new("c-nolock-fork");
+    env.start(&[]);
+    let lock = unlockable(&env, "sess-2");
+    let err = env.fails(&["fork", "sess-1"]);
+    let said = format!("the agent forked into sess-2, which can't be locked: {}: ", lock.display());
+    assert!(err.contains(&said), "{err}");
+    assert!(env.fails(&["status", "sess-2"]).contains("sess-2"));
+    // The fake agent forks into sess-3 next: another process holds it.
+    fs::remove_dir(&lock).unwrap();
+    let out = env.brnr(&start_args(&[])).env("FIRST_SESSION", "2").output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let holder = lock_holder(&env, "sess-3");
+    let err = env.fails(&["fork", "sess-1"]);
+    assert!(
+        err.contains(&format!(
+            "the agent forked into sess-3, which is running in process {holder}"
+        )),
+        "{err}"
+    );
+    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply still here"]), "still here\n");
+}
+
+/// A second process whose agent opens a session another process holds
+/// doesn't start: there is one owner (P11, ADR 3).
+#[test]
+fn a_second_owner_of_a_new_session_isnt_started() {
+    let env = Env::new("c-second");
+    env.start(&[]);
+    let first = env.pid();
+    let err = env.fails(&start_args(&["--prompt", "reply hi"]));
+    assert!(
+        err.contains(&format!("the agent opened sess-1, which is running in process {first}")),
+        "{err}"
+    );
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().len() == 1), "left running");
+    assert!(env.prompts().is_empty());
+    assert_eq!(lock_holder(&env, "sess-1"), first);
+}
+
+/// The pid in `session`'s lock file.
+fn lock_holder(env: &Env, session: &str) -> String {
+    let lock = fs::read_to_string(env.dir.join(format!("run/sessions/{session}.lock"))).unwrap();
+    serde_json::from_str::<Value>(&lock).unwrap()["pid"].to_string()
+}
+
 /// `--take-over` has the process that holds the session close it,
 /// cancelling its turn, and resumes it in a new one; the session forked
 /// beside it keeps running in the first.

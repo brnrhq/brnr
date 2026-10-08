@@ -263,6 +263,13 @@ shown or counted as running, and its metadata and socket are removed.
 only if its profile enables `close`) and resumes it in a new headless
 process; sessions beside it keep running.
 
+A session whose lock can't be taken (`sessions/` isn't private, or a directory
+is where its lock file goes) isn't served headless: `start` fails with the
+cause and the process stops before the agent gets any prompt, and a `fork`
+into it is refused. An editor's process serves it all the same, as the editor
+would be served without brnr; `status` says it isn't locked, and `doctor`
+what is in the way.
+
 `close` ends one session; a headless process with none left stops. `fork` is
 refused in an editor's process, in strict mode, when the agent can't fork, and
 with `stop_when_idle` when the agent can't close sessions.
@@ -560,7 +567,8 @@ brnr doctor --report               # a bug report to read, then paste into an is
 
 It checks that the runtime directory is private, isn't a symlink, is short
 enough for socket paths, and holds nothing left by processes that are gone
-(their metadata, sockets and session locks); that transcripts are readable
+(their metadata, sockets and session locks), nor anything that keeps a
+session from being locked; that transcripts are readable
 only by you; that the config parses, with every key in its part, and each
 profile's agent, cwd, MCP servers and bridges are valid; where the adapters
 are found; and that every running process answers, naming the sessions one
