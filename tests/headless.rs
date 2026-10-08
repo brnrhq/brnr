@@ -842,8 +842,7 @@ fn bridges_next_to_a_symlinked_brnr() {
     symlink(env!("CARGO_BIN_EXE_brnr"), bin.join("brnr")).unwrap();
     let got = env.dir.join("bridge-events");
     let bridge = bin.join("brnr-test-bridge");
-    fs::write(&bridge, format!("#!/bin/sh\nexec cat > '{}'\n", got.display())).unwrap();
-    fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+    script(&bridge, &format!("#!/bin/sh\nexec cat > '{}'\n", got.display()));
     env.write_config("[[profiles.default.bridges]]\ncommand = [\"brnr-test-bridge\"]\n");
     // Enough PATH for the fake agent's python3, not the prefix.
     let python = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();

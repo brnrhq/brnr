@@ -405,9 +405,9 @@ fn adapter_versions() {
     mkdir(&bin, 0o755);
     // A brnr adapter that knows --version.
     let claude = "#!/bin/sh\n[ \"$1\" = --version ] && echo 'brnr-claude-adapter 0.85.1 (@agentclientprotocol/claude-agent-acp)'\n";
-    write(&bin.join("brnr-claude-adapter"), claude, 0o755);
+    script(&bin.join("brnr-claude-adapter"), claude);
     // One built before --version: it waits for an editor instead.
-    write(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n", 0o755);
+    script(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n");
     // codex-acp from npm: a bin link into the package.
     let package = env.dir.join("lib/node_modules/@agentclientprotocol/codex-acp");
     mkdir(&package.join("dist"), 0o755);
@@ -416,7 +416,7 @@ fn adapter_versions() {
         r#"{"name":"@agentclientprotocol/codex-acp","version":"2.1.1"}"#,
         0o644,
     );
-    write(&package.join("dist/index.js"), "#!/usr/bin/env node\n", 0o755);
+    script(&package.join("dist/index.js"), "#!/usr/bin/env node\n");
     symlink(
         "../lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
         bin.join("codex-acp"),
@@ -427,7 +427,7 @@ fn adapter_versions() {
     // build, the adapters may well be next to the real one).
     let alone = env.dir.join("alone");
     mkdir(&alone, 0o755);
-    fs::copy(env!("CARGO_BIN_EXE_brnr"), alone.join("brnr")).unwrap();
+    install(Path::new(env!("CARGO_BIN_EXE_brnr")), &alone.join("brnr"));
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = env.brnr_at(&alone.join("brnr"), &["doctor"]).env("PATH", path).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
