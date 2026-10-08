@@ -564,7 +564,8 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         return Ok(exit_status(child));
     }
     let session = text(&ready["session"]);
-    let about = json!({ "session": session, "pid": ready["pid"] });
+    // The prompt's id, as `send` gives it (ADR 17); null without one.
+    let about = json!({ "session": session, "pid": ready["pid"], "message": ready["message"] });
     if !a.wait {
         if a.json {
             print_json(&about)?;

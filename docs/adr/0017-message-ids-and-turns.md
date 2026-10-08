@@ -11,7 +11,8 @@ message is held, steered into a running turn, or sent after an interrupt.
 ## Decision
 
 Every message the host accepts gets an id (`m<n>`), which is in the `send`
-response, in `user_message` when the message is actually sent, and in the
+response (and `start --json`'s, for the start's prompt), in `user_message`
+when the message is actually sent, and in the
 `turn_ended` of the turn that carried it. A turn can carry more than one: a
 steered message has no turn of its own (ADR 18). So `turn_ended` lists them,
 `messages: [m1, m3]`, in place of its single `message` (P9).

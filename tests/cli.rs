@@ -75,6 +75,22 @@ fn start_wait_prints_the_reply_and_the_turns_result() {
     assert_eq!(prompt["params"]["prompt"][0]["text"], "reply done");
 }
 
+/// `start --json` gives the prompt's message id, as `send --json` does, or
+/// null without a prompt (ADR 17).
+#[test]
+fn start_json_gives_the_prompts_message() {
+    let env = Env::new("c-startmsg");
+    let out = env.run(&start_args(&["--json", "--prompt", "reply done"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let about: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((about["session"].as_str(), about["message"].as_str()), (Some("sess-1"), Some("m1")));
+
+    let env = Env::new("c-startnomsg");
+    let out = env.run(&start_args(&["--json"]));
+    let about: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(about["message"].is_null(), "{about}");
+}
+
 #[test]
 fn send_wait_times_out() {
     let env = Env::new("c-sendto");

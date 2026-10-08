@@ -494,6 +494,8 @@ impl Host {
 
     fn pending_permissions(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
+        // Whether `brnr approve` would be taken, and if not, why (ADR 4).
+        let why_not = self.check_experimental(Experimental::Approve).err();
         self.agent_requests
             .iter()
             .filter(|r| r.handle.is_some())
@@ -502,6 +504,8 @@ impl Host {
                     "request": r.handle,
                     "session": r.session,
                     "owner": owner,
+                    "answerable": why_not.is_none(),
+                    "why_not": why_not,
                     "title": r.params["toolCall"]["title"],
                     "kind": r.params["toolCall"]["kind"],
                     "tool_call": r.params["toolCall"],

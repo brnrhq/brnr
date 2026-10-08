@@ -1663,6 +1663,11 @@ fn experimental_actions_are_refused_without_opt_in() {
     for args in observing {
         env.ok(args);
     }
+    // show says where it can be answered, and why not here.
+    let show = env.ok(&["show", "sess-1", "p1"]);
+    assert!(show.contains("p1, session sess-1, waiting in the editor"), "{show}");
+    let why = "answer it in the editor (`approve` on an editor's session is experimental";
+    assert!(show.contains(why), "{show}");
     for method in ["session/cancel", "session/set_mode", "session/set_config_option"] {
         assert!(env.calls_of(method).is_empty(), "the agent got {method}");
     }
@@ -1805,6 +1810,11 @@ fn approve_answers_in_the_editors_place() {
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["approve"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
+    let show = env.ok(&["show", "sess-1", "p1"]);
+    let here = "answer: in the editor, or brnr approve sess-1 p1, brnr deny sess-1 p1";
+    assert!(show.contains(here), "{show}");
+    let json: Value = serde_json::from_str(&env.ok(&["show", "sess-1", "p1", "--json"])).unwrap();
+    assert_eq!((&json["answerable"], &json["why_not"]), (&Value::Bool(true), &Value::Null), "{json}");
     assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");

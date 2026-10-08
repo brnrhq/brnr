@@ -193,7 +193,10 @@ brnr approve $s p1                 # or: brnr deny $s p1, --option <id>
 
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `show` says when a
-command has any. `--json` has the text as the agent sent it.
+command has any. `--json` has the text as the agent sent it. On an editor's
+session `show` says where the request can be answered: in the editor, and
+here only where `approve` is enabled (`answerable` and `why_not` in
+`--json`).
 
 ### Settings
 

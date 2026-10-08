@@ -44,6 +44,11 @@ always allowed.
 | `settings` | `mode`, `model`, `config` | The host sends the editor `current_mode_update`, or `config_option_update` made from the response's `configOptions`. The agent doesn't: the change was the host's request, and ACP answers the requester (ADR 28). |
 | `close` | `close`, `start --resume --take-over` | Cancel a running turn; tell the editor in the session (a completed tool call, "Session taken over by brnr (process 4466)"); `session/close` to the agent. Afterwards the host answers the editor's requests for that session with an error saying where it continues. |
 
+- `brnr show` on an editor's request says where it can be answered: in the
+  editor, and here only where `approve` is enabled; otherwise it gives the
+  refusal `approve` would (`answerable`, `why_not` in each pending entry).
+- `brnr stop` isn't one of these actions: stopping a process is process
+  management, the same as `kill`.
 - `fork` stays refused on an editor's process: a forked session would be a
   headless session inside a process that ends with the editor, and ACP can't
   tell the editor of a session it didn't create.
