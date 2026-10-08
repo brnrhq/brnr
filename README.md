@@ -159,7 +159,7 @@ brnr status $s                     # what it's doing: turn, tools, plan, usage, 
 brnr send $s "also update the changelog"                # held while a turn runs
 brnr send $s --steer "and the tests too"                # into the running turn
 brnr send $s --interrupt "stop, wrong branch"
-brnr send $s --context "the API key is in .env.local"   # added to the next prompt
+brnr send $s --context "the API key is in .env.local"   # added to the next prompt; --replace: instead of the last
 brnr send $s --wait "what did you change?"              # prints the reply
 brnr send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
 brnr cancel $s                     # stop the running turn (held messages are dropped and listed)
@@ -346,6 +346,7 @@ off included, is in the host log (`bridge-stderr`).
 ```sh
 brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
 brnr start --mode plan --model opus --prompt - < task.md       # set up before the first prompt
+brnr start --set effort=high --prompt - < task.md              # any of the agent's config options, likewise
 brnr start --resume $s                                         # carry on a session that ended
 brnr start --auth api-key --prompt - -- brnr-codex-adapter < task.md   # log in first (OPENAI_API_KEY)
 brnr start --foreground --prompt - -- brnr-codex-adapter < task.md     # in the foreground; Ctrl-C stops it
