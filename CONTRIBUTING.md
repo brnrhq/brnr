@@ -13,6 +13,7 @@ cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release, as CI: some tests stream tens of thousands of events
 adapters/build.sh              # only if you change adapters/ (needs bun)
 adapters/check.py --brnr target/release
+adapters/test_check.py         # only if you change adapters/check.py
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to
