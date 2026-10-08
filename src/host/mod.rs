@@ -30,6 +30,8 @@ mod death;
 mod display;
 mod experimental;
 mod flow;
+#[doc(hidden)]
+pub mod fuzz;
 mod requests;
 mod start;
 mod state;
@@ -435,10 +437,10 @@ impl Host {
         signal_link: Option<UnixStream>,
     ) -> Result<Host, (String, u8)> {
         let recorded = req.recorded();
-        let Request { profile, agent, cwd, strict, log: logging, bridges, role } = req;
-        let (editor, headless) = match role {
-            Role::Editor(editor) => (Some(editor), None),
-            Role::Headless(headless) => (None, Some(headless)),
+        let Request { profile, agent, cwd, strict, log: logging, bridges, mut role } = req;
+        let (proxy_pid, mask, events) = match &mut role {
+            Role::Editor(e) => (Some(e.proxy_pid), e.sigmask.clone(), Vec::new()),
+            Role::Headless(h) => (None, Vec::new(), take(&mut h.events)),
         };
         let program: Vec<OsString> = agent.iter().map(OsString::from).collect();
         if program.is_empty() {
@@ -469,7 +471,6 @@ impl Host {
         // Its own process group: a terminal's Ctrl-C (in the foreground) is
         // for the host, which stops the agent its own way.
         cmd.process_group(0);
-        let mask = editor.as_ref().map(|e| e.sigmask.clone()).unwrap_or_default();
         // std resets the mask in the child; give the agent the editor's.
         unsafe {
             // SAFETY: the closure runs in the child between fork and exec,
@@ -496,6 +497,44 @@ impl Host {
         // ends the start early, an error or a panic, finds them there, kills
         // the agent with them (P14) and records how it ended (ADR 11).
         let (tx, rx) = mpsc::sync_channel(EVENTS_QUEUED);
+        let new = Host::new(role, cwd, strict, logging, agent_pid, rx);
+        let mut host = Host { host_id, sock_path, meta_path, ..new };
+        let parts = Parts {
+            child,
+            listener,
+            channel,
+            signal_link,
+            tx,
+            recorded,
+            profile,
+            agent,
+            proxy_pid,
+            started,
+            events,
+            bridges,
+        };
+        match panic::catch_unwind(AssertUnwindSafe(|| host.set_up(parts))) {
+            Ok(Ok(())) => Ok(host),
+            Ok(Err((error, code))) => Err(host.abandon(error, code)),
+            Err(_) => Err(host.died_starting(death::panicked().unwrap_or("brnr panicked"))),
+        }
+    }
+
+    /// The host of `role`'s agent, `agent_pid`, before anything is set up
+    /// (see `set_up`): no log, no threads, no peers, no sessions. Its ids
+    /// and files are `start`'s to fill in.
+    fn new(
+        role: Role,
+        cwd: PathBuf,
+        strict: bool,
+        logging: Log,
+        agent_pid: pid_t,
+        rx: Receiver<Ev>,
+    ) -> Host {
+        let (editor, headless) = match role {
+            Role::Editor(editor) => (Some(editor), None),
+            Role::Headless(headless) => (None, Some(headless)),
+        };
         let foreground = headless.as_ref().is_some_and(|h| h.foreground.is_some());
         // An editor's process has no start deadline, and none of the rest.
         let start_deadline = (headless.as_ref())
@@ -510,12 +549,12 @@ impl Host {
         };
         // No log until `set_up` starts it.
         let log = Logger::disabled();
-        let mut host = Host {
+        Host {
             foreground,
             startup_reported: false,
             start_done: false,
             info: Value::Null,
-            host_id,
+            host_id: String::new(),
             permission_timeout: h.permission_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: None,
@@ -532,8 +571,8 @@ impl Host {
             log,
             own_stderr: None,
             rx,
-            sock_path,
-            meta_path,
+            sock_path: PathBuf::new(),
+            meta_path: PathBuf::new(),
             cwd,
             sessions: Vec::new(),
             pending: HashMap::new(),
@@ -575,25 +614,6 @@ impl Host {
             drain_until: None,
             stop_requested: false,
             stopping: None,
-        };
-        let parts = Parts {
-            child,
-            listener,
-            channel,
-            signal_link,
-            tx,
-            recorded,
-            profile,
-            agent,
-            proxy_pid: editor.map(|e| e.proxy_pid),
-            started,
-            events: h.events,
-            bridges,
-        };
-        match panic::catch_unwind(AssertUnwindSafe(|| host.set_up(parts))) {
-            Ok(Ok(())) => Ok(host),
-            Ok(Err((error, code))) => Err(host.abandon(error, code)),
-            Err(_) => Err(host.died_starting(death::panicked().unwrap_or("brnr panicked"))),
         }
     }
 
