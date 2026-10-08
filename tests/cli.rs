@@ -1,6 +1,6 @@
 //! The headless CLI end to end against the fake agent: waiting for
 //! replies, the log, status, settings, sessions and processes, approvals,
-//! attachments, notifications and resuming.
+//! attachments, notifications, resuming, and the skill.
 
 mod common;
 
@@ -1720,4 +1720,63 @@ fn ps_lists_the_processes() {
     assert!(env.fails(&["watch"]).contains("<session> or --pid"));
     assert!(env.fails(&["stop", "sess-1"]).contains("no brnr process sess-1"));
     env.stop();
+}
+
+// ---- the skill (ADR 46) --------------------------------------------------
+
+const REFERENCES: [&str; 4] = ["orchestrate", "approvals", "observe", "setup"];
+
+/// A file of the skill, as the repository has it.
+fn skill_file(path: &str) -> String {
+    fs::read_to_string(format!("{}/skills/brnr/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+#[test]
+fn skill_prints_the_skill_and_its_references() {
+    let env = Env::new("c-skill");
+    assert_eq!(env.ok(&["skill"]), skill_file("SKILL.md"));
+    for name in REFERENCES {
+        assert_eq!(env.ok(&["skill", name]), skill_file(&format!("references/{name}.md")));
+    }
+    let err = env.fails(&["skill", "nope"]);
+    assert!(err.contains("no reference nope (references: orchestrate, approvals"), "{err}");
+    assert!(env.fails(&["skill", "--json"]).contains("brnr skill [<reference>"));
+}
+
+#[test]
+fn skill_install_writes_it_for_claude_code_and_codex() {
+    let env = Env::new("c-skillinst");
+    let home = env.dir.join("home-dir");
+    fs::create_dir_all(&home).unwrap();
+    let out = env.brnr(&["skill", "install"]).env("HOME", &home).output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    for dir in [".claude/skills/brnr", ".agents/skills/brnr"] {
+        let skill = home.join(dir);
+        assert!(stdout(&out).contains(&format!("installed {}", skill.display())), "{out:?}");
+        let read = |path: &str| fs::read_to_string(skill.join(path)).unwrap();
+        assert_eq!(read("SKILL.md"), skill_file("SKILL.md"));
+        for name in REFERENCES {
+            let path = format!("references/{name}.md");
+            assert_eq!(read(&path), skill_file(&path));
+        }
+    }
+
+    // --dir instead, as many as given; an earlier install's references that
+    // this one doesn't have go, and nothing else does.
+    let (a, b) = (env.dir.join("a"), env.dir.join("b"));
+    fs::create_dir_all(a.join("brnr/references")).unwrap();
+    fs::write(a.join("brnr/references/gone.md"), "old").unwrap();
+    fs::write(a.join("brnr/references/notes.txt"), "mine").unwrap();
+    let (a_arg, b_arg) = (a.to_string_lossy(), b.to_string_lossy());
+    let printed = env.ok(&["skill", "install", "--dir", &a_arg, "--dir", &b_arg]);
+    assert_eq!(printed.lines().count(), 2, "{printed}");
+    assert!(!a.join("brnr/references/gone.md").exists());
+    assert!(a.join("brnr/references/notes.txt").exists());
+    assert!(b.join("brnr/references/setup.md").exists());
+
+    // One it can't write fails, naming it.
+    fs::write(env.dir.join("file"), "").unwrap();
+    let err = env.fails(&["skill", "install", "--dir", &env.dir.join("file").to_string_lossy()]);
+    assert!(err.contains("file/brnr"), "{err}");
+    assert!(env.fails(&["skill", "install", "--dir"]).contains("--dir needs a directory"));
 }

@@ -386,6 +386,25 @@ a login, the start fails with the agent's methods: log in with the agent's own
 CLI first, or name a method that needs no terminal with `--auth <id>` (`auth`
 in the profile), such as codex-acp's `api-key`.
 
+## For agents
+
+An agent can run other agents through brnr: start headless workers, send
+them work, wait for their turns, read their logs and bring their approvals
+to you. brnr ships a skill that teaches it how
+([skills/brnr](skills/brnr/SKILL.md), [ADR 46](docs/adr/0046-a-skill-for-agents-that-use-brnr.md)):
+exact ids, waiting rather than polling, never approving what you didn't
+delegate, and cleaning up what it starts.
+
+```sh
+brnr skill                         # SKILL.md; brnr skill orchestrate, approvals, observe, setup: its references
+brnr skill install                 # into ~/.claude/skills/brnr (Claude Code) and ~/.agents/skills/brnr (Codex)
+brnr skill install --dir .claude/skills   # or a project's, for each --dir
+```
+
+The skill is built into the binary, so it is always the one for the brnr
+you run; install it again after upgrading. Every command in it runs as a
+test, as the README's do.
+
 ## Strict mode and feature flags
 
 By default brnr speaks stable ACP plus the conventions agents and editors
