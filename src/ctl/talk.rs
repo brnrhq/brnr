@@ -815,6 +815,11 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             ("turn_ended", "idle") if mine(&e) => {
                 last_turn = e.clone();
                 if idle(&mut conn, &session)?.0 {
+                    // Behind the session, the turns that ended after this
+                    // one are queued, before the status that says it is
+                    // idle: it went idle after the last of them.
+                    let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
+                    let e = conn.events.iter().rev().find(ended).cloned().unwrap_or(e);
                     done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
                     return Ok(turn_status(&e));
                 }
