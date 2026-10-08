@@ -55,9 +55,10 @@ ruff check && ruff format --check
 shellcheck release.sh adapters/build.sh
 ```
 
-Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py
-target/release`. CI also runs `cargo deny check`, the minimum Rust version
-(`rust-version` in Cargo.toml) and actionlint and zizmor on the workflows.
+Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
+target/release` (`--brnr`: brnr, built there, is checked with them). CI also
+runs `cargo deny check`, the minimum Rust version (`rust-version` in
+Cargo.toml) and actionlint and zizmor on the workflows.
 
 ## Writing code here
 
