@@ -72,6 +72,7 @@ of to-resolve; the map at the end says where each went.
 | [43](0043-acp-schema-types.md) | ACP types from the official schema crate | yes |
 | [44](0044-brnr-never-phones-home.md) | brnr never phones home (P15; proposed) | — |
 | [45](0045-bug-reports.md) | Bug reports: `doctor --report`, and a link on a panic | yes |
+| [46](0046-a-skill-for-agents-that-use-brnr.md) | A skill for agents that use brnr (proposed) | yes |
 
 ## Where the former entries went
 
