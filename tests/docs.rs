@@ -17,7 +17,6 @@
 mod common;
 
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -27,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use common::{AGENT, Env, kill, wait_for};
+use common::{AGENT, Env, kill, script, wait_for};
 
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
@@ -534,9 +533,7 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
     fs::write(dir.join("task.md"), "reply readme\n").unwrap();
     fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
     fs::write(dir.join("screenshot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-    let curl = dir.join("bin/curl");
-    fs::write(&curl, "#!/bin/sh\necho curl \"$@\"\n").unwrap();
-    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    script(&dir.join("bin/curl"), "#!/bin/sh\necho curl \"$@\"\n");
 
     let s = "sess-1";
     match before {

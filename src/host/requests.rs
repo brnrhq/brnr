@@ -296,8 +296,8 @@ impl Host {
     }
 
     /// The commit (ADR 7): brnr start hears of the session before the agent
-    /// gets any work, and if it has gone, nobody knows this session exists.
-    /// Then the prompt goes.
+    /// gets any work, and if the report can't be written to it, nobody knows
+    /// this session exists. Then the prompt goes.
     fn finish_start(&mut self, i: usize) {
         if self.stop_requested {
             return; // The start already failed (timed out), or was stopped.

@@ -86,6 +86,10 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// them; one that stopped reading doesn't hold it up for longer.
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
+/// How long the host, exiting, waits for its logger to have written what
+/// it recorded before it lets go of its sessions (`wait_logged`).
+const LOG_FLUSH: Duration = Duration::from_secs(2);
+
 /// How long the host, exiting, then gives started bridges to exit on their
 /// own, their stdin closed, so they can act on the last events.
 const BRIDGE_EXIT: Duration = Duration::from_secs(2);
@@ -237,7 +241,7 @@ struct Parts {
     agent: Vec<String>,
     proxy_pid: Option<u32>,
     started: SystemTime,
-    /// What the start channel is subscribed to from the start.
+    /// What the start channel is subscribed to once the start commits.
     events: Vec<String>,
     bridges: Vec<Bridge>,
 }
@@ -695,7 +699,7 @@ impl Host {
             self.display = Some(Display::start(self.sink.clone(), self.json_events));
         }
 
-        // The first peer: brnr start hears of whatever happens from here.
+        // brnr start hears how the start ends from here.
         if let Some(channel) = start_channel {
             self.open_start_channel(channel, events, &tx)
                 .map_err(|err| (format!("start channel: {err}"), 1))?;
@@ -741,7 +745,7 @@ impl Host {
     /// are there), and the agent killed with its process group (P14).
     /// brnr start or the editor is told by `main`, on fd 3, as of any start
     /// that fails before the event loop (see `Failure`), so nothing else is
-    /// to write there: the start channel stops being a peer, and what is
+    /// to write there: the start channel is let go of, and what is
     /// queued for the editor (`READY`) goes first. Returns the error and
     /// the exit code.
     fn died_starting(mut self, reason: &str) -> (String, u8) {
@@ -863,6 +867,7 @@ impl Host {
             self.drop_all(i, "exit");
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
+        self.wait_logged();
         // Let go of the sessions as brnr stops listing the process (ADR 3).
         self.claimed.clear();
         for s in &mut self.sessions {
@@ -938,12 +943,26 @@ impl Host {
         }
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
+        self.wait_logged();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
         self.close_display();
         self.release_stderr();
         std::mem::replace(&mut self.log, Logger::disabled()).finish();
+    }
+
+    /// Exiting, before brnr stops listing the process and its sessions are
+    /// let go of: waits up to LOG_FLUSH for its transcript to have what was
+    /// recorded, `exited` last, so that `log`, `list --all` and `--resume`
+    /// of a session that isn't running read it whole (ADR 48). A stalled
+    /// disk holds the sessions no longer.
+    fn wait_logged(&self) {
+        let (tx, rx) = mpsc::channel();
+        self.sink.when_written(move || {
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(LOG_FLUSH);
     }
 
     /// Exiting: the last events (`exited`) reach the peers, within

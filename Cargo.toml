@@ -26,6 +26,9 @@ toml = "1.1.6"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# --cfg sanitized: built under a sanitizer (.github/workflows/sanitizers.yml),
+# whose bigger stack frames src/json.rs makes room for.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(sanitized)"] }
 
 [lints.clippy]
 # Every unsafe block says why it is sound (// SAFETY: …).
