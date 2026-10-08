@@ -1,8 +1,6 @@
 # 2. The editor's process: `brnr acp` relays, the host owns the agent
 
-Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented,
-except the README still giving the old rationale for dropping `fs` and
-`terminal`.
+Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
 
 ## Context
 
