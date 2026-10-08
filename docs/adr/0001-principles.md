@@ -2,6 +2,8 @@
 
 Accepted 2026-10-07.
 
+Amended by 44: adds P15, brnr never phones home.
+
 The rules the other decisions are measured against. They were drawn out of
 the former decision log when every entry was reviewed (October 2026), and
 sharpened where earlier decisions pulled against them. Decisions cite them as

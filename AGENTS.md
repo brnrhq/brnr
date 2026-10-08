@@ -13,8 +13,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 
 ## Decisions come first
 
-- [ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14) every
-  decision is measured against; [docs/adr](docs/adr/README.md) has the
+- [ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14, and
+  P15 in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)) every decision
+  is measured against; [docs/adr](docs/adr/README.md) has the
   decisions. Read the ADRs a change touches before changing it. Modules say
   which ADR they implement in their first doc line.
 - A change in what brnr does follows an ADR or adds one (the format is in

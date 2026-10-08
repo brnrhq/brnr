@@ -35,6 +35,9 @@ editor ──stdio── brnr acp ──socketpairs── brnr process ──pip
 macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).
 
+brnr never phones home: it makes no network requests of its own and sends
+no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)).
+
 ## Install
 
 ```sh
