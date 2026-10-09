@@ -12,3 +12,10 @@ shows from the n-th last one on. `--last 0` shows nothing (with
 
 - Counting turns (`turn_ended`): it leaves out a turn still running, the one
   most likely wanted.
+
+## Tests
+
+Run `cargo test --release adr_0024_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0024_last_counts_user_messages_including_an_unfinished_turn`.

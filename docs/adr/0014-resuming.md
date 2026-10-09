@@ -28,3 +28,12 @@ ADR 3 says.
 - Refusing an id brnr has no transcript of: `brnr sessions` listed sessions
   that `--resume` then refused.
 - Prefixes of ids: gone with ADR 13.
+
+## Tests
+
+Run `cargo test --release adr_0014_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0014_resume_a_session_only_the_agent_knows`.
+  - `adr_0014_resume_continues_a_session`.
+  - `adr_0014_resume_by_loading_keeps_the_replay_out_of_the_transcript`.

@@ -449,7 +449,7 @@ mod tests {
 
     /// What `--events` can choose is shown in text too (ADR 23 in docs/adr).
     #[test]
-    fn every_event_has_a_line() {
+    fn adr_0023_every_event_has_a_line() {
         for name in crate::host::EVENTS {
             let e = serde_json::json!({ "event": name });
             assert!(event(&e, &Options { session: false, time: false }).is_some(), "{name}");
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn lines_of_the_quiet_and_new_events() {
+    fn adr_0023_lines_of_the_quiet_and_new_events() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let progress = json!({ "event": "tool_progress", "title": "Run", "status": "in_progress" });

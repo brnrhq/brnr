@@ -65,3 +65,16 @@ conversation, and nothing said it was missing (P3).
   would be a guess (P4).
 - Recording the raw replay only, without events: `log` reads events, so the
   history still wouldn't be in it.
+
+## Tests
+
+Run `cargo test --release adr_0057_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0057_a_first_load_records_the_replayed_history`.
+  - `adr_0057_a_load_without_the_transcript_records_the_history`.
+  - `adr_0057_a_load_of_an_empty_history_says_so`.
+
+That a session brnr has a transcript of keeps the replay out of it however
+often it loads, with a `history` event each time, is ADR 14's
+`adr_0014_resume_by_loading_keeps_the_replay_out_of_the_transcript`.

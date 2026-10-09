@@ -50,3 +50,14 @@ closed, though it was still running and reading: a bridge that ran
   listens would have to keep its stdout open.
 - Started bridges getting no events on stdin until they subscribe: a change
   to the protocol, and they would miss the process's start.
+
+## Tests
+
+Run `cargo test --release adr_0035_`. Named claims and their assertions:
+
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0035_bad_request_line_is_answered`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0035_a_bridge_that_closes_its_stdout_gets_events`.

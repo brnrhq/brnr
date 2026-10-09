@@ -36,3 +36,11 @@ without anyone having to stop it.
   `start` died before sending it; ADR 7 removes that gap.
 - Keeping, silently, a session that ran out while the process has others,
   when the agent can't close sessions (as was): lost without a word (P3).
+
+## Tests
+
+Run `cargo test --release adr_0012_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0012_fork_is_refused_when_it_could_never_close`.
+  - `adr_0012_stop_when_idle`.

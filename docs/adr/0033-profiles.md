@@ -56,3 +56,10 @@ features = ["shared_sessions"]      # process management (ADR 42)
 - Keeping the profile flat and marking the headless-only keys in the README
   and `doctor`: an editor's profile would still carry settings it silently
   ignores.
+
+## Tests
+
+Run `cargo test --release adr_0033_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0033_profile_layout_errors_say_where`.

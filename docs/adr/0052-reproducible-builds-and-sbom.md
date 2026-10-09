@@ -50,3 +50,7 @@ Issue #37 asks for those checks. A failed check must fail the workflow
   main run. Publication must depend on the check itself.
 - Running the smoke test from the release checkout: it can accidentally
   test a local binary, bypassing what the user downloads and installs.
+
+## Tests
+
+Test exemption: These claims are exercised by workflow jobs rather than Rust tests: reproducible.yml independently rebuilds and compares SHA-256 hashes on Linux and macOS; release.yml generates the SBOM and runs the fresh Homebrew smoke job. The runtime suite cannot prove a public installation or a release attachment.
