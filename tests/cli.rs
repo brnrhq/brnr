@@ -2400,7 +2400,8 @@ fn adr_0063_config_get_lists_options_choices_and_modes() {
 
 /// `config get --mode`, `--model`, `--thought-level` and `--option <o>`
 /// narrow the list to those options, found as `config set` finds them,
-/// in the list's order; one the agent doesn't have fails (P7).
+/// in the list's order. It lists only the options the agent advertised, so
+/// one the agent doesn't have fails (P7).
 #[test]
 fn adr_0063_config_get_narrows_by_category_and_id() {
     let env = Env::new("c-narrow").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2442,8 +2443,10 @@ fn adr_0063_config_get_narrows_by_category_and_id() {
 /// category and `--option` by id, resolved as a start's settings are
 /// (ADR 58): each sent once, the mode first, then the model, the thought
 /// level and the rest; two values for one setting fail before anything is
-/// sent, as does one the agent has no option for (P7); one the agent
-/// refuses says what was set before it (P3).
+/// sent, as does a mode, model or thought level the agent has no option
+/// for (P7); an option by id the agent hasn't advertised is sent (ADR 28),
+/// and when the agent refuses it the error says what was set before it
+/// (P3).
 #[test]
 fn adr_0063_config_set_by_category_and_by_id() {
     let env = Env::new("c-set").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2511,7 +2514,8 @@ fn adr_0063_config_set_by_category_and_by_id() {
     assert_eq!(sent().len(), 5, "a setting that failed reached the agent");
     assert!(env.fails(&["config", "set", "sess-1"]).starts_with("usage:\n  brnr config set"));
 
-    // The agent refuses one: those before it are set, and said.
+    // An option the agent hasn't advertised is sent, after the mode, and
+    // the agent refuses it: the mode before it is set, and said.
     let err = env.fails(&["config", "set", "sess-1", "--mode", "default", "--option", "bogus=1"]);
     assert!(
         err.contains("setting bogus=1 failed: bad option bogus=1 (already set: mode default)"),

@@ -227,12 +227,13 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     description, and the v1 modes as a row with no option, the same in text
     and JSON.
   - `adr_0063_config_get_narrows_by_category_and_id`: `--mode`, `--model`,
-    `--thought-level` and `--option` narrow the list, in its order; one the
-    agent doesn't have fails.
+    `--thought-level` and `--option` narrow the list, in its order; it
+    lists only options the agent advertised, so one it doesn't have fails.
   - `adr_0063_config_set_by_category_and_by_id`: each setting is sent once,
-    the mode first; two values for one setting, or a setting the agent has
-    no option for, fail before anything is sent; a refused one says what was
-    set before it.
+    the mode first; two values for one setting, or a mode, model or thought
+    level the agent has no option for, fail before anything is sent; an
+    option by id the agent hasn't advertised is sent (ADR 28), and when the
+    agent refuses it the error says what was set before it.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and
