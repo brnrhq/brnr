@@ -93,3 +93,25 @@ Former decisions: 1 → 22; 2 → 23; 3 → 17; 4 → replaced by 7; 5 → 21;
 
 Review items: 1 → 6; 2 → 26; 3 → 9 and 6; 4 → 35 and 36; 5 → 20;
 6 → 4 and 28; 7 → 7; 8 → 3; 9 → 10; 10 → 25; "to investigate" → 11.
+
+## Tests that name their claims
+
+Runtime regression tests use `adr_NNNN_<claim>` names. Each record's Tests
+section links the assertions; `cargo test --release adr_0007_` runs one
+record's claims. A test can establish a specific claim without proving every
+sentence in a decision, especially real-editor rendering, external releases,
+and operational guarantees. The names state the scope of the evidence.
+
+CI first runs the suite, then `.github/scripts/adr-tests.py` lists the tests
+registered by Cargo (including unit and integration tests). It prints every
+ADR, its claim tests, and decisions without Rust tests. An implemented record
+without a registered test or an explicit `Test exemption:` explanation fails
+CI, as does an ignored claim test or a test naming a nonexistent ADR. Exemptions state the external
+check or the remaining gap; they are not counted as test coverage. ADR 1's
+principles and ADR 44's proposal are reported too, without pretending that a
+passing finite suite proves universal design principles.
+
+When changing a claim, update its test and its record's Tests section. Add a
+new record's tests using its number; don't satisfy the inventory with a test
+that merely searches source code or repeats the ADR text. Adding tests to an
+exempted record requires replacing its exemption with test links.

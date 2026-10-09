@@ -154,3 +154,14 @@ reason, and every `toml` block loads as a config. `brnr skill` and
 - Delegating approvals by default for "safe" kinds (`read`): what is safe
   is the user's call, and the agent's mode already says what it asks
   about (P2).
+
+## Tests
+
+Run `cargo test --release adr_0046_`. Named claims and their assertions:
+
+- [tests/docs.rs](../../tests/docs.rs)
+  - `adr_0046_every_example_is_run_or_skipped_and_runs`.
+  - `adr_0046_every_toml_block_loads`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0046_skill_prints_the_skill_and_its_references`.
+  - `adr_0046_skill_install_writes_it_for_claude_code_and_codex`.

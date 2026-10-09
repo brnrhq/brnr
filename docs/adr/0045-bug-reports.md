@@ -73,3 +73,13 @@ happens. brnr listens on no network (P13) and never phones home (P15, ADR
 - The command line in the link: arguments carry prompts and paths.
 - Writing the link into the host log too: the log is the record, and the
   panic is in it.
+
+## Tests
+
+Run `cargo test --release adr_0045_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0045_a_panic_prints_a_link_to_report_it`.
+- [tests/doctor.rs](../../tests/doctor.rs)
+  - `adr_0045_the_report_is_what_to_paste`.
+  - `adr_0045_the_report_shows_a_death_without_a_record`.

@@ -39,6 +39,7 @@ with environment variables:
   STDERR=<text>     write text on stderr as it starts
   EXIT=<code>       exit with code as it starts (after STDERR), reading
                     nothing
+  MODE_GATE=<file>  wait for this file before answering session/set_mode
   QUIET_MODE=1      session/set_mode sends no current_mode_update: ACP answers
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
@@ -535,6 +536,8 @@ for line in sys.stdin.buffer:
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
         result(mid, {"sessions": [old, known]})
     elif method == "session/set_mode":
+        while env("MODE_GATE") and not os.path.exists(env("MODE_GATE")):
+            time.sleep(0.01)
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})
             if not env("QUIET_MODE"):
