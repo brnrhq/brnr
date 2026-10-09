@@ -127,14 +127,18 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   command succeeds only if the agent deleted the session or doesn't have it
   (ACP's `resource_not_found`, -32002), which is said; any other error, or
   no answer, is said and fails the command, the transcript deleted all the
-  same: the agent may still have the session (P3, P7). A file that can't be
-  deleted, or have `session_deleted` recorded in it, is said and fails the
-  command, the others done all the same (P3); what was and wasn't deleted is
-  said as it is, not as "no transcript" or "deleted all the same". A
-  symlinked project folder isn't looked in, and a transcript made private
-  first (ADR 59) is said on stderr: the command has no host log for
-  `made-private`. A deletion isn't activity: LAST ACTIVE stays when a
-  process last served the session.
+  same: the agent may still have the session (P3, P7). Only an agent that
+  answers `resource_not_found` doesn't have it: the Codex adapter (codex-acp
+  2.1.1) answers an unknown session as deleted, so `--purge` succeeds, but
+  the Claude adapter (claude-agent-acp 0.85.1, whose SDK throws a plain
+  error) answers -32603, so `--purge` of a session it already deleted fails.
+  A file that can't be deleted, or have `session_deleted` recorded in it, is
+  said and fails the command, the others done all the same (P3); what was
+  and wasn't deleted is said as it is, not as "no transcript" or "deleted
+  all the same". A symlinked project folder isn't looked in, and a
+  transcript made private first (ADR 59) is said on stderr: the command has
+  no host log for `made-private`. A deletion isn't activity: LAST ACTIVE
+  stays when a process last served the session.
   `session_deleted` is recorded in the session's transcript: by the command,
   as a record of no process's (`host_id` null), since no process has the
   session open; by the editor's process, which closes the session if it had

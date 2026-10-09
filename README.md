@@ -392,14 +392,19 @@ are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
 error, or no answer, is said and exits non-zero: the agent may still have
-the session. A file that can't be deleted, or have `session_deleted`
-recorded in it, is said (`not deleted: …`,
-`session_deleted isn't recorded: …`) and exits non-zero, the others done all
-the same; a transcript made private first is said too on stderr
-(`made-private: <path> (its mode was …)`): there is no host log for it. An
-editor's `session/delete` through `brnr acp` goes to the agent as it is;
-once the agent has deleted the session, the editor's process records
-`session_deleted` too, and closes the session if it had it open.
+the session. Only `resource_not_found` counts as not having it:
+`brnr-codex-adapter` (codex-acp) answers a session it doesn't have as
+deleted, so `--purge` succeeds, but `brnr-claude-adapter` (claude-agent-acp)
+answers with another error (`-32603`, internal error), so `--purge` of a
+session it has already deleted exits non-zero, brnr's transcript deleted all
+the same. A file that can't be deleted, or have `session_deleted` recorded
+in it, is said (`not deleted: …`, `session_deleted isn't recorded: …`) and
+exits non-zero, the others done all the same; a transcript made private
+first is said too on stderr (`made-private: <path> (its mode was …)`): there
+is no host log for it. An editor's `session/delete` through `brnr acp` goes
+to the agent as it is; once the agent has deleted the session, the editor's
+process records `session_deleted` too, and closes the session if it had it
+open.
 
 `brnr process stop` signals the agent's whole process group, so whatever the
 agent started in that group goes with it. The same cleanup runs when the agent

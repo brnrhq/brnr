@@ -202,7 +202,7 @@ transcript. Tool, plan and usage data come from the agent.
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground` | Follows the agent's exit status; startup failure is nonzero. |
-| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
+| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which `brnr-claude-adapter` doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
