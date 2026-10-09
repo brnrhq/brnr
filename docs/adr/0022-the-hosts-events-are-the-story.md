@@ -67,6 +67,11 @@ repeating whole lists of config options or commands.
 
 ## Consequences
 
+- A process holds a session's two files only while it serves the session:
+  closing it closes them once its last record, `session_closed`, is
+  written, and a session opened again appends to them, after another
+  `session-opened`. A process that forks and closes session after session
+  keeps as many files open as it has sessions.
 - Turning the raw file off saves most of the space, and leaves secrets
   (ADR 25) nothing to be redacted from but the host log.
 - The raw file keeps replay possible: the agent's `session/update`s to the
@@ -106,3 +111,6 @@ Run `cargo test --release adr_0022_`. Named claims and their assertions:
   - `adr_0022_log_follows_until_the_host_exits`.
   - `adr_0022_log_follows_the_raw_acp_too`.
   - `adr_0022_session_changed_says_what_changed`.
+  - `adr_0022_closing_sessions_closes_their_files`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0022_a_closed_session_has_its_records_and_then_no_file`.

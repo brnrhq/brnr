@@ -700,6 +700,100 @@ fn adr_0028_mode_as_a_config_option() {
     assert!(env.calls_of("session/set_mode").is_empty());
 }
 
+/// The start's flags win over its profile's settings, one setting at a time,
+/// and an option of category `model` or `mode` is the model or the mode
+/// whatever its id: the profile's value for it is never applied, and status
+/// has the flag's (ADR 58).
+#[test]
+fn adr_0058_start_flags_win_over_the_profile() {
+    let status = |env: &Env| -> Value {
+        serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap()
+    };
+    // The config options the agent was asked to set, as `<id>=<value>`.
+    let sets = |env: &Env| -> Vec<String> {
+        let calls = env.calls_of("session/set_config_option");
+        let set = |c: &Value| {
+            let p = &c["params"];
+            format!("{}={}", p["configId"].as_str().unwrap(), p["value"].as_str().unwrap())
+        };
+        calls.iter().map(set).collect()
+    };
+    let set = |id: &str, value: &str| format!("{id}={value}");
+
+    // As the issue had it: the option's id is `model`.
+    let env = Env::new("c-flagwins");
+    env.write_config("[profiles.default.headless]\nconfig = { model = \"small\" }\n");
+    env.start(&["--model", "large", "--json"]);
+    assert_eq!(sets(&env), [set("model", "large")]);
+    assert_eq!(status(&env)["model"], "large");
+
+    // And whatever the id; the profile's other options still apply.
+    let env = Env::new("c-flagwins-id").agent("MODEL_ID", "llm").agent("MODE_OPTION", "approvals");
+    env.write_config("[profiles.default.headless]\nconfig = { llm = \"large\" }\n");
+    env.start(&["--model", "small"]);
+    assert_eq!(sets(&env), [set("llm", "small")]);
+    assert_eq!(status(&env)["model"], "small");
+
+    // The mode likewise, from --set by the mode option's id over the
+    // profile's `mode`, and from --mode over the profile's option.
+    let env = Env::new("c-flagwins-mode").agent("MODE_OPTION", "approvals");
+    env.write_config("[profiles.default.headless]\nmode = \"plan\"\n");
+    env.start(&["--set", "approvals=default"]);
+    assert_eq!(sets(&env), [set("approvals", "default")]);
+    assert_eq!(status(&env)["mode"], "default");
+    let env = Env::new("c-flagwins-mode2").agent("MODE_OPTION", "approvals");
+    env.write_config("[profiles.default.headless]\nconfig = { approvals = \"default\" }\n");
+    env.start(&["--mode", "plan"]);
+    assert_eq!(sets(&env), [set("approvals", "plan")]);
+    assert_eq!(status(&env)["mode"], "plan");
+
+    // Without flags, the profile's settings are the start's.
+    let env = Env::new("c-profile-only").agent("MODEL_ID", "llm");
+    env.write_config(
+        "[profiles.default.headless]\nmode = \"plan\"\nconfig = { llm = \"large\" }\n",
+    );
+    env.start(&[]);
+    assert_eq!(sets(&env), [set("llm", "large")]);
+    assert_eq!((&status(&env)["mode"], &status(&env)["model"]), (&"plan".into(), &"large".into()));
+}
+
+/// Two values for one setting from the same source fail the start before
+/// anything is set, naming both; the same value twice is one (ADR 58).
+#[test]
+fn adr_0058_start_settings_that_disagree_fail() {
+    let fails = |env: &Env, args: &[&str]| {
+        let mut args = args.to_vec();
+        args.extend(["--prompt", "hi"]);
+        let err = env.fails(&start_args(&args));
+        assert!(env.calls_of("session/set_config_option").is_empty(), "{err}");
+        assert!(env.calls_of("session/set_mode").is_empty() && env.prompts().is_empty(), "{err}");
+        err
+    };
+    let env = Env::new("c-conflict").agent("MODEL_ID", "llm").agent("MODE_OPTION", "approvals");
+    let err = fails(&env, &["--model", "large", "--set", "llm=small"]);
+    assert!(err.contains("--model large and --set llm=small both set the model"), "{err}");
+    let err = fails(&env, &["--mode", "plan", "--set", "approvals=default"]);
+    assert!(err.contains("--mode plan and --set approvals=default both set the mode"), "{err}");
+    let err = fails(&env, &["--set", "llm=small", "--set", "llm=large"]);
+    assert!(err.contains("--set llm=small and --set llm=large disagree"), "{err}");
+
+    let env = Env::new("c-conflict-profile").agent("MODE_OPTION", "approvals");
+    env.write_config(
+        "[profiles.default.headless]\nmode = \"plan\"\nconfig = { approvals = \"default\" }\n",
+    );
+    let err = fails(&env, &[]);
+    assert!(
+        err.contains("the profile's mode plan and its config approvals=default both set the mode"),
+        "{err}"
+    );
+    // A flag settles it.
+    env.start(&["--mode", "default"]);
+
+    let env = Env::new("c-agree").agent("MODEL_ID", "llm");
+    env.start(&["--model", "large", "--set", "llm=large"]);
+    assert_eq!(env.calls_of("session/set_config_option").len(), 1);
+}
+
 #[test]
 fn adr_0028_start_applies_mode_and_model_before_the_prompt() {
     let env = Env::new("c-startmode");
@@ -849,6 +943,62 @@ fn adr_0016_fork_and_close() {
         wait_for(Duration::from_secs(15), || !alive(host)),
         "the process kept running with no session"
     );
+}
+
+/// The transcript files `pid` has open (None without /proc or lsof).
+fn transcripts_open(pid: i32) -> Option<usize> {
+    let is_log = |name: &str| name.ends_with(".jsonl");
+    if let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) {
+        let names = fds.flatten().filter_map(|fd| fs::read_link(fd.path()).ok());
+        return Some(names.filter(|p| is_log(&p.to_string_lossy())).count());
+    }
+    let lsof =
+        std::process::Command::new("lsof").args(["-n", "-Fn", "-p", &pid.to_string()]).output();
+    let out = lsof.ok().filter(|o| o.status.success())?;
+    Some(stdout(&out).lines().filter(|l| l.starts_with('n') && is_log(l)).count())
+}
+
+/// A process that serves session after session holds files only for those
+/// it has open: closing one writes its last records and closes its files,
+/// and one resumed later appends to them (ADR 22).
+#[test]
+fn adr_0022_closing_sessions_closes_their_files() {
+    let env = Env::new("c-closefds");
+    env.start(&[]);
+    let host = env.host_pid();
+    // The logger opens sess-1's files on its own thread, after the start has
+    // returned: `log` answers once it has caught up (ADR 48).
+    env.ok(&["log", "sess-1"]);
+    let Some(before) = transcripts_open(host) else {
+        eprintln!("skipped: neither /proc nor lsof");
+        return env.stop();
+    };
+    // The host log and sess-1's two files.
+    assert_eq!(before, 3);
+    for n in 2..17 {
+        let fork = format!("sess-{n}");
+        env.ok(&["fork", "sess-1"]);
+        let out = env.run(&["send", &fork, "--wait", "reply", "hi", &n.to_string()]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        env.ok(&["close", &fork]);
+    }
+    // What the close wrote is written before the files close.
+    let closed = |n: u32| {
+        let last = events(&env, &format!("sess-{n}")).pop();
+        last.is_some_and(|e| e["event"] == "session_closed")
+    };
+    assert!(wait_for(Duration::from_secs(5), || (2..17).all(closed)), "a close wasn't written");
+    let open = || transcripts_open(host) == Some(before);
+    assert!(wait_for(Duration::from_secs(5), open), "{:?} open", transcripts_open(host));
+    assert!(env.ok(&["log", "sess-9"]).contains("agent: hi 9"));
+
+    // Resumed in a process of its own, it carries on in the same files.
+    let out = env.run(&["start", "--resume", "sess-9", "--wait", "--prompt", "reply again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let log = env.ok(&["log", "sess-9"]);
+    let (first, again) = (log.find("agent: hi 9").unwrap(), log.find("agent: again").unwrap());
+    assert!(first < again && log.contains("session closed (close)"), "{log}");
+    assert_eq!(transcripts_open(host), Some(before));
 }
 
 /// Closing a session drops what it holds and cancels its turn, then says it
