@@ -1,6 +1,7 @@
 //! Requests the host sends the agent as its client:
 //!
-//! - opening the session of a headless start: `initialize`, `authenticate`
+//! - opening the session of a headless start: `initialize` (whose answer
+//!   must choose ACP version 1, ADR 54), `authenticate`
 //!   if the start names a login method (ADR 30), then `session/new`,
 //!   `session/resume` or `session/load` (a resumed session's lock taken
 //!   first, ADR 3), then the mode and config options the start asked for;
@@ -79,7 +80,7 @@ impl Host {
     /// itself.
     pub(super) fn begin_headless_start(&mut self) {
         let params = json!({
-            "protocolVersion": 1,
+            "protocolVersion": schema::PROTOCOL_VERSION,
             "clientCapabilities": {},
             "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
         });
@@ -140,6 +141,11 @@ impl Host {
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         match request {
             HostRequest::Initialize => {
+                // An answer in a version brnr doesn't speak isn't read any
+                // further, and nothing more is sent (ADR 54).
+                if let Err(err) = schema::check_protocol_version(&result) {
+                    return self.fail_start(&err);
+                }
                 self.initialized(&result);
                 if let Err(err) = self.check_mcp_servers() {
                     return self.fail_start(&err);

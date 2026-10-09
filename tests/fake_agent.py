@@ -40,6 +40,8 @@ with environment variables:
                     (a line that isn't JSON is then skipped)
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
+  PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
+                    the missing key with `missing`
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
@@ -434,6 +436,10 @@ for line in sys.stdin.buffer:
             "authMethods": methods,
             "agentInfo": info,
         }
+        if env("PROTOCOL_VERSION") == "missing":
+            del answer["protocolVersion"]
+        elif env("PROTOCOL_VERSION"):
+            answer["protocolVersion"] = json.loads(env("PROTOCOL_VERSION"))
         if not env("NO_STEERING"):
             answer["_meta"] = {"steering": {"supported": True}}
         result(mid, answer)
