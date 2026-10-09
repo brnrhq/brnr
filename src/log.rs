@@ -4,7 +4,7 @@
 //! ACP; `log = false` is no logger at all. Records are written by a
 //! background thread so logging can never slow down or break forwarding;
 //! [`Sink::when_written`] says when what was recorded is written, for
-//! `brnr log` (ADR 48).
+//! `brnr event log` (ADR 48).
 //!
 //! Every record starts with the fields that join files together:
 //! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,

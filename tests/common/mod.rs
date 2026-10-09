@@ -100,14 +100,14 @@ impl Env {
         hosts[0]["host_pid"].as_i64().unwrap() as i32
     }
 
-    /// The one running process's pid, as `brnr ps` and `--pid` have it.
+    /// The one running process's pid, as `brnr process list` and `--pid` have it.
     pub fn pid(&self) -> String {
         self.host_pid().to_string()
     }
 
-    /// `brnr stop` for the one running process, which must succeed.
+    /// `brnr process stop` for the one running process, which must succeed.
     pub fn stop(&self) {
-        self.ok(&["stop", &self.pid()]);
+        self.ok(&["process", "stop", &self.pid()]);
     }
 
     pub fn prompts(&self) -> Vec<String> {

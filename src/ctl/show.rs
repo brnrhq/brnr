@@ -1,6 +1,6 @@
-//! `brnr show <session> <request> [--json]`: one waiting approval in full,
-//! so it can be judged before it is answered: the tool, its kind and paths,
-//! the command or input, and the diff of an edit.
+//! `brnr permission show <session> <request> [--json]`: one waiting approval in
+//! full, so it can be judged before it is answered: the tool, its kind and
+//! paths, the command or input, and the diff of an edit.
 
 use std::process::ExitCode;
 

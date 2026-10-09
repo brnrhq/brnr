@@ -1,15 +1,16 @@
 //! The control commands: start headless sessions and talk to running ones
-//! over their processes' control sockets. `brnr --help` lists them; the
+//! over their processes' control sockets. Most are `brnr <group> <verb>`,
+//! grouped by what they act on (ADR 63). `brnr --help` lists them; the
 //! modules have the details:
 //!
-//! - talk.rs: `start`, `send`, `wait`, `cancel`, `queue`
-//! - history.rs: `log`
-//! - settings.rs: `mode`, `config`, `model`, `commands`, `sessions`, `fork`,
-//!   `close`
-//! - show.rs: `show`; notify.rs: `notify`; doctor.rs: `doctor`; skill.rs:
-//!   `skill`
-//! - here: `ps`, `stop`, `list`, `status`, `pending`, `approve`, `deny`,
-//!   `watch`
+//! - talk.rs: `start`, `prompt send`, `prompt cancel`, `event wait`, `queue`
+//! - history.rs: `event log`
+//! - settings.rs: `mode`, `config`, `model`, `prompt commands`, `sessions`,
+//!   `session fork`, `session close`
+//! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
+//!   `doctor`; skill.rs: `skill`
+//! - here: `process list`, `process stop`, `list`, `session status`,
+//!   `permission requests`, `approve`, `deny`, `event watch`
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
@@ -18,7 +19,7 @@
 //! whether that process answers or not.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
-//! for `log`, `watch` and `start --foreground`).
+//! for `event log`, `event watch` and `start --foreground`).
 
 use std::collections::HashMap;
 use std::env;
@@ -57,6 +58,10 @@ mod show;
 mod skill;
 mod talk;
 
+/// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
+/// its commands act on.
+const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "event"];
+
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
              what an editor runs as its ACP agent
@@ -68,42 +73,45 @@ const USAGE: &str = "usage:
              [-- <agent> [args...]]
              a headless session, in the background (or the foreground)
 
-processes
-  brnr ps [--json]
-  brnr stop <pid>
+process
+  brnr process list [--json]
+  brnr process stop <pid>
 
-chat
-  brnr send <session> [--steer | --interrupt | --context [--replace]]
-            [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
-            (<text>... | -)
-  brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
-  brnr cancel <session> [--keep-held] [--json]
-  brnr queue <session> [--drop <message>] [--clear] [--clear-context] [--json]
+session
+  brnr session status <session> [--json]
+  brnr session fork <session> [--json]
+  brnr session close <session>
+  brnr list [--inactive | --all] [--json]
+  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
 
-approvals
-  brnr pending [<session>] [--json]
-  brnr show <session> <request> [--json]
+prompt
+  brnr prompt send <session> [--steer | --interrupt | --context [--replace]]
+                   [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
+                   (<text>... | -)
+  brnr prompt cancel <session> [--keep-held] [--json]
+  brnr prompt commands <session> [--json]
+
+queue
+  brnr queue list <session> [--clear] [--clear-context] [--json]
+  brnr queue drop <session> <message> [--json]
+
+permission
+  brnr permission requests [<session>] [--json]
+  brnr permission show <session> <request> [--json]
   brnr approve <session> <request> [--option <id>] [--json]
   brnr deny <session> <request> [--option <id>] [--json]
 
-sessions
-  brnr list [--inactive | --all] [--json]
-  brnr status <session> [--json]
-  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
-  brnr fork <session> [--json]
-  brnr close <session>
-
-events
-  brnr log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
-  brnr watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
-  brnr notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
-              -- <command> [args...]
+event
+  brnr event log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
+  brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
+  brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
+                    -- <command> [args...]
+  brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
 
 settings
   brnr mode <session> [<mode>] [--json]
   brnr model <session> [<model>] [--json]
   brnr config <session> [<option>=<value>...] [--json]
-  brnr commands <session> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -111,11 +119,12 @@ brnr
              the skill for agents that use brnr: print it, or install it
   brnr --version
 
-<session> is a session's id, as brnr list shows it. <request> is a pending approval's handle,
-as brnr pending shows it. <pid> is a brnr process, which runs one agent for one or more
-sessions, as brnr ps shows them.
---json prints the same data as the text: one JSON value, or one event per line for log, watch
-and start --foreground. --strict is stable ACP only: no --steer into a running turn, no fork.";
+brnr <group> --help lists a group's commands. <session> is a session's id, as brnr list shows
+it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid> is a
+brnr process, which runs one agent for one or more sessions, as brnr process list shows them.
+--json prints the same data as the text: one JSON value, or one event per line for event log,
+event watch and start --foreground. --strict is stable ACP only: no --steer into a running
+turn, no session fork.";
 
 /// How long a start may take until it commits, in seconds, unless
 /// `BRNR_START_TIMEOUT` says otherwise. It goes in the start request: the
@@ -124,50 +133,64 @@ and start --foreground. --strict is stable ACP only: no --steer into a running t
 const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
-/// The control commands: everything but `acp` and `host`.
+/// The control commands: everything but `acp` and `host`. A group's
+/// commands are `brnr <group> <verb>`; the others, one word.
 pub fn main(args: Vec<String>) -> ExitCode {
-    let rest = args.get(1..).unwrap_or_default();
+    let cmd = args.first().map_or("", String::as_str);
+    let grouped = GROUPS.contains(&cmd);
+    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
+    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
-    let result = match args.first().map(String::as_str) {
-        Some("start") => talk::start(rest),
-        Some("send") => talk::send(rest),
-        Some("wait") => talk::wait(rest),
-        Some("cancel") => talk::cancel(rest),
-        Some("queue") => talk::queue(rest),
-        Some("log") => history::log(rest),
-        Some("mode") => settings::mode(rest),
-        Some("model") => settings::model(rest),
-        Some("config") => settings::config(rest),
-        Some("commands") => settings::commands(rest),
-        Some("sessions") => settings::sessions(rest),
-        Some("fork") => settings::fork(rest),
-        Some("close") => settings::close(rest),
-        Some("show") => show::show(rest),
-        Some("notify") => notify::notify(rest),
-        Some("ps") => done(ps(rest)),
-        Some("stop") => done(stop(rest)),
-        Some("list") => done(list(rest)),
-        Some("status") => done(status(rest)),
-        Some("pending") => done(pending(rest)),
-        Some("approve") => done(answer(rest, "approve")),
-        Some("deny") => done(answer(rest, "deny")),
-        Some("watch") => done(watch(rest)),
-        Some("doctor") => done(doctor::main(rest)),
-        Some("skill") => done(skill::skill(rest)),
-        Some("-h" | "--help") => {
+    let result = match (cmd, verb) {
+        ("process", Some("list")) => done(ps(rest)),
+        ("process", Some("stop")) => done(stop(rest)),
+        ("session", Some("status")) => done(status(rest)),
+        ("session", Some("fork")) => settings::fork(rest),
+        ("session", Some("close")) => settings::close(rest),
+        ("prompt", Some("send")) => talk::send(rest),
+        ("prompt", Some("cancel")) => talk::cancel(rest),
+        ("prompt", Some("commands")) => settings::commands(rest),
+        ("queue", Some("list")) => talk::queue_list(rest),
+        ("queue", Some("drop")) => talk::queue_drop(rest),
+        ("permission", Some("requests")) => done(pending(rest)),
+        ("permission", Some("show")) => show::show(rest),
+        ("event", Some("log")) => history::log(rest),
+        ("event", Some("watch")) => done(watch(rest)),
+        ("event", Some("notify")) => notify::notify(rest),
+        ("event", Some("wait")) => talk::wait(rest),
+        (group, Some("-h" | "--help")) if grouped => {
+            outln!("{}", usage_of(group, None));
+            Ok(ExitCode::SUCCESS)
+        }
+        (group, Some(verb)) if grouped => {
+            Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
+        }
+        (_, None) if grouped => Err(USAGE.to_owned()),
+        ("start", _) => talk::start(rest),
+        ("mode", _) => settings::mode(rest),
+        ("model", _) => settings::model(rest),
+        ("config", _) => settings::config(rest),
+        ("sessions", _) => settings::sessions(rest),
+        ("list", _) => done(list(rest)),
+        ("approve", _) => done(answer(rest, "approve")),
+        ("deny", _) => done(answer(rest, "deny")),
+        ("doctor", _) => done(doctor::main(rest)),
+        ("skill", _) => done(skill::skill(rest)),
+        ("-h" | "--help", _) => {
             outln!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
-        Some("-V" | "--version") => {
+        ("-V" | "--version", _) => {
             outln!("brnr {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err(USAGE.to_owned()),
+        ("", _) => Err(USAGE.to_owned()),
+        (cmd, _) => Err(format!("unknown command: {cmd} (brnr --help for every command)")),
     };
     match result {
         Ok(code) => code,
         Err(msg) if msg == USAGE => {
-            eprintln!("{}", usage_of(args.first().map_or("", String::as_str)));
+            eprintln!("{}", usage_of(cmd, verb));
             ExitCode::FAILURE
         }
         Err(msg) => {
@@ -175,6 +198,15 @@ pub fn main(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The command `args` are, for a bug report: a group's with its verb.
+pub fn command(args: &[String]) -> String {
+    let n = match args.first() {
+        Some(group) if GROUPS.contains(&group.as_str()) => 2,
+        _ => 1,
+    };
+    args.iter().take(n).cloned().collect::<Vec<_>>().join(" ")
 }
 
 /// What [`outln!`] and [`out!`] print with.
@@ -187,21 +219,30 @@ fn out(text: &str) {
     }
 }
 
-/// The usage of one command (its lines in [`USAGE`]), or all of it for a
-/// command there is none of.
-fn usage_of(cmd: &str) -> String {
-    let mut lines = Vec::new();
-    let mut ours = false;
-    for line in USAGE.lines() {
-        let rest = line.trim_start();
-        if rest.starts_with("brnr ") {
-            ours = rest.split_whitespace().nth(1) == Some(cmd);
-        } else if !line.starts_with("    ") {
-            ours = false;
+/// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
+/// group `cmd`'s `verb`, or of every command in the group without one (or
+/// with one it doesn't have). All of it for a command there is none of.
+fn usage_of(cmd: &str, verb: Option<&str>) -> String {
+    let in_group = |verb: Option<&str>| {
+        let mut lines = Vec::new();
+        let mut ours = false;
+        for line in USAGE.lines() {
+            let rest = line.trim_start();
+            if rest.starts_with("brnr ") {
+                let mut words = rest.split_whitespace().skip(1);
+                ours = words.next() == Some(cmd) && (verb.is_none() || words.next() == verb);
+            } else if !line.starts_with("    ") {
+                ours = false;
+            }
+            if ours {
+                lines.push(line);
+            }
         }
-        if ours {
-            lines.push(line);
-        }
+        lines
+    };
+    let mut lines = in_group(verb);
+    if lines.is_empty() && verb.is_some() {
+        lines = in_group(None);
     }
     if lines.is_empty() {
         return USAGE.to_owned();
@@ -281,7 +322,10 @@ fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String
 
 /// The process with pid `pid`.
 fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
-    hosts.iter().find(|h| h.id() == pid).ok_or(format!("no brnr process {pid} (see brnr ps)"))
+    hosts
+        .iter()
+        .find(|h| h.id() == pid)
+        .ok_or(format!("no brnr process {pid} (see brnr process list)"))
 }
 
 /// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
@@ -679,11 +723,13 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
     if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
-        out.push_str(&format!("{n} approval(s) waiting: brnr pending {arg}\n"));
+        out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
     }
     let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
     if held + context > 0 {
-        out.push_str(&format!("held: {held} message(s), {context} context (brnr queue {arg})\n"));
+        out.push_str(&format!(
+            "held: {held} message(s), {context} context (brnr queue list {arg})\n"
+        ));
     }
     if let Some(usage) = render::usage(&x["usage"]) {
         out.push_str(&format!("context window: {usage}\n"));
@@ -821,7 +867,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 // ---- events --------------------------------------------------------------
 
 /// Prints a session's events (`<session>`), or a process's (`--pid`), until
-/// the process exits (or the session closes), as `brnr log` shows them. A
+/// the process exits (or the session closes), as `brnr event log` shows them. A
 /// session's are its own plus the process's (the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
     let (mut session, mut pid) = (None, None);

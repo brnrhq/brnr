@@ -91,7 +91,7 @@ fn recovered(env: &Env, unrecorded: bool) {
     };
     assert!(report.contains(want), "{report}");
     assert!(env.hosts().is_empty(), "runtime metadata survived: {:?}", env.hosts());
-    let listed: Value = serde_json::from_str(&env.ok(&["ps", "--json"])).unwrap();
+    let listed: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3).
@@ -145,7 +145,7 @@ fn adr_0011_seeded_agent_crash_records_death_and_releases_session() {
         env.start(&[]);
         let (host, agent) = processes(&env);
         let descendant = Process::new(env.child_pid());
-        let _ = env.run(&["send", "sess-1", "fault"]);
+        let _ = env.run(&["prompt", "send", "sess-1", "fault"]);
         let fault = marker(&env);
         assert_eq!(fault["seed"], seed.parse::<u64>().unwrap());
         host.gone();
@@ -162,9 +162,9 @@ fn adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session() {
         let env = fixture(&format!("chaos-host-{seed}"), "flood", seed);
         env.start(&[]);
         let (host, agent) = processes(&env);
-        env.ok(&["send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "fault"]);
         marker(&env);
-        env.ok(&["log", "sess-1"]); // Flush the session identity before SIGKILL.
+        env.ok(&["event", "log", "sess-1"]); // Flush the session identity before SIGKILL.
         host.signal(libc::SIGKILL);
         host.gone();
         agent.gone(); // The severed output pipe, without test-assisted cleanup.
@@ -232,7 +232,7 @@ fn adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         assert!(wait_for(WAIT, || fs::read_to_string(&path)
             .is_ok_and(|s| s.trim().parse::<i32>().is_ok())));
         let bridge = Process::new(fs::read_to_string(path).unwrap().trim().parse().unwrap());
-        env.ok(&["send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "fault"]);
         marker(&env);
         bridge.signal(libc::SIGKILL);
         bridge.gone();

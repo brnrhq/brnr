@@ -20,6 +20,22 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** commands are grouped by what they act on,
+  `brnr <group> <verb>`, and the old names fail as unknown commands, with no
+  aliases: `ps` and `stop` are `process list` and `process stop`; `status`,
+  `fork` and `close` are `session status`, `session fork` and
+  `session close`; `send`, `cancel` and `commands` are `prompt send`,
+  `prompt cancel` and `prompt commands`; `queue <s>` is `queue list <s>`
+  (with `--clear` and `--clear-context`), and `queue --drop <m>` is
+  `queue drop <s> <m>`; `pending` and `show` are `permission requests` and
+  `permission show`; `log`, `watch`, `notify` and `wait` are `event log`,
+  `event watch`, `event notify` and `event wait`. Flags are unchanged. A
+  profile's bridge that runs `brnr notify` runs `brnr event notify` instead.
+  `brnr --help` has a section per group, and `brnr <group> --help` lists a
+  group's commands (ADR 63).
+
 ## [0.7.0] - 2026-10-09
 
 ### Added

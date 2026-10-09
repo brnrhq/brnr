@@ -162,7 +162,7 @@ impl Host {
 
     // ---- closing --------------------------------------------------------
 
-    /// brnr is closing `session` under the editor: `brnr close`, or
+    /// brnr is closing `session` under the editor: `brnr session close`, or
     /// `--take-over` by process `taken_by`. The editor is told in the
     /// session, and from now on its requests for it are answered here (see
     /// `closed_error`).
@@ -176,7 +176,7 @@ impl Host {
                 format!("Session taken over by brnr (process {pid})"),
                 format!(
                     "brnr start --resume --take-over closed it here; it continues in brnr \
-                     process {pid} (brnr watch {session})."
+                     process {pid} (brnr event watch {session})."
                 ),
             ),
             None => (
@@ -213,7 +213,7 @@ impl Host {
         };
         match lock::holder(session) {
             Some(pid) if pid != std::process::id() => error.push_str(&format!(
-                "; it continues in brnr process {pid} (`brnr watch {session}`)"
+                "; it continues in brnr process {pid} (`brnr event watch {session}`)"
             )),
             Some(_) => {} // Still closing here.
             None => error.push_str("; load it again to continue it here"),

@@ -69,7 +69,7 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     assert_eq!(mode(&run.join("sessions")), 0o700);
     assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
     // The transcripts are the logger thread's to write (ADR 48).
-    env.ok(&["log", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
     assert!(home.len() >= 7, "{home:?}");
     for path in home {
@@ -93,7 +93,12 @@ fn a_runtime_dir_others_can_use_is_refused() {
         private_dir_error(&stderr(&env.run(&start_args(&[]))));
         assert!(fs::read_dir(&run).unwrap().next().is_none(), "{open:o}: wrote into it");
         assert!(env.calls().is_empty(), "{open:o}: an agent was started");
-        for args in [&["list"][..], &["ps"], &["pending"], &["send", "sess-1", "hi"]] {
+        for args in [
+            &["list"][..],
+            &["process", "list"],
+            &["permission", "requests"],
+            &["prompt", "send", "sess-1", "hi"],
+        ] {
             private_dir_error(&env.fails(args));
         }
         assert_eq!(mode(&run), open);
@@ -110,7 +115,12 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
     fs::create_dir(&target).unwrap();
     chmod(&target, 0o700);
     symlink(&target, env.dir.join("run")).unwrap();
-    for args in [&["list"][..], &["ps"], &["pending"], &["approve", "sess-1", "p1"]] {
+    for args in [
+        &["list"][..],
+        &["process", "list"],
+        &["permission", "requests"],
+        &["approve", "sess-1", "p1"],
+    ] {
         private_dir_error(&env.fails(args));
     }
     assert!(fs::read_dir(&target).unwrap().next().is_none());
@@ -186,13 +196,15 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
 fn no_approval_goes_through_a_dir_others_can_use() {
     let env = Env::new("s-approve");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
     let run = env.dir.join("run");
     chmod(&run, 0o770);
     private_dir_error(&env.fails(&["approve", "sess-1", "p1"]));
     chmod(&run, 0o700);
-    assert!(env.ok(&["pending"]).contains("p1"));
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
     assert!(outcome(&env, "perm-1").is_none());
     env.ok(&["deny", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
@@ -298,7 +310,7 @@ fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() 
         chmod(&events, 0o644);
         chmod(&raw, 0o644);
         env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
-        env.ok(&["log", "old-1"]); // Once the transcript is written (ADR 48).
+        env.ok(&["event", "log", "old-1"]); // Once the transcript is written (ADR 48).
         assert!(fs::read_to_string(&events).unwrap().contains("private-token"), "{name}");
         for path in tree(&home) {
             let want = if path.is_dir() { 0o700 } else { 0o600 };
@@ -362,7 +374,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     // `-` and `_` is escaped, byte by byte.
     let file = "%2e%2e%2f%2e%2e%2f%2e%2e%2f%1b%5b2%4a%2fescape";
     // The transcript is the logger thread's to write (ADR 48).
-    env.ok(&["log", id]);
+    env.ok(&["event", "log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
     assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
@@ -371,7 +383,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     assert!(escaped.is_empty(), "{escaped:?}");
     let list = env.ok(&["list"]);
     assert!(!list.contains('\x1b') && list.contains("escape"), "{list:?}");
-    env.ok(&["send", id, "hi"]);
+    env.ok(&["prompt", "send", id, "hi"]);
     env.stop();
 }
 
@@ -391,11 +403,13 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 fn adr_0027_an_unanswered_request_waits() {
     let env = Env::new("s-waits");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm execute"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
     sleep(Duration::from_secs(3));
     assert!(outcome(&env, "perm-1").is_none(), "answered for the user");
-    assert!(env.ok(&["pending"]).contains("p1"));
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
     env.ok(&["approve", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
@@ -408,10 +422,10 @@ fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
     env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm execute"]);
+    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
     assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
-    assert!(env.ok(&["log", "sess-1"]).contains("by timeout"));
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("by timeout"));
     env.stop();
 }
 
@@ -420,9 +434,11 @@ fn adr_0027_a_timeout_never_allows() {
 fn adr_0027_a_request_is_answered_only_in_its_session() {
     let env = Env::new("s-othersession");
     env.start(&[]);
-    env.ok(&["fork", "sess-1"]);
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
     let err = env.fails(&["approve", "sess-2", "p1"]);
     assert!(err.contains("no pending request p1 in session sess-2"), "{err}");
     assert!(outcome(&env, "perm-1").is_none());
@@ -452,10 +468,14 @@ env = { GITHUB_TOKEN = "resume-secret" }
         env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
         let sent = &env.calls_of(method)[0]["params"]["mcpServers"][0]["env"][0];
         assert_eq!(sent["value"], "resume-secret", "{name}");
-        for args in [&["status", "old-1", "--json"][..], &["ps", "--json"], &["list", "--json"]] {
+        for args in [
+            &["session", "status", "old-1", "--json"][..],
+            &["process", "list", "--json"],
+            &["list", "--json"],
+        ] {
             assert!(!env.ok(args).contains("resume-secret"), "{name}: {args:?}");
         }
-        let acp = env.ok(&["log", "old-1", "--events", "all", "--json"]);
+        let acp = env.ok(&["event", "log", "old-1", "--events", "all", "--json"]);
         assert!(!acp.contains("resume-secret"), "{name}: {acp}");
         env.stop();
         assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));

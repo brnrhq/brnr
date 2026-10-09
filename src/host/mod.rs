@@ -1,6 +1,6 @@
 //! `brnr host`: owns the agent process and its pipes for the agent's whole
-//! life. brnr calls it a process (`brnr ps`, `--pid`); it isn't a command
-//! of its own in the usage, and isn't run by hand.
+//! life. brnr calls it a process (`brnr process list`, `--pid`); it isn't a
+//! command of its own in the usage, and isn't run by hand.
 //!
 //! Started detached by `brnr acp` for an editor, or by `brnr start` for a
 //! headless session (detached, or with `--foreground` as its child), with
@@ -113,8 +113,8 @@ const STDERR_LINE: usize = 2000;
 /// (ADR 62).
 const PIECE: usize = 64 << 10;
 
-/// `brnr stop`: stdin is closed once what is queued for it is written, then
-/// the agent's process group gets SIGTERM, then SIGKILL.
+/// `brnr process stop`: stdin is closed once what is queued for it is written,
+/// then the agent's process group gets SIGTERM, then SIGKILL.
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
@@ -459,7 +459,7 @@ struct Host {
     stdout_open: bool,
     stderr_open: bool,
     drain_until: Option<Instant>,
-    /// A stop was asked for (brnr stop, a signal, a failed start).
+    /// A stop was asked for (brnr process stop, a signal, a failed start).
     stop_requested: bool,
     /// The next escalation of a stop.
     stopping: Option<(Instant, StopStage)>,

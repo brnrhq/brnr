@@ -38,6 +38,6 @@ body:
     attributes:
       label: Session log
       description: >-
-        If it's about a session: `brnr log <session> --last 2 --events all`.
+        If it's about a session: `brnr event log <session> --last 2 --events all`.
         Transcripts can hold your prompts and code: trim them to what shows the bug.
       render: text

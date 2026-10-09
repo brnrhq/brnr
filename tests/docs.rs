@@ -8,7 +8,8 @@
 //!   the test, as does an entry no document has any more;
 //! - every `toml` block loads as a config, every key in its part, as
 //!   `brnr doctor` checks one;
-//! - every command and option `brnr --help` lists is in the README.
+//! - every command (a group's with its verb) and option `brnr --help`
+//!   lists is in the README.
 //!
 //! What the examples name that a test can't have (a real adapter, a model
 //! the fake agent doesn't offer) is in [`STAND_INS`], with what stands in for
@@ -87,51 +88,51 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr acp --profile work", Nothing, Succeeds),
     // Talk to it from outside
     ("brnr list", Idle, Says("sess-1")),
-    ("brnr status $s", Idle, Says("Fake session")),
-    (r#"brnr send $s "also update the changelog""#, Turn, Says("held")),
-    (r#"brnr send $s --steer "and the tests too""#, Turn, Says("steered")),
-    (r#"brnr send $s --interrupt "stop, wrong branch""#, Turn, Says("interrupting")),
-    (r#"brnr send $s --context "the API key is in .env.local""#, Idle, Succeeds),
-    (r#"brnr send $s --wait "what did you change?""#, Idle, Succeeds),
+    ("brnr session status $s", Idle, Says("Fake session")),
+    (r#"brnr prompt send $s "also update the changelog""#, Turn, Says("held")),
+    (r#"brnr prompt send $s --steer "and the tests too""#, Turn, Says("steered")),
+    (r#"brnr prompt send $s --interrupt "stop, wrong branch""#, Turn, Says("interrupting")),
+    (r#"brnr prompt send $s --context "the API key is in .env.local""#, Idle, Succeeds),
+    (r#"brnr prompt send $s --wait "what did you change?""#, Idle, Succeeds),
     (
-        r#"brnr send $s --file src/api.rs --image screenshot.png "why does this look wrong?""#,
+        r#"brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?""#,
         Idle,
         Says("delivered"),
     ),
-    ("brnr cancel $s", Turn, Succeeds),
-    ("brnr queue $s", Turn, Succeeds),
-    ("brnr watch $s", Idle, Follows("agent: readme")),
-    ("brnr log $s", Idle, Says("agent: hi")),
+    ("brnr prompt cancel $s", Turn, Succeeds),
+    ("brnr queue list $s", Turn, Succeeds),
+    ("brnr event watch $s", Idle, Follows("agent: readme")),
+    ("brnr event log $s", Idle, Says("agent: hi")),
     // Waiting, for scripts
-    ("brnr wait $s", Idle, Succeeds),
-    ("brnr wait $s --for permission", Approval, Succeeds),
-    ("brnr wait $s --for turn", Slow, Succeeds),
+    ("brnr event wait $s", Idle, Succeeds),
+    ("brnr event wait $s --for permission", Approval, Succeeds),
+    ("brnr event wait $s --for turn", Slow, Succeeds),
     (
         r#"brnr start --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md"#,
         Nothing,
         Succeeds,
     ),
     // Approvals
-    ("brnr pending", Approval, Says("p1")),
-    ("brnr show $s p1", Approval, Says("Edit src/lib.rs")),
+    ("brnr permission requests", Approval, Says("p1")),
+    ("brnr permission show $s p1", Approval, Says("Edit src/lib.rs")),
     ("brnr approve $s p1", Approval, Succeeds),
     // Settings: each runs without its optional argument and with it.
     ("brnr mode $s [plan]", Idle, Succeeds),
     ("brnr model $s [<model>]", Idle, Succeeds),
     ("brnr config $s [effort=high]", Idle, Succeeds),
-    ("brnr commands $s", Idle, Says("compact")),
+    ("brnr prompt commands $s", Idle, Says("compact")),
     // Sessions and processes
-    ("brnr fork $s", Idle, Says("forked")),
-    ("brnr close $s", Idle, Says("closed")),
+    ("brnr session fork $s", Idle, Says("forked")),
+    ("brnr session close $s", Idle, Says("closed")),
     ("brnr sessions -- brnr-claude-adapter", Nothing, Says("old-1")),
     ("brnr start --resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
     ("brnr start --resume $s --take-over", Idle, Says("started sess-1")),
-    ("brnr ps", Idle, Says("headless")),
-    ("brnr stop 4466", Idle, Succeeds),
+    ("brnr process list", Idle, Says("headless")),
+    ("brnr process stop 4466", Idle, Succeeds),
     // Notifications: curl is a stand-in, first on PATH, that prints its
     // arguments.
     (
-        r#"brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'"#,
+        r#"brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'"#,
         Idle,
         Follows("-d turn ended: end_turn (control) ntfy.sh/my-agents"),
     ),
@@ -160,29 +161,37 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Nothing,
         Says(r#""session": "sess-1""#),
     ),
-    (r#"brnr send $s --json "now add tests for it""#, Idle, Says(r#""status": "delivered""#)),
-    ("brnr wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
     (
-        r#"brnr send $s --wait --timeout 600 --json "what did you change?""#,
+        r#"brnr prompt send $s --json "now add tests for it""#,
+        Idle,
+        Says(r#""status": "delivered""#),
+    ),
+    ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
+    (
+        r#"brnr prompt send $s --wait --timeout 600 --json "what did you change?""#,
         Idle,
         Says(r#""stop_reason": "end_turn""#),
     ),
-    ("brnr log $s --last 1 --json", Idle, Says(r#""event":"turn_ended""#)),
-    ("brnr status $s --json", Idle, Says(r#""state": "idle""#)),
+    ("brnr event log $s --last 1 --json", Idle, Says(r#""event":"turn_ended""#)),
+    ("brnr session status $s --json", Idle, Says(r#""state": "idle""#)),
     ("brnr list --json", Idle, Says(r#""session": "sess-1""#)),
-    ("brnr pending --json", Approval, Says(r#""request": "p1""#)),
-    ("brnr show $s p1 --json", Approval, Says(r#""oldText""#)),
+    ("brnr permission requests --json", Approval, Says(r#""request": "p1""#)),
+    ("brnr permission show $s p1 --json", Approval, Says(r#""oldText""#)),
     // Its references: orchestrate
     (
         "brnr start --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md",
         Nothing,
         Says(r#""message": "m1""#),
     ),
-    (r#"brnr send $s --json "also update the changelog""#, Turn, Says(r#""status": "held""#)),
-    ("brnr wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
-    ("brnr wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
     (
-        r#"brnr send $s --wait --timeout 900 --json "what did you change, and why?""#,
+        r#"brnr prompt send $s --json "also update the changelog""#,
+        Turn,
+        Says(r#""status": "held""#),
+    ),
+    ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr event wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
+    (
+        r#"brnr prompt send $s --wait --timeout 900 --json "what did you change, and why?""#,
         Idle,
         Says(r#""dropped": null"#),
     ),
@@ -202,31 +211,39 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""session": "sess-1""#),
     ),
     (
-        r#"brnr send $s --steer --json "use the existing helper in src/util.rs""#,
+        r#"brnr prompt send $s --steer --json "use the existing helper in src/util.rs""#,
         Turn,
         Says(r#""status": "steered""#),
     ),
     (
-        r#"brnr send $s --interrupt --json "stop: wrong branch, switch to main first""#,
+        r#"brnr prompt send $s --interrupt --json "stop: wrong branch, switch to main first""#,
         Turn,
         Says(r#""status": "interrupting""#),
     ),
-    (r#"brnr send $s --context --json "the API key is in .env.local""#, Idle, Succeeds),
-    ("brnr queue $s --json", Turn, Says(r#""held": []"#)),
-    ("brnr cancel $s --json", Turn, Says(r#""status": "cancelling""#)),
-    ("brnr ps --json", Idle, Says(r#""owner": "headless""#)),
+    (r#"brnr prompt send $s --context --json "the API key is in .env.local""#, Idle, Succeeds),
+    ("brnr queue list $s --json", Turn, Says(r#""held": []"#)),
+    ("brnr prompt cancel $s --json", Turn, Says(r#""status": "cancelling""#)),
+    ("brnr process list --json", Idle, Says(r#""owner": "headless""#)),
     // approvals
-    ("brnr wait $s --for permission --timeout 600 --json", Approval, Says(r#""request": "p1""#)),
+    (
+        "brnr event wait $s --for permission --timeout 600 --json",
+        Approval,
+        Says(r#""request": "p1""#),
+    ),
     ("brnr approve $s p1 --json", Approval, Says(r#""optionId": "allow""#)),
     ("brnr deny $s p1 --json", Approval, Says(r#""optionId": "reject""#)),
     ("brnr approve $s p1 --option <option> --json", Approval, Says(r#""optionId": "allow""#)),
     // observe
-    ("brnr log $s --json", Idle, Says(r#""event":"agent_message""#)),
-    ("brnr watch $s --json", Idle, Follows(r#""event":"agent_message""#)),
-    ("brnr watch --pid 4466 --json", Idle, Follows(r#""event":"agent_message""#)),
-    ("brnr log $s --events default,agent_thought --json", Idle, Says(r#""event":"turn_ended""#)),
+    ("brnr event log $s --json", Idle, Says(r#""event":"agent_message""#)),
+    ("brnr event watch $s --json", Idle, Follows(r#""event":"agent_message""#)),
+    ("brnr event watch --pid 4466 --json", Idle, Follows(r#""event":"agent_message""#)),
     (
-        "brnr watch $s --events turn_ended,permission_request --json",
+        "brnr event log $s --events default,agent_thought --json",
+        Idle,
+        Says(r#""event":"turn_ended""#),
+    ),
+    (
+        "brnr event watch $s --events turn_ended,permission_request --json",
         Idle,
         Follows(r#""event":"turn_ended""#),
     ),
@@ -357,11 +374,15 @@ fn adr_0046_every_toml_block_loads() {
 fn the_readme_has_every_command_and_option() {
     let help = Env::new("help").ok(&["--help"]);
     let readme = read(REFERENCE);
-    let commands = help
-        .lines()
-        .filter_map(|l| l.strip_prefix("  brnr ")?.split_whitespace().next())
-        .filter(|c| !c.starts_with('-'))
-        .map(|c| format!("brnr {c}"));
+    // A group's commands are its name and verb: `brnr process list`.
+    let commands = help.lines().filter_map(|l| {
+        let mut words = l.strip_prefix("  brnr ")?.split_whitespace();
+        let cmd = words.next().filter(|c| !c.starts_with('-'))?;
+        Some(match words.next().filter(|v| v.starts_with(|c: char| c.is_ascii_lowercase())) {
+            Some(verb) => format!("brnr {cmd} {verb}"),
+            None => format!("brnr {cmd}"),
+        })
+    });
     let options = help
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter(|w| w.starts_with("--") && w.len() > 2)
@@ -558,11 +579,11 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         Slow => drop(env.start(&["--prompt", "slow 1"])),
         Approval => {
             env.start(&["--prompt", "perm edit"]);
-            env.ok(&["wait", s, "--for", "permission", "--timeout", "10"]);
+            env.ok(&["event", "wait", s, "--for", "permission", "--timeout", "10"]);
         }
     }
     if let Ended = before {
-        env.ok(&["close", s]);
+        env.ok(&["session", "close", s]);
     }
 
     let (mut args, mut stdin, mut stdout) = (Vec::new(), None, "stdout".to_owned());
@@ -607,11 +628,11 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         Succeeds | Says(_) => Ok(()),
         Follows(what) => {
             let ok = wait_for(Duration::from_secs(10), || {
-                env.run(&["send", s, "reply readme"]);
+                env.run(&["prompt", "send", s, "reply readme"]);
                 sleep(Duration::from_millis(200));
                 printed().contains(what) || stderr().contains(what)
             });
-            env.run(&["close", s]);
+            env.run(&["session", "close", s]);
             if ok { Ok(()) } else { never(what) }
         }
         RunsUntilInterrupted(what) => {

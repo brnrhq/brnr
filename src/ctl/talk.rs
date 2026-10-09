@@ -1,5 +1,5 @@
-//! Starting sessions and talking to them: `start`, `send`, `wait`,
-//! `cancel` and `queue`.
+//! Starting sessions and talking to them: `start`, `prompt send`, `event
+//! wait`, `prompt cancel`, and `queue list` and `drop`.
 //!
 //! `start --wait` and `send --wait` print the agent's reply and exit with the
 //! turn's result; `wait` waits for a session to be idle (or for the next
@@ -71,7 +71,7 @@ impl Conn {
         Ok(Conn { reader: BufReader::new(stream), writer, events: VecDeque::new(), next_req: 0 })
     }
 
-    /// Its connection, to look at without reading (`brnr notify`).
+    /// Its connection, to look at without reading (`brnr event notify`).
     pub(super) fn socket(&self) -> io::Result<UnixStream> {
         self.writer.try_clone()
     }
@@ -189,7 +189,7 @@ pub(super) fn wait_for_message(
             "permission_request" if ours => {
                 let request = e["request"].as_str().unwrap_or("?");
                 errln!(
-                    "brnr: waiting for approval {request}: {} (brnr show {arg} {request}; brnr approve {arg} {request})",
+                    "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr approve {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
                 );
             }
@@ -889,14 +889,14 @@ pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) fn queue(args: &[String]) -> Result<ExitCode, String> {
+/// `queue list`: the held messages and context, after clearing them with
+/// `--clear` and `--clear-context`.
+pub(super) fn queue_list(args: &[String]) -> Result<ExitCode, String> {
     let mut arg = None;
     let mut json_out = false;
     let mut req = json!({ "cmd": "queue" });
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
+    for a in args {
         match a.as_str() {
-            "--drop" => req["drop"] = json!(it.next().ok_or("--drop needs a message id")?),
             "--clear" => req["clear"] = json!(true),
             "--clear-context" => req["clear_context"] = json!(true),
             "--json" => json_out = true,
@@ -905,9 +905,30 @@ pub(super) fn queue(args: &[String]) -> Result<ExitCode, String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    let arg = arg.ok_or(USAGE)?;
+    queue(&arg.ok_or(USAGE)?, req, json_out)
+}
+
+/// `queue drop <session> <message>`: one held message dropped, and what is
+/// still held.
+pub(super) fn queue_drop(args: &[String]) -> Result<ExitCode, String> {
+    let mut positional = Vec::new();
+    let mut json_out = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ => positional.push(a),
+        }
+    }
+    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
+    queue(arg, json!({ "cmd": "queue", "drop": message }), json_out)
+}
+
+/// Sends `req`, the socket's `queue`, for session `arg`, and prints what it
+/// dropped and what is held.
+fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, String> {
     let hosts = discover()?;
-    let (host, session) = running_session(&hosts, &arg)?;
+    let (host, session) = running_session(&hosts, arg)?;
     req["session"] = json!(session);
     let response = call(host, &req)?;
     if json_out {

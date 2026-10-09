@@ -401,7 +401,7 @@ fn a_death_without_a_record_is_reported() {
     env.start(&[]);
     let killed = env.hosts().remove(0);
     // Once its log has the session (`log` waits for its logger to write).
-    env.ok(&["log", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
     kill_unrecorded(&killed);
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
@@ -520,7 +520,7 @@ fn adr_0045_the_report_is_what_to_paste() {
     env.start(&[]);
     let running = env.hosts().remove(0)["host_id"].as_str().unwrap().to_owned();
     // Once its log has its start (`log` waits for its logger to write it).
-    env.ok(&["log", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
     // Something not ok.
     write(&hosts.join("open.txt"), "", 0o644);
 

@@ -29,28 +29,28 @@ mode they chose.
 ## By default: show and wait
 
 ```sh
-brnr wait $s --for permission --timeout 600 --json
-brnr pending --json
-brnr show $s p1 --json
+brnr event wait $s --for permission --timeout 600 --json
+brnr permission requests --json
+brnr permission show $s p1 --json
 ```
 
-`wait --for permission` returns when a request is waiting (at once if one
-already is), with it as JSON. `pending` lists every waiting request, or a
-session's (`brnr pending <session> --json`):
+`event wait --for permission` returns when a request is waiting (at once if
+one already is), with it as JSON. `permission requests` lists every waiting
+request, or a session's (`brnr permission requests <session> --json`):
 
 ```json
 [{"session": "0f6c…", "request": "p1", "owner": "headless", "kind": "edit", "title": "Edit src/lib.rs",
   "options": [{"option": "allow", "kind": "allow_once"}, {"option": "reject", "kind": "reject_once"}]}]
 ```
 
-`show` has the request in full: `title`, `kind`, `tool_call` (with
+`permission show` has the request in full: `title`, `kind`, `tool_call` (with
 `locations`, `rawInput`, and for an edit a `diff` content block with
 `oldText` and `newText`), the `options` (`optionId`, `name`, `kind`),
 `timeout_seconds`, and for an editor's session `answerable` and `why_not`.
 Its text form is what to show the user:
 
 ```sh
-brnr show $s p1
+brnr permission show $s p1
 ```
 
 Tell the user which worker asks (its task, and the session id), what it
@@ -58,7 +58,7 @@ wants to do in a sentence, and the details that matter (the command, the
 paths, the diff), and ask. Then wait. While you wait, the worker's turn
 waits too; that is expected.
 
-A `show` that warns of control characters in a command means the command
+A `permission show` that warns of control characters in a command means the command
 may not be what it looks like: say so.
 
 ## When the user answers, or delegated it

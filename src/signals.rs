@@ -1,5 +1,5 @@
 //! Catching signals sent to the proxy so the host can pass them to the agent
-//! (and those that end `brnr notify`, so it stops its command first), and
+//! (and those that end `brnr event notify`, so it stops its command first), and
 //! carrying the caller's signal mask through to the agent; letting a host in
 //! the foreground write to its terminal.
 
@@ -26,7 +26,7 @@ pub fn install() -> PipeReader {
 }
 
 /// Installs handlers for `sigs`, as [`install`] does for the forwarded
-/// ones (`brnr notify` stops what it runs first, on those that end it).
+/// ones (`brnr event notify` stops what it runs first, on those that end it).
 /// One process catches one set.
 pub fn catch(sigs: &[c_int]) -> PipeReader {
     let (rx, tx) = io::pipe().expect("pipe");

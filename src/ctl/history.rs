@@ -1,8 +1,8 @@
-//! `brnr log`: a session's transcript, running or not, as `watch` shows a
-//! session live, from the events the host recorded in it.
+//! `brnr event log`: a session's transcript, running or not, as `event watch`
+//! shows a session live, from the events the host recorded in it.
 //!
 //! ```text
-//! brnr log <session> [--last <n>] [--follow] [--events <a,b,...>] [--json]
+//! brnr event log <session> [--last <n>] [--follow] [--events <a,b,...>] [--json]
 //! ```
 //!
 //! A session running or not, by its id. It starts at the beginning of

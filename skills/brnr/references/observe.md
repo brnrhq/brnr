@@ -1,48 +1,49 @@
 # Observing sessions
 
 Watching a session is always allowed, a session an editor owns included:
-`status`, `log`, `watch` and `notify` change nothing. They all show the same
+`session status`, `event log`, `event watch` and `event notify` change
+nothing. They all show the same
 events, live or read back from the session's transcript.
 
 ## Status, and the story so far
 
 ```sh
-brnr status $s --json
-brnr log $s --json
-brnr log $s --last 1 --json
+brnr session status $s --json
+brnr event log $s --json
+brnr event log $s --last 1 --json
 ```
 
-`status` is one object: `state` (`idle`, `busy`, `waiting` for an approval),
+`session status` is one object: `state` (`idle`, `busy`, `waiting` for an approval),
 `turn_seconds`, `owner` (`headless` or `editor`), `title`, `mode`, `model`,
 `tools` running, `plan`, `pending` approvals, `held` messages, `context`,
 `usage`, `last_message` (cut at 4000 characters), `cwd`, `pid`,
 `stop_when_idle`. Use it to answer "what is it doing?", not to wait (use
-`wait` for that).
+`event wait` for that).
 
-`log` prints the session's events, one JSON object per line, and works on a
+`event log` prints the session's events, one JSON object per line, and works on a
 session that has ended too. `--last <n>` starts at the n-th last message sent
 to the agent; `--follow` keeps printing until the session closes.
 
 ## Live
 
 ```sh
-brnr watch $s --json
-brnr watch --pid 4466 --json
+brnr event watch $s --json
+brnr event watch --pid 4466 --json
 ```
 
-`watch` prints events as they come, until the session closes (or, with
-`--pid`, until the process exits). It runs until then: start it in the
-background, or prefer `wait` when what you want is the end of a turn.
+`event watch` prints events as they come, until the session closes (or,
+with `--pid`, until the process exits). It runs until then: start it in the
+background, or prefer `event wait` when what you want is the end of a turn.
 
 ## Choosing events
 
 `--events` takes event names, `all`, and `default`, comma-separated, for
-`log`, `watch` and `notify` alike. Without it, `log` and `watch` leave out
-the quiet ones: `acp`, `agent_thought`, `usage` and `tool_progress`.
+`event log`, `event watch` and `event notify` alike. Without it, `event log`
+and `event watch` leave out the quiet ones: `acp`, `agent_thought`, `usage` and `tool_progress`.
 
 ```sh
-brnr log $s --events default,agent_thought --json
-brnr watch $s --events turn_ended,permission_request --json
+brnr event log $s --events default,agent_thought --json
+brnr event watch $s --events turn_ended,permission_request --json
 ```
 
 ## The events
@@ -95,18 +96,19 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 
 ## Notifications
 
-`notify` runs a command for each event: by default `permission_request`,
+`event notify` runs a command for each event: by default `permission_request`,
 `turn_ended` and `exited`. The event is in the command's environment
 (`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION_ID`,
 `BRNR_REQUEST`, `BRNR_PID`) and, as JSON, on its stdin, never on its command
 line. It runs until the session closes.
 
 ```sh
-brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
 ```
 
-`--events` chooses others, as for `watch` (`default` is the three above).
+`--events` chooses others, as for `event watch` (`default` is the three
+above).
 
 Set one up only when the user asks for notifications; for your own waiting,
-`wait` is simpler. Bridges (programs that speak brnr's protocol on the
+`event wait` is simpler. Bridges (programs that speak brnr's protocol on the
 control socket) are in brnr's README.

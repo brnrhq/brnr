@@ -1,5 +1,6 @@
 //! A session's settings and the sessions themselves: `mode`, `config`,
-//! `model`, `commands`, `sessions`, `fork` and `close`.
+//! `model`, `prompt commands`, `sessions`, `session fork` and
+//! `session close`.
 
 use std::env;
 use std::io::{BufRead, BufReader, Write};
@@ -509,11 +510,11 @@ pub(super) fn held<'a>(
     Ok((host, past))
 }
 
-/// `start --resume --take-over`: `owner`, which holds `session`'s lock,
-/// closes it as `brnr close` does, cancelling a running turn, and so lets go
-/// of it (ADR 3) for process `to` to resume. An editor's process does only
-/// if its profile enables the experimental `close`, and tells the editor
-/// where the session went (ADR 4).
+/// `start --resume --take-over`: `owner`, which holds `session`'s lock, closes
+/// it as `brnr session close` does, cancelling a running turn, and so lets go
+/// of it (ADR 3) for process `to` to resume. An editor's process does only if
+/// its profile enables the experimental `close`, and tells the editor where the
+/// session went (ADR 4).
 pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), String> {
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");

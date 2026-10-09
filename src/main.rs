@@ -25,7 +25,7 @@ fn main() -> ExitCode {
         first => {
             let rest: Vec<String> =
                 first.into_iter().chain(args).map(|a| a.to_string_lossy().into_owned()).collect();
-            brnr::bug::install(rest.first().map_or("", String::as_str));
+            brnr::bug::install(&ctl::command(&rest));
             ctl::main(rest)
         }
     }

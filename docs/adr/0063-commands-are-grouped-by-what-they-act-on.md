@@ -1,7 +1,11 @@
 # 63. Commands are grouped by what they act on, with ACP's verbs
 
-Proposed 2026-10-09. Not implemented. Supersedes 15. Amends 7, 12, 14, 16,
-18, 19, 21, 27, 28, 33, 35 and 58.
+Proposed 2026-10-09. Partly implemented: the groups, with today's commands
+renamed into them (`queue list` keeps `--clear` and `--clear-context` for
+now). Not yet: `session new`, `resume`, `list` and `delete`, `queue show`
+and `clear`, `permission allow` and `reject`, `config`, `--pid` and
+`--permission-timeout`, nor the names beyond the command line. Supersedes
+15. Amends 7, 12, 14, 16, 18, 19, 21, 27, 28, 33, 35 and 58.
 
 ## Context
 
@@ -209,9 +213,19 @@ The same names reach brnr's other interfaces, so one word means one thing
 
 ## Tests
 
-Not implemented. Each part comes with `adr_0063_` tests naming its claims:
-the old commands fail as unknown; `session new --pid` and its refusals;
-`session list`'s join, SOURCE and `--include`; `session delete` with and
-without `--purge`, and an editor's delete through `brnr acp`; `allow` and
-`reject` by kind, by `--option`, and their failures; the timeout's reject and cancel;
-`config set` by category and by id; `queue clear`'s flags.
+Run `cargo test --release adr_0063_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0063_old_commands_are_unknown`: each command moved into a group
+    fails under its old name as an unknown command, and does nothing.
+  - `adr_0063_help_lists_the_groups_and_their_commands`: `brnr --help` has a
+    section per group; `brnr <group> --help`, and a group without a verb,
+    print the group's commands; an unknown verb is said, with the group's
+    usage; a command used wrongly shows its own.
+
+Not implemented yet, each to come with `adr_0063_` tests naming its claims:
+`session new --pid` and its refusals; `session list`'s join, SOURCE and
+`--include`; `session delete` with and without `--purge`, and an editor's
+delete through `brnr acp`; `allow` and `reject` by kind, by `--option`, and
+their failures; the timeout's reject and cancel; `config set` by category and
+by id; `queue clear`'s flags.

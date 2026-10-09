@@ -33,7 +33,7 @@ says what is in scope for a report; the principles cited are
 | Processes running as the same user | everything the user can do | **inside** the boundary (P13): see below |
 | The editor | its session | inside; it runs `brnr acp`, and its bytes pass unchanged (P1) |
 | The agent (the adapter and what it runs) | the user's machine, as far as its own permission prompts go | inside as a process; its *text* is untrusted (P8) |
-| Bridges and `notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
+| Bridges and `event notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
 | A malicious adapter or npm package | as the agent | inside once run: brnr can't contain it |
 
 Processes running as the same user are inside the boundary, and that is a
@@ -55,8 +55,8 @@ the user from their own processes.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
  the user                              (B1)
                           $BRNR_DIR, 0700 ── <pid>.sock, 0600
-                                    │      └─ brnr send / approve / watch, any
-                                    │         process of the user's
+                                    │      └─ brnr prompt send / approve / event
+                                    │         watch, any process of the user's
  editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
           (B3: bytes unchanged,             │   │              (B4: its text is
            but the named changes)           │   │               untrusted, P8)
@@ -74,7 +74,7 @@ the user from their own processes.
   invisible (P1).
 - **B4**, the agent: its text (session ids, titles, commands, messages) and
   its permission requests reach brnr's files, terminal and approvals.
-- **B5**, bridges and `notify` commands: the edge of the machine.
+- **B5**, bridges and `event notify` commands: the edge of the machine.
 - **B6**, secrets: what brnr records and sends of the MCP servers' values.
 
 ## Claims
@@ -122,13 +122,13 @@ written for this document.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | A session id becomes a file name only escaped: it can't leave the project folder or the locks' directory, and distinct ids never share a transcript or a lock (P8, ADR 53). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files`, `adr_0053_distinct_ids_get_distinct_names`; `headless.rs`: `adr_0053_distinct_ids_never_share_a_transcript`, `adr_0053_distinct_ids_never_share_a_lock` |
-| The agent's text is shown with control characters and bidi overrides escaped, and `show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
-| The agent's text never reaches a command line: `notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
+| The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
+| The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
 | `permission_timeout` only denies: the reject option, else `cancelled`, never an allow. | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `cli.rs`: `adr_0027_unanswered_permission_times_out_as_deny`; `security.rs`: `adr_0027_a_timeout_never_allows` |
 | A request is answered only in its own session, with an option of the kind asked for (`deny` can't pick an allow option). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0027_an_option_of_the_other_kind_is_refused` |
 
-### B5: bridges and `notify` commands
+### B5: bridges and `event notify` commands
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
@@ -145,7 +145,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0025_a_profiles_mcp_secrets_are_redacted`, `adr_0025_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted`, `adr_0002_acp_passes_bytes_unchanged`, `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0025_secrets_are_redacted_keys_and_structure_stay` |
 | `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0045_the_report_is_what_to_paste` |
-| `status`, `ps` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
+| `session status`, `process list` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
 
 ### The adapters and the release
 
@@ -198,8 +198,8 @@ What brnr doesn't enforce, or doesn't test, today.
   permissive umask leaves it readable by mode; the 0700 directory is what
   keeps it private. Not tested.
 - **An editor's session that can't be locked runs unlocked.** The proxy
-  passes it through; `status` reports `lock_error`, and the host log records
-  `lock-failed`. A headless resume is refused while the editor's process
+  passes it through; `session status` reports `lock_error`, and the host log
+  records `lock-failed`. A headless resume is refused while the editor's process
   reports serving it, but a second process could acquire its lock if that
   process doesn't answer and the lock failure was transient (ADR 50).
 - **Redaction is by field, not by value.** brnr redacts the MCP servers'

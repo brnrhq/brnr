@@ -12,7 +12,8 @@
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
-//!   is in its transcript, which a logger thread writes (`brnr log`, ADR 48)
+//!   is in its transcript, which a logger thread writes (`brnr event log`,
+//!   ADR 48)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
 //!   replace?}` (ADR 18 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
@@ -366,7 +367,7 @@ impl Host {
 
     /// Sends `event` to every subscribed peer that wants it, and (but for
     /// `acp`, which is the raw transcript already) records it in the
-    /// transcript, where `brnr log` reads it back. Returns it as sent.
+    /// transcript, where `brnr event log` reads it back. Returns it as sent.
     pub(super) fn emit(&mut self, mut event: Value) -> Value {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);

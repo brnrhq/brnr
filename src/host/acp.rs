@@ -1103,8 +1103,8 @@ impl Host {
             .collect()
     }
 
-    /// Closes session `i`, `by` `close` (`brnr close`, `--take-over`) or
-    /// `idle`: a running turn is cancelled first, its pending approvals
+    /// Closes session `i`, `by` `close` (`brnr session close`, `--take-over`)
+    /// or `idle`: a running turn is cancelled first, its pending approvals
     /// answered `cancelled`, and `session/close` goes once it has ended
     /// (ADR 16). `peer` hears when the agent has closed it (peer 0: nobody).
     pub(super) fn close(&mut self, i: usize, peer: u64, req_id: Option<Value>, by: &'static str) {
@@ -1184,7 +1184,7 @@ impl Host {
         if self.sessions.len() == 1 {
             self.begin_stop();
         } else if self.caps.close {
-            // As `brnr close` would, with nobody to answer (peer 0).
+            // As `brnr session close` would, with nobody to answer (peer 0).
             self.close(i, 0, None, "idle");
         }
     }
@@ -1576,7 +1576,7 @@ fn held_elsewhere(session: &str, pid: u32) -> String {
     } else {
         format!(
             "brnr: session {session} is running in brnr process {pid}; release it first with \
-             `brnr close {session}`"
+             `brnr session close {session}`"
         )
     }
 }

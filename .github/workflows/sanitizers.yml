@@ -25,7 +25,7 @@
 # pid) and the run fails if there is any, printing them.
 #
 # Leaks are looked for (detect_leaks=1) in what exits normally: the tests,
-# the commands they run, and hosts ended by brnr stop. Not in the
+# the commands they run, and hosts ended by brnr process stop. Not in the
 # intermediate child that detaches the host (it leaves by _exit), a child
 # that execs, or a host the tests kill when they are done (SIGKILL). macOS
 # has AddressSanitizer but neither leak detection nor MemorySanitizer.
