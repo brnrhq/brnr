@@ -872,7 +872,7 @@ fn adr_0006_huge_message_reaches_watchers() {
 /// that the reply comes to them twice at once, as its ACP message and as
 /// its event.
 #[test]
-fn a_reply_bigger_than_the_queue_reaches_every_peer() {
+fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
     let env = Env::new("hugeall");
     let got = env.dir.join("bridge-events");
     env.write_config(&format!(

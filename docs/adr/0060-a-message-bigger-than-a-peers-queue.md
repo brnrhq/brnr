@@ -36,7 +36,7 @@ writes 20 MB in the time the host takes between them.
 
 - A reply of up to about 30 MB reaches every kind of peer that keeps up,
   whatever events it asked for: `start --wait`, `send --wait`, `watch`,
-  `notify` and bridges (`a_reply_bigger_than_the_queue_reaches_every_peer`).
+  `notify` and bridges.
 - A peer that stopped reading is cut off as soon as before when the lines
   are short; when they are each longer than 16 MiB, after 64 MiB of them.
 - A burst of more lines that long than fit in 64 MiB (a turn's thought and
@@ -57,3 +57,13 @@ writes 20 MB in the time the host takes between them.
   peer that stopped reading has part of a line in its socket buffer, so a
   note after it couldn't be read as a line; and keeping the connection until
   the note is written holds the peer's queue for as long as it doesn't read.
+
+## Tests
+
+Run `cargo test --release adr_0060_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer`.
+- [src/host/control.rs](../../src/host/control.rs)
+  - `adr_0060_a_message_and_its_acp_line_fit_at_once`.
+  - `adr_0060_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit`.

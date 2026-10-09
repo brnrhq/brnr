@@ -926,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_and_its_acp_line_fit_at_once() {
+    fn adr_0060_a_message_and_its_acp_line_fit_at_once() {
         let (queue, _rx, _) = Queue::new();
         let big = 20_000_000;
         // Its ACP line, the turn's answer, its event, the turn's end.
@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit() {
+    fn adr_0060_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit() {
         let (queue, _rx, _) = Queue::new();
         assert_eq!(taken(&queue, &[1 << 20; 40]), 18, "the limit, the line past it, one more");
 
