@@ -54,6 +54,12 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** brnr never follows a symlink in its state directory. A
+  symlinked `~/.brnr` or `$BRNR_HOME`, project folder or transcript is
+  refused, as are another user's paths and transcripts with other hard
+  links. A refused host log fails the start, and a refused session file is
+  `session-log-failed` in the host log. Set `BRNR_HOME` to the directory a
+  symlink pointed at instead (ADR 59).
 - **Breaking:** profiles have parts. `[profiles.<p>.headless]` has `cwd`,
   `mode`, `config`, `mcp_servers`, `permission_timeout`, `stop_when_idle`
   and `auth`; `[profiles.<p>.editor]` has `experimental` and `features`.
@@ -162,6 +168,13 @@ brnr's own conventions:
   (ADR 1, P13).
 - MCP servers' `env` and `headers` values are redacted in transcripts and
   everywhere brnr shows them (ADR 25).
+- A transcript or host log others can read, write or search, such as one
+  restored from a backup, copied in or chmod'ed, is made private before
+  anything more is written to it, its directories up to the state
+  directory too. A `made-private` record in the host log names each path
+  and the mode it had. Before, brnr only created transcripts private and
+  went on appending to one that others could read (GHSA-3j4p-vjm3-pgv9;
+  ADR 59, ADR 1 P13).
 
 ## [0.6.0] - 2026-10-07
 

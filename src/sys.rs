@@ -2,12 +2,13 @@
 //! safe functions. The others are `unsafe` where they are made, each with why
 //! it is sound there.
 
+use std::ffi::CStr;
 use std::fs::File;
 use std::io;
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, RawFd};
 
-use libc::{c_int, pid_t};
+use libc::{c_int, c_uint, mode_t, pid_t};
 
 /// Sends `sig` to `pid` (a negative pid: its process group; 0: only checks
 /// it could be sent). Whether it was.
@@ -69,4 +70,29 @@ pub fn uname() -> Option<(String, String, String)> {
         String::from_utf8_lossy(&bytes).into_owned()
     };
     Some((field(&name.sysname), field(&name.release), field(&name.machine)))
+}
+
+/// Opens `name` in the directory `dir`, as openat(2) does with `flags` (and
+/// `O_CLOEXEC`), creating it with `mode` if `flags` says to. The mode is an
+/// unsigned int, as a variadic argument is passed (mode_t is narrower on
+/// macOS).
+pub fn openat(dir: BorrowedFd, name: &CStr, flags: c_int, mode: c_uint) -> io::Result<File> {
+    // SAFETY: `dir` is an open descriptor for as long as it is borrowed, and
+    // `name` a NUL-terminated string; openat(2) reads only those, and the
+    // mode.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags | libc::O_CLOEXEC, mode) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat(2) returned a new descriptor that nothing else owns.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Makes the directory `name` in the directory `dir`, as mkdirat(2) does.
+pub fn mkdirat(dir: BorrowedFd, name: &CStr, mode: mode_t) -> io::Result<()> {
+    // SAFETY: as for `openat`: an open descriptor, a NUL-terminated string.
+    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }

@@ -6,6 +6,9 @@ Amended by 44: adds P15, brnr never phones home.
 
 Amended by 53: a session id in a file name is escaped, one name per id (P8).
 
+Amended by 59: transcripts are written only where only the user can read
+them, existing ones included (P13).
+
 The rules the other decisions are measured against. They were drawn out of
 the former decision log when every entry was reviewed (October 2026), and
 sharpened where earlier decisions pulled against them. Decisions cite them as
@@ -139,8 +142,12 @@ behaves the same with every agent (P2).
 
 A runtime directory and sockets only the user can open, transcripts only the
 user can read; brnr refuses a runtime directory others can use, and listens
-on no network. Reach beyond the machine is what a bridge the user configures
-adds.
+on no network. A transcript is written only where the state directory, each
+directory below it and the file are the user's own and private, whether
+brnr created them or found them: what others can reach is made private
+before anything is written, and a symlink, or what isn't the user's, is
+refused (ADR 59). Reach beyond the machine is what a bridge the user
+configures adds.
 
 ## P14. No orphans
 

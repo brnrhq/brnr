@@ -261,6 +261,93 @@ fn the_process_listens_on_no_network() {
     env.stop();
 }
 
+// ---- transcripts (P13, ADR 59) ----------------------------------------
+
+/// Session `old-1`'s project folder, once a process has served it and gone.
+fn served_once(env: &Env) -> PathBuf {
+    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
+    project.path()
+}
+
+/// Each `made-private` event in the host logs: the path, and its mode.
+fn made_private(env: &Env) -> Vec<(PathBuf, String)> {
+    let text = everything_in(&env.dir.join("home/hosts"));
+    let records = text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    let events = records.map(|r| r["event"].clone()).filter(|e| e["event"] == "made-private");
+    events
+        .map(|e| (e["path"].as_str().unwrap().into(), e["mode"].as_str().unwrap().into()))
+        .collect()
+}
+
+/// A transcript others can read (restored from a backup, copied, chmod'ed)
+/// is made private before the process that opens it again writes to it,
+/// beneath private parents or parents anyone can search, and the host log
+/// says what was; what was private already is left as it was.
+#[test]
+fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() {
+    for (name, parents) in [("s-reopen", 0o700), ("s-reopen-open", 0o755)] {
+        let env = Env::new(name);
+        let project = served_once(&env);
+        let home = env.dir.join("home");
+        let (events, raw) = (project.join("old-1.jsonl"), project.join("old-1.acp.jsonl"));
+        let dirs = [home.clone(), home.join("hosts"), home.join("projects"), project.clone()];
+        dirs.iter().for_each(|d| chmod(d, parents));
+        chmod(&events, 0o644);
+        chmod(&raw, 0o644);
+        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
+        env.ok(&["log", "old-1"]); // Once the transcript is written (ADR 48).
+        assert!(fs::read_to_string(&events).unwrap().contains("private-token"), "{name}");
+        for path in tree(&home) {
+            let want = if path.is_dir() { 0o700 } else { 0o600 };
+            assert_eq!(mode(&path), want, "{name}: {}", path.display());
+        }
+        let opened = if parents == 0o755 { &dirs[..] } else { &[] };
+        let mut want: Vec<(PathBuf, String)> =
+            opened.iter().map(|d| (d.clone(), "755".into())).collect();
+        want.extend([(events, "644".into()), (raw, "644".into())]);
+        assert_eq!(made_private(&env), want, "{name}");
+        env.stop();
+    }
+}
+
+/// A transcript that is a symlink is never followed: the session is served
+/// without it, and the host log says why. A state directory that is one is
+/// refused before an agent's session starts.
+#[test]
+fn adr_0059_a_symlinked_transcript_is_never_followed() {
+    let env = Env::new("s-loglink");
+    let project = served_once(&env);
+    let victim = env.dir.join("victim");
+    fs::write(&victim, "keep me\n").unwrap();
+    chmod(&victim, 0o644);
+    let events = project.join("old-1.jsonl");
+    fs::remove_file(&events).unwrap();
+    symlink(&victim, &events).unwrap();
+    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
+    let failed = || everything_in(&env.dir.join("home/hosts")).contains("session-log-failed");
+    assert!(wait_for(Duration::from_secs(5), failed), "no session-log-failed");
+    let hosts = everything_in(&env.dir.join("home/hosts"));
+    let why = format!("{}: is a symlink, so brnr won't write a transcript there", events.display());
+    assert!(hosts.contains(&why), "{hosts}");
+    assert_eq!(
+        (fs::read_to_string(&victim).unwrap().as_str(), mode(&victim)),
+        ("keep me\n", 0o644)
+    );
+    env.stop();
+
+    let env = Env::new("s-homelink");
+    let elsewhere = env.dir.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    symlink(&elsewhere, env.dir.join("home")).unwrap();
+    let err = env.fails(&start_args(&["--prompt", "private-token"]));
+    assert!(err.contains("home: is a symlink, so brnr won't write a transcript there"), "{err}");
+    assert!(env.prompts().is_empty(), "prompted");
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "wrote through it");
+}
+
 // ---- the agent's text (P8) ---------------------------------------------
 
 /// A session id is the agent's text: as a file name it can't leave the
