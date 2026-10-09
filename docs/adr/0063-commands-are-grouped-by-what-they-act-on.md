@@ -1,11 +1,7 @@
 # 63. Commands are grouped by what they act on, with ACP's verbs
 
-Proposed 2026-10-09. Partly implemented: the groups, with today's commands
-renamed into them (`queue list` keeps `--clear` and `--clear-context` for
-now). Not yet: `session new`, `resume`, `list` and `delete`, `queue show`
-and `clear`, `permission allow` and `reject`, `config`, `--pid` and
-`--permission-timeout`, nor the names beyond the command line. Supersedes
-15. Amends 7, 12, 14, 16, 18, 19, 21, 27, 28, 33, 35 and 58.
+Proposed 2026-10-09. Implemented. Supersedes 15. Amends 3, 4, 7, 12, 14,
+16, 18, 19, 20, 21, 27, 28, 33, 35 and 58.
 
 ## Context
 

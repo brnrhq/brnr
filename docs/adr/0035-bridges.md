@@ -3,8 +3,12 @@
 Amended by 48: a request, `logged`, answered once the process has written
 what it recorded until then.
 
-Amended by 63: requests `new` and `resume` open a session in the running
-process (`session new --pid`, `session resume --pid`).
+Amended by 63: `approve` and `deny` are `allow` and `reject`
+`{session, request, always?, option?}`; `set_mode`, `set_model` and
+`set_config` are one `set_config` taking `mode`, `model`, `thought_level`
+and `options`; `queue` takes `show`; and requests `new` and `resume` open a
+session in the running process (`session new --pid`, `session resume
+--pid`).
 
 Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
 Implemented.

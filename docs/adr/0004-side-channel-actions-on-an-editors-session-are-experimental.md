@@ -8,9 +8,15 @@ updates carry on from; the editor's acknowledgement of a `$/cancel_request`
 (an error) is dropped without telling it. Not yet tried against real editors
 (see Consequences).
 Amends former decisions 9 and 11; resolves review item 6 with ADR 28.
-Amended by 63: the `settings` action is `config` (`config set`);
-`session new --pid` and `session resume --pid` are refused on an editor's
-process, as `fork` is.
+Amended by 63: the table's commands are grouped: `send` is `prompt send`
+(`--context` too), `queue --clear-context` is `queue clear --context`,
+`cancel` is `prompt cancel`, `approve` and `deny` are `permission allow` and
+`reject`, `close` is `session close` and `start --resume --take-over` is
+`session resume --take-over`; `show` is `permission show`, `stop` is
+`process stop` and `fork` is `session fork`. The `approve` action is
+`permission` ("Allowed via brnr", "Rejected via brnr"), and `settings` is
+`config` (`config set`). `session new --pid` and `session resume --pid` are
+refused on an editor's process, as `fork` is.
 
 ## Context
 
