@@ -2288,6 +2288,25 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
     let err = env.fails(&["queue", "drop", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue drop <session> <message>"), "{err}");
     assert!(!err.contains("queue list"), "{err}");
+    // A verb's --help, or -h, is its usage, wherever it is before a `--`.
+    for (args, want) in [
+        (&["session", "status", "--help"][..], "brnr session status <session> [--json]"),
+        (&["process", "stop", "--help"], "brnr process stop <pid>"),
+        (&["queue", "drop", "sess-1", "-h"], "brnr queue drop <session> <message> [--json]"),
+        (&["prompt", "send", "sess-1", "--wait", "--help"], "brnr prompt send <session> ["),
+    ] {
+        let usage = env.ok(args);
+        assert!(usage.starts_with(&format!("usage:\n  {want}")), "{args:?}: {usage}");
+        assert!(usage.ends_with("(brnr --help for every command)\n"), "{args:?}: {usage}");
+        assert_eq!(usage.matches("\n  brnr ").count(), 1, "{args:?}: {usage}");
+    }
+    let send = env.ok(&["prompt", "send", "--help"]);
+    assert!(send.contains("(<text>... | -)"), "its usage's every line: {send}");
+    // After `--`, it is the command's (or the message's).
+    let err = env.fails(&["event", "notify", "nosuch", "--", "echo", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
+    let err = env.fails(&["prompt", "send", "nosuch", "--", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
 }
 
 // ---- the skill (ADR 46) --------------------------------------------------

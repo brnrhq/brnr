@@ -221,7 +221,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
   - `adr_0063_help_lists_the_groups_and_their_commands`: `brnr --help` has a
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
-    usage; a command used wrongly shows its own.
+    usage; a command used wrongly shows its own; a verb's `--help` or `-h`,
+    before any `--`, prints its usage, and after `--` is the command's.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and
