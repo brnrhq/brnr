@@ -698,8 +698,10 @@ fn started(
 /// in process `pid`, which is running, with the socket's `new` or `resume`.
 /// The process answers once the session is open and its settings are set,
 /// and only then sends the prompt: the answer is the commit, as a start's
-/// ready report is (ADR 7). Gone before it (the start timeout, Ctrl-C), the
-/// command closes its connection, and the process closes the session again.
+/// ready report is (ADR 7). The start timeout goes with the request, and is
+/// the process's: past it, the process closes the session again and says
+/// so. Gone before it (Ctrl-C), the command closes its connection, and the
+/// process does the same.
 fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let blocks = attachments(&a.files, &a.images)?;
     let timeout = start_timeout()?;
@@ -757,6 +759,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         ("options", json!(options)),
         ("text", json!(a.prompt.as_deref().unwrap_or_default())),
         ("blocks", json!(blocks)),
+        ("timeout", json!(timeout)),
     ] {
         req[key] = value;
     }
@@ -772,7 +775,10 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         // Before the prompt can go, so no event of its turn is missed.
         conn.subscribe(TURN_EVENTS)?;
     }
-    let until = Instant::now().checked_add(Duration::from_secs(timeout));
+    // The process abandons the opening when its timeout passes, and says
+    // so; this is for a process stuck too badly to (ADR 7).
+    let until =
+        Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
     let ready = match conn.call_until(req, until)? {
         Some(ready) => ready,
         None => return Err("timed out waiting for the session".into()),

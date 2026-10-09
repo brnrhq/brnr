@@ -35,17 +35,18 @@
 //!   (ADR 58), sent one at a time, and answered once the agent has set them
 //!   all (`set`, what was sent) or refused one
 //! - `fork` `{session}`: never in an editor's process
-//! - `new` `{cwd?, mode?, model?, thought_level?, options?, text?, blocks?}`
-//!   and `resume` `{session, …}` (`session new --pid`, `session resume
-//!   --pid`, ADR 63): a session opened in this process (`session/new`, or
-//!   `session/resume` or `session/load`), in `cwd` (the process's by
-//!   default), with the process's MCP servers, then its settings, over the
-//!   profile's as a start's are, then the prompt `text` and `blocks` if
-//!   any. Answered `{session, pid, message}` once it is set up, before the
-//!   prompt goes: the commit, as a start's ready report is (ADR 7). One that
-//!   fails after the agent opened it is closed again, and the answer says
-//!   so. Never in an editor's process, nor with `stop_when_idle` when the
-//!   agent can't close sessions, as `fork`
+//! - `new` `{cwd?, mode?, model?, thought_level?, options?, text?, blocks?,
+//!   timeout?}` and `resume` `{session, …}` (`session new --pid`, `session
+//!   resume --pid`, ADR 63): a session opened in this process
+//!   (`session/new`, or `session/resume` or `session/load`), in `cwd` (the
+//!   process's by default), with the process's MCP servers, then its
+//!   settings, over the profile's as a start's are, then the prompt `text`
+//!   and `blocks` if any. Answered `{session, pid, message}` once it is set
+//!   up, before the prompt goes: the commit, as a start's ready report is
+//!   (ADR 7). One that fails after the agent opened it is closed again, and
+//!   the answer says so: a setting, `timeout` seconds passing, the process
+//!   stopping. Never in an editor's process, nor with `stop_when_idle` when
+//!   the agent can't close sessions, as `fork`
 //! - `close` `{session, take_over?}`: cancels a running turn first, and is
 //!   answered once the agent has closed the session; a headless process
 //!   whose last session closes stops. `take_over` is the pid of the process
@@ -85,7 +86,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use libc::pid_t;
 use serde_json::{Value, json};
@@ -938,9 +939,17 @@ impl Host {
         self.check_blocks(&blocks)?;
         let prompt =
             (!text.trim().is_empty() || !blocks.is_empty()).then(|| Prompt { text, blocks });
+        // The command's: past it, the opening is abandoned (ADR 7).
+        let deadline = match &req["timeout"] {
+            Value::Null => None,
+            secs => {
+                let secs = secs.as_u64().ok_or("timeout must be a number of seconds")?;
+                Instant::now().checked_add(Duration::from_secs(secs))
+            }
+        };
         let req_id = req.get("req_id").cloned();
         let dir = cwd.to_string_lossy().into_owned();
-        let opening = Box::new(Opening { peer, req_id, cwd, settings, prompt });
+        let opening = Box::new(Opening { peer, req_id, cwd, settings, prompt, deadline });
         let mcp = json!(self.mcp_servers);
         if req["cmd"] == "new" {
             let params = json!({ "cwd": dir, "mcpServers": mcp });

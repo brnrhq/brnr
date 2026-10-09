@@ -14,16 +14,17 @@
 //!   `session new --pid`, `session resume --pid`, ADR 63), opened, set up and
 //!   committed as a start's is. The commit is the bridge's answer, queued for
 //!   it while it is still connected, and then the prompt goes. Whatever fails
-//!   after the agent opened the session (a setting, the bridge going away)
-//!   closes it again where the agent can close sessions, and says so; where
-//!   it can't, the answer names the session left open (P3). A process
-//!   stopping meanwhile doesn't commit it,
+//!   after the agent opened the session (a setting, the bridge's timeout
+//!   passing, the bridge going away) closes it again where the agent can
+//!   close sessions, and says so; where it can't, the answer names the
+//!   session left open (P3). A process stopping meanwhile doesn't commit it,
 //!   and one with a session still opening doesn't stop for having none;
 //! - steering a message into a running turn (`_session/steering`, see
 //!   acp.rs).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -127,6 +128,10 @@ pub(super) struct Opening {
     pub(super) settings: Settings,
     /// Sent once it commits.
     pub(super) prompt: Option<Prompt>,
+    /// The command's timeout: past it the opening is abandoned rather than
+    /// committed, before the command, which waits a little longer, gives
+    /// up (ADR 7).
+    pub(super) deadline: Option<Instant>,
 }
 
 /// What a bridge asked the agent for. A close is `by` `close`, or `idle` for
@@ -364,7 +369,7 @@ impl Host {
         }
         // Before each setting, and before the commit.
         if let SetupOf::Open(o) = &setup.of
-            && let Some(why) = self.open_refused()
+            && let Some(why) = self.open_refused(o)
         {
             let (peer, req_id) = (o.peer, o.req_id.clone());
             return self.abandon_open(&setup.session, peer, req_id, why);
@@ -588,10 +593,14 @@ impl Host {
     }
 
     /// Why a bridge's `new` or `resume` can't go on to commit: the process
-    /// is stopping, so the session would end unused with it.
-    fn open_refused(&self) -> Option<String> {
+    /// is stopping, so the session would end unused with it, or the
+    /// command's timeout has passed (ADR 7).
+    fn open_refused(&self, opening: &Opening) -> Option<String> {
         if self.stop_requested || self.agent_in.is_none() {
             return Some("the process is stopping".into());
+        }
+        if opening.deadline.is_some_and(|t| Instant::now() >= t) {
+            return Some("timed out waiting for the session".into());
         }
         None
     }

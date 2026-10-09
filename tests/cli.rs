@@ -3246,12 +3246,39 @@ fn adr_0063_pid_session_that_cant_be_locked_is_closed() {
     assert!(env.prompts().is_empty());
 }
 
-/// A `session new --pid` that gives up before the process has answered
-/// (`BRNR_START_TIMEOUT`) leaves no session: the process closes it once the
-/// agent has opened it, and the prompt is never sent (ADR 7, ADR 63).
+/// A `session new --pid` gone before the process has answered (Ctrl-C)
+/// leaves no session: the process closes it once the agent has opened it,
+/// and the prompt is never sent (ADR 7, ADR 63).
 #[test]
 fn adr_0063_pid_given_up_before_its_commit_sends_no_prompt() {
     let env = Env::new("c-pid-gone").agent("NEW_DELAY", "2");
+    env.start(&[]);
+    let pid = env.pid();
+    let mut cmd = env
+        .brnr(&["session", "new", "--pid", &pid, "--prompt", "reply never"])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let opening = || env.calls_of("session/new").len() == 2;
+    assert!(wait_for(Duration::from_secs(10), opening), "the process wasn't asked");
+    cmd.kill().unwrap();
+    cmd.wait().unwrap();
+    let closed =
+        || env.calls_of("session/close").iter().any(|c| c["params"]["sessionId"] == "sess-2");
+    assert!(wait_for(Duration::from_secs(10), closed), "sess-2 wasn't closed");
+    assert!(env.prompts().is_empty());
+    assert!(env.ok(&["session", "status", "sess-1"]).contains("session sess-1"));
+}
+
+/// The command's timeout goes to the process, which abandons the opening
+/// once it passes, rather than commit: the session is closed again, the
+/// prompt never sent, and the command, waiting a little longer, says so.
+/// Whether the agent was still opening the session or setting it up
+/// (ADR 7, ADR 63).
+#[test]
+fn adr_0063_pid_timeout_abandons_the_opening() {
+    let says = "brnr: timed out waiting for the session; sess-2 was closed\n";
+    let env = Env::new("c-pid-timeout").agent("NEW_DELAY", "2");
     env.start(&[]);
     let pid = env.pid();
     let out = env
@@ -3259,13 +3286,33 @@ fn adr_0063_pid_given_up_before_its_commit_sends_no_prompt() {
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
-    assert_eq!(code(&out), 1);
-    assert!(stderr(&out).contains("timed out waiting for the session"), "{}", stderr(&out));
-    let closed =
-        || env.calls_of("session/close").iter().any(|c| c["params"]["sessionId"] == "sess-2");
-    assert!(wait_for(Duration::from_secs(10), closed), "sess-2 wasn't closed");
+    assert_eq!((code(&out), stderr(&out)), (1, says.into()));
+    assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
-    assert!(env.ok(&["session", "status", "sess-1"]).contains("session sess-1"));
+
+    // A setting answered after the timeout: the session isn't committed.
+    let env = Env::new("c-pid-timeout-set");
+    let gate = env.dir.join("answer-mode");
+    let env = env.agent("MODE_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let pid = env.pid();
+    let asked = Instant::now();
+    let cmd = env
+        .brnr(&["session", "new", "--pid", &pid, "--mode", "plan", "--prompt", "reply never"])
+        .env("BRNR_START_TIMEOUT", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let setting = || !env.calls_of("session/set_mode").is_empty();
+    assert!(wait_for(Duration::from_secs(10), setting), "the mode wasn't set");
+    sleep(Duration::from_millis(1500).saturating_sub(asked.elapsed()));
+    fs::write(&gate, "answer now").unwrap();
+    let out = cmd.wait_with_output().unwrap();
+    assert_eq!((code(&out), stderr(&out)), (1, says.into()));
+    assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
+    assert!(env.prompts().is_empty());
+    assert!(env.fails(&["session", "status", "sess-2"]).contains("sess-2 isn't running"));
 }
 
 /// A session being opened in a running process keeps it running: its last
