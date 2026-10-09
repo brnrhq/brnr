@@ -417,7 +417,7 @@ impl Host {
                 // Its lock, taken as it opened: one another process holds, or
                 // one that can't be locked, can't be served here (ADR 3, ADR 50).
                 if let Some(why) = self.sessions[i].not_owned() {
-                    self.sessions.remove(i);
+                    self.sink.close_session(&self.sessions.remove(i).id);
                     let error = format!("the agent forked into {session}, which {why}");
                     return json!({ "ok": false, "error": error });
                 }

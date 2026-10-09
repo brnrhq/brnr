@@ -945,6 +945,62 @@ fn adr_0016_fork_and_close() {
     );
 }
 
+/// The transcript files `pid` has open (None without /proc or lsof).
+fn transcripts_open(pid: i32) -> Option<usize> {
+    let is_log = |name: &str| name.ends_with(".jsonl");
+    if let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) {
+        let names = fds.flatten().filter_map(|fd| fs::read_link(fd.path()).ok());
+        return Some(names.filter(|p| is_log(&p.to_string_lossy())).count());
+    }
+    let lsof =
+        std::process::Command::new("lsof").args(["-n", "-Fn", "-p", &pid.to_string()]).output();
+    let out = lsof.ok().filter(|o| o.status.success())?;
+    Some(stdout(&out).lines().filter(|l| l.starts_with('n') && is_log(l)).count())
+}
+
+/// A process that serves session after session holds files only for those
+/// it has open: closing one writes its last records and closes its files,
+/// and one resumed later appends to them (ADR 22).
+#[test]
+fn adr_0022_closing_sessions_closes_their_files() {
+    let env = Env::new("c-closefds");
+    env.start(&[]);
+    let host = env.host_pid();
+    // The logger opens sess-1's files on its own thread, after the start has
+    // returned: `log` answers once it has caught up (ADR 48).
+    env.ok(&["log", "sess-1"]);
+    let Some(before) = transcripts_open(host) else {
+        eprintln!("skipped: neither /proc nor lsof");
+        return env.stop();
+    };
+    // The host log and sess-1's two files.
+    assert_eq!(before, 3);
+    for n in 2..17 {
+        let fork = format!("sess-{n}");
+        env.ok(&["fork", "sess-1"]);
+        let out = env.run(&["send", &fork, "--wait", "reply", "hi", &n.to_string()]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        env.ok(&["close", &fork]);
+    }
+    // What the close wrote is written before the files close.
+    let closed = |n: u32| {
+        let last = events(&env, &format!("sess-{n}")).pop();
+        last.is_some_and(|e| e["event"] == "session_closed")
+    };
+    assert!(wait_for(Duration::from_secs(5), || (2..17).all(closed)), "a close wasn't written");
+    let open = || transcripts_open(host) == Some(before);
+    assert!(wait_for(Duration::from_secs(5), open), "{:?} open", transcripts_open(host));
+    assert!(env.ok(&["log", "sess-9"]).contains("agent: hi 9"));
+
+    // Resumed in a process of its own, it carries on in the same files.
+    let out = env.run(&["start", "--resume", "sess-9", "--wait", "--prompt", "reply again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let log = env.ok(&["log", "sess-9"]);
+    let (first, again) = (log.find("agent: hi 9").unwrap(), log.find("agent: again").unwrap());
+    assert!(first < again && log.contains("session closed (close)"), "{log}");
+    assert_eq!(transcripts_open(host), Some(before));
+}
+
 /// Closing a session drops what it holds and cancels its turn, then says it
 /// closed; whatever follows the session ends with it, and the process
 /// carries on.
