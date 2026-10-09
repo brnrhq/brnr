@@ -113,6 +113,10 @@ pub(super) struct Session {
     /// Messages steered into the running turn whose steer the agent hasn't
     /// answered, in the order sent. Nothing held goes while there are any.
     pub(super) steering: VecDeque<Held>,
+    /// The `turn_ended` of a turn that ended while steers into it were
+    /// unanswered: which messages it carried isn't known until the agent
+    /// has answered them all (or they are dropped), so it waits (ADR 56).
+    pub(super) ended: Option<Value>,
     /// Context to append to the next prompt.
     pub(super) context: Vec<String>,
     /// The agent message (or thought) so far, for the `agent_message` and
@@ -619,7 +623,7 @@ impl Host {
                 self.sessions[i].last_turn =
                     Some(json!({ "stop_reason": stop_reason, "error": msg.get("error") }));
             }
-            self.emit(json!({
+            let event = json!({
                 "event": "turn_ended",
                 "session": sid,
                 "by": if injected { "control" } else { "editor" },
@@ -627,7 +631,17 @@ impl Host {
                 "messages": messages,
                 "stop_reason": stop_reason,
                 "error": msg.get("error"),
-            }));
+            });
+            // Waits for the steers into the turn, if the agent hasn't
+            // answered them all (see `Session::ended`).
+            match self.find(&sid) {
+                Some(i) if !self.sessions[i].steering.is_empty() => {
+                    self.sessions[i].ended = Some(event);
+                }
+                _ => {
+                    self.emit(event);
+                }
+            }
             self.next_turn(&sid);
         }
     }
@@ -948,7 +962,19 @@ impl Host {
         let s = &mut self.sessions[i];
         s.interrupts = 0;
         let held: Vec<Held> = s.steering.drain(..).chain(s.held.drain(..)).collect();
-        self.dropped(i, held, by)
+        let dropped = self.dropped(i, held, by);
+        self.turn_answered(i);
+        dropped
+    }
+
+    /// The `turn_ended` that waited for the steers into its turn (see
+    /// `Session::ended`), once none is left unanswered.
+    fn turn_answered(&mut self, i: usize) {
+        if self.sessions[i].steering.is_empty()
+            && let Some(event) = self.sessions[i].ended.take()
+        {
+            self.emit(event);
+        }
     }
 
     /// Messages taken from session `i`'s held ones, never to be sent: each is
@@ -1138,10 +1164,12 @@ impl Host {
     }
 
     /// The agent's answer to steering `message`. `injected`: it is in the
-    /// running turn, whose `turn_ended` lists it. `promptRequired`: the turn
-    /// ended first, and it goes next as a prompt of its own, ahead of what is
-    /// held as it would have been in the turn (after interrupts, which end
-    /// that turn). Anything else drops it.
+    /// running turn, whose `turn_ended` lists it, even if the turn's own
+    /// answer came first (its `turn_ended` waits for the steers').
+    /// `promptRequired`: the turn ended first, and it goes next as a prompt
+    /// of its own, ahead of what is held as it would have been in the turn
+    /// (after interrupts, which end that turn). Anything else, an error
+    /// too, drops it.
     pub(super) fn steer_answered(
         &mut self,
         session: &str,
@@ -1166,21 +1194,34 @@ impl Host {
                 self.dropped(i, vec![held], "steer");
             }
         }
+        self.turn_answered(i);
         self.next_turn(session);
     }
 
-    /// A steered message the agent took into session `i`'s running turn,
-    /// which carries it from now: it is shown as sent, as `send_prompt` shows
-    /// a prompt.
+    /// A steered message the agent took into session `i`'s turn, which
+    /// carries it from now: it is shown as sent, as `send_prompt` shows a
+    /// prompt. The turn is the running one, or the one that ended before the
+    /// agent answered (whose `turn_ended` is waiting for it).
     fn injected(&mut self, i: usize, held: Held) {
-        let session = self.sessions[i].id.clone();
-        let Some(prompt) = self.sessions[i].prompts.front_mut() else {
-            // Its turn ended before the answer came: no turn to carry it.
+        let s = &mut self.sessions[i];
+        let session = s.id.clone();
+        let key = if let Some(ended) = &mut s.ended {
+            if let Some(messages) = ended["messages"].as_array_mut() {
+                messages.push(json!(held.id));
+            }
+            ended["prompt"].as_str().unwrap_or_default().to_owned()
+        } else if let Some(prompt) = s.prompts.front_mut() {
+            prompt.messages.push(held.id.clone());
+            prompt.id.clone()
+        } else {
+            // No turn to carry it. A steer goes while a turn runs, or while
+            // one's `turn_ended` waits for an earlier steer's answer, so this
+            // shouldn't happen; if it does, it isn't left without an end.
             let event = json!({ "event": "steer-after-turn", "message": held.id });
-            return self.sink.note(Some(&session), event);
+            self.sink.note(Some(&session), event);
+            self.dropped(i, vec![held], "steer");
+            return;
         };
-        prompt.messages.push(held.id.clone());
-        let key = prompt.id.clone();
         let blocks = held.content();
         let text = prompt_text(Some(&json!(blocks)));
         self.echo(&session, "Message via brnr", &blocks);
@@ -1342,6 +1383,7 @@ impl Host {
             context: Vec::new(),
             interrupts: 0,
             steering: VecDeque::new(),
+            ended: None,
             agent_text: String::new(),
             agent_text_kind: "agent_message",
             agent_message_id: None,

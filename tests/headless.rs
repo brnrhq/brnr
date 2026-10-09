@@ -696,6 +696,75 @@ fn steer_without_a_turn_is_a_prompt() {
     assert_eq!(turns(&env)[2..], [["m4"], ["m3"]]);
 }
 
+/// The session's `turn_ended` and `message_dropped` events, in order, as
+/// `(event, messages or message, by)`.
+fn endings(env: &Env) -> Vec<(String, Value, Value)> {
+    let log = env.ok(&["log", "sess-1", "--json"]);
+    let events = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    events
+        .filter(|e| e["event"] == "turn_ended" || e["event"] == "message_dropped")
+        .map(|e| {
+            let which = if e["event"] == "turn_ended" { &e["messages"] } else { &e["message"] };
+            (e["event"].as_str().unwrap().to_owned(), which.clone(), e["by"].clone())
+        })
+        .collect()
+}
+
+/// A steer the agent answers `injected` only after the turn it went into has
+/// ended is in that turn all the same: the turn's `turn_ended` waits for the
+/// answer and lists it, and `send --steer --wait` ends with it.
+#[test]
+fn steer_answered_after_its_turn_is_in_that_turn() {
+    let env = Env::new("steer-late").agent("STEER_ANSWER", "late");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
+    assert!(out.status.success(), "{}{}", stderr(&out), env.ok(&["log", "sess-1"]));
+    // What the agent said came before it said it took the message, so isn't
+    // shown as its reply; the transcript has it.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(turns(&env), [["m1", "m2"]]);
+    let said = env.ok(&["log", "sess-1", "--events", "user_message,agent_message"]);
+    assert!(said.contains("agent: steered\n") && said.ends_with("user: reply steered\n"), "{said}");
+}
+
+/// A steer the agent answers with an error after its turn ended is dropped,
+/// `by` `steer`, and that turn ends without it.
+#[test]
+fn steer_refused_after_its_turn_is_dropped() {
+    let env = Env::new("steer-error").agent("STEER_ANSWER", "error");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("m2 was dropped (steer)"), "{}", stderr(&out));
+    let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("steer"));
+    let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
+    assert_eq!(endings(&env), [dropped, ended]);
+}
+
+/// A steer the agent never answers keeps its turn's `turn_ended` waiting,
+/// since what the turn carried isn't known yet; closing the session drops
+/// it, `by` `close`, and the turn ends without it.
+#[test]
+fn steer_never_answered_is_dropped_by_close() {
+    let env = Env::new("steer-never").agent("STEER_ANSWER", "never");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let args = ["send", "sess-1", "--steer", "--wait", "--timeout", "20", "reply steered"];
+    let waiter = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    env.ok(&["close", "sess-1"]);
+    let out = waiter.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("m2 was dropped (close)"), "{}", stderr(&out));
+    let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("close"));
+    let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
+    assert_eq!(endings(&env), [dropped, ended]);
+}
+
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]

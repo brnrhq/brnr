@@ -27,6 +27,10 @@ with environment variables:
                     execute, titled c)
   LEAVE_GROUP=1     move to its parent's process group, out of its own
   NO_STEERING=1     don't advertise _session/steering, nor answer it
+  STEER_ANSWER=<a>  a steer into a running turn is answered after that turn
+                    ends: late (it takes up the steered text, then answers
+                    injected), error (it ends the turn, then answers with an
+                    error) or never (it ends the turn, and never answers)
   MODEL_ID=<id>     the model config option's id (model by default)
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
@@ -525,10 +529,19 @@ for line in sys.stdin.buffer:
         if idle not in (None, "promptRequired"):
             error(mid, -32602, "unsupported steering idleBehavior")
         elif hanging is not None or asking:
-            result(mid, {"outcome": "injected"})
+            late = env("STEER_ANSWER")
+            if not late:
+                result(mid, {"outcome": "injected"})
             if hanging is not None:
                 turn, hanging = hanging, None
-                run(turn, sid, text_of(params["prompt"]))
+                if late in ("error", "never"):
+                    end_turn(turn)
+                else:
+                    run(turn, sid, text_of(params["prompt"]))
+            if late == "late":
+                result(mid, {"outcome": "injected"})
+            elif late == "error":
+                error(mid, -32603, "steering failed")
         elif idle == "promptRequired":
             result(mid, {"outcome": "promptRequired", "reason": "noRunningTurn"})
         else:
