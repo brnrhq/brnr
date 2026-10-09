@@ -872,6 +872,9 @@ fn closing_sessions_closes_their_files() {
     let env = Env::new("c-closefds");
     env.start(&[]);
     let host = env.host_pid();
+    // The logger opens sess-1's files on its own thread, after the start has
+    // returned: `log` answers once it has caught up (ADR 48).
+    env.ok(&["log", "sess-1"]);
     let Some(before) = transcripts_open(host) else {
         eprintln!("skipped: neither /proc nor lsof");
         return env.stop();
