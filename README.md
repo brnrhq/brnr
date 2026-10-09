@@ -298,8 +298,9 @@ values, to list only those options. A setting the agent has no option for
 fails ("the agent offers no thought level"), as two values for one setting do
 (`--model large --option llm=small`, when `llm` is the model); each is sent
 once, the mode first. A mode is the agent's own `session/set_mode` only for an
-agent with modes and no mode option. `config get`'s list has the agent's modes
-as a row with no option (`-`, `null` in `--json`).
+agent with modes and no mode option. `config get` lists each option's choices
+under it, the current one marked `*`, with their names and descriptions, and
+has the agent's modes as a row with no option (`-`, `null` in `--json`).
 
 A boolean option (one an editor's session has when the editor advertises
 boolean config options) takes `true` or `false`, and is sent as a boolean;

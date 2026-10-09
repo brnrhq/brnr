@@ -37,7 +37,8 @@ brnr's own conventions:
   group's commands (ADR 63).
 - **Breaking:** `brnr mode`, `brnr model` and `brnr config` are
   `brnr config get <s>` and `brnr config set <s>`. `get` lists every option
-  with its category, value and choices, and the agent's v1 modes as a row
+  with its category, value and choices, each choice with its name and
+  description, the current one marked, and the agent's v1 modes as a row
   with no option; `--mode`, `--model`, `--thought-level` and
   `--option <o>` narrow it. `set` takes `--mode <m>`, `--model <m>`,
   `--thought-level <l>` (the option of that category) and

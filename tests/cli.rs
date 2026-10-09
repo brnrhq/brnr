@@ -662,13 +662,22 @@ fn adr_0034_status_summarizes_the_session() {
 fn adr_0028_mode_lists_and_switches() {
     let env = Env::new("c-mode");
     env.start(&[]);
+    // Each mode with its name and description, the current one marked, as
+    // `brnr mode` listed them.
     let modes = env.ok(&["config", "get", "sess-1", "--mode"]);
-    assert!(modes.contains("-       mode      default  default plan"), "{modes}");
+    let want = "OPTION  CATEGORY  VALUE      NAME     DESCRIPTION\n\
+                -       mode      default\n\
+                \x20                 * default  Default  Asks before edits\n\
+                \x20                   plan     Plan     Plans, doesn't edit\n";
+    assert_eq!(modes, want);
     assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
     assert_eq!(env.calls_of("session/set_mode")[0]["params"]["modeId"], "plan");
+    assert!(env.ok(&["config", "get", "sess-1", "--mode"]).contains("* plan     Plan"));
     let get = env.ok(&["config", "get", "sess-1", "--mode", "--json"]);
     let json: Value = serde_json::from_str(&get).unwrap();
     assert_eq!(json["options"][0]["value"], "plan");
+    let plan = serde_json::json!({ "value": "plan", "name": "Plan", "description": "Plans, doesn't edit" });
+    assert_eq!(json["options"][0]["choices"][1], plan);
     let err = env.fails(&["config", "set", "sess-1", "--mode", "warp"]);
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
     assert_eq!(env.calls_of("session/set_mode").len(), 1, "warp reached the agent");
@@ -678,12 +687,13 @@ fn adr_0028_mode_lists_and_switches() {
 fn adr_0028_model_and_config() {
     let env = Env::new("c-model");
     env.start(&[]);
-    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("small  small large"));
+    let models = env.ok(&["config", "get", "sess-1", "--model"]);
+    assert!(models.contains("* small  Small\n") && models.contains("  large  Large\n"), "{models}");
     assert_eq!(env.ok(&["config", "set", "sess-1", "--model", "large"]), "model=large\n");
-    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("large  small large"));
+    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("* large  Large"));
     assert_eq!(env.calls_of("session/set_config_option")[0]["params"]["value"], "large");
     let config = env.ok(&["config", "get", "sess-1"]);
-    assert!(config.contains("model") && config.contains("small large"), "{config}");
+    assert!(config.contains("model   model     large      Model\n"), "{config}");
     env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
     let err = env.fails(&["config", "set", "sess-1", "--option", "model=huge"]);
     assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
@@ -745,7 +755,8 @@ fn adr_0028_mode_as_a_config_option() {
         assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"approvals".into(), &"plan".into()));
         let modes = env.ok(&["config", "get", "sess-1", "--mode"]);
         assert!(modes.contains("approvals  mode      plan"), "{modes}");
-        assert_eq!(modes.lines().count(), 2, "{modes}");
+        // The option and its two choices; not the v1 modes.
+        assert_eq!(modes.lines().count(), 4, "{modes}");
         let set_mode = ["config", "set", "sess-1", "--mode", "default"];
         assert_eq!(env.ok(&set_mode), "approvals=default\n");
         assert_eq!(
@@ -894,7 +905,7 @@ fn adr_0022_session_changed_says_what_changed() {
     // changes nothing.
     env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
     env.ok(&["prompt", "send", "sess-1", "--wait", "settings large"]);
-    assert!(env.ok(&["config", "get", "sess-1"]).contains("small large"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("* large"));
     env.ok(&["prompt", "send", "sess-1", "--wait", "commands"]);
     let commands = env.ok(&["prompt", "commands", "sess-1"]);
     assert!(commands.contains("/review") && !commands.contains("/compact"), "{commands}");
@@ -2330,8 +2341,9 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
 }
 
 /// `config get` lists every config option, its category, value and
-/// choices, and the v1 modes after them, as a row with no option; the JSON
-/// has the same rows (ADR 63).
+/// choices, each choice with its name and description, and the v1 modes
+/// after them, as a row with no option; the JSON has the same (ADR 63).
+/// Nothing `brnr mode` and `brnr model` showed is lost.
 #[test]
 fn adr_0063_config_get_lists_options_choices_and_modes() {
     let env = Env::new("c-get")
@@ -2340,23 +2352,38 @@ fn adr_0063_config_get_lists_options_choices_and_modes() {
         .agent("THOUGHT_OPTION", "effort");
     env.start(&[]);
     let get = env.ok(&["config", "get", "sess-1"]);
-    let want = "OPTION     CATEGORY       VALUE    CHOICES       NAME\n\
-                approvals  mode           default  default plan  Mode\n\
-                model      model          small    small large   Model\n\
-                effort     thought_level  low      low high      Effort\n\
-                -          mode           default  default plan\n";
+    let want = "OPTION     CATEGORY       VALUE      NAME     DESCRIPTION\n\
+                approvals  mode           default    Mode\n\
+                \x20                         * default  Default\n\
+                \x20                           plan     Plan\n\
+                model      model          small      Model\n\
+                \x20                         * small    Small\n\
+                \x20                           large    Large\n\
+                effort     thought_level  low        Effort\n\
+                \x20                         * low      Low\n\
+                \x20                           high     High\n\
+                -          mode           default\n\
+                \x20                         * default  Default  Asks before edits\n\
+                \x20                           plan     Plan     Plans, doesn't edit\n";
     assert_eq!(get, want);
     let json: Value =
         serde_json::from_str(&env.ok(&["config", "get", "sess-1", "--json"])).unwrap();
     assert_eq!(json["session"], "sess-1");
     let v1 = serde_json::json!({
-        "option": null, "category": "mode", "value": "default",
-        "choices": ["default", "plan"], "name": null,
+        "option": null, "category": "mode", "value": "default", "name": null, "description": null,
+        "choices": [
+            { "value": "default", "name": "Default", "description": "Asks before edits" },
+            { "value": "plan", "name": "Plan", "description": "Plans, doesn't edit" },
+        ],
     });
     assert_eq!(json["options"][3], v1);
     let effort = serde_json::json!({
-        "option": "effort", "category": "thought_level", "value": "low",
-        "choices": ["low", "high"], "name": "Effort",
+        "option": "effort", "category": "thought_level", "value": "low", "name": "Effort",
+        "description": null,
+        "choices": [
+            { "value": "low", "name": "Low", "description": null },
+            { "value": "high", "name": "High", "description": null },
+        ],
     });
     assert_eq!(json["options"][2], effort);
     assert_eq!(json["options"].as_array().unwrap().len(), 4);
@@ -2390,10 +2417,11 @@ fn adr_0063_config_get_narrows_by_category_and_id() {
     // v1 modes, with no mode option, are the mode.
     assert_eq!(options(&["--mode"]), [Value::Null]);
     let text = env.ok(&["config", "get", "sess-1", "--thought-level"]);
-    assert_eq!(
-        text,
-        "OPTION  CATEGORY       VALUE  CHOICES   NAME\neffort  thought_level  low    low high  Effort\n"
-    );
+    let want = "OPTION  CATEGORY       VALUE   NAME    DESCRIPTION\n\
+                effort  thought_level  low     Effort\n\
+                \x20                      * low   Low\n\
+                \x20                        high  High\n";
+    assert_eq!(text, want);
     let err = env.fails(&["config", "get", "sess-1", "--option", "nope"]);
     assert!(err.contains("the agent has no option nope"), "{err}");
     // By id only: the model option's id is llm.

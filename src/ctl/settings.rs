@@ -79,8 +79,9 @@ enum Wanted {
     Id(String),
 }
 
-/// `config get`: every config option with its value and choices, and the
-/// v1 modes where the agent has them (`option` null); `--mode`, `--model`,
+/// `config get`: every config option with its value and choices (each with
+/// its name and description), and the v1 modes where the agent has them
+/// (`option` null), as the agent gave them; `--mode`, `--model`,
 /// `--thought-level` and `--option <o>` narrow it to those, found as
 /// `config set` finds them (ADR 63).
 pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
@@ -112,19 +113,27 @@ pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
                 "value": o["currentValue"],
                 "choices": choices(o),
                 "name": o["name"],
+                "description": o["description"],
             })
         })
         .collect();
     // After the options, so that a mode option is the mode, as for `set`.
     if let Some(modes) = status["modes"].as_object() {
         let available = modes.get("availableModes").and_then(Value::as_array);
-        let choices: Vec<&Value> = available.into_iter().flatten().map(|m| &m["id"]).collect();
+        let choices: Vec<Value> = available
+            .into_iter()
+            .flatten()
+            .map(
+                |m| json!({ "value": m["id"], "name": m["name"], "description": m["description"] }),
+            )
+            .collect();
         rows.push(json!({
             "option": null,
             "category": "mode",
             "value": modes.get("currentModeId"),
             "choices": choices,
             "name": null,
+            "description": null,
         }));
     }
     if !wanted.is_empty() {
@@ -163,32 +172,46 @@ pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
         Value::Null => "-".to_owned(),
         other => other.to_string(),
     };
-    let mut table = vec![["OPTION", "CATEGORY", "VALUE", "CHOICES", "NAME"].map(String::from)];
+    // An option's row, then a row for each of its choices, the current one
+    // marked, as `brnr mode` and `brnr model` listed them.
+    let text = |v: &Value| v.as_str().unwrap_or("").to_owned();
+    let mut table = vec![["OPTION", "CATEGORY", "VALUE", "NAME", "DESCRIPTION"].map(String::from)];
     for r in &rows {
-        let choices: Vec<String> =
-            r["choices"].as_array().into_iter().flatten().map(shown).collect();
         table.push([
             shown(&r["option"]),
             shown(&r["category"]),
             shown(&r["value"]),
-            choices.join(" "),
-            r["name"].as_str().unwrap_or("").to_owned(),
+            text(&r["name"]),
+            text(&r["description"]),
         ]);
+        for c in r["choices"].as_array().into_iter().flatten() {
+            let mark = if c["value"] == r["value"] { "*" } else { " " };
+            let choice = format!("{mark} {}", shown(&c["value"]));
+            table.push([
+                String::new(),
+                String::new(),
+                choice,
+                text(&c["name"]),
+                text(&c["description"]),
+            ]);
+        }
     }
     print_table(table);
     Ok(ExitCode::SUCCESS)
 }
 
-/// A select option's values, its groups' too.
-fn choices(option: &Value) -> Vec<&Value> {
-    let mut values = Vec::new();
+/// A select option's choices, its groups' too: each value, with its name
+/// and description.
+fn choices(option: &Value) -> Vec<Value> {
+    let mut listed = Vec::new();
     for c in option["options"].as_array().into_iter().flatten() {
         match c["options"].as_array() {
-            Some(group) => values.extend(group.iter().map(|c| &c["value"])),
-            None => values.push(&c["value"]),
+            Some(group) => listed.extend(group),
+            None => listed.push(c),
         }
     }
-    values
+    let choice = |c: &Value| json!({ "value": c["value"], "name": c["name"], "description": c["description"] });
+    listed.into_iter().map(choice).collect()
 }
 
 /// `config set`: `--mode`, `--model` and `--thought-level` find their option

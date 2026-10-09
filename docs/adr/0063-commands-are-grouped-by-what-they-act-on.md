@@ -223,8 +223,9 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     print the group's commands; an unknown verb is said, with the group's
     usage; a command used wrongly shows its own.
   - `adr_0063_config_get_lists_options_choices_and_modes`: every option with
-    its category, value and choices, and the v1 modes as a row with no
-    option, the same in text and JSON.
+    its category, value and choices, each choice with its name and
+    description, and the v1 modes as a row with no option, the same in text
+    and JSON.
   - `adr_0063_config_get_narrows_by_category_and_id`: `--mode`, `--model`,
     `--thought-level` and `--option` narrow the list, in its order; one the
     agent doesn't have fails.
