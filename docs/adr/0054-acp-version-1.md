@@ -48,3 +48,14 @@ they needn't be (P4).
 - Checking the editor's negotiated version too, and refusing for it: the
   editor is the client there, and brnr in the proxy role doesn't refuse
   what it can pass through (P4, as in ADR 50).
+
+## Tests
+
+Run `cargo test --release adr_0054_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0054_a_start_in_an_acp_version_brnr_doesnt_speak_fails`: a start
+    whose agent answers with version 999, 0, `"1"`, 1.5, 70000 or none,
+    strict or not, exits 1 with the cause, sends nothing after
+    `initialize`, and leaves no process or agent running; `brnr sessions`
+    stops at `initialize` too; version 1 starts.

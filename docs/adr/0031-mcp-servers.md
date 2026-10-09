@@ -15,3 +15,10 @@ Accepted (former decision 13); reviewed 2026-10-07. Implemented.
   carries them, and the profile adds none (P1).
 - Their `env` and `headers` values are redacted in what brnr records
   (ADR 25).
+
+## Tests
+
+Run `cargo test --release adr_0031_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0031_mcp_servers_reach_the_agent`.

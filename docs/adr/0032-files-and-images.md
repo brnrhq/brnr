@@ -16,3 +16,10 @@ Accepted (former decision 15); reviewed 2026-10-07. Implemented.
 - Embedding the file's contents (`resource`): it needs the agent's
   `embeddedContext` capability (both adapters have it now), and duplicates
   what the agent can read anyway.
+
+## Tests
+
+Run `cargo test --release adr_0032_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0032_files_and_images_go_with_the_prompt`.

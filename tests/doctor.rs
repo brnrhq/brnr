@@ -165,7 +165,7 @@ fn stale_session_locks_are_removed() {
 /// is gone, and --fix leaves it to the user. Nor is it locked with sessions/
 /// itself open to others (ADR 50).
 #[test]
-fn what_keeps_a_session_from_being_locked_fails() {
+fn adr_0050_what_keeps_a_session_from_being_locked_fails() {
     let env = Env::new("dr-nolock");
     let sessions = env.dir.join("run/sessions");
     mkdir(&sessions.join("sess-1.lock"), 0o700);
@@ -437,7 +437,7 @@ fn a_failed_start_is_no_death() {
 }
 
 #[test]
-fn adapter_versions() {
+fn adr_0039_adapter_versions() {
     let env = Env::new("dr-versions");
     let bin = env.dir.join("bin");
     mkdir(&bin, 0o755);
@@ -490,7 +490,7 @@ fn adapter_versions() {
 /// redacted, even where an older brnr didn't, and the home directory as `~`.
 /// `--json` has the same data.
 #[test]
-fn the_report_is_what_to_paste() {
+fn adr_0045_the_report_is_what_to_paste() {
     let env = Env::new("dr-report");
     let secret = "s3cret-token-value";
     env.write_config(&format!(
@@ -568,7 +568,7 @@ fn the_report_is_what_to_paste() {
 /// A process killed without a word is the one the report shows, besides
 /// the latest.
 #[test]
-fn the_report_shows_a_death_without_a_record() {
+fn adr_0045_the_report_shows_a_death_without_a_record() {
     let env = Env::new("dr-rdied");
     env.start(&[]);
     let killed = env.hosts().remove(0);

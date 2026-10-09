@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn what_the_adapters_send_is_read_as_the_schemas_types() {
+    fn adr_0043_what_the_adapters_send_is_read_as_the_schemas_types() {
         for update in adapter_updates() {
             assert!(read::<SessionUpdate>(&update).is_some(), "{update}");
         }
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deep_part_reads_on_the_stack_json_rs_gives_it() {
+    fn adr_0043_a_deep_part_reads_on_the_stack_json_rs_gives_it() {
         let n = 20_000;
         let input = format!("{}1{}", r#"{"a":"#.repeat(n), "}".repeat(n));
         let line = format!(
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn what_the_types_dont_take_is_left_to_value() {
+    fn adr_0043_what_the_types_dont_take_is_left_to_value() {
         // Kinds the adapters send only to a client that asks for them,
         // unstable or their own, and one from a newer schema.
         let unknown = [
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_is_what_the_schema_has_without_its_unstable_features() {
+    fn adr_0043_stable_is_what_the_schema_has_without_its_unstable_features() {
         // ADR 41: in v1, list, resume, close and delete are stable, fork
         // isn't; `$/cancel_request` is; extension methods never are.
         for method in [
