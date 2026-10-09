@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -19,6 +17,11 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # deploy-pages publishes with the OIDC token.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     timeout-minutes: 10
     environment:
       name: github-pages
