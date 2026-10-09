@@ -714,7 +714,9 @@ fn open_sessions() -> HashMap<String, Vec<String>> {
         else {
             continue;
         };
-        if last["event"]["event"] != "session_closed" {
+        // One the agent deleted, through an editor's process, is closed too
+        // (ADR 63).
+        if !matches!(last["event"]["event"].as_str(), Some("session_closed" | "session_deleted")) {
             open.entry(run.to_owned()).or_default().push(session.to_owned());
         }
     }

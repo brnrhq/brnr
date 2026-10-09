@@ -127,6 +127,8 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Sessions and processes
     ("brnr session fork $s", Idle, Says("forked")),
     ("brnr session close $s", Idle, Says("closed")),
+    ("brnr session delete $s", Ended, Says("deleted sess-1; brnr's transcript of it stays")),
+    ("brnr session delete $s --purge", Ended, Says("deleted sess-1, and brnr's transcript")),
     ("brnr session list -- brnr-claude-adapter", Nothing, Says("old-1")),
     ("brnr session resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
     ("brnr session resume $s --take-over", Idle, Says("started sess-1")),

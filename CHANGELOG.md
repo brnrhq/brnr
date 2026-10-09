@@ -29,6 +29,14 @@ brnr's own conventions:
 - `brnr queue show <s> <m>` shows one held message in full: its text,
   whether it interrupts, and its attachments; the socket's `queue` takes
   `show` (ADR 63).
+- `brnr session delete <s>` has the agent delete its copy of a session
+  (`session/delete`), the agent brnr recorded for it or the one named, and
+  is refused for a session open in a process and for an agent that can't
+  delete sessions. brnr's transcript stays, with a new `session_deleted`
+  event in it, as it does for an editor's `session/delete` through
+  `brnr acp`. `--purge` also deletes brnr's transcript of the session (its
+  events and raw ACP files, not the host logs), even if the agent no longer
+  has it (ADR 63).
 
 ### Changed
 

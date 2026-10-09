@@ -329,6 +329,8 @@ anything else for it fails before it reaches the agent.
 ```sh
 brnr session fork $s               # a copy of the session, in the same process
 brnr session close $s              # cancel a running turn, then close the session
+brnr session delete $s             # the agent deletes its copy; brnr's transcript stays
+brnr session delete $s --purge     # and brnr's transcript of it goes too
 brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here
@@ -376,6 +378,22 @@ process, `--include inactive` the others; both by default.
 
 `session resume` takes an id brnr knows, or any id the agent knows, which it
 resumes in `--cwd` (or here) with the agent after `--` (or the profile's).
+
+`session delete` is `session/delete`, asked of the agent brnr recorded for
+the session (or `--profile` or `-- <agent>`, for a session brnr has no
+transcript of), started for that as `session list` starts one. A session
+open in a process is refused (close it first), as is an agent that can't
+delete sessions (`sessionCapabilities.delete`). Only the agent's copy goes:
+brnr's transcript stays, still listed by `session list`, with a
+`session_deleted` in it, a record of no process's (its `host_id` null).
+`--purge` deletes the transcript too, the session's events file and raw ACP
+in each project folder under `BRNR_HOME`, and nothing else: the host logs
+are shared and stay. With `--purge`, an agent that didn't delete the session
+(it may no longer have it) is said on stderr, and the transcript is deleted
+all the same. An editor's `session/delete` through `brnr acp` goes to the
+agent as it is; once the agent has deleted the session, the editor's process
+records `session_deleted` too, and closes the session if it had it open.
+
 `brnr process stop` signals the agent's whole process group, so whatever the
 agent started in that group goes with it. The same cleanup runs when the agent
 exits or crashes on its own. A SIGKILL of the brnr host itself bypasses
@@ -400,6 +418,7 @@ show the same events, live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
+| `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |

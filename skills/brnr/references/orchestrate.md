@@ -72,6 +72,8 @@ brnr session close $s
 ```
 
 A running turn is cancelled first. The process stops with its last session.
+Deleting a session (`brnr session delete $s`: the agent's copy; with
+`--purge`, brnr's transcript too) can't be undone: only when the user asks.
 
 ## Exit statuses
 

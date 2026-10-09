@@ -38,7 +38,7 @@ the brnr that printed it (`brnr skill`).
 5. **Clean up what you start; touch nothing else.** Start workers with
    `--stop-when-idle`, and `brnr session close` each when its work is done.
    Sessions you didn't start, an editor's above all, you may watch and read, never
-   send to, cancel, close, stop or take over, unless the user asks.
+   send to, cancel, close, delete, stop or take over, unless the user asks.
 6. **Say what went wrong.** A failed turn, a dropped message, a timeout or
    an exited agent: tell the user what brnr said. Don't retry quietly.
 

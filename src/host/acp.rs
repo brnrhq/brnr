@@ -45,6 +45,9 @@
 //!   `shared_sessions` in the profile (ADR 42) it goes through, and the
 //!   session is served shared (see `Hold`).
 //!
+//! The editor's `session/delete` passes through as it is; once the agent has
+//! deleted the session, the host records a `session_deleted` (ADR 63).
+//!
 //! The editor's own steers (`_session/steering`) pass through untouched but
 //! for their ids, as every request does; once the agent has taken one into
 //! the turn, it is a `user_message` by the editor.
@@ -230,6 +233,10 @@ pub(super) enum Pending {
         cwd: Option<String>,
     },
     Close {
+        session: String,
+    },
+    /// The editor's `session/delete`, passed through as it is (ADR 63).
+    Delete {
         session: String,
     },
     /// The editor's `initialize`: the host notes what the agent can do.
@@ -515,6 +522,9 @@ impl Host {
                 }
                 self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
             }
+            ("session/delete", Some(session)) => {
+                self.pending.insert(key.to_owned(), Pending::Delete { session: session.clone() });
+            }
             ("session/prompt", Some(session)) => return self.editor_prompt(session, key, msg),
             ("_session/steering", Some(session)) => {
                 let text = prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
@@ -778,6 +788,12 @@ impl Host {
                     && let Some(i) = self.find(&session)
                 {
                     self.close_session(i, "editor");
+                }
+                Some(session)
+            }
+            Pending::Delete { session } => {
+                if result.is_some() {
+                    self.deleted(&session);
                 }
                 Some(session)
             }
@@ -1144,6 +1160,22 @@ impl Host {
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
         // After its last record, so nothing of it is lost (ADR 22).
         self.sink.close_session(&session);
+    }
+
+    /// The agent has deleted `session`, as the editor asked: a
+    /// `session_deleted`, and brnr's transcript stays (ADR 63). One open here
+    /// is gone from the agent, so it closes, as if the editor had closed it.
+    /// One no process has open has the event appended to its transcripts
+    /// too; one another process holds has it in the host log only, as that
+    /// process writes its transcript.
+    fn deleted(&mut self, session: &str) {
+        let event = json!({ "event": "session_deleted", "session": session, "by": "editor" });
+        let event = self.emit(event);
+        match self.find(session) {
+            Some(i) => self.close_session(i, "editor"),
+            None if lock::holder(session).is_none() => self.sink.append(session, event),
+            None => {}
+        }
     }
 
     /// Whether session `i` has nothing running, held or waiting for an

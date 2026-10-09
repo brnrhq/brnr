@@ -3103,6 +3103,165 @@ fn adr_0063_permission_timeout_flag_wins_over_the_profile() {
     env.stop();
 }
 
+// ---- deleting (ADR 63) -----------------------------------------------------
+
+/// A session that ran a turn (`reply first`), its process stopped since.
+fn ended(env: &Env, args: &[&str]) {
+    let mut args = args.to_vec();
+    args.extend(["--wait", "--prompt", "reply first"]);
+    env.start(&args);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+}
+
+/// Every file under the state directory's `projects`.
+fn transcript_files(env: &Env) -> Vec<String> {
+    let folders = fs::read_dir(env.dir.join("home/projects")).into_iter().flatten().flatten();
+    let files = folders.flat_map(|f| fs::read_dir(f.path()).into_iter().flatten().flatten());
+    let mut names: Vec<String> = files.map(|f| f.file_name().to_string_lossy().into()).collect();
+    names.sort();
+    names
+}
+
+/// `session delete` asks the agent brnr recorded for the session, in its cwd,
+/// to delete it: only the agent's copy goes. brnr's transcript stays, a row
+/// of `session list`, with `session_deleted` in it, a record of no process's,
+/// and the agent is still found for it.
+#[test]
+fn adr_0063_delete_keeps_the_transcript() {
+    let env = Env::new("c-delete");
+    ended(&env, &[]);
+    let out = env.ok(&["session", "delete", "sess-1"]);
+    assert_eq!(out, "deleted sess-1; brnr's transcript of it stays (brnr event log sess-1)\n");
+    let deletes = env.calls_of("session/delete");
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
+    assert_eq!(deletes[0]["params"], serde_json::json!({ "sessionId": "sess-1" }));
+    assert!(env.hosts().is_empty(), "a process was started");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("agent: first") && log.contains("session deleted (delete)"), "{log}");
+    let deleted = logged(&env, "sess-1", "session_deleted");
+    assert_eq!(deleted.len(), 1, "{deleted:?}");
+    assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"delete".into(), &Value::Null));
+    assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    assert_eq!(list[0]["session"], "sess-1", "{list}");
+    assert_eq!(list[0]["agent"], "fake_agent.py", "{list}");
+    // Asked again, of the agent recorded before the deletion.
+    let json: Value =
+        serde_json::from_str(&env.ok(&["session", "delete", "sess-1", "--json"])).unwrap();
+    assert_eq!((&json["deleted"], &json["error"]), (&true.into(), &Value::Null), "{json}");
+    assert_eq!(json["recorded"].as_array().map(Vec::len), Some(1), "{json}");
+    assert_eq!(json["purged"], serde_json::json!([]), "{json}");
+    assert_eq!(env.calls_of("session/delete").len(), 2);
+}
+
+/// A session brnr has no transcript of takes its agent from `--profile` or
+/// `-- <agent>`, and nothing is recorded: there is no transcript to keep.
+#[test]
+fn adr_0063_delete_a_session_only_the_agent_knows() {
+    let env = Env::new("c-delete-agent");
+    let err = env.fails(&["session", "delete", "old-1"]);
+    assert!(err.contains("brnr has no transcript of old-1: name its agent"), "{err}");
+    assert!(env.calls().is_empty(), "an agent was asked");
+    let out = env.ok(&["session", "delete", "old-1", "--", AGENT]);
+    assert_eq!(out, "deleted old-1; brnr has no transcript of it\n");
+    assert_eq!(env.calls_of("session/delete")[0]["params"]["sessionId"], "old-1");
+    assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
+    // An agent's error is the command's, without --purge.
+    let err = env.fails(&["session", "delete", "gone-1", "--", AGENT]);
+    assert!(err.contains("session/delete failed: Session not found: gone-1"), "{err}");
+    // With --purge too, when there is no transcript to delete either.
+    let err = env.fails(&["session", "delete", "gone-1", "--purge", "--", AGENT]);
+    assert!(
+        err.ends_with("Session not found: gone-1; brnr has no transcript of gone-1\n"),
+        "{err}"
+    );
+}
+
+/// `--purge` also deletes brnr's transcript of the session, its events and
+/// raw ACP, and nothing else: another session's files and the host logs stay.
+/// An agent that no longer has the session is said, and the transcript is
+/// deleted all the same.
+#[test]
+fn adr_0063_delete_purge() {
+    let env = Env::new("c-purge").agent("SESSION_ID", "gone-1");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    assert_eq!(env.ok(&["session", "fork", "gone-1"]), "forked gone-1 into sess-2\n");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let all = ["gone-1.acp.jsonl", "gone-1.jsonl", "sess-2.acp.jsonl", "sess-2.jsonl"];
+    assert_eq!(transcript_files(&env), all);
+    let hosts = fs::read_dir(env.dir.join("home/hosts")).unwrap().count();
+
+    let json: Value =
+        serde_json::from_str(&env.ok(&["session", "delete", "sess-2", "--purge", "--json"]))
+            .unwrap();
+    assert_eq!(json["deleted"], true, "{json}");
+    let purged: Vec<&str> =
+        json["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(purged.len(), 2, "{json}");
+    assert!(purged[0].ends_with("/sess-2.jsonl") && purged[1].ends_with("/sess-2.acp.jsonl"));
+    assert_eq!(json["recorded"], serde_json::json!([]), "{json}");
+    assert_eq!(transcript_files(&env), ["gone-1.acp.jsonl", "gone-1.jsonl"]);
+
+    let out = env.run(&["session", "delete", "gone-1", "--purge"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains(
+            "the agent didn't delete gone-1 (session/delete failed: Session not found: gone-1): it \
+             may no longer have it"
+        ),
+        "{err}"
+    );
+    let text = stdout(&out);
+    assert!(text.starts_with("deleted brnr's transcript of gone-1:\n  "), "{text}");
+    assert_eq!(text.lines().count(), 3, "{text}");
+    assert_eq!(env.calls_of("session/delete").len(), 2);
+    assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
+    assert_eq!(env.ok(&["session", "list", "--json"]).trim(), "[]");
+    // The host logs are shared, and stay.
+    assert_eq!(fs::read_dir(env.dir.join("home/hosts")).unwrap().count(), hosts);
+}
+
+/// A session open in a process isn't deleted, with `--purge` or without:
+/// it is closed first. The agent isn't asked.
+#[test]
+fn adr_0063_delete_refuses_an_open_session() {
+    let env = Env::new("c-delete-open");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    let pid = env.pid();
+    for args in [&["session", "delete", "sess-1"][..], &["session", "delete", "sess-1", "--purge"]]
+    {
+        let err = env.fails(args);
+        let want =
+            format!("sess-1 is open in process {pid}: close it first (brnr session close sess-1)");
+        assert!(err.contains(&want), "{err}");
+    }
+    assert!(env.calls_of("session/delete").is_empty());
+    assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
+    assert!(env.ok(&["session", "status", "sess-1"]).contains("session sess-1"));
+    env.ok(&["session", "close", "sess-1"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    env.ok(&["session", "delete", "sess-1"]);
+}
+
+/// An agent without `sessionCapabilities.delete` isn't asked to delete, and
+/// nothing is deleted, `--purge` or not (P7).
+#[test]
+fn adr_0063_delete_needs_an_agent_that_can_delete() {
+    let env = Env::new("c-delete-cant").agent("NO_DELETE", "1");
+    ended(&env, &[]);
+    for args in [&["session", "delete", "sess-1"][..], &["session", "delete", "sess-1", "--purge"]]
+    {
+        let err = env.fails(args);
+        assert!(err.contains("the agent can't delete sessions"), "{err}");
+    }
+    assert!(env.calls_of("session/delete").is_empty());
+    assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
+    assert!(logged(&env, "sess-1", "session_deleted").is_empty());
+}
+
 // ---- the skill (ADR 46) --------------------------------------------------
 
 const REFERENCES: [&str; 4] = ["orchestrate", "approvals", "observe", "setup"];

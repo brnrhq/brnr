@@ -387,6 +387,50 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     env.stop();
 }
 
+/// `session delete --purge` deletes only the session's own two files in
+/// each project folder under the state directory: not another session's,
+/// not the host logs, nothing a symlink in it points at (a project folder,
+/// or a file named like the transcript), and nothing an id that climbs
+/// could name (ADR 63).
+#[test]
+fn adr_0063_purge_deletes_only_that_sessions_files() {
+    let env = Env::new("s-purge");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let projects = env.dir.join("home/projects");
+    let folder = fs::read_dir(&projects).unwrap().next().unwrap().unwrap().path();
+    let outside = env.dir.join("outside");
+    fs::create_dir(&outside).unwrap();
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        fs::write(outside.join(name), "keep\n").unwrap();
+    }
+    symlink(&outside, projects.join("linked")).unwrap();
+    fs::create_dir(projects.join("other")).unwrap();
+    symlink(outside.join("target"), projects.join("other/sess-1.jsonl")).unwrap();
+    fs::write(folder.join("sess-2.jsonl"), "keep\n").unwrap();
+    let before_hosts = tree(&env.dir.join("home/hosts"));
+
+    env.ok(&["session", "delete", "sess-1", "--purge"]);
+    assert!(!folder.join("sess-1.jsonl").exists() && !folder.join("sess-1.acp.jsonl").exists());
+    // The link went, not what it pointed at; the linked folder wasn't looked in.
+    assert!(fs::symlink_metadata(projects.join("other/sess-1.jsonl")).is_err());
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        assert_eq!(fs::read_to_string(outside.join(name)).unwrap(), "keep\n", "{name}");
+    }
+    assert!(folder.join("sess-2.jsonl").is_file(), "another session's file went");
+    assert_eq!(tree(&env.dir.join("home/hosts")), before_hosts, "a host log went");
+
+    // An id is a file name only escaped: one that climbs names nothing.
+    for id in ["../outside/sess-1", "..", "../../outside/target"] {
+        env.ok(&["session", "delete", id, "--purge", "--", AGENT]);
+    }
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        assert_eq!(fs::read_to_string(outside.join(name)).unwrap(), "keep\n", "{name}");
+    }
+    assert!(folder.join("sess-2.jsonl").is_file());
+}
+
 // ---- approvals (ADR 27) ------------------------------------------------
 
 /// What the agent was answered to permission request `request`, if it was.

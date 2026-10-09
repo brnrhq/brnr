@@ -8,6 +8,7 @@
 //! - history.rs: `event log`
 //! - settings.rs: `config get`, `config set`, `prompt commands`,
 //!   `session fork`, `session close`
+//! - delete.rs: `session delete`
 //! - sessions.rs: `session list`
 //! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
 //!   `doctor`; skill.rs: `skill`
@@ -52,6 +53,7 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", brnr::render::clean(&format!($($arg)*))) };
 }
 
+mod delete;
 mod doctor;
 mod history;
 mod notify;
@@ -81,6 +83,7 @@ session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
+  brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
 
@@ -160,6 +163,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("session", Some("status")) => done(status(rest)),
         ("session", Some("fork")) => settings::fork(rest),
         ("session", Some("close")) => settings::close(rest),
+        ("session", Some("delete")) => delete::delete(rest),
         ("prompt", Some("send")) => talk::send(rest),
         ("prompt", Some("cancel")) => talk::cancel(rest),
         ("prompt", Some("commands")) => settings::commands(rest),
@@ -456,7 +460,14 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
         }
-        let host_id = last["host_id"].as_str().unwrap_or_default().to_owned();
+        // The process that last served it: a deletion's record is no
+        // process's (ADR 63).
+        let served = match last["host_id"].is_string() {
+            true => Some(last.clone()),
+            false => last_record_where(&file, |r| r["host_id"].is_string()),
+        };
+        let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
+        let host_id = host_id.unwrap_or_default().to_owned();
         let start = started
             .entry(host_id.clone())
             .or_insert_with(|| first_record(&paths::host_log(&host_id)).unwrap_or_default());
@@ -487,6 +498,12 @@ fn first_record(path: &Path) -> Option<Value> {
 /// wrote. A line cut short is never read as a record: an object ends only
 /// at its last byte.
 fn last_record(path: &Path) -> Option<Value> {
+    last_record_where(path, |_| true)
+}
+
+/// The last record in a file that brnr can read and `wanted` takes, read
+/// backwards as [`last_record`] reads.
+fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
     use std::io::{Seek, SeekFrom};
     let mut file = fs::File::open(path).ok()?;
     let mut end = file.metadata().ok()?.len();
@@ -501,13 +518,13 @@ fn last_record(path: &Path) -> Option<Value> {
         tail = chunk;
         // Its lines, last first; the first is whole only at the file's start.
         while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = as_record(&tail[i + 1..]) {
+            if let Some(found) = as_record(&tail[i + 1..]).filter(&wanted) {
                 return Some(found);
             }
             tail.truncate(i);
         }
         if start == 0 {
-            return as_record(&tail);
+            return as_record(&tail).filter(&wanted);
         }
         end = start;
     }

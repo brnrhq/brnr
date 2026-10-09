@@ -308,6 +308,11 @@ impl Asked {
         Ok((asked, caps))
     }
 
+    /// The agent's pid.
+    pub(super) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Sends a request and waits for its answer: its result, or its error.
     pub(super) fn ask(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;

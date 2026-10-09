@@ -1954,6 +1954,53 @@ fn adr_0020_editor_close_is_an_event() {
     assert!(env.ok(&["process", "list"]).contains("editor"));
 }
 
+/// The editor's `session/delete` of `session`, with `id`.
+fn editor_delete(id: u64, session: &str) -> String {
+    let params = json!({ "sessionId": session });
+    json!({ "jsonrpc": "2.0", "id": id, "method": "session/delete", "params": params }).to_string()
+}
+
+/// The editor's `session/delete` goes to the agent as it is. Once the agent
+/// has deleted the session, its process records a `session_deleted` by the
+/// editor: in the transcript of one no process has open, which stays, and
+/// in that of one open there, which then closes (ADR 63). One the agent
+/// didn't delete records nothing.
+#[test]
+fn adr_0063_an_editors_delete_is_recorded() {
+    let env = Env::new("ed-delete");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_delete(2, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"], json!({}));
+    assert_eq!(env.calls_of("session/delete")[0]["params"], json!({ "sessionId": "sess-1" }));
+    let deleted = || env.ok(&["event", "log", "sess-1", "--json", "--events", "session_deleted"]);
+    assert!(wait_for(Duration::from_secs(5), || !deleted().is_empty()), "not recorded");
+    let event: Value = serde_json::from_str(deleted().lines().next().unwrap()).unwrap();
+    assert_eq!((&event["session"], &event["by"]), (&"sess-1".into(), &"editor".into()));
+    assert_eq!(event["host_id"], editor_process(&env)["host_id"]);
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("agent: first"));
+    assert!(env.ok(&["session", "list"]).contains("sess-1"), "the transcript went");
+    writeln!(to_agent, "{}", editor_delete(3, "gone-1")).unwrap();
+    assert!(response(&mut from_agent, 3)["error"].is_object());
+    assert_eq!(host_logs(&env).matches(r#""event":"session_deleted""#).count(), 1);
+    let _ = editor.kill();
+
+    let env = Env::new("ed-delete-open");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_delete(3, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"], json!({}));
+    let names = "session_deleted,session_closed";
+    let ends = || env.ok(&["event", "log", "sess-1", "--json", "--events", names]);
+    assert!(wait_for(Duration::from_secs(5), || ends().lines().count() == 2), "{}", ends());
+    let ends: Vec<Value> = ends().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!((&ends[0]["event"], &ends[0]["by"]), (&"session_deleted".into(), &"editor".into()));
+    assert_eq!((&ends[1]["event"], &ends[1]["by"]), (&"session_closed".into(), &"editor".into()));
+    assert!(!env.ok(&["session", "list", "--include", "active"]).contains("sess-1"), "still open");
+    let _ = editor.kill();
+}
+
 /// When the editor goes, what the agent started goes too: its process
 /// group, as when it is stopped.
 #[test]

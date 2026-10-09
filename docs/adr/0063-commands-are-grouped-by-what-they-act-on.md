@@ -125,6 +125,12 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   events file and `<id>.acp.jsonl`, ADR 22), not the process logs, which
   are shared. With `--purge`, an agent that no longer has the session is
   said, and the transcript is deleted all the same (P3).
+  `session_deleted` is recorded in the session's transcript: by the command,
+  as a record of no process's (`host_id` null), since no process has the
+  session open; by the editor's process, which closes the session if it had
+  it open. An agent whose `session/delete` fails (an error, or no answer)
+  hasn't deleted it, which `--purge` says, and takes as its no longer
+  having the session.
 - **`prompt send`** is `send`, flags unchanged; **`prompt cancel`** is
   `cancel`, the turn's `session/cancel`; **`prompt commands`** is `commands`.
 - **`queue`** is `queue` split into verbs. `show` is new: one held message
@@ -277,11 +283,30 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     both by default; an unknown state fails.
   - `adr_0063_list_stops_an_agent_that_wont_go` (ADR 15's): the agent asked,
     ignoring SIGTERM, is killed with what it started.
+  - `adr_0063_delete_keeps_the_transcript`: `session delete` asks the
+    recorded agent, which deletes its copy; the transcript stays, listed,
+    with `session_deleted` in it, and the agent is still found for it.
+  - `adr_0063_delete_a_session_only_the_agent_knows`: one brnr has no
+    transcript of needs its agent named, and records nothing.
+  - `adr_0063_delete_purge`: `--purge` deletes the session's two files, not
+    another session's nor the host logs, and does so for an agent that no
+    longer has the session, saying so.
+  - `adr_0063_delete_refuses_an_open_session`: refused, the agent not asked,
+    until the session is closed.
+  - `adr_0063_delete_needs_an_agent_that_can_delete`: an agent without
+    `sessionCapabilities.delete` isn't asked, and nothing is deleted.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0063_an_editors_delete_is_recorded`: the editor's `session/delete`
+    reaches the agent; once answered, `session_deleted` by the editor is in
+    the transcript, and an open session closes.
 - [tests/security.rs](../../tests/security.rs)
   - `adr_0063_timeout_rejects_once_else_cancels_the_turn`: the timeout
     answers `reject_once`; without it, `session/cancel` goes first and the
     request is answered `cancelled`, and the turn ends.
+  - `adr_0063_purge_deletes_only_that_sessions_files`: nothing a symlink
+    points at, nor an id that climbs names, is deleted.
+- [src/render.rs](../../src/render.rs)
+  - `adr_0063_a_deletion_is_shown_with_who_deleted`.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
-`session new --pid` and its refusals; `session delete` with and without
-`--purge`, and an editor's delete through `brnr acp`.
+`session new --pid` and its refusals.

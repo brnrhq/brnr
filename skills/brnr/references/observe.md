@@ -66,6 +66,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
 {"event": "session_closed", "session": "0f6c…", "by": "idle"}
+{"event": "session_deleted", "session": "0f6c…", "by": "delete"}
 {"event": "history", "session": "0f6c…", "updates": 42, "recorded": true}
 {"event": "exited", "status": {"code": 0}}
 ```
@@ -86,6 +87,9 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.
 - `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `session_deleted`: the agent deleted its copy of the session, `by`
+  `delete` (`brnr session delete`) or the `editor`. brnr's transcript stays,
+  and `event log` still reads it.
 - `history`: a `session/load` replayed the session's history (`updates`).
   `recorded: true` when brnr had no transcript of it: the history is in the
   log as events with `replayed: true` (`(replayed) user: …` in text);

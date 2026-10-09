@@ -49,6 +49,7 @@ session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
+  brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
 
@@ -134,6 +135,7 @@ with the agent's capabilities.
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; errors on stderr. |
+| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) even if the agent no longer has it. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded` and `purged` (file paths), `failed` (files not deleted; exit 1). |
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |

@@ -270,7 +270,8 @@ brnr prompt send $s --interrupt "stop, wrong branch"
 brnr event watch $s                <span class="c"># messages, tools, plan and approvals, live</span>
 brnr permission requests           <span class="c"># approvals waiting for an answer</span>
 brnr permission allow $s p1
-brnr session close $s</pre>
+brnr session close $s
+brnr session delete $s --purge     <span class="c"># the agent's copy, and brnr's transcript</span></pre>
         <p>Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs. In an editor's session, <code>prompt send</code> and <code>permission allow</code> work once its profile enables them.</p>
       </div>
     </div>

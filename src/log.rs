@@ -126,6 +126,8 @@ enum Cmd {
     Close { session: String },
     Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8> },
     Note { session: Option<String>, ts: SystemTime, event: String },
+    // An event for a session not open here, into its transcripts.
+    Append { session: String, ts: SystemTime, event: String },
     // The queue has room again after `gap`.
     Skipped { ts: SystemTime, gap: Gap },
     // Called once what was queued before it is written.
@@ -291,6 +293,17 @@ impl Sink {
         });
     }
 
+    /// An event for `session`, which this process doesn't have open, into
+    /// each of its events files ([`transcripts`]): an editor's deletion of a
+    /// session it hasn't opened here (ADR 63). Never skipped.
+    pub fn append(&self, session: &str, event: Value) {
+        self.record(Some(session), false, true, |ts| Cmd::Append {
+            session: session.to_owned(),
+            ts,
+            event: event.to_string(),
+        });
+    }
+
     /// Queues the record `make` makes, or, with the queue full, counts it
     /// skipped without making it, unless it is one to `keep`. Never waits for
     /// the logger to write: it only takes the lock to take the gap.
@@ -439,6 +452,15 @@ impl Writer {
             }
             Cmd::Note { session, ts, event } => {
                 self.write(ts, session.as_deref(), false, &event_body(event));
+            }
+            Cmd::Append { session, ts, event } => {
+                let record = self.head.record(ts, Some(&session), &event_body(event));
+                for path in transcripts(&session) {
+                    let put = self.open_file(ts, &path).and_then(|mut out| out.put(&record));
+                    if let Err(err) = put {
+                        self.failed(ts, &session, &path, &err);
+                    }
+                }
             }
             Cmd::Skipped { ts, gap } => self.skipped(ts, gap),
             Cmd::Written(then) => {
@@ -855,6 +877,112 @@ fn at(path: &Path, err: io::Error) -> io::Error {
         Some(libc::ENXIO) => refused(path, "is not a regular file"),
         _ => io::Error::new(err.kind(), format!("{}: {err}", path.display())),
     }
+}
+
+/// `session`'s events files under the state directory: in each project
+/// folder, the one named for its id (ADR 53), where there is one. A session
+/// resumed in another folder has one in each.
+pub fn transcripts(session: &str) -> Vec<PathBuf> {
+    let name = format!("{}.jsonl", paths::file_name(session));
+    let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
+    let mut found: Vec<PathBuf> = folders
+        .flatten()
+        .map(|folder| folder.path().join(&name))
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()))
+        .collect();
+    found.sort();
+    found
+}
+
+/// Records `event` in each of `session`'s events files ([`transcripts`]),
+/// for a session no process has open: a record of no process's, its
+/// `host_id`, `host_pid` and `proxy_pid` null, with the pid of the agent
+/// `brnr session delete` started (ADR 63). Written as the logger writes:
+/// private, never through a symlink (ADR 59), on a line of its own (ADR
+/// 55). The files written to.
+pub fn record_in_transcripts(
+    session: &str,
+    agent_pid: u32,
+    event: &Value,
+) -> Result<Vec<PathBuf>, String> {
+    let mut record = format!(
+        r#"{{"ts":"{}","host_id":null,"host_pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session_id":{},"#,
+        rfc3339(SystemTime::now()),
+        json!(session),
+    )
+    .into_bytes();
+    record.extend_from_slice(&event_body(event));
+    let mut written = Vec::new();
+    for path in transcripts(session) {
+        let (mut out, _) = open_append(&path).map_err(|e| e.to_string())?;
+        out.put(&record).map_err(|e| format!("{}: {e}", path.display()))?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+/// Deletes `session`'s transcripts (ADR 63): in each project folder under
+/// the state directory, its events file and its raw ACP, named for its id
+/// (ADR 53), and nothing else: not the host logs, which are shared, nor
+/// another session's files. The state directory, `projects` and each folder
+/// are opened without following a symlink, each from the one before, and
+/// the names removed from what was opened (`unlinkat`), so nothing outside
+/// the state directory is reached through a link put in it: a symlinked
+/// folder isn't looked in, and a symlink with a transcript's name is removed,
+/// not what it points at. The paths deleted, and what couldn't be.
+pub fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
+    let (mut deleted, mut failed) = (Vec::new(), Vec::new());
+    let root = paths::state_dir();
+    let projects_path = root.join("projects");
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    fn named(path: &Path) -> impl Fn(io::Error) -> io::Error + '_ {
+        move |e| io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+    }
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(&root)
+        .map_err(named(&root))
+        .and_then(|root| {
+            sys::openat(root.as_fd(), c"projects", flags, 0).map_err(named(&projects_path))
+        });
+    let projects = match opened {
+        Ok(projects) => projects,
+        Err(e) if e.kind() == ErrorKind::NotFound => return (deleted, failed),
+        Err(e) => {
+            failed.push(e.to_string());
+            return (deleted, failed);
+        }
+    };
+    let name = paths::file_name(session);
+    let names = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
+    let entries = std::fs::read_dir(&projects_path).into_iter().flatten().flatten();
+    let mut folders: Vec<_> = entries.map(|e| e.file_name()).collect();
+    folders.sort();
+    for folder in folders {
+        let path = projects_path.join(&folder);
+        let Ok(c_folder) = CString::new(folder.as_bytes()) else { continue };
+        let dir = match sys::openat(projects.as_fd(), &c_folder, flags, 0) {
+            Ok(dir) => dir,
+            // Not a project folder: a file, or a symlink, never followed.
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTDIR | libc::ELOOP)) => continue,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => {
+                failed.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        for file in &names {
+            // An escaped name has no NUL (ADR 53).
+            let c_file = CString::new(file.as_str()).expect("an escaped name");
+            match sys::unlinkat(dir.as_fd(), &c_file, 0) {
+                Ok(()) => deleted.push(path.join(file)),
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => failed.push(format!("{}: {e}", path.join(file).display())),
+            }
+        }
+    }
+    (deleted, failed)
 }
 
 /// Why no transcript is written at `path`, and what to do.

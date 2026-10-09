@@ -25,6 +25,7 @@ with environment variables:
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
+  NO_DELETE=1       don't offer session/delete
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
                     authenticate with fake-login came first
@@ -63,7 +64,9 @@ with environment variables:
 $/cancel_request for the prompt that hangs answers it with an error, -32800.
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
-would, a page each. session/load replays a question, an answer and a title.
+would, a page each. session/load replays a question, an answer and a title. session/delete
+deletes any session but one whose id starts with gone, which it doesn't have
+(-32002).
 
 A client whose initialize advertises boolean config options
 (clientCapabilities.session.configOptions.boolean) also gets a boolean option,
@@ -508,6 +511,8 @@ for line in sys.stdin.buffer:
             del session_caps["close"]
         if env("NO_LIST"):
             del session_caps["list"]
+        if not env("NO_DELETE"):
+            session_caps["delete"] = {}
         caps = {
             "loadSession": True,
             "promptCapabilities": {"image": not env("NO_IMAGE")},
@@ -574,6 +579,11 @@ for line in sys.stdin.buffer:
         result(mid, opened(f"sess-{sessions}"))
     elif method == "session/close":
         result(mid, {})
+    elif method == "session/delete" and not env("NO_DELETE"):
+        if sid.startswith("gone"):
+            error(mid, -32002, f"Session not found: {sid}")
+        else:
+            result(mid, {})
     elif method == "session/list":
         old = {
             "sessionId": "old-1",

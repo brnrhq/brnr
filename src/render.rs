@@ -110,6 +110,8 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
+        // The agent's copy deleted; brnr's transcript stays (ADR 63).
+        "session_deleted" => format!("session deleted ({})", s(&e["by"])),
         // What a load replayed, and whether it is in the transcript as
         // replayed events or was there already (ADR 57).
         "history" => {
@@ -489,6 +491,13 @@ mod tests {
         assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
         let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
         assert_eq!(shown(replayed), "(replayed) user: old");
+    }
+
+    #[test]
+    fn adr_0063_a_deletion_is_shown_with_who_deleted() {
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let deleted = serde_json::json!({ "event": "session_deleted", "by": "editor" });
+        assert_eq!(shown(deleted), "session deleted (editor)");
     }
 
     #[test]

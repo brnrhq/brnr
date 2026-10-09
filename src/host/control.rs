@@ -51,7 +51,8 @@
 //! without a list gets every event except `acp`, which is busy (one per
 //! streamed chunk) and must be asked for by name. A held message that goes
 //! unsent (`cancel`, `queue`, its session closing, the agent exiting) is a
-//! `message_dropped`; a session that closes, `session_closed`.
+//! `message_dropped`; a session that closes, `session_closed`; one the agent
+//! deleted, `session_deleted`.
 //!
 //! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
 //! up has stopped reading and is dropped rather than buffered for without
@@ -104,6 +105,7 @@ pub const EVENTS: &[&str] = &[
     "message_dropped",
     "context_dropped",
     "session_closed",
+    "session_deleted",
     "history",
     "line_too_long",
     "exited",
