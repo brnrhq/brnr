@@ -78,8 +78,13 @@ impl SessionState {
         changed
     }
 
+    /// The mode, or with no modes the config option of category `mode`, as
+    /// `brnr mode` has it (ADR 28).
     pub(super) fn current_mode(&self) -> Option<&str> {
-        self.modes.as_ref()?["currentModeId"].as_str()
+        match &self.modes {
+            Some(modes) => modes["currentModeId"].as_str(),
+            None => self.option("mode")?["currentValue"].as_str(),
+        }
     }
 
     pub(super) fn set_mode(&mut self, mode: &str) {

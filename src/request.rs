@@ -46,7 +46,7 @@ pub struct Request {
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Editor(Editor),
-    Headless(Headless),
+    Headless(Box<Headless>),
 }
 
 /// `brnr acp`: the editor's process, joined to the proxy by the link on
@@ -69,11 +69,11 @@ pub struct Editor {
 pub struct Headless {
     /// Resume this session instead of opening a new one.
     pub resume: Option<String>,
-    /// The mode, the model (the config option whose category is `model`,
-    /// ADR 28) and config options to set before the prompt.
-    pub mode: Option<String>,
-    pub model: Option<String>,
-    pub config: BTreeMap<String, String>,
+    /// What the start's flags set (`--mode`, `--model`, `--set`), and what
+    /// the profile does (`mode`, `config`): the flags win, setting by
+    /// setting, once the agent has said which option is which (ADR 58).
+    pub settings: Settings,
+    pub defaults: Settings,
     /// As ACP has them.
     pub mcp_servers: Vec<Value>,
     /// The login method to run after `initialize` (ADR 30).
@@ -90,6 +90,16 @@ pub struct Headless {
     /// `start --foreground`: the process is `start`'s child, and shows the
     /// session on its stdout.
     pub foreground: Option<Foreground>,
+}
+
+/// The mode, the model (the config option whose category is `model`,
+/// ADR 28) and config options by id, to set before the prompt.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    pub mode: Option<String>,
+    pub model: Option<String>,
+    pub config: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]

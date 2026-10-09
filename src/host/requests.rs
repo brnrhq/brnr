@@ -3,23 +3,26 @@
 //! - opening the session of a headless start: `initialize`, `authenticate`
 //!   if the start names a login method (ADR 30), then `session/new`,
 //!   `session/resume` or `session/load` (a resumed session's lock taken
-//!   first, ADR 3), then the mode and config options the start asked for;
-//!   then the start commits (see start.rs), and the prompt goes;
+//!   first, ADR 3), then the mode and config options the start asked for,
+//!   its flags over its profile's (ADR 58); then the start commits (see
+//!   start.rs), and the prompt goes;
 //! - what bridges ask of the agent through the host: set the mode, a config
 //!   option or the model, fork or close a session. The bridge gets its answer
 //!   when the agent's arrives;
 //! - steering a message into a running turn (`_session/steering`, see
 //!   acp.rs).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::acp::{Held, new_session};
+use super::state::SessionState;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
+use crate::request::Settings;
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, error_message};
 
 pub(super) enum HostRequest {
@@ -47,11 +50,12 @@ pub(super) enum Open {
 }
 
 /// What a headless start applies before the first prompt. The mode and the
-/// model are found as `brnr mode` and `brnr model` find them (ADR 28).
-#[derive(Clone)]
+/// model are found as `brnr mode` and `brnr model` find them (ADR 28): the
+/// model as the id of its option, and the value.
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum SetupStep {
     Mode(String),
-    Model(String),
+    Model(String, String),
     Config(String, String),
 }
 
@@ -59,7 +63,7 @@ impl SetupStep {
     fn describe(&self) -> String {
         match self {
             SetupStep::Mode(mode) => format!("setting mode {mode}"),
-            SetupStep::Model(model) => format!("setting model {model}"),
+            SetupStep::Model(_, model) => format!("setting model {model}"),
             SetupStep::Config(id, value) => format!("setting {id}={value}"),
         }
     }
@@ -176,6 +180,11 @@ impl Host {
                 self.sessions[i].replaying = false;
                 self.sessions[i].state.result(&result);
                 self.starting = Some(session);
+                let (flags, profile) = std::mem::take(&mut self.settings);
+                match setup_steps(&flags, &profile, &self.sessions[i].state) {
+                    Ok(steps) => self.setup = steps,
+                    Err(error) => return self.fail_start(&error),
+                }
                 self.run_setup(i);
             }
             HostRequest::Setup(step) => {
@@ -280,10 +289,7 @@ impl Host {
             SetupStep::Mode(mode) => {
                 Ok(("session/set_mode", json!({ "sessionId": session, "modeId": mode })))
             }
-            SetupStep::Model(model) => match option("model") {
-                Some(id) => set(id, model),
-                None => Err("the agent offers no model choice".to_owned()),
-            },
+            SetupStep::Model(id, model) => set(id, model),
             SetupStep::Config(id, value) => set(id, value),
         };
         match request {
@@ -468,16 +474,76 @@ impl Capabilities {
     }
 }
 
-/// A queue of setup steps from the start's mode, model and config options.
+/// The setup steps of a headless start, once its session is open: its flags
+/// over its profile's settings, setting by setting (ADR 58). A config option
+/// whose category is `mode` or `model` is that setting, so `--model` replaces
+/// a profile's `config = { <its id> = … }`. Two values for one setting from
+/// the same source fail (P4).
 pub(super) fn setup_steps(
+    flags: &Settings,
+    profile: &Settings,
+    state: &SessionState,
+) -> Result<VecDeque<SetupStep>, String> {
+    let id = |category| state.option(category).and_then(|o| o["id"].as_str()).map(str::to_owned);
+    let ids = (id("mode"), id("model"));
+    let flags = Resolved::of(flags, &ids, None)?;
+    let profile = Resolved::of(profile, &ids, Some(&flags))?;
+    let mode = flags.mode.or(profile.mode);
+    let mut steps: VecDeque<SetupStep> = mode.map(SetupStep::Mode).into_iter().collect();
+    if let Some(model) = flags.model.or(profile.model) {
+        let Some(id) = ids.1 else {
+            return Err(format!("setting model {model}: the agent offers no model choice"));
+        };
+        steps.push_back(SetupStep::Model(id, model));
+    }
+    let mut config = profile.config;
+    config.extend(flags.config);
+    steps.extend(config.into_iter().map(|(k, v)| SetupStep::Config(k, v)));
+    // A value its option's type doesn't take (ADR 28) fails the start before
+    // any of them is sent.
+    for step in &steps {
+        if let SetupStep::Model(id, value) | SetupStep::Config(id, value) = step {
+            state.config_params("", id, value).map_err(|e| format!("{}: {e}", step.describe()))?;
+        }
+    }
+    Ok(steps)
+}
+
+/// One source's settings, with its options of category `mode` and `model`
+/// taken as the mode and the model.
+struct Resolved {
     mode: Option<String>,
     model: Option<String>,
-    config: Vec<(String, String)>,
-) -> VecDeque<SetupStep> {
-    let mut steps: VecDeque<SetupStep> = mode.into_iter().map(SetupStep::Mode).collect();
-    steps.extend(model.map(SetupStep::Model));
-    steps.extend(config.into_iter().map(|(k, v)| SetupStep::Config(k, v)));
-    steps
+    config: BTreeMap<String, String>,
+}
+
+impl Resolved {
+    /// `ids`: the agent's mode and model options. `over`: the flags, when
+    /// these are the profile's settings: what the flags set, the profile's
+    /// values for are neither applied nor checked.
+    fn of(
+        s: &Settings,
+        ids: &(Option<String>, Option<String>),
+        over: Option<&Resolved>,
+    ) -> Result<Resolved, String> {
+        let (single, option) =
+            if over.is_some() { ("the profile's ", "its config ") } else { ("--", "--set ") };
+        let mut config = s.config.clone();
+        let mut one = |what: &str, value: &Option<String>, id: &Option<String>, won: bool| {
+            let other = id.as_ref().and_then(|id| Some((id, config.remove(id)?)));
+            match (value, other) {
+                _ if won => Ok(None),
+                (Some(value), Some((id, other))) if *value != other => Err(format!(
+                    "{single}{what} {value} and {option}{id}={other} both set the {what}"
+                )),
+                (Some(value), _) => Ok(Some(value.clone())),
+                (None, other) => Ok(other.map(|(_, v)| v)),
+            }
+        };
+        let mode = one("mode", &s.mode, &ids.0, over.is_some_and(|o| o.mode.is_some()))?;
+        let model = one("model", &s.model, &ids.1, over.is_some_and(|o| o.model.is_some()))?;
+        Ok(Resolved { mode, model, config })
+    }
 }
 
 /// ACP's `auth_required`, or an agent that says as much.
@@ -531,5 +597,30 @@ mod tests {
         let forks = json!({ "agentCapabilities": { "sessionCapabilities": { "fork": {} } } });
         let forks = Capabilities::of(&forks);
         assert!(forks.fork && !forks.resume && !forks.steering);
+    }
+
+    #[test]
+    fn adr_0028_a_start_refuses_a_boolean_it_cant_send_before_sending_any() {
+        let state = SessionState {
+            config: Some(json!([
+                { "id": "model", "category": "model", "type": "select", "currentValue": "small" },
+                { "id": "fast", "type": "boolean", "currentValue": false },
+            ])),
+            ..SessionState::default()
+        };
+        let flags = |fast: &str| Settings {
+            model: Some("large".into()),
+            config: BTreeMap::from([("fast".into(), fast.into())]),
+            ..Settings::default()
+        };
+        let steps = setup_steps(&flags("true"), &Settings::default(), &state).unwrap();
+        let steps: Vec<_> = steps.into_iter().collect();
+        let want = [
+            SetupStep::Model("model".into(), "large".into()),
+            SetupStep::Config("fast".into(), "true".into()),
+        ];
+        assert_eq!(steps, want);
+        let error = setup_steps(&flags("on"), &Settings::default(), &state).unwrap_err();
+        assert_eq!(error, "setting fast=on: fast is a boolean option: true or false, not on");
     }
 }

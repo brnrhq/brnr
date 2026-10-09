@@ -3,6 +3,9 @@
 Accepted (former decision 9); reviewed 2026-10-07. Implemented, telling
 the editor included (ADR 4).
 Resolves review item 6 with ADR 4.
+Amended by 58: a start's flags win over its profile's settings, setting by
+setting, the mode and model options included; one source's values that
+disagree fail the start.
 
 ## Context
 
@@ -30,7 +33,8 @@ model.
   JSON boolean, and any other value for it fails before reaching the agent
   (P7); a `select` option, or one the agent hasn't advertised, gets the value
   as a value id (a string), with no `type`. `start --set` and the profile's
-  headless `config` are sent the same way. An agent offers boolean options
+  headless `config` are sent the same way, once ADR 58 has merged them, and
+  a value one of them can't take fails the start before any is sent. An agent offers boolean options
   only to a client that advertises them
   (`clientCapabilities.session.configOptions.boolean`): an editor can, and
   then an editor's session has them; brnr's own headless client doesn't.
@@ -68,3 +72,5 @@ Run `cargo test --release adr_0028_`. Named claims and their assertions:
   - `adr_0028_a_boolean_option_is_set_as_a_boolean`.
 - [src/host/state.rs](../../src/host/state.rs)
   - `adr_0028_a_config_value_is_sent_as_its_option_type_has_it`.
+- [src/host/requests.rs](../../src/host/requests.rs)
+  - `adr_0028_a_start_refuses_a_boolean_it_cant_send_before_sending_any`.
