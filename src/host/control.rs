@@ -811,7 +811,7 @@ impl Host {
                 let mode = text("mode")?;
                 let state = &self.sessions[i].state;
                 let params = json!({ "sessionId": session, "modeId": mode });
-                let option = state.option("mode").map(|o| o["id"].clone());
+                let option = state.option("mode").map(|o| o["id"].as_str().unwrap_or_default());
                 if let Some(modes) = &state.modes {
                     let known = modes["availableModes"]
                         .as_array()
@@ -828,7 +828,7 @@ impl Host {
                     );
                 } else if let Some(id) = option {
                     // An agent with modes only as a config option.
-                    let params = json!({ "sessionId": session, "configId": id, "value": mode });
+                    let params = state.config_params(&session, id, &mode)?;
                     self.peer_op(
                         peer,
                         req_id,
@@ -842,7 +842,7 @@ impl Host {
             }
             "set_config" => {
                 let (option, value) = (text("option")?, text("value")?);
-                let params = json!({ "sessionId": session, "configId": option, "value": value });
+                let params = self.sessions[i].state.config_params(&session, &option, &value)?;
                 self.peer_op(
                     peer,
                     req_id,
@@ -855,10 +855,10 @@ impl Host {
                 // The config option of category `model`; never
                 // `session/set_model` (ADR 28).
                 let model = text("model")?;
-                let option = self.sessions[i].state.option("model");
-                let id =
-                    option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
-                let params = json!({ "sessionId": session, "configId": id, "value": model });
+                let state = &self.sessions[i].state;
+                let option = state.option("model").ok_or("the agent offers no model choice")?;
+                let id = option["id"].as_str().unwrap_or_default();
+                let params = state.config_params(&session, id, &model)?;
                 self.peer_op(
                     peer,
                     req_id,
