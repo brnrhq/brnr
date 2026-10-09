@@ -88,9 +88,12 @@ paths in CI.
 The parsers that read bytes from outside brnr have fuzz targets in `fuzz/`
 (frames, ACP lines, the host fed ACP from both sides), which CI fuzzes
 with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:
-`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run host corpus/host
-seeds/host` (`cargo fuzz list` has the others). A crash it finds is fixed
-with a regression test in the main test suite.
+`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run -O -a host
+corpus/host seeds/host` (`cargo fuzz list` has the others). `-O -a` builds
+it as CI does: optimized, with debug assertions and overflow checks on, so
+a `debug_assert!` or an integer overflow an input reaches is a crash. (`-O`
+alone turns them off; with neither, cargo-fuzz builds the same as `-O -a`.)
+A crash it finds is fixed with a regression test in the main test suite.
 
 Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
 built under AddressSanitizer and under MemorySanitizer, on Linux. To run
