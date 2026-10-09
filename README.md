@@ -472,9 +472,11 @@ setting the agent has no option for.
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
-process stops instead. `--permission-timeout <s>` rejects an approval nobody
-answered in that many seconds. Each wins over the profile's
-`stop_when_idle` and `permission_timeout`.
+process stops instead. `--permission-timeout <s>` answers an approval nobody
+answered in that many seconds as `permission_timeout` does: with its
+`reject_once` option, or, without exactly one, by cancelling its turn, which
+answers every request pending in the session `cancelled`. Each wins over the
+profile's `stop_when_idle` and `permission_timeout`.
 
 `--foreground` keeps the session in the terminal, for a supervisor such as
 systemd or a container. It shows the session's events on stdout (`--json`: as
@@ -566,7 +568,8 @@ mode = "plan"                       # the agent's mode, model, thought level
 model = "opus"                      #   and config options by id, set before
 thought_level = "high"              #   the first prompt; the flags win
 options = { effort = "high" }
-permission_timeout = 600            # reject what nobody answered in 10 minutes
+permission_timeout = 600            # reject once (else cancel the turn) what
+                                    #   nobody answered in 10 minutes
 stop_when_idle = 600                # close a session idle 10 minutes
 # auth = "api-key"                  # a login method to run first (codex-acp's)
 
