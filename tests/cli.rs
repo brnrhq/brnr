@@ -2313,11 +2313,6 @@ fn adr_0033_profile_layout_errors_say_where() {
             "[profiles.default.editor]\nstop_when_idle = 5\n",
             "profiles.default.editor: stop_when_idle is for brnr session new and resume only; it goes under [profiles.default.headless]",
         ),
-        // `config` is `options` now (ADR 63).
-        (
-            "[profiles.default.headless]\nconfig = { effort = \"high\" }\n",
-            "profiles.default.headless: unknown key config (keys: cwd, mode, model, thought_level, options,",
-        ),
         (
             "[profiles.default]\nagnet = [\"x\"]\n",
             "profiles.default: unknown key agnet (keys: agent, log, strict, bridges, headless, editor)",
@@ -2325,11 +2320,6 @@ fn adr_0033_profile_layout_errors_say_where() {
         (
             "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
             r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, permission, config, close)"#,
-        ),
-        // `settings` is `config` now (ADR 63).
-        (
-            "[profiles.default.editor]\nexperimental = [\"settings\"]\n",
-            r#"profiles.default.editor.experimental: unknown action "settings""#,
         ),
         (
             "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
@@ -2743,6 +2733,77 @@ fn adr_0063_old_commands_are_unknown() {
     assert!(env.calls_of("session/set_config_option").is_empty());
     assert!(env.calls_of("session/resume").is_empty() && env.hosts().len() == 1);
     env.stop();
+}
+
+/// The socket's and bridges' commands ADR 63 replaced are gone, with no
+/// aliases (P9): `approve`, `deny`, `set_mode` and `set_model` each fail as
+/// an unknown command, and do nothing.
+#[test]
+fn adr_0063_old_socket_commands_are_unknown() {
+    let env = Env::new("c-old-socket");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    for (cmd, fields) in [
+        ("approve", json!({ "request": "p1" })),
+        ("deny", json!({ "request": "p1" })),
+        ("set_mode", json!({ "mode": "plan" })),
+        ("set_model", json!({ "model": "large" })),
+    ] {
+        let mut req = json!({ "cmd": cmd, "session": "sess-1", "req_id": cmd });
+        req.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        writeln!(conn, "{req}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let answer: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(answer["ok"], false, "{cmd}: {answer}");
+        assert_eq!(answer["error"], format!("unknown command: {cmd}"), "{cmd}: {answer}");
+    }
+    let pending = env.ok(&["permission", "requests", "sess-1"]);
+    assert!(pending.contains("p1"), "answered: {pending}");
+    assert!(env.calls_of("session/set_mode").is_empty());
+    assert!(env.calls_of("session/set_config_option").is_empty());
+    assert!(env.calls_of("session/set_model").is_empty());
+}
+
+/// A profile's keys and editor actions have ADR 63's names, with no aliases
+/// (P9): the headless `config` is `options`, and the experimental actions
+/// `approve` and `settings` are `permission` and `config`; an old name fails
+/// to load, before any process starts.
+#[test]
+fn adr_0063_profile_keys_and_actions_have_the_new_names() {
+    let env = Env::new("c-profile-names");
+    for (config, want) in [
+        (
+            "[profiles.default.headless]\nconfig = { effort = \"high\" }\n",
+            "profiles.default.headless: unknown key config (keys: cwd, mode, model, thought_level, options,",
+        ),
+        (
+            "[profiles.default.editor]\nexperimental = [\"approve\"]\n",
+            r#"profiles.default.editor.experimental: unknown action "approve" (actions: send, context, cancel, permission, config, close)"#,
+        ),
+        (
+            "[profiles.default.editor]\nexperimental = [\"settings\"]\n",
+            r#"profiles.default.editor.experimental: unknown action "settings""#,
+        ),
+    ] {
+        env.write_config(config);
+        let err = env.fails(&new_args(&["--prompt", "hi"]));
+        assert!(err.contains(want), "{config}: {err}");
+    }
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
+
+    // The new names load, and `options` sets the options it names.
+    env.write_config(
+        "[profiles.default.headless]\noptions = { model = \"large\" }\n\n\
+         [profiles.default.editor]\nexperimental = [\"permission\", \"config\"]\n",
+    );
+    env.start(&[]);
+    let set = &env.calls_of("session/set_config_option")[0]["params"];
+    assert_eq!((&set["configId"], &set["value"]), (&"model".into(), &"large".into()));
 }
 
 /// `brnr --help` lists the groups, each with its commands; `brnr <group>

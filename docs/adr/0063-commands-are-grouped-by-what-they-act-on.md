@@ -231,6 +231,11 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0063_old_commands_are_unknown`: each command moved into a group
     fails under its old name as an unknown command, and does nothing.
+  - `adr_0063_old_socket_commands_are_unknown`: the socket's `approve`,
+    `deny`, `set_mode` and `set_model` are unknown commands, and do nothing.
+  - `adr_0063_profile_keys_and_actions_have_the_new_names`: a profile's
+    headless `config`, and the experimental actions `approve` and
+    `settings`, fail to load; `options`, `permission` and `config` load.
   - `adr_0063_help_lists_the_groups_and_their_commands`: `brnr --help` has a
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
