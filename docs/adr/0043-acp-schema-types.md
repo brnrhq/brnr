@@ -5,6 +5,7 @@ Accepted 2026-10-07. Implemented with `agent-client-protocol-schema`
 Read with its types: session updates, the capabilities and login methods in
 `initialize`'s answer, the session `session/new` or `session/fork` opened,
 permission option kinds, JSON-RPC errors, and `brnr sessions`' `session/list`.
+Written with its types: `session/set_config_option`'s params (ADR 28).
 Strict mode's stable methods are the crate's. Left to `serde_json::Value`,
 as the types don't take them or brnr passes them on as they were said: the
 JSON-RPC envelope and the editor's requests, extension methods and `_meta`,

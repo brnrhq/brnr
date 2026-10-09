@@ -53,8 +53,9 @@
 //! limit: a connection is shut down, a started bridge gets SIGTERM. The limit
 //! is in bytes, not lines, so a burst of small events (an agent streaming
 //! fast) doesn't look like a peer that stopped reading, and the line that
-//! takes a peer past it doesn't count, so one long message doesn't either
-//! (ADR 49).
+//! takes a peer past it doesn't count, nor (up to [`ASIDE_BYTES`] of them)
+//! lines longer than the whole queue, so one long message doesn't either,
+//! even when it comes twice, as its ACP message and its event (ADR 49, 60).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -112,6 +113,11 @@ pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
 
+/// Bytes of lines a peer past [`QUEUE_BYTES`] may have queued that don't
+/// count toward it (ADR 60): two of the longest lines the host reads
+/// (ADR 51), a message's ACP line and its event.
+const ASIDE_BYTES: usize = 64 << 20;
+
 pub(super) static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
 /// How to cut a peer off.
@@ -126,9 +132,10 @@ pub(super) enum Closer {
 pub(super) struct Queue {
     tx: Sender<String>,
     queued: Arc<AtomicUsize>,
-    /// While the backlog is past the limit, the size of the line that took
-    /// it past, which doesn't count toward it.
-    past: Arc<AtomicUsize>,
+    /// While the backlog is past the limit, the size of the lines set aside,
+    /// which don't count toward it: the one that took it past, and those
+    /// longer than the limit since.
+    aside: Arc<AtomicUsize>,
 }
 
 impl Queue {
@@ -136,22 +143,31 @@ impl Queue {
     pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
-        (Queue { tx, queued: queued.clone(), past: Arc::default() }, rx, queued)
+        (Queue { tx, queued: queued.clone(), aside: Arc::default() }, rx, queued)
     }
 
-    /// Full once the backlog is past the limit, not counting the line that
-    /// took it past. Until then a peer takes the next line however big it
-    /// is (a long agent message, a status), and that line doesn't make the
-    /// line after it (the `turn_ended` after a turn's long `agent_message`)
-    /// find a peer that keeps up behind. At most the limit, the line that
-    /// took the backlog past it, and one more are queued.
+    /// Full once the backlog is past the limit, not counting the lines set
+    /// aside. Until then a peer takes the next line however big it is (a
+    /// long agent message, a status), and that line doesn't make the line
+    /// after it (the `turn_ended` after a turn's long `agent_message`) find
+    /// a peer that keeps up behind (ADR 49). Nor does a line longer than the
+    /// limit that comes while it is past it (the `agent_message` right after
+    /// its ACP message, to a peer that asked for `acp`), up to
+    /// [`ASIDE_BYTES`] set aside (ADR 60). At most the limit, the lines set
+    /// aside (the first however long) and one more are queued.
     fn push(&self, line: String) -> Queued {
         let len = line.len() + 1;
         let queued = self.queued.load(Relaxed);
         if queued <= QUEUE_BYTES {
-            self.past.store(if queued + len > QUEUE_BYTES { len } else { 0 }, Relaxed);
-        } else if queued - self.past.load(Relaxed).min(queued) > QUEUE_BYTES {
-            return Queued::Full;
+            self.aside.store(if queued + len > QUEUE_BYTES { len } else { 0 }, Relaxed);
+        } else {
+            let aside = self.aside.load(Relaxed);
+            if queued - aside.min(queued) > QUEUE_BYTES {
+                return Queued::Full;
+            }
+            if len > QUEUE_BYTES && aside + len <= ASIDE_BYTES {
+                self.aside.store(aside + len, Relaxed);
+            }
         }
         self.queued.fetch_add(len, Relaxed);
         match self.tx.send(line) {
@@ -802,7 +818,7 @@ impl Host {
                 let mode = text("mode")?;
                 let state = &self.sessions[i].state;
                 let params = json!({ "sessionId": session, "modeId": mode });
-                let option = state.option("mode").map(|o| o["id"].clone());
+                let option = state.option("mode").map(|o| o["id"].as_str().unwrap_or_default());
                 if let Some(modes) = &state.modes {
                     let known = modes["availableModes"]
                         .as_array()
@@ -819,7 +835,7 @@ impl Host {
                     );
                 } else if let Some(id) = option {
                     // An agent with modes only as a config option.
-                    let params = json!({ "sessionId": session, "configId": id, "value": mode });
+                    let params = state.config_params(&session, id, &mode)?;
                     self.peer_op(
                         peer,
                         req_id,
@@ -833,7 +849,7 @@ impl Host {
             }
             "set_config" => {
                 let (option, value) = (text("option")?, text("value")?);
-                let params = json!({ "sessionId": session, "configId": option, "value": value });
+                let params = self.sessions[i].state.config_params(&session, &option, &value)?;
                 self.peer_op(
                     peer,
                     req_id,
@@ -846,10 +862,10 @@ impl Host {
                 // The config option of category `model`; never
                 // `session/set_model` (ADR 28).
                 let model = text("model")?;
-                let option = self.sessions[i].state.option("model");
-                let id =
-                    option.map(|o| o["id"].clone()).ok_or("the agent offers no model choice")?;
-                let params = json!({ "sessionId": session, "configId": id, "value": model });
+                let state = &self.sessions[i].state;
+                let option = state.option("model").ok_or("the agent offers no model choice")?;
+                let id = option["id"].as_str().unwrap_or_default();
+                let params = state.config_params(&session, id, &model)?;
                 self.peer_op(
                     peer,
                     req_id,
@@ -902,5 +918,37 @@ impl Host {
             return Err(format!("{wanted} is closing"));
         }
         Ok(i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lines of `n` bytes, newline included, into a queue nobody writes
+    /// from, as for a peer that stopped reading: how many were taken before
+    /// the first that wasn't.
+    fn taken(queue: &Queue, sizes: &[usize]) -> usize {
+        sizes.iter().take_while(|&&n| matches!(queue.push("x".repeat(n - 1)), Queued::Ok)).count()
+    }
+
+    #[test]
+    fn adr_0060_a_message_and_its_acp_line_fit_at_once() {
+        let (queue, _rx, _) = Queue::new();
+        let big = 20_000_000;
+        // Its ACP line, the turn's answer, its event, the turn's end.
+        assert_eq!(taken(&queue, &[big, 200, big, 300]), 4);
+    }
+
+    #[test]
+    fn adr_0060_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit() {
+        let (queue, _rx, _) = Queue::new();
+        assert_eq!(taken(&queue, &[1 << 20; 40]), 18, "the limit, the line past it, one more");
+
+        // Lines longer than the limit are set aside up to ASIDE_BYTES.
+        let (queue, _rx, queued) = Queue::new();
+        let big = QUEUE_BYTES + 1;
+        assert_eq!(taken(&queue, &[big; 10]), ASIDE_BYTES / big + 1, "set aside, and one more");
+        assert!(queued.load(Relaxed) <= QUEUE_BYTES + ASIDE_BYTES + big);
     }
 }

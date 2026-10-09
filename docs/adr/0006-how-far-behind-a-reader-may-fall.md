@@ -3,6 +3,9 @@
 Amended by 49: the line that takes a peer past 16 MiB doesn't count toward
 it.
 
+Amended by 60: nor, up to 64 MiB of them, do lines longer than 16 MiB
+that come while a peer is past it.
+
 Accepted 2026-10-07, from former decision 25. Implemented. The logger's
 queue is bounded too, and gives way as an observer does: past 64 MiB not yet
 written (a slow or stalled disk), records are skipped and counted, but never
