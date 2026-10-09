@@ -25,7 +25,15 @@ model.
   `session/set_mode` is ACP v1's; v2 drops it, and a mode is then only the
   config option with category `mode`.
 - `brnr config <session> [<option>=<value>...]` lists or sets config
-  options.
+  options. A value is sent as the option's advertised `type` has it: a
+  `boolean` option takes `true` or `false`, sent as `type: "boolean"` and a
+  JSON boolean, and any other value for it fails before reaching the agent
+  (P7); a `select` option, or one the agent hasn't advertised, gets the value
+  as a value id (a string), with no `type`. `start --set` and the profile's
+  headless `config` are sent the same way. An agent offers boolean options
+  only to a client that advertises them
+  (`clientCapabilities.session.configOptions.boolean`): an editor can, and
+  then an editor's session has them; brnr's own headless client doesn't.
 - `brnr model <session> [<model>]` is `config` for the option whose category
   is `model`; with no such option, "the agent offers no model choice".
   Matched by category only, not by id (P4). `session/set_model` isn't used.

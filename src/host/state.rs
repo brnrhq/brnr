@@ -19,7 +19,10 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::Host;
-use crate::schema::{self, SessionUpdate, ToolCallStatus, ToolKind};
+use crate::schema::{
+    self, SessionConfigOptionValue, SessionUpdate, SetSessionConfigOptionRequest, ToolCallStatus,
+    ToolKind,
+};
 
 /// How much of the last agent message the status report has; the events
 /// have all of it.
@@ -89,6 +92,32 @@ impl SessionState {
     /// category only, an option's id being the agent's own (ADR 28).
     pub(super) fn option(&self, category: &str) -> Option<&Value> {
         self.config.as_ref()?.as_array()?.iter().find(|o| o["category"] == category)
+    }
+
+    /// `session/set_config_option`'s params setting option `id` to `value`,
+    /// as the type the agent advertised for it has them: a boolean option
+    /// takes `true` or `false`, sent as ACP's `type: "boolean"` and a JSON
+    /// boolean; any other, or one it hasn't advertised, the value as a value
+    /// id (a string). Anything else for a boolean fails here, rather than
+    /// reaching the agent as a string it would refuse.
+    pub(super) fn config_params(
+        &self,
+        session: &str,
+        id: &str,
+        value: &str,
+    ) -> Result<Value, String> {
+        let options = self.config.as_ref().and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        let kind = options.iter().find(|o| o["id"] == id).and_then(|o| o["type"].as_str());
+        let value = match (kind, value) {
+            (Some("boolean"), "true") => SessionConfigOptionValue::boolean(true),
+            (Some("boolean"), "false") => SessionConfigOptionValue::boolean(false),
+            (Some("boolean"), _) => {
+                return Err(format!("{id} is a boolean option: true or false, not {value}"));
+            }
+            _ => SessionConfigOptionValue::value_id(value.to_owned()),
+        };
+        let params = SetSessionConfigOptionRequest::new(session.to_owned(), id.to_owned(), value);
+        Ok(serde_json::to_value(params).expect("a request serializes"))
     }
 
     pub(super) fn current_model(&self) -> Option<String> {
@@ -307,5 +336,29 @@ mod tests {
         assert_eq!(shown, Some(json!({ "review": review, "compact": null })));
         assert_eq!(commands(&review, &reworded), Some(json!({ "review": reworded })));
         assert_eq!(commands(&compact, &compact), None);
+    }
+
+    #[test]
+    fn a_config_value_is_sent_as_its_option_type_has_it() {
+        let state = SessionState {
+            config: Some(json!([
+                { "id": "model", "type": "select", "currentValue": "small", "options": [] },
+                { "id": "fast", "type": "boolean", "currentValue": false },
+            ])),
+            ..SessionState::default()
+        };
+        let params = |id, value| state.config_params("s", id, value);
+        let set =
+            json!({ "sessionId": "s", "configId": "fast", "type": "boolean", "value": false });
+        assert_eq!(params("fast", "false"), Ok(set));
+        assert_eq!(
+            params("fast", "True"),
+            Err("fast is a boolean option: true or false, not True".into())
+        );
+        let set = json!({ "sessionId": "s", "configId": "model", "value": "large" });
+        assert_eq!(params("model", "large"), Ok(set));
+        // One the agent hasn't advertised is the agent's to refuse.
+        let set = json!({ "sessionId": "s", "configId": "effort", "value": "true" });
+        assert_eq!(params("effort", "true"), Ok(set));
     }
 }

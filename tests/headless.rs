@@ -2370,6 +2370,50 @@ fn settings_are_told_to_the_editor() {
     assert_eq!(config["configOptions"][0]["currentValue"], "small", "{config}");
 }
 
+/// An editor that negotiates boolean config options gets them from the
+/// agent, and `config` sets one as ACP has it: `type: "boolean"` and a JSON
+/// boolean. A value that isn't `true` or `false` fails before it reaches the
+/// agent; a select option is still set by its value id.
+#[test]
+fn a_boolean_option_is_set_as_a_boolean() {
+    let env = Env::new("ex-boolean");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"settings\"]\n");
+    let args = ["acp", "--", AGENT];
+    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"session":{"configOptions":{"boolean":{}}}}}}"#;
+    writeln!(to_agent, "{initialize}").unwrap();
+    response(&mut from_agent, 1);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{new}").unwrap();
+    let options = response(&mut from_agent, 2)["result"]["configOptions"].clone();
+    assert_eq!(options[1]["type"], "boolean", "{options}");
+    assert!(env.ok(&["config", "sess-1"]).contains("fast    false"));
+
+    assert_eq!(env.ok(&["config", "sess-1", "fast=true"]), "fast=true\n");
+    let set = env.calls_of("session/set_config_option")[0]["params"].clone();
+    let typed = serde_json::json!({ "sessionId": "sess-1", "configId": "fast", "type": "boolean", "value": true });
+    assert_eq!(set, typed);
+    let config = update(&mut from_agent, "config_option_update");
+    assert_eq!(config["configOptions"][1]["currentValue"], true, "{config}");
+    assert!(env.ok(&["config", "sess-1"]).contains("fast    true"));
+
+    let err = env.fails(&["config", "sess-1", "fast=yes"]);
+    assert!(err.contains("fast is a boolean option: true or false, not yes"), "{err}");
+    assert_eq!(env.calls_of("session/set_config_option").len(), 1, "yes reached the agent");
+
+    env.ok(&["config", "sess-1", "model=large"]);
+    let set = env.calls_of("session/set_config_option")[1]["params"].clone();
+    let id = serde_json::json!({ "sessionId": "sess-1", "configId": "model", "value": "large" });
+    assert_eq!(set, id);
+    let _ = editor.kill();
+    let _ = editor.wait();
+}
+
 /// `close` cancels the editor's turn, tells it in the session, and closes the
 /// session; the editor's requests for it are answered by brnr after that,
 /// until it loads it again.

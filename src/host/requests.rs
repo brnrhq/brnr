@@ -266,33 +266,30 @@ impl Host {
         let session = self.sessions[i].id.clone();
         let Some(step) = self.setup.pop_front() else { return self.finish_start(i) };
         let state = &self.sessions[i].state;
-        let option = |category| state.option(category).map(|o| o["id"].clone());
-        let set = |id, value| {
-            let params = json!({ "sessionId": session, "configId": id, "value": value });
-            ("session/set_config_option", params)
+        let option =
+            |category| state.option(category).map(|o| o["id"].as_str().unwrap_or_default());
+        let set = |id: &str, value: &str| {
+            Ok(("session/set_config_option", state.config_params(&session, id, value)?))
         };
-        let (method, params) = match &step {
+        let request = match &step {
             // An agent with modes only as a config option.
             SetupStep::Mode(mode) if state.modes.is_none() => match option("mode") {
                 Some(id) => set(id, mode),
-                None => {
-                    let error = format!("{}: the agent offers no modes", step.describe());
-                    return self.fail_start(&error);
-                }
+                None => Err("the agent offers no modes".to_owned()),
             },
             SetupStep::Mode(mode) => {
-                ("session/set_mode", json!({ "sessionId": session, "modeId": mode }))
+                Ok(("session/set_mode", json!({ "sessionId": session, "modeId": mode })))
             }
             SetupStep::Model(model) => match option("model") {
                 Some(id) => set(id, model),
-                None => {
-                    let error = format!("{}: the agent offers no model choice", step.describe());
-                    return self.fail_start(&error);
-                }
+                None => Err("the agent offers no model choice".to_owned()),
             },
-            SetupStep::Config(id, value) => set(json!(id), value),
+            SetupStep::Config(id, value) => set(id, value),
         };
-        self.host_request(method, params, HostRequest::Setup(step));
+        match request {
+            Ok((method, params)) => self.host_request(method, params, HostRequest::Setup(step)),
+            Err(error) => self.fail_start(&format!("{}: {error}", step.describe())),
+        }
     }
 
     /// The commit (ADR 7): brnr start hears of the session before the agent

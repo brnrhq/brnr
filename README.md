@@ -259,6 +259,10 @@ brnr config $s [effort=high]       # any of the agent's config options
 brnr commands $s                   # the agent's slash commands (send them as text)
 ```
 
+A boolean option (one an editor's session has when the editor advertises
+boolean config options) takes `true` or `false`, and is sent as a boolean;
+anything else for it fails before it reaches the agent.
+
 ### Sessions and processes
 
 ```sh
