@@ -1008,9 +1008,9 @@ impl Host {
 
     /// Exiting, before brnr stops listing the process and its sessions are
     /// let go of: waits up to LOG_FLUSH for its transcript to have what was
-    /// recorded, `exited` last, so that `log`, `list --all` and `--resume`
-    /// of a session that isn't running read it whole (ADR 48). A stalled
-    /// disk holds the sessions no longer.
+    /// recorded, `exited` last, so that `event log`, `session list` and
+    /// `session resume` of a session that isn't running read it whole (ADR
+    /// 48). A stalled disk holds the sessions no longer.
     fn wait_logged(&self) {
         let (tx, rx) = mpsc::channel();
         self.sink.when_written(move || {

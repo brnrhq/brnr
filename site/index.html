@@ -260,10 +260,10 @@ brnr acp --profile work          <span class="c"># agent and settings from a pro
     <div class="cols">
       <div>
         <h2>Talk to it from outside</h2>
-        <p class="intro">Name a session by its id, as <code>brnr list</code> shows it with the agent's title.</p>
+        <p class="intro">Name a session by its id, as <code>brnr session list</code> shows it with the agent's title.</p>
       </div>
       <div class="body">
-<pre>brnr list                          <span class="c"># running sessions; --all: ended ones too</span>
+<pre>brnr session list                  <span class="c"># open sessions and ended ones; -- &lt;agent&gt;: the agent's too</span>
 brnr prompt send $s "also update the changelog"   <span class="c"># held while a turn runs</span>
 brnr prompt send $s --steer "and the tests too"   <span class="c"># into the running turn</span>
 brnr prompt send $s --interrupt "stop, wrong branch"

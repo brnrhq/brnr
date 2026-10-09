@@ -103,6 +103,16 @@ brnr's own conventions:
 - **Breaking:** `queue --clear` and `--clear-context` are
   `queue clear <s> --messages` and `--context`, and `queue clear <s>` with
   neither drops both; `queue list` takes neither flag (ADR 63).
+- **Breaking:** `brnr session list` replaces `list` and `sessions`, which
+  fail as unknown commands. On its own it is brnr's index, open and ended
+  sessions in every cwd, with nothing started (what `list --all` was;
+  `--include active` for what `list` was, `--include inactive` for
+  `list --inactive`). With `--profile` or `-- <agent>` it is what `sessions`
+  was, joined: the cwd's sessions (here, or `--cwd`) and the agent's, every
+  page of `session/list`, on the session id; an agent that can't list fails
+  it. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
+  `brnr`, `agent` or `both`; a session only the agent knows is `inactive`
+  where it was `-`, and every row has its AGENT (ADR 63).
 
 ## [0.7.0] - 2026-10-09
 

@@ -318,7 +318,9 @@ fn adr_0009_foreground_close_of_the_last_session() {
         .spawn()
         .unwrap();
     assert!(
-        wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")),
+        wait_for(Duration::from_secs(10), || env
+            .ok(&["session", "list", "--include", "active"])
+            .contains("sess-1")),
         "no session"
     );
     env.ok(&["session", "close", "sess-1"]);
@@ -608,7 +610,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
 #[test]
 fn adr_0045_a_panic_prints_a_link_to_report_it() {
     let env = Env::new("panic-link");
-    let out = env.brnr(&["list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
+    let out = env.brnr(&["session", "list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(101), "{err}");
     let shown = err.find("a test asked for it").expect("Rust's message");
@@ -618,7 +620,7 @@ fn adr_0045_a_panic_prints_a_link_to_report_it() {
     assert!(url.starts_with(&format!("{ISSUE_LINK}Panic%20at%20src%2Fbug.rs%3A")), "{url}");
     let version = format!("&version=brnr%20{}&setup=", env!("CARGO_PKG_VERSION"));
     assert!(url.contains(&version), "{url}");
-    assert!(url.contains("&what=%60brnr%20list%60%20panicked%3A"), "{url}");
+    assert!(url.contains("&what=%60brnr%20session%20list%60%20panicked%3A"), "{url}");
     assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
     assert!(!url.contains(' '), "{url}");
 
@@ -1226,7 +1228,7 @@ fn adr_0035_bad_request_line_is_answered() {
     );
 }
 
-/// `brnr list | head -1`: a reader that goes away ends brnr quietly, as it
+/// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]
 fn closed_stdout_ends_quietly() {
@@ -1234,7 +1236,8 @@ fn closed_stdout_ends_quietly() {
     env.start(&[]);
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
-    let out = env.brnr(&["list"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
+    let out =
+        env.brnr(&["session", "list"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
 }
@@ -1247,11 +1250,11 @@ fn closed_stdout_ends_quietly() {
 #[test]
 fn shared_runtime_dir_is_refused() {
     let env = Env::new("shared");
-    assert!(env.ok(&["list"]).contains("no running sessions"), "a missing dir is no error");
+    assert_eq!(env.ok(&["session", "list"]), "no sessions\n", "a missing dir is no error");
     let run = env.dir.join("run");
     fs::create_dir(&run).unwrap();
     fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
-    let err = env.fails(&["list"]);
+    let err = env.fails(&["session", "list"]);
     assert!(err.contains("not a private directory owned by this user"), "{err}");
 }
 
@@ -1263,7 +1266,7 @@ fn metadata_names_its_own_socket() {
     let mut meta = env.hosts()[0].clone();
     meta["id"] = "4242".into();
     fs::write(env.dir.join("run/4242.json"), meta.to_string()).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
 }
 
@@ -1319,8 +1322,8 @@ fn project(env: &Env) -> (PathBuf, Vec<String>) {
     (dir, names)
 }
 
-/// A session's transcript is two files: its events, which `log`, `list` and
-/// `--resume` read, and its raw ACP beside them (ADR 22).
+/// A session's transcript is two files: its events, which `event log`,
+/// `session list` and `session resume` read, and its raw ACP beside them (ADR 22).
 #[test]
 fn adr_0022_transcripts_are_two_files() {
     let env = Env::new("twofiles");
@@ -1347,8 +1350,10 @@ fn adr_0022_transcripts_are_two_files() {
     // What belongs to no session is in the host log.
     let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
     assert!(records(&host).iter().any(|r| r["msg"]["method"] == "initialize"));
-    // One session, for list and --resume.
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    // One session, for session list and session resume.
+    let list: Value =
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!(list[0]["session"], "sess-1");
     let cwd = fs::canonicalize(&env.dir).unwrap();
@@ -1390,7 +1395,9 @@ fn adr_0053_distinct_ids_never_share_a_transcript() {
             records(&dir.join(name)).iter().map(|r| r["session_id"].clone()).collect();
         assert!(ids.iter().all(|id| *id == ids[0]), "{name}: {ids:?}");
     }
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    let list: Value =
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap();
     let mut listed: Vec<&str> =
         list.as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
     listed.sort();
@@ -1421,7 +1428,7 @@ fn adr_0053_distinct_ids_never_share_a_lock() {
     let mut want = COLLIDING.to_vec();
     want.sort();
     assert_eq!(locked.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), want);
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), COLLIDING.len(), "{list}");
     for (id, pid) in &locked {
@@ -1460,9 +1467,9 @@ fn adr_0022_log_events_leaves_out_the_raw_acp() {
 }
 
 /// A transcript that ends partway through a record, as a process that died
-/// mid-write leaves it, is still its session's (ADR 55): `list` takes the
-/// last record it can read, `log` shows everything before the cut and says
-/// where it is, and a resume puts its first record on a line of its own.
+/// mid-write leaves it, is still its session's (ADR 55): `session list` takes
+/// the last record it can read, `log` shows everything before the cut and
+/// says where it is, and a resume puts its first record on a line of its own.
 /// Nothing rewrites what was there.
 #[test]
 fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
@@ -1472,8 +1479,10 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let (dir, _) = project(&env);
     let file = dir.join("sess-1.jsonl");
-    let listed =
-        || -> Value { serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap() };
+    let listed = || -> Value {
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap()
+    };
     // Ending in a newline, as written: the last record is `exited`.
     let whole = fs::read(&file).unwrap();
     assert!(whole.ends_with(b"\n"));
@@ -1536,8 +1545,8 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
 
 /// A process that exits is listed, and holds its sessions, until its
 /// transcript has `exited`, so that what reads it once the process has gone
-/// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled
-/// disk holds it up for 2 s at most.
+/// (`event log`, `session list`, `session resume`) reads it whole (ADR 48). A
+/// stalled disk holds it up for 2 s at most.
 #[test]
 fn adr_0048_an_exit_is_written_before_the_process_goes() {
     let env = Env::new("exitlog");
@@ -1805,7 +1814,7 @@ fn adr_0002_acp_is_what_an_editor_runs() {
     writeln!(to_agent, "{new}").unwrap();
     assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
     assert!(env.ok(&["process", "list"]).contains("editor"));
-    assert!(env.ok(&["list"]).contains("sess-1"));
+    assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     // A message sent from outside is shown to the editor as a completed
     // tool call; its response (to brnr's own prompt id) is kept from it.
     env.ok(&["prompt", "send", "sess-1", "reply hi"]);
@@ -1936,7 +1945,8 @@ fn adr_0020_editor_close_is_an_event() {
         line.clear();
         assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to the close");
     }
-    assert!(!env.ok(&["list"]).contains("sess-1"), "the session is still listed");
+    let open = env.ok(&["session", "list", "--include", "active"]);
+    assert!(!open.contains("sess-1"), "the session is still listed");
     let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "session_closed"]);
     let closed: Value =
         serde_json::from_str(log.lines().next().expect("no session_closed")).unwrap();

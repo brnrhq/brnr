@@ -351,7 +351,7 @@ fn a_stopped_host_with_a_full_backlog_is_running() {
         assert!(queued.len() < 10_000, "never refused");
     }
     let (ok, text) = doctor(&env, &["--fix"]);
-    let list = env.run(&["list", "--json"]);
+    let list = env.run(&["session", "list", "--json"]);
     kill(host, libc::SIGCONT);
     assert!(ok, "{text}");
     let warning = format!("{host} is running but not answering; it serves sess-1");

@@ -1051,42 +1051,229 @@ fn adr_0028_commands_lists_the_agents_commands() {
 
 // ---- sessions ------------------------------------------------------------
 
+/// `session list --json`, with `args`.
+fn session_list(env: &Env, args: &[&str]) -> Vec<Value> {
+    let mut all = vec!["session", "list", "--json"];
+    all.extend_from_slice(args);
+    let rows: Value = serde_json::from_str(&env.ok(&all)).unwrap();
+    rows.as_array().unwrap().clone()
+}
+
+/// The row of session `id` in `rows`, which must have one.
+fn row<'a>(rows: &'a [Value], id: &str) -> &'a Value {
+    let mut found = rows.iter().filter(|r| r["session"] == id);
+    let row = found.next().unwrap_or_else(|| panic!("no {id} in {rows:?}"));
+    assert!(found.next().is_none(), "two of {id} in {rows:?}");
+    row
+}
+
+/// Opens session `id` with the start `args`, and closes it: one brnr has the
+/// transcript of, and no process has open.
+fn closed_session(env: &Env, id: &str, args: &[&str]) {
+    let before = env.hosts().len();
+    let out = env.brnr(&new_args(args)).env("SESSION_ID", id).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    env.ok(&["session", "close", id]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().len() == before), "it lives on");
+    env.ok(&["event", "log", id]);
+}
+
+/// With no agent named, `session list` is brnr's index: the sessions open
+/// in its processes and those it has transcripts of, in every cwd, with
+/// nothing started, not even the default profile's agent. `--cwd` narrows it
+/// to one.
 #[test]
-fn adr_0015_sessions_lists_the_agents_sessions() {
-    let env = Env::new("c-sessions");
+fn adr_0063_list_without_an_agent_is_brnrs_index() {
+    let env = Env::new("c-list-index");
+    env.write_config(&format!("[profiles.default]\nagent = [{AGENT:?}]\n"));
     env.start(&[]);
-    // An agent of its own, started to ask: no process of brnr's needed.
-    let out = env.ok(&["sessions", "--", AGENT]);
-    assert!(out.contains("old-1") && out.contains("An old session"), "{out}");
-    // What brnr knows of each, in brnr list's terms.
-    let row = |id: &str| out.lines().find(|l| l.starts_with(id)).unwrap_or_else(|| panic!("{out}"));
-    assert!(!row("old-1").contains("idle") && !row("old-1").contains("inactive"), "{out}");
-    assert!(
-        row("sess-1").contains("idle") && row("sess-1").contains(&env.host_pid().to_string()),
-        "{out}"
+    let sub = env.dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    let out = env
+        .brnr(&new_args(&["--cwd", &sub.to_string_lossy()]))
+        .env("FIRST_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    closed_session(&env, "mine-1", &[]);
+    let started = env.calls_of("initialize").len();
+
+    let rows = session_list(&env, &[]);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let pid = |r: &Value| r["pid"].as_i64();
+    // Where brnr runs, as the system has it.
+    let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    let (one, two, mine) = (row(&rows, "sess-1"), row(&rows, "sess-2"), row(&rows, "mine-1"));
+    assert_eq!(
+        (&one["state"], &one["cwd"], &one["title"]),
+        (&"idle".into(), &here.clone().into(), &"Fake session".into())
     );
-    let json: Value = serde_json::from_str(&env.ok(&["sessions", "--json", "--", AGENT])).unwrap();
-    // Most recently active first: the running session, then the agent's old one.
-    assert_eq!(json[0]["session"], "sess-1");
-    assert_eq!(json[0]["pid"].as_i64(), Some(i64::from(env.host_pid())));
-    assert_eq!(json[1]["session"], "old-1");
-    assert!(json[1]["state"].is_null() && json[1]["pid"].is_null(), "{json}");
-    assert_eq!(env.hosts().len(), 1, "an agent was left running");
+    assert_eq!((&two["state"], &two["cwd"]), (&"idle".into(), &sub.to_string_lossy().into()));
+    assert!(pid(one).is_some() && pid(two).is_some() && pid(one) != pid(two), "{rows:?}");
+    assert_eq!(
+        (&mine["state"], &mine["pid"], &mine["cwd"]),
+        (&"inactive".into(), &Value::Null, &here.into())
+    );
+    for r in &rows {
+        assert_eq!((&r["source"], &r["agent"]), (&"brnr".into(), &"fake_agent.py".into()), "{r}");
+        let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
+        let want = ["session", "title", "state", "pid", "agent", "source", "last_active", "cwd"];
+        assert_eq!(keys, want, "{r}");
+    }
+    // Most recently active first.
+    let times: Vec<&str> = rows.iter().map(|r| r["last_active"].as_str().unwrap()).collect();
+    assert!(times.windows(2).all(|w| w[0] >= w[1]), "{times:?}");
+    assert!(env.calls_of("session/list").is_empty(), "the agent was asked");
+    assert_eq!(env.calls_of("initialize").len(), started, "an agent was started");
+
+    let table = env.ok(&["session", "list"]);
+    let head: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(
+        head,
+        ["SESSION", "TITLE", "STATE", "PID", "AGENT", "SOURCE", "LAST", "ACTIVE", "CWD"]
+    );
+    let line = table.lines().find(|l| l.starts_with("mine-1")).unwrap_or_else(|| panic!("{table}"));
+    let cells: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(cells[..5], ["mine-1", "-", "inactive", "-", "fake_agent.py"], "{table}");
+    assert_eq!(cells[5], "brnr", "{table}");
+
+    let rows = session_list(&env, &["--cwd", &sub.to_string_lossy()]);
+    let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
+    assert_eq!(ids, ["sess-2"], "{rows:?}");
+    let empty = env.dir.join("empty");
+    let out = env.ok(&["session", "list", "--cwd", &empty.to_string_lossy()]);
+    assert_eq!(out, format!("no sessions in {}\n", empty.display()));
+    assert!(env.calls_of("session/list").is_empty(), "the agent was asked");
+}
+
+/// With an agent named (`-- <agent>` or `--profile`), brnr's sessions in the
+/// cwd are joined with the agent's, every page of them, on the session id:
+/// SOURCE says who knows each, a session only the agent knows is `inactive`,
+/// and the agent's title and time win where it gives them. Sessions in
+/// other cwds are left out. An agent that can't list fails the command.
+#[test]
+fn adr_0063_list_joins_the_agents_sessions_on_id() {
+    let env = Env::new("c-list-join");
+    // brnr knows none: the agent's alone, oldest last (sess-1 has no time).
+    let rows = session_list(&env, &["--", AGENT]);
+    let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
+    assert_eq!(ids, ["old-1", "sess-1"], "{rows:?}");
+    let old = row(&rows, "old-1");
+    assert_eq!(
+        (&old["state"], &old["pid"], &old["source"]),
+        (&"inactive".into(), &Value::Null, &"agent".into())
+    );
+    assert_eq!(
+        (&old["title"], &old["last_active"]),
+        (&"An old session".into(), &"2026-10-01T10:00:00Z".into())
+    );
+    let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    assert_eq!((&old["agent"], &old["cwd"]), (&"fake_agent.py".into(), &here.into()));
+    // Every page: the second asked for with the first's cursor.
+    let asked = env.calls_of("session/list");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1]["params"]["cursor"], "2");
+    assert_eq!(env.hosts().len(), 0, "an agent was left running");
+
+    // Now brnr has old-1's transcript, sess-1 open, mine-1's transcript, and
+    // sess-2 open in another cwd.
+    closed_session(&env, "old-1", &[]);
+    env.start(&[]);
+    closed_session(&env, "mine-1", &[]);
+    let sub = env.dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    let out = env
+        .brnr(&new_args(&["--cwd", &sub.to_string_lossy()]))
+        .env("FIRST_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows = session_list(&env, &["--", AGENT]);
+    assert_eq!(rows.len(), 3, "sess-2 is in another cwd: {rows:?}");
+    let (old, one, mine) = (row(&rows, "old-1"), row(&rows, "sess-1"), row(&rows, "mine-1"));
+    assert_eq!((&old["state"], &old["source"]), (&"inactive".into(), &"both".into()));
+    assert_eq!(
+        (&old["title"], &old["last_active"]),
+        (&"An old session".into(), &"2026-10-01T10:00:00Z".into())
+    );
+    assert_eq!((&one["state"], &one["source"]), (&"idle".into(), &"both".into()));
+    assert!(one["pid"].is_u64(), "{one}");
+    // The agent gives sess-1 no title or time: brnr's.
+    assert_eq!(one["title"], "Fake session");
+    assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00Z", "{one}");
+    assert_eq!((&mine["state"], &mine["source"]), (&"inactive".into(), &"brnr".into()));
+    assert_eq!(rows.last().unwrap()["session"], "old-1", "{rows:?}");
+    let hosts = env.hosts().len();
+
+    // The profile's agent, as -- <agent>; and the text.
+    env.write_config(&format!("[profiles.fake]\nagent = [{AGENT:?}]\n"));
+    assert_eq!(session_list(&env, &["--profile", "fake"]), rows);
+    let table = env.ok(&["session", "list", "--", AGENT]);
+    let source = |id: &str| {
+        let line = table.lines().find(|l| l.starts_with(id)).unwrap_or_else(|| panic!("{table}"));
+        line.contains(&format!("fake_agent.py  {}", row(&rows, id)["source"].as_str().unwrap()))
+    };
+    assert!(source("old-1") && source("sess-1") && source("mine-1"), "{table}");
+    assert_eq!(env.hosts().len(), hosts, "an agent was left running");
+
+    let err = env.fails(&["session", "list", "--profile", "nope"]);
+    assert!(err.contains("no profile \"nope\""), "{err}");
+    let env = Env::new("c-list-nolist").agent("NO_LIST", "1");
+    let out = env.run(&["session", "list", "--", AGENT]);
+    assert_eq!(code(&out), 1);
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions\n");
+}
+
+/// `--include` keeps sessions by state: `active` those open in a process,
+/// `inactive` those that aren't, whoever knows them; both by default. An
+/// unknown state fails.
+#[test]
+fn adr_0063_list_include_filters_by_state() {
+    let env = Env::new("c-list-include");
+    closed_session(&env, "mine-1", &[]);
+    env.start(&[]);
+    let ids = |args: &[&str]| -> Vec<String> {
+        let rows = session_list(&env, args);
+        let mut ids: Vec<String> =
+            rows.iter().map(|r| r["session"].as_str().unwrap().to_owned()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&[]), ["mine-1", "sess-1"]);
+    assert_eq!(ids(&["--include", "active,inactive"]), ["mine-1", "sess-1"]);
+    assert_eq!(ids(&["--include", "active"]), ["sess-1"]);
+    assert_eq!(ids(&["--include", "inactive"]), ["mine-1"]);
+    // The agent's own are inactive: sess-1 is open, so it is active here too.
+    assert_eq!(ids(&["--include", "inactive", "--", AGENT]), ["mine-1", "old-1"]);
+    assert_eq!(ids(&["--include", "active", "--", AGENT]), ["sess-1"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    assert_eq!(env.ok(&["session", "list", "--include", "active"]), "no active sessions\n");
+    for bad in ["open", "active,", "Active"] {
+        let err = env.fails(&["session", "list", "--include", bad]);
+        assert!(err.starts_with("brnr: unknown state "), "{bad}: {err}");
+        assert!(err.contains("(states: active, inactive)"), "{bad}: {err}");
+    }
+    assert!(env.fails(&["session", "list", "--include"]).contains("--include needs a list"));
 }
 
 /// An agent asked for its sessions that ignores SIGTERM (and its stdin
 /// closing) is killed, with what it started, rather than waited for.
 #[test]
-fn adr_0015_sessions_stops_an_agent_that_wont_go() {
+fn adr_0063_list_stops_an_agent_that_wont_go() {
     let env = Env::new("c-sessstub").agent("STUBBORN", "all");
     let started = Instant::now();
-    let mut sessions =
-        env.brnr(&["sessions", "--json", "--", AGENT]).stdout(Stdio::piped()).spawn().unwrap();
-    if !wait_exit(&mut sessions, Duration::from_secs(30)) {
-        let _ = sessions.kill();
-        panic!("brnr sessions waited on the agent");
+    let mut list = env
+        .brnr(&["session", "list", "--json", "--", AGENT])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if !wait_exit(&mut list, Duration::from_secs(30)) {
+        let _ = list.kill();
+        panic!("brnr session list waited on the agent");
     }
-    let out = sessions.wait_with_output().unwrap();
+    let out = list.wait_with_output().unwrap();
     assert!(out.status.success());
     assert!(stdout(&out).contains("old-1"), "{}", stdout(&out));
     assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
@@ -1474,7 +1661,7 @@ fn adr_0050_a_new_session_that_cant_be_locked_isnt_started() {
     for pid in agents {
         assert!(wait_for(Duration::from_secs(5), || !alive(pid)), "agent {pid} lives on");
     }
-    assert_eq!(env.ok(&["list"]), "no running sessions\n");
+    assert_eq!(env.ok(&["session", "list", "--include", "active"]), "no active sessions\n");
 }
 
 /// The agent's pid in each host log: one for every process started here.
@@ -1598,8 +1785,9 @@ fn adr_0003_take_over_moves_a_session() {
 }
 
 /// A process that doesn't answer still holds its session's lock: it isn't
-/// resumed elsewhere, and list, ps and sessions say which process has it
-/// without asking it.
+/// resumed elsewhere, and session list (an active session's, joined with the
+/// agent's or not) and process list say which process has it without asking
+/// it.
 #[test]
 fn adr_0003_a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
@@ -1612,10 +1800,10 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     };
     let resume = spawn(&resume_args("sess-1", &[]));
     let take_over = spawn(&resume_args("sess-1", &["--take-over"]));
-    let list = spawn(&["list", "--all", "--json"]);
+    let list = spawn(&["session", "list", "--include", "active", "--json"]);
     let ps = spawn(&["process", "list", "--json"]);
-    let sessions = spawn(&["sessions", "--json", "--", AGENT]);
-    let table = spawn(&["sessions", "--", AGENT]);
+    let sessions = spawn(&["session", "list", "--json", "--", AGENT]);
+    let table = spawn(&["session", "list", "--", AGENT]);
     let [resume, take_over, list, ps, sessions, table] =
         [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
     kill(pid, libc::SIGCONT);
@@ -1632,10 +1820,13 @@ fn adr_0003_a_silent_process_keeps_its_session() {
         (&ps[0]["owner"], &ps[0]["sessions"]),
         (&"unreachable".into(), &serde_json::json!(["sess-1"]))
     );
-    // As list says it, not as one only the agent knows.
+    // Joined with the agent's, its cwd the agent's, not as one only the
+    // agent knows.
     let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
     let row = sessions.as_array().unwrap().iter().find(|r| r["session"] == "sess-1").unwrap();
     assert_eq!((&row["state"], &row["pid"]), (&"unreachable".into(), &pid.into()), "{sessions}");
+    let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    assert_eq!((&row["source"], &row["cwd"]), (&"both".into(), &here.into()), "{sessions}");
     let table = stdout(&table);
     let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
     assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
@@ -1668,7 +1859,7 @@ fn a_gone_process_whose_pid_is_taken_is_not_listed() {
     let ps: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
     let pids: Vec<&Value> = ps.as_array().unwrap().iter().map(|p| &p["pid"]).collect();
     assert_eq!(pids, [&Value::from(real)], "{ps}");
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["pid"]), (&"sess-1".into(), &Value::from(real)));
     let pid = sleep.id();
@@ -2085,9 +2276,9 @@ fn adr_0054_a_start_in_an_acp_version_brnr_doesnt_speak_fails() {
             }
         }
     }
-    // brnr sessions asks no further either.
+    // brnr session list asks no further either.
     let env = Env::new("c-proto-sessions").agent("PROTOCOL_VERSION", "999");
-    assert!(env.fails(&["sessions", "--", AGENT]).contains(unsupported));
+    assert!(env.fails(&["session", "list", "--", AGENT]).contains(unsupported));
     let methods: Vec<Value> = env.calls().iter().map(|c| c["method"].clone()).collect();
     assert_eq!(methods, ["initialize"]);
 
@@ -2513,7 +2704,7 @@ fn adr_0013_ps_lists_the_processes() {
     assert_eq!(ps[0]["sessions"], serde_json::json!(["sess-1", "sess-2"]));
     assert!(env.ok(&["process", "list"]).contains("sess-1, sess-2"));
     // Most recently active first; both just opened, so take them by id.
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     let row = |id: &str| {
         list.as_array()
             .unwrap()
@@ -2540,7 +2731,7 @@ fn adr_0063_old_commands_are_unknown() {
     let old = [
         "ps", "stop", "status", "fork", "close", "send", "cancel", "commands", "queue", "pending",
         "show", "log", "watch", "notify", "wait", "mode", "model", "config", "start", "approve",
-        "deny",
+        "deny", "list", "sessions",
     ];
     for cmd in old {
         let err = env.fails(&[cmd, "sess-1"]);

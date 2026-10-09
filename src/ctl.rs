@@ -6,11 +6,12 @@
 //! - talk.rs: `session new`, `session resume`, `prompt send`, `prompt cancel`,
 //!   `event wait`, `queue`
 //! - history.rs: `event log`
-//! - settings.rs: `config get`, `config set`, `prompt commands`, `sessions`,
+//! - settings.rs: `config get`, `config set`, `prompt commands`,
 //!   `session fork`, `session close`
+//! - sessions.rs: `session list`
 //! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
 //!   `doctor`; skill.rs: `skill`
-//! - here: `process list`, `process stop`, `list`, `session status`,
+//! - here: `process list`, `process stop`, `session status`,
 //!   `permission requests`, `permission allow` and `reject`, `event watch`
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
@@ -38,8 +39,8 @@ use brnr::{lock, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
-/// options), and quietly ending brnr when the reader goes away (`brnr list |
-/// head -1`), as a filter does, rather than panicking.
+/// options), and quietly ending brnr when the reader goes away (`brnr session
+/// list | head -1`), as a filter does, rather than panicking.
 macro_rules! outln {
     ($($arg:tt)*) => { $crate::ctl::out(&format!("{}\n", format_args!($($arg)*))) };
 }
@@ -54,6 +55,7 @@ macro_rules! errln {
 mod doctor;
 mod history;
 mod notify;
+mod sessions;
 mod settings;
 mod show;
 mod skill;
@@ -79,8 +81,8 @@ session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
-  brnr list [--inactive | --all] [--json]
-  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
+  brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
+                    [-- <agent> [args...]]
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
@@ -127,11 +129,11 @@ brnr
              the skill for agents that use brnr: print it, or install it
   brnr --version
 
-brnr <group> --help lists a group's commands. <session> is a session's id, as brnr list shows
-it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid> is a
-brnr process, which runs one agent for one or more sessions, as brnr process list shows them.
---json prints the same data as the text: one JSON value, or one event per line for event log,
-event watch and session new --foreground. --strict is stable ACP only: no --steer into a
+brnr <group> --help lists a group's commands. <session> is a session's id, as brnr session list
+shows it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid>
+is a brnr process, which runs one agent for one or more sessions, as brnr process list shows
+them. --json prints the same data as the text: one JSON value, or one event per line for event
+log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.";
 
 /// How long a start may take until it commits, in seconds, unless
@@ -154,6 +156,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("process", Some("stop")) => done(stop(rest)),
         ("session", Some("new")) => talk::new(rest),
         ("session", Some("resume")) => talk::resume(rest),
+        ("session", Some("list")) => sessions::list(rest),
         ("session", Some("status")) => done(status(rest)),
         ("session", Some("fork")) => settings::fork(rest),
         ("session", Some("close")) => settings::close(rest),
@@ -181,8 +184,6 @@ pub fn main(args: Vec<String>) -> ExitCode {
             Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
         }
         (_, None) if grouped => Err(USAGE.to_owned()),
-        ("sessions", _) => settings::sessions(rest),
-        ("list", _) => done(list(rest)),
         ("doctor", _) => done(doctor::main(rest)),
         ("skill", _) => done(skill::skill(rest)),
         ("-h" | "--help", _) => {
@@ -323,7 +324,7 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
     if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
         return Ok(Found::Inactive(p));
     }
-    Err(format!("no session {arg} (see brnr list --all)"))
+    Err(format!("no session {arg} (see brnr session list)"))
 }
 
 /// The running session `arg` names, for what needs one running.
@@ -392,9 +393,9 @@ fn ps(args: &[String]) -> Result<(), String> {
         outln!("no brnr processes");
         return Ok(());
     }
-    // Each session has a cwd of its own (brnr list); the process's is only
-    // where the editor happened to start it, so the table leaves it to
-    // --json.
+    // Each session has a cwd of its own (brnr session list); the process's
+    // is only where the editor happened to start it, so the table leaves it
+    // to --json.
     let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
         let sessions: Vec<String> =
@@ -421,93 +422,6 @@ fn stop(args: &[String]) -> Result<(), String> {
 }
 
 // ---- sessions ------------------------------------------------------------
-
-fn list(args: &[String]) -> Result<(), String> {
-    let (mut json_out, mut active, mut inactive) = (false, true, false);
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json_out = true,
-            "--all" => inactive = true,
-            "--inactive" => (active, inactive) = (false, true),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let hosts = discover()?;
-    let mut rows = if active { running_rows(&hosts, &lock::all()) } else { Vec::new() };
-    if inactive {
-        for p in inactive_sessions(&hosts) {
-            rows.push(json!({
-                "session": p["session_id"],
-                "title": null,
-                "state": "inactive",
-                "pid": null,
-                "agent": agent_name(&p["agent"]),
-                "cwd": p["cwd"],
-                "last_active": p["last_active"],
-            }));
-        }
-    }
-    // Most recently active first, like brnr sessions, however many processes.
-    rows.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
-    if json_out {
-        return print_json(&json!(rows));
-    }
-    if rows.is_empty() {
-        outln!("no {}sessions", if active { "running " } else { "" });
-        return Ok(());
-    }
-    let mut table =
-        vec![["SESSION", "TITLE", "STATE", "PID", "AGENT", "LAST ACTIVE", "CWD"].map(String::from)];
-    for r in &rows {
-        table.push([
-            text(&r["session"]),
-            r["title"].as_str().unwrap_or("-").to_owned(),
-            text(&r["state"]),
-            r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
-            text(&r["agent"]),
-            r["last_active"].as_str().map_or("?".to_owned(), when),
-            text(&r["cwd"]),
-        ]);
-    }
-    print_table(table);
-    Ok(())
-}
-
-/// The running sessions, a row each, as `list` shows them: those each
-/// process that answers says it serves, and those one that doesn't answer
-/// holds the locks of (ADR 3), `unreachable`. `sessions` takes its STATE and
-/// PID from these too (ADR 15).
-fn running_rows(hosts: &[Host], locks: &[lock::Entry]) -> Vec<Value> {
-    let mut rows = Vec::new();
-    for host in hosts {
-        for s in host.sessions() {
-            rows.push(json!({
-                "session": s["session_id"],
-                "title": s["title"],
-                "state": s["state"],
-                "pid": host.id().parse::<u64>().ok(),
-                "agent": agent_name(&host.info()["agent"]),
-                "cwd": s["cwd"],
-                "last_active": s["last_active"],
-            }));
-        }
-        // One that doesn't answer: what it holds the locks of, and no more.
-        if host.status.is_none() {
-            for session in host.held(locks) {
-                rows.push(json!({
-                    "session": session,
-                    "title": null,
-                    "state": "unreachable",
-                    "pid": host.id().parse::<u64>().ok(),
-                    "agent": agent_name(&host.info()["agent"]),
-                    "cwd": null,
-                    "last_active": null,
-                }));
-            }
-        }
-    }
-    rows
-}
 
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
@@ -1092,7 +1006,7 @@ fn refused(err: &io::Error) -> bool {
 /// Whether the process with `pid` now may be the one that made `file`,
 /// though its socket refuses: macOS also refuses a connection to a socket
 /// whose backlog is full, as a stopped process's fills up with every
-/// `brnr list` that waited on it. One that started after `file` was
+/// `brnr session list` that waited on it. One that started after `file` was
 /// written is another process. What can't be told counts as "may be":
 /// nothing is removed on a guess (P4).
 #[cfg(target_vendor = "apple")]
@@ -1206,9 +1120,9 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 mod tests {
     use super::*;
 
-    /// What `list` and `--resume` take from a transcript, whatever its end
-    /// (ADR 55): ending in a newline or not; cut short; a whole line that
-    /// isn't a record, last or before the last; empty; nothing readable.
+    /// What `session list` and `session resume` take from a transcript, whatever
+    /// its end (ADR 55): ending in a newline or not; cut short; a whole line
+    /// that isn't a record, last or before the last; empty; nothing readable.
     #[test]
     fn adr_0055_the_first_and_last_records_are_ones_brnr_can_read() {
         let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));

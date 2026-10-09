@@ -26,7 +26,8 @@ replaced (`brnr send`), fails as unknown.
 `--` separates brnr options from the agent or notification command and its
 arguments. Programs are executed as argument vectors, not shell strings;
 invoke a shell explicitly if shell syntax is needed. With no agent after
-`--`, the selected profile supplies it. `--profile` defaults to `default`
+`--`, the selected profile supplies it; `session list` asks an agent only when
+`--profile` or `-- <agent>` names one. `--profile` defaults to `default`
 when that profile exists. `brnr --help` prints the syntax below, a section
 per group; `-h` is an alias, and `-V` aliases `--version`. `brnr host` is internal, not a command
 for users to start by hand.
@@ -48,8 +49,8 @@ session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
-  brnr list [--inactive | --all] [--json]
-  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
+  brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
+                    [-- <agent> [args...]]
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
@@ -96,11 +97,11 @@ brnr
              the skill for agents that use brnr: print it, or install it
   brnr --version
 
-brnr <group> --help lists a group's commands. <session> is a session's id, as brnr list shows
-it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid> is a
-brnr process, which runs one agent for one or more sessions, as brnr process list shows them.
---json prints the same data as the text: one JSON value, or one event per line for event log,
-event watch and session new --foreground. --strict is stable ACP only: no --steer into a
+brnr <group> --help lists a group's commands. <session> is a session's id, as brnr session list
+shows it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid>
+is a brnr process, which runs one agent for one or more sessions, as brnr process list shows
+them. --json prints the same data as the text: one JSON value, or one event per line for event
+log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
 ```
 
@@ -129,9 +130,8 @@ with the agent's capabilities.
 | `brnr permission requests` | Lists pending approvals across hosts, optionally filtered by session. | Table or JSON array of approval objects. |
 | `brnr permission show` | Displays one pending approval in full. | Tool/command/diff details; JSON approval object includes `request`, `session`, `owner`, `answerable`, `why_not`, `title`, `kind`, `tool_call`, `options`, `timeout_seconds`. |
 | `brnr permission allow`, `brnr permission reject` | Answers an approval with its option of kind `allow_once` (`allow_always` with `--always`) or `reject_once` (`reject_always`); `--option` names the agent's option ID instead, of the verb's side if its kind is ACP's (and the always kind with `--always`). | Acknowledgment with `session`, `request`, `outcome` (ACP's). A missing or doubled kind, or an option of the other side, fails, listing the options; nothing is answered. |
-| `brnr list` | Running sessions by default; `--inactive` only saved inactive sessions; `--all` both. | Session table or JSON array with `session`, `title`, `state`, `pid`, `agent`, `cwd`, `last_active`. |
+| `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that); an agent that can't list fails. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
-| `brnr sessions` | Starts an agent to query its own session list for the selected cwd. | Session table or JSON array with `session`, `title`, `state`, `pid`, `last_active`, `cwd`; unknown state/PID can be null. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; errors on stderr. |
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |

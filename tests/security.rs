@@ -94,7 +94,7 @@ fn a_runtime_dir_others_can_use_is_refused() {
         assert!(fs::read_dir(&run).unwrap().next().is_none(), "{open:o}: wrote into it");
         assert!(env.calls().is_empty(), "{open:o}: an agent was started");
         for args in [
-            &["list"][..],
+            &["session", "list"][..],
             &["process", "list"],
             &["permission", "requests"],
             &["prompt", "send", "sess-1", "hi"],
@@ -116,7 +116,7 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
     chmod(&target, 0o700);
     symlink(&target, env.dir.join("run")).unwrap();
     for args in [
-        &["list"][..],
+        &["session", "list"][..],
         &["process", "list"],
         &["permission", "requests"],
         &["permission", "allow", "sess-1", "p1"],
@@ -142,7 +142,7 @@ fn a_runtime_dir_of_another_users_is_refused() {
     let env = Env::new("s-theirs");
     let out = env.brnr(&new_args(&[])).env("BRNR_DIR", dir).output().unwrap();
     private_dir_error(&stderr(&out));
-    let out = env.brnr(&["list"]).env("BRNR_DIR", dir).output().unwrap();
+    let out = env.brnr(&["session", "list"]).env("BRNR_DIR", dir).output().unwrap();
     assert!(!out.status.success());
     private_dir_error(&stderr(&out));
 }
@@ -381,7 +381,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     let made = tree(&env.dir);
     let escaped: Vec<_> = made.iter().filter(|p| p.ends_with("escape")).collect();
     assert!(escaped.is_empty(), "{escaped:?}");
-    let list = env.ok(&["list"]);
+    let list = env.ok(&["session", "list"]);
     assert!(!list.contains('\x1b') && list.contains("escape"), "{list:?}");
     env.ok(&["prompt", "send", id, "hi"]);
     env.stop();
@@ -508,7 +508,7 @@ env = { GITHUB_TOKEN = "resume-secret" }
         for args in [
             &["session", "status", "old-1", "--json"][..],
             &["process", "list", "--json"],
-            &["list", "--json"],
+            &["session", "list", "--json"],
         ] {
             assert!(!env.ok(args).contains("resume-secret"), "{name}: {args:?}");
         }

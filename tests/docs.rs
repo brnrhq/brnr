@@ -87,7 +87,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr acp -- brnr-codex-adapter", Nothing, Succeeds),
     ("brnr acp --profile work", Nothing, Succeeds),
     // Talk to it from outside
-    ("brnr list", Idle, Says("sess-1")),
+    ("brnr session list", Idle, Says("sess-1")),
     ("brnr session status $s", Idle, Says("Fake session")),
     (r#"brnr prompt send $s "also update the changelog""#, Turn, Says("held")),
     (r#"brnr prompt send $s --steer "and the tests too""#, Turn, Says("steered")),
@@ -127,7 +127,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Sessions and processes
     ("brnr session fork $s", Idle, Says("forked")),
     ("brnr session close $s", Idle, Says("closed")),
-    ("brnr sessions -- brnr-claude-adapter", Nothing, Says("old-1")),
+    ("brnr session list -- brnr-claude-adapter", Nothing, Says("old-1")),
     ("brnr session resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
     ("brnr session resume $s --take-over", Idle, Says("started sess-1")),
     ("brnr process list", Idle, Says("headless")),
@@ -181,7 +181,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     ("brnr event log $s --last 1 --json", Idle, Says(r#""event":"turn_ended""#)),
     ("brnr session status $s --json", Idle, Says(r#""state": "idle""#)),
-    ("brnr list --json", Idle, Says(r#""session": "sess-1""#)),
+    ("brnr session list --include active --json", Idle, Says(r#""session": "sess-1""#)),
     ("brnr permission requests --json", Approval, Says(r#""request": "p1""#)),
     ("brnr permission show $s p1 --json", Approval, Says(r#""oldText""#)),
     // Its references: orchestrate

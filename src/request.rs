@@ -27,8 +27,7 @@ use crate::{host, log, paths, spawn};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// The profile's name, for the record (`list --inactive`, `session
-    /// resume`).
+    /// The profile's name, for the record (`session resume`).
     pub profile: Option<String>,
     /// The agent's command as it is run: an adapter found next to brnr (see
     /// spawn.rs), a profile's with `~` expanded.

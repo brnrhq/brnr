@@ -201,7 +201,7 @@ action on a session: it stops an editor's process as it does any other.
 ## Talk to it from outside
 
 ```sh
-brnr list                          # running sessions; --all: ended ones too (--inactive: only those)
+brnr session list                  # brnr's sessions: open ones and ended ones (--include active: open only)
 brnr session status $s             # what it's doing: turn, tools, plan, usage, last message
 brnr prompt send $s "also update the changelog"                # held while a turn runs
 brnr prompt send $s --steer "and the tests too"                # into the running turn
@@ -216,9 +216,9 @@ brnr event watch $s                # live: messages, tools, plan, approvals (--e
 brnr event log $s                  # the story so far; --last 2, --follow, and event watch's flags
 ```
 
-A `<session>` is the session's id, as the agent gave it: `brnr list` shows
-them, with the agent's title for each, and `session new --json` prints the
-new one, with its process's `pid` and the prompt's id as `message`
+A `<session>` is the session's id, as the agent gave it: `brnr session list`
+shows them, with the agent's title for each, and `session new --json` prints
+the new one, with its process's `pid` and the prompt's id as `message`
 (`s=$(brnr session new --json … | jq -r .session)`). `event log` works on a session
 that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
@@ -329,7 +329,7 @@ anything else for it fails before it reaches the agent.
 ```sh
 brnr session fork $s               # a copy of the session, in the same process
 brnr session close $s              # cancel a running turn, then close the session
-brnr sessions -- brnr-claude-adapter   # the agent's own list for this folder (--cwd), and what brnr knows of each
+brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here
 brnr process list                  # brnr's processes: pid, owner, agent, sessions
@@ -339,14 +339,14 @@ brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5
 A process holds a lock for each session it serves
 (`$BRNR_DIR/sessions/<id>.lock`), so which process has a session is known
 without asking it. A process that doesn't answer (within 5 seconds) still has
-its sessions: `list` and `process list` show them `unreachable`, commands on
-them say the process isn't answering, and `session resume` refuses them,
-naming the process, as it does any session that is running. A process that is
-gone, even one whose pid another process has now (nobody listens on its
-socket), isn't shown or counted as running, and its metadata and socket are
-removed. `--take-over` asks the owner to close the session (an editor's
-process does only if its profile enables `close`) and resumes it in a new
-headless process; sessions beside it keep running.
+its sessions: `session list` and `process list` show them `unreachable`,
+commands on them say the process isn't answering, and `session resume`
+refuses them, naming the process, as it does any session that is running. A
+process that is gone, even one whose pid another process has now (nobody
+listens on its socket), isn't shown or counted as running, and its metadata
+and socket are removed. `--take-over` asks the owner to close the session
+(an editor's process does only if its profile enables `close`) and resumes it
+in a new headless process; sessions beside it keep running.
 
 A session whose lock can't be taken (`sessions/` isn't private, or a directory
 is where its lock file goes) isn't served headless: `session new` fails with the
@@ -360,12 +360,21 @@ locked, and `doctor` what is in the way.
 agent can't fork, and with `stop_when_idle` when the agent can't close
 sessions.
 
-`brnr sessions` starts the agent just to ask it (`session/list`), so it
-includes sessions started outside brnr and needs nothing running; its STATE
-and PID columns say, as `brnr list` would, which are running and in which
-process (`unreachable` for one whose process holds it but doesn't answer),
-which brnr has a transcript of (`inactive`), and which only the agent knows
-(`-`). `session resume` takes an id brnr knows, or any id the agent knows, which it
+`brnr session list` on its own is brnr's index, with nothing started: every
+session open in brnr's processes and every one it has a transcript of, in
+every folder (`--cwd` for one). With an agent named (`-- <agent>` or
+`--profile`), it shows only this folder's (or `--cwd`'s), starts the agent
+just to ask it (`session/list`, every page) and joins the two on the session
+id, so it includes sessions started outside brnr; an agent that can't list
+fails it. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
+text and `--json` alike, most recently active first: STATE is `idle`, `busy`
+or `waiting` for one open in a process, `unreachable` for one whose process
+holds it but doesn't answer, `inactive` for one no process has open; SOURCE
+says who knows it, `brnr`, `agent` or `both`; TITLE and LAST ACTIVE are the
+agent's where it gives them. `--include active` keeps the sessions open in a
+process, `--include inactive` the others; both by default.
+
+`session resume` takes an id brnr knows, or any id the agent knows, which it
 resumes in `--cwd` (or here) with the agent after `--` (or the profile's).
 `brnr process stop` signals the agent's whole process group, so whatever the
 agent started in that group goes with it. The same cleanup runs when the agent
@@ -533,7 +542,7 @@ capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
 fork, the editor's capabilities passed through, and no experimental actions.
 What it refuses says why.
 
-Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr sessions`)
+Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr session list` with an agent)
 whose agent answers `initialize` with another version, or one brnr can't
 read, fails with that, before anything else is sent, and the agent is
 stopped ([ADR 54](docs/adr/0054-acp-version-1.md)). An editor's process
@@ -647,20 +656,20 @@ file has the same folder and name as Claude Code's own transcript. In
 `<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
 digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
 sessions never share a file. The events are the ones bridges get, `exited`
-included, and are what `brnr event log`, `list --all` and `--resume` read;
-`event log` reads the raw file too when `acp` events are chosen. A thread of
-the process's own writes them, so the session never waits for the disk;
-`event log` of a running session first waits until its process has written
-what it recorded until then (up to 5 s, then it says so and shows what is
-there), so a turn `session new --wait` just reported is in it, and a process that
-exits is listed until its transcript has its `exited` (2 s at most). A process
-killed (SIGKILL) loses what it hadn't written yet, and may leave its last
-record cut short: the session is still listed, logged and resumed as of its
-last whole record, `event log` says on stderr which lines it couldn't read,
-and the next process starts on a new line; brnr never rewrites a transcript.
-Every record carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for
-joining. `log = "events"` leaves out the raw file, most of the space;
-`log = false` writes nothing.
+included, and are what `brnr event log`, `session list` and `session resume`
+read; `event log` reads the raw file too when `acp` events are chosen. A
+thread of the process's own writes them, so the session never waits for the
+disk; `event log` of a running session first waits until its process has
+written what it recorded until then (up to 5 s, then it says so and shows what
+is there), so a turn `session new --wait` just reported is in it, and a
+process that exits is listed until its transcript has its `exited` (2 s at
+most). A process killed (SIGKILL) loses what it hadn't written yet, and may
+leave its last record cut short: the session is still listed, logged and
+resumed as of its last whole record, `event log` says on stderr which lines it
+couldn't read, and the next process starts on a new line; brnr never rewrites
+a transcript. Every record carries `host_id`, `host_pid`, `proxy_pid` and
+`agent_pid` for joining. `log = "events"` leaves out the raw file, most of the
+space; `log = false` writes nothing.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host

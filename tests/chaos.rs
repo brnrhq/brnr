@@ -96,7 +96,7 @@ fn recovered(env: &Env, unrecorded: bool) {
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3).
     env.resume("sess-1", &[]);
-    assert!(env.ok(&["list"]).contains("sess-1"));
+    assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     env.stop();
 }
 
@@ -196,7 +196,9 @@ fn adr_0011_killed_proxy_mid_fault_stops_host_and_agent() {
             assert!(wait_for(WAIT, || env.calls_of("session/new").len() == 1));
             // Wait for the host to own the session, rather than assuming the
             // agent's receipt of session/new means its reply was processed.
-            assert!(wait_for(WAIT, || env.ok(&["list"]).contains("sess-1")));
+            assert!(wait_for(WAIT, || env
+                .ok(&["session", "list", "--include", "active"])
+                .contains("sess-1")));
             let (host, agent) = processes(&env);
             let descendant = Process::new(env.child_pid());
             writeln!(

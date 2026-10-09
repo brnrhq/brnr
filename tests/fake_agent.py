@@ -24,6 +24,7 @@ with environment variables:
   NO_RESUME=1       offer session/load but not session/resume
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
+  NO_LIST=1         don't offer session/list
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
                     authenticate with fake-login came first
@@ -62,7 +63,7 @@ with environment variables:
 $/cancel_request for the prompt that hangs answers it with an error, -32800.
 
 session/list always has old-1 and sess-1, as an agent's store of sessions
-would. session/load replays a question, an answer and a title.
+would, a page each. session/load replays a question, an answer and a title.
 
 A client whose initialize advertises boolean config options
 (clientCapabilities.session.configOptions.boolean) also gets a boolean option,
@@ -505,6 +506,8 @@ for line in sys.stdin.buffer:
             session_caps["resume"] = {}
         if env("NO_CLOSE"):
             del session_caps["close"]
+        if env("NO_LIST"):
+            del session_caps["list"]
         caps = {
             "loadSession": True,
             "promptCapabilities": {"image": not env("NO_IMAGE")},
@@ -579,7 +582,10 @@ for line in sys.stdin.buffer:
             "updatedAt": "2026-10-01T10:00:00Z",
         }
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
-        result(mid, {"sessions": [old, known]})
+        if params.get("cursor") == "2":
+            result(mid, {"sessions": [known]})
+        else:
+            result(mid, {"sessions": [old], "nextCursor": "2"})
     elif method == "session/set_mode":
         while env("MODE_GATE") and not os.path.exists(env("MODE_GATE")):
             time.sleep(0.01)

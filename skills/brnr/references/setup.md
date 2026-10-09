@@ -67,7 +67,8 @@ In Zed, in `settings.json`:
 }
 ```
 
-The editor's sessions then show in `brnr list`, with `owner` `editor`. You
+The editor's sessions then show in `brnr session list`, and in
+`brnr process list` with `owner` `editor`. You
 can watch them; acting on them is off by default, and is the user's to turn
 on (`experimental` in the profile's `editor` part, in brnr's README).
 

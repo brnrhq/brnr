@@ -262,12 +262,26 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     messages only, `--context` the held context only, and both flags or
     neither drop both, each with its event; `queue list` takes neither
     `--clear` nor `--clear-context`.
+  - `adr_0063_list_without_an_agent_is_brnrs_index`: `session list` with no
+    agent named lists the sessions open in brnr's processes and those it has
+    transcripts of, in every cwd, source `brnr`, with the columns in order,
+    and starts no agent, not even the default profile's; `--cwd` narrows it.
+  - `adr_0063_list_joins_the_agents_sessions_on_id`: with `-- <agent>` or
+    `--profile`, the agent is asked for every page; brnr's sessions in the
+    cwd are joined with the agent's on the id (`both`), one only the agent
+    knows is `inactive` with source `agent`, the agent's title and time win
+    where it gives them, and another cwd's are left out; an agent that can't
+    list fails.
+  - `adr_0063_list_include_filters_by_state`: `--include active` keeps the
+    sessions open in a process, `inactive` the others, whoever knows them;
+    both by default; an unknown state fails.
+  - `adr_0063_list_stops_an_agent_that_wont_go` (ADR 15's): the agent asked,
+    ignoring SIGTERM, is killed with what it started.
 - [tests/security.rs](../../tests/security.rs)
   - `adr_0063_timeout_rejects_once_else_cancels_the_turn`: the timeout
     answers `reject_once`; without it, `session/cancel` goes first and the
     request is answered `cancelled`, and the turn ends.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
-`session new --pid` and its refusals; `session list`'s join, SOURCE and
-`--include`; `session delete` with and without `--purge`, and an editor's
-delete through `brnr acp`.
+`session new --pid` and its refusals; `session delete` with and without
+`--purge`, and an editor's delete through `brnr acp`.

@@ -484,7 +484,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                 owner = Some((host, wanted.clone()));
                 Some(running)
             }
-            // A session brnr has no transcript of (one `brnr sessions` lists)
+            // A session brnr has no transcript of (one only the agent knows)
             // goes to the agent as given, in --cwd or here, with -- <agent>
             // or the profile's.
             None => match find_session(&hosts, &wanted) {
