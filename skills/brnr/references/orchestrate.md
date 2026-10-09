@@ -126,7 +126,9 @@ brnr cancel $s --json
 ```
 
 - `--steer` puts the message into the running turn (refused if the agent
-  can't steer); on an idle session it is sent as a prompt.
+  can't steer); on an idle session it is sent as a prompt. Either way it
+  ends in the `turn_ended` of the turn that carried it, or a
+  `message_dropped`.
 - `--interrupt` cancels the running turn and sends the message ahead of what
   is held.
 - `--context` adds text to the next prompt, without a turn of its own.

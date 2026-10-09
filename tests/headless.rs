@@ -698,6 +698,75 @@ fn adr_0018_steer_without_a_turn_is_a_prompt() {
     assert_eq!(turns(&env)[2..], [["m4"], ["m3"]]);
 }
 
+/// The session's `turn_ended` and `message_dropped` events, in order, as
+/// `(event, messages or message, by)`.
+fn endings(env: &Env) -> Vec<(String, Value, Value)> {
+    let log = env.ok(&["log", "sess-1", "--json"]);
+    let events = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    events
+        .filter(|e| e["event"] == "turn_ended" || e["event"] == "message_dropped")
+        .map(|e| {
+            let which = if e["event"] == "turn_ended" { &e["messages"] } else { &e["message"] };
+            (e["event"].as_str().unwrap().to_owned(), which.clone(), e["by"].clone())
+        })
+        .collect()
+}
+
+/// A steer the agent answers `injected` only after the turn it went into has
+/// ended is in that turn all the same: the turn's `turn_ended` waits for the
+/// answer and lists it, and `send --steer --wait` ends with it.
+#[test]
+fn adr_0056_steer_answered_after_its_turn_is_in_that_turn() {
+    let env = Env::new("steer-late").agent("STEER_ANSWER", "late");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
+    assert!(out.status.success(), "{}{}", stderr(&out), env.ok(&["log", "sess-1"]));
+    // What the agent said came before it said it took the message, so isn't
+    // shown as its reply; the transcript has it.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(turns(&env), [["m1", "m2"]]);
+    let said = env.ok(&["log", "sess-1", "--events", "user_message,agent_message"]);
+    assert!(said.contains("agent: steered\n") && said.ends_with("user: reply steered\n"), "{said}");
+}
+
+/// A steer the agent answers with an error after its turn ended is dropped,
+/// `by` `steer`, and that turn ends without it.
+#[test]
+fn adr_0056_steer_refused_after_its_turn_is_dropped() {
+    let env = Env::new("steer-error").agent("STEER_ANSWER", "error");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("m2 was dropped (steer)"), "{}", stderr(&out));
+    let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("steer"));
+    let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
+    assert_eq!(endings(&env), [dropped, ended]);
+}
+
+/// A steer the agent never answers keeps its turn's `turn_ended` waiting,
+/// since what the turn carried isn't known yet; closing the session drops
+/// it, `by` `close`, and the turn ends without it.
+#[test]
+fn adr_0056_steer_never_answered_is_dropped_by_close() {
+    let env = Env::new("steer-never").agent("STEER_ANSWER", "never");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let args = ["send", "sess-1", "--steer", "--wait", "--timeout", "20", "reply steered"];
+    let waiter = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    env.ok(&["close", "sess-1"]);
+    let out = waiter.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("m2 was dropped (close)"), "{}", stderr(&out));
+    let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("close"));
+    let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
+    assert_eq!(endings(&env), [dropped, ended]);
+}
+
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]
@@ -1340,6 +1409,80 @@ fn adr_0022_log_events_leaves_out_the_raw_acp() {
     let host = records(&host);
     assert!(host.iter().any(|r| r["msg"]["method"] == "initialize"));
     assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
+}
+
+/// A transcript that ends partway through a record, as a process that died
+/// mid-write leaves it, is still its session's (ADR 55): `list` takes the
+/// last record it can read, `log` shows everything before the cut and says
+/// where it is, and a resume puts its first record on a line of its own.
+/// Nothing rewrites what was there.
+#[test]
+fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
+    let env = Env::new("cutshort");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let (dir, _) = project(&env);
+    let file = dir.join("sess-1.jsonl");
+    let listed =
+        || -> Value { serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap() };
+    // Ending in a newline, as written: the last record is `exited`.
+    let whole = fs::read(&file).unwrap();
+    assert!(whole.ends_with(b"\n"));
+    let exited = records(&file).last().unwrap().clone();
+    assert_eq!(exited["event"]["event"], "exited");
+    assert_eq!(listed()[0]["last_active"], exited["ts"]);
+
+    // A record cut short: the session, as of its last whole record.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap()
+        .write_all(br#"{"ts":"partial"#)
+        .unwrap();
+    let cut = fs::read(&file).unwrap();
+    let list = listed();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["last_active"]), (&"sess-1".into(), &exited["ts"]));
+    for json in [false, true] {
+        let args: &[&str] = if json { &["log", "sess-1", "--json"] } else { &["log", "sess-1"] };
+        let out = env.run(args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hi"), "json: {json}");
+        let err = stderr(&out);
+        assert!(err.contains("ends partway through a record (14 bytes), not shown"), "{err}");
+    }
+    assert_eq!(fs::read(&file).unwrap(), cut, "reading it changed it");
+
+    // A complete line that isn't a record, last: the same, and said.
+    fs::write(&file, [&whole[..], b"not a record\n"].concat()).unwrap();
+    assert_eq!(listed()[0]["last_active"], exited["ts"]);
+    let n = whole.iter().filter(|&&b| b == b'\n').count() + 1;
+    let err = stderr(&env.run(&["log", "sess-1"]));
+    assert!(
+        err.contains(&format!("sess-1.jsonl:{n} isn't a record brnr can read, not shown")),
+        "{err}"
+    );
+
+    // Resumed: what was there stays, and the next record is on a line of
+    // its own.
+    fs::write(&file, &cut).unwrap();
+    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let after = fs::read(&file).unwrap();
+    assert!(after.starts_with(&cut), "the transcript was rewritten");
+    assert_eq!(after[cut.len()], b'\n');
+    let out = env.run(&["log", "sess-1"]);
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(log.contains("agent: hi") && log.contains("agent: again"), "{log}");
+    assert!(stderr(&out).contains(&format!("sess-1.jsonl:{n} isn't a record")), "{}", stderr(&out));
+    assert_ne!(listed()[0]["last_active"], exited["ts"]);
+
+    // An empty file says nothing of a session: it isn't one.
+    fs::write(dir.join("empty-1.jsonl"), "").unwrap();
+    assert_eq!(listed().as_array().unwrap().len(), 1);
+    assert!(env.fails(&["log", "empty-1"]).contains("no session empty-1"));
 }
 
 /// A process that exits is listed, and holds its sessions, until its

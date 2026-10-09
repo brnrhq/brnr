@@ -101,12 +101,18 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
             path.display()
         );
     }
+    // A line cut short at the end is still being written while its process
+    // runs; once it has gone, it is a record cut short (ADR 55).
+    let has_gone = || !host_pid.is_some_and(alive);
     if !follow {
+        if has_gone() {
+            transcript.cut_short();
+        }
         return Ok(ExitCode::SUCCESS);
     }
     loop {
         // Looked at first: what the process wrote before it went is read.
-        let gone = !host_pid.is_some_and(alive);
+        let gone = has_gone();
         for event in transcript.read(gone)? {
             // Nothing more comes once the session closes or the agent exits.
             let end = event["event"] == "exited" || event["event"] == "session_closed";
@@ -118,6 +124,7 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         if gone {
+            transcript.cut_short();
             return Ok(ExitCode::SUCCESS);
         }
         sleep(POLL);
@@ -196,30 +203,60 @@ impl Transcript {
             merged.push(event);
         }
     }
+
+    /// Says which of its files end partway through a record, for a
+    /// transcript that won't grow.
+    fn cut_short(&self) {
+        self.events.cut_short();
+        if let Some(acp) = &self.acp {
+            acp.cut_short();
+        }
+    }
 }
 
 /// One file of a transcript, read as it grows.
 struct Tail {
+    path: PathBuf,
     file: BufReader<File>,
     /// A line still being written.
-    partial: String,
+    partial: Vec<u8>,
+    /// How many lines were read whole.
+    lines: usize,
 }
 
 impl Tail {
     fn open(path: &Path) -> io::Result<Tail> {
-        Ok(Tail { file: BufReader::new(File::open(path)?), partial: String::new() })
+        let file = BufReader::new(File::open(path)?);
+        Ok(Tail { path: path.to_owned(), file, partial: Vec::new(), lines: 0 })
     }
 
     /// The records appended since the last read, with when each was
-    /// written.
+    /// written. A line that isn't one is passed over, and said (ADR 55).
     fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
         let mut records = Vec::new();
         loop {
-            let n = self.file.read_line(&mut self.partial).map_err(|e| e.to_string())?;
-            if n == 0 || !self.partial.ends_with('\n') {
+            let n = self.file.read_until(b'\n', &mut self.partial).map_err(|e| e.to_string())?;
+            if n == 0 || !self.partial.ends_with(b"\n") {
                 return Ok(records);
             }
-            records.extend(record(&take(&mut self.partial)));
+            self.lines += 1;
+            match record(&take(&mut self.partial)) {
+                Some(r) => records.push(r),
+                None => errln!(
+                    "brnr: {}:{} isn't a record brnr can read, not shown",
+                    self.path.display(),
+                    self.lines
+                ),
+            }
+        }
+    }
+
+    /// Says so if the file ends partway through a line: once nothing more
+    /// will be written, it is a record cut short (ADR 55).
+    fn cut_short(&self) {
+        if !self.partial.is_empty() {
+            let (path, n) = (self.path.display(), self.partial.len());
+            errln!("brnr: {path} ends partway through a record ({n} bytes), not shown");
         }
     }
 }
@@ -227,8 +264,8 @@ impl Tail {
 /// A transcript record as the event `watch` would have shown, a host event
 /// (see host/control.rs, `emit`) or an ACP message as an `acp` event, with
 /// when it was written.
-fn record(line: &str) -> Option<(String, Value)> {
-    let mut record: Value = serde_json::from_str(line).ok()?;
+fn record(line: &[u8]) -> Option<(String, Value)> {
+    let mut record: Value = serde_json::from_slice(line).ok()?;
     let ts = record["ts"].as_str().unwrap_or_default().to_owned();
     if record["event"]["event"].is_string() {
         return Some((ts, record["event"].take()));

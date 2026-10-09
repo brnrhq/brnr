@@ -209,7 +209,9 @@ running turn instead (`_session/steering`, refused if the agent doesn't offer
 it), and `--interrupt` cancels the turn and sends the message ahead of what is
 held. On an idle session each is sent at once. `send` says which: `delivered`,
 `held`, `steered` or `interrupting`. Every message gets an id (`m<n>`), which
-`send --wait` uses to find the turn that answers it.
+`send --wait` uses to find the turn that answers it. A turn that ends before
+the agent has answered the steers into it has its `turn_ended` wait for those
+answers, so it lists every message the agent took into it.
 
 A message that never goes out is a `message_dropped` event, saying why:
 `cancel` (unless `--keep-held`), `queue --drop` or `--clear`, its session
@@ -590,7 +592,11 @@ never waits for the disk; `log` of a running session first waits until its
 process has written what it recorded until then (up to 5 s, then it says so
 and shows what is there), so a turn `start --wait` just reported is in it,
 and a process that exits is listed until its transcript has its `exited` (2 s
-at most). A process killed (SIGKILL) loses what it hadn't written yet. Every record
+at most). A process killed (SIGKILL) loses what it hadn't written yet, and
+may leave its last record cut short: the session is still listed, logged and
+resumed as of its last whole record, `log` says on stderr which lines it
+couldn't read, and the next process starts on a new line; brnr never rewrites
+a transcript. Every record
 carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
 `log = "events"` leaves out the raw file, most of the space; `log = false`
 writes nothing.

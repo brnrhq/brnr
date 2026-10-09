@@ -53,7 +53,7 @@ use std::env;
 use std::fmt::Display;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -331,7 +331,7 @@ impl Logger {
     /// the log directory fails early. Sessions get a raw file if `acp`.
     pub fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
         let path = paths::host_log(&ids.host_id);
-        let host = Out::new(open_append(&path)?);
+        let host = open_append(&path)?;
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let writer = Writer {
@@ -455,17 +455,14 @@ impl Writer {
         let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
         let events = match open_append(&path) {
-            Ok(file) => Out::new(file),
+            Ok(out) => out,
             Err(err) => return self.failed(now, &session, &path, &err),
         };
         let (mut acp, mut acp_path) = (None, None);
         if self.acp {
             let raw = paths::acp_log(&path);
             match open_append(&raw) {
-                Ok(file) => {
-                    (acp, acp_path) =
-                        (Some(Out::new(file)), Some(raw.to_string_lossy().into_owned()))
-                }
+                Ok(out) => (acp, acp_path) = (Some(out), Some(raw.to_string_lossy().into_owned())),
                 Err(err) => self.failed(now, &session, &raw, &err),
             }
         }
@@ -722,12 +719,20 @@ pub fn redact_record(record: &mut Value) {
 
 /// Opens `path` for appending, creating its directory, so a session's file
 /// grows across hosts that serve it. Transcripts hold prompts and tool
-/// output, so what this creates is private to the user.
-fn open_append(path: &Path) -> io::Result<File> {
+/// output, so what this creates is private to the user. A file that ends
+/// partway through a line (a process that died mid-write) is left as it
+/// is, and the next record starts on a line of its own (ADR 55).
+fn open_append(path: &Path) -> io::Result<Out> {
     if let Some(dir) = path.parent() {
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
-    OpenOptions::new().create(true).append(true).mode(0o600).open(path)
+    let file = OpenOptions::new().create(true).read(true).append(true).mode(0o600).open(path)?;
+    let mut last = *b"\n";
+    let len = file.metadata()?.len();
+    if len > 0 {
+        file.read_exact_at(&mut last, len - 1)?;
+    }
+    Ok(Out { cut: last[0] != b'\n', ..Out::new(file) })
 }
 
 /// `20261001T171839` in UTC: the start of a host id.
