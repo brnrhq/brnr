@@ -20,7 +20,7 @@ use serde_json::Value;
 use super::Host;
 use super::start::StartChannel;
 use crate::config::{Experimental, Feature, Log};
-use crate::request::{Editor, Headless, Prompt, Role};
+use crate::request::{Editor, Headless, Prompt, Role, Settings};
 
 /// How far the clock moves at each [`Harness::tick`]: past every timeout
 /// the harness sets.
@@ -66,13 +66,13 @@ impl Harness {
     pub fn headless(strict: bool, resume: Option<String>) -> Harness {
         let headless = Headless {
             resume,
-            mode: Some("plan".into()),
+            settings: Settings { mode: Some("plan".into()), ..Settings::default() },
             prompt: Some(Prompt { text: "hello".into(), blocks: Vec::new() }),
             stop_when_idle: Some(1),
             permission_timeout: Some(1),
             ..Headless::default()
         };
-        let mut harness = Harness::new(Role::Headless(headless), strict);
+        let mut harness = Harness::new(Role::Headless(Box::new(headless)), strict);
         harness.host.begin_headless_start();
         harness
     }

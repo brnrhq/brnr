@@ -61,7 +61,7 @@ use crate::frame;
 use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
-use crate::request::{Prompt, Request, Role};
+use crate::request::{Prompt, Request, Role, Settings};
 use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
@@ -406,6 +406,9 @@ struct Host {
     auth: Option<String>,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
+    /// Headless start: what its flags and its profile set, made `setup` once
+    /// the session is open and the agent has said which option is which.
+    settings: (Settings, Settings),
     /// Headless start: mode and config options to set before the prompt.
     setup: std::collections::VecDeque<SetupStep>,
     /// Headless start: the session being opened.
@@ -616,7 +619,8 @@ impl Host {
             prompt: h.prompt,
             auth: h.auth,
             resume: h.resume,
-            setup: requests::setup_steps(h.mode, h.model, h.config.into_iter().collect()),
+            settings: (h.settings, h.defaults),
+            setup: Default::default(),
             starting: None,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
