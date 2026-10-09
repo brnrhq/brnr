@@ -54,6 +54,8 @@ with environment variables:
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
 
+$/cancel_request for the prompt that hangs answers it with an error, -32800.
+
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
 
@@ -622,6 +624,10 @@ for line in sys.stdin.buffer:
         time.sleep(float(env("CANCEL_DELAY", "0")))
         if hanging is not None:
             end_turn(hanging, "cancelled")
+            hanging = None
+    elif method == "$/cancel_request":
+        if hanging is not None and params.get("requestId") == hanging:
+            error(hanging, -32800, "Request cancelled")
             hanging = None
     elif method is None and mid in asking:
         end_turn(asking.pop(mid))

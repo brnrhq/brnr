@@ -119,10 +119,12 @@ doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
-unchanged. It changes the stream in three ways, each below: the editor's `fs`
-and `terminal` capabilities are dropped, a session another brnr process
-serves can't be loaded, and the experimental actions a profile enables act on
-the editor's session. When the editor goes away, so does the agent;
+unchanged. It changes the stream in four ways: every request reaches the
+agent with an id of brnr's, and its answer comes back to the editor with the
+editor's own id, so that the editor's requests and brnr's are never confused
+(ADR 61); and, each below, the editor's `fs` and `terminal` capabilities are
+dropped, a session another brnr process serves can't be loaded, and the
+experimental actions a profile enables act on the editor's session. When the editor goes away, so does the agent;
 `brnr start --resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
 

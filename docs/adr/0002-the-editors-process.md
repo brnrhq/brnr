@@ -5,6 +5,10 @@ Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
 Amended by 62: the editor's stdout ends when the agent's does, while the
 agent runs on, and brnr writes nothing more there of its own.
 
+Amended by 61: the editor's requests reach the agent with an id of the
+host's, and their answers come back with the editor's; in a line only the
+id changes.
+
 ## Context
 
 The editor runs brnr as its agent. brnr needs the agent in a process the

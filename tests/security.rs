@@ -437,8 +437,9 @@ fn lines_until(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Vec<String> 
 
 /// An editor's lines reach the agent byte for byte, whatever their spacing,
 /// key order and escapes, MCP secrets in them included, and with lines that
-/// aren't JSON among them; the agent's reach the editor the same way. Only
-/// what brnr records has the secrets redacted.
+/// aren't JSON among them, but for a request's id, which is the host's
+/// (ADR 61); the agent's reach the editor the same way, its answers with the
+/// editor's ids. Only what brnr records has the secrets redacted.
 #[test]
 fn adr_0002_acp_passes_bytes_unchanged() {
     let env = Env::new("s-bytes");
@@ -476,7 +477,17 @@ fn adr_0002_acp_passes_bytes_unchanged() {
             from.extend(lines_until(&mut from_agent, *id));
         }
     }
-    let sent: String = lines.iter().map(|(_, l)| format!("{l}\n")).collect();
+    // Each request with the host's id in place of the editor's, in the order
+    // sent, and nothing else changed.
+    let sent: String = (lines.iter())
+        .map(|(id, l)| {
+            let Some(id) = id else { return format!("{l}\n") };
+            let spans = brnr::json::members(l.as_bytes(), "id");
+            let ours = format!("\"brnr-{id}\"");
+            let line = brnr::json::replace(l.as_bytes(), &spans, ours.as_bytes());
+            format!("{}\n", String::from_utf8(line).unwrap())
+        })
+        .collect();
     assert!(
         wait_for(Duration::from_secs(5), || fs::read(&raw).is_ok_and(|r| r.len() >= sent.len()))
     );
