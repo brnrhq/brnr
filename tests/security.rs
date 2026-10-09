@@ -67,6 +67,8 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     assert_eq!(mode(&run.join(format!("{}.sock", env.pid()))), 0o600);
     assert_eq!(mode(&run.join("sessions")), 0o700);
     assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
+    // The transcripts are the logger thread's to write (ADR 48).
+    env.ok(&["log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
     assert!(home.len() >= 7, "{home:?}");
     for path in home {
@@ -271,6 +273,8 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     // As P8 has it (ADR 53): anything but lowercase ASCII letters, digits,
     // `-` and `_` is escaped, byte by byte.
     let file = "%2e%2e%2f%2e%2e%2f%2e%2e%2f%1b%5b2%4a%2fescape";
+    // The transcript is the logger thread's to write (ADR 48).
+    env.ok(&["log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
     assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());

@@ -407,11 +407,12 @@ fn list_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String
             1,
             "initialize",
             json!({
-                "protocolVersion": 1,
+                "protocolVersion": schema::PROTOCOL_VERSION,
                 "clientCapabilities": {},
                 "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
             }),
         )?;
+        schema::check_protocol_version(&init)?;
         let caps: AgentCapabilities = schema::read(&init["agentCapabilities"]).unwrap_or_default();
         if caps.session_capabilities.list.is_none() {
             return Err("the agent doesn't list its sessions".to_owned());
