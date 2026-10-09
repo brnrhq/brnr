@@ -44,3 +44,15 @@ model.
   as a config option.
 - Matching the option by id or category (former decision 9): an option that
   happens to have the id `model` is a guess; the category is ACP's.
+
+## Tests
+
+Run `cargo test --release adr_0028_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0028_mode_lists_and_switches`.
+  - `adr_0028_model_and_config`.
+  - `adr_0028_model_is_the_option_of_category_model`.
+  - `adr_0028_mode_as_a_config_option`.
+  - `adr_0028_start_applies_mode_and_model_before_the_prompt`.
+  - `adr_0028_commands_lists_the_agents_commands`.

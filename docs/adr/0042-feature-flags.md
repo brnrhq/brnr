@@ -25,3 +25,10 @@ which act on an editor's session (ADR 4).
 - Deciding them by strict mode: they aren't protocol.
 - Making them experimental actions: they don't add to an editor's session;
   they decide what brnr's own processes may do.
+
+## Tests
+
+Run `cargo test --release adr_0042_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0042_shared_sessions_let_an_editor_load_a_held_session`.
