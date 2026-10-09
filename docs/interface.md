@@ -186,7 +186,12 @@ Configure the editor to execute `brnr acp` with the chosen profile/agent.
 Stdin and stdout carry the editor-agent ACP JSON-RPC stream, not the bridge
 protocol below. Do not write human messages to this stdout. brnr relays ACP
 between the editor and its agent; stderr carries diagnostics and the
-agent's stderr. The editor initializes the protocol and owns its sessions.
+agent's stderr, as it is written. Stdout ends when the agent's stdout does,
+even if the agent runs on; brnr writes nothing more there itself. Stderr
+ends when `brnr acp` exits. Both streams share one connection and a 16 MiB
+buffer, so an editor that stops reading one eventually holds up the other
+([ADR 62](adr/0062-stdout-ends-and-stderr-comes-as-written.md)). The editor initializes the protocol and owns its
+sessions.
 See [editor setup and deviations](../README.md#use-it-from-an-editor) and
 [ADR 2](adr/0002-the-editors-process.md). Default capability adjustments and
 experimental actions are documented there; strict mode passes the editor's

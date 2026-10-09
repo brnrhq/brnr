@@ -2,6 +2,9 @@
 
 Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
 
+Amended by 62: the editor's stdout ends when the agent's does, while the
+agent runs on, and brnr writes nothing more there of its own.
+
 ## Context
 
 The editor runs brnr as its agent. brnr needs the agent in a process the

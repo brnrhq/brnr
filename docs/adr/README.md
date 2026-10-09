@@ -84,6 +84,7 @@ of to-resolve; the map at the end says where each went.
 | [56](0056-a-turn-ends-once-its-steers-are-answered.md) | A turn ends once its steers are answered | yes |
 | [58](0058-a-starts-flags-win-over-its-profile.md) | A start's flags win over its profile, setting by setting | yes |
 | [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up (proposed) | yes |
+| [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written (proposed) | yes |
 
 ## Where the former entries went
 

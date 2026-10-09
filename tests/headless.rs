@@ -431,6 +431,24 @@ fn adr_0010_failed_start_shows_the_agents_stderr() {
     assert!(stderr(&out).contains(want), "{}", stderr(&out));
 }
 
+/// A start that times out while the agent waits at a prompt of its own on
+/// stderr, no newline after it, ends its error with that prompt.
+#[test]
+fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
+    let env = Env::new("errpart");
+    let agent = env.dir.join("agent.py");
+    let text = "#!/usr/bin/env python3\nimport os, sys\nos.write(2, b'login required: ')\nsys.stdin.read()\n";
+    script(&agent, text);
+    let out = (env.brnr(&["start", "--prompt", "hi", "--", agent.to_str().unwrap()]))
+        .env("BRNR_START_TIMEOUT", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let want = "timed out waiting for the session. \
+                The agent's last lines on stderr:\n  login required: \n";
+    assert!(stderr(&out).ends_with(want), "{}", stderr(&out));
+}
+
 /// Answering a permission request while the agent is being stopped can't
 /// reach it, so it fails rather than claiming success.
 #[test]
