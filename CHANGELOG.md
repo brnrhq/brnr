@@ -51,6 +51,10 @@ brnr's own conventions:
   one (ADR 11, 50).
 - `docs/interface.md`, the reference for commands, JSON, exit statuses,
   configuration and the bridge protocol, and `docs/threat-model.md`.
+- A `history` event after a session is loaded says how many updates the
+  agent replayed, and whether brnr recorded them or its transcript already
+  had the session. `--events history` selects it; it's shown by default
+  (ADR 57).
 
 ### Changed
 
@@ -106,6 +110,29 @@ brnr's own conventions:
   (ADR 54).
 - **Breaking:** a line over 32 MiB from the agent isn't interpreted:
   headless it is dropped, and an editor gets it byte for byte (ADR 51).
+- **Breaking:** between `brnr acp` and its process, the process sends `EOF`
+  once the agent's stdout ends, and a `STDERR` frame for each read of the
+  agent's stderr rather than for each line. Run both from the same version,
+  as `brnr acp` starts them (ADR 62).
+- **Breaking:** the host log records the agent's stderr as lines alongside
+  forwarding it: one `agent-stderr` record per line, or per 64 KiB of a
+  longer one, with a line still unfinished recorded when stderr ends or the
+  process exits. For when bytes reached the editor, read its stderr, not the
+  host log (ADR 62).
+- **Breaking:** the host log has two new notes: `agent-stdout-ended`, and
+  `not-sent-to-editor` for a line of brnr's own (a sent message's tool call,
+  a refusal, a withdrawal) not written because the editor's stdout had
+  already ended (ADR 62).
+- **Breaking:** `brnr log` reports on stderr each transcript line it can't
+  read, and a transcript that ends partway through a record, where it used
+  to skip them silently. It still exits 0 (ADR 55).
+- **Breaking:** a turn's `turn_ended` waits until the agent has answered
+  every steer sent into it, so it can come after the prompt's answer. A
+  steer the agent never answers holds it until `cancel` or `close` drops
+  the steer (ADR 56).
+- **Breaking:** events from a load's replay that brnr records carry
+  `"replayed": true`, and text shows them as `(replayed) …`. A replayed
+  `user_message` has no `by` and no message id (ADR 57).
 - `brnr start` commits once its ready report is written: interrupted before
   that, the process stops and the prompt is never sent (ADR 7).
 - Backpressure replaces the 30 s timeout on the editor link and the agent's
@@ -150,6 +177,18 @@ brnr's own conventions:
   ignores SIGTERM.
 - A bridge's request line that isn't UTF-8 gets an error reply, instead of
   the bridge being dropped (ADR 35).
+- A session whose transcript ends partway through a record, as a process
+  killed mid-write leaves it, is still listed, logged and resumed, from
+  its last whole record. A process that reopens it starts its first record
+  on a new line, and a line that isn't UTF-8 no longer fails `log`
+  (ADR 55).
+- A steered message always ends, in its turn's `turn_ended` or in a
+  `message_dropped`, whichever order the agent answers in: `send --steer
+  --wait` no longer times out when the agent acknowledges the steer after
+  the turn's answer (ADR 56).
+- `start --resume` of a session brnr has no transcript of, through
+  `session/load`, records the history the agent replays. A transcript made
+  by an earlier load keeps its gap unless it is deleted (ADR 57).
 
 ### Security
 
@@ -158,11 +197,17 @@ brnr's own conventions:
   brnr gave its own (`brnr-1`) can no longer end the editor's turn with the
   answer to `brnr mode`, nor a `send`'s turn with the editor's answer, and
   the editor's `$/cancel_request` reaches only its own requests. The editor
-  gets its ids back as it wrote them (GHSA-84pw-hh9c-w2m8, ADR 61).
+  gets its ids back as it wrote them (GHSA-84pw-hh9c-w2m8; ADR 61).
 - The agent's text is escaped wherever brnr shows it, so a permission
   request can't disguise its command with control characters, and terminal
   sequences (OSC 52, titles) don't reach the terminal; `show` warns about a
   command with control characters (ADR 1, P8).
+- Through `brnr acp`, the editor's stdout ends when the agent closes its
+  stdout, even while the agent runs on, and the agent's stderr reaches the
+  editor as it is written, without waiting for a newline, as it would from
+  the agent run directly. A failed start's error includes the stderr line
+  the agent is still writing, such as a login prompt (GHSA-4q62-fhcc-rgf2;
+  ADR 62).
 - Every command refuses a runtime directory other users can access, as the
   process already did, and ignores metadata whose socket isn't next to it
   (ADR 1, P13).
