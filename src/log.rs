@@ -22,6 +22,11 @@
 //! files only for the sessions it has open; one opened again appends to
 //! them, starting with another `session-opened`.
 //!
+//! What a record goes into, from the state directory down, is the user's own
+//! and private before anything is written to it (P13, ADR 59): a file or
+//! directory others can reach is made private, and noted in the host log as
+//! `made-private`; a symlink, or one that isn't the user's, is refused.
+//!
 //! What is queued for the logger is bounded (ADR 6 in docs/adr), in bytes,
 //! counted from when a record is queued until the logger has written it.
 //! Past `LOG_BYTES` (a disk that is slow, or has stopped) records are
@@ -50,11 +55,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::CString;
 use std::fmt::Display;
-use std::fs::{DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -63,7 +71,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::paths;
+use crate::{paths, sys};
 
 /// What may be queued for the logger before records are skipped.
 const LOG_BYTES: usize = 64 << 20;
@@ -331,10 +339,10 @@ impl Logger {
     /// the log directory fails early. Sessions get a raw file if `acp`.
     pub fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
         let path = paths::host_log(&ids.host_id);
-        let host = open_append(&path)?;
+        let (host, made) = open_append(&path)?;
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
-        let writer = Writer {
+        let mut writer = Writer {
             head: Head { ids, proxy_pid },
             acp,
             host,
@@ -343,6 +351,7 @@ impl Logger {
             queue: queue.clone(),
             stall: env::var_os("BRNR_TEST_LOG_STALL").map(PathBuf::from),
         };
+        writer.made_private(SystemTime::now(), made);
         let thread = thread::spawn(move || writer.run(rx));
         Ok(Logger { sink: Sink(Some((tx, queue))), host_log: Some(path), thread: Some(thread) })
     }
@@ -454,14 +463,14 @@ impl Writer {
         }
         let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
-        let events = match open_append(&path) {
+        let events = match self.open_file(now, &path) {
             Ok(out) => out,
             Err(err) => return self.failed(now, &session, &path, &err),
         };
         let (mut acp, mut acp_path) = (None, None);
         if self.acp {
             let raw = paths::acp_log(&path);
-            match open_append(&raw) {
+            match self.open_file(now, &raw) {
                 Ok(out) => (acp, acp_path) = (Some(out), Some(raw.to_string_lossy().into_owned())),
                 Err(err) => self.failed(now, &session, &raw, &err),
             }
@@ -481,6 +490,25 @@ impl Writer {
             "acp_file": acp_path,
         });
         self.note(now, None, event);
+    }
+
+    /// Opens `path` (see [`open_append`]), noting in the host log what it
+    /// made private.
+    fn open_file(&mut self, ts: SystemTime, path: &Path) -> io::Result<Out> {
+        let (out, made) = open_append(path)?;
+        self.made_private(ts, made);
+        Ok(out)
+    }
+
+    /// Notes in the host log each path that was made private, with the mode
+    /// it had: others could have read what was there before (ADR 59).
+    fn made_private(&mut self, ts: SystemTime, made: Made) {
+        for (path, mode) in made {
+            let path = path.to_string_lossy();
+            let event =
+                json!({ "event": "made-private", "path": path, "mode": format!("{mode:o}") });
+            self.note(ts, None, event);
+        }
     }
 
     fn failed(&mut self, ts: SystemTime, session: &str, path: &Path, err: &io::Error) {
@@ -717,22 +745,125 @@ pub fn redact_record(record: &mut Value) {
     }
 }
 
-/// Opens `path` for appending, creating its directory, so a session's file
-/// grows across hosts that serve it. Transcripts hold prompts and tool
-/// output, so what this creates is private to the user. A file that ends
-/// partway through a line (a process that died mid-write) is left as it
-/// is, and the next record starts on a line of its own (ADR 55).
-fn open_append(path: &Path) -> io::Result<Out> {
-    if let Some(dir) = path.parent() {
-        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    }
-    let file = OpenOptions::new().create(true).read(true).append(true).mode(0o600).open(path)?;
+/// What [`open_private`] made private: each path, and the mode it had.
+type Made = Vec<(PathBuf, u32)>;
+
+/// Opens `path`, under the state directory, for appending, so a session's
+/// file grows across hosts that serve it. Transcripts hold prompts and tool
+/// output, so what it writes to is private to the user (ADR 59; see
+/// [`open_private`]). A file that ends partway through a line (a process
+/// that died mid-write) is left as it is, and the next record starts on a
+/// line of its own (ADR 55).
+fn open_append(path: &Path) -> io::Result<(Out, Made)> {
+    let (file, made) = open_private(&paths::state_dir(), path)?;
     let mut last = *b"\n";
     let len = file.metadata()?.len();
     if len > 0 {
         file.read_exact_at(&mut last, len - 1)?;
     }
-    Ok(Out { cut: last[0] != b'\n', ..Out::new(file) })
+    Ok((Out { cut: last[0] != b'\n', ..Out::new(file) }, made))
+}
+
+/// Opens `path` under `root` for appending, private to the user before
+/// anything is written (ADR 59): `root`, each directory below it and the
+/// file are opened without following a symlink, each from the one before,
+/// and created 0700 or 0600 if missing. Each is checked through what was
+/// opened, so what is checked is what is written to: one that isn't a
+/// directory (or a file with no other links) of the user's is refused, and
+/// one that others could read, write or search is made private (`fchmod`).
+fn open_private(root: &Path, path: &Path) -> io::Result<(File, Made)> {
+    let mut made = Made::new();
+    let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    let open_root = || OpenOptions::new().read(true).custom_flags(flags).open(root);
+    let mut dir = match open_root() {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            DirBuilder::new().recursive(true).mode(0o700).create(root).map_err(|e| at(root, e))?;
+            open_root()
+        }
+        opened => opened,
+    }
+    .map_err(|e| at(root, e))?;
+    keep_private(&dir, root, true, &mut made)?;
+    let rel =
+        path.strip_prefix(root).map_err(|_| refused(path, "is not in the state directory"))?;
+    let (mut names, mut here) = (rel.components().peekable(), root.to_owned());
+    while let Some(name) = names.next() {
+        let Component::Normal(name) = name else {
+            return Err(refused(path, "is not a plain path"));
+        };
+        here.push(name);
+        let name = CString::new(name.as_bytes()).map_err(|e| at(&here, e.into()))?;
+        if names.peek().is_none() {
+            // Read too, for its last byte (ADR 55). Not blocked by a FIFO
+            // put there; a regular file ignores O_NONBLOCK.
+            let flags = libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_NONBLOCK;
+            let file = sys::openat(dir.as_fd(), &name, flags | libc::O_NOFOLLOW, 0o600);
+            let file = file.map_err(|e| at(&here, e))?;
+            keep_private(&file, &here, false, &mut made)?;
+            return Ok((file, made));
+        }
+        let flags = libc::O_RDONLY | flags;
+        dir = match sys::openat(dir.as_fd(), &name, flags, 0) {
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                match sys::mkdirat(dir.as_fd(), &name, 0o700) {
+                    Err(e) if e.kind() != ErrorKind::AlreadyExists => Err(e),
+                    _ => sys::openat(dir.as_fd(), &name, flags, 0),
+                }
+            }
+            opened => opened,
+        }
+        .map_err(|e| at(&here, e))?;
+        keep_private(&dir, &here, true, &mut made)?;
+    }
+    Err(refused(path, "is not a file in the state directory"))
+}
+
+/// Refuses what `open_private` opened at `path` unless it is the user's own
+/// directory (`dir`), or file with no other name, and makes it private if
+/// others have any access to it, adding it to `made` with the mode it had.
+fn keep_private(opened: &File, path: &Path, dir: bool, made: &mut Made) -> io::Result<()> {
+    let meta = opened.metadata().map_err(|e| at(path, e))?;
+    let mode = meta.mode() & 0o777;
+    if dir && !meta.is_dir() {
+        return Err(refused(path, "is not a directory"));
+    } else if !dir && !meta.is_file() {
+        return Err(refused(path, "is not a regular file"));
+    } else if meta.uid() != sys::uid() {
+        return Err(refused(path, &format!("is owned by uid {}", meta.uid())));
+    } else if !dir && meta.nlink() != 1 {
+        // Another name for it could be anywhere: appending there writes
+        // the transcript into some other file.
+        return Err(refused(path, &format!("has {} hard links", meta.nlink())));
+    }
+    if mode & 0o077 != 0 {
+        opened.set_permissions(Permissions::from_mode(mode & 0o700)).map_err(|e| at(path, e))?;
+        made.push((path.to_owned(), mode));
+    }
+    Ok(())
+}
+
+/// `err`, opening `path`, saying where, and what was there if that is why.
+/// `O_NOFOLLOW` and `O_DIRECTORY` refused it; what it is is looked at only
+/// for the message (a symlink is ELOOP on Linux, ENOTDIR on macOS for a
+/// directory, and a FIFO opened without blocking ENXIO).
+fn at(path: &Path, err: io::Error) -> io::Error {
+    let errno = err.raw_os_error();
+    let link = || std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    match errno {
+        Some(libc::ELOOP | libc::ENOTDIR | libc::ENXIO) if link() => refused(path, "is a symlink"),
+        Some(libc::ENOTDIR) => refused(path, "is not a directory"),
+        Some(libc::ENXIO) => refused(path, "is not a regular file"),
+        _ => io::Error::new(err.kind(), format!("{}: {err}", path.display())),
+    }
+}
+
+/// Why no transcript is written at `path`, and what to do.
+fn refused(path: &Path, why: &str) -> io::Error {
+    let msg = format!(
+        "{}: {why}, so brnr won't write a transcript there (move it away, or set BRNR_HOME)",
+        path.display()
+    );
+    io::Error::new(ErrorKind::PermissionDenied, msg)
 }
 
 /// `20261001T171839` in UTC: the start of a host id.
@@ -966,6 +1097,141 @@ mod tests {
         assert!(note["error"].is_string(), "{note}");
         assert_eq!(lines[2].as_ref().unwrap()["event"]["event"], "back");
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A directory of this test's own, empty, holding `home`: the state
+    /// directory, not made yet.
+    fn scratch_home(name: &str) -> (PathBuf, PathBuf) {
+        let dir = env::temp_dir().join(format!("brnr-log-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        (dir.join("home"), dir)
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::symlink_metadata(path).unwrap().mode() & 0o777
+    }
+
+    fn chmod(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// `path`'s directories under `home`, `home` first, and `path`.
+    fn chain(home: &Path, path: &Path) -> Vec<PathBuf> {
+        let mut all: Vec<PathBuf> =
+            path.ancestors().take_while(|p| p.starts_with(home)).map(Path::to_owned).collect();
+        all.reverse();
+        all
+    }
+
+    fn private_all(home: &Path, path: &Path) {
+        for p in chain(home, path) {
+            let want = if p == path { 0o600 } else { 0o700 };
+            assert_eq!(mode(&p), want, "{}", p.display());
+        }
+    }
+
+    #[test]
+    fn adr_0059_new_and_private_paths_are_opened_as_they_are() {
+        let (home, dir) = scratch_home("new");
+        let path = home.join("projects/-w/s.jsonl");
+        let (mut file, made) = open_private(&home, &path).unwrap();
+        assert_eq!(made, []);
+        private_all(&home, &path);
+        file.write_all(b"one\n").unwrap();
+        // Opened again: nothing to make private, and appended to.
+        let (mut file, made) = open_private(&home, &path).unwrap();
+        assert_eq!(made, []);
+        file.write_all(b"two\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adr_0059_what_others_can_reach_is_made_private_before_a_write() {
+        // Beneath private parents, and beneath parents anyone can search.
+        for (name, parents) in [("open-file", 0o700), ("open-dirs", 0o755)] {
+            let (home, dir) = scratch_home(name);
+            let path = home.join("projects/-w/s.jsonl");
+            open_private(&home, &path).unwrap().0.write_all(b"old\n").unwrap();
+            let all = chain(&home, &path);
+            for p in &all {
+                chmod(p, if *p == path { 0o644 } else { parents });
+            }
+            let (mut file, made) = open_private(&home, &path).unwrap();
+            // Private through the descriptor, before anything is written.
+            private_all(&home, &path);
+            let want: Made = (all.into_iter())
+                .map(|p| if p == path { (p, 0o644) } else { (p, parents) })
+                .filter(|(_, mode)| mode & 0o077 != 0)
+                .collect();
+            assert_eq!(made, want, "{name}");
+            file.write_all(b"new\n").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\nnew\n");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn adr_0059_a_symlink_is_never_followed() {
+        let (home, dir) = scratch_home("symlink");
+        let path = home.join("projects/-w/s.jsonl");
+        let victim = dir.join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        chmod(&victim, 0o755);
+        std::fs::write(victim.join("s.jsonl"), "keep me\n").unwrap();
+        chmod(&victim.join("s.jsonl"), 0o644);
+        // The file, its folder, and the state directory itself.
+        let links = [
+            (victim.join("s.jsonl"), path.clone()),
+            (victim.clone(), home.join("projects/-w")),
+            (victim.clone(), home.clone()),
+        ];
+        for (target, link) in links {
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let err = open_private(&home, &path).unwrap_err().to_string();
+            let want =
+                format!("{}: is a symlink, so brnr won't write a transcript there", link.display());
+            assert!(err.starts_with(&want), "{err}");
+            assert_eq!(std::fs::read_to_string(victim.join("s.jsonl")).unwrap(), "keep me\n");
+            assert_eq!((mode(&victim), mode(&victim.join("s.jsonl"))), (0o755, 0o644));
+            assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 1);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adr_0059_only_the_users_own_directories_and_files_are_written_to() {
+        let (home, dir) = scratch_home("refused");
+        let path = home.join("projects/-w/s.jsonl");
+        let refused = |why: &str| {
+            let err = open_private(&home, &path).unwrap_err().to_string();
+            assert!(err.contains(why), "{err}");
+        };
+        // Another name for the file, which could be anywhere.
+        let other = dir.join("other");
+        std::fs::write(&other, "keep me\n").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::hard_link(&other, &path).unwrap();
+        refused(": has 2 hard links, so brnr won't");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep me\n");
+        // A FIFO: refused, not waited on.
+        std::fs::remove_file(&path).unwrap();
+        let fifo = std::process::Command::new("mkfifo").arg(&path).status().unwrap();
+        assert!(fifo.success());
+        refused(": is not a regular file");
+        // A file where a directory goes.
+        std::fs::remove_dir_all(home.join("projects")).unwrap();
+        std::fs::write(home.join("projects"), "").unwrap();
+        refused(": is not a directory");
+        // Another user's (root's): `/`, as the state directory.
+        if sys::uid() != 0 {
+            let err = open_private(Path::new("/"), Path::new("/x.jsonl")).unwrap_err();
+            assert!(err.to_string().starts_with("/: is owned by uid 0"), "{err}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

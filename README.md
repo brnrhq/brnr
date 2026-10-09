@@ -623,8 +623,21 @@ exit from a death. `brnr log` always shows a gap, whatever `--events` chose.
 
 The values of MCP servers' `env` and `headers` are recorded as
 `"<redacted>"`, in the raw ACP, the host log and `acp` events alike; the agent
-gets them as given. Transcripts hold prompts and tool output, so brnr creates
-them readable only by you.
+gets them as given.
+
+Transcripts hold prompts and tool output, so brnr writes them only where only
+you can read them (ADR 59): `~/.brnr` (or `$BRNR_HOME`), each directory below
+it and the file must be yours, with no group or other access, before a record
+goes in, whether brnr made them or found them there. It creates them 0700 and
+0600; one restored, copied or chmod'ed so that others can reach it is made
+private when a process opens it, and the host log has a `made-private`
+record (`path`, and the `mode` it had). Symlinks are never followed, the
+state directory included (set `BRNR_HOME` to where one points instead), and
+what isn't your own directory or file, or has another hard link, is refused:
+a process whose host log can't be opened doesn't start (`log: <path>: …`),
+and a session whose file can't be is served without it, with a
+`session-log-failed` record in the host log saying why. There is no
+override; `log = false` writes nothing.
 
 ## Adapters
 

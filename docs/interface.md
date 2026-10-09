@@ -308,6 +308,13 @@ pre-1.0 compatibility policy.
 Human-readable output escapes agent control characters; JSON retains the
 agent's text, so escape it before displaying it in a terminal or UI. MCP
 environment/header secrets are redacted from recorded ACP, but transcripts
-can contain prompts and tool output. `doctor --report` is for review before
+can contain prompts and tool output. brnr writes a transcript or host log
+only where the state directory, each directory below it and the file are the
+user's own with no group or other access: what others can reach is made
+private before the next record (a `made-private` host-log record says so),
+and a symlink, another user's path, a non-regular file or one with other
+hard links is refused, with no override (ADR 59). A refused host log fails
+the start; a refused session file is a `session-log-failed` host-log record.
+`doctor --report` is for review before
 sharing; it does not upload anything. See the [threat model](threat-model.md)
 for trust boundaries and the documented host-SIGKILL cleanup limitation.
