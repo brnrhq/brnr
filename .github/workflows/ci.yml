@@ -1,6 +1,7 @@
 # Checks the formatting, lints and tests every pull request and every push to
-# main, on Linux and macOS. The integration tests drive the real binary
-# against tests/fake_agent.py, so they need python3 (both runners have it).
+# main, on Linux and macOS, and lints on aarch64 Linux too. The integration
+# tests drive the real binary against tests/fake_agent.py, so they need
+# python3 (both runners have it).
 # The adapters are built and checked too, so that a pull request moving their
 # npm versions (Dependabot's) is tested; cargo deny checks the crates
 # (deny.toml) and cargo vet that each is audited or exempted (supply-chain/);
@@ -46,6 +47,22 @@ jobs:
         run: |
           python3 .github/scripts/test_adr_tests.py
           python3 .github/scripts/adr-tests.py
+
+  # Lints on aarch64 Linux too, where c_char is u8, not i8: a cast that is
+  # needed on the other runners is one clippy flags there (issue 79).
+  clippy-arm:
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --release --all-targets -- -D warnings
 
   adapters:
     timeout-minutes: 20

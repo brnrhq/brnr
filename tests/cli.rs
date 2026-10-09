@@ -1629,6 +1629,53 @@ fn adr_0030_auth_runs_the_login_method_named() {
     assert!(env.prompts().is_empty());
 }
 
+/// An agent whose answer to `initialize` chooses an ACP version brnr doesn't
+/// speak, or none it can read, fails the start, strict or not: nothing is
+/// sent after `initialize`, and the agent is stopped (ADR 54). Version 1
+/// starts.
+#[test]
+fn adr_0054_a_start_in_an_acp_version_brnr_doesnt_speak_fails() {
+    let unsupported = "the agent speaks ACP version 999; brnr speaks only version 1";
+    let unreadable = "the agent's answer to initialize has no ACP version brnr can read";
+    let cases = [
+        ("999", unsupported.to_owned()),
+        ("0", "the agent speaks ACP version 0; brnr speaks only version 1".to_owned()),
+        ("\"1\"", format!("{unreadable} (protocolVersion: \"1\")")),
+        ("1.5", format!("{unreadable} (protocolVersion: 1.5)")),
+        ("70000", format!("{unreadable} (protocolVersion: 70000)")),
+        ("missing", format!("{unreadable} (protocolVersion: null)")),
+    ];
+    for (i, (version, want)) in cases.iter().enumerate() {
+        for strict in [false, true] {
+            let env = Env::new(&format!("c-proto-{i}-{strict}")).agent("PROTOCOL_VERSION", version);
+            let mut args = vec!["--json", "--prompt", "hi"];
+            if strict {
+                args.insert(0, "--strict");
+            }
+            let out = env.run(&start_args(&args));
+            assert_eq!(code(&out), 1, "{version}: {}", stdout(&out));
+            assert!(stdout(&out).is_empty(), "{version}: {}", stdout(&out));
+            assert!(stderr(&out).contains(want.as_str()), "{version}: {}", stderr(&out));
+            let methods: Vec<Value> = env.calls().iter().map(|c| c["method"].clone()).collect();
+            assert_eq!(methods, ["initialize"], "{version}: sent after initialize");
+            assert!(env.prompts().is_empty());
+            assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "left running");
+            for pid in agent_pids(&env) {
+                assert!(wait_for(Duration::from_secs(5), || !alive(pid)), "agent {pid} lives on");
+            }
+        }
+    }
+    // brnr sessions asks no further either.
+    let env = Env::new("c-proto-sessions").agent("PROTOCOL_VERSION", "999");
+    assert!(env.fails(&["sessions", "--", AGENT]).contains(unsupported));
+    let methods: Vec<Value> = env.calls().iter().map(|c| c["method"].clone()).collect();
+    assert_eq!(methods, ["initialize"]);
+
+    let env = Env::new("c-proto-1").agent("PROTOCOL_VERSION", "1");
+    env.start(&["--strict", "--prompt", "hi"]);
+    assert!(wait_for(Duration::from_secs(10), || env.prompts() == ["hi"]), "{:?}", env.prompts());
+}
+
 // ---- profiles ------------------------------------------------------------
 
 /// A profile has shared, headless and editor parts (ADR 33): a key in the
