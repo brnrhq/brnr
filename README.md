@@ -41,6 +41,13 @@ no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)). Who can
 reach a session, and what keeps others out, is in the
 [threat model](docs/threat-model.md).
 
+## Interface reference
+
+The [external interface reference](docs/interface.md) describes command
+syntax, inputs and outputs, JSON results, exit codes, configuration, and
+the bridge/control-socket protocol. Use it when writing scripts or bridges;
+the sections below provide examples and explain the workflows.
+
 ## Install
 
 ```sh
@@ -258,6 +265,10 @@ brnr model $s [<model>]            # list or set the model (the config option of
 brnr config $s [effort=high]       # any of the agent's config options
 brnr commands $s                   # the agent's slash commands (send them as text)
 ```
+
+A boolean option (one an editor's session has when the editor advertises
+boolean config options) takes `true` or `false`, and is sent as a boolean;
+anything else for it fails before it reaches the agent.
 
 ### Sessions and processes
 
@@ -507,7 +518,7 @@ environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
-`close`, `stop` (see `src/host/control.rs`); those about a session name it by
+`close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
@@ -528,7 +539,9 @@ writes. A signal to `brnr acp`, or its stdout closing, doesn't wait behind
 them: it goes to the brnr process on a link of its own, and reaches the agent
 at once. Observers never slow the session: a bridge or watcher 16 MiB behind
 is cut off (a connection closed, a started bridge sent SIGTERM), not counting
-the one line, however long, that took it past 16 MiB, and the
+the one line, however long, that took it past 16 MiB, nor (up to 64 MiB of
+them) lines longer than 16 MiB that came after it, so a reply bigger than
+that reaches every peer that keeps up, and the
 foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
@@ -552,7 +565,10 @@ Like the agents' own transcripts, keyed by project folder:
 
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
-file has the same folder and name as Claude Code's own transcript. The events
+file has the same folder and name as Claude Code's own transcript. In
+`<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
+digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
+sessions never share a file. The events
 are the ones bridges get, `exited` included, and are what `brnr log`,
 `list --all` and `--resume` read; `log` reads the raw file too when `acp`
 events are chosen. A thread of the process's own writes them, so the session

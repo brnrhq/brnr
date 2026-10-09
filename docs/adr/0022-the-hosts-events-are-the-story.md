@@ -4,6 +4,9 @@ Amended by 48: `log` of a running session first waits until its process has
 written what it recorded until then. Amended by 55: what reads a transcript
 passes over a line it can't read, cut short or not, and `log` says so.
 
+Amended by 53: the session id in the file names is escaped, one name per
+id, so distinct sessions never share a transcript.
+
 Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
 Of the config options and the commands, `session_changed` has a JSON merge
 patch (RFC 7396) by id and name: an option's new value (`{"model":
