@@ -79,8 +79,8 @@ fn adr_0021_start_wait_prints_the_reply_and_the_turns_result() {
     assert_eq!(prompt["params"]["prompt"][0]["text"], "reply done");
 }
 
-/// `start --json` gives the prompt's message id, as `send --json` does, or
-/// null without a prompt (ADR 17).
+/// `session new --json` gives the prompt's message id, as `prompt send
+/// --json` does, or null without a prompt (ADR 17).
 #[test]
 fn adr_0017_start_json_gives_the_prompts_message() {
     let env = Env::new("c-startmsg");
@@ -522,11 +522,12 @@ fn adr_0022_log_reads_an_inactive_session() {
     assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
 }
 
-/// `log` shows a running session as far as its process has recorded it
-/// when asked, though a thread of the process's own writes the transcript:
-/// the turn `start --wait` just reported is there (ADR 48). A process that
-/// hasn't written it in 5 s (a stalled disk: `BRNR_TEST_LOG_STALL` holds
-/// its logger) is shown as far as it has, and `log` says so.
+/// `event log` shows a running session as far as its process has recorded
+/// it when asked, though a thread of the process's own writes the
+/// transcript: the turn `session new --wait` just reported is there (ADR
+/// 48). A process that hasn't written it in 5 s (a stalled disk:
+/// `BRNR_TEST_LOG_STALL` holds its logger) is shown as far as it has, and
+/// `event log` says so.
 #[test]
 fn adr_0048_log_shows_what_the_process_has_recorded() {
     let env = Env::new("c-logged");
@@ -697,7 +698,7 @@ fn adr_0028_model_and_config() {
 }
 
 /// `config set --model` and `config get --model` find the option whose
-/// category is `model`, whatever its id, and so does `start --model`.
+/// category is `model`, whatever its id, and so does `session new --model`.
 /// Without one the agent offers no model choice, an option that is only
 /// called `model` and the unstable `session/set_model` notwithstanding
 /// (ADR 28).
@@ -737,8 +738,8 @@ fn adr_0028_model_is_the_option_of_category_model() {
 }
 
 /// An agent with a config option of category `mode`: that is its mode, for
-/// `config set --mode` and `start --mode`, also when it has v1 modes as
-/// well; `session/set_mode` isn't sent (ADR 28, ADR 63).
+/// `config set --mode` and `session new --mode`, also when it has v1 modes
+/// as well; `session/set_mode` isn't sent (ADR 28, ADR 63).
 #[test]
 fn adr_0028_mode_as_a_config_option() {
     for both in [false, true] {

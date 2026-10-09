@@ -512,9 +512,9 @@ already implement alike, ahead of the spec: `_session/steering` (for
 `prompt send --steer`), `session/fork`, unstable in ACP v1 (for
 `brnr session fork`), and dropping the editor's `fs` and `terminal`
 capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
-`--strict` on `acp` and `session new`) is stable ACP to the letter: no steering, no
-fork, the editor's capabilities passed through, and no experimental actions.
-What it refuses says why.
+`--strict` on `acp`, `session new` and `session resume`) is stable ACP to
+the letter: no steering, no fork, the editor's capabilities passed through,
+and no experimental actions. What it refuses says why.
 
 Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr sessions`)
 whose agent answers `initialize` with another version, or one brnr can't

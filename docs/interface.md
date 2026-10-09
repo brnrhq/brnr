@@ -160,16 +160,16 @@ with the agent's capabilities.
   `--stop-when-idle` and `--permission-timeout` are numbers of seconds,
   winning over the profile's `stop_when_idle` and `permission_timeout`;
   `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session.
-- `--wait` requires a prompt or attachment. `session new --wait` and
-  `prompt send --wait` write the reply on stdout; approvals and
+- `--wait` requires a prompt or attachment. `session new --wait`,
+  `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
   `session`, `message`, `reply` (string), `stop_reason`, `error`, `dropped`,
-  and `pid` for `session new` and `resume`. Missing error/drop information is null. A command
+  and `pid` for `session new` and `session resume`. Missing error/drop information is null. A command
   may fail before a completion object is available.
 - `--foreground` instead stays attached, displaying event lines;
   `--json` makes them JSON lines and `--quiet` suppresses the display.
   Ctrl-C stops the session. It cannot be combined with `--wait`.
-- `--strict` on `acp`/`session new` selects stable ACP only. Actions on an editor's
+- `--strict` on `acp`, `session new` and `session resume` selects stable ACP only. Actions on an editor's
   session require the corresponding experimental profile setting. See
   [strict mode](../README.md#strict-mode-and-feature-flags) and
   [experimental actions](../README.md#experimental-actions).
@@ -192,10 +192,10 @@ transcript. Tool, plan and usage data come from the agent.
 | Context | Result |
 |---|---|
 | Ordinary CLI command | 0 on success; 1 for invalid arguments or an operation failure. |
-| `event wait`, `session new --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`exit` succeeds when its requested condition occurs. |
+| `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`exit` succeeds when its requested condition occurs. |
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
-| `session new --foreground` | Follows the agent's exit status; startup failure is nonzero. |
+| `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
