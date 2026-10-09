@@ -70,3 +70,17 @@ answering when `start --resume` asks): a caveat of the proxy role, which
   refused.
 - `doctor --fix` removing what is in a lock file's place: a directory may
   hold the user's files, and a symlink's target is the user's to judge.
+
+## Tests
+
+Run `cargo test --release adr_0050_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0050_an_editors_session_that_cant_be_locked_is_passed_through`.
+- [tests/doctor.rs](../../tests/doctor.rs)
+  - `adr_0050_what_keeps_a_session_from_being_locked_fails`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0050_a_new_session_that_cant_be_locked_isnt_started`.
+  - `adr_0050_a_resume_that_cant_be_locked_isnt_started`.
+  - `adr_0050_a_fork_that_cant_be_owned_is_refused`.
+  - `adr_0050_a_second_owner_of_a_new_session_isnt_started`.

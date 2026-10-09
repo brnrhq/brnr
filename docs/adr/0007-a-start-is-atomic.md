@@ -112,3 +112,15 @@ interrupted, the process stops too and the prompt is never sent.
   with `ps` (P13).
 - Committing at launch: a killed `start` would leave a running session whose
   id nobody was told, and Ctrl-C couldn't cancel a start.
+
+## Tests
+
+Run `cargo test --release adr_0007_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0007_abandoned_start_sends_no_prompt`.
+  - `adr_0007_start_gone_as_ready_is_written_sends_no_prompt`.
+  - `adr_0007_start_gone_after_ready_leaves_the_session_running`.
+  - `adr_0007_start_timeout_stops_the_host`.
+  - `adr_0007_empty_prompt_is_refused`.
+  - `adr_0007_large_prompt_from_stdin`.

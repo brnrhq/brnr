@@ -51,3 +51,16 @@ the agent has opened the session and said what its options are.
   changes the agent's state twice, with the profile's value briefly current.
 - The last flag winning a conflict within the flags: a guess at what was
   meant (P4); the user can drop one.
+
+## Tests
+
+Run `cargo test --release adr_0058_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0058_start_flags_win_over_the_profile`: `--model` over a profile's
+    model option, with the id `model` and with another; the mode over the
+    profile's likewise, either way round; each setting is sent once, and
+    `status` has the value that won.
+  - `adr_0058_start_settings_that_disagree_fail`: two values for one setting
+    from the flags, or from the profile, fail the start before anything is
+    set; a flag settles the profile's; the same value twice is one.

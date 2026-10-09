@@ -33,3 +33,11 @@ codex-acp's other method, `chat-gpt`, opens a browser.
   an API key, in CI say, needed an interactive login first.
 - brnr choosing a method that looks non-interactive: it can't tell, and a
   guess could open a browser on a server.
+
+## Tests
+
+Run `cargo test --release adr_0030_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0030_login_needed_is_explained`.
+  - `adr_0030_auth_runs_the_login_method_named`.
