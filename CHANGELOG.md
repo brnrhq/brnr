@@ -153,6 +153,12 @@ brnr's own conventions:
 
 ### Security
 
+- Every request to the agent has an id of brnr's, the editor's too, and its
+  answer goes only to whoever sent it: an editor's request whose id was one
+  brnr gave its own (`brnr-1`) can no longer end the editor's turn with the
+  answer to `brnr mode`, nor a `send`'s turn with the editor's answer, and
+  the editor's `$/cancel_request` reaches only its own requests. The editor
+  gets its ids back as it wrote them (GHSA-84pw-hh9c-w2m8, ADR 61).
 - The agent's text is escaped wherever brnr shows it, so a permission
   request can't disguise its command with control characters, and terminal
   sequences (OSC 52, titles) don't reach the terminal; `show` warns about a

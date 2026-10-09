@@ -87,6 +87,7 @@ of to-resolve; the map at the end says where each went.
 | [58](0058-a-starts-flags-win-over-its-profile.md) | A start's flags win over its profile, setting by setting | yes |
 | [59](0059-transcripts-are-written-only-where-only-you-can-read.md) | Transcripts are written only where only you can read them (proposed) | yes |
 | [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up (proposed) | yes |
+| [61](0061-request-ids-are-the-hosts.md) | Every request to the agent has an id of the host's (proposed) | yes |
 | [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written (proposed) | yes |
 
 ## Where the former entries went

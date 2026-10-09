@@ -66,12 +66,12 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, Hold, Pending, Session};
+use acp::{AgentRequest, ClientRequest, Hold, Pending, Session};
 use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
-use requests::{Capabilities, HostRequest, SetupStep};
+use requests::{Capabilities, SetupStep};
 use start::StartChannel;
 
 /// Where the editor link or the start channel is: a socket either way.
@@ -373,10 +373,9 @@ struct Host {
     /// Sessions this process has taken (or failed to take) the lock of
     /// before the agent opened them: a resume or a load not yet answered.
     claimed: HashMap<String, Hold>,
-    /// Every unanswered request to the agent → the session it is about.
-    client_requests: HashMap<String, Option<String>>,
-    /// Requests the host itself sent the agent as its client.
-    host_requests: HashMap<String, HostRequest>,
+    /// Every unanswered request to the agent, by its id there, which is the
+    /// host's whoever asked (ADR 61): who asked, and the session it is about.
+    client_requests: HashMap<String, ClientRequest>,
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
     /// Agent requests the host answered itself while the editor may answer
@@ -389,6 +388,7 @@ struct Host {
     closed: HashMap<String, Option<u32>>,
     /// Request id of every unanswered prompt → its session.
     prompt_session: HashMap<String, String>,
+    /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
     next_permission: u64,
     /// Bytes from the editor after the last complete line.
@@ -614,7 +614,6 @@ impl Host {
             pending: HashMap::new(),
             claimed: HashMap::new(),
             client_requests: HashMap::new(),
-            host_requests: HashMap::new(),
             agent_requests: Vec::new(),
             answered: HashMap::new(),
             closed: HashMap::new(),

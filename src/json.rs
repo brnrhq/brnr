@@ -9,7 +9,11 @@
 //! A deep value takes a deep stack, to parse and also to clone, show or drop
 //! afterwards. [`depth`] says how deep a line goes, and [`on_stack`] runs
 //! code on a stack that takes values that deep.
+//!
+//! [`members`] finds a top-level member in the line itself, so that a
+//! request's id is changed there and the rest goes on byte for byte (ADR 61).
 
+use std::ops::Range;
 use std::panic;
 use std::thread;
 
@@ -106,6 +110,106 @@ fn scan(text: &[u8], mut lone: impl FnMut(usize)) -> usize {
     deepest
 }
 
+/// Where in `text`, a JSON object, the values of its top-level members
+/// named `name` are: each of them, a name given twice included, and a name
+/// with escapes as a reader decodes it. What isn't an object has none.
+pub fn members(text: &[u8], name: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut i = blank(text, 0);
+    if text.get(i) != Some(&b'{') {
+        return found;
+    }
+    loop {
+        let key = blank(text, i + 1);
+        let Some(key_end) = string_end(text, key) else { return found };
+        let colon = blank(text, key_end);
+        if text.get(colon) != Some(&b':') {
+            return found;
+        }
+        let start = blank(text, colon + 1);
+        let Some(end) = value_end(text, start) else { return found };
+        if serde_json::from_slice::<String>(&text[key..key_end]).is_ok_and(|k| k == name) {
+            found.push(start..end);
+        }
+        i = blank(text, end);
+        if text.get(i) != Some(&b',') {
+            return found;
+        }
+    }
+}
+
+/// `text` with each of `spans`, in order and apart (as [`members`] finds
+/// them), replaced by `with`.
+pub fn replace(text: &[u8], spans: &[Range<usize>], with: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + spans.len() * with.len());
+    let mut from = 0;
+    for span in spans {
+        out.extend_from_slice(&text[from..span.start]);
+        out.extend_from_slice(with);
+        from = span.end;
+    }
+    out.extend_from_slice(&text[from..]);
+    out
+}
+
+/// Past the whitespace at `i`.
+fn blank(text: &[u8], mut i: usize) -> usize {
+    while text.get(i).is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
+        i += 1;
+    }
+    i
+}
+
+/// Just past the string that starts at `i`, if one does.
+fn string_end(text: &[u8], i: usize) -> Option<usize> {
+    if text.get(i) != Some(&b'"') {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < text.len() {
+        match text[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Just past the value that starts at `i`, if one does.
+fn value_end(text: &[u8], i: usize) -> Option<usize> {
+    match *text.get(i)? {
+        b'"' => string_end(text, i),
+        b'{' | b'[' => {
+            let (mut depth, mut j) = (0_usize, i);
+            while j < text.len() {
+                match text[j] {
+                    b'"' => {
+                        j = string_end(text, j)?;
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 {
+                            return Some(j + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            None
+        }
+        _ => {
+            let end = (i..text.len())
+                .find(|&j| matches!(text[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'))
+                .unwrap_or(text.len());
+            (end > i).then_some(end)
+        }
+    }
+}
+
 /// The UTF-16 code unit of the `\uXXXX` escape at `at`, if there is one.
 fn unit(text: &[u8], at: usize) -> Option<u16> {
     let hex = text.get(at..at + 6)?.strip_prefix(br"\u")?;
@@ -154,6 +258,27 @@ mod tests {
         assert_eq!(read(r#""\ud83d" trailing"#), None);
         assert_eq!(read(r#""\uZZZZ""#), None);
         assert_eq!(read(""), None);
+    }
+
+    #[test]
+    fn adr_0061_an_id_is_found_where_it_is_and_nowhere_else() {
+        let ids = |text: &str| -> Vec<String> {
+            let found = members(text.as_bytes(), "id");
+            found.into_iter().map(|r| text[r].to_owned()).collect()
+        };
+        assert_eq!(ids(r#"{"jsonrpc":"2.0","id":1e3,"method":"m"}"#), ["1e3"]);
+        assert_eq!(ids(r#" { "params" : {"id":"no"} ,"id" : "x\"y" }"#), [r#""x\"y""#]);
+        // An escaped name is the name; one given twice, both.
+        assert_eq!(
+            ids(r#"{"id":-0.0,"a":["id",{"}":"]"}],"id":[1,{"id":2}]}"#),
+            ["-0.0", r#"[1,{"id":2}]"#]
+        );
+        assert_eq!(ids(r#"{"idx":1,"i\ud83dd":2}"#), Vec::<String>::new());
+        assert_eq!(ids(r#"["id", 1]"#), Vec::<String>::new());
+        assert_eq!(ids("{}"), Vec::<String>::new());
+        let text = br#"{"id":1, "id" :2,"x":3}"#;
+        let found = members(text, "id");
+        assert_eq!(replace(text, &found, br#""w""#), br#"{"id":"w", "id" :"w","x":3}"#);
     }
 
     #[test]
