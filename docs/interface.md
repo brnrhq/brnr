@@ -17,7 +17,7 @@ come from `prompt send`. A PID identifies the brnr host that can own multiple
 sessions.
 
 Most commands are `brnr <group> <verb>`, grouped by what they act on:
-`process`, `session`, `prompt`, `queue`, `permission` and `event`
+`process`, `session`, `prompt`, `queue`, `permission`, `config` and `event`
 ([ADR 63](adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 `brnr <group> --help` prints one group's syntax, as does a group without a
 verb (exiting 1). A command brnr doesn't have, such as the names these
