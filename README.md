@@ -391,6 +391,13 @@ prompt. Until then, a step failing, the timeout (120 seconds,
 prompt is never sent. A start that fails ends its error with the agent's last
 lines on stderr (`claude CLI not found`).
 
+`--mode`, `--model` and `--set` win over the profile's `mode` and `config`,
+setting by setting. The model is the agent's config option of category
+`model`, whatever its id, so `--model large` replaces a profile's
+`config = { model = "small" }`; the mode likewise. Two different values for
+one setting from the flags (`--model large --set model=small`), or from the
+profile, fail the start before anything is set.
+
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
