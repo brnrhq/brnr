@@ -165,9 +165,11 @@ aliases or shims.
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
   it can't.
 - A change users notice (a command, a flag, an output, a behaviour, a fix)
-  adds its entry under `## Unreleased` in [CHANGELOG.md](CHANGELOG.md), under
-  the heading it belongs to (Breaking, Added, Changed, Fixed, Security): what
-  is now true, in a sentence, with its ADR. A breaking change says what to
+  adds its entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md),
+  which follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+  under its change type (Added, Changed, Deprecated, Removed, Fixed,
+  Security): what is now true, in a sentence, with its ADR. A breaking change
+  goes under Changed or Removed, starts with **Breaking:**, and says what to
   do instead. That section is the next release's notes.
 - Releases are the maintainers' (`release.sh`, in the README).
 
