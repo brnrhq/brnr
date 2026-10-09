@@ -4,6 +4,8 @@ Accepted 2026-10-07.
 
 Amended by 44: adds P15, brnr never phones home.
 
+Amended by 53: a session id in a file name is escaped, one name per id (P8).
+
 The rules the other decisions are measured against. They were drawn out of
 the former decision log when every entry was reviewed (October 2026), and
 sharpened where earlier decisions pulled against them. Decisions cite them as
@@ -98,8 +100,10 @@ agent's capabilities); never quietly ignored or approximated.
 
 It never reaches a command line or a path unsanitized: values go in the
 environment (ADR 36), and session ids become file names (transcripts, and
-ADR 3's lock files) only sanitized, as `paths::session_log` does: anything
-but ASCII letters, digits, `-`, `_` and `.` becomes `_`. Wherever brnr shows
+ADR 3's lock files) only escaped, as `paths::file_name` does (ADR 53):
+lowercase ASCII letters, digits, `-` and `_` stay, and every other byte is
+`%` and two hex digits, so the name stays in its folder and distinct ids
+never share one. Wherever brnr shows
 it, control characters and bidi overrides are escaped (`render::clean`); JSON
 carries it as sent.
 

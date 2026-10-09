@@ -12,6 +12,9 @@
 //!   is the session's cwd with every non-alphanumeric character turned
 //!   into `-` (as `~/.claude/projects` does); and `hosts/<host id>.jsonl`
 //!   for what belongs to no session.
+//!
+//!   A session id in a file name is escaped (`file_name`, ADR 53): one name
+//!   per id, so two sessions never share a transcript or a lock.
 //! - Config: `$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`,
 //!   else `~/.config/brnr/config.toml`.
 
@@ -75,12 +78,10 @@ pub fn host_log(host_id: &str) -> PathBuf {
 }
 
 pub fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    let mut name = file_name(session);
-    // `x.acp` would be named like session `x`'s raw ACP.
-    if name.ends_with(".acp") {
-        name.replace_range(name.len() - 4..name.len() - 3, "_");
-    }
-    state_dir().join("projects").join(project_key(cwd)).join(format!("{name}.jsonl"))
+    state_dir()
+        .join("projects")
+        .join(project_key(cwd))
+        .join(format!("{}.jsonl", file_name(session)))
 }
 
 /// Where the session locks are (see lock.rs).
@@ -92,13 +93,24 @@ pub fn session_lock(session: &str) -> PathBuf {
     session_locks().join(format!("{}.lock", file_name(session)))
 }
 
-/// A session id as a file name: anything but ASCII letters, digits, `-`,
-/// `_` and `.` becomes `_` (the agent's text is untrusted).
+/// A session id as a file name (ADR 53): lowercase ASCII letters, digits,
+/// `-` and `_` stay, and every other byte of its UTF-8 is `%` and two
+/// lowercase hex digits; the empty id is `%`. The agent's text is untrusted
+/// (P8): the name has no `/`, no `.` (so it is never `.` or `..`, nor named
+/// like another session's raw ACP file), and distinct ids get distinct names,
+/// also where the file system ignores case or Unicode normalization.
 fn file_name(session: &str) -> String {
-    session
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' })
-        .collect()
+    if session.is_empty() {
+        return "%".into();
+    }
+    let mut name = String::with_capacity(session.len());
+    for b in session.bytes() {
+        match b {
+            b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' => name.push(b as char),
+            _ => name.push_str(&format!("%{b:02x}")),
+        }
+    }
+    name
 }
 
 /// The raw ACP file beside a session's events file (`session_log`).
@@ -145,8 +157,60 @@ mod tests {
             (file(&events), file(&acp))
         };
         assert_eq!(name("s-1"), ("s-1.jsonl".into(), "s-1.acp.jsonl".into()));
-        assert_eq!(name("a/b"), ("a_b.jsonl".into(), "a_b.acp.jsonl".into()));
+        assert_eq!(name("a/b"), ("a%2fb.jsonl".into(), "a%2fb.acp.jsonl".into()));
         // Not session `x`'s raw file.
-        assert_eq!(name("x.acp"), ("x_acp.jsonl".into(), "x_acp.acp.jsonl".into()));
+        assert_eq!(name("x.acp"), ("x%2eacp.jsonl".into(), "x%2eacp.acp.jsonl".into()));
+    }
+
+    /// Ids that the former `_` for anything unsafe, or a file system that
+    /// ignores case or normalization, would have put in one file.
+    const COLLIDING: &[&str] = &[
+        "a/b",
+        "a_b",
+        "a%2fb",
+        "a%2Fb",
+        "a.b",
+        "x",
+        "x.acp",
+        "x_acp",
+        "x%2eacp",
+        "Sess-1",
+        "sess-1",
+        "SESS-1",
+        "\u{e9}",
+        "e\u{301}",
+        "_",
+        "",
+        "%",
+        ".",
+        "..",
+        "../x",
+        "\u{1f600}",
+        "\u{1f601}",
+    ];
+
+    #[test]
+    fn distinct_ids_get_distinct_names() {
+        let dir = session_log(Path::new("/w"), "s").parent().unwrap().to_owned();
+        let mut seen = std::collections::HashMap::new();
+        for id in COLLIDING {
+            let events = session_log(Path::new("/w"), id);
+            let lock = session_lock(id);
+            assert_eq!(events.parent(), Some(dir.as_path()), "{id:?}");
+            assert_eq!(lock.parent(), Some(session_locks().as_path()), "{id:?}");
+            assert_eq!(acp_log(&events).parent(), Some(dir.as_path()), "{id:?}");
+            assert!(is_events_log(&events) && !is_events_log(&acp_log(&events)), "{id:?}");
+            assert!(lock.extension().is_some_and(|e| e == "lock"), "{id:?}");
+            // Folded as a case-insensitive file system would.
+            let name = file_name(id).to_lowercase();
+            assert!(!name.contains(['/', '.']), "{id:?}: {name}");
+            if let Some(other) = seen.insert(name.clone(), id) {
+                panic!("{other:?} and {id:?} are both {name}");
+            }
+        }
+        // No events file is another session's raw ACP.
+        for (a, b) in COLLIDING.iter().flat_map(|a| COLLIDING.iter().map(move |b| (a, b))) {
+            assert_ne!(session_log(Path::new("/w"), a), acp_log(&session_log(Path::new("/w"), b)));
+        }
     }
 }

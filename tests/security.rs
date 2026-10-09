@@ -268,9 +268,9 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     let env = Env::new("s-climb").agent("SESSION_ID", id);
     env.start(&["--prompt", "hello"]);
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
-    // As P8 has it: anything but ASCII letters, digits, `-`, `_` and `.`
-    // becomes `_`.
-    let file = ".._.._..___2J_escape";
+    // As P8 has it (ADR 53): anything but lowercase ASCII letters, digits,
+    // `-` and `_` is escaped, byte by byte.
+    let file = "%2e%2e%2f%2e%2e%2f%2e%2e%2f%1b%5b2%4a%2fescape";
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
     assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
