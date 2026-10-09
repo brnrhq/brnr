@@ -93,3 +93,21 @@ repeating whole lists of config options or commands.
 - Host-wide events copied into every session's file (former decision 35):
   the case that prompted it, `owner_changed`, went with ADR 2; `exited` is
   what remains.
+
+## Tests
+
+Run `cargo test --release adr_0022_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0022_transcripts_are_two_files`.
+  - `adr_0022_log_events_leaves_out_the_raw_acp`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0022_log_shows_the_conversation`.
+  - `adr_0022_log_merges_the_raw_acp_in_time`.
+  - `adr_0022_log_reads_an_inactive_session`.
+  - `adr_0022_log_follows_until_the_host_exits`.
+  - `adr_0022_log_follows_the_raw_acp_too`.
+  - `adr_0022_session_changed_says_what_changed`.
+  - `adr_0022_closing_sessions_closes_their_files`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0022_a_closed_session_has_its_records_and_then_no_file`.

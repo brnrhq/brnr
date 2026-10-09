@@ -53,3 +53,12 @@ stable in both. Extension methods start with `_` (`_session/steering`).
   process is enough.
 - Strict mode also deciding process management (whether an editor may share
   a session another process owns): that isn't protocol (ADR 42).
+
+## Tests
+
+Run `cargo test --release adr_0041_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0041_strict_mode_refuses_steering_and_fork`.
+  - `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode`.
+  - `adr_0041_strict_mode_has_no_experimental_actions`.

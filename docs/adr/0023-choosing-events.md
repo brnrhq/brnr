@@ -51,3 +51,16 @@ printed nothing while `--json` had them.
   `in_progress`.
 - Text quietly leaving out events that JSON has: what `--events` chose
   wouldn't be what was shown.
+
+## Tests
+
+Run `cargo test --release adr_0023_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0023_every_event_chosen_is_shown_in_text`.
+  - `adr_0023_log_shows_only_the_events_asked_for`.
+  - `adr_0023_thoughts_are_shown_when_asked`.
+  - `adr_0023_watch_is_readable_by_default`.
+- [src/render.rs](../../src/render.rs)
+  - `adr_0023_every_event_has_a_line`.
+  - `adr_0023_lines_of_the_quiet_and_new_events`.
