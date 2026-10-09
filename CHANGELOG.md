@@ -1,74 +1,31 @@
 # Changelog
 
-What changed in each release of brnr, for the people who use it. A
-release's section is its GitHub release's notes (ADR 40).
+All notable changes to this project will be documented in this file.
 
-- Each release is `## X.Y.Z - YYYY-MM-DD`, newest first, under
-  `## Unreleased`, which is what's on main since the last release. A pull
-  request that changes what users see adds its line to Unreleased;
-  `release.sh` names the section for the version it releases.
-- Under it, the headings that apply, in this order: **Breaking** (before 1.0
-  nothing is kept for compatibility, ADR 1's P9: a change is made outright,
-  and says here what to do instead), **Added**, **Changed**, **Fixed**, and
-  **Security**: a fixed vulnerability, named by its advisory (`GHSA-…`) and
-  CVE id where it has them, with what it allowed and who it affected.
-- An entry says what is now true, in a sentence, with the ADR it follows.
-  0.6.0 and earlier came before `docs/adr`; their entries cite the record
-  that now holds the decision.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+brnr's own conventions:
 
-### Breaking
+- A pull request that changes what users notice adds its entry under
+  [Unreleased]. `release.sh` dates that section for the release, and a
+  release's section is its GitHub release's notes (ADR 40).
+- Before 1.0 nothing is kept for compatibility (ADR 1, P9). A breaking
+  change goes under Changed or Removed, starts with **Breaking:**, and says
+  what to do instead.
+- Security names a fixed vulnerability by its advisory (`GHSA-…`) and CVE
+  ids where it has them.
+- An entry cites the ADR it follows. 0.6.0 and earlier came before
+  `docs/adr`, so they cite the record that now holds the decision.
 
-- Profiles have parts: `[profiles.<p>.headless]` has `cwd`, `mode`,
-  `config`, `mcp_servers`, `permission_timeout`, `stop_when_idle` and
-  `auth`; `[profiles.<p>.editor]` has `experimental` and `features`. `log` is
-  `"all"`, `"events"` or `false`. The flat layout fails to load, and
-  `brnr doctor` says which key goes where (ADR 33).
-- Acting on an editor's session is experimental: `send`, `cancel`, `mode`,
-  `model`, `config` and the rest are refused there until named in the editor
-  part's `experimental = [...]`. Strict mode refuses them all (ADR 4).
-- `send` holds a message while a turn runs. `--after-turn`, the `queued`
-  status and the bridge modes `now` and `after-turn` are gone; `--steer`
-  sends into the running turn, where the agent can be steered (ADR 18).
-- `turn_ended` has `messages` instead of `message`, and `exited` no longer
-  has `undelivered`: a dropped message is a `message_dropped` event
-  (ADR 17, 20). `usage` and `tool_progress` are left out by default, and
-  `session_changed` carries a merge patch of what changed (ADR 23).
-- A session has two transcripts: `<id>.jsonl` its events, `<id>.acp.jsonl`
-  the raw ACP (ADR 22).
-- `brnr model` sets the config option of category `model`;
-  `session/set_model` is no longer sent (ADR 28). A boolean config option
-  takes `true` or `false` and is sent as a boolean (ADR 28).
-- `brnr host` isn't run by hand: a process is started with one resolved
-  request on its stdin (ADR 8). As a profile bridge, `notify` is
-  `command = ["brnr", "notify", "--stdin", "--", …]` (ADR 36).
-- Text output shows control characters and bidi overrides in the agent's
-  text escaped; `--json` keeps the text as sent. `notify`'s `BRNR_TEXT`,
-  `BRNR_TITLE` and `BRNR_MESSAGE` are escaped and capped at 32 KiB (ADR 1,
-  P8; ADR 36).
-- `wait` on a session that is already idle exits as its last turn ended: 1
-  if it failed or was stopped (ADR 21). `start --foreground` exits 1 when the
-  start fails (ADR 9), and `notify` exits 1 when it is cut off (ADR 36).
-- `approve --option` refuses a reject option, and `deny --option` an allow
-  one (ADR 27).
-- A start's `--mode`, `--model` and `--set` win over its profile, whatever
-  the option's id; two values for one setting (`--set a=1 --set a=2`, or
-  `--model` and `--set` of the model option) fail the start instead of the
-  last one winning (ADR 58).
-- Transcript and lock file names escape every byte of a session id but
-  lowercase ASCII letters, digits, `-` and `_` (`a/b` is `a%2fb`). Existing
-  files aren't renamed; UUID ids, which the Claude Code and Codex adapters
-  use, keep their names (ADR 53).
-- A headless start, or `brnr sessions`, fails against an agent that answers
-  `initialize` with an ACP version other than 1, or none (ADR 54).
-- A line over 32 MiB from the agent isn't interpreted: headless it is
-  dropped, and an editor gets it byte for byte (ADR 51).
+## [Unreleased]
 
 ### Added
 
 - `brnr start --auth <method>`, `--strict` (and `brnr acp --strict`), and
   `--resume <session> --take-over` (ADR 30, 41, 3).
+- `send --steer` sends into the running turn, where the agent can be
+  steered (ADR 18).
 - A session is locked by the process that serves it. An editor's load of a
   session another process holds is refused unless the editor part has
   `features = ["shared_sessions"]` (ADR 3, 42). A session that can't be
@@ -92,12 +49,57 @@ release's section is its GitHub release's notes (ADR 40).
 - `doctor` checks what keeps a session from being locked, and tells
   processes that are gone by their socket, so a reused pid isn't taken for
   one (ADR 11, 50).
-- [docs/interface.md](docs/interface.md), the reference for commands, JSON,
-  exit statuses, configuration and the bridge protocol, and
-  [docs/threat-model.md](docs/threat-model.md).
+- `docs/interface.md`, the reference for commands, JSON, exit statuses,
+  configuration and the bridge protocol, and `docs/threat-model.md`.
 
 ### Changed
 
+- **Breaking:** profiles have parts. `[profiles.<p>.headless]` has `cwd`,
+  `mode`, `config`, `mcp_servers`, `permission_timeout`, `stop_when_idle`
+  and `auth`; `[profiles.<p>.editor]` has `experimental` and `features`.
+  `log` is `"all"`, `"events"` or `false`. The flat layout fails to load,
+  and `brnr doctor` says which key goes where (ADR 33).
+- **Breaking:** acting on an editor's session is experimental. `send`,
+  `cancel`, `mode`, `model`, `config` and the rest are refused there until
+  named in the editor part's `experimental = [...]`; strict mode refuses
+  them all (ADR 4).
+- **Breaking:** `send` holds a message while a turn runs (ADR 18).
+- **Breaking:** `turn_ended` has `messages` instead of `message`, and a
+  dropped message is a `message_dropped` event instead of `exited`'s
+  `undelivered` (ADR 17, 20). `usage` and `tool_progress` are left out by
+  default, and `session_changed` carries a merge patch of what changed
+  (ADR 23).
+- **Breaking:** a session has two transcripts: `<id>.jsonl` its events,
+  `<id>.acp.jsonl` the raw ACP (ADR 22).
+- **Breaking:** `brnr model` sets the config option of category `model`;
+  `session/set_model` is no longer sent. A boolean config option takes
+  `true` or `false` and is sent as a boolean (ADR 28).
+- **Breaking:** `brnr host` isn't run by hand: a process is started with one
+  resolved request on its stdin (ADR 8). As a profile bridge, `notify` is
+  `command = ["brnr", "notify", "--stdin", "--", …]` (ADR 36).
+- **Breaking:** text output shows control characters and bidi overrides in
+  the agent's text escaped; `--json` keeps the text as sent. `notify`'s
+  `BRNR_TEXT`, `BRNR_TITLE` and `BRNR_MESSAGE` are escaped and capped at
+  32 KiB (ADR 1, P8; ADR 36).
+- **Breaking:** `wait` on a session that is already idle exits as its last
+  turn ended: 1 if it failed or was stopped (ADR 21). `start --foreground`
+  exits 1 when the start fails (ADR 9), and `notify` exits 1 when it is cut
+  off (ADR 36).
+- **Breaking:** `approve --option` refuses a reject option, and
+  `deny --option` an allow one (ADR 27).
+- **Breaking:** a start's `--mode`, `--model` and `--set` win over its
+  profile, whatever the option's id. Two values for one setting
+  (`--set a=1 --set a=2`, or `--model` and `--set` of the model option) fail
+  the start instead of the last one winning (ADR 58).
+- **Breaking:** transcript and lock file names escape every byte of a
+  session id but lowercase ASCII letters, digits, `-` and `_` (`a/b` is
+  `a%2fb`). Existing files aren't renamed; UUID ids, which the Claude Code
+  and Codex adapters use, keep their names (ADR 53).
+- **Breaking:** a headless start, or `brnr sessions`, fails against an agent
+  that answers `initialize` with an ACP version other than 1, or none
+  (ADR 54).
+- **Breaking:** a line over 32 MiB from the agent isn't interpreted:
+  headless it is dropped, and an editor gets it byte for byte (ADR 51).
 - `brnr start` commits once its ready report is written: interrupted before
   that, the process stops and the prompt is never sent (ADR 7).
 - Backpressure replaces the 30 s timeout on the editor link and the agent's
@@ -116,6 +118,12 @@ release's section is its GitHub release's notes (ADR 40).
   forwarded untouched (ADR 26, 43).
 - A GitHub release's notes are its section of this file, not the titles of
   the pull requests it merged (ADR 40).
+
+### Removed
+
+- **Breaking:** `send --after-turn`, the `queued` status, and the bridge
+  modes `now` and `after-turn`: a message sent during a turn is held until
+  it ends, or use `--steer` (ADR 18).
 
 ### Fixed
 
@@ -149,71 +157,75 @@ release's section is its GitHub release's notes (ADR 40).
 - MCP servers' `env` and `headers` values are redacted in transcripts and
   everywhere brnr shows them (ADR 25).
 
-## 0.6.0 - 2026-10-07
+## [0.6.0] - 2026-10-07
 
-### Breaking
+### Changed
 
-- The approval policy is gone: no `--permissions`, no `permissions` profile
-  key, no rules by tool kind. A config that still has `permissions` fails to
-  load, and `brnr doctor` says so; delete the key. Headless, every request
-  waits for `brnr approve` or `deny`, or a bridge, and `permission_timeout`
-  still denies what nobody answers. How much the agent asks is its mode
-  (`brnr start --mode`, `mode =` in the profile, `brnr mode`) (ADR 27).
-- `brnr list` and `brnr sessions` share one table: SESSION, TITLE, STATE,
-  PID, (AGENT,) LAST ACTIVE, CWD, most recently active first.
-  `sessions --json`'s `updated` and `brnr` are now `last_active`, `state` and
-  `pid` (ADR 15).
-- `brnr ps` has no CWD column; `--json` keeps the process's `cwd` (ADR 15).
-- The editor sees an injected message as a completed tool call ("Message via
-  brnr", "Context via brnr"), not a `user_message_chunk`, which editors don't
-  show out of turn. Events, bridges and transcripts still have
-  `user_message`, `by: control` (ADR 5).
+- **Breaking:** headless, every permission request waits for `brnr approve`
+  or `deny`, or a bridge; `permission_timeout` still denies what nobody
+  answers. How much the agent asks is its mode (`brnr start --mode`,
+  `mode =` in the profile, `brnr mode`) (ADR 27).
+- **Breaking:** `brnr list` and `brnr sessions` share one table: SESSION,
+  TITLE, STATE, PID, (AGENT,) LAST ACTIVE, CWD, most recently active first.
+  `sessions --json`'s `updated` and `brnr` are now `last_active`, `state`
+  and `pid` (ADR 15).
+- **Breaking:** the editor sees an injected message as a completed tool call
+  ("Message via brnr", "Context via brnr"), not a `user_message_chunk`,
+  which editors don't show out of turn. Events, bridges and transcripts
+  still have `user_message`, `by: control` (ADR 5).
 
-## 0.5.0 - 2026-10-06
+### Removed
 
-### Breaking
+- **Breaking:** the approval policy: `--permissions`, the `permissions`
+  profile key and the rules by tool kind. A config that still has
+  `permissions` fails to load, and `brnr doctor` says so; delete the key
+  (ADR 27).
+- **Breaking:** `brnr ps`'s CWD column; `--json` keeps the process's `cwd`
+  (ADR 15).
 
-- Commands take a session, the id the agent gave it, or a process's pid.
-  `<target>`, host ids, names, prefixes and `--session` are gone, and brnr no
-  longer picks a session or a request for you; `show`, `approve` and `deny`
-  take `<session> <request>` (ADR 13).
-- `brnr stop <pid>` stops a process; `close` ends a session (ADR 13, 16).
-- The editor going away stops its agent, as if the editor had run it
-  directly; `start --resume` carries the session on headless.
-  `on_disconnect`, `brnr acp --name` and `--on-disconnect`, and the
-  `owner_changed` event are gone (ADR 2, 14).
-- `--stop-when-idle <s>` and `stop_when_idle` take seconds, counted from the
-  start; `0` closes the session as soon as it is idle (ADR 12).
-- `brnr host` is out of the usage: `start --foreground [--quiet]` runs a
-  session in the foreground, for supervisors such as systemd (ADR 9).
-- `brnr sessions [--profile <p>] [--cwd <dir>] [-- <agent>]` starts the agent
-  to ask it for its sessions, instead of taking a target (ADR 15).
-- `list --json` and `status --json` have new shapes: `list` is an index,
-  with each session's title, and `status` the detail (ADR 15, 34).
-- Bridges name a session by its exact id; the `sessions` request is gone, and
-  `BRNR_PID` replaces `BRNR_HOST` and `BRNR_HOST_ID`. For `notify`,
-  `BRNR_SESSION_ID` replaces `BRNR_SESSION`, and `BRNR_PID` `BRNR_HOST`
-  (ADR 35, 36).
+## [0.5.0] - 2026-10-06
 
 ### Added
 
 - `brnr ps` lists brnr's processes; `watch` and `notify` take a session or
   `--pid <pid>` (ADR 13).
+- `start --foreground [--quiet]` runs a session in the foreground, for
+  supervisors such as systemd (ADR 9).
 - `--json` on every command that prints data, with the same fields as the
   text (ADR 34).
 - A usage error prints only that command's usage.
 
-## 0.4.0 - 2026-10-06
+### Changed
 
-### Breaking
+- **Breaking:** commands take a session, the id the agent gave it, or a
+  process's pid, and brnr no longer picks a session or a request for you;
+  `show`, `approve` and `deny` take `<session> <request>` (ADR 13).
+- **Breaking:** `brnr stop <pid>` stops a process; `close` ends a session
+  (ADR 13, 16).
+- **Breaking:** the editor going away stops its agent, as if the editor had
+  run it directly; `start --resume` carries the session on headless (ADR 2,
+  14).
+- **Breaking:** `--stop-when-idle <s>` and `stop_when_idle` take seconds,
+  counted from the start; `0` closes the session as soon as it is idle
+  (ADR 12).
+- **Breaking:** `brnr sessions [--profile <p>] [--cwd <dir>] [-- <agent>]`
+  starts the agent to ask it for its sessions, instead of taking a target
+  (ADR 15).
+- **Breaking:** `list --json` and `status --json` have new shapes: `list` is
+  an index, with each session's title, and `status` the detail (ADR 15, 34).
+- **Breaking:** bridges name a session by its exact id, and `BRNR_PID`
+  replaces `BRNR_HOST` and `BRNR_HOST_ID`. For `notify`, `BRNR_SESSION_ID`
+  replaces `BRNR_SESSION`, and `BRNR_PID` `BRNR_HOST` (ADR 35, 36).
 
-- `watch` and `log` have no `--raw` (use `--events all`, or
-  `--events default,acp`) and no `--thoughts` (`--events
-  default,agent_thought`), and leave out `acp` and `agent_thought` by
-  default, in `--json` too (ADR 23).
-- `log` shows its transcript as the events `watch` shows live, not the
-  stored lines; the file is unchanged, and `brnr list --json` gives its path
-  (ADR 22).
+### Removed
+
+- **Breaking:** `<target>`, host ids, names, prefixes and `--session`: pass
+  a session id or a pid (ADR 13).
+- **Breaking:** `on_disconnect`, `brnr acp --name` and `--on-disconnect`,
+  the `owner_changed` event and the bridges' `sessions` request (ADR 2, 35).
+- **Breaking:** `brnr host` from the usage: use `start --foreground` (ADR 9).
+
+## [0.4.0] - 2026-10-06
 
 ### Added
 
@@ -225,20 +237,24 @@ release's section is its GitHub release's notes (ADR 40).
 
 ### Changed
 
+- **Breaking:** `watch` and `log` leave out `acp` and `agent_thought` by
+  default, in `--json` too (ADR 23).
+- **Breaking:** `log` shows its transcript as the events `watch` shows live,
+  not the stored lines; the file is unchanged, and `brnr list --json` gives
+  its path (ADR 22).
 - `owner_changed` is in every session's transcript, so `log` shows the
   process taking over from the editor (ADR 22).
 - The help is grouped: chat, approvals, sessions, events, settings, brnr.
 - An adapter formula's `revision` is dropped when its npm version moves
   (ADR 39).
 
-## 0.3.0 - 2026-10-05
+### Removed
 
-### Breaking
+- **Breaking:** `--raw` and `--thoughts` from `watch` and `log`: use
+  `--events all` or `--events default,acp`, and `--events
+  default,agent_thought` (ADR 23).
 
-- `brnr proxy` is `brnr acp`, with no alias: editor configs need
-  `brnr acp -- <agent>` (ADR 2).
-- The compiled adapters are `brnr-claude-adapter` and `brnr-codex-adapter`;
-  `claude-agent-acp` and `codex-acp` now mean the npm packages (ADR 38).
+## [0.3.0] - 2026-10-05
 
 ### Added
 
@@ -250,6 +266,14 @@ release's section is its GitHub release's notes (ADR 40).
   (ADR 39).
 - `brnr acp --help`.
 
+### Changed
+
+- **Breaking:** `brnr proxy` is `brnr acp`, with no alias: editor configs
+  need `brnr acp -- <agent>` (ADR 2).
+- **Breaking:** the compiled adapters are `brnr-claude-adapter` and
+  `brnr-codex-adapter`; `claude-agent-acp` and `codex-acp` now mean the npm
+  packages (ADR 38).
+
 ### Fixed
 
 - brnr finds the adapters next to a symlinked brnr, as Homebrew installs it
@@ -258,7 +282,7 @@ release's section is its GitHub release's notes (ADR 40).
   message doesn't cut off a reader that is keeping up; every reader gets
   `exited` before the process ends (ADR 6).
 
-## 0.2.0 - 2026-10-02
+## [0.2.0] - 2026-10-02
 
 ### Added
 
@@ -307,9 +331,7 @@ release's section is its GitHub release's notes (ADR 40).
 - `--prompt` goes to the process on its stdin, not its command line, where
   `ps` showed it (ADR 8).
 
-## 0.1.0 - 2026-10-02
-
-The first release.
+## [0.1.0] - 2026-10-02
 
 ### Added
 
@@ -327,3 +349,11 @@ The first release.
 - `adapters/`, which builds the Claude Code and Codex ACP adapters as
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
+
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/brnrhq/brnr/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/brnrhq/brnr/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/brnrhq/brnr/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/brnrhq/brnr/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/brnrhq/brnr/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/brnrhq/brnr/releases/tag/v0.1.0
