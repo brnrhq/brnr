@@ -17,7 +17,10 @@
 //!
 //! A session's events file starts with a `session-opened` event naming the
 //! host log and the raw file; the host log records a `session-opened` event
-//! naming both of each session's files.
+//! naming both of each session's files. Closing a session closes its files
+//! once what was recorded for it before is written, so a process holds
+//! files only for the sessions it has open; one opened again appends to
+//! them, starting with another `session-opened`.
 //!
 //! What is queued for the logger is bounded (ADR 6 in docs/adr), in bytes,
 //! counted from when a record is queued until the logger has written it.
@@ -112,6 +115,7 @@ pub struct Ids {
 
 enum Cmd {
     Open { session: String, cwd: PathBuf },
+    Close { session: String },
     Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8> },
     Note { session: Option<String>, ts: SystemTime, event: String },
     // The queue has room again after `gap`.
@@ -231,6 +235,16 @@ impl Sink {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: it says where the session's records go.
             let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
+        }
+    }
+
+    /// Closes `session`'s files once what was recorded before is written.
+    /// Records for it after go to the host log, until it is opened again.
+    pub fn close_session(&self, session: &str) {
+        if let Some((tx, _)) = &self.0 {
+            // Never skipped: a process that serves session after session
+            // would otherwise hold every file it ever opened.
+            let _ = tx.send(Cmd::Close { session: session.to_owned() });
         }
     }
 
@@ -404,6 +418,7 @@ impl Writer {
     fn handle(&mut self, cmd: Cmd) -> bool {
         match cmd {
             Cmd::Open { session, cwd } => self.open(session, &cwd),
+            Cmd::Close { session } => drop(self.sessions.remove(&session)),
             Cmd::Msg { session, ts, dir, bytes } => {
                 let files = session.as_deref().and_then(|s| self.sessions.get(s));
                 // A session's, with no raw file to go in, is left out.
@@ -880,6 +895,39 @@ mod tests {
         assert_eq!(skipped(&t), []);
         assert_eq!(skipped(&host), [(3, 1)]);
         for path in [host, s, t] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn a_closed_session_has_its_records_and_then_no_file() {
+        let (host, s) = (scratch("close-host"), scratch("close-s"));
+        let mut writer = Writer {
+            head: head(),
+            acp: false,
+            host: appending(&host),
+            host_path: host.clone(),
+            sessions: HashMap::new(),
+            queue: Arc::default(),
+            stall: None,
+        };
+        writer.sessions.insert("s".into(), Files { events: appending(&s), acp: None });
+        let note = |event: &str| Cmd::Note {
+            session: Some("s".into()),
+            ts: SystemTime::now(),
+            event: json!({ "event": event }).to_string(),
+        };
+        for cmd in [note("last"), Cmd::Close { session: "s".into() }, note("after")] {
+            assert!(writer.handle(cmd));
+        }
+        assert!(writer.sessions.is_empty());
+        let events = |path: &Path| -> Vec<Value> {
+            lines(path).into_iter().flatten().map(|r| r["event"]["event"].clone()).collect()
+        };
+        assert_eq!(events(&s), ["last"]);
+        // Not open: into the host log, as for any session not opened.
+        assert_eq!(events(&host), ["after"]);
+        for path in [host, s] {
             let _ = std::fs::remove_file(path);
         }
     }

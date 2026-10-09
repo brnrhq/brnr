@@ -64,6 +64,11 @@ repeating whole lists of config options or commands.
 
 ## Consequences
 
+- A process holds a session's two files only while it serves the session:
+  closing it closes them once its last record, `session_closed`, is
+  written, and a session opened again appends to them, after another
+  `session-opened`. A process that forks and closes session after session
+  keeps as many files open as it has sessions.
 - Turning the raw file off saves most of the space, and leaves secrets
   (ADR 25) nothing to be redacted from but the host log.
 - The raw file keeps replay possible: the agent's `session/update`s to the
