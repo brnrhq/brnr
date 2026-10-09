@@ -789,9 +789,11 @@ fn adr_0006_slow_watcher_is_disconnected() {
         .unwrap();
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
-    assert!(env.run(&["send", "sess-1", "go"]).status.success());
-    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
-    sleep(Duration::from_secs(3));
+    // Stopped until the turn has ended, so every event came while it was:
+    // continued sooner, it would be reading again when the turn's 20 MB
+    // message came, which a peer that keeps up takes (ADR 60).
+    let out = env.run(&["send", "sess-1", "--wait", "go"]);
+    assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
     assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
