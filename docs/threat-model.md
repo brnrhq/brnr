@@ -100,7 +100,9 @@ written for this document.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| What brnr creates under `~/.brnr` is 0700 (directories) and 0600 (files), whatever the umask. | `open_append` (src/log.rs) | `headless.rs`: `transcripts_are_private`; `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
+| What brnr creates under `~/.brnr` is 0700 (directories) and 0600 (files), whatever the umask. | `open_private` (src/log.rs) | `headless.rs`: `transcripts_are_private`; `security.rs`: `what_brnr_makes_is_private_whatever_the_umask`; src/log.rs: `adr_0059_new_and_private_paths_are_opened_as_they_are` |
+| Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits, however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `made-private` with the mode it had. There is no override (ADR 59). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private` | `security.rs`: `adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written`; src/log.rs: `adr_0059_what_others_can_reach_is_made_private_before_a_write` |
+| A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, or has another hard link, is refused. Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session-log-failed` in the host log. | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat` (src/sys.rs) | `security.rs`: `adr_0059_a_symlinked_transcript_is_never_followed`; src/log.rs: `adr_0059_a_symlink_is_never_followed`, `adr_0059_only_the_users_own_directories_and_files_are_written_to` |
 | `doctor` warns of transcripts others can read, and `--fix` makes them private. | `transcripts` (src/ctl/doctor.rs) | `doctor.rs`: `readable_transcripts_are_made_private` |
 
 ### B3: `brnr acp` passes bytes unchanged but for the named changes
@@ -178,6 +180,17 @@ What brnr doesn't enforce, or doesn't test, today.
   opened to others while a process runs is refused by the commands
   (`no_approval_goes_through_a_dir_others_can_use`), but the running process
   goes on serving its socket, which its own mode still guards.
+- **What others read before a repair.** A transcript others could reach is
+  made private when a process opens it again (ADR 59), not before: what was
+  in it until then may have been read, which the host log's `made-private`
+  says. One no process opens again stays as it is until `doctor --fix`.
+- **Another user's file in the state directory is tested only as `/`.**
+  Making one takes root, so the ownership check is tested with `/` as the
+  state directory; a file of another user's beneath it is refused by the
+  same check, untested.
+- **A session whose transcript is refused is served unrecorded.** Logging
+  never stops forwarding (P1, P6), so the session goes on; only the host
+  log's `session-log-failed` and `doctor`'s transcripts check say so.
 - **Metadata files follow the umask.** `<pid>.json` (pids, cwd, the agent's
   command line, the socket's path) is created with the default mode, so a
   permissive umask leaves it readable by mode; the 0700 directory is what
