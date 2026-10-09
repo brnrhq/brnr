@@ -39,3 +39,7 @@ adapters.
   tests ran against, and both adapters are written for Node; deno's npm
   compatibility would be one more thing to verify for code that spawns and
   talks to subprocesses.
+
+## Tests
+
+Test exemption: Homebrew formulae live in the separate tap repository; this checkout cannot prove their installation or license declarations. The adapters CI job builds and exercises both pinned adapters; the release workflow tests the public brnr formula. Adapter formula installation still needs a tap-side check.

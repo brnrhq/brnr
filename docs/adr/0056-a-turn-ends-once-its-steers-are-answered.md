@@ -53,3 +53,18 @@ its timeout (124) on a session that was idle (P3).
   for what is one turn's list of messages.
 - Dropping a late `injected` steer as `message_dropped`: it would say a
   message the agent took never went (P3 the other way).
+
+## Tests
+
+Run `cargo test --release adr_0056_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0056_steer_answered_after_its_turn_is_in_that_turn`: an `injected`
+    answer after the turn's own is in that turn's `turn_ended`, and
+    `send --steer --wait` exits 0.
+  - `adr_0056_steer_refused_after_its_turn_is_dropped`: an error answer
+    after the turn's is a `message_dropped`, `by` `steer`, then the turn's
+    `turn_ended` without it; `--wait` exits 1.
+  - `adr_0056_steer_never_answered_is_dropped_by_close`: the `turn_ended`
+    waits for the unanswered steer; closing the session drops it, `by`
+    `close`, then the `turn_ended` goes; `--wait` exits 1.

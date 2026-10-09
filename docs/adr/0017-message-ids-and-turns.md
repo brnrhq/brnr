@@ -22,3 +22,12 @@ more than one: a steered message has no turn of its own (ADR 18). So
 ## Considered
 
 - Matching on the message's text: fragile.
+
+## Tests
+
+Run `cargo test --release adr_0017_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0017_steer_goes_into_the_running_turn`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0017_start_json_gives_the_prompts_message`.

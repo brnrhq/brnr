@@ -18,3 +18,7 @@ would say.
 - One command that pushes the bump to main and tags: it skips review.
 - Doing it all in a workflow (`workflow_dispatch`): it works, but is harder
   to run and debug than a script you can read.
+
+## Tests
+
+Test exemption: Tagging, publishing and updating the tap mutate external repositories and registries, so the runtime suite cannot execute this workflow. release.sh runs its checks before creating a release PR; release.yml and the post-publication checks are the integration evidence. There is no sandboxed end-to-end release.sh test yet.
