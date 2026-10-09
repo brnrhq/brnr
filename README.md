@@ -701,6 +701,13 @@ the panic, and in the foreground by the process itself.
 ./release.sh notes     # what the release pull request would say
 ```
 
+A release's notes are its section of [CHANGELOG.md](CHANGELOG.md), in
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) form, which
+pull requests add to under `[Unreleased]`. `./release.sh minor` names that
+section for the version on the release branch and moves its compare links,
+`./release.sh tag` won't tag a version without one, and the release workflow
+publishes it as the GitHub release's notes, or fails (ADR 40).
+
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.
 
