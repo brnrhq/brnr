@@ -1225,6 +1225,49 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions\n");
 }
 
+/// A session is the cwd's however brnr recorded it: `--cwd <dir>/`, or a
+/// symlink to `<dir>`, is `<dir>`'s, with an agent named or not. One open in
+/// a process that the agent lists is joined (`both`), whatever its recorded
+/// cwd, rather than shown as one only the agent knows.
+#[test]
+fn adr_0063_list_finds_a_cwd_however_it_is_spelled() {
+    let env = Env::new("c-list-spelled");
+    let real = env.dir.join("real");
+    fs::create_dir_all(&real).unwrap();
+    let link = env.dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = real.to_string_lossy().into_owned();
+    env.start(&["--cwd", &format!("{real}/")]);
+    let out = env
+        .brnr(&new_args(&["--cwd", &link.to_string_lossy()]))
+        .env("FIRST_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let ids = |args: &[&str]| -> Vec<String> {
+        let rows = session_list(&env, args);
+        let mut ids: Vec<String> =
+            rows.iter().map(|r| r["session"].as_str().unwrap().to_owned()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&["--cwd", &real]), ["sess-1", "sess-2"]);
+
+    let rows = session_list(&env, &["--cwd", &real, "--", AGENT]);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let one = row(&rows, "sess-1");
+    assert_eq!((&one["state"], &one["source"]), (&"idle".into(), &"both".into()), "{one}");
+    assert!(one["pid"].is_u64(), "{one}");
+    let two = row(&rows, "sess-2");
+    assert_eq!((&two["state"], &two["source"]), (&"idle".into(), &"brnr".into()), "{two}");
+    assert_eq!(row(&rows, "old-1")["source"], "agent");
+    assert_eq!(ids(&["--include", "active", "--cwd", &real, "--", AGENT]), ["sess-1", "sess-2"]);
+    assert_eq!(ids(&["--include", "active", "--cwd", &format!("{real}/")]), ["sess-1", "sess-2"]);
+    let other = env.dir.join("other");
+    fs::create_dir_all(&other).unwrap();
+    assert!(ids(&["--cwd", &other.to_string_lossy()]).is_empty());
+}
+
 /// `--include` keeps sessions by state: `active` those open in a process,
 /// `inactive` those that aren't, whoever knows them; both by default. An
 /// unknown state fails.
@@ -1786,12 +1829,15 @@ fn adr_0003_take_over_moves_a_session() {
 
 /// A process that doesn't answer still holds its session's lock: it isn't
 /// resumed elsewhere, and session list (an active session's, joined with the
-/// agent's or not) and process list say which process has it without asking
-/// it.
+/// agent's or not, or its cwd's by its transcript) and process list say
+/// which process has it without asking it.
 #[test]
 fn adr_0003_a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
     env.start(&[]);
+    // Its transcript written: what says it is this cwd's when its process
+    // can't.
+    env.ok(&["event", "log", "sess-1"]);
     let pid = env.host_pid();
     kill(pid, libc::SIGSTOP);
     // Each waits for the stopped process to answer, side by side.
@@ -1804,8 +1850,13 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     let ps = spawn(&["process", "list", "--json"]);
     let sessions = spawn(&["session", "list", "--json", "--", AGENT]);
     let table = spawn(&["session", "list", "--", AGENT]);
-    let [resume, take_over, list, ps, sessions, table] =
-        [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
+    let (dir, elsewhere) = (env.dir.to_string_lossy(), env.dir.join("elsewhere"));
+    fs::create_dir_all(&elsewhere).unwrap();
+    let in_dir = spawn(&["session", "list", "--json", "--cwd", &dir]);
+    let there = spawn(&["session", "list", "--json", "--cwd", &elsewhere.to_string_lossy()]);
+    let [resume, take_over, list, ps, sessions, table, in_dir, there] =
+        [resume, take_over, list, ps, sessions, table, in_dir, there]
+            .map(|c| c.wait_with_output().unwrap());
     kill(pid, libc::SIGCONT);
     let refused = format!("sess-1 is running in process {pid}");
     assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
@@ -1830,6 +1881,15 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     let table = stdout(&table);
     let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
     assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
+    // With --cwd and no agent, its transcript says which cwd's it is; its
+    // cwd still unknown.
+    let in_dir: Value = serde_json::from_slice(&in_dir.stdout).unwrap();
+    assert_eq!(in_dir.as_array().unwrap().len(), 1, "{in_dir}");
+    let (one, state) = (&in_dir[0]["session"], &in_dir[0]["state"]);
+    assert_eq!((one, state), (&"sess-1".into(), &"unreachable".into()), "{in_dir}");
+    assert_eq!(in_dir[0]["cwd"], Value::Null, "{in_dir}");
+    let there: Value = serde_json::from_slice(&there.stdout).unwrap();
+    assert_eq!(there, serde_json::json!([]));
     assert_eq!(env.hosts().len(), 1, "a second process started");
 }
 

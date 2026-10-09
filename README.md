@@ -366,7 +366,9 @@ every folder (`--cwd` for one). With an agent named (`-- <agent>` or
 `--profile`), it shows only this folder's (or `--cwd`'s), starts the agent
 just to ask it (`session/list`, every page) and joins the two on the session
 id, so it includes sessions started outside brnr; an agent that can't list
-fails it. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
+fails it. A folder is the same however it is spelled (a trailing slash, a
+symlink), and an `unreachable` session is a folder's if the agent lists it
+there or brnr has its transcript there. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
 text and `--json` alike, most recently active first: STATE is `idle`, `busy`
 or `waiting` for one open in a process, `unreachable` for one whose process
 holds it but doesn't answer, `inactive` for one no process has open; SOURCE

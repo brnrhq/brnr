@@ -110,7 +110,9 @@ brnr's own conventions:
   `list --inactive`). With `--profile` or `-- <agent>` it is what `sessions`
   was, joined: the cwd's sessions (here, or `--cwd`) and the agent's, every
   page of `session/list`, on the session id; an agent that can't list fails
-  it. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
+  it. A cwd is the same however it is spelled (a trailing slash, a symlink),
+  and an `unreachable` session is the cwd's if the agent lists it there or
+  brnr has its transcript there. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
   `brnr`, `agent` or `both`; a session only the agent knows is `inactive`
   where it was `-`, and every row has its AGENT (ADR 63).
 

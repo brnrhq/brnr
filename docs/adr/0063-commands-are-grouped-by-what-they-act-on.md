@@ -106,7 +106,15 @@ command's. `--profile` and `-- <agent>` combine as they do today.
     are narrowed to that cwd, the agent is started and asked
     (`session/list`, every page), and the two are joined on the session id:
     exact, so brnr never guesses which recorded agent a command line is
-    (P4). An agent that can't list fails the command (P7).
+    (P4). A session open in a process that the agent lists there is joined
+    whatever cwd brnr recorded for it, its lock being one per id (ADR 53).
+    An agent that can't list fails the command (P7).
+  - A cwd is the same however it is spelled: `--cwd` and a row's cwd are
+    compared as the directories they name (a trailing slash or a symlink
+    makes no difference). An `unreachable` session's cwd is unknown (its
+    process doesn't answer), so it is the cwd's if the agent lists it there
+    or brnr has its transcript there; its CWD stays null unless the agent
+    gives one.
   - `--include` filters by state: `active` is open in a process (`idle`,
     `busy`, `waiting`, `unreachable`), `inactive` isn't, whoever knows it;
     both by default.
@@ -272,6 +280,10 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     knows is `inactive` with source `agent`, the agent's title and time win
     where it gives them, and another cwd's are left out; an agent that can't
     list fails.
+  - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
+    with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
+    named or not, and the open one the agent lists is `both` and `active`,
+    not one only the agent knows.
   - `adr_0063_list_include_filters_by_state`: `--include active` keeps the
     sessions open in a process, `inactive` the others, whoever knows them;
     both by default; an unknown state fails.
