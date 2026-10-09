@@ -2652,11 +2652,18 @@ fn adr_0063_thought_level_is_the_option_of_its_category() {
     env.start(&["--thought-level", "high"]);
     assert_eq!(sets(&env), ["effort=high"]);
 
-    // An agent with no thought level.
-    let env = Env::new("c-thought-none");
-    let err = env.fails(&new_args(&["--thought-level", "high", "--prompt", "hi"]));
+    // Two values for it from one flag fail before anything is set.
+    let err = env.fails(&new_args(&["--thought-level", "high", "--thought-level", "low"]));
+    assert!(err.contains("--thought-level high and --thought-level low disagree"), "{err}");
+    assert_eq!(sets(&env), ["effort=high"], "{err}");
+
+    // An agent with no thought level: nothing is set, not even the model,
+    // and nothing is prompted.
+    let env = Env::new("c-thought-none").agent("MODEL_ID", "llm");
+    let args = ["--thought-level", "high", "--model", "large", "--prompt", "hi"];
+    let err = env.fails(&new_args(&args));
     assert!(err.contains("setting thought level high: the agent offers no thought level"), "{err}");
-    assert!(env.prompts().is_empty());
+    assert!(sets(&env).is_empty() && env.prompts().is_empty(), "{err}");
 }
 
 /// `--permission-timeout` is the profile's `permission_timeout` as a flag,
