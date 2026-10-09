@@ -552,7 +552,10 @@ Like the agents' own transcripts, keyed by project folder:
 
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
-file has the same folder and name as Claude Code's own transcript. The events
+file has the same folder and name as Claude Code's own transcript. In
+`<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
+digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
+sessions never share a file. The events
 are the ones bridges get, `exited` included, and are what `brnr log`,
 `list --all` and `--resume` read; `log` reads the raw file too when `acp`
 events are chosen. A thread of the process's own writes them, so the session

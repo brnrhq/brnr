@@ -1180,6 +1180,79 @@ fn adr_0022_transcripts_are_two_files() {
     assert_eq!(acp.matches(r#""method":"session/prompt""#).count(), 2, "{acp}");
 }
 
+/// Session ids the former `_` for anything unsafe in a file name, or a file
+/// system that ignores case or Unicode normalization, put in one file.
+const COLLIDING: &[&str] =
+    &["a/b", "a_b", "x.acp", "x_acp", "Sess-1", "sess-1", "\u{e9}", "e\u{301}"];
+
+/// `brnr start` of the fake agent, its session `id`.
+fn start_as(env: &Env, id: &str) {
+    let out =
+        env.brnr(&start_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
+    let out = out.unwrap();
+    assert!(out.status.success(), "start {id:?}: {}", stderr(&out));
+}
+
+/// Distinct session ids have distinct transcripts, one after the other in
+/// one folder, and each is listed, by its own id (ADR 53).
+#[test]
+fn adr_0053_distinct_ids_never_share_a_transcript() {
+    let env = Env::new("colliding");
+    for id in COLLIDING {
+        start_as(&env, id);
+        env.stop();
+        assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    }
+    let (dir, names) = project(&env);
+    let events: Vec<&String> = names.iter().filter(|n| !n.ends_with(".acp.jsonl")).collect();
+    assert_eq!(events.len(), COLLIDING.len(), "{names:?}");
+    for name in events {
+        let ids: Vec<Value> =
+            records(&dir.join(name)).iter().map(|r| r["session_id"].clone()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]), "{name}: {ids:?}");
+    }
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    let mut listed: Vec<&str> =
+        list.as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
+    listed.sort();
+    let mut want = COLLIDING.to_vec();
+    want.sort();
+    assert_eq!(listed, want);
+    for id in COLLIDING {
+        let log = env.ok(&["log", id, "--json"]);
+        assert_eq!(log.matches(r#""event":"turn_ended""#).count(), 1, "{id:?}: {log}");
+    }
+}
+
+/// Distinct session ids are owned apart: each running process holds a lock
+/// of its own, and each session is reached in its own (ADR 3, ADR 53).
+#[test]
+fn adr_0053_distinct_ids_never_share_a_lock() {
+    let env = Env::new("colliding-locks");
+    for id in COLLIDING {
+        start_as(&env, id);
+    }
+    // Each lock names its own session and process.
+    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("run/sessions"))
+        .unwrap()
+        .map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap())
+        .map(|l: Value| (l["session"].as_str().unwrap().to_owned(), l["pid"].clone()))
+        .collect();
+    locked.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut want = COLLIDING.to_vec();
+    want.sort();
+    assert_eq!(locked.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), want);
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), COLLIDING.len(), "{list}");
+    for (id, pid) in &locked {
+        let row =
+            rows.iter().find(|r| r["session"] == id.as_str()).unwrap_or_else(|| panic!("{id:?}"));
+        assert_eq!((&row["state"], &row["pid"]), (&Value::from("idle"), pid), "{id:?}: {list}");
+        env.ok(&["send", id, "reply again"]);
+    }
+}
+
 /// `log = "events"` leaves out the raw ACP file, and `log --events acp`
 /// says there is none; what belongs to no session is still in the host log.
 #[test]
