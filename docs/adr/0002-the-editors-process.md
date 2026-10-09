@@ -65,3 +65,17 @@ What the editor sees differently, stated in the README:
 - Passing `fs` and `terminal` through always: by P1's test the agent is
   affected, since it can't use the editor's buffers or terminal. Kept for
   strict mode; the default follows v2.
+
+## Tests
+
+Run `cargo test --release adr_0002_`. Named claims and their assertions:
+
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0002_acp_passes_bytes_unchanged`.
+  - `adr_0002_acp_passes_stderr_and_the_exit_status`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0002_acp_is_what_an_editor_runs`.
+  - `adr_0002_editor_gone_takes_the_agents_children`.
+  - `adr_0002_a_signal_doesnt_wait_behind_a_stalled_agents_stdin`.
+  - `adr_0002_an_editors_process_needs_its_signal_link`.
+  - `adr_0002_non_blocking_stdin_is_waited_on`.

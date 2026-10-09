@@ -42,6 +42,10 @@ jobs:
       - run: cargo clippy --release --all-targets -- -D warnings
       # Release, as locally: some tests stream tens of thousands of events.
       - run: cargo test --release
+      - name: ADR claim inventory
+        run: |
+          python3 .github/scripts/test_adr_tests.py
+          python3 .github/scripts/adr-tests.py
 
   adapters:
     timeout-minutes: 20
@@ -117,7 +121,7 @@ jobs:
           version: 1.30.1
           advanced-security: false
           annotations: true
-      - run: shellcheck release.sh adapters/build.sh .github/scripts/*.sh
+      - run: shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh .github/scripts/*.sh
       - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: 0.15.10

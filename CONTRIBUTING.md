@@ -50,6 +50,13 @@ through `_exit`, can be missing. This is an execution baseline, not proof
 that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
+The parsers that read bytes from outside brnr have fuzz targets in `fuzz/`
+(frames, ACP lines, the host fed ACP from both sides), which CI fuzzes
+with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:
+`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run host corpus/host
+seeds/host` (`cargo fuzz list` has the others). A crash it finds is fixed
+with a regression test in the main test suite.
+
 Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
 built under AddressSanitizer and under MemorySanitizer, on Linux. To run
 them yourself (nightly Rust, with `rust-src`), and see any

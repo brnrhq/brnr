@@ -45,6 +45,10 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   `tests/docs.rs` runs the examples in the README, the site and the skill
   (`skills/brnr/`): an example added or changed needs its line in
   `EXAMPLES` there (or `SKIPPED`, with why).
+- `fuzz/`: cargo-fuzz targets for the parsers that read bytes from outside
+  (frame.rs, json.rs, the host through `host::fuzz::Harness`), a workspace
+  of its own on nightly; seeds in `fuzz/seeds/`. CI fuzzes them with
+  ClusterFuzzLite (`.clusterfuzzlite/`, `.github/workflows/fuzz.yml`).
 - `docs/threat-model.md`: who can reach what, each claim with what enforces
   it and its test, and the gaps. A change to a boundary (permissions, the
   socket, redaction, approvals, what `brnr acp` changes) updates it.
@@ -60,7 +64,7 @@ cargo fmt --check
 cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release: some tests stream tens of thousands of events
 ruff check && ruff format --check
-shellcheck release.sh adapters/build.sh
+shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh
 ```
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr

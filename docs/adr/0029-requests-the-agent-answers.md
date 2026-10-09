@@ -16,3 +16,10 @@ never answers (or answers in a line brnr can't read, ADR 26) waits as long
 as it keeps waiting, and so does the `session/close` of a `--take-over`
 (ADR 3) once `brnr` has stopped waiting. Whether the host should answer such
 requests with an error after a time of its own (P3) is still open.
+
+## Tests
+
+Run `cargo test --release adr_0029_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0029_agent_requests_wait_for_their_answer_without_blocking_the_host`.

@@ -35,3 +35,11 @@ How each editor shows it is part of ADR 4's trials.
 - `user_message_chunk`: honest about what it is, but not rendered.
 - `agent_message_chunk` or `agent_thought_chunk`: rendered, but the text
   appears as the agent's own words.
+
+## Tests
+
+Run `cargo test --release adr_0005_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0005_send_to_an_editors_session_waits_for_no_turn`.
+  - `adr_0005_context_joins_the_editors_next_prompt`.

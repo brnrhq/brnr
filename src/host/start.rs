@@ -27,7 +27,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,15 +37,20 @@ use super::control::{self, Closer, Peer, Queue};
 use super::{Ev, Host};
 
 /// The start channel while the start is under way.
-pub(super) struct StartChannel {
-    /// Its id as a peer, once it is one.
-    peer: u64,
-    /// Where the report is written.
-    stream: UnixStream,
-    /// To cut it off, once it is a peer.
-    closer: UnixStream,
-    /// What it is subscribed to once the start commits.
-    events: Vec<String>,
+pub(super) enum StartChannel {
+    /// A simulated start in the fuzz harness: reports are collected without
+    /// sockets, threads or peers, as the agent's input and editor link are.
+    Collected(Sender<Value>),
+    Socket {
+        /// Its id as a peer, once it is one.
+        peer: u64,
+        /// Where the report is written.
+        stream: UnixStream,
+        /// To cut it off, once it is a peer.
+        closer: UnixStream,
+        /// What it is subscribed to once the start commits.
+        events: Vec<String>,
+    },
 }
 
 impl Host {
@@ -59,7 +64,7 @@ impl Host {
     ) -> io::Result<()> {
         let (reader, closer) = (channel.try_clone()?, channel.try_clone()?);
         let peer = control::NEXT_PEER.fetch_add(1, Relaxed);
-        self.start_channel = Some(StartChannel { peer, stream: channel, closer, events });
+        self.start_channel = Some(StartChannel::Socket { peer, stream: channel, closer, events });
         let t = tx.clone();
         thread::spawn(move || {
             read_to_eof(reader);
@@ -78,7 +83,8 @@ impl Host {
     /// brnr start closed its end of the channel.
     pub(super) fn start_gone(&mut self, peer: u64) {
         self.peers.remove(&peer);
-        if self.start_channel.as_ref().is_some_and(|c| c.peer == peer) {
+        if matches!(&self.start_channel, Some(StartChannel::Socket { peer: id, .. }) if *id == peer)
+        {
             self.start_channel = None;
             self.abandon_start();
         }
@@ -94,17 +100,20 @@ impl Host {
     /// the start: brnr start has gone, whether or not its EOF has reached
     /// the event loop yet.
     pub(super) fn report_ready(&mut self, session: &str, message: Option<&str>) -> bool {
-        let Some(mut channel) = self.start_channel.take() else { return false };
+        let Some(channel) = self.start_channel.take() else { return false };
         let mut ready = json!({ "ok": true, "pid": std::process::id(), "session": session });
         if let Some(message) = message {
             ready["message"] = json!(message);
         }
-        self.test_hold_ready(&channel.stream);
-        if write_report(&mut channel.stream, &ready).is_err() {
+        let (peer, mut stream, closer, events) = match channel {
+            StartChannel::Socket { peer, stream, closer, events } => (peer, stream, closer, events),
+            StartChannel::Collected(tx) => return tx.send(ready).is_ok(),
+        };
+        self.test_hold_ready(&stream);
+        if write_report(&mut stream, &ready).is_err() {
             self.abandon_start();
             return false;
         }
-        let StartChannel { peer, stream, closer, events } = channel;
         let (queue, lines, queued) = Queue::new();
         thread::spawn(move || control::write_lines(stream, lines, queued));
         // A socket peer, as brnr's own connections are: not a bridge.
@@ -116,8 +125,15 @@ impl Host {
 
     /// Tells brnr start the start failed, if it is still waiting to hear.
     pub(super) fn report_failure(&mut self, error: &str) {
-        if let Some(mut channel) = self.start_channel.take() {
-            let _ = write_report(&mut channel.stream, &json!({ "ok": false, "error": error }));
+        let report = json!({ "ok": false, "error": error });
+        match self.start_channel.take() {
+            Some(StartChannel::Socket { mut stream, .. }) => {
+                let _ = write_report(&mut stream, &report);
+            }
+            Some(StartChannel::Collected(tx)) => {
+                let _ = tx.send(report);
+            }
+            None => {}
         }
     }
 }

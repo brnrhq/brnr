@@ -25,11 +25,29 @@ criteria = "safe-to-deploy"
 delta = "1.0.4 -> 1.0.5"
 notes = "Automated review of the complete crates.io delta. The macro implementation is unchanged. Changes are deprecation documentation, version metadata and upstream CI action versions; no new executable build or runtime code."
 
+[[audits.darling_macro]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+version = "0.24.1"
+notes = "Reviewed all packaged executable source and both manifests. The only source file exposes six derive entry points that parse compiler-supplied tokens through syn and delegate to the matching darling_core derive function, plus a removed-API entry point returning a fixed diagnostic. No build script, unsafe code, filesystem/network access, or process execution. This review covers the wrapper, not its dependencies; darling_core and syn remain separately exempted."
+
 [[audits.indexmap]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
 delta = "2.14.0 -> 2.14.2"
 notes = "Reviewed the compiled source and manifest delta against the imported audited version. Both disjoint mutable-access helpers validate all bounds and duplicate indices before deriving references from the exclusive slice pointer; no mutation occurs between checks and pointer use. Optional missing keys produce None. Bucket projections split distinct key/value fields. Index operations retain explicit checked bounds; same-key equality uses Eq. Empty-map macros use the existing safe const constructor. No new ambient I/O. Dependencies require separate coverage."
+
+[[audits.jiff-tzdb-platform]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+version = "0.1.3"
+notes = "Reviewed all packaged executable source and both manifests. The no_std library only publicly re-exports jiff_tzdb, with no build script, other modules, unsafe code, or I/O. Platform selection is controlled by the caller. This review does not audit the re-exported time-zone database dependency, which remains separately exempted."
+
+[[audits.powerfmt]]
+who = "Automated source review (GPT-6)"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.2.1"
+notes = "Reviewed the complete source and manifest delta and the surrounding WriteBuffer implementation. Its private length starts at zero and advances only after a checked destination slice has been filled with complete UTF-8 input. The new unchecked prefix and raw slice conversions therefore cover initialized bytes with the original lifetime and alignment; the mutable conversion follows a full copy of Copy elements. Array initialization removes an unsafe helper. The alternate formatting macro now calls the boolean alternate setter instead of width. Other changes are inline annotations, docs cfg, lints and MSRV. No build script or new I/O; the optional macro dependency requires separate coverage."
 
 [[audits.proc-macro2]]
 who = "Automated source review (GPT-6)"

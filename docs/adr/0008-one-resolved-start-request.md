@@ -46,3 +46,15 @@ config.
   would still be resolved in two places.
 - Keeping `brnr host` by hand: a second interface, whose flags lagged
   `start`'s before (no `--file`, `--image`, `--model`, `--set`).
+
+## Tests
+
+Run `cargo test --release adr_0008_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0008_start_hands_over_one_request`.
+  - `adr_0008_host_is_not_run_by_hand`.
+  - `adr_0008_a_bad_request_is_refused`.
+  - `adr_0008_prompt_is_not_on_the_command_line`.
+  - `adr_0008_acp_reports_a_config_error`.
+  - `adr_0008_acp_hands_over_one_request`.

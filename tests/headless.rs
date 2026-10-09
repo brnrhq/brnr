@@ -38,7 +38,7 @@ fn started_record(env: &Env) -> Value {
 /// process at once, whatever it is doing (here, waiting 30 s for the
 /// session), and the agent never gets the prompt.
 #[test]
-fn abandoned_start_sends_no_prompt() {
+fn adr_0007_abandoned_start_sends_no_prompt() {
     let env = Env::new("abandon").agent("NEW_DELAY", "30");
     let mut start = env
         .brnr(&start_args(&["--prompt", "run the migration"]))
@@ -61,7 +61,7 @@ fn abandoned_start_sends_no_prompt() {
 /// never gets the prompt (ADR 7). (`BRNR_TEST_READY=hold` holds the commit
 /// there until brnr start has gone.)
 #[test]
-fn start_gone_as_ready_is_written_sends_no_prompt() {
+fn adr_0007_start_gone_as_ready_is_written_sends_no_prompt() {
     let env = Env::new("abandon-ready");
     let mut start = env
         .brnr(&start_args(&["--prompt", "run the migration"]))
@@ -82,7 +82,7 @@ fn start_gone_as_ready_is_written_sends_no_prompt() {
 /// A `brnr start --wait` that goes once it has the ready report leaves the
 /// session running, its prompt sent: the start committed (ADR 7, P14).
 #[test]
-fn start_gone_after_ready_leaves_the_session_running() {
+fn adr_0007_start_gone_after_ready_leaves_the_session_running() {
     let env = Env::new("after-ready");
     let mut start = env
         .brnr(&start_args(&["--wait", "--prompt", "hang on"]))
@@ -107,7 +107,7 @@ fn start_gone_after_ready_leaves_the_session_running() {
 /// Everything the process does is in the one request it was started with,
 /// which its `started` record holds; its argv is only `brnr host`.
 #[test]
-fn start_hands_over_one_request() {
+fn adr_0008_start_hands_over_one_request() {
     let env = Env::new("request");
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.headless]\nmode = \"plan\"\n",
@@ -132,7 +132,7 @@ fn start_hands_over_one_request() {
 
 /// `brnr host` isn't run by hand, and takes no flags.
 #[test]
-fn host_is_not_run_by_hand() {
+fn adr_0008_host_is_not_run_by_hand() {
     let env = Env::new("byhand");
     let err = env.fails(&["host", "--prompt", "hi", "--", AGENT]);
     assert!(err.contains("not by hand"), "{err}");
@@ -145,7 +145,7 @@ fn host_is_not_run_by_hand() {
 /// (its starter died writing it) or of the wrong shape is refused, and the
 /// agent never started.
 #[test]
-fn a_bad_request_is_refused() {
+fn adr_0008_a_bad_request_is_refused() {
     let env = Env::new("badreq");
     let host = |request: &[u8]| {
         let (ours, theirs) = UnixStream::pair().unwrap();
@@ -182,7 +182,7 @@ fn a_bad_request_is_refused() {
 /// When the session doesn't open in time, `brnr start` says so and the
 /// host stops instead of carrying on unseen.
 #[test]
-fn start_timeout_stops_the_host() {
+fn adr_0007_start_timeout_stops_the_host() {
     let env = Env::new("timeout").agent("NEW_DELAY", "4");
     let out = env
         .brnr(&start_args(&["--prompt", "run the migration"]))
@@ -198,7 +198,7 @@ fn start_timeout_stops_the_host() {
 }
 
 #[test]
-fn empty_prompt_is_refused() {
+fn adr_0007_empty_prompt_is_refused() {
     let env = Env::new("empty");
     let out = env.run(&start_args(&["--prompt", " "]));
     assert!(!out.status.success());
@@ -210,7 +210,7 @@ fn empty_prompt_is_refused() {
 /// `ps` shows it and Linux caps a single argument at 128 KiB. Nor is the
 /// agent's command: `pkill -f <adapter>` would take the process with it.
 #[test]
-fn prompt_is_not_on_the_command_line() {
+fn adr_0008_prompt_is_not_on_the_command_line() {
     let env = Env::new("argv");
     env.start(&["--prompt", "deploy with sk-SECRET-123"]);
     let ps = Command::new("ps").args(["-o", "args=", "-p", &env.host_pid().to_string()]).output();
@@ -225,7 +225,7 @@ fn prompt_is_not_on_the_command_line() {
 /// More than Linux takes in one argument, read from start's stdin before it
 /// launches the process, and handed over in the request.
 #[test]
-fn large_prompt_from_stdin() {
+fn adr_0007_large_prompt_from_stdin() {
     let env = Env::new("bigprompt");
     let prompt = "x".repeat(300_000);
     let out = env.run_with_stdin(&start_args(&["--prompt", "-"]), prompt.as_bytes());
@@ -295,7 +295,7 @@ fn stop_reaches_an_agent_out_of_its_group() {
 /// A start that fails after the session opened (setting its mode) fails in
 /// the foreground too: it says why, and doesn't exit 0.
 #[test]
-fn foreground_start_failure_is_reported() {
+fn adr_0009_foreground_start_failure_is_reported() {
     let env = Env::new("fg-mode");
     let out = env.run(&start_args(&["--foreground", "--mode", "bogus"]));
     assert!(!out.status.success(), "exited 0: {}", stderr(&out));
@@ -305,7 +305,7 @@ fn foreground_start_failure_is_reported() {
 /// Closing the last session ends a foreground process as it should: no
 /// claim that the session never started.
 #[test]
-fn foreground_close_of_the_last_session() {
+fn adr_0009_foreground_close_of_the_last_session() {
     let env = Env::new("fg-close");
     let mut fg = env
         .brnr(&start_args(&["--foreground", "--quiet"]))
@@ -348,7 +348,7 @@ fn runtime_files(env: &Env) -> Vec<String> {
 /// the host log, and the session carries on. Stopped, it records `exited`
 /// and leaves nothing behind in the runtime dir.
 #[test]
-fn foreground_outlives_its_stdout() {
+fn adr_0009_foreground_outlives_its_stdout() {
     let env = Env::new("fg-head");
     let (reader, writer) = std::io::pipe().unwrap();
     let mut fg = env
@@ -380,7 +380,7 @@ fn foreground_outlives_its_stdout() {
 /// events it missed; the session isn't held up, and its transcript has them
 /// all.
 #[test]
-fn slow_foreground_reader_is_told_what_it_missed() {
+fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
     let env = Env::new("fg-slow");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "many 80000"];
     let mut fg =
@@ -403,7 +403,7 @@ fn slow_foreground_reader_is_told_what_it_missed() {
 /// In the foreground the agent's stderr goes to stderr as it comes,
 /// unchanged; stdout is the events. It is in the host log too.
 #[test]
-fn foreground_passes_the_agents_stderr() {
+fn adr_0010_foreground_passes_the_agents_stderr() {
     let env = Env::new("fg-stderr").agent("STDERR", "[session/create] phase=ready \x1b[1m");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "reply hi"];
     let out = env.run(&start_args(&args));
@@ -417,7 +417,7 @@ fn foreground_passes_the_agents_stderr() {
 /// A start that fails ends its error with the agent's last lines on stderr:
 /// brnr start's, and the foreground's after the agent's stderr itself.
 #[test]
-fn failed_start_shows_the_agents_stderr() {
+fn adr_0010_failed_start_shows_the_agents_stderr() {
     let env = Env::new("errtail").agent("STDERR", "Error: claude CLI not found").agent("EXIT", "1");
     let err = env.fails(&start_args(&["--prompt", "hi"]));
     let want = "the agent exited before the session started. \
@@ -432,7 +432,7 @@ fn failed_start_shows_the_agents_stderr() {
 /// Answering a permission request while the agent is being stopped can't
 /// reach it, so it fails rather than claiming success.
 #[test]
-fn approve_during_stop_fails() {
+fn adr_0027_approve_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
     env.start(&["--prompt", "edit it"]);
     let waiting =
@@ -447,7 +447,7 @@ fn approve_during_stop_fails() {
 /// Messages still held when the agent exits are dropped with an event each,
 /// before `exited`, not silently.
 #[test]
-fn held_messages_are_reported_on_exit() {
+fn adr_0020_held_messages_are_reported_on_exit() {
     let env = Env::new("held");
     env.start(&["--prompt", "hang on"]);
     let mut watch = env
@@ -484,7 +484,7 @@ fn held_messages_are_reported_on_exit() {
 /// transcript and reaches the peers; the agent goes; and the process's
 /// files are removed. (`BRNR_TEST_PANIC` lets a request ask for the panic.)
 #[test]
-fn a_panic_is_recorded() {
+fn adr_0011_a_panic_is_recorded() {
     for on in ["loop", "thread"] {
         let env = Env::new(&format!("panic-{on}"));
         let args = start_args(&["--prompt", "hang on"]);
@@ -533,7 +533,7 @@ fn a_panic_is_recorded() {
 /// start fails saying why, and an editor's brnr acp too, with 101.
 /// (`BRNR_TEST_PANIC=start` asks for the panic.)
 #[test]
-fn a_panic_while_starting_is_recorded() {
+fn adr_0011_a_panic_while_starting_is_recorded() {
     let got = |env: &Env| fs::read_to_string(env.dir.join("bridge-events")).unwrap_or_default();
     for editor in [false, true] {
         let env = Env::new(if editor { "panic-start-ed" } else { "panic-start" });
@@ -582,7 +582,7 @@ fn a_panic_while_starting_is_recorded() {
 /// foreground process's, on its stderr, once. `BRNR_TEST_PANIC=cli` makes
 /// the CLI panic.
 #[test]
-fn a_panic_prints_a_link_to_report_it() {
+fn adr_0045_a_panic_prints_a_link_to_report_it() {
     let env = Env::new("panic-link");
     let out = env.brnr(&["list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
     let err = stderr(&out);
@@ -612,7 +612,7 @@ fn a_panic_prints_a_link_to_report_it() {
 /// Several interrupts sent before the turn stops are delivered in the order
 /// they were sent.
 #[test]
-fn interrupts_keep_their_order() {
+fn adr_0018_interrupts_keep_their_order() {
     let env = Env::new("interrupt").agent("CANCEL_DELAY", "1");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
@@ -634,7 +634,7 @@ fn turns(env: &Env) -> Vec<Vec<String>> {
 /// A message sent while a turn runs is held, never a second prompt, and
 /// goes as a turn of its own when that one ends, in the order sent.
 #[test]
-fn send_while_a_turn_runs_is_held() {
+fn adr_0018_send_while_a_turn_runs_is_held() {
     let env = Env::new("held-order");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
@@ -654,7 +654,7 @@ fn send_while_a_turn_runs_is_held() {
 /// its own, its id among that turn's messages, and `send --steer --wait`
 /// ends with that turn.
 #[test]
-fn steer_goes_into_the_running_turn() {
+fn adr_0017_steer_goes_into_the_running_turn() {
     let env = Env::new("steer");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
@@ -675,7 +675,7 @@ fn steer_goes_into_the_running_turn() {
 /// `promptRequired` (the turn ended before the steer reached it), which goes
 /// ahead of what was held meanwhile, as it would have in the turn.
 #[test]
-fn steer_without_a_turn_is_a_prompt() {
+fn adr_0018_steer_without_a_turn_is_a_prompt() {
     let env = Env::new("steer-idle");
     env.start(&[]);
     assert_eq!(env.ok(&["send", "sess-1", "--steer", "reply now"]), "delivered (message m1)\n");
@@ -699,7 +699,7 @@ fn steer_without_a_turn_is_a_prompt() {
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]
-fn steer_needs_the_agents_steering() {
+fn adr_0018_steer_needs_the_agents_steering() {
     let env = Env::new("steer-none").agent("NO_STEERING", "1");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
@@ -718,7 +718,7 @@ fn steer_needs_the_agents_steering() {
 /// only: steering a running turn and forking are refused, saying why, and
 /// the rest is as without.
 #[test]
-fn strict_mode_refuses_steering_and_fork() {
+fn adr_0041_strict_mode_refuses_steering_and_fork() {
     let env = Env::new("strict");
     env.start(&["--strict", "--prompt", "hang on"]);
     assert_eq!(started_record(&env)["request"]["strict"], true);
@@ -745,7 +745,7 @@ fn strict_mode_refuses_steering_and_fork() {
 /// The editor's `fs` and `terminal` capabilities don't reach the agent, as
 /// in ACP v2 (ADR 2), but in strict mode, as stable v1 has them.
 #[test]
-fn fs_and_terminal_pass_through_only_in_strict_mode() {
+fn adr_0041_fs_and_terminal_pass_through_only_in_strict_mode() {
     let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
     for (name, strict) in [("ed-caps", false), ("ed-strict", true)] {
         let env = Env::new(name);
@@ -775,7 +775,7 @@ fn fs_and_terminal_pass_through_only_in_strict_mode() {
 /// A watcher that stops reading is disconnected instead of having every
 /// event queued for it in the host.
 #[test]
-fn slow_watcher_is_disconnected() {
+fn adr_0006_slow_watcher_is_disconnected() {
     // About 30 MB of events: more than a peer's queue holds.
     let env = Env::new("slowwatch").agent("FLOOD", "40000");
     env.start(&[]);
@@ -806,7 +806,7 @@ fn slow_watcher_is_disconnected() {
 /// cleanly when the host exits. Stopped once it has read the burst: an
 /// exit waits only so long for a peer to be sent what is queued for it.
 #[test]
-fn reading_watcher_stays_connected() {
+fn adr_0006_reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
     env.start(&[]);
     let mut watch = env
@@ -840,7 +840,7 @@ fn reading_watcher_stays_connected() {
 /// One message bigger than a peer's whole queue still reaches a peer that
 /// keeps up, and the status report (which quotes it) still gets out.
 #[test]
-fn huge_message_reaches_watchers() {
+fn adr_0006_huge_message_reaches_watchers() {
     let env = Env::new("huge");
     env.start(&[]);
     let mut watch = env
@@ -872,7 +872,7 @@ fn huge_message_reaches_watchers() {
 /// Here it is 8 MB behind (stopped, for the test), then a 12 MB message
 /// comes.
 #[test]
-fn a_long_message_doesnt_put_a_watcher_behind() {
+fn adr_0049_a_long_message_doesnt_put_a_watcher_behind() {
     let env = Env::new("longmsg");
     env.start(&[]);
     let mut watch = env
@@ -905,7 +905,7 @@ fn a_long_message_doesnt_put_a_watcher_behind() {
 /// symlinks in the prefix's `bin`, which isn't on the editor's PATH. brnr is
 /// started by that path and finds an adapter by its bare name next to it.
 #[test]
-fn adapters_next_to_a_symlinked_brnr() {
+fn adr_0038_adapters_next_to_a_symlinked_brnr() {
     let env = Env::new("linked");
     let bin = env.dir.join("prefix").join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -931,7 +931,7 @@ fn adapters_next_to_a_symlinked_brnr() {
 /// adapter is, by whoever starts the process (ADR 8, ADR 38): the request
 /// it hands the process has the path, and the bridge runs.
 #[test]
-fn bridges_next_to_a_symlinked_brnr() {
+fn adr_0038_bridges_next_to_a_symlinked_brnr() {
     let env = Env::new("linkedbridge");
     let bin = env.dir.join("prefix").join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -959,7 +959,7 @@ fn bridges_next_to_a_symlinked_brnr() {
 /// A peer a few MB behind still takes one big message: it is cut off only
 /// once its backlog is past the limit, not because the next line is big.
 #[test]
-fn big_message_to_a_lagging_watcher() {
+fn adr_0006_big_message_to_a_lagging_watcher() {
     let env = Env::new("lagbig");
     env.start(&[]);
     let mut watch = env
@@ -989,7 +989,7 @@ fn big_message_to_a_lagging_watcher() {
 /// Every watcher gets `exited` before the host is gone, not only those whose
 /// writer happened to run before the process ended.
 #[test]
-fn every_watcher_sees_the_exit() {
+fn adr_0006_every_watcher_sees_the_exit() {
     let env = Env::new("exitall");
     env.start(&[]);
     let watchers: Vec<_> = (0..8)
@@ -1026,7 +1026,7 @@ fn unresponsive_host_is_reported() {
 /// A line that isn't a request (not even UTF-8) is answered with an error,
 /// and the connection carries on.
 #[test]
-fn bad_request_line_is_answered() {
+fn adr_0035_bad_request_line_is_answered() {
     let env = Env::new("badline");
     env.start(&[]);
     let socket = env.hosts()[0]["socket"].as_str().unwrap().to_owned();
@@ -1141,7 +1141,7 @@ fn project(env: &Env) -> (PathBuf, Vec<String>) {
 /// A session's transcript is two files: its events, which `log`, `list` and
 /// `--resume` read, and its raw ACP beside them (ADR 22).
 #[test]
-fn transcripts_are_two_files() {
+fn adr_0022_transcripts_are_two_files() {
     let env = Env::new("twofiles");
     env.start(&["--wait", "--prompt", "reply hi"]);
     env.stop();
@@ -1181,7 +1181,7 @@ fn transcripts_are_two_files() {
 /// `log = "events"` leaves out the raw ACP file, and `log --events acp`
 /// says there is none; what belongs to no session is still in the host log.
 #[test]
-fn log_events_leaves_out_the_raw_acp() {
+fn adr_0022_log_events_leaves_out_the_raw_acp() {
     let env = Env::new("logevents");
     env.write_config("[profiles.default]\nlog = \"events\"\n");
     env.start(&["--wait", "--prompt", "reply hi"]);
@@ -1210,7 +1210,7 @@ fn log_events_leaves_out_the_raw_acp() {
 /// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled
 /// disk holds it up for 2 s at most.
 #[test]
-fn an_exit_is_written_before_the_process_goes() {
+fn adr_0048_an_exit_is_written_before_the_process_goes() {
     let env = Env::new("exitlog");
     let stall = env.dir.join("stall");
     let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
@@ -1231,7 +1231,7 @@ fn an_exit_is_written_before_the_process_goes() {
 /// queued is all written. (`BRNR_TEST_LOG_STALL` holds the logger while the
 /// file it names exists.)
 #[test]
-fn a_stalled_disk_skips_records_and_says_so() {
+fn adr_0006_a_stalled_disk_skips_records_and_says_so() {
     let env = Env::new("logstall");
     let stall = env.dir.join("stall");
     let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
@@ -1323,7 +1323,7 @@ fn watched_request(watch: &mut Child, method: &str) -> Value {
 /// agent, and are `<redacted>` in what brnr records (the host log, the raw
 /// ACP, the started request) and in `acp` events (ADR 25).
 #[test]
-fn a_profiles_mcp_secrets_are_redacted() {
+fn adr_0025_a_profiles_mcp_secrets_are_redacted() {
     let env = Env::new("secrets");
     env.write_config(
         r#"[[profiles.default.headless.mcp_servers]]
@@ -1372,7 +1372,7 @@ headers = { Authorization = "Bearer header-secret" }
 /// what brnr records of it, and sends to `acp` subscribers, has its MCP
 /// servers' secrets redacted (ADR 25).
 #[test]
-fn an_editors_mcp_secrets_are_redacted() {
+fn adr_0025_an_editors_mcp_secrets_are_redacted() {
     let env = Env::new("ed-secrets");
     let mut editor = env
         .brnr(&["acp", "--", AGENT])
@@ -1440,7 +1440,7 @@ fn runtime_dir_symlink_is_refused() {
 /// `brnr acp` is what an editor runs as its agent: ACP over stdio, with the
 /// session reachable meanwhile. When the editor goes, the agent goes too.
 #[test]
-fn acp_is_what_an_editor_runs() {
+fn adr_0002_acp_is_what_an_editor_runs() {
     use std::io::Write;
     let env = Env::new("ed-acp");
     env.write_config("[profiles.default.editor]\nexperimental = [\"send\"]\n");
@@ -1505,7 +1505,7 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 /// `brnr acp` resolves the profile itself: a config error is the editor's
 /// to see, on its stderr, and no process starts.
 #[test]
-fn acp_reports_a_config_error() {
+fn adr_0008_acp_reports_a_config_error() {
     let env = Env::new("ed-config");
     env.write_config("[profiles.default]\npermission_timeout = 600\n");
     let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
@@ -1519,7 +1519,7 @@ fn acp_reports_a_config_error() {
 /// An editor's process gets the profile's shared and editor parts, and the
 /// editor's process id and signal mask, in its request.
 #[test]
-fn acp_hands_over_one_request() {
+fn adr_0008_acp_hands_over_one_request() {
     let env = Env::new("ed-request");
     env.write_config(
         "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
@@ -1593,7 +1593,7 @@ fn open_editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<C
 /// by the editor, in the session's transcript; the process stays the
 /// editor's.
 #[test]
-fn editor_close_is_an_event() {
+fn adr_0020_editor_close_is_an_event() {
     let env = Env::new("ed-close");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     let close =
@@ -1615,7 +1615,7 @@ fn editor_close_is_an_event() {
 /// When the editor goes, what the agent started goes too: its process
 /// group, as when it is stopped.
 #[test]
-fn editor_gone_takes_the_agents_children() {
+fn adr_0002_editor_gone_takes_the_agents_children() {
     let env = Env::new("ed-kids").agent("STUBBORN", "child");
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let (host, child) = (env.host_pid(), env.child_pid());
@@ -1641,7 +1641,7 @@ fn assert_holds_less(pid: i32, limit: u64) {
 /// after which the host gave up on the editor and ended the agent), and goes
 /// on once the editor reads again.
 #[test]
-fn editor_that_stops_reading_holds_the_agent_back() {
+fn adr_0006_editor_that_stops_reading_holds_the_agent_back() {
     let env = Env::new("ed-stall").agent("NOISE", "150000");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     let host = env.host_pid();
@@ -1659,7 +1659,7 @@ fn editor_that_stops_reading_holds_the_agent_back() {
 /// the editor writes, and the host keeps no more of it than its cap. The
 /// editor going away is still noticed, and takes the agent with it.
 #[test]
-fn a_stalled_agent_holds_the_editor_back() {
+fn adr_0006_a_stalled_agent_holds_the_editor_back() {
     let env = Env::new("ed-full").agent("STALL", "1");
     let (mut editor, to_agent, _from_agent) = open_editor(&env);
     let host = env.host_pid();
@@ -1694,7 +1694,7 @@ fn too_long(env: &Env) -> Vec<Value> {
 /// one message of 40 MB or 40 MiB of no JSON at all: it is dropped, an event
 /// says so, and the session goes on (ADR 51).
 #[test]
-fn headless_an_agent_line_past_the_limit_is_dropped_and_said() {
+fn adr_0051_headless_an_agent_line_past_the_limit_is_dropped_and_said() {
     let env = Env::new("toolong");
     env.start(&[]);
     for prompt in ["big 40000000", "long 40"] {
@@ -1716,7 +1716,7 @@ fn headless_an_agent_line_past_the_limit_is_dropped_and_said() {
 /// comes, its newline last), and the editor gets it unchanged once it reads
 /// again (ADR 51).
 #[test]
-fn a_long_line_to_an_editor_that_stops_reading_is_held_back() {
+fn adr_0051_a_long_line_to_an_editor_that_stops_reading_is_held_back() {
     let env = Env::new("ed-long");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     let host = env.host_pid();
@@ -1741,7 +1741,7 @@ fn a_long_line_to_an_editor_that_stops_reading_is_held_back() {
 /// A line from the editor past the limit goes to the agent as it came,
 /// unread by the host, and an event says so (ADR 51).
 #[test]
-fn an_editor_line_past_the_limit_goes_to_the_agent_unread() {
+fn adr_0051_an_editor_line_past_the_limit_goes_to_the_agent_unread() {
     let env = Env::new("ed-longin");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     let params = serde_json::json!({ "pad": "e".repeat(40 << 20) });
@@ -1761,7 +1761,7 @@ fn an_editor_line_past_the_limit_goes_to_the_agent_unread() {
 /// with no newline leaves the host holding none of it (ADR 51). (No
 /// transcripts: the host log's queue isn't what is measured.)
 #[test]
-fn the_agents_stderr_without_a_newline_is_bounded() {
+fn adr_0051_the_agents_stderr_without_a_newline_is_bounded() {
     let env = Env::new("errlong");
     env.write_config("[profiles.default]\nlog = false\n");
     env.start(&[]);
@@ -1776,7 +1776,7 @@ fn the_agents_stderr_without_a_newline_is_bounded() {
 /// run directly, while the agent's stdin holds back what the editor writes:
 /// it doesn't wait behind it. The agent dies of it, and so `brnr acp` does.
 #[test]
-fn a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
+fn adr_0002_a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
     let env = Env::new("ed-signal").agent("STALL", "1");
     let (mut editor, to_agent, _from_agent) = open_editor(&env);
     let host = env.host_pid();
@@ -1795,7 +1795,7 @@ fn a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
 /// fd 4, as it doesn't without the link: it tells the proxy so on the link,
 /// and the agent never started.
 #[test]
-fn an_editors_process_needs_its_signal_link() {
+fn adr_0002_an_editors_process_needs_its_signal_link() {
     let env = Env::new("ed-nosig");
     let (mut ours, theirs) = UnixStream::pair().unwrap();
     let fd = theirs.as_raw_fd();
@@ -1835,7 +1835,7 @@ fn an_editors_process_needs_its_signal_link() {
 /// An editor may hand over a non-blocking stdin: nothing to read yet is not
 /// the end of it.
 #[test]
-fn non_blocking_stdin_is_waited_on() {
+fn adr_0002_non_blocking_stdin_is_waited_on() {
     let env = Env::new("ed-nonblock");
     let (reader, mut writer) = std::io::pipe().unwrap();
     let fd = reader.as_raw_fd();
@@ -1876,7 +1876,7 @@ fn editor_process(env: &Env) -> Value {
 /// brnr, with an error saying how to release it, and the agent never hears
 /// of it; once released, it loads (ADR 3).
 #[test]
-fn an_editors_load_of_a_held_session_is_refused() {
+fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let env = Env::new("ed-held");
     env.start(&[]);
     let headless = env.pid();
@@ -1901,7 +1901,7 @@ fn an_editors_load_of_a_held_session_is_refused() {
 /// its process keeps the transcript, and `status` says the session isn't
 /// locked. A headless resume of it is still refused (ADR 50).
 #[test]
-fn an_editors_session_that_cant_be_locked_is_passed_through() {
+fn adr_0050_an_editors_session_that_cant_be_locked_is_passed_through() {
     use std::os::unix::fs::DirBuilderExt;
     let env = Env::new("ed-nolock");
     let unlockable = |session: &str| {
@@ -1936,7 +1936,7 @@ fn an_editors_session_that_cant_be_locked_is_passed_through() {
 /// and `status` says the session is shared. The headless process stays its
 /// owner (ADR 3, ADR 42).
 #[test]
-fn shared_sessions_let_an_editor_load_a_held_session() {
+fn adr_0042_shared_sessions_let_an_editor_load_a_held_session() {
     let env = Env::new("ed-shared");
     env.write_config("[profiles.default.editor]\nfeatures = [\"shared_sessions\"]\n");
     env.start(&[]);
@@ -1966,7 +1966,7 @@ fn shared_sessions_let_an_editor_load_a_held_session() {
 /// enable the experimental `close` (ADR 4), and the process started for it
 /// goes, having done nothing.
 #[test]
-fn take_over_from_an_editor_is_refused() {
+fn adr_0004_take_over_from_an_editor_is_refused() {
     let env = Env::new("ed-takeover");
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let pid = env.pid();
@@ -2011,7 +2011,7 @@ const ALLOW: &str = r#"{"jsonrpc":"2.0","id":"perm-1","result":{"outcome":{"outc
 /// session waits on it (titled with U+FFFD), and the editor's answer
 /// reaches the agent.
 #[test]
-fn a_lone_surrogate_is_read() {
+fn adr_0026_a_lone_surrogate_is_read() {
     let env = Env::new("ed-lone");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "odd surrogate")).unwrap();
@@ -2026,7 +2026,7 @@ fn a_lone_surrogate_is_read() {
 /// So is nesting deeper than serde_json's 128: the host reads a request
 /// 20000 deep, and carries on once it is answered.
 #[test]
-fn deep_nesting_is_read() {
+fn adr_0026_deep_nesting_is_read() {
     let env = Env::new("ed-deep");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "odd deep 20000")).unwrap();
@@ -2045,7 +2045,7 @@ fn deep_nesting_is_read() {
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
 /// held back: an answer to an id the host doesn't know goes to the agent.
 #[test]
-fn an_answer_the_host_cant_place_reaches_the_agent() {
+fn adr_0026_an_answer_the_host_cant_place_reaches_the_agent() {
     let env = Env::new("ed-garbled");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "odd garbled")).unwrap();
@@ -2061,7 +2061,7 @@ fn an_answer_the_host_cant_place_reaches_the_agent() {
 /// agent isn't answered twice, and the editor is told so in the session
 /// (ADR 26).
 #[test]
-fn a_late_answer_to_a_cancelled_request_is_dropped() {
+fn adr_0026_a_late_answer_to_a_cancelled_request_is_dropped() {
     let env = Env::new("ed-late");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2126,7 +2126,7 @@ fn wait_idle(env: &Env) {
 /// it, saying what to add; observing it is always allowed, and the agent
 /// hears of none of it.
 #[test]
-fn experimental_actions_are_refused_without_opt_in() {
+fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     let env = Env::new("ex-refused");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2184,7 +2184,7 @@ fn experimental_actions_are_refused_without_opt_in() {
 /// In strict mode an editor's session has no experimental actions, whatever
 /// its profile enables (ADR 41), and fork stays refused.
 #[test]
-fn strict_mode_has_no_experimental_actions() {
+fn adr_0041_strict_mode_has_no_experimental_actions() {
     let env = Env::new("ex-strict");
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.editor]\nexperimental = \
@@ -2218,7 +2218,7 @@ fn strict_mode_has_no_experimental_actions() {
 /// held, steered or interrupting. Enabling `send` enables nothing else, and
 /// the refusal names the profile.
 #[test]
-fn send_to_an_editors_session_waits_for_no_turn() {
+fn adr_0005_send_to_an_editors_session_waits_for_no_turn() {
     let env = Env::new("ex-send");
     env.write_config("[profiles.work.editor]\nexperimental = [\"send\"]\n");
     let (_editor, mut to_agent, mut from_agent) = open_editor_with(&env, &["--profile", "work"]);
@@ -2259,7 +2259,7 @@ fn send_to_an_editors_session_waits_for_no_turn() {
 
 /// `context` joins the editor's own next prompt, and is shown to it.
 #[test]
-fn context_joins_the_editors_next_prompt() {
+fn adr_0005_context_joins_the_editors_next_prompt() {
     let env = Env::new("ex-context");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["context"]);
     let err = env.fails(&["send", "sess-1", "hi"]);
@@ -2279,7 +2279,7 @@ fn context_joins_the_editors_next_prompt() {
 /// from the editor (`$/cancel_request`). The editor acknowledging that is
 /// dropped, with nothing to tell it.
 #[test]
-fn cancel_withdraws_the_editors_requests() {
+fn adr_0004_cancel_withdraws_the_editors_requests() {
     let env = Env::new("ex-cancel");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2308,7 +2308,7 @@ fn cancel_withdraws_the_editors_requests() {
 /// who answered. The editor's own answer after that is dropped, and it is
 /// told who answered first.
 #[test]
-fn approve_answers_in_the_editors_place() {
+fn adr_0004_approve_answers_in_the_editors_place() {
     let env = Env::new("ex-approve");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["approve"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2357,7 +2357,7 @@ fn approve_answers_in_the_editors_place() {
 /// The agent answers a change of mode or config option only to the host,
 /// which asked; the editor is sent the update itself (ADR 28).
 #[test]
-fn settings_are_told_to_the_editor() {
+fn adr_0004_settings_are_told_to_the_editor() {
     let env = Env::new("ex-settings").agent("QUIET_MODE", "1");
     let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
     assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
@@ -2374,7 +2374,7 @@ fn settings_are_told_to_the_editor() {
 /// session; the editor's requests for it are answered by brnr after that,
 /// until it loads it again.
 #[test]
-fn close_tells_the_editor() {
+fn adr_0004_close_tells_the_editor() {
     let env = Env::new("ex-close");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["close"]);
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
@@ -2402,7 +2402,7 @@ fn close_tells_the_editor() {
 /// editor is told in the session which process has it, and its requests for
 /// it say where it continues.
 #[test]
-fn take_over_from_an_editor() {
+fn adr_0004_take_over_from_an_editor() {
     let env = Env::new("ex-takeover");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["close"]);
     let editors = env.pid();
@@ -2430,7 +2430,7 @@ fn take_over_from_an_editor() {
 /// The editor's own steer goes to the agent untouched, and once the agent has
 /// taken it into the turn it is a `user_message` of that turn, by the editor.
 #[test]
-fn the_editors_own_steer_is_recorded() {
+fn adr_0004_the_editors_own_steer_is_recorded() {
     let env = Env::new("ex-steer");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();

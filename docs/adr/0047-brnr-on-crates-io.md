@@ -53,3 +53,7 @@ leaves Linux users without Homebrew to build from a clone.
   tested, tagged build.
 - Prebuilt binaries through `cargo binstall`: binstall can already fall back
   to building from source. Release binaries are a separate decision.
+
+## Tests
+
+Test exemption: Publishing requires the crates.io trusted-publisher environment and creates an immutable external version. release.yml runs cargo publish --dry-run before publication and uses the crates job for the real publish; release.sh checks the published version. The runtime suite cannot prove registry permissions or publication.

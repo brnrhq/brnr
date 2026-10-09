@@ -8,8 +8,8 @@ or an explicit exemption. `vet` is a required check on `main`; CI uses
 
 ## Remaining work
 
-After the first local review batch for [#29](https://github.com/brnrhq/brnr/issues/29),
-the locked graph has 102 third-party versions: 38 fully audited and 64
+After two local review batches for [#29](https://github.com/brnrhq/brnr/issues/29),
+the locked graph has 102 third-party versions: 41 fully audited and 61
 exempted, up from 25 audited and 77 exempted. These counts cover Cargo's
 full dependency graph, including optional and platform-specific crates,
 not just the dependencies compiled on Linux and macOS.
@@ -24,12 +24,19 @@ and the smallest reviewable changes from audited versions.
 
 ## Local evidence
 
-`audits.toml` records 13 source-delta reviews against versions covered by
-the configured upstream importers. The records describe what was checked,
-including unsafe pointer and FFI boundaries where affected. They identify
+`audits.toml` records 14 source-delta reviews against versions covered by
+the configured upstream importers, plus full source reviews of the small
+`darling_macro` and `jiff-tzdb-platform` wrappers. The records describe what
+was checked, including unsafe pointer and FFI boundaries where affected. They identify
 automated source reviews explicitly; they do not assert human review or
 prove the absence of vulnerabilities. Each dependency needs its own
 coverage; auditing a parent crate does not audit its dependencies.
+
+The second batch covers the `powerfmt` buffer delta and those two wrappers.
+Their dependencies still need separate coverage: `darling_core`, `syn` and
+`jiff-tzdb` remain exempted. `itoa` was considered, but its formatter rewrite
+needs a dedicated review of the unsafe indexing and division arithmetic;
+its exemption remains.
 
 Only read changes are certified. Larger unread changes remain exemptions;
 publisher identity alone is not used to grant coverage. `imports.lock`

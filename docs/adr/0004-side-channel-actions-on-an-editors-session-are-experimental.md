@@ -104,3 +104,17 @@ always allowed.
 - `send` mid-turn on an editor's session passed through as a second prompt:
   its meaning would be the agent's and the editor's, which brnr can't promise
   (P2).
+
+## Tests
+
+Run `cargo test --release adr_0004_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0004_take_over_from_an_editor_is_refused`.
+  - `adr_0004_experimental_actions_are_refused_without_opt_in`.
+  - `adr_0004_cancel_withdraws_the_editors_requests`.
+  - `adr_0004_approve_answers_in_the_editors_place`.
+  - `adr_0004_settings_are_told_to_the_editor`.
+  - `adr_0004_close_tells_the_editor`.
+  - `adr_0004_take_over_from_an_editor`.
+  - `adr_0004_the_editors_own_steer_is_recorded`.

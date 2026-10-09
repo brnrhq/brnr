@@ -61,3 +61,18 @@ SIGTERM, and the notifications stopped without a word.
   hidden, and it is the only option with one subscription per bridge.
 - The process writing to a started bridge's stdin only once it subscribes:
   ADR 35.
+
+## Tests
+
+Run `cargo test --release adr_0036_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0036_notify_runs_a_command_per_event`.
+  - `adr_0036_notify_reads_events_as_watch_does`.
+  - `adr_0036_notify_works_as_a_bridge`.
+  - `adr_0036_notify_reads_stdin_as_a_bridge`.
+  - `adr_0036_notify_stdin_ends_with_its_input`.
+  - `adr_0036_notify_fails_when_cut_off`.
+  - `adr_0036_notify_cut_off_as_a_bridge_stops_its_command`.
+  - `adr_0036_notify_cut_off_on_the_socket_stops_its_command`.
+  - `adr_0036_notify_cuts_what_the_environment_cant_hold`.
