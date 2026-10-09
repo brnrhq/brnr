@@ -3268,6 +3268,66 @@ fn adr_0063_pid_given_up_before_its_commit_sends_no_prompt() {
     assert!(env.ok(&["session", "status", "sess-1"]).contains("session sess-1"));
 }
 
+/// A session being opened in a running process keeps it running: its last
+/// other session closing, by `stop_when_idle` or `session close`, doesn't
+/// stop the process as if it had none, and the new session commits and gets
+/// its prompt (ADR 12, ADR 63).
+#[test]
+fn adr_0063_pid_opening_keeps_the_process_running() {
+    let env = Env::new("c-pid-open-idle").agent("NEW_DELAY", "3");
+    env.start(&["--stop-when-idle", "2"]);
+    let pid = env.pid();
+    let out = env.run(&["session", "new", "--pid", &pid, "--wait", "--prompt", "reply two"]);
+    assert_eq!((code(&out), stdout(&out)), (0, "two\n".into()), "{}", stderr(&out));
+    let closed = events(&env, "sess-1").into_iter().find(|e| e["event"] == "session_closed");
+    assert_eq!(closed.unwrap()["by"], "idle");
+
+    // Closed while the agent is still opening the new one.
+    let env = Env::new("c-pid-open-close");
+    let gate = env.dir.join("answer-new");
+    let env = env.agent("NEW_GATE", gate.to_str().unwrap());
+    fs::write(&gate, "").unwrap();
+    env.start(&[]);
+    fs::remove_file(&gate).unwrap();
+    let pid = env.pid();
+    let cmd = env
+        .brnr(&["session", "new", "--pid", &pid, "--wait", "--prompt", "reply two"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let opening = || env.calls_of("session/new").len() == 2;
+    assert!(wait_for(Duration::from_secs(10), opening), "the process wasn't asked");
+    env.ok(&["session", "close", "sess-1"]);
+    fs::write(&gate, "").unwrap();
+    let out = cmd.wait_with_output().unwrap();
+    assert_eq!((code(&out), stdout(&out)), (0, "two\n".into()), "{}", stderr(&out));
+    assert_eq!(env.pid(), pid, "still running");
+    assert!(env.ok(&["session", "status", "sess-2"]).contains("session sess-2"));
+}
+
+/// A process that stops while a session is being opened in it doesn't
+/// commit it: the command fails, saying so, and the prompt is never sent
+/// (ADR 7, ADR 63).
+#[test]
+fn adr_0063_pid_opening_in_a_stopping_process_fails() {
+    let env = Env::new("c-pid-open-stop").agent("NEW_DELAY", "2");
+    env.start(&[]);
+    let pid = env.pid();
+    let cmd = env
+        .brnr(&["session", "new", "--pid", &pid, "--prompt", "reply never"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let opening = || env.calls_of("session/new").len() == 2;
+    assert!(wait_for(Duration::from_secs(10), opening), "the process wasn't asked");
+    env.stop();
+    let out = cmd.wait_with_output().unwrap();
+    assert_eq!((code(&out), stderr(&out)), (1, "brnr: the process is stopping\n".into()));
+    assert!(env.prompts().is_empty());
+}
+
 /// `--thought-level`, and a profile's `thought_level`, are the option of
 /// category `thought_level`, whatever its id, as `--model` and `model` are
 /// the model's: one setting with `--option` by its id, the flag winning

@@ -6,6 +6,8 @@ line, and every message it receives to $CALL_LOG as JSON. Behaviour is chosen
 with environment variables:
 
   NEW_DELAY=<s>     wait before answering session/new
+  NEW_GATE=<file>   answer session/new once this file exists, reading on
+                    meanwhile
   STALL=1           stop reading stdin once the session exists
   STUBBORN=all      ignore SIGTERM and stdin EOF; start a child that also
                     ignores SIGTERM
@@ -110,6 +112,7 @@ import random
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 env = os.environ.get
@@ -185,9 +188,14 @@ def settings(answer):
     return answer
 
 
+# A late answer to session/new (NEW_GATE) is sent from a thread of its own.
+sending = threading.Lock()
+
+
 def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
+    with sending:
+        sys.stdout.write(json.dumps(msg) + "\n")
+        sys.stdout.flush()
 
 
 def append(var, value):
@@ -230,6 +238,25 @@ def opened(session):
         models = [{"modelId": "small", "name": "Small"}, {"modelId": "large", "name": "Large"}]
         answer["models"] = {"currentModelId": model, "availableModels": models}
     return answer
+
+
+def new_opened(mid, session):
+    """Answers session/new, then tells of the session's commands and title."""
+    result(mid, opened(session))
+    update(
+        session,
+        {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [{"name": "compact", "description": "Compact the conversation"}],
+        },
+    )
+    update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
+
+
+def new_later(gate, mid, session):
+    while not os.path.exists(gate):
+        time.sleep(0.05)
+    new_opened(mid, session)
 
 
 def text_of(prompt):
@@ -549,17 +576,11 @@ for line in sys.stdin.buffer:
         session = f"sess-{sessions}"
         if env("SESSION_ID") and sessions == 1:
             session = env("SESSION_ID")
-        result(mid, opened(session))
-        update(
-            session,
-            {
-                "sessionUpdate": "available_commands_update",
-                "availableCommands": [
-                    {"name": "compact", "description": "Compact the conversation"}
-                ],
-            },
-        )
-        update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
+        gate = env("NEW_GATE")
+        if gate and not os.path.exists(gate):
+            threading.Thread(target=new_later, args=(gate, mid, session), daemon=True).start()
+            continue
+        new_opened(mid, session)
         if env("STALL"):
             time.sleep(100000)
     elif method in ("session/resume", "session/load"):

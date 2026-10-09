@@ -16,7 +16,9 @@
 //!   it while it is still connected, and then the prompt goes. Whatever fails
 //!   after the agent opened the session (a setting, the bridge going away)
 //!   closes it again where the agent can close sessions, and says so; where
-//!   it can't, the answer names the session left open (P3);
+//!   it can't, the answer names the session left open (P3). A process
+//!   stopping meanwhile doesn't commit it,
+//!   and one with a session still opening doesn't stop for having none;
 //! - steering a message into a running turn (`_session/steering`, see
 //!   acp.rs).
 
@@ -360,6 +362,13 @@ impl Host {
         if matches!(setup.of, SetupOf::Start) && self.stop_requested {
             return; // The start already failed (timed out), or was stopped.
         }
+        // Before each setting, and before the commit.
+        if let SetupOf::Open(o) = &setup.of
+            && let Some(why) = self.open_refused()
+        {
+            let (peer, req_id) = (o.peer, o.req_id.clone());
+            return self.abandon_open(&setup.session, peer, req_id, why);
+        }
         let Some(i) = self.find(&setup.session) else {
             let error = format!("{} closed before its settings were set", setup.session);
             return self.setup_failed(setup, &error);
@@ -525,20 +534,14 @@ impl Host {
                 }
             }
             let error = format!("{what} failed: {}", error_message(error));
-            return self.reply(
-                opening.peer,
-                opening.req_id,
-                json!({ "ok": false, "error": error }),
-            );
+            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            return self.stop_if_empty();
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         let Some(session) = asked.or_else(|| new_session(&result)) else {
             let error = format!("{what} returned no sessionId");
-            return self.reply(
-                opening.peer,
-                opening.req_id,
-                json!({ "ok": false, "error": error }),
-            );
+            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            return self.stop_if_empty();
         };
         let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
         if let Some(why) = self.sessions[i].not_owned() {
@@ -584,13 +587,26 @@ impl Host {
         }
     }
 
+    /// Why a bridge's `new` or `resume` can't go on to commit: the process
+    /// is stopping, so the session would end unused with it.
+    fn open_refused(&self) -> Option<String> {
+        if self.stop_requested || self.agent_in.is_none() {
+            return Some("the process is stopping".into());
+        }
+        None
+    }
+
     /// A bridge's `new` or `resume` failed with `error` after the agent
     /// opened `session`: it is closed again (`session/close`), and the bridge
     /// is answered once it is, saying so. An agent that can't close sessions
-    /// keeps it open, and the answer names it (P3).
+    /// keeps it open, and the answer names it (P3). A stopping process can't
+    /// tell the agent any more: the session ends with it.
     fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: String) {
         self.sink
             .note(None, json!({ "event": "open-failed", "session_id": session, "error": error }));
+        if self.agent_in.is_none() {
+            return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+        }
         if !self.caps.close {
             if let Some(i) = self.find(session) {
                 self.sessions[i].opening = false; // Served as any other is.
@@ -606,6 +622,25 @@ impl Host {
         }
         let op = PeerOp::Close { session: session.to_owned(), by: "close", failed: Some(error) };
         self.peer_op(peer, req_id, op, "session/close", json!({ "sessionId": session }));
+    }
+
+    /// A headless process stops with its last session, unless a bridge's
+    /// `new` or `resume` is still waiting for the agent to open one.
+    fn stop_if_empty(&mut self) {
+        if self.sessions.is_empty() && !self.opening_in_flight() && !self.editor_attached() {
+            self.begin_stop();
+        }
+    }
+
+    /// Whether a bridge's `new` or `resume` is waiting for the agent's
+    /// answer: a session not among `sessions` yet, which keeps the process
+    /// from stopping as if it had none (see `stop_if_empty`,
+    /// `fire_idle_timers`).
+    pub(super) fn opening_in_flight(&self) -> bool {
+        let opening = |r: &ClientRequest| {
+            matches!(r.by, Requester::Host(HostRequest::Opening(Open::New | Open::Resume(_), _)))
+        };
+        self.client_requests.values().any(opening)
     }
 
     pub(super) fn peer_op(
@@ -672,9 +707,7 @@ impl Host {
                 if let Some(i) = self.find(&session) {
                     self.close_session(i, by);
                 }
-                if self.sessions.is_empty() && !self.editor_attached() {
-                    self.begin_stop();
-                }
+                self.stop_if_empty();
                 match failed {
                     Some(failed) => {
                         json!({ "ok": false, "error": format!("{failed}; {session} was closed") })
