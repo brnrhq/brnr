@@ -209,7 +209,9 @@ running turn instead (`_session/steering`, refused if the agent doesn't offer
 it), and `--interrupt` cancels the turn and sends the message ahead of what is
 held. On an idle session each is sent at once. `send` says which: `delivered`,
 `held`, `steered` or `interrupting`. Every message gets an id (`m<n>`), which
-`send --wait` uses to find the turn that answers it.
+`send --wait` uses to find the turn that answers it. A turn that ends before
+the agent has answered the steers into it has its `turn_ended` wait for those
+answers, so it lists every message the agent took into it.
 
 A message that never goes out is a `message_dropped` event, saying why:
 `cancel` (unless `--keep-held`), `queue --drop` or `--clear`, its session
