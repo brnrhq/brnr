@@ -322,6 +322,7 @@ live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
+| `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
@@ -401,9 +402,15 @@ the session (twice kills the agent). A display that can't keep up skips
 events, saying how many (`… 120 events not shown`); stdout closing
 (`| head -1`) ends the display, not the session.
 
-`--resume` uses the agent's `session/resume` (or `session/load`, without
-recording the replayed history again), in the session's cwd, with the agent
-and profile it last had, and appends to the same transcript.
+`--resume` uses the agent's `session/resume` (or `session/load`), in the
+session's cwd, with the agent and profile it last had, and appends to the
+same transcript. A load replays the session's history: brnr records it, as
+events marked `replayed`, only when it has no transcript of the session (one
+it has never seen, or whose transcript is gone), so repeated loads don't
+record it twice. A `history` event says how many updates were replayed and
+whether they were recorded. brnr's transcript has only what happened through
+brnr: turns taken in the agent's own client, or with `log = false`, aren't
+in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
 `brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody

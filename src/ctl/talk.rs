@@ -433,6 +433,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     // closes the session once the process to resume it has started, so it
     // can say which (ADR 3, ADR 4).
     let mut owner = None;
+    let mut transcript = false;
     if let Some(wanted) = a.resume.clone() {
         // A session another process holds is refused, naming the process,
         // unless --take-over. The process started here takes the lock itself,
@@ -461,6 +462,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
                 Err(_) => None,
             },
         };
+        transcript = found.is_some();
         if let Some(past) = found {
             a.resume = past["session_id"].as_str().map(str::to_owned);
             resume_cwd = past["cwd"].as_str().map(str::to_owned);
@@ -499,6 +501,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         if a.wait { TURN_EVENTS.iter().map(|e| e.to_string()).collect() } else { Vec::new() };
     let headless = request::Headless {
         resume: a.resume,
+        transcript,
         mode: a.mode.or(h.mode.clone()),
         model: a.model,
         config,

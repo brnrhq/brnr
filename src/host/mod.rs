@@ -406,6 +406,9 @@ struct Host {
     auth: Option<String>,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
+    /// Headless start: brnr has a transcript of the session resumed, so a
+    /// load's replay isn't recorded again (ADR 57).
+    transcript: bool,
     /// Headless start: mode and config options to set before the prompt.
     setup: std::collections::VecDeque<SetupStep>,
     /// Headless start: the session being opened.
@@ -616,6 +619,7 @@ impl Host {
             prompt: h.prompt,
             auth: h.auth,
             resume: h.resume,
+            transcript: h.transcript,
             setup: requests::setup_steps(h.mode, h.model, h.config.into_iter().collect()),
             starting: None,
             mcp_servers: h.mcp_servers,

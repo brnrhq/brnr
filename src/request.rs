@@ -69,6 +69,9 @@ pub struct Editor {
 pub struct Headless {
     /// Resume this session instead of opening a new one.
     pub resume: Option<String>,
+    /// brnr has a transcript of the session resumed: what a `session/load`
+    /// replays is in it already, and isn't recorded again (ADR 57).
+    pub transcript: bool,
     /// The mode, the model (the config option whose category is `model`,
     /// ADR 28) and config options to set before the prompt.
     pub mode: Option<String>,

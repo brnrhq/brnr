@@ -79,6 +79,7 @@ of to-resolve; the map at the end says where each went.
 | [50](0050-a-session-that-cant-be-locked.md) | A session that can't be locked isn't served headless | yes |
 | [51](0051-lines-too-long-to-read.md) | Lines too long to read | yes |
 | [52](0052-reproducible-builds-and-sbom.md) | Release builds are checked for reproducibility and carry an SBOM | yes |
+| [57](0057-a-loads-history.md) | A load's history is recorded once, and a `history` event says so (proposed) | yes |
 
 ## Where the former entries went
 

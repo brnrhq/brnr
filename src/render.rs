@@ -100,6 +100,17 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
+        // What a load replayed, and whether it is in the transcript as
+        // replayed events or was there already (ADR 57).
+        "history" => {
+            let updates = e["updates"].as_u64().unwrap_or(0);
+            let how = if e["recorded"] == true {
+                "recorded"
+            } else {
+                "not recorded: brnr's transcript has the session"
+            };
+            format!("history: {updates} updates replayed by the agent, {how}")
+        }
         // A line too long to read: passed on unread, or dropped (ADR 51).
         "line_too_long" => {
             let what = if e["relayed"] == true { "passed on unread" } else { "dropped" };
@@ -140,6 +151,8 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         prefix.push_str(&format!("{session:<8}  "));
     }
     let indent = " ".repeat(prefix.len());
+    // History a load replayed (ADR 57).
+    let what = if e["replayed"] == true { format!("(replayed) {what}") } else { what };
     let what = clean(what.trim_end());
     Some(format!("{prefix}{}", what.replace('\n', &format!("\n{indent}"))))
 }
@@ -462,6 +475,10 @@ mod tests {
         assert_eq!(shown(dropped), "dropped m3 (queue): later");
         let closed = json!({ "event": "session_closed", "by": "idle" });
         assert_eq!(shown(closed), "session closed (idle)");
+        let history = json!({ "event": "history", "updates": 3, "recorded": true });
+        assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
+        let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
+        assert_eq!(shown(replayed), "(replayed) user: old");
     }
 
     #[test]

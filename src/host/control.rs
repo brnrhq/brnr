@@ -97,6 +97,7 @@ pub const EVENTS: &[&str] = &[
     "message_dropped",
     "context_dropped",
     "session_closed",
+    "history",
     "line_too_long",
     "exited",
     "acp",
@@ -354,6 +355,12 @@ impl Host {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
+        // History a load replays, which brnr had no transcript of (ADR 57).
+        if let Some(i) = event["session"].as_str().and_then(|s| self.find(s))
+            && self.sessions[i].replay.as_ref().is_some_and(|r| r.record)
+        {
+            event["replayed"] = json!(true);
+        }
         let line = event.to_string();
         if name != "acp" {
             self.sink.note(event["session"].as_str(), event.clone());

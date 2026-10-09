@@ -65,6 +65,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
 {"event": "session_closed", "session": "0f6c…", "by": "idle"}
+{"event": "history", "session": "0f6c…", "updates": 42, "recorded": true}
 {"event": "exited", "status": {"code": 0}}
 ```
 
@@ -80,6 +81,11 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.
 - `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `history`: a `session/load` replayed the session's history (`updates`).
+  `recorded: true` when brnr had no transcript of it: the history is in the
+  log as events with `replayed: true` (`(replayed) user: …` in text);
+  `false` when brnr's transcript had it already, which has only what
+  happened through brnr.
 - `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
   brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
   said, such as the answer to a turn, is lost. It is the process's.
