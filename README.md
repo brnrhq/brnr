@@ -392,9 +392,14 @@ are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
 error, or no answer, is said and exits non-zero: the agent may still have
-the session. An editor's `session/delete` through `brnr acp` goes to the
-agent as it is; once the agent has deleted the session, the editor's process
-records `session_deleted` too, and closes the session if it had it open.
+the session. A file that can't be deleted, or have `session_deleted`
+recorded in it, is said (`not deleted: …`,
+`session_deleted isn't recorded: …`) and exits non-zero, the others done all
+the same; a transcript made private first is said too on stderr
+(`made-private: <path> (its mode was …)`): there is no host log for it. An
+editor's `session/delete` through `brnr acp` goes to the agent as it is;
+once the agent has deleted the session, the editor's process records
+`session_deleted` too, and closes the session if it had it open.
 
 `brnr process stop` signals the agent's whole process group, so whatever the
 agent started in that group goes with it. The same cleanup runs when the agent
@@ -711,7 +716,8 @@ it and the file must be yours, with no group or other access, before a record
 goes in, whether brnr made them or found them there. It creates them 0700 and
 0600; one restored, copied or chmod'ed so that others can reach it is made
 private when a process opens it, and the host log has a `made-private`
-record (`path`, and the `mode` it had). Symlinks are never followed, the
+record (`path`, and the `mode` it had; `session delete`, which has no host
+log, says so on stderr). Symlinks are never followed, the
 state directory included (set `BRNR_HOME` to where one points instead), and
 what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),

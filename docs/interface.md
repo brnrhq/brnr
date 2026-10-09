@@ -135,7 +135,7 @@ with the agent's capabilities.
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; errors on stderr. |
-| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded` and `purged` (file paths), `failed` (files not deleted; exit 1). Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
+| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `made-private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
@@ -202,7 +202,7 @@ transcript. Tool, plan and usage data come from the agent.
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground` | Follows the agent's exit status; startup failure is nonzero. |
-| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`): then 0, brnr's transcript deleted. |
+| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
@@ -338,10 +338,11 @@ environment/header secrets are redacted from recorded ACP, but transcripts
 can contain prompts and tool output. brnr writes a transcript or host log
 only where the state directory, each directory below it and the file are the
 user's own with no group or other access: what others can reach is made
-private before the next record (a `made-private` host-log record says so),
-and a symlink, another user's path, a non-regular file or one with other
-hard links is refused, with no override (ADR 59). A refused host log fails
-the start; a refused session file is a `session-log-failed` host-log record.
+private before the next record (a `made-private` host-log record says so,
+or, from `session delete`, a line on stderr), and a symlink, another user's
+path, a non-regular file or one with other hard links is refused, with no
+override (ADR 59). A refused host log fails the start; a refused session
+file is a `session-log-failed` host-log record.
 `doctor --report` is for review before
 sharing; it does not upload anything. See the [threat model](threat-model.md)
 for trust boundaries and the documented host-SIGKILL cleanup limitation.

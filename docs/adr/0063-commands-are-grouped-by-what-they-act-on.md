@@ -127,8 +127,14 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   command succeeds only if the agent deleted the session or doesn't have it
   (ACP's `resource_not_found`, -32002), which is said; any other error, or
   no answer, is said and fails the command, the transcript deleted all the
-  same: the agent may still have the session (P3, P7). A deletion isn't
-  activity: LAST ACTIVE stays when a process last served the session.
+  same: the agent may still have the session (P3, P7). A file that can't be
+  deleted, or have `session_deleted` recorded in it, is said and fails the
+  command, the others done all the same (P3); what was and wasn't deleted is
+  said as it is, not as "no transcript" or "deleted all the same". A
+  symlinked project folder isn't looked in, and a transcript made private
+  first (ADR 59) is said on stderr: the command has no host log for
+  `made-private`. A deletion isn't activity: LAST ACTIVE stays when a
+  process last served the session.
   `session_deleted` is recorded in the session's transcript: by the command,
   as a record of no process's (`host_id` null), since no process has the
   session open; by the editor's process, which closes the session if it had
@@ -298,6 +304,14 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     doesn't have the session (-32002), saying so, and succeeding.
   - `adr_0063_delete_purge_fails_when_the_agent_does`: for any other error,
     the transcript is deleted too, the error said, and the command fails.
+  - `adr_0063_delete_purge_says_what_it_couldnt_delete`: a transcript in a
+    folder brnr can't write to isn't deleted, which is said, not "no
+    transcript" nor "all the same", and the command fails, whatever the
+    agent answered.
+  - `adr_0063_delete_records_in_each_transcript_it_can`: `session_deleted`
+    goes into each transcript that can take it, one refused is said and
+    fails the command, a symlinked folder isn't looked in, and a transcript
+    made private first is said.
   - `adr_0063_delete_refuses_an_open_session`: refused, the agent not asked,
     until the session is closed.
   - `adr_0063_delete_needs_an_agent_that_can_delete`: an agent without

@@ -37,7 +37,10 @@ brnr's own conventions:
   `brnr acp`. `--purge` also deletes brnr's transcript of the session (its
   events and raw ACP files, not the host logs) whatever the agent answered,
   and exits non-zero unless the agent deleted the session or doesn't have it
-  (`resource_not_found`) (ADR 63).
+  (`resource_not_found`). A file that can't be deleted, or have
+  `session_deleted` recorded in it, is said and exits non-zero, the others
+  done all the same, and a transcript made private first is said on stderr
+  (ADR 63).
 
 ### Changed
 

@@ -3161,6 +3161,60 @@ fn adr_0063_delete_keeps_the_transcript() {
     assert_eq!(list[0]["last_active"], active, "{list}");
 }
 
+/// Without `--purge`, `session_deleted` goes into each transcript it can be
+/// written to, whichever before it couldn't, and one that couldn't is said
+/// and fails the command. A symlinked project folder isn't looked in, and a
+/// transcript others could read is made private first, which is said: the
+/// command has no host log for `made-private` (ADR 59).
+#[test]
+fn adr_0063_delete_records_in_each_transcript_it_can() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let env = Env::new("c-delete-each");
+    ended(&env, &[]);
+    let projects = env.dir.join("home/projects");
+    let folder = fs::read_dir(&projects).unwrap().next().unwrap().unwrap().path();
+    let mine = folder.join("sess-1.jsonl");
+    let before = fs::read_to_string(&mine).unwrap();
+    // Sorted first, a transcript with two names is refused (ADR 59).
+    let refused = projects.join("+refused");
+    fs::create_dir(&refused).unwrap();
+    fs::write(refused.join("sess-1.jsonl"), &before).unwrap();
+    fs::hard_link(refused.join("sess-1.jsonl"), env.dir.join("other-name")).unwrap();
+    // A folder that is a symlink, to one outside the state directory.
+    let outside = env.dir.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sess-1.jsonl"), &before).unwrap();
+    symlink(&outside, projects.join("+linked")).unwrap();
+    fs::set_permissions(&mine, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let out = env.run(&["session", "delete", "sess-1"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "deleted sess-1; brnr's transcript of it stays (brnr event log sess-1)\n"
+    );
+    let err = stderr(&out);
+    let want = format!(
+        "brnr: session_deleted isn't recorded: {}: has 2 hard links",
+        refused.join("sess-1.jsonl").display()
+    );
+    assert!(err.contains(&want), "{err}");
+    let want = format!("brnr: made-private: {} (its mode was 644)", mine.display());
+    assert!(err.contains(&want), "{err}");
+    assert!(!err.contains("+linked") && !err.contains("outside"), "{err}");
+    assert_eq!(fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o600);
+    let after = fs::read_to_string(&mine).unwrap();
+    assert!(after.starts_with(&before) && after.contains("session_deleted"), "{after}");
+    assert_eq!(fs::read_to_string(refused.join("sess-1.jsonl")).unwrap(), before);
+    assert_eq!(fs::read_to_string(outside.join("sess-1.jsonl")).unwrap(), before);
+
+    let json: Value =
+        serde_json::from_str(&stdout(&env.run(&["session", "delete", "sess-1", "--json"])))
+            .unwrap();
+    assert_eq!(json["recorded"], serde_json::json!([mine.to_string_lossy()]), "{json}");
+    assert_eq!(json["failed"].as_array().map(Vec::len), Some(1), "{json}");
+}
+
 /// A session brnr has no transcript of takes its agent from `--profile` or
 /// `-- <agent>`, and nothing is recorded: there is no transcript to keep.
 #[test]
@@ -3253,6 +3307,59 @@ fn adr_0063_delete_purge_fails_when_the_agent_does() {
     assert_eq!(json["error"], "session/delete failed: Can't delete stuck-1", "{json}");
     assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
+}
+
+/// With `--purge`, a transcript that can't be deleted (a project folder
+/// brnr can't write to) is said, and fails the command: it isn't "no
+/// transcript", nor deleted all the same.
+#[test]
+fn adr_0063_delete_purge_says_what_it_couldnt_delete() {
+    use std::os::unix::fs::PermissionsExt;
+    if uid() == 0 {
+        eprintln!("skipped: root deletes in a read-only folder");
+        return;
+    }
+    let env = Env::new("c-purge-ro").agent("SESSION_ID", "stuck-1");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    assert_eq!(env.ok(&["session", "fork", "stuck-1"]), "forked stuck-1 into sess-2\n");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let projects = env.dir.join("home/projects");
+    let folder = fs::read_dir(&projects).unwrap().next().unwrap().unwrap().path();
+    let all = ["sess-2.acp.jsonl", "sess-2.jsonl", "stuck-1.acp.jsonl", "stuck-1.jsonl"];
+    let mode = |m| fs::set_permissions(&folder, fs::Permissions::from_mode(m)).unwrap();
+    mode(0o500);
+
+    // The agent deleted it; brnr's transcript isn't.
+    let out = env.run(&["session", "delete", "sess-2", "--purge"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "deleted sess-2, but not brnr's transcript of it\n");
+    let err = stderr(&out);
+    let want = format!("brnr: not deleted: {}: ", folder.join("sess-2.jsonl").display());
+    assert!(err.contains(&want), "{err}");
+    assert!(err.contains("sess-2.acp.jsonl"), "{err}");
+
+    // Nor did the agent delete it.
+    let out = env.run(&["session", "delete", "stuck-1", "--purge"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    let err = stderr(&out);
+    assert!(
+        err.contains(
+            "brnr: the agent didn't delete stuck-1 (session/delete failed: Can't delete stuck-1): \
+             it may still have it; brnr's transcript of it isn't deleted either"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("all the same") && !err.contains("no transcript"), "{err}");
+    let want = format!("brnr: not deleted: {}: ", folder.join("stuck-1.jsonl").display());
+    assert!(err.contains(&want), "{err}");
+    let out = env.run(&["session", "delete", "stuck-1", "--purge", "--json"]);
+    let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!((&json["deleted"], &json["purged"]), (&false.into(), &json!([])), "{json}");
+    assert_eq!(json["failed"].as_array().map(Vec::len), Some(2), "{json}");
+    mode(0o700);
+    assert_eq!(transcript_files(&env), all);
 }
 
 /// A session open in a process isn't deleted, with `--purge` or without:
