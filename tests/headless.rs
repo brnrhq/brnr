@@ -1705,7 +1705,10 @@ fn adr_0025_an_editors_mcp_secrets_are_redacted() {
         serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new", "params": params });
     writeln!(to_agent, "{new}").unwrap();
     assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
-    assert_eq!(env.calls_of("session/new")[0], new);
+    // As the editor sent it, but for the host's id (ADR 61).
+    let mut got = env.calls_of("session/new")[0].clone();
+    got["id"] = json!(2);
+    assert_eq!(got, new);
     let seen = watched_request(&mut watch, "session/new");
     let server = &seen["msg"]["params"]["mcpServers"][0];
     let header = serde_json::json!({ "name": "Authorization", "value": "<redacted>" });
@@ -2769,8 +2772,9 @@ fn adr_0004_take_over_from_an_editor() {
     assert_eq!(env.prompts(), ["hang"]);
 }
 
-/// The editor's own steer goes to the agent untouched, and once the agent has
-/// taken it into the turn it is a `user_message` of that turn, by the editor.
+/// The editor's own steer goes to the agent untouched but for its id, the
+/// host's (ADR 61), and once the agent has taken it into the turn it is a
+/// `user_message` of that turn, by the editor.
 #[test]
 fn adr_0004_the_editors_own_steer_is_recorded() {
     let env = Env::new("ex-steer");
@@ -2785,10 +2789,203 @@ fn adr_0004_the_editors_own_steer_is_recorded() {
     writeln!(to_agent, "{steer}").unwrap();
     assert_eq!(response(&mut from_agent, 4)["result"]["outcome"], "injected");
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
-    assert_eq!(env.calls_of("_session/steering"), [steer]);
+    let mut got = env.calls_of("_session/steering");
+    assert_ne!(got[0]["id"], 4, "the agent got the editor's id");
+    got[0]["id"] = json!(4);
+    assert_eq!(got, [steer]);
     let log = env.ok(&["log", "sess-1", "--json", "--events", "user_message"]);
     let said: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(said.len(), 2, "{said:?}");
     assert_eq!((&said[1]["by"], &said[1]["text"]), (&"editor".into(), &"reply steered".into()));
     assert_eq!(said[1]["prompt"], said[0]["prompt"]);
+}
+
+// ---- request ids (ADR 61) ----------------------------------------------
+
+/// The editor's `session/cancel` of sess-1's turn.
+const CANCEL: &str =
+    r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"sess-1"}}"#;
+
+/// The editor's request `method` with id `id`, as it is written.
+fn request_with_id(id: &str, method: &str, params: Value) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#)
+}
+
+/// The editor's prompt with id `id`, as it is written.
+fn prompt_with_id(id: &str, text: &str) -> String {
+    let prompt = json!([{ "type": "text", "text": text }]);
+    request_with_id(id, "session/prompt", json!({ "sessionId": "sess-1", "prompt": prompt }))
+}
+
+/// The id of a message, as it is written.
+fn raw_id(line: &str) -> Option<String> {
+    let found = brnr::json::members(line.as_bytes(), "id");
+    found.last().map(|span| line[span.clone()].to_owned())
+}
+
+/// The answers the editor gets, until the one to `id` (as it is written):
+/// each with its id as written.
+fn answers_until(from_agent: &mut BufReader<ChildStdout>, id: &str) -> Vec<(String, Value)> {
+    let mut answers = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let Some(raw) = raw_id(&line).filter(|_| msg.get("method").is_none()) else { continue };
+        let last = raw == id;
+        answers.push((raw, msg));
+        if last {
+            return answers;
+        }
+    }
+}
+
+/// The editor's answer to `id`, as it is written.
+fn answer_to(from_agent: &mut BufReader<ChildStdout>, id: &str) -> Value {
+    answers_until(from_agent, id).pop().unwrap().1
+}
+
+fn state(env: &Env) -> Value {
+    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    status["state"].clone()
+}
+
+/// The ids of the requests the agent got: each its own.
+fn assert_distinct_ids(env: &Env) -> Vec<Value> {
+    let ids: Vec<Value> = (env.calls().into_iter())
+        .filter(|c| c.get("method").is_some() && c.get("id").is_some())
+        .map(|c| c["id"].clone())
+        .collect();
+    for (i, id) in ids.iter().enumerate() {
+        assert!(!ids[..i].contains(id), "the agent got {id} twice: {ids:?}");
+    }
+    ids
+}
+
+/// The `turn_ended` events of sess-1.
+fn turns_ended(env: &Env) -> Vec<Value> {
+    let log = env.ok(&["log", "sess-1", "--json", "--events", "turn_ended"]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// An editor's prompt whose id is one the host gives its own requests
+/// (`brnr-1`) runs on while `mode`, `model` and `config` are answered: the
+/// session is busy until the agent answers the prompt itself, and the editor
+/// gets that answer, with its id.
+#[test]
+fn adr_0061_an_editors_prompt_ends_only_with_its_own_answer() {
+    let env = Env::new("id-prompt");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
+    writeln!(to_agent, "{}", prompt_with_id(r#""brnr-1""#, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    assert_eq!(state(&env), "busy");
+    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    assert_eq!(state(&env), "busy", "the mode's answer ended the editor's turn");
+    env.ok(&["model", "sess-1", "large"]);
+    env.ok(&["config", "sess-1", "model=small"]);
+    assert_eq!(state(&env), "busy");
+    assert!(turns_ended(&env).is_empty());
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    let answers = answers_until(&mut from_agent, r#""brnr-1""#);
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].1["result"]["stopReason"], "cancelled");
+    wait_idle(&env);
+    let ended = turns_ended(&env);
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(
+        (&ended[0]["by"], &ended[0]["stop_reason"]),
+        (&"editor".into(), &"cancelled".into())
+    );
+    assert_distinct_ids(&env);
+}
+
+/// The editor's request with the id of the host's own request, a prompt
+/// `send` injected, is the editor's: its answer reaches the editor, and the
+/// host's turn runs on until the agent ends it.
+#[test]
+fn adr_0061_an_editors_request_with_a_host_requests_id_is_the_editors() {
+    let env = Env::new("id-host").agent("QUIET_MODE", "1");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["send"]);
+    env.ok(&["send", "sess-1", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let host = env.calls_of("session/prompt")[0]["id"].to_string();
+    let params = json!({ "sessionId": "sess-1", "modeId": "plan" });
+    writeln!(to_agent, "{}", request_with_id(&host, "session/set_mode", params.clone())).unwrap();
+    writeln!(to_agent, "{}", request_with_id(r#""after""#, "session/set_mode", params)).unwrap();
+    let answers = answers_until(&mut from_agent, r#""after""#);
+    assert_eq!(state(&env), "busy", "the editor's answer ended the host's turn");
+    let raws: Vec<&str> = answers.iter().map(|(raw, _)| raw.as_str()).collect();
+    assert_eq!(raws, [host.as_str(), r#""after""#], "{answers:?}");
+    assert_eq!(answers[0].1["result"], json!({}));
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    wait_idle(&env);
+    let ended = turns_ended(&env);
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(
+        (&ended[0]["by"], &ended[0]["stop_reason"]),
+        (&"control".into(), &"cancelled".into())
+    );
+    assert_distinct_ids(&env);
+}
+
+/// Ids of either type, and numbers however they are written, come back to
+/// the editor as it wrote them: `7` and `"7"` are two requests, and none of
+/// the editor's ids reaches the agent.
+#[test]
+fn adr_0061_ids_come_back_as_the_editor_wrote_them() {
+    let env = Env::new("id-types");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", prompt_with_id("7", "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let ids = [r#""7""#, "1e3", "-0.50", r#""brnr-1""#, r#""brnr-2""#];
+    for id in ids {
+        let params = json!({ "sessionId": "sess-1", "modeId": "plan" });
+        writeln!(to_agent, "{}", request_with_id(id, "session/set_mode", params)).unwrap();
+        let answer = answer_to(&mut from_agent, id);
+        assert_eq!(answer["result"], json!({}), "{id}: {answer}");
+    }
+    assert_eq!(state(&env), "busy");
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    let answers = answers_until(&mut from_agent, "7");
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0].1["result"]["stopReason"], "cancelled");
+    // As the agent read them, too.
+    let got = assert_distinct_ids(&env);
+    for id in [json!(7), json!("7"), json!(1000.0), json!(-0.5)] {
+        assert!(!got.contains(&id), "the agent got the editor's id {id}: {got:?}");
+    }
+}
+
+/// The editor's `$/cancel_request` names its own requests: one of its own
+/// goes to the agent with that request's id there, and one naming the id of
+/// the host's prompt doesn't go, so the host's turn runs on.
+#[test]
+fn adr_0061_the_editors_cancel_request_is_for_its_own_request() {
+    let env = Env::new("id-cancel").agent("QUIET_MODE", "1");
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["send"]);
+    let cancel_request = |id: &str| {
+        format!(r#"{{"jsonrpc":"2.0","method":"$/cancel_request","params":{{"requestId":{id}}}}}"#)
+    };
+    env.ok(&["send", "sess-1", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let host = env.calls_of("session/prompt")[0]["id"].to_string();
+    writeln!(to_agent, "{}", cancel_request(&host)).unwrap();
+    let params = json!({ "sessionId": "sess-1", "modeId": "plan" });
+    writeln!(to_agent, "{}", request_with_id(r#""after""#, "session/set_mode", params)).unwrap();
+    answer_to(&mut from_agent, r#""after""#);
+    assert_eq!(state(&env), "busy", "the editor cancelled the host's prompt");
+    assert!(env.calls_of("$/cancel_request").is_empty());
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    wait_idle(&env);
+
+    writeln!(to_agent, "{}", prompt_with_id(r#""mine""#, "hang")).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
+    writeln!(to_agent, "{}", cancel_request(r#""mine""#)).unwrap();
+    let answer = answer_to(&mut from_agent, r#""mine""#);
+    assert_eq!(answer["error"]["code"], -32800, "{answer}");
+    let sent = env.calls_of("$/cancel_request");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["params"]["requestId"], env.calls_of("session/prompt")[1]["id"]);
+    wait_idle(&env);
 }

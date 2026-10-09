@@ -1,14 +1,16 @@
 # brnr
 
+[![License](https://img.shields.io/github/license/brnrhq/brnr)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
+[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#building-and-testing)
 [![CI](https://github.com/brnrhq/brnr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brnrhq/brnr/actions/workflows/ci.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/brnrhq/brnr/badge)](https://scorecard.dev/viewer/?uri=github.com/brnrhq/brnr)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15315/badge)](https://www.bestpractices.dev/projects/15315)
 [![Release](https://img.shields.io/github/v/release/brnrhq/brnr)](https://github.com/brnrhq/brnr/releases/latest)
 [![Homebrew](https://img.shields.io/badge/brew-brnrhq%2Ftap%2Fbrnr-orange)](#install)
 [![crates.io](https://img.shields.io/crates/v/brnr)](https://crates.io/crates/brnr)
-[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](CONTRIBUTING.md#building-and-testing)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
-[![License](https://img.shields.io/github/license/brnrhq/brnr)](LICENSE)
+
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/brnrhq/brnr/badge)](https://scorecard.dev/viewer/?uri=github.com/brnrhq/brnr)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15315/badge)](https://www.bestpractices.dev/projects/15315)
+
 
 A burner phone for your coding agents.
 
@@ -121,10 +123,12 @@ doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
-unchanged. It changes the stream in three ways, each below: the editor's `fs`
-and `terminal` capabilities are dropped, a session another brnr process
-serves can't be loaded, and the experimental actions a profile enables act on
-the editor's session. When the editor goes away, so does the agent;
+unchanged. It changes the stream in four ways: every request reaches the
+agent with an id of brnr's, and its answer comes back to the editor with the
+editor's own id, so that the editor's requests and brnr's are never confused
+(ADR 61); and, each below, the editor's `fs` and `terminal` capabilities are
+dropped, a session another brnr process serves can't be loaded, and the
+experimental actions a profile enables act on the editor's session. When the editor goes away, so does the agent;
 `brnr start --resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
 

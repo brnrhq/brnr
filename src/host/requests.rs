@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{Held, Replay, new_session};
+use super::acp::{ClientRequest, Held, Replay, Requester, new_session};
 use super::state::SessionState;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
@@ -92,16 +92,15 @@ impl Host {
     }
 
     pub(super) fn host_request(&mut self, method: &str, params: Value, kind: HostRequest) {
-        self.next_id += 1;
-        let id = Value::String(format!("brnr-{}", self.next_id));
+        let id = self.wire_id();
         let key = id_key(&id);
         let cwd = params["cwd"].as_str().map(str::to_owned);
         let session = params["sessionId"].as_str().map(str::to_owned);
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
-        self.client_requests.insert(key.clone(), session.clone());
-        self.host_requests.insert(key.clone(), kind);
+        let request = ClientRequest { by: Requester::Host(kind), session: session.clone() };
+        self.client_requests.insert(key.clone(), request);
         // Without the MCP servers' secrets (ADR 25 in docs/adr).
         let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());
         self.record(session.as_deref(), Dir::ControlToAgent, &recorded);

@@ -4,15 +4,20 @@
 //! The host reads ACP line by line from both sides. It changes the stream
 //! in these ways; everything else passes through unchanged:
 //!
+//! - Every request to the agent has an id of the host's (`brnr-<n>`), the
+//!   editor's too, and the answer is for whoever sent it: the editor's goes
+//!   back to it with its id as it wrote it (ADR 61). In a line, only the id
+//!   changes. The editor's `$/cancel_request` names its own requests, and
+//!   goes with their ids on the agent's side.
 //! - The editor's `initialize` loses the `fs` and `terminal` client
 //!   capabilities ([`DROPPED_CAPABILITIES`]), but in strict mode.
-//! - An injected message goes to the agent as a `session/prompt` with a host
-//!   id (`brnr-<n>`), never while a prompt is running: until then it is
-//!   held. With `--steer` it goes into the running turn instead, as
-//!   `_session/steering` (ADR 18 in docs/adr). The responses are kept from
-//!   the editor, and the editor is shown the text as it is sent, as a
-//!   completed tool call (`echo`). On an editor's session it is the
-//!   experimental `send` (ADR 4), refused while a prompt runs.
+//! - An injected message goes to the agent as a `session/prompt`, never
+//!   while a prompt is running: until then it is held. With `--steer` it
+//!   goes into the running turn instead, as `_session/steering` (ADR 18 in
+//!   docs/adr). The responses are kept from the editor, and the editor is
+//!   shown the text as it is sent, as a completed tool call (`echo`). On an
+//!   editor's session it is the experimental `send` (ADR 4), refused while a
+//!   prompt runs.
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
 //! - What the side channel does to an editor's session (ADR 4, see
@@ -39,9 +44,9 @@
 //!   `shared_sessions` in the profile (ADR 42) it goes through, and the
 //!   session is served shared (see `Hold`).
 //!
-//! The editor's own steers (`_session/steering`) pass through untouched; once
-//! the agent has taken one into the turn, it is a `user_message` by the
-//! editor.
+//! The editor's own steers (`_session/steering`) pass through untouched but
+//! for their ids, as every request does; once the agent has taken one into
+//! the turn, it is a `user_message` by the editor.
 //!
 //! Lines are read as json.rs reads them: any JSON text, a lone surrogate as
 //! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
@@ -236,6 +241,24 @@ pub(super) enum Pending {
     },
 }
 
+/// A request to the agent it hasn't answered: who asked, so who its answer
+/// is for, and the session it is about. Its id on the agent's side is the
+/// host's own, whoever asked (ADR 61).
+pub(super) struct ClientRequest {
+    pub(super) by: Requester,
+    pub(super) session: Option<String>,
+}
+
+pub(super) enum Requester {
+    /// The editor, with its id: as it wrote it (`raw`), which its answer goes
+    /// back with, and as a key, for its `$/cancel_request`.
+    Editor { raw: Vec<u8>, key: String },
+    /// The host, as the agent's client or for a bridge.
+    Host(HostRequest),
+    /// A message the host sent as a prompt: its answer ends the turn.
+    Prompt,
+}
+
 /// A request from the agent to its client.
 pub(super) struct AgentRequest {
     pub(super) key: String,
@@ -349,14 +372,40 @@ impl Host {
                     {
                         return self.refuse(id, sid, &method, &error);
                     }
-                    let key = id_key(&id);
-                    if let Some(rewritten) = self.editor_request(&method, &key, &mut msg, &session)
-                    {
-                        line = rewritten;
-                    }
-                    self.client_requests.insert(key.clone(), session.clone());
+                    // It goes with an id of the host's, which nobody else's
+                    // can be: the editor's as it wrote it comes back on the
+                    // answer (ADR 61). Only the id changes in the line.
+                    let wire = self.wire_id();
+                    let key = id_key(&wire);
+                    let spans = json::members(&line, "id");
+                    let raw = match spans.last() {
+                        Some(span) => line[span.clone()].to_vec(),
+                        None => serde_json::to_vec(&id).unwrap(),
+                    };
+                    msg.insert("id".to_owned(), wire.clone());
+                    line = match self.editor_request(&method, &key, &mut msg, &session) {
+                        Some(rewritten) => rewritten,
+                        None if !spans.is_empty() => {
+                            json::replace(&line, &spans, &serde_json::to_vec(&wire).unwrap())
+                        }
+                        None => serde_json::to_vec(&msg).unwrap(),
+                    };
+                    let by = Requester::Editor { raw, key: id_key(&id) };
+                    let request = ClientRequest { by, session: session.clone() };
+                    self.client_requests.insert(key.clone(), request);
                     if method == "session/new" {
                         deferred = Some(key);
+                    }
+                }
+                (Some(method), None) if method == "$/cancel_request" => {
+                    if let Some(cancels) = self.editor_cancel(&msg) {
+                        for cancel in cancels {
+                            let mut line = serde_json::to_vec(&cancel).unwrap();
+                            line.push(b'\n');
+                            self.record(session.as_deref(), Dir::EditorToAgent, &line);
+                            self.write_agent(&line);
+                        }
+                        return;
                     }
                 }
                 (None, Some(id)) => {
@@ -380,7 +429,8 @@ impl Host {
         // A session/new goes in the host log now, so one the agent never
         // answers is still on record, and in the session's file once the
         // response names it. What is recorded keeps the MCP servers' secrets
-        // out (ADR 25 in docs/adr); the agent gets the line as it came.
+        // out (ADR 25 in docs/adr); the agent gets the line as it came, but
+        // for a request's id (ADR 61) and the named changes.
         let session = if deferred.is_some() { None } else { session };
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
@@ -390,6 +440,37 @@ impl Host {
             *request = Some(recorded.to_vec());
         }
         self.write_agent(&line);
+    }
+
+    /// The editor's `$/cancel_request` of its request `requestId`: the
+    /// cancellations to send the agent instead, each with the id that request
+    /// has there (one each, if the editor gave several requests that id). An
+    /// id the host gave a request on the agent's side, which the editor
+    /// never had, isn't one of its own to cancel: nothing goes, and the host
+    /// log says so. Any other goes as it came (`None`): the id of a request
+    /// the host couldn't read (ADR 26), or of none.
+    fn editor_cancel(&mut self, msg: &Map<String, Value>) -> Option<Vec<Value>> {
+        let named = msg.get("params")?.get("requestId")?;
+        let key = id_key(named);
+        let mut wires: Vec<&String> = (self.client_requests.iter())
+            .filter(|(_, r)| matches!(&r.by, Requester::Editor { key: k, .. } if *k == key))
+            .map(|(wire, _)| wire)
+            .collect();
+        if wires.is_empty() {
+            if !self.client_requests.contains_key(&key) {
+                return None;
+            }
+            let event = json!({ "event": "editor-cancel-dropped", "request_id": named });
+            self.sink.note(None, event);
+            return Some(Vec::new());
+        }
+        wires.sort();
+        let cancels = wires.into_iter().map(|wire| {
+            let mut cancel = Value::Object(msg.clone());
+            cancel["params"]["requestId"] = serde_json::from_str(wire).unwrap();
+            cancel
+        });
+        Some(cancels.collect())
     }
 
     /// What the editor sent after its last line, as it closed its stdin: it
@@ -594,8 +675,8 @@ impl Host {
     }
 
     fn agent_response(&mut self, key: &str, msg: &Map<String, Value>, line: &[u8]) {
-        let mut session = self.client_requests.remove(key).flatten();
-        let ours = self.host_requests.remove(key);
+        let request = self.client_requests.remove(key);
+        let mut session = request.as_ref().and_then(|r| r.session.clone());
         if let Some(pending) = self.pending.remove(key) {
             session = self.session_changed(pending, msg.get("result")).or(session);
         }
@@ -616,11 +697,22 @@ impl Host {
             session = Some(sid.clone());
             turn = Some((sid, injected, messages));
         }
-        let forward = ours.is_none() && !turn.as_ref().is_some_and(|(_, injected, _)| *injected);
-        let dir = if forward { Dir::AgentToEditor } else { Dir::AgentToControl };
+        // Whose answer it is (ADR 61): the editor's goes to it with its id as
+        // it wrote it, and nothing else in the line changed. One to an id the
+        // host never sent (a request in a line it couldn't read, ADR 26) goes
+        // on as it came.
+        let (ours, forward) = match request.map(|r| r.by) {
+            Some(Requester::Editor { raw, .. }) => {
+                (None, Some(json::replace(line, &json::members(line, "id"), &raw)))
+            }
+            Some(Requester::Host(request)) => (Some(request), None),
+            Some(Requester::Prompt) => (None, None),
+            None => (None, Some(line.to_vec())),
+        };
+        let dir = if forward.is_some() { Dir::AgentToEditor } else { Dir::AgentToControl };
         self.record(session.as_deref(), dir, line);
-        if forward {
-            self.send_link(frame::DATA, line);
+        if let Some(line) = forward {
+            self.send_link(frame::DATA, &line);
         }
         if let Some(request) = ours {
             self.host_request_done(request, msg);
@@ -1114,6 +1206,13 @@ impl Host {
             .min()
     }
 
+    /// A new id for a request to the agent, `brnr-<n>`: the host gives every
+    /// request its own, the editor's too, so no two can be confused (ADR 61).
+    pub(super) fn wire_id(&mut self) -> Value {
+        self.next_id += 1;
+        Value::String(format!("brnr-{}", self.next_id))
+    }
+
     /// A new `m<n>` message id.
     pub(super) fn message_id(&mut self) -> String {
         self.next_message += 1;
@@ -1129,8 +1228,7 @@ impl Host {
     }
 
     pub(super) fn send_prompt(&mut self, i: usize, held: Held) {
-        self.next_id += 1;
-        let id = Value::String(format!("brnr-{}", self.next_id));
+        let id = self.wire_id();
         let key = id_key(&id);
         let session = self.sessions[i].id.clone();
         let context = take(&mut self.sessions[i].context);
@@ -1145,7 +1243,8 @@ impl Host {
         let prompt = Prompt { id: key.clone(), injected: true, messages: vec![held.id.clone()] };
         self.start_turn(i, prompt);
         self.prompt_session.insert(key.clone(), session.clone());
-        self.client_requests.insert(key.clone(), Some(session.clone()));
+        let request = ClientRequest { by: Requester::Prompt, session: Some(session.clone()) };
+        self.client_requests.insert(key.clone(), request);
         let text = prompt_text(Some(&json!(blocks)));
         self.echo(&session, "Message via brnr", &blocks);
         self.emit(json!({

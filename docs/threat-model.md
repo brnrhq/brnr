@@ -109,7 +109,8 @@ written for this document.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too; the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it | `security.rs`: `adr_0002_acp_passes_bytes_unchanged` |
+| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too, but for a request's id (below); the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it; `json::members`, `json::replace` (src/json.rs) change an id in place | `security.rs`: `adr_0002_acp_passes_bytes_unchanged` |
+| Every request to the agent has an id of the host's, the editor's too, so no editor id can be taken for another requester's, and an answer goes only to whoever sent the request: the editor's with its id as it wrote it. The editor's `$/cancel_request` reaches only its own requests (ADR 61). | `wire_id`, `editor_message`, `agent_response`, `editor_cancel` (src/host/acp.rs); `host_request` (src/host/requests.rs) | `headless.rs`: `adr_0061_an_editors_prompt_ends_only_with_its_own_answer`, `adr_0061_an_editors_request_with_a_host_requests_id_is_the_editors`, `adr_0061_ids_come_back_as_the_editor_wrote_them`, `adr_0061_the_editors_cancel_request_is_for_its_own_request`; src/json.rs: `adr_0061_an_id_is_found_where_it_is_and_nowhere_else` |
 | The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0002_acp_passes_stderr_and_the_exit_status` |
 | The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 62). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0062_the_editors_stdout_ends_with_the_agents`, `adr_0062_stderr_comes_as_it_is_written`, `adr_0062_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0062_brnrs_own_lines_end_with_the_agents_stdout` |
 | The named changes: the editor's `fs` and `terminal` capabilities are dropped, but in strict mode (ADR 2, ADR 41). | `drop_capabilities` (src/host/acp.rs) | `headless.rs`: `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode` |
@@ -226,6 +227,16 @@ What brnr doesn't enforce, or doesn't test, today.
   EPIPE. The editor's stderr ends when `brnr acp` exits, not when the
   agent's does (ADR 62), which `adr_0062_stdout_and_stderr_end_on_their_own`
   checks; the rest isn't tested.
+- **Requests in lines the host can't read keep the editor's id.** A
+  request the host doesn't read (not JSON, past 32 MiB, or what the editor
+  wrote after its last newline) reaches the agent untracked, with the
+  editor's id. If the editor gave it an id the host has given a request
+  still waiting, which it was never told, the answer is taken for that
+  request's (ADR 61). Not tested.
+- **The agent's ids are passed to the editor as they are.** An agent that
+  reuses an id after the host answered a request with it (`cancel`,
+  `approve`) can have the editor's late answer to the first taken as its
+  answer to the second (ADR 61). Not tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 38); that directory is trusted as
   `PATH` is.
