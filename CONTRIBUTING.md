@@ -4,6 +4,41 @@ Bug reports, ideas and pull requests are welcome. For anything bigger than a
 fix, open an issue first: brnr's behaviour is decided in
 [ADRs](docs/adr/README.md), and a change to it starts there.
 
+## Requirements for acceptable contributions
+
+Before a pull request can be accepted:
+
+- Follow the [coding standards](#coding-standards) below and the existing
+  [design decisions](#decisions). Explain what changes and why in the pull
+  request, including the ADR it follows or adds when behaviour changes.
+- Add tests that demonstrate changed behaviour and catch regressions.
+  Update the documentation and examples that describe that behaviour, as
+  explained under [pull requests](#pull-requests).
+- Pass the required [build, test and lint checks](#building-and-testing)
+  in CI. Report which checks you ran locally and any you could not run.
+- Justify new dependencies and meet the [dependency requirements](#dependencies).
+  Never certify an audit without reviewing the code; record an exemption
+  explicitly when it has not been audited.
+- Contribute under the project's [Apache-2.0 license](#license).
+
+## Coding standards
+
+Match the surrounding code. Keep implementations compact, use comments to
+explain why, and write doc comments that describe what an item does.
+The same conventions are collected in [AGENTS.md](AGENTS.md#writing-code-here)
+for coding agents; they apply to human contributions too.
+
+- Rust follows the repository's rustfmt configuration and must pass
+  `cargo fmt --check` and Clippy with warnings denied. Every `unsafe` block
+  needs a `// SAFETY:` comment explaining why it is sound. Put system calls
+  that are safe for all arguments behind safe functions in `src/sys.rs`.
+- Python must pass Ruff's lint and formatting checks. Shell scripts must
+  pass ShellCheck. GitHub Actions workflows must pass actionlint and zizmor.
+  [ci.yml](.github/workflows/ci.yml) defines the commands and tool versions.
+- Keep text and `--json` output consistent. Report errors or dropped work
+  explicitly. A change to permissions, sockets, redaction or approvals
+  must update the [threat model](docs/threat-model.md) and its tests.
+
 ## Building and testing
 
 ```sh

@@ -391,6 +391,13 @@ prompt. Until then, a step failing, the timeout (120 seconds,
 prompt is never sent. A start that fails ends its error with the agent's last
 lines on stderr (`claude CLI not found`).
 
+`--mode`, `--model` and `--set` win over the profile's `mode` and `config`,
+setting by setting. The model is the agent's config option of category
+`model`, whatever its id, so `--model large` replaces a profile's
+`config = { model = "small" }`; the mode likewise. Two different values for
+one setting from the flags (`--model large --set model=small`), or from the
+profile, fail the start before anything is set.
+
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
@@ -668,7 +675,9 @@ release; the next brnr release ships it.
 ## Contributing
 
 [CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and propose a
-change. brnr has five direct dependencies; CI checks their licenses and
+change, including the [requirements for acceptable contributions](CONTRIBUTING.md#requirements-for-acceptable-contributions)
+and [coding standards](CONTRIBUTING.md#coding-standards).
+brnr has five direct dependencies; CI checks their licenses and
 advisories with cargo deny, and with cargo vet that every crate is audited
 (by Mozilla, Google and others whose audits brnr imports) or listed as an
 exemption still to audit. The [audit status](supply-chain/README.md) records

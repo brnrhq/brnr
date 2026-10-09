@@ -3,6 +3,9 @@
 Accepted (former decision 9); reviewed 2026-10-07. Implemented, telling
 the editor included (ADR 4).
 Resolves review item 6 with ADR 4.
+Amended by 58: a start's flags win over its profile's settings, setting by
+setting, the mode and model options included; one source's values that
+disagree fail the start.
 
 ## Context
 
