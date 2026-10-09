@@ -26,6 +26,9 @@ brnr's own conventions:
   category `thought_level`, and `--permission-timeout <s>`, which wins over
   the profile's `permission_timeout` as the other flags win over theirs
   (ADR 58, ADR 63).
+- `brnr queue show <s> <m>` shows one held message in full: its text,
+  whether it interrupts, and its attachments; the socket's `queue` takes
+  `show` (ADR 63).
 
 ### Changed
 
@@ -35,7 +38,7 @@ brnr's own conventions:
   `fork` and `close` are `session status`, `session fork` and
   `session close`; `send`, `cancel` and `commands` are `prompt send`,
   `prompt cancel` and `prompt commands`; `queue <s>` is `queue list <s>`
-  (with `--clear` and `--clear-context`), and `queue --drop <m>` is
+  (and `queue clear <s>`, below), and `queue --drop <m>` is
   `queue drop <s> <m>`; `pending` and `show` are `permission requests` and
   `permission show`; `log`, `watch`, `notify` and `wait` are `event log`,
   `event watch`, `event notify` and `event wait`. Flags are unchanged. A
@@ -97,6 +100,9 @@ brnr's own conventions:
   `cancelled`) and `option_kind`, the chosen option's kind, and reads
   `permission p1 allowed with allow (allow_once), by …` as text. The
   editor is told "Allowed via brnr" or "Rejected via brnr" (ADR 63).
+- **Breaking:** `queue --clear` and `--clear-context` are
+  `queue clear <s> --messages` and `--context`, and `queue clear <s>` with
+  neither drops both; `queue list` takes neither flag (ADR 63).
 
 ## [0.7.0] - 2026-10-09
 

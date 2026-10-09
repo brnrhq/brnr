@@ -101,6 +101,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     ("brnr prompt cancel $s", Turn, Succeeds),
     ("brnr queue list $s", Turn, Succeeds),
+    ("brnr queue clear $s", Turn, Says("nothing held")),
     ("brnr event watch $s", Idle, Follows("agent: readme")),
     ("brnr event log $s", Idle, Says("agent: hi")),
     // Waiting, for scripts

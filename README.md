@@ -153,7 +153,7 @@ experimental = ["send", "permission"]
 | Action | Commands | What brnr does for the editor |
 |---|---|---|
 | `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
-| `context` | `prompt send --context`, `queue list --clear-context` | Added to the editor's next prompt, shown as "Context via brnr". |
+| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr". |
 | `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
 | `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
@@ -210,7 +210,8 @@ brnr prompt send $s --context "the API key is in .env.local"   # added to the ne
 brnr prompt send $s --wait "what did you change?"              # prints the reply
 brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
 brnr prompt cancel $s              # stop the running turn (held messages are dropped and listed)
-brnr queue list $s                 # held messages and context; --clear, and brnr queue drop $s m3
+brnr queue list $s                 # held messages and context; brnr queue show $s m3: one in full
+brnr queue clear $s                # drop them (--messages, --context: only those); brnr queue drop $s m3: one
 brnr event watch $s                # live: messages, tools, plan, approvals (--events all: everything)
 brnr event log $s                  # the story so far; --last 2, --follow, and event watch's flags
 ```
@@ -235,10 +236,10 @@ A turn that ends before the agent has answered the steers into it has its
 into it.
 
 A message that never goes out is a `message_dropped` event, saying why:
-`prompt cancel` (unless `--keep-held`), `queue drop` or `queue list --clear`,
+`prompt cancel` (unless `--keep-held`), `queue drop` or `queue clear`,
 its session closing, the agent exiting, or a steer the agent didn't take.
 Context that never joins a prompt is a `context_dropped` event the same way:
-`queue list --clear-context`, its session closing, or the agent exiting
+`queue clear`, its session closing, or the agent exiting
 (`prompt cancel` keeps it for the next prompt).
 
 Every command that prints data takes `--json`, with the same data as its

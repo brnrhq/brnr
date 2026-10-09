@@ -67,8 +67,10 @@ prompt
   brnr prompt commands <session> [--json]
 
 queue
-  brnr queue list <session> [--clear] [--clear-context] [--json]
+  brnr queue list <session> [--json]
+  brnr queue show <session> <message> [--json]
   brnr queue drop <session> <message> [--json]
+  brnr queue clear <session> [--messages] [--context] [--json]
 
 permission
   brnr permission requests [<session>] [--json]
@@ -120,8 +122,10 @@ with the agent's capabilities.
 | `brnr prompt send` | Sends text/attachments to one session. Positional words form the prompt; `-` reads it from stdin. | Acknowledgment with `session`, `status`, and `message`; context-only submissions have no message ID. Status is `delivered`, `held`, `steered` or `interrupting`. With `--wait`, a completed-turn result instead. |
 | `brnr event wait` | Waits for `idle` (default), `turn`, `permission`, or process `exit`. | Condition summary or JSON for the condition/last turn. See [exit codes](#exit-codes). |
 | `brnr prompt cancel` | Cancels the turn; drops held messages unless `--keep-held`. | Acknowledgment with session, status and dropped `{message, text}` objects. Context is retained. |
-| `brnr queue list` | Shows held messages/context, after clearing them with `--clear` (messages) and `--clear-context`. | JSON has `session`, `held`, `context`, `dropped`; text displays the same queue contents. |
+| `brnr queue list` | Shows held messages and context. | JSON has `session`, `held` (`message`, `text`, `interrupt`, `attachments`, a count), `context`, `dropped`; text displays the same queue contents. |
+| `brnr queue show` | Shows one held message in full. | Its ID, whether it interrupts, its text, and each attachment (a file's URI, an image's type and size); JSON has `session`, `message`, `text`, `interrupt`, `attachments` and `blocks`, the attachments as ACP content blocks. A message not held fails. |
 | `brnr queue drop` | Drops one held message by ID. | As `queue list`, with the message in `dropped`. |
+| `brnr queue clear` | Drops the held messages (`--messages`), the held context (`--context`), or with neither flag both. | As `queue list`, with the messages in `dropped`; each dropped message or context is an event. |
 | `brnr permission requests` | Lists pending approvals across hosts, optionally filtered by session. | Table or JSON array of approval objects. |
 | `brnr permission show` | Displays one pending approval in full. | Tool/command/diff details; JSON approval object includes `request`, `session`, `owner`, `answerable`, `why_not`, `title`, `kind`, `tool_call`, `options`, `timeout_seconds`. |
 | `brnr permission allow`, `brnr permission reject` | Answers an approval with its option of kind `allow_once` (`allow_always` with `--always`) or `reject_once` (`reject_always`); `--option` names the agent's option ID instead, of the verb's side if its kind is ACP's (and the always kind with `--always`). | Acknowledgment with `session`, `request`, `outcome` (ACP's). A missing or doubled kind, or an option of the other side, fails, listing the options; nothing is answered. |
@@ -280,7 +284,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer; inspect recorded gaps/errors for lost data. |
 | `send` | `session`; optional `text`, `blocks` (ACP content-block array), `mode` (`prompt`, `steer`, `interrupt`, `context`), `replace` (boolean). | `session`, `status`, `message`; context mode returns `status:"held"` without a message ID. |
 | `cancel` | `session`; optional boolean `keep_held`. | `session`, `status`, `dropped` objects (`message`, `text`). |
-| `queue` | `session`; optional `drop` (message ID), `clear`, `clear_context` (booleans). | `session`, `held`, `context`, `dropped`. |
+| `queue` | `session`; optional `drop` (message ID), `clear`, `clear_context` (booleans); or `show` (message ID) alone. | `session`, `held`, `context`, `dropped`; with `show`, that message: `session`, `message`, `text`, `interrupt`, `attachments`, `blocks`. |
 | `subscribe` | Optional `events`: array of event names or string `"all"`. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. |
 | `pending` | None | `pending`: approval objects for the host's sessions. |
 | `allow`, `reject` | `session`, `request`; optional `always` boolean, `option` string. | `session`, `request`, `outcome`. |

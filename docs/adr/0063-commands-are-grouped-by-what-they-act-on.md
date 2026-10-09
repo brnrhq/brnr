@@ -254,6 +254,14 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
   - `adr_0063_option_must_be_on_the_verbs_side`: `--option` of the other
     side, or of the once kind with `--always`, fails; one of a kind brnr
     doesn't know goes with either verb.
+  - `adr_0063_queue_show`: `queue show` prints one held message in full, its
+    text, whether it interrupts, and its attachments, in text and `--json`
+    (the content blocks), and drops nothing; a message not held fails, and
+    the socket's `show` goes alone.
+  - `adr_0063_queue_clear_flags`: `queue clear --messages` drops the held
+    messages only, `--context` the held context only, and both flags or
+    neither drop both, each with its event; `queue list` takes neither
+    `--clear` nor `--clear-context`.
 - [tests/security.rs](../../tests/security.rs)
   - `adr_0063_timeout_rejects_once_else_cancels_the_turn`: the timeout
     answers `reject_once`; without it, `session/cancel` goes first and the
@@ -262,4 +270,4 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and
 `--include`; `session delete` with and without `--purge`, and an editor's
-delete through `brnr acp`; `queue clear`'s flags.
+delete through `brnr acp`.

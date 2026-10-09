@@ -98,8 +98,10 @@ prompt
   brnr prompt commands <session> [--json]
 
 queue
-  brnr queue list <session> [--clear] [--clear-context] [--json]
+  brnr queue list <session> [--json]
+  brnr queue show <session> <message> [--json]
   brnr queue drop <session> <message> [--json]
+  brnr queue clear <session> [--messages] [--context] [--json]
 
 permission
   brnr permission requests [<session>] [--json]
@@ -159,7 +161,9 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("prompt", Some("cancel")) => talk::cancel(rest),
         ("prompt", Some("commands")) => settings::commands(rest),
         ("queue", Some("list")) => talk::queue_list(rest),
+        ("queue", Some("show")) => talk::queue_show(rest),
         ("queue", Some("drop")) => talk::queue_drop(rest),
+        ("queue", Some("clear")) => talk::queue_clear(rest),
         ("permission", Some("requests")) => done(pending(rest)),
         ("permission", Some("show")) => show::show(rest),
         ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),

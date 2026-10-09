@@ -136,8 +136,9 @@ brnr prompt cancel $s --json
 - `--interrupt` cancels the running turn and sends the message ahead of what
   is held.
 - `--context` adds text to the next prompt, without a turn of its own.
-- `queue list` lists what is held; `brnr queue drop $s <message>` and
-  `queue list --clear` drop it.
+- `queue list` lists what is held, and `brnr queue show $s <message>` one
+  message in full; `brnr queue drop $s <message>` drops one, and
+  `brnr queue clear $s` all of it (`--messages` or `--context`: only those).
 - `prompt cancel` stops the running turn and drops what is held (`dropped` lists
   them; `--keep-held` keeps them). Each dropped message is one you sent and
   the worker never got: say so if it mattered.

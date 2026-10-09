@@ -1,5 +1,6 @@
 //! Starting sessions and talking to them: `session new` and `resume`,
-//! `prompt send`, `event wait`, `prompt cancel`, and `queue list` and `drop`.
+//! `prompt send`, `event wait`, `prompt cancel`, and `queue list`, `show`,
+//! `drop` and `clear`.
 //!
 //! `session new --wait` and `send --wait` print the agent's reply and exit
 //! with the turn's result; `wait` waits for a session to be idle (or for the
@@ -919,39 +920,80 @@ pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `queue list`: the held messages and context, after clearing them with
-/// `--clear` and `--clear-context`.
+/// `queue list`: the held messages and context.
 pub(super) fn queue_list(args: &[String]) -> Result<ExitCode, String> {
-    let mut arg = None;
-    let mut json_out = false;
-    let mut req = json!({ "cmd": "queue" });
-    for a in args {
-        match a.as_str() {
-            "--clear" => req["clear"] = json!(true),
-            "--clear-context" => req["clear_context"] = json!(true),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
+    let (positional, json_out) = queue_args(args, &[])?;
+    let [arg] = positional[..] else { return Err(USAGE.to_owned()) };
+    queue(arg, json!({ "cmd": "queue" }), json_out)
+}
+
+/// `queue show <session> <message>`: one held message in full, its text,
+/// whether it interrupts, and its attachments.
+pub(super) fn queue_show(args: &[String]) -> Result<ExitCode, String> {
+    let (positional, json_out) = queue_args(args, &[])?;
+    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
+    let hosts = discover()?;
+    let (host, session) = running_session(&hosts, arg)?;
+    let response = call(host, &json!({ "cmd": "queue", "session": session, "show": message }))?;
+    if json_out {
+        print_json(&response_json(response))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let how = if response["interrupt"] == true { "interrupt" } else { "after turn" };
+    outln!("{} ({how}), session {session}", text(&response["message"]));
+    if let Some(t) = response["text"].as_str().filter(|t| !t.is_empty()) {
+        outln!("{t}");
+    }
+    for block in response["blocks"].as_array().into_iter().flatten() {
+        match block["type"].as_str() {
+            Some("resource_link") => outln!("file: {}", text(&block["uri"])),
+            Some("image") => {
+                let data = block["data"].as_str().unwrap_or_default();
+                let pad = data.bytes().rev().take_while(|&b| b == b'=').count();
+                let bytes = (data.len() / 4 * 3).saturating_sub(pad);
+                outln!("image: {}, {bytes} bytes", text(&block["mimeType"]));
+            }
+            Some("text") => outln!("text: {}", text(&block["text"])),
+            _ => outln!("{block}"),
         }
     }
-    queue(&arg.ok_or(USAGE)?, req, json_out)
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `queue drop <session> <message>`: one held message dropped, and what is
 /// still held.
 pub(super) fn queue_drop(args: &[String]) -> Result<ExitCode, String> {
+    let (positional, json_out) = queue_args(args, &[])?;
+    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
+    queue(arg, json!({ "cmd": "queue", "drop": message }), json_out)
+}
+
+/// `queue clear <session> [--messages] [--context]`: the held messages, the
+/// held context, or with neither flag both, dropped; and what is left.
+pub(super) fn queue_clear(args: &[String]) -> Result<ExitCode, String> {
+    let (positional, json_out) = queue_args(args, &["--messages", "--context"])?;
+    let [arg] = positional[..] else { return Err(USAGE.to_owned()) };
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    let (messages, context) = (has("--messages"), has("--context"));
+    let neither = !messages && !context;
+    let req = json!({ "cmd": "queue", "clear": messages || neither, "clear_context": context || neither });
+    queue(arg, req, json_out)
+}
+
+/// A queue command's positional arguments and `--json`, refusing any other
+/// option than `flags`.
+fn queue_args<'a>(args: &'a [String], flags: &[&str]) -> Result<(Vec<&'a str>, bool), String> {
     let mut positional = Vec::new();
     let mut json_out = false;
     for a in args {
         match a.as_str() {
             "--json" => json_out = true,
+            flag if flags.contains(&flag) => {}
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => positional.push(a),
+            _ => positional.push(a.as_str()),
         }
     }
-    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
-    queue(arg, json!({ "cmd": "queue", "drop": message }), json_out)
+    Ok((positional, json_out))
 }
 
 /// Sends `req`, the socket's `queue`, for session `arg`, and prints what it

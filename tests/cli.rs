@@ -5,13 +5,14 @@
 mod common;
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::process::Stdio;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use common::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn code(out: &std::process::Output) -> i32 {
     out.status.code().unwrap_or(-1)
@@ -321,14 +322,14 @@ fn adr_0020_queue_lists_and_drops() {
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
     let out = env.ok(&["queue", "drop", "sess-1", "m2"]);
     assert_eq!(out, "dropped m2: first\nm3 (after turn): second\ncontext: some context\n");
-    let out = env.ok(&["queue", "list", "sess-1", "--clear-context"]);
+    let out = env.ok(&["queue", "clear", "sess-1", "--context"]);
     assert_eq!(out, "m3 (after turn): second\n");
     let json: Value =
         serde_json::from_str(&env.ok(&["queue", "list", "sess-1", "--json"])).unwrap();
     assert_eq!(json["held"][0]["message"], "m3");
     assert!(env.fails(&["queue", "drop", "sess-1", "m9"]).contains("no held message m9"));
     assert_eq!(
-        env.ok(&["queue", "list", "sess-1", "--clear"]),
+        env.ok(&["queue", "clear", "sess-1", "--messages"]),
         "dropped m3: second\nnothing held\n"
     );
     let dropped: Vec<(Value, Value)> = events(&env, "sess-1")
@@ -337,6 +338,109 @@ fn adr_0020_queue_lists_and_drops() {
         .map(|e| (e["message"].clone(), e["by"].clone()))
         .collect();
     assert_eq!(dropped, [("m2".into(), "queue".into()), ("m3".into(), "queue".into())]);
+}
+
+/// `queue show` shows one held message in full: its text, whether it
+/// interrupts, and its attachments, the same in text and `--json` (P5).
+#[test]
+fn adr_0063_queue_show() {
+    // The interrupt's cancel isn't answered while the test runs: it stays held.
+    let env = Env::new("c-queue-show").agent("CANCEL_DELAY", "60");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let image = env.dir.join("dot.png");
+    fs::write(&image, b"\x89PNG fake").unwrap();
+    let file = env.dir.join("notes.txt");
+    fs::write(&file, "notes").unwrap();
+    let (file, image) = (file.to_str().unwrap(), image.to_str().unwrap());
+    env.ok(&["prompt", "send", "sess-1", "--file", file, "--image", image, "two\nlines"]);
+    env.ok(&["prompt", "send", "sess-1", "--interrupt", "stop"]);
+    let json: Value =
+        serde_json::from_str(&env.ok(&["queue", "show", "sess-1", "m2", "--json"])).unwrap();
+    let uri = json["blocks"][0]["uri"].as_str().unwrap();
+    assert!(uri.starts_with("file:///") && uri.ends_with("/notes.txt"), "{json}");
+    assert_eq!((&json["session"], &json["message"]), (&"sess-1".into(), &"m2".into()));
+    assert_eq!((&json["text"], &json["interrupt"]), (&"two\nlines".into(), &false.into()));
+    assert_eq!(json["attachments"], 2);
+    assert_eq!(
+        json["blocks"][0],
+        json!({ "type": "resource_link", "uri": uri, "name": "notes.txt" })
+    );
+    assert_eq!(
+        json["blocks"][1],
+        json!({ "type": "image", "mimeType": "image/png", "data": "iVBORyBmYWtl" })
+    );
+    let out = env.ok(&["queue", "show", "sess-1", "m2"]);
+    let says =
+        "m2 (after turn), session sess-1\ntwo\nlines\nfile: {uri}\nimage: image/png, 9 bytes\n";
+    assert_eq!(out, says.replace("{uri}", uri));
+    let out = env.ok(&["queue", "show", "sess-1", "m3"]);
+    assert_eq!(out, "m3 (interrupt), session sess-1\nstop\n");
+    assert!(env.fails(&["queue", "show", "sess-1", "m9"]).contains("no held message m9"));
+    let err = env.fails(&["queue", "show", "sess-1"]);
+    assert!(err.starts_with("usage:\n  brnr queue show <session> <message>"), "{err}");
+    // The socket's show goes alone: with a drop, it does neither.
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(conn, r#"{{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}}"#).unwrap();
+    let mut answer = String::new();
+    BufReader::new(conn).read_line(&mut answer).unwrap();
+    let answer: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer["error"], "queue's show takes no drop or clear", "{answer}");
+    // Showing drops nothing.
+    let out = env.ok(&["queue", "list", "sess-1"]);
+    assert_eq!(out, "m3 (interrupt): stop\nm2 (after turn): two\nlines\n");
+    assert!(!events(&env, "sess-1").iter().any(|e| e["event"] == "message_dropped"));
+}
+
+/// `queue clear` drops the held messages with `--messages`, the held context
+/// with `--context`, and both with both flags or neither; each dropped one
+/// is an event, and `queue list` takes neither flag (ADR 63, P9).
+#[test]
+fn adr_0063_queue_clear_flags() {
+    let env = Env::new("c-queue-clear");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let mut n = 0;
+    let mut hold = || {
+        n += 1;
+        env.ok(&["prompt", "send", "sess-1", &format!("message {n}")]);
+        env.ok(&["prompt", "send", "sess-1", "--context", &format!("context {n}")]);
+        n
+    };
+    let n = hold();
+    let out = env.ok(&["queue", "clear", "sess-1", "--messages"]);
+    assert_eq!(out, format!("dropped m{}: message {n}\ncontext: context {n}\n", n + 1));
+    let out = env.ok(&["queue", "clear", "sess-1", "--context"]);
+    assert_eq!(out, "nothing held\n");
+    let n = hold();
+    let out = env.ok(&["queue", "clear", "sess-1", "--context"]);
+    assert_eq!(out, format!("m{} (after turn): message {n}\n", n + 1));
+    env.ok(&["queue", "clear", "sess-1", "--messages"]);
+    for both in [
+        &["queue", "clear", "sess-1"][..],
+        &["queue", "clear", "sess-1", "--messages", "--context"],
+    ] {
+        let n = hold();
+        let json: Value = serde_json::from_str(&env.ok(&[both, &["--json"]].concat())).unwrap();
+        assert_eq!(json["dropped"][0]["text"], format!("message {n}"), "{both:?}");
+        assert_eq!((&json["held"], &json["context"]), (&json!([]), &json!([])), "{both:?}");
+    }
+    let dropped = |event: &str| -> Vec<Value> {
+        (events(&env, "sess-1").into_iter())
+            .filter(|e| e["event"] == event)
+            .map(|e| e["text"].clone())
+            .collect()
+    };
+    let texts =
+        |what: &str| -> Vec<Value> { (1..=4).map(|n| format!("{what} {n}").into()).collect() };
+    assert_eq!(dropped("message_dropped"), texts("message"));
+    assert_eq!(dropped("context_dropped"), texts("context"));
+    for flag in ["--clear", "--clear-context"] {
+        let err = env.fails(&["queue", "list", "sess-1", flag]);
+        assert_eq!(err, format!("brnr: unknown option: {flag}\n"));
+    }
+    assert!(env.fails(&["queue", "clear", "sess-1", "--all"]).contains("unknown option: --all"));
 }
 
 // ---- seeing --------------------------------------------------------------
@@ -1159,13 +1263,13 @@ fn adr_0020_idle_close_is_an_event() {
 }
 
 /// Context held for a next prompt that won't come is told as it goes: by
-/// `queue --clear-context`, a close, or the process exiting (ADR 20).
+/// `queue clear --context`, a close, or the process exiting (ADR 20).
 #[test]
 fn adr_0020_dropped_context_is_an_event() {
     let env = Env::new("c-ctxdrop");
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "--context", "first"]);
-    env.ok(&["queue", "list", "sess-1", "--clear-context"]);
+    env.ok(&["queue", "clear", "sess-1", "--context"]);
     env.ok(&["session", "fork", "sess-1"]);
     env.ok(&["prompt", "send", "sess-1", "--context", "second"]);
     env.ok(&["session", "close", "sess-1"]);
@@ -2463,8 +2567,11 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
         assert!(usage.starts_with(&format!("usage:\n  brnr {group} ")), "{usage}");
         assert_eq!(env.fails(&[group]), usage, "{group} without a command");
     }
-    let queue = "usage:\n  brnr queue list <session> [--clear] [--clear-context] [--json]\n  \
-                 brnr queue drop <session> <message> [--json]\n(brnr --help for every command)\n";
+    let queue = "usage:\n  brnr queue list <session> [--json]\n  \
+                 brnr queue show <session> <message> [--json]\n  \
+                 brnr queue drop <session> <message> [--json]\n  \
+                 brnr queue clear <session> [--messages] [--context] [--json]\n\
+                 (brnr --help for every command)\n";
     assert_eq!(env.ok(&["queue", "--help"]), queue);
     let err = env.fails(&["queue", "nope"]);
     assert_eq!(err, format!("brnr: unknown command: queue nope\n{queue}"));

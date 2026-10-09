@@ -2472,7 +2472,7 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     let actions: [(&[&str], &str); 10] = [
         (&["prompt", "send", "sess-1", "hi"], "send"),
         (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
-        (&["queue", "list", "sess-1", "--clear-context"], "context"),
+        (&["queue", "clear", "sess-1", "--context"], "context"),
         (&["prompt", "cancel", "sess-1"], "cancel"),
         (&["permission", "allow", "sess-1", "p1"], "permission"),
         (&["permission", "reject", "sess-1", "p1"], "permission"),
@@ -2612,7 +2612,7 @@ fn adr_0005_context_joins_the_editors_next_prompt() {
     let err = env.fails(&["prompt", "send", "sess-1", "hi"]);
     assert!(err.contains("`send` on an editor's session is experimental"), "{err}");
     env.ok(&["prompt", "send", "sess-1", "--context", "dropped"]);
-    env.ok(&["queue", "list", "sess-1", "--clear-context"]);
+    env.ok(&["queue", "clear", "sess-1", "--context"]);
     env.ok(&["prompt", "send", "sess-1", "--context", "kept"]);
     writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
     let echo = update(&mut from_agent, "tool_call");

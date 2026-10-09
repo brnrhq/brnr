@@ -22,7 +22,8 @@
 //! - `cancel` `{session, keep_held?}`: cancel the running turn; held
 //!   messages are dropped (and listed) unless `keep_held`
 //! - `queue` `{session, drop?, clear?, clear_context?}`: the held messages
-//!   and context, after removing what was asked
+//!   and context, after removing what was asked; `{session, show}`: the held
+//!   message `show` in full, its content `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
@@ -42,7 +43,7 @@
 //!   agent's process group)
 //!
 //! On an editor's session every command that acts on it (`send`, `cancel`,
-//! `queue --clear-context`, `allow`, `reject`, `set_config` and `close`) is
+//! `queue clear --context`, `allow`, `reject`, `set_config` and `close`) is
 //! experimental: refused unless the editor's profile enables it (ADR 4, see
 //! experimental.rs). Bridges observe it freely.
 //!
@@ -769,8 +770,29 @@ impl Host {
         Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
     }
 
+    /// `queue`: one held message in full (`show`), or the held messages and
+    /// context after dropping one (`drop`) or clearing them (`clear`,
+    /// `clear_context`).
     fn queue(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        if let Some(id) = req["show"].as_str() {
+            if ["drop", "clear", "clear_context"].iter().any(|k| req.get(k).is_some()) {
+                return Err("queue's show takes no drop or clear".into());
+            }
+            let s = &self.sessions[i];
+            let n =
+                s.held.iter().position(|h| h.id == id).ok_or(format!("no held message {id}"))?;
+            let (h, interrupt) = (&s.held[n], n < s.interrupts);
+            return Ok(json!({
+                "ok": true,
+                "session": s.id,
+                "message": h.id,
+                "text": h.text,
+                "interrupt": interrupt,
+                "attachments": h.blocks.len(),
+                "blocks": h.blocks,
+            }));
+        }
         if req["clear_context"].as_bool() == Some(true) {
             self.check_experimental(Experimental::Context)?;
         }
