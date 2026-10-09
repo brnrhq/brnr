@@ -110,24 +110,6 @@ brnr's own conventions:
   (ADR 54).
 - **Breaking:** a line over 32 MiB from the agent isn't interpreted:
   headless it is dropped, and an editor gets it byte for byte (ADR 51).
-- `brnr start` commits once its ready report is written: interrupted before
-  that, the process stops and the prompt is never sent (ADR 7).
-- Backpressure replaces the 30 s timeout on the editor link and the agent's
-  stdin; signals reach the agent on a link of their own (ADR 2, 6).
-- One long message doesn't cut off a reader that keeps up, also one that
-  asked for `acp`. A reader that stopped reading is cut off soon after
-  16 MiB, or 64 MiB of lines longer than that (ADR 49, 60).
-- `log` of a running session waits, up to 5 s, for its process to write
-  what it has recorded, and an exiting process stays listed until its
-  transcript has its `exited` (ADR 48).
-- Past 64 MiB waiting for a slow disk, the logger skips records and the
-  transcript says `records-skipped` (ADR 22).
-- `close` cancels a running turn first (ADR 16).
-- ACP is read with `agent-client-protocol-schema`'s types, and every RFC 8259
-  line is read, lone surrogates and deep nesting too; the bytes are still
-  forwarded untouched (ADR 26, 43).
-- A GitHub release's notes are its section of this file, not the titles of
-  the pull requests it merged (ADR 40).
 - **Breaking:** between `brnr acp` and its process, the process sends `EOF`
   once the agent's stdout ends, and a `STDERR` frame for each read of the
   agent's stderr rather than for each line. Run both from the same version,
@@ -151,6 +133,24 @@ brnr's own conventions:
 - **Breaking:** events from a load's replay that brnr records carry
   `"replayed": true`, and text shows them as `(replayed) …`. A replayed
   `user_message` has no `by` and no message id (ADR 57).
+- `brnr start` commits once its ready report is written: interrupted before
+  that, the process stops and the prompt is never sent (ADR 7).
+- Backpressure replaces the 30 s timeout on the editor link and the agent's
+  stdin; signals reach the agent on a link of their own (ADR 2, 6).
+- One long message doesn't cut off a reader that keeps up, also one that
+  asked for `acp`. A reader that stopped reading is cut off soon after
+  16 MiB, or 64 MiB of lines longer than that (ADR 49, 60).
+- `log` of a running session waits, up to 5 s, for its process to write
+  what it has recorded, and an exiting process stays listed until its
+  transcript has its `exited` (ADR 48).
+- Past 64 MiB waiting for a slow disk, the logger skips records and the
+  transcript says `records-skipped` (ADR 22).
+- `close` cancels a running turn first (ADR 16).
+- ACP is read with `agent-client-protocol-schema`'s types, and every RFC 8259
+  line is read, lone surrogates and deep nesting too; the bytes are still
+  forwarded untouched (ADR 26, 43).
+- A GitHub release's notes are its section of this file, not the titles of
+  the pull requests it merged (ADR 40).
 
 ### Removed
 
