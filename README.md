@@ -466,6 +466,13 @@ mode (`strict = true` in a profile, `--strict` on `acp` and `start`) is stable
 ACP to the letter: no steering, no fork, the editor's capabilities passed
 through, and no experimental actions. What it refuses says why.
 
+Either way, brnr speaks ACP version 1. A `brnr start` (or `brnr sessions`)
+whose agent answers `initialize` with another version, or one brnr can't
+read, fails with that, before anything else is sent, and the agent is
+stopped ([ADR 54](docs/adr/0054-acp-version-1.md)). An editor's process
+passes the editor's `initialize` and the agent's answer through: the version
+they agree on is theirs.
+
 How brnr's processes share sessions isn't protocol, and strict mode doesn't
 change it: it has defaults that protect you, and feature flags in a profile's
 editor part to change them. The one so far is `shared_sessions`: the editor

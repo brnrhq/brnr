@@ -36,6 +36,7 @@ use agent_client_protocol_schema::v1::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+pub use agent_client_protocol_schema::ProtocolVersion;
 pub use agent_client_protocol_schema::v1::{
     AgentCapabilities, AuthMethod, ContentBlock, Error, ErrorCode, ListSessionsResponse, MessageId,
     NewSessionResponse, PermissionOptionKind, SessionConfigOptionValue, SessionInfo, SessionUpdate,
@@ -70,6 +71,35 @@ pub fn stable(method: &str) -> bool {
 /// code and a message).
 pub fn error_message(error: &Value) -> String {
     read::<Error>(error).map_or_else(|| error.to_string(), |e| e.message)
+}
+
+/// The ACP version brnr speaks as a client, the one its `initialize` asks
+/// for (ADR 54).
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+
+/// Whether the agent's answer to brnr's `initialize` chose the version brnr
+/// speaks. An agent that doesn't speak the version asked for answers with
+/// one it does; a client that doesn't speak that one closes the connection
+/// and says so (ACP's initialization), rather than go on (ADR 54).
+pub fn check_protocol_version(result: &Value) -> Result<(), String> {
+    let chosen = &result["protocolVersion"];
+    match read::<ProtocolVersion>(chosen) {
+        Some(version) if version == PROTOCOL_VERSION => Ok(()),
+        Some(version) => Err(format!(
+            "the agent speaks ACP version {version}; brnr speaks only version {PROTOCOL_VERSION}"
+        )),
+        None => {
+            let mut shown = chosen.to_string();
+            if let Some((cut, _)) = shown.char_indices().nth(40) {
+                shown.truncate(cut);
+                shown.push('…');
+            }
+            Err(format!(
+                "the agent's answer to initialize has no ACP version brnr can read \
+                 (protocolVersion: {shown})"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
