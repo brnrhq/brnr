@@ -4,6 +4,10 @@ Accepted 2026-10-08. Implemented. Amends 6 (what a reader holds beside the
 cap), 10 (the agent's stderr goes on in pieces) and 26 (a line too long to
 read). Resolves #58.
 
+Amended by 62: the agent's stderr goes on as each read brings it, up to
+64 KiB, a line or not; a piece of 64 KiB is what the host log records of a
+longer line.
+
 ## Context
 
 ADR 6 caps what is on its way through the host at 16 MiB, counted in bytes,

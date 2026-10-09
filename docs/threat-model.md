@@ -109,6 +109,7 @@ written for this document.
 |---|---|---|
 | The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too; the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it | `security.rs`: `adr_0002_acp_passes_bytes_unchanged` |
 | The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0002_acp_passes_stderr_and_the_exit_status` |
+| The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 62). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0062_the_editors_stdout_ends_with_the_agents`, `adr_0062_stderr_comes_as_it_is_written`, `adr_0062_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0062_brnrs_own_lines_end_with_the_agents_stdout` |
 | The named changes: the editor's `fs` and `terminal` capabilities are dropped, but in strict mode (ADR 2, ADR 41). | `drop_capabilities` (src/host/acp.rs) | `headless.rs`: `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode` |
 | The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0042_shared_sessions_let_an_editor_load_a_held_session` |
 | Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped` |
@@ -205,6 +206,13 @@ What brnr doesn't enforce, or doesn't test, today.
   where `$TMPDIR` is shared (`/tmp` on Linux), another user who creates that
   path first makes brnr refuse to start until it is removed. They gain no
   access.
+- **`brnr acp`'s stdout and stderr share one connection.** They come
+  through the host in order, under one 16 MiB cap, rather than as two
+  pipes: an editor that stops reading one eventually holds up the agent's
+  writes to the other, and an editor closing its stderr gives the agent no
+  EPIPE. The editor's stderr ends when `brnr acp` exits, not when the
+  agent's does (ADR 62), which `adr_0062_stdout_and_stderr_end_on_their_own`
+  checks; the rest isn't tested.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 38); that directory is trusted as
   `PATH` is.

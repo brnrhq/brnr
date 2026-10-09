@@ -3,8 +3,9 @@
 //! it is sound there.
 
 use std::fs::File;
+use std::io;
 use std::mem::ManuallyDrop;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 
 use libc::{c_int, pid_t};
 
@@ -31,6 +32,24 @@ pub fn stdio(fd: RawFd) -> ManuallyDrop<File> {
     // life (io::stdout() writes to fd 1 on the same terms), and ManuallyDrop
     // keeps this File from closing one: it only borrows it.
     ManuallyDrop::new(unsafe { File::from_raw_fd(fd) })
+}
+
+/// Ends stdout for whoever reads it, as closing it would: fd 1 is left open
+/// on /dev/null, so that no file opened later is taken for stdout, and what
+/// writes to it then writes nowhere.
+pub fn end_stdout() -> io::Result<()> {
+    let null = File::options().write(true).open("/dev/null")?;
+    loop {
+        // SAFETY: dup2(2) takes no pointers; `null` is open, and fd 1 is the
+        // process's (see `stdio`): what holds it goes on to hold /dev/null.
+        if unsafe { libc::dup2(null.as_raw_fd(), 1) } >= 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
 }
 
 /// The kernel's name, release and machine (`uname -srm`).

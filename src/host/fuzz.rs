@@ -112,6 +112,16 @@ impl Harness {
         self.host.agent_line(line);
     }
 
+    /// The agent's stdout ending, after its last line.
+    pub fn agent_stdout_eof(&mut self) {
+        self.host.handle(super::Ev::AgentStdoutEof);
+    }
+
+    /// Bytes of the agent's stderr, as a read returned them.
+    pub fn agent_stderr(&mut self, bytes: &[u8]) {
+        self.host.handle(super::Ev::AgentStderr(bytes.to_vec()));
+    }
+
     /// Time passes: unanswered permission requests and idle sessions time
     /// out.
     pub fn tick(&mut self) {
@@ -162,6 +172,41 @@ mod tests {
         );
         assert!(h.sent().agent[0].windows(11).any(|w| w == b"session/new"));
         h.tick();
+    }
+
+    #[test]
+    fn adr_0062_brnrs_own_lines_end_with_the_agents_stdout() {
+        let mut h = Harness::editor(false, false);
+        let update = serde_json::json!({ "sessionUpdate": "agent_message_chunk" });
+        h.host.update_editor("sess-1", update.clone());
+        assert_eq!(h.sent().editor.len(), 1);
+        h.agent_line(b"last\n");
+        h.agent_stdout_eof();
+        // A message sent from outside, after: nothing follows the end.
+        h.host.update_editor("sess-1", update);
+        let sent = h.sent().editor;
+        assert_eq!(sent, vec![(frame::DATA, b"last\n".to_vec()), (frame::EOF, Vec::new())]);
+        // Stderr and the exit status still go.
+        h.agent_stderr(b"x");
+        assert_eq!(h.sent().editor, vec![(frame::STDERR, b"x".to_vec())]);
+    }
+
+    #[test]
+    fn adr_0062_stderr_goes_on_before_its_line_ends() {
+        let mut h = Harness::headless(false, None);
+        let (link, editor) = mpsc::channel();
+        h.host.link = Some(link);
+        h.agent_stderr(b"first\nlogin ");
+        h.agent_stderr(b"required: ");
+        let sent: Vec<_> = editor.try_iter().collect();
+        let want =
+            [(frame::STDERR, b"first\nlogin ".to_vec()), (frame::STDERR, b"required: ".to_vec())];
+        assert_eq!(sent, want);
+        // The line it is in the middle of ends a failed start's error too.
+        let error = h.host.with_stderr("timed out");
+        assert!(error.ends_with("stderr:\n  first\n  login required: "), "{error}");
+        h.agent_stderr(b"ok\n");
+        assert!(h.host.with_stderr("timed out").ends_with("\n  login required: ok"));
     }
 
     #[test]

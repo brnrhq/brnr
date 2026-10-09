@@ -11,7 +11,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -512,4 +513,140 @@ fn adr_0002_acp_passes_stderr_and_the_exit_status() {
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert_eq!(stderr(&out), format!("{text}\n"));
     assert!(out.stdout.is_empty());
+}
+
+/// How long a stream gets to bring what a test waits for: far more than it
+/// takes, so that only a stream that waits for something else fails.
+const WITHIN: Duration = Duration::from_secs(10);
+
+/// An editor running `brnr acp -- <agent>`, its stdin held open, its stdout
+/// and stderr read on threads of their own: what each brings as it comes,
+/// `None` at EOF. The agent is a Python script that waits for `gate(n)`,
+/// a file in the test's directory, at most 30 s (then exits 99).
+struct Editor {
+    acp: Child,
+    _stdin: ChildStdin,
+    stdout: Receiver<Option<Vec<u8>>>,
+    stderr: Receiver<Option<Vec<u8>>>,
+}
+
+impl Editor {
+    fn new(env: &Env, agent: &str) -> Editor {
+        let path = env.dir.join("agent.py");
+        let gate = "def gate(n):\n    \
+                    for _ in range(600):\n        \
+                    if os.path.exists(f'gate{n}'): return\n        \
+                    time.sleep(0.05)\n    \
+                    sys.exit(99)\n";
+        script(&path, &format!("#!/usr/bin/env python3\nimport os, sys, time\n{gate}{agent}"));
+        let mut acp = (env.brnr(&["acp", "--", path.to_str().unwrap()]))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Editor {
+            _stdin: acp.stdin.take().unwrap(),
+            stdout: reader(acp.stdout.take().unwrap()),
+            stderr: reader(acp.stderr.take().unwrap()),
+            acp,
+        }
+    }
+
+    fn running(&mut self) -> bool {
+        self.acp.try_wait().unwrap().is_none()
+    }
+
+    /// `brnr acp`'s exit code, within WITHIN.
+    fn code(&mut self) -> Option<i32> {
+        assert!(wait_exit(&mut self.acp, WITHIN), "acp didn't exit");
+        self.acp.wait().unwrap().code()
+    }
+}
+
+/// What `from` brings, as it comes; `None` at EOF.
+fn reader(mut from: impl std::io::Read + Send + 'static) -> Receiver<Option<Vec<u8>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = from.read(&mut buf) {
+            let _ = tx.send(Some(buf[..n].to_vec()));
+        }
+        let _ = tx.send(None);
+    });
+    rx
+}
+
+/// The stream brings `want` next, and no more for now.
+fn brings(stream: &Receiver<Option<Vec<u8>>>, want: &[u8]) {
+    let mut got = Vec::new();
+    while got.len() < want.len() {
+        match stream.recv_timeout(WITHIN) {
+            Ok(Some(bytes)) => got.extend(bytes),
+            Ok(None) => panic!("EOF after {:?}", String::from_utf8_lossy(&got)),
+            Err(_) => panic!("only {:?} within {WITHIN:?}", String::from_utf8_lossy(&got)),
+        }
+    }
+    assert_eq!(String::from_utf8_lossy(&got), String::from_utf8_lossy(want));
+}
+
+/// The stream ends next.
+fn ends(stream: &Receiver<Option<Vec<u8>>>) {
+    match stream.recv_timeout(WITHIN) {
+        Ok(None) => {}
+        Ok(Some(bytes)) => panic!("{:?}, not EOF", String::from_utf8_lossy(&bytes)),
+        Err(_) => panic!("no EOF within {WITHIN:?}"),
+    }
+}
+
+/// An agent that closes its stdout and runs on: the editor sees its stdout
+/// end then, not when the agent exits, and the agent's stderr after it.
+#[test]
+fn adr_0062_the_editors_stdout_ends_with_the_agents() {
+    let env = Env::new("s-out-eof");
+    let agent = "os.close(1)\ngate(1)\nos.write(2, b'after stdout')\nsys.exit(5)\n";
+    let mut editor = Editor::new(&env, agent);
+    ends(&editor.stdout);
+    assert!(editor.running(), "stdout ended only as acp exited");
+    fs::write(env.dir.join("gate1"), "").unwrap();
+    brings(&editor.stderr, b"after stdout");
+    ends(&editor.stderr);
+    assert_eq!(editor.code(), Some(5));
+}
+
+/// What the agent writes on stderr comes out of `brnr acp`'s as soon as it
+/// is written, a line or not, and its last bytes once, whole, before the
+/// exit status.
+#[test]
+fn adr_0062_stderr_comes_as_it_is_written() {
+    let env = Env::new("s-err-part");
+    let agent = "os.write(2, b'login required: ')\ngate(1)\nos.write(2, b'ok')\nsys.exit(3)\n";
+    let mut editor = Editor::new(&env, agent);
+    brings(&editor.stderr, b"login required: ");
+    assert!(editor.running());
+    fs::write(env.dir.join("gate1"), "").unwrap();
+    brings(&editor.stderr, b"ok");
+    ends(&editor.stderr);
+    ends(&editor.stdout);
+    assert_eq!(editor.code(), Some(3));
+}
+
+/// The agent's stdout and stderr live on their own: stdout carries on after
+/// stderr has closed, and ends while the agent runs on. The editor's stderr,
+/// `brnr acp`'s own as well, ends as it exits.
+#[test]
+fn adr_0062_stdout_and_stderr_end_on_their_own() {
+    let env = Env::new("s-lifetimes");
+    let agent = "os.write(2, b'a')\nos.close(2)\nos.write(1, b'line\\n')\ngate(1)\n\
+                 os.close(1)\ngate(2)\nsys.exit(4)\n";
+    let mut editor = Editor::new(&env, agent);
+    brings(&editor.stderr, b"a");
+    brings(&editor.stdout, b"line\n");
+    fs::write(env.dir.join("gate1"), "").unwrap();
+    ends(&editor.stdout);
+    assert!(editor.running());
+    assert_eq!(editor.stderr.try_recv(), Err(TryRecvError::Empty));
+    fs::write(env.dir.join("gate2"), "").unwrap();
+    ends(&editor.stderr);
+    assert_eq!(editor.code(), Some(4));
 }

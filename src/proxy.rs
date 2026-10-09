@@ -5,15 +5,16 @@
 //! profile and the agent into the host's start request (see request.rs),
 //! starts the host (see host/) in a session of its own, which runs the
 //! agent, and from then on only relays: stdin and stdout carry ACP to and
-//! from the host, the agent's stderr comes out of the proxy's stderr,
-//! signals the proxy receives are handed to the host, and the proxy exits
-//! with the agent's exact wait status. Signals, and its stdout failing, go
-//! on a socket of their own, the signal link (see frame.rs): they don't wait
-//! behind the editor's input while the agent isn't reading it, as they
-//! wouldn't with the agent run directly. The agent never holds the editor's
-//! file descriptors and is out of reach of the editor's process group and
-//! process tree; when the proxy goes, the host stops it as if the editor had
-//! run it.
+//! from the host, stdout ending when the agent's does, however long the
+//! agent runs on; the agent's stderr comes out of the proxy's stderr as it
+//! comes, newline or not; signals the proxy receives are handed to the host;
+//! and the proxy exits with the agent's exact wait status. Signals, and its
+//! stdout failing, go on a socket of their own, the signal link (see
+//! frame.rs): they don't wait behind the editor's input while the agent
+//! isn't reading it, as they wouldn't with the agent run directly. The
+//! agent never holds the editor's file descriptors and is out of reach of
+//! the editor's process group and process tree; when the proxy goes, the
+//! host stops it as if the editor had run it.
 
 use std::env;
 use std::ffi::OsString;
@@ -187,6 +188,14 @@ fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
                     // agent's stdout, as a closed pipe would.
                     stdout_open = false;
                     send(&signal_link, frame::STDOUT_CLOSED, &[]);
+                }
+            }
+            // The agent's stdout has ended: ours does, for the editor to
+            // see EOF now rather than when we exit (ADR 62).
+            frame::EOF => {
+                stdout_open = false;
+                if let Err(err) = sys::end_stdout() {
+                    eprintln!("brnr acp: closing stdout: {err}");
                 }
             }
             frame::STDERR => {
