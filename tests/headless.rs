@@ -789,9 +789,11 @@ fn adr_0006_slow_watcher_is_disconnected() {
         .unwrap();
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
-    assert!(env.run(&["send", "sess-1", "go"]).status.success());
-    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
-    sleep(Duration::from_secs(3));
+    // Stopped until the turn has ended, so every event came while it was:
+    // continued sooner, it would be reading again when the turn's 20 MB
+    // message came, which a peer that keeps up takes (ADR 60).
+    let out = env.run(&["send", "sess-1", "--wait", "go"]);
+    assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
     assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
@@ -866,6 +868,66 @@ fn adr_0006_huge_message_reaches_watchers() {
     assert!(preview.chars().count() <= 4001, "status quotes {} chars", preview.chars().count());
     let _ = watch.kill();
     let _ = watch.wait();
+}
+
+/// A reply bigger than a peer's whole queue reaches every kind of peer that
+/// keeps up, and none is cut off for it (ADR 60): `start --wait`, `send
+/// --wait`, a watcher and a bridge, the last two asking for `acp` too, so
+/// that the reply comes to them twice at once, as its ACP message and as
+/// its event.
+#[test]
+fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
+    let env = Env::new("hugeall");
+    let got = env.dir.join("bridge-events");
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", \"exec cat > '{}'\"]\n\
+         events = [\"acp\", \"agent_message\", \"turn_ended\"]\n",
+        got.display()
+    ));
+    let size = 20_000_000;
+    let out = env.run(&start_args(&["--wait", "--prompt", &format!("big {size}")]));
+    assert!(out.status.success(), "start --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "start --wait: {}", stderr(&out));
+
+    let mut watch = env
+        .brnr(&["watch", "sess-1", "--json", "--events", "all"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        let mut sizes = Vec::new();
+        for line in lines {
+            let event: Value = serde_json::from_str(&line).unwrap();
+            if event["event"] == "agent_message" {
+                sizes.push(event["text"].as_str().unwrap().len());
+            }
+        }
+        sizes
+    });
+    sleep(Duration::from_millis(300));
+    let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+    assert!(out.status.success(), "send --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "send --wait: {}", stderr(&out));
+    let out = env.run(&["send", "sess-1", "--wait", "--json", &format!("big {size}")]);
+    assert!(out.status.success(), "send --wait --json: {}", stderr(&out));
+    let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(turn["reply"].as_str().unwrap().len(), size);
+
+    assert!(watch.try_wait().unwrap().is_none(), "the watcher was cut off");
+    let turns = || fs::read_to_string(&got).unwrap_or_default().matches(r#""turn_ended""#).count();
+    assert!(wait_for(Duration::from_secs(30), || turns() == 3), "the bridge was cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    assert_eq!(lines.join().unwrap(), [size, size], "the watcher's messages");
+    let bridge = fs::read_to_string(&got).unwrap();
+    let messages = bridge.lines().filter(|l| l.contains(r#""event":"agent_message""#));
+    assert!(messages.map(str::len).all(|n| n > size), "the bridge's messages");
 }
 
 /// A watcher some way behind when a long message comes, one that takes it
