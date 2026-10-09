@@ -1,4 +1,4 @@
-//! Starting the host, from the proxy or from `brnr start`.
+//! Starting the host, from the proxy or from `brnr session new`.
 
 use std::env;
 use std::ffi::OsStr;
@@ -22,8 +22,8 @@ pub fn host_command() -> io::Result<Command> {
 /// A bare program name (no `/`) that is installed next to brnr, such as the
 /// adapters `brnr-claude-adapter` and `brnr-codex-adapter`, or `brnr` for a
 /// bridge. Found there even when that directory isn't on the editor's PATH.
-/// Looked for by whoever starts a process, `brnr start` or `brnr acp`, which
-/// ran by the path the user gave (ADR 8, ADR 38).
+/// Looked for by whoever starts a process, `brnr session new` or `brnr acp`,
+/// which ran by the path the user gave (ADR 8, ADR 38).
 ///
 /// "Next to brnr" is the running binary's directory, and the directory of
 /// the path brnr was started by if that differs: started through a symlink
@@ -113,9 +113,9 @@ pub fn detached(
 }
 
 /// Starts `cmd` as our child in a process group of its own, with each of
-/// `fds` moved as for [`detached`]: `brnr start --foreground`, which waits
-/// for it and passes it the signals it gets, so a terminal's Ctrl-C reaches
-/// it once.
+/// `fds` moved as for [`detached`]: `brnr session new --foreground`, which
+/// waits for it and passes it the signals it gets, so a terminal's Ctrl-C
+/// reaches it once.
 pub fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
     let mut fds = fds.to_vec();
     // SAFETY: as in detached: move_fds makes only async-signal-safe calls

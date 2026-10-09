@@ -1,7 +1,7 @@
 //! Profiles from `config.toml` (see paths.rs for where it lives). A profile
 //! has three parts (ADR 33 in docs/adr): at the top what every process of
-//! the profile uses, under `headless` what only `brnr start` uses, and under
-//! `editor` what only `brnr acp` uses.
+//! the profile uses, under `headless` what only `brnr session new` and
+//! `resume` use, and under `editor` what only `brnr acp` uses.
 //!
 //! ```toml
 //! [profiles.work]                     # every process of the profile
@@ -13,10 +13,12 @@
 //! command = ["~/bin/slack-bridge", "--channel", "#agents"]
 //! events = ["permission_request", "turn_ended"]   # omit for every event but acp
 //!
-//! [profiles.work.headless]            # brnr start
+//! [profiles.work.headless]            # brnr session new and resume
 //! cwd = "~/work/project"
-//! mode = "plan"                       # the agent's mode and config options,
-//! config = { model = "opus" }         # set before the first prompt
+//! mode = "plan"                       # the agent's mode, model, thought
+//! model = "opus"                      #   level and config options by id,
+//! thought_level = "high"              #   set before the first prompt
+//! options = { effort = "high" }
 //! permission_timeout = 600            # seconds until an unanswered request is denied
 //! stop_when_idle = 600                # close a session idle this many seconds
 //! auth = "api-key"                    # the agent's login method, run first (ADR 30)
@@ -69,14 +71,17 @@ pub struct Profile {
     pub editor: Editor,
 }
 
-/// What only `brnr start` uses (ADR 12, 27, 28, 30, 31).
+/// What only `brnr session new` and `resume` use (ADR 12, 27, 28, 30, 31,
+/// 63).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Headless {
     pub cwd: Option<String>,
     pub mode: Option<String>,
+    pub model: Option<String>,
+    pub thought_level: Option<String>,
     #[serde(default)]
-    pub config: BTreeMap<String, String>,
+    pub options: BTreeMap<String, String>,
     pub permission_timeout: Option<u64>,
     pub stop_when_idle: Option<u64>,
     pub auth: Option<String>,
@@ -307,8 +312,17 @@ enum Part {
 }
 
 const SHARED_KEYS: &[&str] = &["agent", "log", "strict", "bridges"];
-const HEADLESS_KEYS: &[&str] =
-    &["cwd", "mode", "config", "permission_timeout", "stop_when_idle", "auth", "mcp_servers"];
+const HEADLESS_KEYS: &[&str] = &[
+    "cwd",
+    "mode",
+    "model",
+    "thought_level",
+    "options",
+    "permission_timeout",
+    "stop_when_idle",
+    "auth",
+    "mcp_servers",
+];
 const EDITOR_KEYS: &[&str] = &["experimental", "features"];
 
 impl Part {
@@ -331,7 +345,7 @@ impl Part {
     fn used_by(self) -> &'static str {
         match self {
             Part::Shared => "for every process of the profile",
-            Part::Headless => "for brnr start only",
+            Part::Headless => "for brnr session new and resume only",
             Part::Editor => "for brnr acp only",
         }
     }

@@ -59,7 +59,7 @@ fn private_dir_error(err: &str) {
 #[test]
 fn what_brnr_makes_is_private_whatever_the_umask() {
     let env = Env::new("s-umask");
-    let mut start = env.brnr(&start_args(&["--prompt", "hello"]));
+    let mut start = env.brnr(&new_args(&["--prompt", "hello"]));
     let out = with_umask(&mut start, 0).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
@@ -90,7 +90,7 @@ fn a_runtime_dir_others_can_use_is_refused() {
         let run = env.dir.join("run");
         fs::create_dir(&run).unwrap();
         chmod(&run, open);
-        private_dir_error(&stderr(&env.run(&start_args(&[]))));
+        private_dir_error(&stderr(&env.run(&new_args(&[]))));
         assert!(fs::read_dir(&run).unwrap().next().is_none(), "{open:o}: wrote into it");
         assert!(env.calls().is_empty(), "{open:o}: an agent was started");
         for args in [
@@ -140,7 +140,7 @@ fn a_runtime_dir_of_another_users_is_refused() {
         return;
     };
     let env = Env::new("s-theirs");
-    let out = env.brnr(&start_args(&[])).env("BRNR_DIR", dir).output().unwrap();
+    let out = env.brnr(&new_args(&[])).env("BRNR_DIR", dir).output().unwrap();
     private_dir_error(&stderr(&out));
     let out = env.brnr(&["list"]).env("BRNR_DIR", dir).output().unwrap();
     assert!(!out.status.success());
@@ -170,9 +170,9 @@ fn lock_failed(env: &Env) -> bool {
 fn adr_0003_session_locks_are_private_and_never_followed() {
     let env = Env::new("s-locks");
     let sessions = session_locks(&env, 0o777);
-    private_dir_error(&stderr(&env.run(&start_args(&["--resume", "old-1"]))));
+    private_dir_error(&stderr(&env.run(&resume_args("old-1", &[]))));
     assert!(env.calls_of("session/resume").is_empty());
-    private_dir_error(&env.fails(&start_args(&[])));
+    private_dir_error(&env.fails(&new_args(&[])));
     assert!(lock_failed(&env), "no lock-failed");
     assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
 
@@ -182,8 +182,8 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
     fs::write(&victim, "keep me").unwrap();
     symlink(&victim, sessions.join("old-1.lock")).unwrap();
     symlink(&victim, sessions.join("sess-1.lock")).unwrap();
-    assert!(!env.run(&start_args(&["--resume", "old-1"])).status.success());
-    let err = env.fails(&start_args(&[]));
+    assert!(!env.run(&resume_args("old-1", &[])).status.success());
+    let err = env.fails(&new_args(&[]));
     assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
     assert!(lock_failed(&env), "no lock-failed");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
@@ -277,7 +277,7 @@ fn the_process_listens_on_no_network() {
 
 /// Session `old-1`'s project folder, once a process has served it and gone.
 fn served_once(env: &Env) -> PathBuf {
-    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+    env.resume("old-1", &["--wait", "--prompt", "reply hi"]);
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
@@ -309,7 +309,7 @@ fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() 
         dirs.iter().for_each(|d| chmod(d, parents));
         chmod(&events, 0o644);
         chmod(&raw, 0o644);
-        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
+        env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
         env.ok(&["event", "log", "old-1"]); // Once the transcript is written (ADR 48).
         assert!(fs::read_to_string(&events).unwrap().contains("private-token"), "{name}");
         for path in tree(&home) {
@@ -338,7 +338,7 @@ fn adr_0059_a_symlinked_transcript_is_never_followed() {
     let events = project.join("old-1.jsonl");
     fs::remove_file(&events).unwrap();
     symlink(&victim, &events).unwrap();
-    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
+    env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
     let failed = || everything_in(&env.dir.join("home/hosts")).contains("session-log-failed");
     assert!(wait_for(Duration::from_secs(5), failed), "no session-log-failed");
     let hosts = everything_in(&env.dir.join("home/hosts"));
@@ -354,7 +354,7 @@ fn adr_0059_a_symlinked_transcript_is_never_followed() {
     let elsewhere = env.dir.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     symlink(&elsewhere, env.dir.join("home")).unwrap();
-    let err = env.fails(&start_args(&["--prompt", "private-token"]));
+    let err = env.fails(&new_args(&["--prompt", "private-token"]));
     assert!(err.contains("home: is a symlink, so brnr won't write a transcript there"), "{err}");
     assert!(env.prompts().is_empty(), "prompted");
     assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "wrote through it");
@@ -465,7 +465,7 @@ command = "true"
 env = { GITHUB_TOKEN = "resume-secret" }
 "#,
         );
-        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+        env.resume("old-1", &["--wait", "--prompt", "reply hi"]);
         let sent = &env.calls_of(method)[0]["params"]["mcpServers"][0]["env"][0];
         assert_eq!(sent["value"], "resume-secret", "{name}");
         for args in [

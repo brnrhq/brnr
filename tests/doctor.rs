@@ -252,11 +252,15 @@ fn misplaced_keys_fail() {
     );
     assert!(
         fails[1].contains(
-            "profiles.old: cwd is for brnr start only; it goes under [profiles.old.headless]"
+            "profiles.old: cwd is for brnr session new and resume only; it goes under [profiles.old.headless]"
         ),
         "{text}"
     );
-    assert!(fails[2].contains("profiles.old: permission_timeout is for brnr start only"), "{text}");
+    assert!(
+        fails[2]
+            .contains("profiles.old: permission_timeout is for brnr session new and resume only"),
+        "{text}"
+    );
 
     write(
         &env.dir.join("none.toml"),
@@ -269,6 +273,19 @@ fn misplaced_keys_fail() {
         text.contains("ok    profile ok: agent true, 0 bridges, strict, experimental send approve, features shared_sessions"),
         "{text}"
     );
+
+    // The headless `config` is `options` now (ADR 63), with no alias.
+    write(
+        &env.dir.join("none.toml"),
+        "[profiles.old.headless]\nconfig = { effort = \"high\" }\n",
+        0o600,
+    );
+    let (ok, text) = doctor(&env, &[]);
+    assert!(!ok, "{text}");
+    let fails = lines(&text, "FAIL  config");
+    assert_eq!(fails.len(), 1, "{text}");
+    let says = "profiles.old.headless: unknown key config (keys: cwd, mode, model, thought_level, options,";
+    assert!(fails[0].contains(says), "{text}");
 }
 
 #[test]
@@ -427,7 +444,7 @@ fn a_death_without_a_record_is_reported() {
 fn a_failed_start_is_no_death() {
     let env = Env::new("dr-failed");
     env.write_config("[[profiles.b.bridges]]\ncommand = [\"/no/such/brnr-bridge\"]\n");
-    let out = env.run(&start_args(&["--profile", "b"]));
+    let out = env.run(&new_args(&["--profile", "b"]));
     assert!(!out.status.success(), "it started");
     let (_, text) = doctor(&env, &[]);
     assert!(

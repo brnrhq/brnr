@@ -58,19 +58,19 @@ fn adr_0021_send_wait_prints_the_reply() {
 #[test]
 fn adr_0021_start_wait_prints_the_reply_and_the_turns_result() {
     let env = Env::new("c-startwait");
-    let out = env.run(&start_args(&["--wait", "--prompt", "reply done"]));
+    let out = env.run(&new_args(&["--wait", "--prompt", "reply done"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "done\n");
     assert!(stderr(&out).contains("started"), "{}", stderr(&out));
 
     let env = Env::new("c-startfail");
-    let out = env.run(&start_args(&["--wait", "--prompt", "fail"]));
+    let out = env.run(&new_args(&["--wait", "--prompt", "fail"]));
     assert_eq!(code(&out), 1);
     assert!(stderr(&out).contains("turn failed: boom"), "{}", stderr(&out));
 
     // The turn as one object, read on the start channel like the report.
     let env = Env::new("c-startjson");
-    let out = env.run(&start_args(&["--wait", "--json", "--prompt", "reply done"]));
+    let out = env.run(&new_args(&["--wait", "--json", "--prompt", "reply done"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!((turn["session"].as_str(), turn["reply"].as_str()), (Some("sess-1"), Some("done")));
@@ -84,7 +84,7 @@ fn adr_0021_start_wait_prints_the_reply_and_the_turns_result() {
 #[test]
 fn adr_0017_start_json_gives_the_prompts_message() {
     let env = Env::new("c-startmsg");
-    let out = env.run(&start_args(&["--json", "--prompt", "reply done"]));
+    let out = env.run(&new_args(&["--json", "--prompt", "reply done"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let about: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
@@ -93,7 +93,7 @@ fn adr_0017_start_json_gives_the_prompts_message() {
     );
 
     let env = Env::new("c-startnomsg");
-    let out = env.run(&start_args(&["--json"]));
+    let out = env.run(&new_args(&["--json"]));
     let about: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(about["message"].is_null(), "{about}");
 }
@@ -196,11 +196,8 @@ fn adr_0021_huge_timeouts_are_never() {
     env.write_config(&format!(
         "[profiles.default.headless]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
     ));
-    let out = env
-        .brnr(&start_args(&[]))
-        .env("BRNR_START_TIMEOUT", u64::MAX.to_string())
-        .output()
-        .unwrap();
+    let out =
+        env.brnr(&new_args(&[])).env("BRNR_START_TIMEOUT", u64::MAX.to_string()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
     let forever = u64::MAX.to_string();
@@ -734,7 +731,7 @@ fn adr_0028_model_is_the_option_of_category_model() {
     assert!(env.calls_of("session/set_model").is_empty());
 
     let env = Env::new("c-modelstart").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
-    let err = env.fails(&start_args(&["--model", "large", "--prompt", "hi"]));
+    let err = env.fails(&new_args(&["--model", "large", "--prompt", "hi"]));
     assert!(err.contains("setting model large: the agent offers no model choice"), "{err}");
     assert!(env.calls_of("session/set_model").is_empty() && env.prompts().is_empty());
 }
@@ -792,27 +789,27 @@ fn adr_0058_start_flags_win_over_the_profile() {
 
     // As the issue had it: the option's id is `model`.
     let env = Env::new("c-flagwins");
-    env.write_config("[profiles.default.headless]\nconfig = { model = \"small\" }\n");
+    env.write_config("[profiles.default.headless]\noptions = { model = \"small\" }\n");
     env.start(&["--model", "large", "--json"]);
     assert_eq!(sets(&env), [set("model", "large")]);
     assert_eq!(status(&env)["model"], "large");
 
     // And whatever the id; the profile's other options still apply.
     let env = Env::new("c-flagwins-id").agent("MODEL_ID", "llm").agent("MODE_OPTION", "approvals");
-    env.write_config("[profiles.default.headless]\nconfig = { llm = \"large\" }\n");
+    env.write_config("[profiles.default.headless]\noptions = { llm = \"large\" }\n");
     env.start(&["--model", "small"]);
     assert_eq!(sets(&env), [set("llm", "small")]);
     assert_eq!(status(&env)["model"], "small");
 
-    // The mode likewise, from --set by the mode option's id over the
+    // The mode likewise, from --option by the mode option's id over the
     // profile's `mode`, and from --mode over the profile's option.
     let env = Env::new("c-flagwins-mode").agent("MODE_OPTION", "approvals");
     env.write_config("[profiles.default.headless]\nmode = \"plan\"\n");
-    env.start(&["--set", "approvals=default"]);
+    env.start(&["--option", "approvals=default"]);
     assert_eq!(sets(&env), [set("approvals", "default")]);
     assert_eq!(status(&env)["mode"], "default");
     let env = Env::new("c-flagwins-mode2").agent("MODE_OPTION", "approvals");
-    env.write_config("[profiles.default.headless]\nconfig = { approvals = \"default\" }\n");
+    env.write_config("[profiles.default.headless]\noptions = { approvals = \"default\" }\n");
     env.start(&["--mode", "plan"]);
     assert_eq!(sets(&env), [set("approvals", "plan")]);
     assert_eq!(status(&env)["mode"], "plan");
@@ -820,7 +817,7 @@ fn adr_0058_start_flags_win_over_the_profile() {
     // Without flags, the profile's settings are the start's.
     let env = Env::new("c-profile-only").agent("MODEL_ID", "llm");
     env.write_config(
-        "[profiles.default.headless]\nmode = \"plan\"\nconfig = { llm = \"large\" }\n",
+        "[profiles.default.headless]\nmode = \"plan\"\noptions = { llm = \"large\" }\n",
     );
     env.start(&[]);
     assert_eq!(sets(&env), [set("llm", "large")]);
@@ -834,33 +831,33 @@ fn adr_0058_start_settings_that_disagree_fail() {
     let fails = |env: &Env, args: &[&str]| {
         let mut args = args.to_vec();
         args.extend(["--prompt", "hi"]);
-        let err = env.fails(&start_args(&args));
+        let err = env.fails(&new_args(&args));
         assert!(env.calls_of("session/set_config_option").is_empty(), "{err}");
         assert!(env.calls_of("session/set_mode").is_empty() && env.prompts().is_empty(), "{err}");
         err
     };
     let env = Env::new("c-conflict").agent("MODEL_ID", "llm").agent("MODE_OPTION", "approvals");
-    let err = fails(&env, &["--model", "large", "--set", "llm=small"]);
-    assert!(err.contains("--model large and --set llm=small both set the model"), "{err}");
-    let err = fails(&env, &["--mode", "plan", "--set", "approvals=default"]);
-    assert!(err.contains("--mode plan and --set approvals=default both set the mode"), "{err}");
-    let err = fails(&env, &["--set", "llm=small", "--set", "llm=large"]);
-    assert!(err.contains("--set llm=small and --set llm=large disagree"), "{err}");
+    let err = fails(&env, &["--model", "large", "--option", "llm=small"]);
+    assert!(err.contains("--model large and --option llm=small both set the model"), "{err}");
+    let err = fails(&env, &["--mode", "plan", "--option", "approvals=default"]);
+    assert!(err.contains("--mode plan and --option approvals=default both set the mode"), "{err}");
+    let err = fails(&env, &["--option", "llm=small", "--option", "llm=large"]);
+    assert!(err.contains("--option llm=small and --option llm=large disagree"), "{err}");
 
     let env = Env::new("c-conflict-profile").agent("MODE_OPTION", "approvals");
     env.write_config(
-        "[profiles.default.headless]\nmode = \"plan\"\nconfig = { approvals = \"default\" }\n",
+        "[profiles.default.headless]\nmode = \"plan\"\noptions = { approvals = \"default\" }\n",
     );
     let err = fails(&env, &[]);
     assert!(
-        err.contains("the profile's mode plan and its config approvals=default both set the mode"),
+        err.contains("the profile's mode plan and its options approvals=default both set the mode"),
         "{err}"
     );
     // A flag settles it.
     env.start(&["--mode", "default"]);
 
     let env = Env::new("c-agree").agent("MODEL_ID", "llm");
-    env.start(&["--model", "large", "--set", "llm=large"]);
+    env.start(&["--model", "large", "--option", "llm=large"]);
     assert_eq!(env.calls_of("session/set_config_option").len(), 1);
 }
 
@@ -883,10 +880,10 @@ fn adr_0028_start_applies_mode_and_model_before_the_prompt() {
     // Another agent, whose sessions aren't the first one's: a mode it
     // doesn't list fails before anything is sent, a value it refuses as it
     // answers.
-    let out = env.brnr(&start_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
+    let out = env.brnr(&new_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
-    let out = env.brnr(&start_args(&["--model", "huge"])).env("FIRST_SESSION", "2").output();
+    let out = env.brnr(&new_args(&["--model", "huge"])).env("FIRST_SESSION", "2").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
 }
@@ -996,7 +993,7 @@ fn adr_0015_sessions_stops_an_agent_that_wont_go() {
 #[test]
 fn adr_0014_resume_a_session_only_the_agent_knows() {
     let env = Env::new("c-resume-agent");
-    let out = env.run(&start_args(&["--resume", "old-1", "--wait", "--prompt", "reply again"]));
+    let out = env.run(&resume_args("old-1", &["--wait", "--prompt", "reply again"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "again\n");
     assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "old-1");
@@ -1068,7 +1065,7 @@ fn adr_0022_closing_sessions_closes_their_files() {
     assert!(env.ok(&["event", "log", "sess-9"]).contains("agent: hi 9"));
 
     // Resumed in a process of its own, it carries on in the same files.
-    let out = env.run(&["start", "--resume", "sess-9", "--wait", "--prompt", "reply again"]);
+    let out = env.run(&["session", "resume", "sess-9", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let log = env.ok(&["event", "log", "sess-9"]);
     let (first, again) = (log.find("agent: hi 9").unwrap(), log.find("agent: again").unwrap());
@@ -1196,13 +1193,13 @@ fn adr_0014_resume_continues_a_session() {
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     // With the same agent as before, without saying so.
-    let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    let out = env.run(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "again\n");
     assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "sess-1");
     let log = env.ok(&["event", "log", "sess-1"]);
     assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
-    assert!(env.fails(&["start", "--resume", "sess-1"]).contains("sess-1 is running in process"));
+    assert!(env.fails(&["session", "resume", "sess-1"]).contains("sess-1 is running in process"));
 }
 
 /// `session`'s events named `names` in its transcript, as JSON.
@@ -1228,7 +1225,7 @@ fn adr_0014_resume_by_loading_keeps_the_replay_out_of_the_transcript() {
     for again in ["reply again", "reply third"] {
         env.stop();
         assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
-        env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", again]);
+        env.ok(&["session", "resume", "sess-1", "--wait", "--prompt", again]);
     }
     assert_eq!(env.calls_of("session/load").len(), 2);
     let all = env.ok(&["event", "log", "sess-1", "--events", "all"]);
@@ -1257,7 +1254,7 @@ fn adr_0014_resume_by_loading_keeps_the_replay_out_of_the_transcript() {
 #[test]
 fn adr_0057_a_first_load_records_the_replayed_history() {
     let env = Env::new("c-load-first").agent("NO_RESUME", "1");
-    let out = env.run(&start_args(&["--resume", "old-1", "--json"]));
+    let out = env.run(&resume_args("old-1", &["--json"]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
     let history = logged(&env, "old-1", "history");
@@ -1282,7 +1279,7 @@ fn adr_0057_a_first_load_records_the_replayed_history() {
     // Loaded again, the history is in the transcript once.
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
-    env.ok(&["start", "--resume", "old-1", "--wait", "--prompt", "reply new"]);
+    env.ok(&["session", "resume", "old-1", "--wait", "--prompt", "reply new"]);
     assert_eq!(env.calls_of("session/load").len(), 2);
     assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
     let history = logged(&env, "old-1", "history");
@@ -1302,7 +1299,7 @@ fn adr_0057_a_load_without_the_transcript_records_the_history() {
     for folder in fs::read_dir(env.dir.join("home/projects")).unwrap().flatten() {
         fs::remove_dir_all(folder.path()).unwrap();
     }
-    let out = env.run(&start_args(&["--resume", "sess-1"]));
+    let out = env.run(&resume_args("sess-1", &[]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(replayed(&env, "sess-1"), ["old question", "replayed history"]);
     let history = logged(&env, "sess-1", "history");
@@ -1314,7 +1311,7 @@ fn adr_0057_a_load_without_the_transcript_records_the_history() {
 #[test]
 fn adr_0057_a_load_of_an_empty_history_says_so() {
     let env = Env::new("c-load-empty").agent("NO_RESUME", "1").agent("NO_HISTORY", "1");
-    let out = env.run(&start_args(&["--resume", "old-1"]));
+    let out = env.run(&resume_args("old-1", &[]));
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(replayed(&env, "old-1").is_empty());
     let history = logged(&env, "old-1", "history");
@@ -1334,11 +1331,13 @@ fn adr_0003_resume_of_a_held_session_is_refused() {
     let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
     let lock: Value = serde_json::from_str(&lock).unwrap();
     assert_eq!((lock["pid"].to_string(), &lock["session"]), (pid.clone(), &"sess-1".into()));
-    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    let err = env.fails(&resume_args("sess-1", &[]));
     assert!(err.contains(&format!("sess-1 is running in process {pid} (--take-over")), "{err}");
     assert_eq!(env.hosts().len(), 1, "a second process started");
     assert!(env.calls_of("session/resume").is_empty());
-    assert!(env.fails(&start_args(&["--take-over"])).contains("--take-over goes with --resume"));
+    assert!(
+        env.fails(&new_args(&["--take-over"])).contains("--take-over goes with session resume")
+    );
 }
 
 /// A directory where `session`'s lock file goes, so its lock can't be taken:
@@ -1358,7 +1357,7 @@ fn adr_0050_a_new_session_that_cant_be_locked_isnt_started() {
     let env = Env::new("c-nolock");
     let lock = unlockable(&env, "sess-1");
     for _ in 0..2 {
-        let out = env.run(&start_args(&["--json", "--prompt", "reply hi"]));
+        let out = env.run(&new_args(&["--json", "--prompt", "reply hi"]));
         assert_eq!(code(&out), 1, "{}", stdout(&out));
         assert!(stdout(&out).is_empty(), "{}", stdout(&out));
         let said = format!("the agent opened sess-1, which can't be locked: {}: ", lock.display());
@@ -1398,7 +1397,7 @@ fn adr_0050_a_resume_that_cant_be_locked_isnt_started() {
         env.stop();
         assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
         let lock = unlockable(&env, "sess-1");
-        let out = env.run(&start_args(&["--resume", "sess-1", "--prompt", "reply again"]));
+        let out = env.run(&resume_args("sess-1", &["--prompt", "reply again"]));
         assert_eq!(code(&out), 1, "{}", stdout(&out));
         let said = format!("sess-1 can't be locked: {}: ", lock.display());
         assert!(stderr(&out).contains(&said), "{how}: {}", stderr(&out));
@@ -1422,7 +1421,7 @@ fn adr_0050_a_fork_that_cant_be_owned_is_refused() {
     assert!(env.fails(&["session", "status", "sess-2"]).contains("sess-2"));
     // The fake agent forks into sess-3 next: another process holds it.
     fs::remove_dir(&lock).unwrap();
-    let out = env.brnr(&start_args(&[])).env("FIRST_SESSION", "2").output().unwrap();
+    let out = env.brnr(&new_args(&[])).env("FIRST_SESSION", "2").output().unwrap();
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let holder = lock_holder(&env, "sess-3");
     let err = env.fails(&["session", "fork", "sess-1"]);
@@ -1442,7 +1441,7 @@ fn adr_0050_a_second_owner_of_a_new_session_isnt_started() {
     let env = Env::new("c-second");
     env.start(&[]);
     let first = env.pid();
-    let err = env.fails(&start_args(&["--prompt", "reply hi"]));
+    let err = env.fails(&new_args(&["--prompt", "reply hi"]));
     assert!(
         err.contains(&format!("the agent opened sess-1, which is running in process {first}")),
         "{err}"
@@ -1469,7 +1468,7 @@ fn adr_0003_take_over_moves_a_session() {
     env.ok(&["session", "fork", "sess-1"]);
     env.ok(&["prompt", "send", "sess-1", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let args = ["start", "--resume", "sess-1", "--take-over", "--wait", "--prompt", "reply here"];
+    let args = ["session", "resume", "sess-1", "--take-over", "--wait", "--prompt", "reply here"];
     let out = env.run(&args);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "here\n");
@@ -1507,8 +1506,8 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     let spawn = |args: &[&str]| {
         env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     };
-    let resume = spawn(&start_args(&["--resume", "sess-1"]));
-    let take_over = spawn(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let resume = spawn(&resume_args("sess-1", &[]));
+    let take_over = spawn(&resume_args("sess-1", &["--take-over"]));
     let list = spawn(&["list", "--all", "--json"]);
     let ps = spawn(&["process", "list", "--json"]);
     let sessions = spawn(&["sessions", "--json", "--", AGENT]);
@@ -1549,7 +1548,7 @@ fn adr_0003_a_dead_process_lets_go() {
     // was killed is gone, and the session with it.
     env.ok(&["event", "log", "sess-1"]);
     kill(env.host_pid(), libc::SIGKILL);
-    let out = env.run(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    let out = env.run(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "again\n");
 }
@@ -1722,25 +1721,37 @@ fn adr_0012_stop_when_idle() {
     let env = Env::new("c-idlestart");
     env.start(&["--stop-when-idle", "1"]);
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
-    assert!(env.fails(&start_args(&["--stop-when-idle"])).contains("not a number of seconds"));
+    assert!(env.fails(&new_args(&["--stop-when-idle"])).contains("not a number of seconds"));
 }
 
 #[test]
 fn adr_0009_foreground_start_shows_the_session() {
     let env = Env::new("c-fg");
-    let args =
-        ["start", "--foreground", "--stop-when-idle", "0", "--prompt", "reply hi", "--", AGENT];
+    let args = [
+        "session",
+        "new",
+        "--foreground",
+        "--stop-when-idle",
+        "0",
+        "--prompt",
+        "reply hi",
+        "--",
+        AGENT,
+    ];
     let out = env.brnr(&args).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("user: reply hi") && text.contains("agent: hi"), "{text}");
     let mut json = args.to_vec();
-    json.insert(1, "--json");
+    json.insert(2, "--json");
     let out = env.brnr(&json).stdin(Stdio::null()).output().unwrap();
     let events: Vec<Value> =
         stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert!(events.iter().any(|e| e["event"] == "agent_message" && e["text"] == "hi"));
-    assert!(env.fails(&["start", "--foreground", "--wait", "--prompt", "x"]).contains("don't go"));
+    assert!(
+        env.fails(&["session", "new", "--foreground", "--wait", "--prompt", "x"])
+            .contains("don't go")
+    );
 }
 
 #[test]
@@ -1770,13 +1781,13 @@ headers = { Authorization = "Bearer x" }
     env.write_config(
         "[[profiles.default.headless.mcp_servers]]\nname = \"s\"\nurl = \"https://x\"\ntype = \"sse\"\n",
     );
-    assert!(env.fails(&start_args(&[])).contains("doesn't support sse"));
+    assert!(env.fails(&new_args(&[])).contains("doesn't support sse"));
 }
 
 #[test]
 fn adr_0030_login_needed_is_explained() {
     let env = Env::new("c-auth").agent("AUTH", "1");
-    let err = env.fails(&start_args(&[]));
+    let err = env.fails(&new_args(&[]));
     assert!(err.contains("log in (Log in to the fake `fake-login`)"), "{err}");
     assert!(err.contains("--auth <id>"), "{err}");
     assert!(err.contains("claude"), "{err}");
@@ -1805,7 +1816,7 @@ fn adr_0030_auth_runs_the_login_method_named() {
 
     // One the agent doesn't offer fails up front.
     let env = Env::new("c-authnone");
-    let err = env.fails(&start_args(&["--auth", "api-key", "--prompt", "hi"]));
+    let err = env.fails(&new_args(&["--auth", "api-key", "--prompt", "hi"]));
     assert!(
         err.contains("the agent offers no login method api-key (it offers: fake-login)"),
         "{err}"
@@ -1814,7 +1825,7 @@ fn adr_0030_auth_runs_the_login_method_named() {
 
     // The agent's error, and no prompt.
     let env = Env::new("c-authfail").agent("AUTH_FAIL", "1");
-    let err = env.fails(&start_args(&["--auth", "fake-login", "--prompt", "hi"]));
+    let err = env.fails(&new_args(&["--auth", "fake-login", "--prompt", "hi"]));
     assert!(err.contains("authenticate fake-login failed: Login failed"), "{err}");
     assert!(!err.contains("Log in with the agent's own CLI"), "{err}");
     assert_eq!(methods(&env), ["initialize", "authenticate"]);
@@ -1844,7 +1855,7 @@ fn adr_0054_a_start_in_an_acp_version_brnr_doesnt_speak_fails() {
             if strict {
                 args.insert(0, "--strict");
             }
-            let out = env.run(&start_args(&args));
+            let out = env.run(&new_args(&args));
             assert_eq!(code(&out), 1, "{version}: {}", stdout(&out));
             assert!(stdout(&out).is_empty(), "{version}: {}", stdout(&out));
             assert!(stderr(&out).contains(want.as_str()), "{version}: {}", stderr(&out));
@@ -1879,8 +1890,8 @@ fn adr_0033_profile_layout_errors_say_where() {
     for (config, want) in [
         (
             "[profiles.default]\ncwd = \"/tmp\"\nmode = \"plan\"\n",
-            "profiles.default: cwd is for brnr start only; it goes under [profiles.default.headless]; \
-             profiles.default: mode is for brnr start only",
+            "profiles.default: cwd is for brnr session new and resume only; it goes under [profiles.default.headless]; \
+             profiles.default: mode is for brnr session new and resume only",
         ),
         (
             "[profiles.default.headless]\nagent = [\"x\"]\n",
@@ -1892,7 +1903,12 @@ fn adr_0033_profile_layout_errors_say_where() {
         ),
         (
             "[profiles.default.editor]\nstop_when_idle = 5\n",
-            "profiles.default.editor: stop_when_idle is for brnr start only; it goes under [profiles.default.headless]",
+            "profiles.default.editor: stop_when_idle is for brnr session new and resume only; it goes under [profiles.default.headless]",
+        ),
+        // `config` is `options` now (ADR 63).
+        (
+            "[profiles.default.headless]\nconfig = { effort = \"high\" }\n",
+            "profiles.default.headless: unknown key config (keys: cwd, mode, model, thought_level, options,",
         ),
         (
             "[profiles.default]\nagnet = [\"x\"]\n",
@@ -1925,7 +1941,7 @@ fn adr_0033_profile_layout_errors_say_where() {
         ),
     ] {
         env.write_config(config);
-        let err = env.fails(&start_args(&["--prompt", "hi"]));
+        let err = env.fails(&new_args(&["--prompt", "hi"]));
         assert!(err.contains(want), "{config}: {err}");
         assert!(err.contains("none.toml: "), "{err}");
     }
@@ -2304,7 +2320,7 @@ fn adr_0063_old_commands_are_unknown() {
     env.start(&["--wait", "--prompt", "reply hi"]);
     let old = [
         "ps", "stop", "status", "fork", "close", "send", "cancel", "commands", "queue", "pending",
-        "show", "log", "watch", "notify", "wait", "mode", "model", "config",
+        "show", "log", "watch", "notify", "wait", "mode", "model", "config", "start",
     ];
     for cmd in old {
         let err = env.fails(&[cmd, "sess-1"]);
@@ -2314,6 +2330,7 @@ fn adr_0063_old_commands_are_unknown() {
     assert!(env.calls_of("session/fork").is_empty() && env.calls_of("session/close").is_empty());
     assert!(env.calls_of("session/set_mode").is_empty());
     assert!(env.calls_of("session/set_config_option").is_empty());
+    assert!(env.calls_of("session/resume").is_empty() && env.hosts().len() == 1);
     env.stop();
 }
 
@@ -2524,6 +2541,146 @@ fn adr_0063_config_set_by_category_and_by_id() {
     let err = env.fails(&["config", "set", "sess-1", "--thought-level", "high"]);
     assert!(err.contains("setting thought level high: the agent offers no thought level"), "{err}");
     assert!(env.calls_of("session/set_config_option").is_empty());
+}
+
+/// `session new` and `session resume` are what `start` and `start --resume`
+/// were: a process and its first session, new or resumed (`session/resume`,
+/// ADR 14), with every flag `start` took but `--set`, which is `--option`;
+/// `--take-over` goes with `resume` only, and each says its usage, with the
+/// flags they share (ADR 63).
+#[test]
+fn adr_0063_new_and_resume_replace_start() {
+    let env = Env::new("c-new");
+    let out = env.run(&new_args(&["--wait", "--prompt", "reply first"]));
+    assert_eq!((code(&out), stdout(&out)), (0, "first\n".into()), "{}", stderr(&out));
+    assert!(stderr(&out).starts_with("started sess-1 (process "), "{}", stderr(&out));
+    assert!(env.calls_of("session/resume").is_empty());
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+
+    // The recorded agent, cwd and profile, as `--resume` had them.
+    let out = env.run(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    assert_eq!((code(&out), stdout(&out)), (0, "again\n".into()), "{}", stderr(&out));
+    assert_eq!(env.calls_of("session/resume")[0]["params"]["sessionId"], "sess-1");
+    assert_eq!(env.calls_of("session/new").len(), 1);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let err = env.fails(&["prompt", "send", "sess-1", "hi"]);
+    assert!(err.contains("sess-1 isn't running: brnr session resume sess-1"), "{err}");
+
+    for (args, says) in [
+        (new_args(&["--set", "model=large"]), "brnr: unknown option: --set"),
+        (new_args(&["--resume", "sess-1"]), "brnr: unknown option: --resume"),
+        (new_args(&["--take-over"]), "brnr: --take-over goes with session resume"),
+        (new_args(&["--option", "model"]), "brnr: --option takes <option>=<value>, not model"),
+        (new_args(&["--mode", "plan", "--mode", "x"]), "brnr: --mode plan and --mode x disagree"),
+        (
+            new_args(&["--permission-timeout", "soon"]),
+            "brnr: --permission-timeout: not a number of seconds: soon",
+        ),
+        (new_args(&["sess-1"]), "usage:\n  brnr session new [<new flags>]"),
+        (vec!["session", "resume"], "usage:\n  brnr session resume <session> [--take-over]"),
+        (resume_args("sess-1", &["sess-2"]), "usage:\n  brnr session resume <session>"),
+    ] {
+        let err = env.fails(&args);
+        assert!(err.starts_with(says), "{args:?}: {err}");
+    }
+    assert!(env.hosts().is_empty() && env.calls_of("session/new").len() == 1, "one started");
+    // Each one's usage has the flags they share.
+    let usage = env.fails(&["session", "resume"]);
+    assert!(!usage.contains("brnr session new"), "{usage}");
+    for flag in ["--permission-timeout <s>", "--thought-level <l>", "--option <o>=<v>", "--wait"] {
+        assert!(usage.contains(flag), "{flag}: {usage}");
+    }
+    assert!(env.ok(&["session", "--help"]).contains("brnr session new [<new flags>]"));
+}
+
+/// `--thought-level`, and a profile's `thought_level`, are the option of
+/// category `thought_level`, whatever its id, as `--model` and `model` are
+/// the model's: one setting with `--option` by its id, the flag winning
+/// over the profile, and an agent without one fails the start (ADR 58,
+/// ADR 63).
+#[test]
+fn adr_0063_thought_level_is_the_option_of_its_category() {
+    let sets = |env: &Env| -> Vec<String> {
+        let calls = env.calls_of("session/set_config_option");
+        let set = |c: &Value| {
+            let p = &c["params"];
+            format!("{}={}", p["configId"].as_str().unwrap(), p["value"].as_str().unwrap())
+        };
+        calls.iter().map(set).collect()
+    };
+    let env = Env::new("c-thought").agent("THOUGHT_OPTION", "effort").agent("MODEL_ID", "llm");
+    env.start(&["--thought-level", "high", "--model", "large", "--wait", "--prompt", "reply ok"]);
+    assert_eq!(sets(&env), ["llm=large", "effort=high"], "the model first");
+    assert!(env.ok(&["config", "get", "sess-1", "--thought-level"]).contains("high"));
+    let calls = env.calls();
+    let methods: Vec<&str> = calls.iter().filter_map(|c| c["method"].as_str()).collect();
+    let prompt = methods.iter().position(|m| *m == "session/prompt").unwrap();
+    assert_eq!(methods[prompt - 2..prompt], ["session/set_config_option"; 2], "before the prompt");
+
+    // The profile's keys, the flag over them setting by setting.
+    let env = Env::new("c-thought-profile").agent("THOUGHT_OPTION", "effort");
+    env.write_config("[profiles.default.headless]\nthought_level = \"low\"\nmodel = \"large\"\n");
+    env.start(&["--option", "effort=high"]);
+    assert_eq!(sets(&env), ["model=large", "effort=high"]);
+    let env = Env::new("c-thought-profile2").agent("THOUGHT_OPTION", "effort");
+    env.write_config("[profiles.default.headless]\nthought_level = \"low\"\n");
+    env.start(&[]);
+    assert_eq!(sets(&env), ["effort=low"]);
+
+    // Two values for it from one source fail before anything is set.
+    let env = Env::new("c-thought-conflict").agent("THOUGHT_OPTION", "effort");
+    let err = env.fails(&new_args(&["--thought-level", "high", "--option", "effort=low"]));
+    assert!(
+        err.contains("--thought-level high and --option effort=low both set the thought level"),
+        "{err}"
+    );
+    env.write_config(
+        "[profiles.default.headless]\nthought_level = \"low\"\noptions = { effort = \"high\" }\n",
+    );
+    let err = env.fails(&new_args(&["--prompt", "hi"]));
+    assert!(
+        err.contains(
+            "the profile's thought_level low and its options effort=high both set the thought level"
+        ),
+        "{err}"
+    );
+    assert!(sets(&env).is_empty() && env.prompts().is_empty(), "{err}");
+    // A flag settles it.
+    env.start(&["--thought-level", "high"]);
+    assert_eq!(sets(&env), ["effort=high"]);
+
+    // An agent with no thought level.
+    let env = Env::new("c-thought-none");
+    let err = env.fails(&new_args(&["--thought-level", "high", "--prompt", "hi"]));
+    assert!(err.contains("setting thought level high: the agent offers no thought level"), "{err}");
+    assert!(env.prompts().is_empty());
+}
+
+/// `--permission-timeout` is the profile's `permission_timeout` as a flag,
+/// and wins over it, as a start's other flags do (ADR 58, ADR 63).
+#[test]
+fn adr_0063_permission_timeout_flag_wins_over_the_profile() {
+    let env = Env::new("c-permflag");
+    env.write_config("[profiles.default.headless]\npermission_timeout = 600\n");
+    env.start(&["--permission-timeout", "1"]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("permission p1 -> reject (by timeout)"));
+    env.stop();
+
+    let env = Env::new("c-permflag2");
+    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
+    env.start(&["--permission-timeout", "600"]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
+    sleep(Duration::from_secs(3));
+    assert!(outcome(&env, "perm-1").is_none(), "the profile's timeout answered it");
+    env.stop();
 }
 
 // ---- the skill (ADR 46) --------------------------------------------------

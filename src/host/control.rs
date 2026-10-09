@@ -35,7 +35,7 @@
 //! - `close` `{session, take_over?}`: cancels a running turn first, and is
 //!   answered once the agent has closed the session; a headless process
 //!   whose last session closes stops. `take_over` is the pid of the process
-//!   `start --resume --take-over` resumes it in
+//!   `session resume --take-over` resumes it in
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
 //!
@@ -815,7 +815,7 @@ impl Host {
                 self.check_experimental(Experimental::Config)?;
                 let settings = settings_of(req)?;
                 let state = &self.sessions[i].state;
-                let steps = resolve_settings(&settings, &Settings::default(), state, "--option")?;
+                let steps = resolve_settings(&settings, &Settings::default(), state)?;
                 if steps.is_empty() {
                     return Err("nothing to set".into());
                 }

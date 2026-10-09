@@ -88,13 +88,14 @@ permission_timeout = 1800           # deny what nobody answered in 30 minutes
 ```
 
 ```sh
-brnr start --profile work --json --prompt - < task.md
+brnr session new --profile work --json --prompt - < task.md
 ```
 
 What goes at the top applies to every process of the profile (`agent`,
-`log`, `strict`, `bridges`); under `headless`, only to `brnr start` (`cwd`,
-`mode`, `config`, `mcp_servers`, `permission_timeout`, `stop_when_idle`,
-`auth`); under `editor`, only to `brnr acp`. A key in the wrong part fails
+`log`, `strict`, `bridges`); under `headless`, only to `brnr session new`
+and `resume` (`cwd`, `mode`, `model`, `thought_level`, `options`,
+`mcp_servers`, `permission_timeout`, `stop_when_idle`, `auth`), whose flags
+of the same names win over them; under `editor`, only to `brnr acp`. A key in the wrong part fails
 to load; `brnr doctor` says where it goes. Set `mode` only to what the user
 chose: it decides what the agent asks approval for.
 

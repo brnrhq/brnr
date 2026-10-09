@@ -15,7 +15,7 @@
 //! - `config`: the agent answers a change only to whoever asked (ADR 28),
 //!   so the editor is sent the `current_mode_update` or
 //!   `config_option_update` here.
-//! - `close`, and `start --resume --take-over` of an editor's session: the
+//! - `close`, and `session resume --take-over` of an editor's session: the
 //!   editor is told in the session, and its later requests for it are
 //!   answered with an error saying where it continues.
 //!
@@ -175,7 +175,7 @@ impl Host {
             Some(pid) => (
                 format!("Session taken over by brnr (process {pid})"),
                 format!(
-                    "brnr start --resume --take-over closed it here; it continues in brnr \
+                    "brnr session resume --take-over closed it here; it continues in brnr \
                      process {pid} (brnr event watch {session})."
                 ),
             ),

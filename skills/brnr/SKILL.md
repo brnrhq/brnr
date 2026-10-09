@@ -20,12 +20,12 @@ the brnr that printed it (`brnr skill`).
 
 1. **Use the CLI as it is.** Run `brnr` commands with `--json` and read the
    JSON. Don't write wrapper scripts, and don't parse the text output.
-2. **Use exact ids.** A session is the `session` that `brnr start --json`
+2. **Use exact ids.** A session is the `session` that `brnr session new --json`
    printed, or one from `brnr list --json`; a request the `request` from
    `brnr permission requests --json`; a message the `message` from
    `brnr prompt send --json`. Never guess, never pick "the only one", never reuse an id you didn't get
    in this task without finding it in `brnr list --json`.
-3. **Wait, don't poll.** Use `prompt send --wait`, `start --wait` or
+3. **Wait, don't poll.** Use `prompt send --wait`, `session new --wait` or
    `event wait --for`, always with `--timeout`, never a loop of `sleep` and
    `session status`. The exit
    status is the result: 0 the turn ended normally, 1 it failed, stopped or
@@ -48,7 +48,7 @@ the brnr that printed it (`brnr skill`).
 `permission requests`.
 
 ```sh
-brnr start --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md   # {session, pid, message}
+brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md   # {session, pid, message}
 brnr prompt send $s --json "now add tests for it"     # {status, session, message}: delivered, held, …
 brnr event wait $s --timeout 600 --json               # until idle; exit 0, 1 or 124
 brnr prompt send $s --wait --timeout 600 --json "what did you change?"   # {session, message, reply, stop_reason, error, dropped}

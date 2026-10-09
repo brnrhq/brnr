@@ -108,7 +108,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr event wait $s --for permission", Approval, Succeeds),
     ("brnr event wait $s --for turn", Slow, Succeeds),
     (
-        r#"brnr start --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md"#,
+        r#"brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md"#,
         Nothing,
         Succeeds,
     ),
@@ -126,8 +126,8 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr session fork $s", Idle, Says("forked")),
     ("brnr session close $s", Idle, Says("closed")),
     ("brnr sessions -- brnr-claude-adapter", Nothing, Says("old-1")),
-    ("brnr start --resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
-    ("brnr start --resume $s --take-over", Idle, Says("started sess-1")),
+    ("brnr session resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
+    ("brnr session resume $s --take-over", Idle, Says("started sess-1")),
     ("brnr process list", Idle, Says("headless")),
     ("brnr process stop 4466", Idle, Succeeds),
     // Notifications: curl is a stand-in, first on PATH, that prints its
@@ -139,16 +139,20 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     // Headless sessions
     (
-        r#"brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter"#,
+        r#"brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter"#,
         Nothing,
         Says("started"),
     ),
-    ("brnr start --mode plan --model opus --prompt - < task.md", Nothing, Says("started")),
-    ("brnr start --set effort=high --prompt - < task.md", Nothing, Says("started")),
-    ("brnr start --resume $s", Ended, Says("started sess-1")),
-    ("brnr start --auth api-key --prompt - -- brnr-codex-adapter < task.md", Nothing, Succeeds),
+    ("brnr session new --mode plan --model opus --prompt - < task.md", Nothing, Says("started")),
+    ("brnr session new --option effort=high --prompt - < task.md", Nothing, Says("started")),
+    ("brnr session resume $s", Ended, Says("started sess-1")),
     (
-        "brnr start --foreground --prompt - -- brnr-codex-adapter < task.md",
+        "brnr session new --auth api-key --prompt - -- brnr-codex-adapter < task.md",
+        Nothing,
+        Succeeds,
+    ),
+    (
+        "brnr session new --foreground --prompt - -- brnr-codex-adapter < task.md",
         Nothing,
         RunsUntilInterrupted("agent: readme"),
     ),
@@ -158,7 +162,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr doctor --report", Nothing, Says("brnr doctor --report")),
     // The skill's core (skills/brnr/SKILL.md)
     (
-        "brnr start --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md",
+        "brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md",
         Nothing,
         Says(r#""session": "sess-1""#),
     ),
@@ -180,7 +184,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr permission show $s p1 --json", Approval, Says(r#""oldText""#)),
     // Its references: orchestrate
     (
-        "brnr start --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md",
+        "brnr session new --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md",
         Nothing,
         Says(r#""message": "m1""#),
     ),
@@ -197,17 +201,17 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""dropped": null"#),
     ),
     (
-        "brnr start --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md",
+        "brnr session new --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md",
         Nothing,
         Says(r#""reply": "readme"#),
     ),
     (
-        r#"brnr start --json --stop-when-idle 600 --cwd ~/work/api --prompt "make the api tests pass" -- brnr-claude-adapter"#,
+        r#"brnr session new --json --stop-when-idle 600 --cwd ~/work/api --prompt "make the api tests pass" -- brnr-claude-adapter"#,
         Nothing,
         Says(r#""session": "sess-1""#),
     ),
     (
-        r#"brnr start --json --stop-when-idle 600 --cwd ~/work/web --prompt "make the web tests pass" -- brnr-codex-adapter"#,
+        r#"brnr session new --json --stop-when-idle 600 --cwd ~/work/web --prompt "make the web tests pass" -- brnr-codex-adapter"#,
         Nothing,
         Says(r#""session": "sess-1""#),
     ),
@@ -250,7 +254,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     // setup
     ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
-    ("brnr start --profile work --json --prompt - < task.md", Nothing, Says(r#""session""#)),
+    ("brnr session new --profile work --json --prompt - < task.md", Nothing, Says(r#""session""#)),
     ("brnr skill", Nothing, Says("name: brnr")),
     ("brnr skill orchestrate", Nothing, Says("# Orchestrating workers")),
     ("brnr skill install", Nothing, Says("installed")),

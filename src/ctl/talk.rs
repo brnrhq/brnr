@@ -1,12 +1,12 @@
-//! Starting sessions and talking to them: `start`, `prompt send`, `event
-//! wait`, `prompt cancel`, and `queue list` and `drop`.
+//! Starting sessions and talking to them: `session new` and `resume`,
+//! `prompt send`, `event wait`, `prompt cancel`, and `queue list` and `drop`.
 //!
-//! `start --wait` and `send --wait` print the agent's reply and exit with the
-//! turn's result; `wait` waits for a session to be idle (or for the next
-//! turn, an approval, or its process's exit). Exit status: 0 when the turn
-//! ended normally (`end_turn`), 1 if it failed or stopped for another reason
-//! or its message was dropped (or, waiting for a turn or an approval, the
-//! session closed first), 124 on `--timeout` (see ADR 21 in docs/adr).
+//! `session new --wait` and `send --wait` print the agent's reply and exit
+//! with the turn's result; `wait` waits for a session to be idle (or for the
+//! next turn, an approval, or its process's exit). Exit status: 0 when the
+//! turn ended normally (`end_turn`), 1 if it failed or stopped for another
+//! reason or its message was dropped (or, waiting for a turn or an approval,
+//! the session closed first), 124 on `--timeout` (see ADR 21 in docs/adr).
 //!
 //! `send` (ADR 18 in docs/adr):
 //! - default: a prompt and a turn of its own, sent now if no turn is
@@ -327,14 +327,15 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-// ---- start ---------------------------------------------------------------
+// ---- session new and resume ---------------------------------------------
 
-// A start is atomic (ADR 7 in docs/adr). Everything it needs is read and
-// resolved before the process is launched, and handed to it in one request
-// on its stdin (ADR 8). The process reports on the start channel, a
-// socketpair at its fd 3: the start commits at its ready report, after which
-// the process sends the prompt itself. Until then, `start` going away (or
-// giving up) stops it, and the prompt is never sent.
+// A start, `session new` or `session resume`, is atomic (ADR 7 in
+// docs/adr). Everything it needs is read and resolved before the process is
+// launched, and handed to it in one request on its stdin (ADR 8). The
+// process reports on the start channel, a socketpair at its fd 3: the start
+// commits at its ready report, after which the process sends the prompt
+// itself. Until then, the command going away (or giving up) stops it, and
+// the prompt is never sent.
 
 #[derive(Default)]
 struct StartArgs {
@@ -343,12 +344,13 @@ struct StartArgs {
     prompt: Option<String>,
     files: Vec<String>,
     images: Vec<String>,
-    mode: Option<String>,
-    model: Option<String>,
-    set: Vec<String>,
+    /// `--mode`, `--model`, `--thought-level` and `--option`.
+    settings: request::Settings,
+    /// The session `resume` resumes; none for `new`.
     resume: Option<String>,
     take_over: bool,
     stop_when_idle: Option<u64>,
+    permission_timeout: Option<u64>,
     auth: Option<String>,
     strict: bool,
     wait: bool,
@@ -359,10 +361,25 @@ struct StartArgs {
     agent: Vec<String>,
 }
 
-fn parse_start(args: &[String]) -> Result<StartArgs, String> {
+/// `session new`'s flags, or (`resume`) `session resume`'s, which also
+/// takes the session and `--take-over`.
+fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
     let mut a = StartArgs::default();
+    let mut pairs = Vec::new();
+    let mut by_category: [(&str, Option<String>); 3] =
+        [("mode", None), ("model", None), ("thought-level", None)];
     let mut it = args.iter();
     while let Some(arg) = it.next() {
+        let flag = arg.strip_prefix("--");
+        if let Some((name, set)) = by_category.iter_mut().find(|(name, _)| Some(*name) == flag) {
+            let value = it.next().ok_or(format!("--{name} needs a value"))?;
+            if let Some(was) = set.replace(value.clone())
+                && was != *value
+            {
+                return Err(format!("--{name} {was} and --{name} {value} disagree"));
+            }
+            continue;
+        }
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
             "--profile" => a.profile = Some(value("--profile")?),
@@ -370,15 +387,17 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
             "--prompt" => a.prompt = Some(value("--prompt")?),
             "--file" => a.files.push(value("--file")?),
             "--image" => a.images.push(value("--image")?),
-            "--mode" => a.mode = Some(value("--mode")?),
-            "--model" => a.model = Some(value("--model")?),
-            "--set" => a.set.push(value("--set")?),
-            "--resume" => a.resume = Some(value("--resume")?),
-            "--take-over" => a.take_over = true,
+            "--option" => pairs.push(value("--option")?),
+            "--take-over" if resume => a.take_over = true,
+            "--take-over" => return Err("--take-over goes with session resume".into()),
             "--auth" => a.auth = Some(value("--auth")?),
             "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--stop-when-idle" => {
                 a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
+            }
+            "--permission-timeout" => {
+                let secs = value("--permission-timeout")?;
+                a.permission_timeout = Some(seconds("--permission-timeout", &secs)?);
             }
             "--strict" => a.strict = true,
             "--wait" => a.wait = true,
@@ -389,17 +408,24 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
                 a.agent = it.by_ref().cloned().collect();
                 break;
             }
-            other => return Err(format!("unknown option: {other}")),
+            other if other.starts_with('-') && other != "-" => {
+                return Err(format!("unknown option: {other}"));
+            }
+            _ if resume && a.resume.is_none() => a.resume = Some(arg.clone()),
+            _ => return Err(USAGE.to_owned()),
         }
     }
+    if resume && a.resume.is_none() {
+        return Err(USAGE.to_owned());
+    }
+    let [(_, mode), (_, model), (_, thought_level)] = by_category;
+    let options = settings::options("--option", &pairs)?;
+    a.settings = request::Settings { mode, model, thought_level, options };
     if a.prompt.as_deref() == Some("-") {
         a.prompt = Some(read_stdin()?);
     }
     if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
         return Err("--prompt is empty".into());
-    }
-    if let Some(bad) = a.set.iter().find(|s| !s.contains('=')) {
-        return Err(format!("--set takes <option>=<value>, not {bad}"));
     }
     let has_prompt = a.prompt.is_some() || !a.files.is_empty() || !a.images.is_empty();
     if a.wait && !has_prompt {
@@ -414,14 +440,21 @@ fn parse_start(args: &[String]) -> Result<StartArgs, String> {
     if a.timeout.is_some() && !a.wait {
         return Err("--timeout goes with --wait".into());
     }
-    if a.take_over && a.resume.is_none() {
-        return Err("--take-over goes with --resume".into());
-    }
     Ok(a)
 }
 
-pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
-    let mut a = parse_start(args)?;
+/// `brnr session new`: a process, and the new session it opens.
+pub(super) fn new(args: &[String]) -> Result<ExitCode, String> {
+    start(parse_start(args, false)?)
+}
+
+/// `brnr session resume`: a process, and the session it resumes (ADR 14).
+pub(super) fn resume(args: &[String]) -> Result<ExitCode, String> {
+    start(parse_start(args, true)?)
+}
+
+fn start(mut a: StartArgs) -> Result<ExitCode, String> {
+    let command = if a.resume.is_some() { "session resume" } else { "session new" };
     let blocks = attachments(&a.files, &a.images)?;
     let timeout = match env::var("BRNR_START_TIMEOUT") {
         Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
@@ -491,13 +524,11 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     }
     let mcp_servers =
         h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
-    let options = settings::options("--set", &a.set)?;
-    let settings = request::Settings { mode: a.mode, model: a.model, thought_level: None, options };
     let defaults = request::Settings {
         mode: h.mode.clone(),
-        model: None,
-        thought_level: None,
-        options: h.config.clone(),
+        model: h.model.clone(),
+        thought_level: h.thought_level.clone(),
+        options: h.options.clone(),
     };
     let has_prompt = a.prompt.is_some() || !blocks.is_empty();
     let prompt = has_prompt.then(|| request::Prompt { text: a.prompt.unwrap_or_default(), blocks });
@@ -506,14 +537,14 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     let headless = request::Headless {
         resume: a.resume,
         transcript,
-        settings,
+        settings: a.settings,
         defaults,
         mcp_servers,
         auth: a.auth.or(h.auth.clone()),
         prompt,
         start_timeout: timeout,
         stop_when_idle: a.stop_when_idle.or(h.stop_when_idle),
-        permission_timeout: h.permission_timeout,
+        permission_timeout: a.permission_timeout.or(h.permission_timeout),
         events,
         foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
     };
@@ -578,7 +609,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         if brnr::bug::is_panic(error) {
             // A detached process has no terminal to say where to report it.
             errln!("brnr: {error}");
-            eprintln!("{}", brnr::bug::link(error, "start"));
+            eprintln!("{}", brnr::bug::link(error, command));
             return Ok(ExitCode::FAILURE);
         }
         return Err(error.to_owned());
@@ -610,7 +641,8 @@ fn describe_started(about: &Value) -> String {
     format!("started {} (process {})", text(&about["session"]), about["pid"])
 }
 
-/// `start --foreground`: the signals we get go to the process we started.
+/// `session new --foreground`: the signals we get go to the process we
+/// started.
 fn forward_signals(mut signals: io::PipeReader, pid: i32) {
     use std::io::Read;
     let mut sig = [0];
@@ -619,7 +651,8 @@ fn forward_signals(mut signals: io::PipeReader, pid: i32) {
     }
 }
 
-/// Waits for the process `start --foreground` started and exits as it did.
+/// Waits for the process `session new --foreground` started and exits as it
+/// did.
 fn exit_status(mut child: Child) -> ExitCode {
     use std::os::unix::process::ExitStatusExt;
     match child.wait() {

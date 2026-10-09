@@ -1,6 +1,8 @@
 # 7. A start is atomic and commits at ready
 
 Accepted 2026-10-07. Implemented.
+Amended by 63: `brnr start` is `brnr session new`, and `start --resume`
+`brnr session resume`; each is a start as described here.
 Replaces former decision 4; amends former decisions 21 and 41; resolves
 review item 7.
 Made exact 2026-10-08 (#67): the process used to queue the report for a

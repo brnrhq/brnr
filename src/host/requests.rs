@@ -103,8 +103,8 @@ pub(super) enum PeerOp {
 }
 
 impl Host {
-    /// Started with no editor (`brnr start`): the host opens the session
-    /// itself.
+    /// Started with no editor (`brnr session new` or `resume`): the host
+    /// opens the session itself.
     pub(super) fn begin_headless_start(&mut self) {
         let params = json!({
             "protocolVersion": schema::PROTOCOL_VERSION,
@@ -212,7 +212,7 @@ impl Host {
                 self.end_replay(i);
                 self.sessions[i].state.result(&result);
                 let (flags, profile) = std::mem::take(&mut self.settings);
-                match resolve_settings(&flags, &profile, &self.sessions[i].state, "--set") {
+                match resolve_settings(&flags, &profile, &self.sessions[i].state) {
                     Ok(steps) => self.run_setup(Setup { session, steps, done: vec![], peer: None }),
                     Err(error) => self.fail_start(&error),
                 }
@@ -397,9 +397,9 @@ impl Host {
         self.reply(peer, req_id, json!({ "ok": false, "error": error }));
     }
 
-    /// The commit (ADR 7): brnr start hears of the session before the agent
-    /// gets any work, and if the report can't be written to it, nobody knows
-    /// this session exists. Then the prompt goes.
+    /// The commit (ADR 7): brnr session new hears of the session before the
+    /// agent gets any work, and if the report can't be written to it, nobody
+    /// knows this session exists. Then the prompt goes.
     fn finish_start(&mut self, i: usize) {
         if self.stop_requested {
             return; // The start already failed (timed out), or was stopped.
@@ -426,7 +426,7 @@ impl Host {
         self.begin_stop();
     }
 
-    /// Reports `error` to brnr start if it is still waiting, and in the
+    /// Reports `error` to brnr session new if it is still waiting, and in the
     /// foreground on stderr: a step after the session opened (its mode, a
     /// config option) fails the start as much as opening it does. It ends
     /// with the agent's last lines on stderr (ADR 10).
@@ -567,19 +567,16 @@ impl Capabilities {
 /// from one source fail (P4); a setting the agent has no option for, a v1
 /// mode it doesn't list, or a value its option's type doesn't take fails
 /// before any is sent (P7). The mode goes first, then the model, the
-/// thought level, and the other options by id. `set` is what the flags call
-/// an option by id in errors (`--set` for a start, `--option` for `config
-/// set`).
+/// thought level, and the other options by id.
 pub(super) fn resolve_settings(
     flags: &Settings,
     profile: &Settings,
     state: &SessionState,
-    set: &str,
 ) -> Result<VecDeque<SetupStep>, String> {
     let id = |category| state.option(category).and_then(|o| o["id"].as_str()).map(str::to_owned);
     let ids = [id("mode"), id("model"), id("thought_level")];
-    let flags = Resolved::of(flags, &ids, None, set)?;
-    let profile = Resolved::of(profile, &ids, Some(&flags), set)?;
+    let flags = Resolved::of(flags, &ids, None)?;
+    let profile = Resolved::of(profile, &ids, Some(&flags))?;
     // What the flags set wins, setting by setting.
     let won = |n: usize| flags.by_category[n].clone().or_else(|| profile.by_category[n].clone());
     let mut steps = VecDeque::new();
@@ -639,7 +636,6 @@ impl Resolved {
         s: &Settings,
         ids: &[Option<String>; 3],
         over: Option<&Resolved>,
-        set: &str,
     ) -> Result<Resolved, String> {
         let mut options = s.options.clone();
         let values = [&s.mode, &s.model, &s.thought_level];
@@ -655,11 +651,13 @@ impl Resolved {
                     let what = key.replace('_', " ");
                     return Err(match over {
                         Some(_) => format!(
-                            "the profile's {key} {value} and its config {id}={other} both set \
+                            "the profile's {key} {value} and its options {id}={other} both set \
                              the {what}"
                         ),
                         None => {
-                            format!("--{flag} {value} and {set} {id}={other} both set the {what}")
+                            format!(
+                                "--{flag} {value} and --option {id}={other} both set the {what}"
+                            )
                         }
                     });
                 }
@@ -738,7 +736,7 @@ mod tests {
             options: BTreeMap::from([("fast".into(), fast.into())]),
             ..Settings::default()
         };
-        let resolve = |flags| resolve_settings(&flags, &Settings::default(), &state, "--set");
+        let resolve = |flags| resolve_settings(&flags, &Settings::default(), &state);
         let steps: Vec<_> = resolve(flags("true")).unwrap().into_iter().collect();
         let want = [
             SetupStep::Option {

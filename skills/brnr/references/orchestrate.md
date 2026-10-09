@@ -13,7 +13,7 @@ waiting), so a worker you lose track of doesn't run forever; its process
 stops with its last session.
 
 ```sh
-brnr start --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md
+brnr session new --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md
 ```
 
 ```json
@@ -21,7 +21,7 @@ brnr start --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-c
 ```
 
 `message` is the prompt's id, `pid` the process (for `brnr process stop`).
-`--mode`, `--model` and `--set <option>=<value>` set the session up before
+`--mode`, `--model`, `--thought-level` and `--option <option>=<value>` set the session up before
 the first prompt; leave them out unless the user chose them. A start is atomic: if it
 fails (exit non-zero, the reason on stderr), nothing was sent and nothing is
 left running. Tell the user why; don't start it again with other settings on
@@ -75,7 +75,7 @@ A running turn is cancelled first. The process stops with its last session.
 
 ## Exit statuses
 
-`event wait`, `prompt send --wait` and `start --wait` exit with the turn's
+`event wait`, `prompt send --wait` and `session new --wait` exit with the turn's
 result:
 
 | Status | Means | Do |
@@ -85,7 +85,7 @@ result:
 | 124 | your `--timeout` passed | the worker is still going: wait again, `brnr prompt cancel`, or ask the user |
 
 A worker waiting for an approval doesn't end its turn: `event wait` runs
-until your timeout. `prompt send --wait` and `start --wait` say on stderr
+until your timeout. `prompt send --wait` and `session new --wait` say on stderr
 when an approval comes (`brnr: waiting for approval p1: …`); with
 `event wait`, wait for it too (`--for permission`) or check
 `brnr permission requests --json` when it times out. Then see the approvals
@@ -97,7 +97,7 @@ For a task with one answer, start, wait and stop in one command. stdout is
 the reply and nothing else; `started …` goes to stderr.
 
 ```sh
-brnr start --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md
+brnr session new --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md
 ```
 
 With `--json` the result is one object, as `prompt send --wait`'s, with the
@@ -110,8 +110,8 @@ directory (a git worktree, say) when they edit files: two agents in one
 checkout overwrite each other.
 
 ```sh
-brnr start --json --stop-when-idle 600 --cwd ~/work/api --prompt "make the api tests pass" -- brnr-claude-adapter
-brnr start --json --stop-when-idle 600 --cwd ~/work/web --prompt "make the web tests pass" -- brnr-codex-adapter
+brnr session new --json --stop-when-idle 600 --cwd ~/work/api --prompt "make the api tests pass" -- brnr-claude-adapter
+brnr session new --json --stop-when-idle 600 --cwd ~/work/web --prompt "make the web tests pass" -- brnr-codex-adapter
 ```
 
 Then `brnr event wait <session> --timeout 900 --json` for each, in turn or in
@@ -151,6 +151,6 @@ brnr process stop 4466
 
 `process list` lists brnr's processes (`pid`, `owner`, `agent`,
 `sessions`). Stop only a process you started (its `pid` from
-`start --json`), when closing its sessions isn't enough: `process stop` ends
+`session new --json`), when closing its sessions isn't enough: `process stop` ends
 every session in it. Never stop one whose
 `owner` is `editor`.

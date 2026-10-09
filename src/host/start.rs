@@ -1,5 +1,5 @@
-//! The start channel (ADR 7 in docs/adr): brnr start's end of a socketpair,
-//! at fd 3.
+//! The start channel (ADR 7 in docs/adr): brnr session new's (or `resume`'s)
+//! end of a socketpair, at fd 3.
 //!
 //! Whatever fails before the start commits is reported on it, `{ok: false,
 //! error}`, and stops the process. The commit is the ready report, `{ok:
@@ -8,18 +8,18 @@
 //! (see `finish_start`; `message` is the prompt's `m<n>`). Until then the
 //! channel isn't a peer and nothing else is written on it, so either report
 //! is written there and then, by the event loop, and the commit is that
-//! write succeeding: one that fails (brnr start has gone, though its EOF may
-//! not have reached the event loop yet) abandons the start. A write that
-//! succeeds is as far as the host can know: brnr start may still go before
-//! it reads the report, and the session then carries on, as after any
+//! write succeeding: one that fails (brnr session new has gone, though its EOF
+//! may not have reached the event loop yet) abandons the start. A write that
+//! succeeds is as far as the host can know: brnr session new may still go
+//! before it reads the report, and the session then carries on, as after any
 //! commit. Committed, the channel becomes a peer, subscribed with `--wait`
-//! to the events brnr start follows its turn by, before the prompt goes, so
-//! it misses none of them.
+//! to the events brnr session new follows its turn by, before the prompt goes,
+//! so it misses none of them.
 //!
-//! brnr start never writes on it; the host reads it on a thread for EOF.
-//! brnr start gone before the commit means nobody knows of the session: the
-//! process stops at once (`start-abandoned`). After the commit the session
-//! carries on, whatever brnr start does (P14).
+//! brnr session new never writes on it; the host reads it on a thread for EOF.
+//! brnr session new gone before the commit means nobody knows of the session:
+//! the process stops at once (`start-abandoned`). After the commit the session
+//! carries on, whatever brnr session new does (P14).
 
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
@@ -74,13 +74,13 @@ impl Host {
     }
 
     /// The start channel is let go of, with nothing written to it: how the
-    /// start ended is `main`'s to tell brnr start, on fd 3, as of a start
-    /// that fails before the event loop (see `Host::died_starting`).
+    /// start ended is `main`'s to tell brnr session new, on fd 3, as of a
+    /// start that fails before the event loop (see `Host::died_starting`).
     pub(super) fn release_start_channel(&mut self) {
         self.start_channel = None;
     }
 
-    /// brnr start closed its end of the channel.
+    /// brnr session new closed its end of the channel.
     pub(super) fn start_gone(&mut self, peer: u64) {
         self.peers.remove(&peer);
         if matches!(&self.start_channel, Some(StartChannel::Socket { peer: id, .. }) if *id == peer)
@@ -95,10 +95,10 @@ impl Host {
         self.begin_stop();
     }
 
-    /// The commit: brnr start is told the session, and the message its
+    /// The commit: brnr session new is told the session, and the message its
     /// prompt will be. False if the report can't be written, which abandons
-    /// the start: brnr start has gone, whether or not its EOF has reached
-    /// the event loop yet.
+    /// the start: brnr session new has gone, whether or not its EOF has
+    /// reached the event loop yet.
     pub(super) fn report_ready(&mut self, session: &str, message: Option<&str>) -> bool {
         let Some(channel) = self.start_channel.take() else { return false };
         let mut ready = json!({ "ok": true, "pid": std::process::id(), "session": session });
@@ -123,7 +123,8 @@ impl Host {
         true
     }
 
-    /// Tells brnr start the start failed, if it is still waiting to hear.
+    /// Tells brnr session new the start failed, if it is still waiting to
+    /// hear.
     pub(super) fn report_failure(&mut self, error: &str) {
         let report = json!({ "ok": false, "error": error });
         match self.start_channel.take() {
@@ -151,8 +152,8 @@ static TEST_HOLD_READY: LazyLock<bool> =
 impl Host {
     /// For the tests, with `BRNR_TEST_READY=hold`: the commit is held, once
     /// the host has decided to report ready and before the report is
-    /// written, until brnr start has gone (for up to 30 s), so that it goes
-    /// at the worst moment. `test-ready-held` in the host log says it is
+    /// written, until brnr session new has gone (for up to 30 s), so that it
+    /// goes at the worst moment. `test-ready-held` in the host log says it is
     /// held.
     fn test_hold_ready(&self, stream: &UnixStream) {
         if !*TEST_HOLD_READY {

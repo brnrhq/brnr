@@ -251,7 +251,7 @@
 brnr acp -- brnr-codex-adapter
 brnr acp --profile work          <span class="c"># agent and settings from a profile</span></pre>
         <p>The editor and the agent talk as before. Watching the editor's sessions from outside always works; acting on them (sending, approving, changing the mode) is experimental, and enabled one action at a time in the profile.</p>
-        <p>When the editor goes away, the agent stops the way it would if the editor had started it. <code>brnr start --resume</code> carries on with its session headless.</p>
+        <p>When the editor goes away, the agent stops the way it would if the editor had started it. <code>brnr session resume</code> carries on with its session headless.</p>
       </div>
     </div>
   </section>
@@ -283,13 +283,13 @@ brnr session close $s</pre>
         <p class="intro">Start a headless session and check in on it later.</p>
       </div>
       <div class="body">
-<pre>brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
+<pre>brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
         <p>Approvals wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, in folders named like those of Claude Code's own transcripts.</p>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]
 
-[profiles.work.headless]            <span class="c"># for brnr start</span>
+[profiles.work.headless]            <span class="c"># for brnr session new and resume</span>
 stop_when_idle = 600                <span class="c"># close a session idle 10 minutes</span>
 mode = "acceptEdits"                <span class="c"># the agent's mode, before the first prompt</span></pre>
       </div>

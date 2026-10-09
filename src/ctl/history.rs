@@ -135,8 +135,8 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 /// if its process records none), and the pid of the process serving it, if
 /// one is. A running session's process is asked to have written what it
 /// recorded until now first: a thread of its own writes it, and what was
-/// just seen happen (a turn `start --wait` reported) may not be there yet
-/// (ADR 48).
+/// just seen happen (a turn `session new --wait` reported) may not be there
+/// yet (ADR 48).
 fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
     let hosts = discover()?;
     match find_session(&hosts, arg)? {

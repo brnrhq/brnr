@@ -233,6 +233,18 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     the mode first; two values for one setting, or a setting the agent has
     no option for, fail before anything is sent; a refused one says what was
     set before it.
+  - `adr_0063_new_and_resume_replace_start`: `session new` opens a session
+    and `session resume` resumes it (`session/resume`) with the recorded
+    agent; `--set`, `--resume` and `--take-over` on `new` fail; each
+    says its usage, with the flags they share.
+  - `adr_0063_thought_level_is_the_option_of_its_category`: `--thought-level`
+    and the profile's `thought_level` set the option of that category,
+    after the model and before the prompt; the flag wins over the profile;
+    two values for it from one source, or an agent without one, fail the
+    start before anything is set.
+  - `adr_0063_permission_timeout_flag_wins_over_the_profile`: a shorter
+    `--permission-timeout` denies before the profile's would, and a longer
+    one keeps the profile's from answering.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and

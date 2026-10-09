@@ -93,8 +93,8 @@ pub fn set_mask(sigs: &[c_int]) {
 static TTOU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Lets this process write to its terminal from a background process group:
-/// under `stty tostop` its first write would otherwise stop it. `brnr start
-/// --foreground` runs the host in a group of its own, writing to the
+/// under `stty tostop` its first write would otherwise stop it. `brnr session
+/// new --foreground` runs the host in a group of its own, writing to the
 /// terminal.
 pub fn write_from_background() {
     // SAFETY: signal(2) with SIG_IGN installs no handler and takes no

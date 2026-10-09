@@ -20,6 +20,13 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- `session new` and `resume` take `--thought-level <l>`, the option of
+  category `thought_level`, and `--permission-timeout <s>`, which wins over
+  the profile's `permission_timeout` as the other flags win over theirs
+  (ADR 58, ADR 63).
+
 ### Changed
 
 - **Breaking:** commands are grouped by what they act on,
@@ -60,6 +67,16 @@ brnr's own conventions:
 - **Breaking:** the editor's experimental action `settings` is `config`:
   `experimental = ["config"]` under `[profiles.<name>.editor]`; `settings`
   fails to load (ADR 4, ADR 63).
+- **Breaking:** `brnr start` is `brnr session new`, and
+  `brnr start --resume <s>` is `brnr session resume <s>`, with every flag
+  `start` took but `--set`, which is `--option <o>=<v>`; `start` fails as an
+  unknown command, with no alias. `--take-over` goes with `session resume`
+  only. A start is atomic as before, and `resume` brings a recorded
+  session's cwd, agent and profile as `--resume` did (ADR 7, 14, 63).
+- **Breaking:** a profile's headless `config` is `options`, beside the new
+  `model` and `thought_level`: `config = { model = "opus" }` becomes
+  `model = "opus"` (or `options = { model = "opus" }`). A profile with
+  `config` fails to load, and `brnr doctor` says so (ADR 33, ADR 63).
 
 ## [0.7.0] - 2026-10-09
 

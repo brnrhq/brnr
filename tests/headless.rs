@@ -1,6 +1,6 @@
-//! Headless sessions (`brnr start`) and editors' (`brnr acp`) against a fake
-//! ACP agent (fake_agent.py). Each test gets its own runtime, state and config
-//! directories, and kills whatever it leaves running.
+//! Headless sessions (`brnr session new`) and editors' (`brnr acp`) against a
+//! fake ACP agent (fake_agent.py). Each test gets its own runtime, state and
+//! config directories, and kills whatever it leaves running.
 
 mod common;
 
@@ -34,14 +34,14 @@ fn started_record(env: &Env) -> Value {
     record["event"].clone()
 }
 
-/// A `brnr start` that goes away before the start commits stops the
+/// A `brnr session new` that goes away before the start commits stops the
 /// process at once, whatever it is doing (here, waiting 30 s for the
 /// session), and the agent never gets the prompt.
 #[test]
 fn adr_0007_abandoned_start_sends_no_prompt() {
     let env = Env::new("abandon").agent("NEW_DELAY", "30");
     let mut start = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -55,16 +55,16 @@ fn adr_0007_abandoned_start_sends_no_prompt() {
     assert!(fs::read_to_string(log).unwrap().contains("start-abandoned"));
 }
 
-/// A `brnr start` that goes once the process has decided to report ready,
-/// but before the report is written, hasn't been told the session: the
+/// A `brnr session new` that goes once the process has decided to report
+/// ready, but before the report is written, hasn't been told the session: the
 /// write fails, the start is abandoned as before the commit, and the agent
 /// never gets the prompt (ADR 7). (`BRNR_TEST_READY=hold` holds the commit
-/// there until brnr start has gone.)
+/// there until brnr session new has gone.)
 #[test]
 fn adr_0007_start_gone_as_ready_is_written_sends_no_prompt() {
     let env = Env::new("abandon-ready");
     let mut start = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .env("BRNR_TEST_READY", "hold")
         .stderr(Stdio::null())
         .spawn()
@@ -79,13 +79,13 @@ fn adr_0007_start_gone_as_ready_is_written_sends_no_prompt() {
     assert!(host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
 }
 
-/// A `brnr start --wait` that goes once it has the ready report leaves the
-/// session running, its prompt sent: the start committed (ADR 7, P14).
+/// A `brnr session new --wait` that goes once it has the ready report leaves
+/// the session running, its prompt sent: the start committed (ADR 7, P14).
 #[test]
 fn adr_0007_start_gone_after_ready_leaves_the_session_running() {
     let env = Env::new("after-ready");
     let mut start = env
-        .brnr(&start_args(&["--wait", "--prompt", "hang on"]))
+        .brnr(&new_args(&["--wait", "--prompt", "hang on"]))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -112,7 +112,7 @@ fn adr_0008_start_hands_over_one_request() {
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.headless]\nmode = \"plan\"\n",
     );
-    env.start(&["--set", "model=large", "--stop-when-idle", "60", "--prompt", "hello"]);
+    env.start(&["--option", "model=large", "--stop-when-idle", "60", "--prompt", "hello"]);
     let started = started_record(&env);
     let request = &started["request"];
     assert_eq!(request["agent"][0], AGENT, "{request}");
@@ -139,7 +139,7 @@ fn adr_0008_host_is_not_run_by_hand() {
     let err = env.fails(&["host", "--prompt", "hi", "--", AGENT]);
     assert!(err.contains("not by hand"), "{err}");
     let err = env.fails(&["host"]);
-    assert!(err.contains("brnr start --foreground"), "{err}");
+    assert!(err.contains("brnr session new --foreground"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -181,13 +181,13 @@ fn adr_0008_a_bad_request_is_refused() {
     assert!(env.hosts().is_empty() && env.calls().is_empty());
 }
 
-/// When the session doesn't open in time, `brnr start` says so and the
+/// When the session doesn't open in time, `brnr session new` says so and the
 /// host stops instead of carrying on unseen.
 #[test]
 fn adr_0007_start_timeout_stops_the_host() {
     let env = Env::new("timeout").agent("NEW_DELAY", "4");
     let out = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
@@ -202,7 +202,7 @@ fn adr_0007_start_timeout_stops_the_host() {
 #[test]
 fn adr_0007_empty_prompt_is_refused() {
     let env = Env::new("empty");
-    let out = env.run(&start_args(&["--prompt", " "]));
+    let out = env.run(&new_args(&["--prompt", " "]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("empty"), "{}", stderr(&out));
     assert!(env.hosts().is_empty());
@@ -230,8 +230,8 @@ fn adr_0008_prompt_is_not_on_the_command_line() {
 fn adr_0007_large_prompt_from_stdin() {
     let env = Env::new("bigprompt");
     let prompt = "x".repeat(300_000);
-    let out = env.run_with_stdin(&start_args(&["--prompt", "-"]), prompt.as_bytes());
-    assert!(out.status.success(), "start failed: {}", stderr(&out));
+    let out = env.run_with_stdin(&new_args(&["--prompt", "-"]), prompt.as_bytes());
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     assert_eq!(env.prompts()[0].len(), prompt.len());
     let started = started_record(&env);
@@ -300,7 +300,7 @@ fn stop_reaches_an_agent_out_of_its_group() {
 #[test]
 fn adr_0009_foreground_start_failure_is_reported() {
     let env = Env::new("fg-mode");
-    let out = env.run(&start_args(&["--foreground", "--model", "huge"]));
+    let out = env.run(&new_args(&["--foreground", "--model", "huge"]));
     assert!(!out.status.success(), "exited 0: {}", stderr(&out));
     let says = "setting model huge failed: bad option model=huge";
     assert!(stderr(&out).contains(says), "{}", stderr(&out));
@@ -312,7 +312,7 @@ fn adr_0009_foreground_start_failure_is_reported() {
 fn adr_0009_foreground_close_of_the_last_session() {
     let env = Env::new("fg-close");
     let mut fg = env
-        .brnr(&start_args(&["--foreground", "--quiet"]))
+        .brnr(&new_args(&["--foreground", "--quiet"]))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -348,15 +348,15 @@ fn runtime_files(env: &Env) -> Vec<String> {
     files
 }
 
-/// `brnr start --foreground … | head -1`: the display stops, with a note in
-/// the host log, and the session carries on. Stopped, it records `exited`
+/// `brnr session new --foreground … | head -1`: the display stops, with a note
+/// in the host log, and the session carries on. Stopped, it records `exited`
 /// and leaves nothing behind in the runtime dir.
 #[test]
 fn adr_0009_foreground_outlives_its_stdout() {
     let env = Env::new("fg-head");
     let (reader, writer) = std::io::pipe().unwrap();
     let mut fg = env
-        .brnr(&start_args(&["--foreground", "--prompt", "reply hi"]))
+        .brnr(&new_args(&["--foreground", "--prompt", "reply hi"]))
         .stdout(writer)
         .stderr(Stdio::piped())
         .spawn()
@@ -388,7 +388,7 @@ fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
     let env = Env::new("fg-slow");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "many 80000"];
     let mut fg =
-        env.brnr(&start_args(&args)).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        env.brnr(&new_args(&args)).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     // The session runs to its end while nothing is read.
     let ended = || host_logs(&env).contains(r#""event":"exited""#) && env.hosts().is_empty();
     assert!(wait_for(Duration::from_secs(30), ended), "the session was held up");
@@ -410,7 +410,7 @@ fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
 fn adr_0010_foreground_passes_the_agents_stderr() {
     let env = Env::new("fg-stderr").agent("STDERR", "[session/create] phase=ready \x1b[1m");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "reply hi"];
-    let out = env.run(&start_args(&args));
+    let out = env.run(&new_args(&args));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("[session/create] phase=ready \x1b[1m\n"), "{}", stderr(&out));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("phase=ready"));
@@ -419,15 +419,15 @@ fn adr_0010_foreground_passes_the_agents_stderr() {
 }
 
 /// A start that fails ends its error with the agent's last lines on stderr:
-/// brnr start's, and the foreground's after the agent's stderr itself.
+/// brnr session new's, and the foreground's after the agent's stderr itself.
 #[test]
 fn adr_0010_failed_start_shows_the_agents_stderr() {
     let env = Env::new("errtail").agent("STDERR", "Error: claude CLI not found").agent("EXIT", "1");
-    let err = env.fails(&start_args(&["--prompt", "hi"]));
+    let err = env.fails(&new_args(&["--prompt", "hi"]));
     let want = "the agent exited before the session started. \
                 The agent's last lines on stderr:\n  Error: claude CLI not found\n";
     assert!(err.ends_with(want), "{err}");
-    let out = env.run(&start_args(&["--foreground", "--prompt", "hi"]));
+    let out = env.run(&new_args(&["--foreground", "--prompt", "hi"]));
     assert!(!out.status.success());
     assert_eq!(stderr(&out).matches("Error: claude CLI not found").count(), 2, "{}", stderr(&out));
     assert!(stderr(&out).contains(want), "{}", stderr(&out));
@@ -441,7 +441,7 @@ fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
     let agent = env.dir.join("agent.py");
     let text = "#!/usr/bin/env python3\nimport os, sys\nos.write(2, b'login required: ')\nsys.stdin.read()\n";
     script(&agent, text);
-    let out = (env.brnr(&["start", "--prompt", "hi", "--", agent.to_str().unwrap()]))
+    let out = (env.brnr(&["session", "new", "--prompt", "hi", "--", agent.to_str().unwrap()]))
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
@@ -511,7 +511,7 @@ fn adr_0020_held_messages_are_reported_on_exit() {
 fn adr_0011_a_panic_is_recorded() {
     for on in ["loop", "thread"] {
         let env = Env::new(&format!("panic-{on}"));
-        let args = start_args(&["--prompt", "hang on"]);
+        let args = new_args(&["--prompt", "hang on"]);
         let out = env.brnr(&args).env("BRNR_TEST_PANIC", "1").output().unwrap();
         assert!(out.status.success(), "{}", stderr(&out));
         // Held behind the hanging turn, so dropped when the process dies.
@@ -565,7 +565,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
         env.write_config(&format!(
             "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
         ));
-        let args = if editor { vec!["acp", "--", AGENT] } else { start_args(&["--prompt", "hi"]) };
+        let args = if editor { vec!["acp", "--", AGENT] } else { new_args(&["--prompt", "hi"]) };
         let out =
             env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
         let err = stderr(&out);
@@ -579,7 +579,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
         let line = err.lines().find(|l| l.starts_with(said)).unwrap_or_default();
         assert!(line.ends_with(": a test asked for it"), "{editor}: {err}");
         // Then the link to report it (ADR 45), once.
-        let command = if editor { "acp" } else { "start" };
+        let command = if editor { "acp" } else { "session%20new" };
         let link = format!("&what=%60brnr%20{command}%60%20panicked");
         assert_eq!(err.matches(&link).count(), 1, "{editor}: {err}");
         assert!(err.trim_end().lines().last().unwrap().starts_with(ISSUE_LINK), "{err}");
@@ -622,13 +622,13 @@ fn adr_0045_a_panic_prints_a_link_to_report_it() {
     assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
     assert!(!url.contains(' '), "{url}");
 
-    let args = start_args(&["--foreground", "--prompt", "hi"]);
+    let args = new_args(&["--foreground", "--prompt", "hi"]);
     let out =
         env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(101), "{err}");
     assert_eq!(err.matches(ISSUE_LINK).count(), 1, "{err}");
-    assert!(err.contains("&what=%60brnr%20start%20--foreground%60%20panicked"), "{err}");
+    assert!(err.contains("&what=%60brnr%20session%20new%20--foreground%60%20panicked"), "{err}");
 }
 
 // ---- sending -----------------------------------------------------------
@@ -1001,7 +1001,7 @@ fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
         got.display()
     ));
     let size = 20_000_000;
-    let out = env.run(&start_args(&["--wait", "--prompt", &format!("big {size}")]));
+    let out = env.run(&new_args(&["--wait", "--prompt", &format!("big {size}")]));
     assert!(out.status.success(), "start --wait: {}", stderr(&out));
     assert_eq!(out.stdout.len(), size + 1, "start --wait: {}", stderr(&out));
 
@@ -1101,7 +1101,8 @@ fn adr_0038_adapters_next_to_a_symlinked_brnr() {
     let want = format!("ok    brnr-claude-adapter: {}", bin.join("brnr-claude-adapter").display());
     assert!(doctor.contains(&want), "{doctor}");
 
-    let args = ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
+    let args =
+        ["session", "new", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
@@ -1125,7 +1126,7 @@ fn adr_0038_bridges_next_to_a_symlinked_brnr() {
     let python = String::from_utf8(python.stdout).unwrap();
     let path = format!("{}:/usr/bin:/bin", Path::new(python.trim()).parent().unwrap().display());
 
-    let args = start_args(&["--wait", "--prompt", "reply linked"]);
+    let args = new_args(&["--wait", "--prompt", "reply linked"]);
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     let request = started_record(&env)["request"].clone();
@@ -1352,7 +1353,7 @@ fn adr_0022_transcripts_are_two_files() {
     assert_eq!(list[0]["session"], "sess-1");
     let cwd = fs::canonicalize(&env.dir).unwrap();
     assert_eq!(list[0]["cwd"], cwd.to_string_lossy().as_ref());
-    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.ok(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(project(&env).1, names, "resumed into other files");
     let acp = env.ok(&["event", "log", "sess-1", "--events", "acp", "--json"]);
     assert_eq!(acp.matches(r#""method":"session/prompt""#).count(), 2, "{acp}");
@@ -1363,10 +1364,10 @@ fn adr_0022_transcripts_are_two_files() {
 const COLLIDING: &[&str] =
     &["a/b", "a_b", "x.acp", "x_acp", "Sess-1", "sess-1", "\u{e9}", "e\u{301}"];
 
-/// `brnr start` of the fake agent, its session `id`.
+/// `brnr session new` of the fake agent, its session `id`.
 fn start_as(env: &Env, id: &str) {
     let out =
-        env.brnr(&start_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
+        env.brnr(&new_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
     let out = out.unwrap();
     assert!(out.status.success(), "start {id:?}: {}", stderr(&out));
 }
@@ -1515,7 +1516,7 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     // Resumed: what was there stays, and the next record is on a line of
     // its own.
     fs::write(&file, &cut).unwrap();
-    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.ok(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let after = fs::read(&file).unwrap();
@@ -1763,7 +1764,7 @@ fn runtime_dir_symlink_is_refused() {
     fs::create_dir(&target).unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(&target, env.dir.join("run")).unwrap();
-    let out = env.run(&start_args(&[]));
+    let out = env.run(&new_args(&[]));
     assert!(!out.status.success(), "started in a symlinked runtime dir");
     assert!(fs::read_dir(&target).unwrap().next().is_none(), "wrote into the symlink target");
 }
@@ -1843,7 +1844,7 @@ fn adr_0008_acp_reports_a_config_error() {
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
-    assert!(err.contains("profiles.default: permission_timeout is for brnr start only; it goes under [profiles.default.headless]"), "{err}");
+    assert!(err.contains("profiles.default: permission_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -2254,7 +2255,7 @@ fn adr_0050_an_editors_session_that_cant_be_locked_is_passed_through() {
     assert!(text.contains(&format!("not locked: {why}; nothing stops")), "{text}");
     assert!(env.ok(&["event", "log", "sess-1"]).contains("from the editor"));
     let pid = editor_process(&env)["host_pid"].to_string();
-    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    let err = env.fails(&resume_args("sess-1", &[]));
     assert!(err.contains(&format!("sess-1 is running in process {pid}")), "{err}");
     // A load reaches the agent, as it would with the lock taken.
     unlockable("old-1");
@@ -2304,7 +2305,7 @@ fn adr_0004_take_over_from_an_editor_is_refused() {
     let env = Env::new("ed-takeover");
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let pid = env.pid();
-    let err = env.fails(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let err = env.fails(&resume_args("sess-1", &["--take-over"]));
     let refused = format!(
         "sess-1 is running in process {pid}, an editor's: `close` on an editor's session is \
          experimental"
@@ -2790,7 +2791,7 @@ fn adr_0004_take_over_from_an_editor() {
     let editors = env.pid();
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let out = env.run(&resume_args("sess-1", &["--take-over"]));
     assert!(out.status.success(), "{}", stderr(&out));
     let said = format!("closed sess-1 in process {editors}");
     assert!(stderr(&out).contains(&said), "{}", stderr(&out));

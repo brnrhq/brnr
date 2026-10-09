@@ -95,7 +95,7 @@ fn recovered(env: &Env, unrecorded: bool) {
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3).
-    env.start(&["--resume", "sess-1"]);
+    env.resume("sess-1", &[]);
     assert!(env.ok(&["list"]).contains("sess-1"));
     env.stop();
 }
@@ -108,7 +108,7 @@ fn adr_0007_seeded_setup_failure_never_commits_a_prompt() {
                 .agent("FAULT_PHASE", "setup")
                 .agent("STUBBORN", "child");
             let mut start = env
-                .brnr(&start_args(&["--prompt", "must not run"]))
+                .brnr(&new_args(&["--prompt", "must not run"]))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -240,7 +240,7 @@ fn adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         assert!(host.running() && agent.running());
         assert!(env.ok(&["doctor", "--fix"]).contains("no process died without recording it"));
         assert_eq!(env.host_pid(), host.pid);
-        assert!(env.fails(&start_args(&["--resume", "sess-1"])).contains("running in process"));
+        assert!(env.fails(&resume_args("sess-1", &[])).contains("running in process"));
         env.stop();
         host.gone();
         agent.gone();

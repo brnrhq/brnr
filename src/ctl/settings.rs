@@ -538,7 +538,7 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `start --resume --take-over`: process `pid`, which holds `session`'s
+/// `session resume --take-over`: process `pid`, which holds `session`'s
 /// lock, and the session as its transcript has it once closed there (its
 /// cwd, the process's agent and profile), for the process that resumes it.
 pub(super) fn held<'a>(
@@ -565,7 +565,7 @@ pub(super) fn held<'a>(
     Ok((host, past))
 }
 
-/// `start --resume --take-over`: `owner`, which holds `session`'s lock, closes
+/// `session resume --take-over`: `owner`, which holds `session`'s lock, closes
 /// it as `brnr session close` does, cancelling a running turn, and so lets go
 /// of it (ADR 3) for process `to` to resume. An editor's process does only if
 /// its profile enables the experimental `close`, and tells the editor where the

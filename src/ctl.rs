@@ -3,7 +3,8 @@
 //! grouped by what they act on (ADR 63). `brnr --help` lists them; the
 //! modules have the details:
 //!
-//! - talk.rs: `start`, `prompt send`, `prompt cancel`, `event wait`, `queue`
+//! - talk.rs: `session new`, `session resume`, `prompt send`, `prompt cancel`,
+//!   `event wait`, `queue`
 //! - history.rs: `event log`
 //! - settings.rs: `config get`, `config set`, `prompt commands`, `sessions`,
 //!   `session fork`, `session close`
@@ -19,7 +20,7 @@
 //! whether that process answers or not.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
-//! for `event log`, `event watch` and `start --foreground`).
+//! for `event log`, `event watch` and `session new --foreground`).
 
 use std::collections::HashMap;
 use std::env;
@@ -66,23 +67,28 @@ const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
-  brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
-             [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--stop-when-idle <s>] [--auth <method>] [--resume <session> [--take-over]]
-             [--strict] [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
-             [-- <agent> [args...]]
-             a headless session, in the background (or the foreground)
-
 process
   brnr process list [--json]
   brnr process stop <pid>
 
 session
+  brnr session new [<new flags>] [-- <agent> [args...]]
+                   a process for a headless session, in the background (or the foreground)
+  brnr session resume <session> [--take-over] [<new flags>] [-- <agent> [args...]]
+                   the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
   brnr list [--inactive | --all] [--json]
   brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
+
+<new flags>
+  process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
+           [--permission-timeout <s>] [--foreground [--quiet]]
+  session: [--cwd <dir>] [--mode <m>] [--model <m>] [--thought-level <l>]
+           [--option <o>=<v>]...
+  prompt:  [--prompt <text> | -] [--file <path>]... [--image <path>]...
+           [--wait [--timeout <s>]] [--json]
 
 prompt
   brnr prompt send <session> [--steer | --interrupt | --context [--replace]]
@@ -123,12 +129,12 @@ brnr <group> --help lists a group's commands. <session> is a session's id, as br
 it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid> is a
 brnr process, which runs one agent for one or more sessions, as brnr process list shows them.
 --json prints the same data as the text: one JSON value, or one event per line for event log,
-event watch and start --foreground. --strict is stable ACP only: no --steer into a running
-turn, no session fork.";
+event watch and session new --foreground. --strict is stable ACP only: no --steer into a
+running turn, no session fork.";
 
 /// How long a start may take until it commits, in seconds, unless
 /// `BRNR_START_TIMEOUT` says otherwise. It goes in the start request: the
-/// process fails the start when it passes, and `start` gives up a little
+/// process fails the start when it passes, and `session new` gives up a little
 /// later, for a process stuck too badly to say so.
 const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
@@ -144,6 +150,8 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let result = match (cmd, verb) {
         ("process", Some("list")) => done(ps(rest)),
         ("process", Some("stop")) => done(stop(rest)),
+        ("session", Some("new")) => talk::new(rest),
+        ("session", Some("resume")) => talk::resume(rest),
         ("session", Some("status")) => done(status(rest)),
         ("session", Some("fork")) => settings::fork(rest),
         ("session", Some("close")) => settings::close(rest),
@@ -168,7 +176,6 @@ pub fn main(args: Vec<String>) -> ExitCode {
             Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
         }
         (_, None) if grouped => Err(USAGE.to_owned()),
-        ("start", _) => talk::start(rest),
         ("sessions", _) => settings::sessions(rest),
         ("list", _) => done(list(rest)),
         ("approve", _) => done(answer(rest, "approve")),
@@ -246,6 +253,11 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
     if lines.is_empty() {
         return USAGE.to_owned();
     }
+    // `session new` and `resume` share their flags, listed once.
+    if lines.iter().any(|l| l.contains("<new flags>")) {
+        let flags = USAGE.lines().skip_while(|l| *l != "<new flags>");
+        lines.extend(flags.take_while(|l| !l.is_empty()));
+    }
     format!("usage:\n{}\n(brnr --help for every command)", lines.join("\n"))
 }
 
@@ -315,7 +327,7 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
 fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String), String> {
     match find_session(hosts, arg)? {
         Found::Running(host, id) => Ok((host, id)),
-        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr start --resume {arg}")),
+        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr session resume {arg}")),
     }
 }
 

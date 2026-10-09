@@ -2,8 +2,8 @@
 //! life. brnr calls it a process (`brnr process list`, `--pid`); it isn't a
 //! command of its own in the usage, and isn't run by hand.
 //!
-//! Started detached by `brnr acp` for an editor, or by `brnr start` for a
-//! headless session (detached, or with `--foreground` as its child), with
+//! Started detached by `brnr acp` for an editor, or by `brnr session new` for
+//! a headless session (detached, or with `--foreground` as its child), with
 //! the one request that says everything on its stdin (see request.rs) and
 //! fd 3: the editor link, or the start channel (see start.rs). An editor's
 //! process also has the proxy's signal link on fd 4 (see frame.rs). It is
@@ -14,7 +14,7 @@
 //!   itself when no editor is attached (see acp.rs);
 //! - any number of bridges, speaking JSON lines rather than ACP: children
 //!   started from the profile, processes on the control socket such as
-//!   brnr (see control.rs), and `brnr start` on its start channel.
+//!   brnr (see control.rs), and `brnr session new` on its start channel.
 //!
 //! When the editor goes away, the agent gets what a directly spawned agent
 //! would have: its stdin is closed and it is killed, with its process group
@@ -123,8 +123,8 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     // SAFETY: isatty(3) takes a descriptor number and touches no memory.
     if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
         eprintln!(
-            "brnr host is started by brnr start and brnr acp, not by hand \
-             (brnr start --foreground runs a session in a terminal)"
+            "brnr host is started by brnr session new and brnr acp, not by hand \
+             (brnr session new --foreground runs a session in a terminal)"
         );
         return ExitCode::from(2);
     }
@@ -152,10 +152,10 @@ pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if request.headless().is_some_and(|h| h.foreground.is_some()) {
+    if let Some(h) = request.headless().filter(|h| h.foreground.is_some()) {
         // In a process group of its own, writing to the terminal.
         signals::write_from_background();
-        death::foreground();
+        death::foreground(if h.resume.is_some() { "session resume" } else { "session new" });
     }
     let editor = matches!(request.role, Role::Editor(_));
     // An editor's process doesn't start without its signal link, as it
@@ -212,8 +212,8 @@ fn is_socket(fd: RawFd) -> bool {
 }
 
 /// Where a startup failure is reported, besides stderr: fd 3, as a frame
-/// for the proxy on an editor's link (`true`), or as a line for brnr start
-/// on the start channel.
+/// for the proxy on an editor's link (`true`), or as a line for brnr session
+/// new on the start channel.
 struct Failure {
     channel: Option<(UnixStream, bool)>,
 }
@@ -302,7 +302,7 @@ enum Ev {
     },
     /// A signal sent to the host itself.
     Signal(c_int),
-    /// brnr start closed its end of the start channel.
+    /// brnr session new closed its end of the start channel.
     StartGone {
         peer: u64,
     },
@@ -316,13 +316,13 @@ enum StopStage {
 }
 
 struct Host {
-    /// For `brnr start --foreground`, in a terminal: it says on stderr how
-    /// things go, and exits with the agent's status.
+    /// For `brnr session new --foreground`, in a terminal: it says on stderr
+    /// how things go, and exits with the agent's status.
     foreground: bool,
     /// In the foreground, a failed start has been reported on stderr.
     startup_reported: bool,
     /// The start is over: it has committed (the session is open and set up,
-    /// and brnr start has been told, see `finish_start`), or an editor
+    /// and brnr session new has been told, see `finish_start`), or an editor
     /// attached. Until then, the process stopping is the start failing.
     start_done: bool,
     info: Value,
@@ -351,7 +351,7 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<JoinHandle<()>>,
-    /// brnr start's start channel, until the start commits or fails.
+    /// brnr session new's start channel, until the start commits or fails.
     start_channel: Option<StartChannel>,
     /// When the start fails if it hasn't committed: the request's start
     /// timeout.
@@ -750,7 +750,7 @@ impl Host {
             self.display = Some(Display::start(self.sink.clone(), self.json_events));
         }
 
-        // brnr start hears how the start ends from here.
+        // brnr session new hears how the start ends from here.
         if let Some(channel) = start_channel {
             self.open_start_channel(channel, events, &tx)
                 .map_err(|err| (format!("start channel: {err}"), 1))?;
@@ -794,9 +794,9 @@ impl Host {
     /// recorded as `died` records one, as far as what the start has made
     /// allows (no sessions yet; the log, the display and bridges once they
     /// are there), and the agent killed with its process group (P14).
-    /// brnr start or the editor is told by `main`, on fd 3, as of any start
-    /// that fails before the event loop (see `Failure`), so nothing else is
-    /// to write there: the start channel is let go of, and what is
+    /// brnr session new or the editor is told by `main`, on fd 3, as of any
+    /// start that fails before the event loop (see `Failure`), so nothing else
+    /// is to write there: the start channel is let go of, and what is
     /// queued for the editor (`READY`) goes first. Returns the error and
     /// the exit code.
     fn died_starting(mut self, reason: &str) -> (String, u8) {
@@ -1352,7 +1352,7 @@ impl Host {
     }
 
     /// The start fails when its timeout passes before the commit, rather
-    /// than carry on where nobody knows about it (brnr start gives up
+    /// than carry on where nobody knows about it (brnr session new gives up
     /// waiting a little later).
     fn fire_start_timer(&mut self, now: Instant) {
         if self.start_deadline.is_some_and(|t| now >= t) {

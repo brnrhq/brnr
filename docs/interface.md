@@ -36,23 +36,28 @@ usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
-  brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
-             [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--stop-when-idle <s>] [--auth <method>] [--resume <session> [--take-over]]
-             [--strict] [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
-             [-- <agent> [args...]]
-             a headless session, in the background (or the foreground)
-
 process
   brnr process list [--json]
   brnr process stop <pid>
 
 session
+  brnr session new [<new flags>] [-- <agent> [args...]]
+                   a process for a headless session, in the background (or the foreground)
+  brnr session resume <session> [--take-over] [<new flags>] [-- <agent> [args...]]
+                   the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
   brnr session close <session>
   brnr list [--inactive | --all] [--json]
   brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
+
+<new flags>
+  process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
+           [--permission-timeout <s>] [--foreground [--quiet]]
+  session: [--cwd <dir>] [--mode <m>] [--model <m>] [--thought-level <l>]
+           [--option <o>=<v>]...
+  prompt:  [--prompt <text> | -] [--file <path>]... [--image <path>]...
+           [--wait [--timeout <s>]] [--json]
 
 prompt
   brnr prompt send <session> [--steer | --interrupt | --context [--replace]]
@@ -93,8 +98,8 @@ brnr <group> --help lists a group's commands. <session> is a session's id, as br
 it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid> is a
 brnr process, which runs one agent for one or more sessions, as brnr process list shows them.
 --json prints the same data as the text: one JSON value, or one event per line for event log,
-event watch and start --foreground. --strict is stable ACP only: no --steer into a running
-turn, no session fork.
+event watch and session new --foreground. --strict is stable ACP only: no --steer into a
+running turn, no session fork.
 ```
 
 ## CLI inputs and results
@@ -109,7 +114,7 @@ with the agent's capabilities.
 | Command | Input and effect | Output |
 |---|---|---|
 | `brnr acp` | Editor ACP on stdin; launches the selected agent. | Agent ACP on stdout; diagnostics and agent stderr on stderr. See [editor transport](#editor-transport). |
-| `brnr start` | Opens/resumes a headless session; sets cwd, authentication and settings before an optional prompt. | Startup summary; JSON object with `session`, numeric `pid`, and `message` (null without a prompt). |
+| `brnr session new`, `brnr session resume` | Starts a process for a headless session, new or resumed; sets cwd, authentication and settings before an optional prompt. | Startup summary; JSON object with `session`, numeric `pid`, and `message` (null without a prompt). |
 | `brnr process list` | Lists discovered running hosts. | Table or JSON array of `pid`, `owner`, `agent`, `sessions`, `uptime_seconds`, `cwd`. An unresponsive host has owner `unreachable`. |
 | `brnr process stop` | Stops the specified host and its agent; affects all its sessions. | Stopping acknowledgment; errors on stderr. |
 | `brnr prompt send` | Sends text/attachments to one session. Positional words form the prompt; `-` reads it from stdin. | Acknowledgment with `session`, `status`, and `message`; context-only submissions have no message ID. Status is `delivered`, `held`, `steered` or `interrupting`. With `--wait`, a completed-turn result instead. |
@@ -129,7 +134,7 @@ with the agent's capabilities.
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
 | `brnr config get` | Lists the config options and the agent's v1 modes; `--mode`, `--model`, `--thought-level` (by category) and repeatable `--option <id>` narrow it. One the agent doesn't have fails. | Table of each option, then its choices (the current one marked `*`), or JSON with `session` and `options`, each with `option` (null for the v1 modes), `category`, `value`, `name`, `description`, and `choices`, each with `value`, `name`, `description`. |
-| `brnr config set` | Sets `--mode`, `--model`, `--thought-level` (the option of that category; a mode is `session/set_mode` only with v1 modes and no mode option) and repeatable `--option <id>=<value>`, resolved as `start`'s settings are: two values for one setting fail, each is sent once, the mode first. | One `<option>=<value>` line per setting sent (`mode=` for v1 modes); JSON has `session` and `set`, each with `option`, `category`, `value`. |
+| `brnr config set` | Sets `--mode`, `--model`, `--thought-level` (the option of that category; a mode is `session/set_mode` only with v1 modes and no mode option) and repeatable `--option <id>=<value>`, resolved as `session new`'s settings are: two values for one setting fail, each is sent once, the mode first. | One `<option>=<value>` line per setting sent (`mode=` for v1 modes); JSON has `session` and `set`, each with `option`, `category`, `value`. |
 | `brnr prompt commands` | Lists the agent's advertised slash commands; invoke them by sending text. | JSON has `session` and `commands`, each with `command`, `hint`, `description`. |
 | `brnr doctor` | Checks configuration, permissions, processes and transcripts; `--fix` performs the documented safe repairs. | Check lines or JSON array of `level`, `check`, `message`. `--report` produces Markdown; with `--json`, an object containing `brnr`, `os`, `adapters`, `checks`, `host_logs`. |
 | `brnr skill` | Reads embedded guidance, or a named reference: `orchestrate`, `approvals`, `observe`, `setup`. `install` writes it into each directory's `brnr/` subdirectory. | Markdown, or installed-path messages. Default install roots: `~/.claude/skills`, `~/.agents/skills`. No JSON mode. |
@@ -137,7 +142,7 @@ with the agent's capabilities.
 
 ### Prompts, attachments and lifecycle flags
 
-- `start --prompt -` and `prompt send <session> -` read prompt text from
+- `session new --prompt -` and `prompt send <session> -` read prompt text from
   stdin.
   `--file` and `--image` may repeat; they become ACP content blocks. See
   [files and images](adr/0032-files-and-images.md) for encoding and capability
@@ -146,22 +151,25 @@ with the agent's capabilities.
   turn when supported; `--interrupt` cancels it and sends ahead of held
   prompts. `--context` adds context to the next prompt; `--replace` replaces
   the last context entry. These are distinct modes, not combined flags.
-- `start --resume` selects an existing agent session. `--take-over` requests
-  that its current owner close it first. `--auth` names a noninteractive
+- `session resume <session>` resumes an existing agent session (`session new`
+  opens a new one); they take the same flags. `--take-over`, on `resume`
+  only, requests that its current owner close it first. `--auth` names a noninteractive
   authentication method; credentials/login remain the agent's responsibility.
-- `--mode`, `--model` and repeatable `--set` request startup settings.
-  `--stop-when-idle` is a number of seconds; zero means stop/close as soon as
-  idle. `--timeout` bounds waiting, not the lifetime of the session.
-- `start --wait` requires a prompt or attachment. `start --wait` and
+- `--mode`, `--model`, `--thought-level` and repeatable `--option <id>=<value>`
+  request startup settings, winning over the profile's, setting by setting.
+  `--stop-when-idle` and `--permission-timeout` are numbers of seconds,
+  winning over the profile's `stop_when_idle` and `permission_timeout`;
+  `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session.
+- `--wait` requires a prompt or attachment. `session new --wait` and
   `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
   `session`, `message`, `reply` (string), `stop_reason`, `error`, `dropped`,
-  and `pid` for `start`. Missing error/drop information is null. A command
+  and `pid` for `session new` and `resume`. Missing error/drop information is null. A command
   may fail before a completion object is available.
-- `start --foreground` instead stays attached, displaying event lines;
+- `--foreground` instead stays attached, displaying event lines;
   `--json` makes them JSON lines and `--quiet` suppresses the display.
   Ctrl-C stops the session. It cannot be combined with `--wait`.
-- `--strict` on `acp`/`start` selects stable ACP only. Actions on an editor's
+- `--strict` on `acp`/`session new` selects stable ACP only. Actions on an editor's
   session require the corresponding experimental profile setting. See
   [strict mode](../README.md#strict-mode-and-feature-flags) and
   [experimental actions](../README.md#experimental-actions).
@@ -184,10 +192,10 @@ transcript. Tool, plan and usage data come from the agent.
 | Context | Result |
 |---|---|
 | Ordinary CLI command | 0 on success; 1 for invalid arguments or an operation failure. |
-| `event wait`, `start --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`exit` succeeds when its requested condition occurs. |
+| `event wait`, `session new --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`exit` succeeds when its requested condition occurs. |
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
-| `start --foreground` | Follows the agent's exit status; startup failure is nonzero. |
+| `session new --foreground` | Follows the agent's exit status; startup failure is nonzero. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
@@ -220,7 +228,7 @@ names fail to load. `doctor` validates every profile.
 | Section | Keys and input types |
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
-| `profiles.<name>.headless` | `cwd`, `mode`, `auth`: strings; `config`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. |
+| `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. |
 | `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `approve`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
