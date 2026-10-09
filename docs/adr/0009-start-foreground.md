@@ -3,6 +3,9 @@
 Accepted (former decision 45); reviewed 2026-10-07. Implemented.
 Resolves review item 3 with ADR 6.
 
+Amended by 63: `start --foreground` is `session new --foreground` (and
+`session resume --foreground`), with the same flags.
+
 ## Context
 
 `brnr host` was the way to run a session in the foreground by hand, and its

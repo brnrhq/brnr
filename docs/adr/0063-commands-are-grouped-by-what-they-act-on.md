@@ -1,7 +1,8 @@
 # 63. Commands are grouped by what they act on, with ACP's verbs
 
-Proposed 2026-10-09. Implemented. Supersedes 15. Amends 3, 4, 7, 12, 14,
-16, 18, 19, 20, 21, 27, 28, 33, 35 and 58.
+Proposed 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 7, 9,
+11, 12, 13, 14, 16, 18, 19, 20, 21, 27, 28, 33, 35, 36, 38, 39, 41, 45, 46,
+50, 54, 57 and 58.
 
 ## Context
 

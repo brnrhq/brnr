@@ -3,6 +3,9 @@
 Accepted 2026-10-08. Implemented. Part of #23's answer to error reporting:
 reporting without telemetry (#24).
 
+Amended by 63: `brnr start` is `brnr session new` (and
+`session resume`), and `wait` is `event wait`.
+
 ## Context
 
 A bug report needs the brnr version, the OS, the adapters, what doctor
