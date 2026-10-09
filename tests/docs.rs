@@ -285,7 +285,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKERS: usize = 6;
 
 #[test]
-fn every_example_is_run_or_skipped_and_runs() {
+fn adr_0046_every_example_is_run_or_skipped_and_runs() {
     let (lines, _) = documents();
     let mut problems = Vec::new();
     let mut used = vec![false; EXAMPLES.len()];
@@ -335,7 +335,7 @@ fn every_example_is_run_or_skipped_and_runs() {
 }
 
 #[test]
-fn every_toml_block_loads() {
+fn adr_0046_every_toml_block_loads() {
     let (_, blocks) = documents();
     assert!(!blocks.is_empty());
     let mut problems = Vec::new();

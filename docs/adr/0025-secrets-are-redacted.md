@@ -29,3 +29,15 @@ checked.
 - Keeping them, protected by file permissions only.
 - Not recording these requests at all: the record of the session's opening
   would be lost.
+
+## Tests
+
+Run `cargo test --release adr_0025_`. Named claims and their assertions:
+
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0025_a_resumed_sessions_secrets_are_redacted`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0025_a_profiles_mcp_secrets_are_redacted`.
+  - `adr_0025_an_editors_mcp_secrets_are_redacted`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0025_secrets_are_redacted_keys_and_structure_stay`.

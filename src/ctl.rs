@@ -1139,7 +1139,7 @@ mod tests {
     /// (ADR 55): ending in a newline or not; cut short; a whole line that
     /// isn't a record, last or before the last; empty; nothing readable.
     #[test]
-    fn the_first_and_last_records_are_ones_brnr_can_read() {
+    fn adr_0055_the_first_and_last_records_are_ones_brnr_can_read() {
         let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));
         let cases: [(&str, Option<i64>, Option<i64>); 9] = [
             ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),

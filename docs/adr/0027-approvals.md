@@ -51,3 +51,19 @@ other.
 - `pending -v` for the details: `pending` stays a table, `show` is one
   request in full.
 - Approving on timeout: see above.
+
+## Tests
+
+Run `cargo test --release adr_0027_`. Named claims and their assertions:
+
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0027_an_unanswered_request_waits`.
+  - `adr_0027_a_timeout_never_allows`.
+  - `adr_0027_a_request_is_answered_only_in_its_session`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0027_approve_during_stop_fails`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0027_unanswered_permission_times_out_as_deny`.
+  - `adr_0027_show_explains_a_permission_request`.
+  - `adr_0027_show_escapes_a_spoofed_command`.
+  - `adr_0027_an_option_of_the_other_kind_is_refused`.

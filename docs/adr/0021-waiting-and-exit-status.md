@@ -30,3 +30,19 @@ Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented.
 
 - A command per condition (`wait-idle`, …): one command with `--for` is
   smaller.
+
+## Tests
+
+Run `cargo test --release adr_0021_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0021_send_wait_prints_the_reply`.
+  - `adr_0021_start_wait_prints_the_reply_and_the_turns_result`.
+  - `adr_0021_send_wait_times_out`.
+  - `adr_0021_send_wait_reports_a_permission_request`.
+  - `adr_0021_wait_behind_exits_as_the_last_turn_ended`.
+  - `adr_0021_wait_returns_when_the_session_goes_idle`.
+  - `adr_0021_wait_on_an_idle_session_reports_the_last_turn`.
+  - `adr_0021_huge_timeouts_are_never`.
+  - `adr_0021_wait_for_permission`.
+  - `adr_0021_wait_for_exit`.

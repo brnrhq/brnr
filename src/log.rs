@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn how_the_process_ended_is_never_skipped() {
+    fn adr_0011_how_the_process_ended_is_never_skipped() {
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let sink = Sink(Some((tx, queue.clone())));
@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn past_the_cap_records_are_skipped_and_noted_before_the_next() {
+    fn adr_0006_past_the_cap_records_are_skipped_and_noted_before_the_next() {
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let sink = Sink(Some((tx, queue.clone())));
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records() {
+    fn adr_0006_a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records() {
         let (host, s, t) = (scratch("gap-host"), scratch("gap-s"), scratch("gap-t"));
         let mut writer = Writer {
             head: head(),
@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_write_is_noted_once_the_file_takes_records_again() {
+    fn adr_0006_a_failed_write_is_noted_once_the_file_takes_records_again() {
         let path = scratch("failed");
         let head = head();
         // Open for reading only: no write goes in, as on a full disk.
@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn secrets_are_redacted_keys_and_structure_stay() {
+    fn adr_0025_secrets_are_redacted_keys_and_structure_stay() {
         let env = json!([{ "name": "TOKEN", "value": "t" }]);
         let stdio = json!({ "name": "gh", "command": "gh", "args": [], "env": env });
         let headers = json!([{ "name": "Authorization", "value": "a" }]);

@@ -64,3 +64,12 @@ anywhere in a file, not only at its end.
 - Taking the session's id from the file name when no record can be read:
   the name is a sanitized id (ADR 22), not the id, and there would be no
   cwd, agent or profile to resume it with.
+
+## Tests
+
+Run `cargo test --release adr_0055_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0055_a_transcript_cut_short_is_still_its_sessions`.
+- [src/ctl.rs](../../src/ctl.rs)
+  - `adr_0055_the_first_and_last_records_are_ones_brnr_can_read`.
