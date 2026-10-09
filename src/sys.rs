@@ -42,8 +42,11 @@ pub fn uname() -> Option<(String, String, String)> {
     if unsafe { libc::uname(&mut name) } != 0 {
         return None;
     }
+    // c_char is i8 on some targets and u8 on others (aarch64 Linux): taking
+    // its byte is right for both, where `as u8` is a cast clippy flags on one.
     let field = |chars: &[libc::c_char]| {
-        let bytes: Vec<u8> = chars.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        let bytes: Vec<u8> =
+            chars.iter().map(|c| c.to_ne_bytes()[0]).take_while(|&b| b != 0).collect();
         String::from_utf8_lossy(&bytes).into_owned()
     };
     Some((field(&name.sysname), field(&name.release), field(&name.machine)))
