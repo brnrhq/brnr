@@ -1205,6 +1205,80 @@ fn log_events_leaves_out_the_raw_acp() {
     assert!(!host.iter().any(|r| r["msg"]["method"] == "session/prompt"), "a session's ACP");
 }
 
+/// A transcript that ends partway through a record, as a process that died
+/// mid-write leaves it, is still its session's (ADR 55): `list` takes the
+/// last record it can read, `log` shows everything before the cut and says
+/// where it is, and a resume puts its first record on a line of its own.
+/// Nothing rewrites what was there.
+#[test]
+fn a_transcript_cut_short_is_still_its_sessions() {
+    let env = Env::new("cutshort");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let (dir, _) = project(&env);
+    let file = dir.join("sess-1.jsonl");
+    let listed =
+        || -> Value { serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap() };
+    // Ending in a newline, as written: the last record is `exited`.
+    let whole = fs::read(&file).unwrap();
+    assert!(whole.ends_with(b"\n"));
+    let exited = records(&file).last().unwrap().clone();
+    assert_eq!(exited["event"]["event"], "exited");
+    assert_eq!(listed()[0]["last_active"], exited["ts"]);
+
+    // A record cut short: the session, as of its last whole record.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap()
+        .write_all(br#"{"ts":"partial"#)
+        .unwrap();
+    let cut = fs::read(&file).unwrap();
+    let list = listed();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["last_active"]), (&"sess-1".into(), &exited["ts"]));
+    for json in [false, true] {
+        let args: &[&str] = if json { &["log", "sess-1", "--json"] } else { &["log", "sess-1"] };
+        let out = env.run(args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hi"), "json: {json}");
+        let err = stderr(&out);
+        assert!(err.contains("ends partway through a record (14 bytes), not shown"), "{err}");
+    }
+    assert_eq!(fs::read(&file).unwrap(), cut, "reading it changed it");
+
+    // A complete line that isn't a record, last: the same, and said.
+    fs::write(&file, [&whole[..], b"not a record\n"].concat()).unwrap();
+    assert_eq!(listed()[0]["last_active"], exited["ts"]);
+    let n = whole.iter().filter(|&&b| b == b'\n').count() + 1;
+    let err = stderr(&env.run(&["log", "sess-1"]));
+    assert!(
+        err.contains(&format!("sess-1.jsonl:{n} isn't a record brnr can read, not shown")),
+        "{err}"
+    );
+
+    // Resumed: what was there stays, and the next record is on a line of
+    // its own.
+    fs::write(&file, &cut).unwrap();
+    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let after = fs::read(&file).unwrap();
+    assert!(after.starts_with(&cut), "the transcript was rewritten");
+    assert_eq!(after[cut.len()], b'\n');
+    let out = env.run(&["log", "sess-1"]);
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(log.contains("agent: hi") && log.contains("agent: again"), "{log}");
+    assert!(stderr(&out).contains(&format!("sess-1.jsonl:{n} isn't a record")), "{}", stderr(&out));
+    assert_ne!(listed()[0]["last_active"], exited["ts"]);
+
+    // An empty file says nothing of a session: it isn't one.
+    fs::write(dir.join("empty-1.jsonl"), "").unwrap();
+    assert_eq!(listed().as_array().unwrap().len(), 1);
+    assert!(env.fails(&["log", "empty-1"]).contains("no session empty-1"));
+}
+
 /// A process that exits is listed, and holds its sessions, until its
 /// transcript has `exited`, so that what reads it once the process has gone
 /// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled

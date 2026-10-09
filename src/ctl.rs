@@ -502,18 +502,23 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     past
 }
 
+/// The first record in a file that brnr can read (ADR 55).
 fn first_record(path: &Path) -> Option<Value> {
-    let mut line = String::new();
-    BufReader::new(fs::File::open(path).ok()?).read_line(&mut line).ok()?;
-    serde_json::from_str(&line).ok()
+    let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
+    lines.map_while(Result::ok).find_map(|line| as_record(&line))
 }
 
-/// The last line of a file, read backwards so a long transcript costs no
-/// more than its last record.
+/// The last record in a file that brnr can read, read backwards so a long
+/// transcript costs no more than its last records. A line brnr can't read
+/// is passed over (ADR 55): one a process that died mid-write cut short,
+/// at the end or, once another process has taken the file, before what it
+/// wrote. A line cut short is never read as a record: an object ends only
+/// at its last byte.
 fn last_record(path: &Path) -> Option<Value> {
     use std::io::{Seek, SeekFrom};
     let mut file = fs::File::open(path).ok()?;
     let mut end = file.metadata().ok()?.len();
+    // From `end` to the start of the lines already tried.
     let mut tail: Vec<u8> = Vec::new();
     loop {
         let start = end.saturating_sub(64 * 1024);
@@ -522,15 +527,23 @@ fn last_record(path: &Path) -> Option<Value> {
         file.read_exact(&mut chunk).ok()?;
         chunk.extend_from_slice(&tail);
         tail = chunk;
-        let body = tail.strip_suffix(b"\n").unwrap_or(&tail);
-        if let Some(i) = body.iter().rposition(|&b| b == b'\n') {
-            return serde_json::from_slice(&body[i + 1..]).ok();
+        // Its lines, last first; the first is whole only at the file's start.
+        while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
+            if let Some(found) = as_record(&tail[i + 1..]) {
+                return Some(found);
+            }
+            tail.truncate(i);
         }
         if start == 0 {
-            return serde_json::from_slice(body).ok();
+            return as_record(&tail);
         }
         end = start;
     }
+}
+
+/// A line of a transcript as a record, if it is one.
+fn as_record(line: &[u8]) -> Option<Value> {
+    serde_json::from_slice(line).ok().filter(Value::is_object)
 }
 
 fn agent_name(argv: &Value) -> String {
@@ -1115,5 +1128,40 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
         let cells: Vec<String> =
             row.iter().zip(&widths).map(|(cell, w)| format!("{cell:<w$}")).collect();
         outln!("{}", cells.join("  ").trim_end());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `list` and `--resume` take from a transcript, whatever its end
+    /// (ADR 55): ending in a newline or not; cut short; a whole line that
+    /// isn't a record, last or before the last; empty; nothing readable.
+    #[test]
+    fn the_first_and_last_records_are_ones_brnr_can_read() {
+        let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));
+        let cases: [(&str, Option<i64>, Option<i64>); 9] = [
+            ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"part\n{\"n\":3}\n", Some(1), Some(3)),
+            ("{\"ts\":\"part\n{\"n\":1}\n", Some(1), Some(1)),
+            ("{\"n\":1}\n42\n", Some(1), Some(1)),
+            ("", None, None),
+            ("{\"ts\":\"partial", None, None),
+        ];
+        let n = |r: Option<Value>| r.and_then(|r| r["n"].as_i64());
+        for (text, first, last) in cases {
+            fs::write(&path, text).unwrap();
+            assert_eq!((n(first_record(&path)), n(last_record(&path))), (first, last), "{text:?}");
+        }
+        // Past the 64 KiB a read backwards takes at a time.
+        let long = format!(r#"{{"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
+        let junk = "y".repeat(70_000);
+        fs::write(&path, format!("{{\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut")).unwrap();
+        assert_eq!(n(last_record(&path)), Some(3));
+        let _ = fs::remove_file(path);
     }
 }
