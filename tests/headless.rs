@@ -18,7 +18,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use common::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 // ---- starting ----------------------------------------------------------
 
@@ -119,8 +119,10 @@ fn adr_0008_start_hands_over_one_request() {
     assert_eq!(request["strict"], true);
     assert_eq!(request["log"], "all");
     let headless = &request["role"]["headless"];
-    assert_eq!(headless["mode"], "plan", "{request}");
-    assert_eq!(headless["config"]["model"], "large");
+    // The flags' settings and the profile's, apart (ADR 58).
+    assert_eq!(headless["defaults"]["mode"], "plan", "{request}");
+    assert_eq!(headless["settings"]["config"]["model"], "large");
+    assert!(headless["settings"]["mode"].is_null() && headless["defaults"]["config"] == json!({}));
     assert_eq!(headless["stop_when_idle"], 60);
     assert_eq!(headless["start_timeout"], 120);
     assert_eq!(headless["prompt"]["text"], "hello");
