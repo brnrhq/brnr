@@ -88,9 +88,12 @@ paths in CI.
 The parsers that read bytes from outside brnr have fuzz targets in `fuzz/`
 (frames, ACP lines, the host fed ACP from both sides), which CI fuzzes
 with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:
-`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run host corpus/host
-seeds/host` (`cargo fuzz list` has the others). A crash it finds is fixed
-with a regression test in the main test suite.
+`cd fuzz && mkdir -p corpus/host && cargo +nightly fuzz run -O -a host
+corpus/host seeds/host` (`cargo fuzz list` has the others). `-O -a` builds
+it as CI does: optimized, with debug assertions and overflow checks on, so
+a `debug_assert!` or an integer overflow an input reaches is a crash. (`-O`
+alone turns them off; with neither, cargo-fuzz builds the same as `-O -a`.)
+A crash it finds is fixed with a regression test in the main test suite.
 
 Once a week, `.github/workflows/sanitizers.yml` runs the tests with brnr
 built under AddressSanitizer and under MemorySanitizer, on Linux. To run
@@ -99,7 +102,7 @@ report, also the host's, in `/tmp/reports`:
 
 ```sh
 mkdir -p /tmp/reports
-RUSTFLAGS="-Zsanitizer=address --cfg sanitized" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
+RUSTFLAGS="-Zsanitizer=address --cfg sanitized -Cdebug-assertions" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
   cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu --release
 ls /tmp/reports                # empty: nothing was found
 ```
@@ -164,6 +167,13 @@ aliases or shims.
   they describe. Their examples, and the site's, run as tests
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
   it can't.
+- A change users notice (a command, a flag, an output, a behaviour, a fix)
+  adds its entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md),
+  which follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+  under its change type (Added, Changed, Deprecated, Removed, Fixed,
+  Security): what is now true, in a sentence, with its ADR. A breaking change
+  goes under Changed or Removed, starts with **Breaking:**, and says what to
+  do instead. That section is the next release's notes.
 - Releases are the maintainers' (`release.sh`, in the README).
 
 ## Security

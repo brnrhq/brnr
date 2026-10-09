@@ -406,6 +406,9 @@ struct Host {
     auth: Option<String>,
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
+    /// Headless start: brnr has a transcript of the session resumed, so a
+    /// load's replay isn't recorded again (ADR 57).
+    transcript: bool,
     /// Headless start: what its flags and its profile set, made `setup` once
     /// the session is open and the agent has said which option is which.
     settings: (Settings, Settings),
@@ -619,6 +622,7 @@ impl Host {
             prompt: h.prompt,
             auth: h.auth,
             resume: h.resume,
+            transcript: h.transcript,
             settings: (h.settings, h.defaults),
             setup: Default::default(),
             starting: None,

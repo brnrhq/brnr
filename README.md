@@ -338,6 +338,7 @@ live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
+| `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
@@ -424,9 +425,15 @@ the session (twice kills the agent). A display that can't keep up skips
 events, saying how many (`… 120 events not shown`); stdout closing
 (`| head -1`) ends the display, not the session.
 
-`--resume` uses the agent's `session/resume` (or `session/load`, without
-recording the replayed history again), in the session's cwd, with the agent
-and profile it last had, and appends to the same transcript.
+`--resume` uses the agent's `session/resume` (or `session/load`), in the
+session's cwd, with the agent and profile it last had, and appends to the
+same transcript. A load replays the session's history: brnr records it, as
+events marked `replayed`, only when it has no transcript of the session (one
+it has never seen, or whose transcript is gone), so repeated loads don't
+record it twice. A `history` event says how many updates were replayed and
+whether they were recorded. brnr's transcript has only what happened through
+brnr: turns taken in the agent's own client, or with `log = false`, aren't
+in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
 `brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody
@@ -585,7 +592,11 @@ never waits for the disk; `log` of a running session first waits until its
 process has written what it recorded until then (up to 5 s, then it says so
 and shows what is there), so a turn `start --wait` just reported is in it,
 and a process that exits is listed until its transcript has its `exited` (2 s
-at most). A process killed (SIGKILL) loses what it hadn't written yet. Every record
+at most). A process killed (SIGKILL) loses what it hadn't written yet, and
+may leave its last record cut short: the session is still listed, logged and
+resumed as of its last whole record, `log` says on stderr which lines it
+couldn't read, and the next process starts on a new line; brnr never rewrites
+a transcript. Every record
 carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
 `log = "events"` leaves out the raw file, most of the space; `log = false`
 writes nothing.
@@ -702,6 +713,13 @@ the panic, and in the foreground by the process itself.
 ./release.sh tag       # once it's merged: tags, releases, updates the Homebrew tap
 ./release.sh notes     # what the release pull request would say
 ```
+
+A release's notes are its section of [CHANGELOG.md](CHANGELOG.md), in
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) form, which
+pull requests add to under `[Unreleased]`. `./release.sh minor` names that
+section for the version on the release branch and moves its compare links,
+`./release.sh tag` won't tag a version without one, and the release workflow
+publishes it as the GitHub release's notes, or fails (ADR 40).
 
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.

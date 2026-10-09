@@ -12,7 +12,10 @@
 # they drive (CARGO_BIN_EXE_brnr, under target/<triple>) are both built that
 # way, with --cfg sanitized, which gives json.rs's deep stacks room for the
 # bigger frames and skips the tests' memory caps, which the sanitizer's own
-# memory would break.
+# memory would break. And with debug assertions and overflow checks on
+# (-Cdebug-assertions, which --release otherwise leaves off), in std too: a
+# debug_assert!, an integer overflow or one of std's checks of an unsafe
+# function's preconditions fails the test it happens in.
 #
 # A report in brnr's own process fails its test, but most of brnr runs in
 # processes the tests only see the output of: the host is a grandchild that
@@ -49,8 +52,8 @@ jobs:
         sanitizer: [address, memory]
     runs-on: ubuntu-latest
     env:
-      RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized
-      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized
+      RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized -Cdebug-assertions
+      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }} --cfg sanitized -Cdebug-assertions
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

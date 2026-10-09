@@ -69,6 +69,9 @@ pub struct Editor {
 pub struct Headless {
     /// Resume this session instead of opening a new one.
     pub resume: Option<String>,
+    /// brnr has a transcript of the session resumed: what a `session/load`
+    /// replays is in it already, and isn't recorded again (ADR 57).
+    pub transcript: bool,
     /// What the start's flags set (`--mode`, `--model`, `--set`), and what
     /// the profile does (`mode`, `config`): the flags win, setting by
     /// setting, once the agent has said which option is which (ADR 58).

@@ -25,10 +25,14 @@
 //!   or the CLI, until `permission_timeout` denies them; how much the agent
 //!   asks is the agent's mode (`--mode`, see ADR 27 in docs/adr).
 //!   Elicitation is declined, and anything else gets "method not found".
-//! - While `session/load` replays a resumed session's history, the replayed
-//!   updates are neither recorded nor turned into events: the transcript has
-//!   them already. What they say the session is now (its title, mode, config
-//!   options and commands) is kept.
+//! - While a headless `session/load` replays a resumed session's history
+//!   (ADR 57): if brnr has a transcript of the session, the replayed updates
+//!   are neither recorded nor turned into events, as the transcript has them
+//!   already, but what they say the session is now (its title, mode, config
+//!   options and commands) is kept. If it has none, they are recorded and
+//!   made into events as live ones would be, the user's messages too, each
+//!   marked `replayed`. Either way a `history` event says which, and how many
+//!   updates the agent replayed.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3); with
@@ -98,6 +102,14 @@ impl Held {
     }
 }
 
+/// A headless `session/load`'s replay of history, while it lasts (ADR 57).
+pub(super) struct Replay {
+    /// Recorded and made into events: brnr has no transcript of the session.
+    pub(super) record: bool,
+    /// The updates the agent has replayed.
+    pub(super) updates: u64,
+}
+
 pub(super) struct Session {
     pub(super) id: String,
     pub(super) cwd: PathBuf,
@@ -129,7 +141,7 @@ pub(super) struct Session {
     /// When the running turn started.
     pub(super) turn_started: Option<Instant>,
     /// `session/load` is replaying history (see the module docs).
-    pub(super) replaying: bool,
+    pub(super) replay: Option<Replay>,
     /// Since when nothing has been running, held or waiting for an answer
     /// (see `fire_idle_timers`); `idle_done` once its time ran out.
     idle_since: Option<Instant>,
@@ -560,22 +572,22 @@ impl Host {
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
             (method, None) => {
                 let session = param_session(&msg);
-                let replaying = session
-                    .as_deref()
-                    .and_then(|s| self.find(s))
-                    .is_some_and(|i| self.sessions[i].replaying);
-                if replaying {
-                    // History the transcript has already; no editor to show it.
-                    if method.as_deref() == Some("session/update")
-                        && let Some(i) = session.as_deref().and_then(|s| self.find(s))
-                    {
-                        self.replayed_state(i, &msg["params"]["update"]);
-                    }
-                    return;
-                }
-                if method.as_deref() == Some("session/update")
-                    && let Some(session) = &session
+                let update = method.as_deref() == Some("session/update");
+                let i = session.as_deref().and_then(|s| self.find(s));
+                if let Some(i) = i
+                    && let Some(replay) = &mut self.sessions[i].replay
                 {
+                    replay.updates += u64::from(update);
+                    if !replay.record {
+                        // History the transcript has already; no editor to
+                        // show it.
+                        if update {
+                            self.replayed_state(i, &msg["params"]["update"]);
+                        }
+                        return;
+                    }
+                }
+                if update && let Some(session) = &session {
                     self.track_update(session, &msg["params"]["update"]);
                 }
                 self.record(session.as_deref(), Dir::AgentToEditor, line);
@@ -875,6 +887,11 @@ impl Host {
         let (text_kind, chunk) = match &update {
             SessionUpdate::AgentMessageChunk(chunk) => ("agent_message", chunk),
             SessionUpdate::AgentThoughtChunk(chunk) => ("agent_thought", chunk),
+            // Live, a user's message is the prompt's; replayed, only the
+            // agent has it (ADR 57).
+            SessionUpdate::UserMessageChunk(chunk) if self.sessions[i].replay.is_some() => {
+                ("user_message", chunk)
+            }
             // These end the agent message (or thought) being assembled;
             // bookkeeping updates (usage, commands, mode) don't.
             SessionUpdate::UserMessageChunk(_)
@@ -1391,7 +1408,7 @@ impl Host {
             agent_message_id: None,
             state: SessionState::default(),
             turn_started: None,
-            replaying: false,
+            replay: None,
             idle_since: None,
             idle_done: false,
             last_active: SystemTime::now(),

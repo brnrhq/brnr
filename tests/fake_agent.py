@@ -22,6 +22,7 @@ with environment variables:
   PERMISSION=1      ask permission (kind edit) before answering a prompt
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
+  NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
@@ -531,7 +532,7 @@ for line in sys.stdin.buffer:
         if env("STALL"):
             time.sleep(100000)
     elif method in ("session/resume", "session/load"):
-        if method == "session/load":
+        if method == "session/load" and not env("NO_HISTORY"):
             update(
                 sid,
                 {

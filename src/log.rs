@@ -61,7 +61,7 @@ use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -345,7 +345,7 @@ impl Logger {
         let mut writer = Writer {
             head: Head { ids, proxy_pid },
             acp,
-            host: Out::new(host),
+            host,
             host_path: path.clone(),
             sessions: HashMap::new(),
             queue: queue.clone(),
@@ -464,17 +464,14 @@ impl Writer {
         let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
         let events = match self.open_file(now, &path) {
-            Ok(file) => Out::new(file),
+            Ok(out) => out,
             Err(err) => return self.failed(now, &session, &path, &err),
         };
         let (mut acp, mut acp_path) = (None, None);
         if self.acp {
             let raw = paths::acp_log(&path);
             match self.open_file(now, &raw) {
-                Ok(file) => {
-                    (acp, acp_path) =
-                        (Some(Out::new(file)), Some(raw.to_string_lossy().into_owned()))
-                }
+                Ok(out) => (acp, acp_path) = (Some(out), Some(raw.to_string_lossy().into_owned())),
                 Err(err) => self.failed(now, &session, &raw, &err),
             }
         }
@@ -497,10 +494,10 @@ impl Writer {
 
     /// Opens `path` (see [`open_append`]), noting in the host log what it
     /// made private.
-    fn open_file(&mut self, ts: SystemTime, path: &Path) -> io::Result<File> {
-        let (file, made) = open_append(path)?;
+    fn open_file(&mut self, ts: SystemTime, path: &Path) -> io::Result<Out> {
+        let (out, made) = open_append(path)?;
         self.made_private(ts, made);
-        Ok(file)
+        Ok(out)
     }
 
     /// Notes in the host log each path that was made private, with the mode
@@ -754,9 +751,17 @@ type Made = Vec<(PathBuf, u32)>;
 /// Opens `path`, under the state directory, for appending, so a session's
 /// file grows across hosts that serve it. Transcripts hold prompts and tool
 /// output, so what it writes to is private to the user (ADR 59; see
-/// [`open_private`]).
-fn open_append(path: &Path) -> io::Result<(File, Made)> {
-    open_private(&paths::state_dir(), path)
+/// [`open_private`]). A file that ends partway through a line (a process
+/// that died mid-write) is left as it is, and the next record starts on a
+/// line of its own (ADR 55).
+fn open_append(path: &Path) -> io::Result<(Out, Made)> {
+    let (file, made) = open_private(&paths::state_dir(), path)?;
+    let mut last = *b"\n";
+    let len = file.metadata()?.len();
+    if len > 0 {
+        file.read_exact_at(&mut last, len - 1)?;
+    }
+    Ok((Out { cut: last[0] != b'\n', ..Out::new(file) }, made))
 }
 
 /// Opens `path` under `root` for appending, private to the user before
@@ -789,8 +794,9 @@ fn open_private(root: &Path, path: &Path) -> io::Result<(File, Made)> {
         here.push(name);
         let name = CString::new(name.as_bytes()).map_err(|e| at(&here, e.into()))?;
         if names.peek().is_none() {
-            // Not blocked by a FIFO put there; a regular file ignores it.
-            let flags = libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT | libc::O_NONBLOCK;
+            // Read too, for its last byte (ADR 55). Not blocked by a FIFO
+            // put there; a regular file ignores O_NONBLOCK.
+            let flags = libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_NONBLOCK;
             let file = sys::openat(dir.as_fd(), &name, flags | libc::O_NOFOLLOW, 0o600);
             let file = file.map_err(|e| at(&here, e))?;
             keep_private(&file, &here, false, &mut made)?;
