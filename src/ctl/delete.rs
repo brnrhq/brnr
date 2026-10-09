@@ -12,9 +12,11 @@
 //! Without `--purge` the transcript stays, and `session_deleted` is appended
 //! to it, a record of no process's (`host_id` null: none has the session
 //! open). With it, the events file and the raw ACP are deleted (see
-//! `log::purge`), but not the host logs, which are shared; an agent that
-//! didn't delete the session (it may no longer have it) is said, and the
-//! transcript is deleted all the same (P3).
+//! `log::purge`), but not the host logs, which are shared, whatever the
+//! agent answered. An agent that doesn't have the session (ACP's
+//! `resource_not_found`) is said, and the command succeeds; any other error,
+//! or no answer, is said, and the command fails: the agent may still have
+//! the session (P3, P7).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -22,6 +24,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
+use brnr::schema::ErrorCode;
 use brnr::{lock, log};
 
 use super::sessions::{Asked, named_agent};
@@ -85,8 +88,11 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
         return Err("the agent can't delete sessions (no sessionCapabilities.delete)".into());
     }
     let agent_pid = asked.pid();
-    let answer = asked.ask("session/delete", json!({ "sessionId": id })).map(drop);
+    let answer = asked.answer("session/delete", json!({ "sessionId": id })).map(drop);
     drop(asked);
+    // The agent doesn't have it: nothing of it is left there to delete.
+    let gone = matches!(answer, Err((Some(ErrorCode::ResourceNotFound), _)));
+    let answer = answer.map_err(|(_, why)| why);
     if let (Err(error), false) = (&answer, purge) {
         return Err(error.clone());
     }
@@ -97,10 +103,15 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
             if purged.is_empty() && failed.is_empty() {
                 return Err(format!("{error}; brnr has no transcript of {id}"));
             }
-            errln!(
-                "brnr: the agent didn't delete {id} ({error}): it may no longer have it; deleted \
-                 brnr's transcript of it all the same"
-            );
+            match gone {
+                true => errln!(
+                    "brnr: the agent doesn't have {id} ({error}); deleted brnr's transcript of it"
+                ),
+                false => errln!(
+                    "brnr: the agent didn't delete {id} ({error}): it may still have it; deleted \
+                     brnr's transcript of it all the same"
+                ),
+            }
         }
     } else {
         let event = json!({
@@ -141,11 +152,11 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
             outln!("  {path}");
         }
     }
-    if failed.is_empty() {
-        return Ok(ExitCode::SUCCESS);
-    }
     for why in &failed {
         errln!("brnr: not deleted: {why}");
     }
-    Ok(ExitCode::FAILURE)
+    match failed.is_empty() && (answer.is_ok() || gone) {
+        true => Ok(ExitCode::SUCCESS),
+        false => Ok(ExitCode::FAILURE),
+    }
 }

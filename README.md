@@ -388,9 +388,11 @@ brnr's transcript stays, still listed by `session list`, with a
 `session_deleted` in it, a record of no process's (its `host_id` null).
 `--purge` deletes the transcript too, the session's events file and raw ACP
 in each project folder under `BRNR_HOME`, and nothing else: the host logs
-are shared and stay. With `--purge`, an agent that didn't delete the session
-(it may no longer have it) is said on stderr, and the transcript is deleted
-all the same. An editor's `session/delete` through `brnr acp` goes to the
+are shared and stay, and does so whatever the agent answered. With
+`--purge`, the command exits 0 only if the agent deleted the session or
+doesn't have it (ACP's `resource_not_found`, said on stderr); any other
+error, or no answer, is said and exits non-zero: the agent may still have
+the session. An editor's `session/delete` through `brnr acp` goes to the
 agent as it is; once the agent has deleted the session, the editor's process
 records `session_deleted` too, and closes the session if it had it open.
 

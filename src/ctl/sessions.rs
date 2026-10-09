@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
+use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
 use brnr::{config, json, lock, paths, spawn, sys};
 
 use super::{Host, USAGE, agent_name, discover, inactive_sessions, print_json, print_table, when};
@@ -315,17 +315,27 @@ impl Asked {
 
     /// Sends a request and waits for its answer: its result, or its error.
     pub(super) fn ask(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.answer(method, params).map_err(|(_, why)| why)
+    }
+
+    /// As [`ask`](Self::ask), with the code of the agent's error when it
+    /// answered with one: none when it didn't answer.
+    pub(super) fn answer(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, (Option<ErrorCode>, String)> {
         let id = self.next_id;
         self.next_id += 1;
         let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let stdin = self.stdin.as_mut().ok_or("the agent's stdin is closed")?;
-        writeln!(stdin, "{req}").map_err(|e| format!("the agent: {e}"))?;
+        let stdin = self.stdin.as_mut().ok_or((None, "the agent's stdin is closed".to_owned()))?;
+        writeln!(stdin, "{req}").map_err(|e| (None, format!("the agent: {e}")))?;
         loop {
             let wait = self.deadline.saturating_duration_since(Instant::now());
             let line = self
                 .lines
                 .recv_timeout(wait)
-                .map_err(|_| format!("the agent didn't answer {method}"))?;
+                .map_err(|_| (None, format!("the agent didn't answer {method}")))?;
             // As the host reads it (see json.rs): a title cut mid-emoji is no
             // reason to miss the answer.
             let line = line.as_bytes();
@@ -335,7 +345,11 @@ impl Asked {
             };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
-                    return Err(format!("{method} failed: {}", schema::error_message(error)));
+                    let code = schema::read::<Error>(error).map(|e| e.code);
+                    return Err((
+                        code,
+                        format!("{method} failed: {}", schema::error_message(error)),
+                    ));
                 }
                 return Ok(msg["result"].clone());
             }

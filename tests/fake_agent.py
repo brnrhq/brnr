@@ -66,7 +66,7 @@ $/cancel_request for the prompt that hangs answers it with an error, -32800.
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would, a page each. session/load replays a question, an answer and a title. session/delete
 deletes any session but one whose id starts with gone, which it doesn't have
-(-32002).
+(-32002), or stuck, which it fails to delete (-32603).
 
 A client whose initialize advertises boolean config options
 (clientCapabilities.session.configOptions.boolean) also gets a boolean option,
@@ -582,6 +582,8 @@ for line in sys.stdin.buffer:
     elif method == "session/delete" and not env("NO_DELETE"):
         if sid.startswith("gone"):
             error(mid, -32002, f"Session not found: {sid}")
+        elif sid.startswith("stuck"):
+            error(mid, -32603, f"Can't delete {sid}")
         else:
             result(mid, {})
     elif method == "session/list":

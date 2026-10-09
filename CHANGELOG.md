@@ -35,8 +35,9 @@ brnr's own conventions:
   delete sessions. brnr's transcript stays, with a new `session_deleted`
   event in it, as it does for an editor's `session/delete` through
   `brnr acp`. `--purge` also deletes brnr's transcript of the session (its
-  events and raw ACP files, not the host logs), even if the agent no longer
-  has it (ADR 63).
+  events and raw ACP files, not the host logs) whatever the agent answered,
+  and exits non-zero unless the agent deleted the session or doesn't have it
+  (`resource_not_found`) (ADR 63).
 
 ### Changed
 

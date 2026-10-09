@@ -3180,8 +3180,8 @@ fn adr_0063_delete_a_session_only_the_agent_knows() {
 
 /// `--purge` also deletes brnr's transcript of the session, its events and
 /// raw ACP, and nothing else: another session's files and the host logs stay.
-/// An agent that no longer has the session is said, and the transcript is
-/// deleted all the same.
+/// An agent that doesn't have the session (`resource_not_found`) is said, the
+/// transcript is deleted all the same, and the command succeeds.
 #[test]
 fn adr_0063_delete_purge() {
     let env = Env::new("c-purge").agent("SESSION_ID", "gone-1");
@@ -3209,8 +3209,8 @@ fn adr_0063_delete_purge() {
     let err = stderr(&out);
     assert!(
         err.contains(
-            "the agent didn't delete gone-1 (session/delete failed: Session not found: gone-1): it \
-             may no longer have it"
+            "the agent doesn't have gone-1 (session/delete failed: Session not found: gone-1); \
+             deleted brnr's transcript of it"
         ),
         "{err}"
     );
@@ -3222,6 +3222,31 @@ fn adr_0063_delete_purge() {
     assert_eq!(env.ok(&["session", "list", "--json"]).trim(), "[]");
     // The host logs are shared, and stay.
     assert_eq!(fs::read_dir(env.dir.join("home/hosts")).unwrap().count(), hosts);
+}
+
+/// With `--purge`, an agent whose `session/delete` fails otherwise may still
+/// have the session: its error is said and the command fails, but brnr's
+/// transcript is deleted all the same.
+#[test]
+fn adr_0063_delete_purge_fails_when_the_agent_does() {
+    let env = Env::new("c-purge-stuck").agent("SESSION_ID", "stuck-1");
+    ended(&env, &[]);
+    assert_eq!(transcript_files(&env), ["stuck-1.acp.jsonl", "stuck-1.jsonl"]);
+    let out = env.run(&["session", "delete", "stuck-1", "--purge", "--json"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains(
+            "the agent didn't delete stuck-1 (session/delete failed: Can't delete stuck-1): it \
+             may still have it; deleted brnr's transcript of it all the same"
+        ),
+        "{err}"
+    );
+    let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["deleted"], false, "{json}");
+    assert_eq!(json["error"], "session/delete failed: Can't delete stuck-1", "{json}");
+    assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
+    assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
 }
 
 /// A session open in a process isn't deleted, with `--purge` or without:
