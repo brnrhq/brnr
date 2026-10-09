@@ -89,3 +89,21 @@ Who gives way depends on who the reader is (P6).
 - An unbounded buffer for the foreground (more of the memory problem), or
   blocking the host on it (it stops the control socket, the agent's traffic
   and signals).
+
+## Tests
+
+Run `cargo test --release adr_0006_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0006_slow_watcher_is_disconnected`.
+  - `adr_0006_reading_watcher_stays_connected`.
+  - `adr_0006_huge_message_reaches_watchers`.
+  - `adr_0006_big_message_to_a_lagging_watcher`.
+  - `adr_0006_every_watcher_sees_the_exit`.
+  - `adr_0006_a_stalled_disk_skips_records_and_says_so`.
+  - `adr_0006_editor_that_stops_reading_holds_the_agent_back`.
+  - `adr_0006_a_stalled_agent_holds_the_editor_back`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0006_past_the_cap_records_are_skipped_and_noted_before_the_next`.
+  - `adr_0006_a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records`.
+  - `adr_0006_a_failed_write_is_noted_once_the_file_takes_records_again`.

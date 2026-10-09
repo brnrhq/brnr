@@ -47,3 +47,13 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
   heuristic, which withholds the editor's bytes.
 - Leaving serde_json's limits and only no longer dropping unknown ids: the
   lone surrogate, the case that happens, would still go untracked.
+
+## Tests
+
+Run `cargo test --release adr_0026_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0026_a_lone_surrogate_is_read`.
+  - `adr_0026_deep_nesting_is_read`.
+  - `adr_0026_an_answer_the_host_cant_place_reaches_the_agent`.
+  - `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`.

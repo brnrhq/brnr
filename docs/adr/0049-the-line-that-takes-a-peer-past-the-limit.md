@@ -41,3 +41,10 @@ macOS runner, and under load locally: a `watch --events all` of a burst of
 - Raising the limit: a longer message would do the same.
 - A time instead (behind for so long): ADR 6 left times out for observers,
   and a stopped peer would hold memory for that long.
+
+## Tests
+
+Run `cargo test --release adr_0049_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0049_a_long_message_doesnt_put_a_watcher_behind`.

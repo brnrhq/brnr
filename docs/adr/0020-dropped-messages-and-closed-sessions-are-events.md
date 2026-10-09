@@ -47,3 +47,17 @@ an `undelivered` list in `exited`.
 - A distinct exit status for "never ran": one more code for scripts to
   learn; the difference is in stderr and `--json`.
 - Keeping `undelivered` in `exited`: two kinds of record for one thing.
+
+## Tests
+
+Run `cargo test --release adr_0020_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0020_held_messages_are_reported_on_exit`.
+  - `adr_0020_editor_close_is_an_event`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0020_send_wait_on_a_dropped_message`.
+  - `adr_0020_queue_lists_and_drops`.
+  - `adr_0020_close_ends_what_follows_the_session`.
+  - `adr_0020_idle_close_is_an_event`.
+  - `adr_0020_dropped_context_is_an_event`.
