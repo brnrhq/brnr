@@ -92,7 +92,7 @@ written for this document.
 | The control socket is 0600, the directory 0700, the session locks' directory 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
 | Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl.rs) | `headless.rs`: `metadata_names_its_own_socket` |
-| Session locks are held to the runtime directory's terms and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused (ADR 50). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_result` (src/host/requests.rs) | `security.rs`: `session_locks_are_private_and_never_followed`; `cli.rs`: `a_new_session_that_cant_be_locked_isnt_started`, `a_resume_that_cant_be_locked_isnt_started`, `a_fork_that_cant_be_owned_is_refused` |
+| Session locks are held to the runtime directory's terms and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused (ADR 50). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0050_a_new_session_that_cant_be_locked_isnt_started`, `adr_0050_a_resume_that_cant_be_locked_isnt_started`, `adr_0050_a_fork_that_cant_be_owned_is_refused` |
 | brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); ADR 44 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
 | `doctor` fails a runtime directory others can use, and `--fix` tightens it but never through a symlink. | `runtime_dir`, `private_problem`, `fixable` (src/ctl/doctor.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed` |
 
@@ -107,30 +107,30 @@ written for this document.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too; the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it | `security.rs`: `acp_passes_bytes_unchanged` |
-| The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `acp_passes_stderr_and_the_exit_status` |
-| The named changes: the editor's `fs` and `terminal` capabilities are dropped, but in strict mode (ADR 2, ADR 41). | `drop_capabilities` (src/host/acp.rs) | `headless.rs`: `fs_and_terminal_pass_through_only_in_strict_mode` |
-| The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `an_editors_load_of_a_held_session_is_refused`, `shared_sessions_let_an_editor_load_a_held_session` |
-| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `experimental_actions_are_refused_without_opt_in`, `strict_mode_has_no_experimental_actions`, `approve_answers_in_the_editors_place`, `a_late_answer_to_a_cancelled_request_is_dropped` |
+| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too; the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it | `security.rs`: `adr_0002_acp_passes_bytes_unchanged` |
+| The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0002_acp_passes_stderr_and_the_exit_status` |
+| The named changes: the editor's `fs` and `terminal` capabilities are dropped, but in strict mode (ADR 2, ADR 41). | `drop_capabilities` (src/host/acp.rs) | `headless.rs`: `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode` |
+| The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0042_shared_sessions_let_an_editor_load_a_held_session` |
+| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped` |
 
 ### B4: the agent's text, and its approvals
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | A session id becomes a file name only sanitized: it can't leave the project folder or the locks' directory (P8). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files` |
-| The agent's text is shown with control characters and bidi overrides escaped, and `show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
-| The agent's text never reaches a command line: `notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `notify_runs_a_command_per_event`; `headless.rs`: `prompt_is_not_on_the_command_line` |
-| Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `an_unanswered_request_waits` |
-| `permission_timeout` only denies: the reject option, else `cancelled`, never an allow. | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `cli.rs`: `unanswered_permission_times_out_as_deny`; `security.rs`: `a_timeout_never_allows` |
-| A request is answered only in its own session, with an option of the kind asked for (`deny` can't pick an allow option). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `a_request_is_answered_only_in_its_session`; `cli.rs`: `an_option_of_the_other_kind_is_refused` |
+| The agent's text is shown with control characters and bidi overrides escaped, and `show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
+| The agent's text never reaches a command line: `notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
+| Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
+| `permission_timeout` only denies: the reject option, else `cancelled`, never an allow. | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `cli.rs`: `adr_0027_unanswered_permission_times_out_as_deny`; `security.rs`: `adr_0027_a_timeout_never_allows` |
+| A request is answered only in its own session, with an option of the kind asked for (`deny` can't pick an allow option). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0027_an_option_of_the_other_kind_is_refused` |
 
 ### B5: bridges and `notify` commands
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| A started bridge runs the profile's command as the user, with `BRNR_PID` and `BRNR_SOCKET`; it can do anything a socket client can (ADR 35). | `start_bridge` (src/host/control.rs) | `cli.rs`: `notify_works_as_a_bridge`, `a_bridge_that_closes_its_stdout_gets_events` |
-| A bridge gets every event but `acp` unless it asks for it by name, so the raw ACP isn't forwarded by default. | `Peer::wants` (src/host/control.rs) | `security.rs`: `a_bridge_gets_no_raw_acp_unless_it_asks` |
-| A reader that falls behind is cut off and told, and never holds the session up (ADR 6). | `send_to`, `drop_peer` (src/host/control.rs) | `headless.rs`: `slow_watcher_is_disconnected`; `cli.rs`: `notify_cut_off_as_a_bridge_stops_its_command` |
+| A started bridge runs the profile's command as the user, with `BRNR_PID` and `BRNR_SOCKET`; it can do anything a socket client can (ADR 35). | `start_bridge` (src/host/control.rs) | `cli.rs`: `adr_0036_notify_works_as_a_bridge`, `adr_0035_a_bridge_that_closes_its_stdout_gets_events` |
+| A bridge gets every event but `acp` unless it asks for it by name, so the raw ACP isn't forwarded by default. | `Peer::wants` (src/host/control.rs) | `security.rs`: `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks` |
+| A reader that falls behind is cut off and told, and never holds the session up (ADR 6). | `send_to`, `drop_peer` (src/host/control.rs) | `headless.rs`: `adr_0006_slow_watcher_is_disconnected`; `cli.rs`: `adr_0036_notify_cut_off_as_a_bridge_stops_its_command` |
 
 What a bridge sends beyond the machine, and to whom, is the bridge's: brnr
 can't see past its stdin. That is the reach P13 says a bridge adds.
@@ -139,9 +139,9 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `a_profiles_mcp_secrets_are_redacted`, `an_editors_mcp_secrets_are_redacted`; `security.rs`: `a_resumed_sessions_secrets_are_redacted`, `acp_passes_bytes_unchanged`, `a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `secrets_are_redacted_keys_and_structure_stay` |
-| `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `the_report_is_what_to_paste` |
-| `status`, `ps` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `a_resumed_sessions_secrets_are_redacted` |
+| The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0025_a_profiles_mcp_secrets_are_redacted`, `adr_0025_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted`, `adr_0002_acp_passes_bytes_unchanged`, `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0025_secrets_are_redacted_keys_and_structure_stay` |
+| `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0045_the_report_is_what_to_paste` |
+| `status`, `ps` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
 
 ### The adapters and the release
 
@@ -156,6 +156,15 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 What brnr doesn't enforce, or doesn't test, today.
 
+- **SIGKILL of the host bypasses child cleanup.** The host is the sole
+  supervisor. Its death closes the agent and bridge pipes, but an agent or
+  bridge that ignores EOF, is blocked, or leaves descendants can survive it.
+  `doctor --fix` repairs stale metadata and locks; it does not kill those
+  survivors. `chaos.rs` checks a flooding agent exits on its broken pipe,
+  and that killing the proxy during a hung turn lets the surviving host
+  stop its agent. Neither establishes unconditional cleanup after host
+  SIGKILL; that would require a separate lifetime supervisor on both macOS
+  and Linux.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
 - **No peer credentials on the socket.** The process doesn't check who

@@ -64,3 +64,12 @@ process was gone, in a Linux container under load.
   (P1, ADR 6).
 - Waiting in the tests only (for a record to appear in the file): every
   user's script that runs `log` after `--wait` would have the same race.
+
+## Tests
+
+Run `cargo test --release adr_0048_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0048_an_exit_is_written_before_the_process_goes`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0048_log_shows_what_the_process_has_recorded`.

@@ -11,6 +11,11 @@ with environment variables:
                     ignores SIGTERM
   STUBBORN=child    only the child ignores SIGTERM
   CHILD_PID=<file>  where the child's pid is written
+  FAULT=<kind>     crash (exit 86), hang (stop reading), or flood until cut off
+  FAULT_SEED=<n>   reproducible checkpoint, default 0; turn emits 0..31 chunks
+                    before faulting, setup chooses initialize or session/new
+  FAULT_PHASE=<p>  turn (default) or setup (before the selected reply)
+  FAULT_LOG=<file> append kind, seed, checkpoint and pid just before faulting
   FLOOD=<n>         stream n agent_message_chunk updates for every prompt
   NOISE=<n>         write n notifications brnr doesn't interpret (500 bytes
                     each) for every prompt
@@ -34,6 +39,7 @@ with environment variables:
   STDERR=<text>     write text on stderr as it starts
   EXIT=<code>       exit with code as it starts (after STDERR), reading
                     nothing
+  MODE_GATE=<file>  wait for this file before answering session/set_mode
   QUIET_MODE=1      session/set_mode sends no current_mode_update: ACP answers
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
@@ -82,6 +88,7 @@ and by the prompt's text:
 
 import json
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -198,9 +205,37 @@ def text_of(prompt):
     return "\n".join(b.get("text", "") for b in prompt if b.get("type") == "text")
 
 
+def fault(checkpoint, sid=None):
+    """A seeded failure, with a marker so tests never race a wall-clock delay."""
+    kind = env("FAULT")
+    append(
+        "FAULT_LOG",
+        {"kind": kind, "seed": fault_seed, "checkpoint": checkpoint, "pid": os.getpid()},
+    )
+    if kind == "crash":
+        os._exit(86)
+    if kind == "hang":
+        time.sleep(100000)
+    if kind == "flood":
+        try:
+            while True:
+                if sid:
+                    say(sid, "f" * 4096)
+                else:
+                    send({"jsonrpc": "2.0", "method": "_fake/noise", "params": {"pad": "f" * 4096}})
+                time.sleep(0.001)
+        except BrokenPipeError:
+            # Avoid a second flush of the broken pipe during interpreter exit.
+            os._exit(0)
+
+
 def run(mid, sid, text):
     """Takes up the text of prompt mid, or of a steer into its turn."""
     global hanging, model
+    if env("FAULT") and env("FAULT_PHASE", "turn") == "turn":
+        for step in range(fault_point):
+            say(sid, f"checkpoint {step}")
+        fault(fault_point, sid)
     for _ in range(int(env("FLOOD", "0"))):
         say(sid, "y" * 500)
     for _ in range(int(env("NOISE", "0"))):
@@ -400,6 +435,13 @@ if stubborn:
     with open(env("CHILD_PID"), "w") as f:
         f.write(str(child.pid))
 
+fault_seed = int(env("FAULT_SEED", "0"))
+fault_random = random.Random(fault_seed)
+fault_point = fault_random.randrange(32)
+fault_setup = fault_random.choice(("initialize", "session/new"))
+if env("FAULT") not in (None, "crash", "hang", "flood"):
+    raise ValueError("FAULT must be crash, hang or flood")
+
 model = "small"
 mode = "default"
 fast = None  # the boolean option's value, once the client says it takes booleans
@@ -422,6 +464,8 @@ for line in sys.stdin.buffer:
     method, mid = msg.get("method"), msg.get("id")
     params = msg.get("params") or {}
     sid = params.get("sessionId")
+    if env("FAULT") and env("FAULT_PHASE") == "setup" and method == fault_setup:
+        fault(method)
     if method == "initialize":
         client_session = (params.get("clientCapabilities") or {}).get("session") or {}
         if (client_session.get("configOptions") or {}).get("boolean") is not None:
@@ -503,6 +547,8 @@ for line in sys.stdin.buffer:
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
         result(mid, {"sessions": [old, known]})
     elif method == "session/set_mode":
+        while env("MODE_GATE") and not os.path.exists(env("MODE_GATE")):
+            time.sleep(0.01)
         if params.get("modeId") in ("default", "plan"):
             result(mid, {})
             if not env("QUIET_MODE"):

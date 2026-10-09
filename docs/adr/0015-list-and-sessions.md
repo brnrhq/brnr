@@ -40,3 +40,11 @@ agent's, for one folder.
 - Each table with its own columns (`UPDATED` against `LAST ACTIVE`, a `BRNR`
   column folding state and pid into one cell, timestamps formatted two ways)
   and its own order.
+
+## Tests
+
+Run `cargo test --release adr_0015_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0015_sessions_lists_the_agents_sessions`.
+  - `adr_0015_sessions_stops_an_agent_that_wont_go`.

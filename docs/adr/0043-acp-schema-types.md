@@ -54,3 +54,15 @@ Rust libraries, as of October 2026:
   is stable ACP and what isn't.
 - Later, perhaps: brnr as a component in someone else's conductor chain, an
   experimental feature once the proxy-chains RFD is stable.
+
+## Tests
+
+Run `cargo test --release adr_0043_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0043_an_update_the_schema_doesnt_know_changes_nothing`.
+- [src/schema.rs](../../src/schema.rs)
+  - `adr_0043_what_the_adapters_send_is_read_as_the_schemas_types`.
+  - `adr_0043_a_deep_part_reads_on_the_stack_json_rs_gives_it`.
+  - `adr_0043_what_the_types_dont_take_is_left_to_value`.
+  - `adr_0043_stable_is_what_the_schema_has_without_its_unstable_features`.

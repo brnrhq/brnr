@@ -14,3 +14,11 @@ and listed in its response. `--keep-held` keeps them, to go out as usual.
 - Cancelling the turn and letting held messages go out as usual: surprising,
   since "stop" would start the next queued message.
 - Cancelling the turn and pausing the queue: a paused state to explain.
+
+## Tests
+
+Run `cargo test --release adr_0019_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0019_cancel_drops_held_messages_and_says_so`.
+  - `adr_0019_cancel_can_keep_held_messages`.

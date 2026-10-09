@@ -1098,12 +1098,10 @@ impl Host {
             }
             Ev::AgentStderrEof => self.stderr_open = false,
             Ev::AgentExited => {
-                // Stopping: whatever the agent left running in its process
-                // group goes too. Done before reaping, while the pid (and so
-                // the group id) can't be reused.
-                if self.stop_requested {
-                    self.kill_group(libc::SIGKILL);
-                }
+                // Whatever the agent left running goes too, including after
+                // a spontaneous exit or a crash during setup (ADR 11, P14).
+                // Before reaping, its pid (and group id) can't be reused.
+                self.kill_group(libc::SIGKILL);
                 // Reaped here, on the thread that sends signals, so a signal
                 // can never reach a recycled pid.
                 self.status = reap(self.agent_pid).ok();

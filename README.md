@@ -306,7 +306,10 @@ which brnr has a transcript of (`inactive`), and which only the agent knows
 (`-`). `--resume` takes an id brnr knows, or any id the
 agent knows, which it resumes in `--cwd` (or here) with the agent after
 `--` (or the profile's). `brnr stop` signals the agent's whole process group,
-so whatever the agent started goes with it.
+so whatever the agent started in that group goes with it. The same cleanup
+runs when the agent exits or crashes on its own. A SIGKILL of the brnr host
+itself bypasses cleanup: agents and bridges that ignore their closed pipes,
+or their descendants, can survive it; `doctor` reports the unrecorded death.
 
 ### Events
 

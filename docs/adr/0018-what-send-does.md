@@ -56,3 +56,13 @@ For headless sessions:
 - Sending everything held during a turn as one prompt when it ends: closer to
   how Claude Code batches queued messages, but `--wait` would no longer map
   one message to one turn.
+
+## Tests
+
+Run `cargo test --release adr_0018_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0018_interrupts_keep_their_order`.
+  - `adr_0018_send_while_a_turn_runs_is_held`.
+  - `adr_0018_steer_without_a_turn_is_a_prompt`.
+  - `adr_0018_steer_needs_the_agents_steering`.

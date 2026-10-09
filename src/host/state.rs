@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn a_config_value_is_sent_as_its_option_type_has_it() {
+    fn adr_0028_a_config_value_is_sent_as_its_option_type_has_it() {
         let state = SessionState {
             config: Some(json!([
                 { "id": "model", "type": "select", "currentValue": "small", "options": [] },

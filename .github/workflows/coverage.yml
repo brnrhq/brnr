@@ -1,0 +1,63 @@
+# Coverage is informational while we learn the baseline. Keep each run's
+# summary and HTML report so main's history shows the trend without a service
+# token, a percentage gate, or a badge suggesting a target we haven't chosen.
+name: coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: coverage
+      - run: cargo install --locked cargo-llvm-cov --version 0.9.1
+      # Runs unit and integration tests, with CARGO_BIN_EXE_brnr instrumented
+      # too. Children inherit LLVM_PROFILE_FILE (including its process id).
+      - run: cargo llvm-cov --locked --release --all-targets --no-report
+      - name: Summarize coverage
+        run: |
+          cargo llvm-cov report --release --ignore-filename-regex '/tests/' > coverage.txt
+          {
+            echo '## Rust coverage (Linux, release)'
+            echo
+            echo 'Informational only; no coverage threshold. Unit and integration tests run the instrumented binary.'
+            echo 'The table reports line, region, and function coverage, not branch coverage; TOTAL is the overall baseline.'
+            echo 'Profiles from processes killed by a signal or exiting through _exit can be missing.'
+            echo 'Compare main runs for the trend; download the coverage artifact for uncovered source lines.'
+            echo
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Render uncovered lines
+        run: cargo llvm-cov report --release --ignore-filename-regex '/tests/' --html
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: |
+            coverage.txt
+            target/llvm-cov/html/
+          if-no-files-found: error
+          retention-days: 90
