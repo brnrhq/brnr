@@ -55,7 +55,7 @@ the user from their own processes.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
  the user                              (B1)
                           $BRNR_DIR, 0700 ── <pid>.sock, 0600
-                                    │      └─ brnr prompt send / approve / event
+                                    │      └─ brnr prompt send / permission / event
                                     │         watch, any process of the user's
  editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
           (B3: bytes unchanged,             │   │              (B4: its text is
@@ -125,8 +125,8 @@ written for this document.
 | The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
 | The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
-| `permission_timeout` (or `--permission-timeout`) only denies: the reject option, else `cancelled`, never an allow. | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `cli.rs`: `adr_0027_unanswered_permission_times_out_as_deny`; `security.rs`: `adr_0027_a_timeout_never_allows` |
-| A request is answered only in its own session, with an option of the kind asked for (`deny` can't pick an allow option). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0027_an_option_of_the_other_kind_is_refused` |
+| `permission_timeout` (or `--permission-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
+| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 63). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0063_allow_and_reject_pick_by_kind`, `adr_0063_a_missing_or_doubled_kind_fails`, `adr_0063_option_must_be_on_the_verbs_side` |
 
 ### B5: bridges and `event notify` commands
 
@@ -213,7 +213,7 @@ What brnr doesn't enforce, or doesn't test, today.
   adapter or npm package, or an agent in a permissive mode, acts without
   asking, and nothing in brnr can stop it.
 - **`permission_timeout` is headless only.** An editor's session waits for
-  the editor; with `approve` enabled, any of the user's processes may answer
+  the editor; with `permission` enabled, any of the user's processes may answer
   it (ADR 4).
 - **A refused runtime directory is a denial of service.** With neither
   `BRNR_DIR` nor `XDG_RUNTIME_DIR` set, the directory is `$TMPDIR/brnr-<uid>`;
@@ -235,7 +235,7 @@ What brnr doesn't enforce, or doesn't test, today.
   request's (ADR 61). Not tested.
 - **The agent's ids are passed to the editor as they are.** An agent that
   reuses an id after the host answered a request with it (`cancel`,
-  `approve`) can have the editor's late answer to the first taken as its
+  `permission allow`) can have the editor's late answer to the first taken as its
   answer to the second (ADR 61). Not tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 38); that directory is trusted as

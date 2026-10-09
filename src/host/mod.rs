@@ -327,7 +327,7 @@ struct Host {
     start_done: bool,
     info: Value,
     host_id: String,
-    /// How long an unanswered permission request waits before it is denied.
+    /// How long an unanswered permission request waits before it is rejected.
     permission_timeout: Option<Duration>,
     agent_pid: pid_t,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
@@ -379,7 +379,7 @@ struct Host {
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
     /// Agent requests the host answered itself while the editor may answer
-    /// them too (a cancel, an approve): its late answers are dropped (see
+    /// them too (a cancel, an allow): its late answers are dropped (see
     /// experimental.rs).
     answered: HashMap<String, experimental::Answered>,
     /// Sessions brnr closed under the editor (ADR 4) → the process that took

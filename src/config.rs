@@ -19,7 +19,7 @@
 //! model = "opus"                      #   level and config options by id,
 //! thought_level = "high"              #   set before the first prompt
 //! options = { effort = "high" }
-//! permission_timeout = 600            # seconds until an unanswered request is denied
+//! permission_timeout = 600            # seconds until an unanswered request is rejected
 //! stop_when_idle = 600                # close a session idle this many seconds
 //! auth = "api-key"                    # the agent's login method, run first (ADR 30)
 //!
@@ -30,7 +30,7 @@
 //! env = { GITHUB_TOKEN = "…" }
 //!
 //! [profiles.work.editor]              # brnr acp
-//! experimental = ["send", "approve"]  # actions on the editor's session (ADR 4)
+//! experimental = ["send", "permission"] # actions on the editor's session (ADR 4)
 //! features = ["shared_sessions"]      # process management (ADR 42)
 //! ```
 //!
@@ -154,7 +154,7 @@ pub enum Experimental {
     Send,
     Context,
     Cancel,
-    Approve,
+    Permission,
     Config,
     Close,
 }
@@ -164,7 +164,7 @@ impl Experimental {
         Experimental::Send,
         Experimental::Context,
         Experimental::Cancel,
-        Experimental::Approve,
+        Experimental::Permission,
         Experimental::Config,
         Experimental::Close,
     ];
@@ -174,7 +174,7 @@ impl Experimental {
             Experimental::Send => "send",
             Experimental::Context => "context",
             Experimental::Cancel => "cancel",
-            Experimental::Approve => "approve",
+            Experimental::Permission => "permission",
             Experimental::Config => "config",
             Experimental::Close => "close",
         }

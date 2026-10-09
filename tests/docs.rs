@@ -115,7 +115,8 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Approvals
     ("brnr permission requests", Approval, Says("p1")),
     ("brnr permission show $s p1", Approval, Says("Edit src/lib.rs")),
-    ("brnr approve $s p1", Approval, Succeeds),
+    ("brnr permission allow $s p1", Approval, Says("p1 allow")),
+    ("brnr permission reject $s p1", Approval, Says("p1 reject")),
     // Settings: each runs without its optional argument and with it.
     ("brnr config get $s [--model]", Idle, Says("* small")),
     ("brnr config set $s --mode plan", Idle, Says("mode=plan")),
@@ -235,9 +236,13 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Approval,
         Says(r#""request": "p1""#),
     ),
-    ("brnr approve $s p1 --json", Approval, Says(r#""optionId": "allow""#)),
-    ("brnr deny $s p1 --json", Approval, Says(r#""optionId": "reject""#)),
-    ("brnr approve $s p1 --option <option> --json", Approval, Says(r#""optionId": "allow""#)),
+    ("brnr permission allow $s p1 --json", Approval, Says(r#""optionId": "allow""#)),
+    ("brnr permission reject $s p1 --json", Approval, Says(r#""optionId": "reject""#)),
+    (
+        "brnr permission allow $s p1 --option <option> --json",
+        Approval,
+        Says(r#""optionId": "allow""#),
+    ),
     // observe
     ("brnr event log $s --json", Idle, Says(r#""event":"agent_message""#)),
     ("brnr event watch $s --json", Idle, Follows(r#""event":"agent_message""#)),

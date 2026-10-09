@@ -5,6 +5,14 @@ Implemented; approvals on an editor's session are ADR 4's experimental
 `approve`, and `show` says of an editor's request that it is waiting in the
 editor, and whether it can be answered here (`answerable`, `why_not`).
 
+Amended by 63: `approve` and `deny` are `permission allow` and `reject`,
+which answer with the option of one kind (`allow_once`, `reject_once`, or
+with `--always` `allow_always`, `reject_always`), with no other kind in its
+place and never `cancelled`; a missing or doubled kind fails. The timeout
+answers with `reject_once`, else cancels the turn, never `reject_always`.
+`pending` and `show` are `permission requests` and `show`; the experimental
+action is `permission`.
+
 ## Context
 
 brnr had a policy of its own for headless approvals: how the host answers
@@ -61,9 +69,7 @@ Run `cargo test --release adr_0027_`. Named claims and their assertions:
   - `adr_0027_a_timeout_never_allows`.
   - `adr_0027_a_request_is_answered_only_in_its_session`.
 - [tests/headless.rs](../../tests/headless.rs)
-  - `adr_0027_approve_during_stop_fails`.
+  - `adr_0027_allow_during_stop_fails`.
 - [tests/cli.rs](../../tests/cli.rs)
-  - `adr_0027_unanswered_permission_times_out_as_deny`.
   - `adr_0027_show_explains_a_permission_request`.
   - `adr_0027_show_escapes_a_spoofed_command`.
-  - `adr_0027_an_option_of_the_other_kind_is_refused`.

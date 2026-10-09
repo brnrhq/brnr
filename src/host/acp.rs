@@ -26,9 +26,10 @@
 //!   answer dropped; brnr's notes to it take the echo's form; and a session
 //!   brnr closed under it has its later requests answered by the host.
 //! - With no editor attached, the host answers what the agent asks of its
-//!   client. Permission requests wait for an approve or deny from a bridge
-//!   or the CLI, until `permission_timeout` denies them; how much the agent
-//!   asks is the agent's mode (`--mode`, see ADR 27 in docs/adr).
+//!   client. Permission requests wait for an allow or reject from a bridge
+//!   or the CLI, by the option's kind (ADR 63), until `permission_timeout`
+//!   rejects them once, or cancels their turn; how much the agent asks is
+//!   the agent's mode (`--mode`, see ADR 27 in docs/adr).
 //!   Elicitation is declined, and anything else gets "method not found".
 //! - While a headless `session/load` replays a resumed session's history
 //!   (ADR 57): if brnr has a transcript of the session, the replayed updates
@@ -268,14 +269,16 @@ pub(super) struct AgentRequest {
     pub(super) params: Value,
     /// `p<n>` for a permission request: what bridges and brnr call it.
     pub(super) handle: Option<String>,
-    /// When `permission_timeout` denies it.
+    /// When `permission_timeout` answers it.
     pub(super) deadline: Option<Instant>,
 }
 
+/// How a permission request is answered from outside (ADR 63): `allow` or
+/// `reject`, once or, with `always`, always.
 #[derive(Clone, Copy)]
 pub(super) enum Choice {
     Allow,
-    Deny,
+    Reject,
 }
 
 impl Host {
@@ -413,8 +416,8 @@ impl Host {
                     if self.agent_requests.iter().any(|r| r.key == key) {
                         session = self.agent_request_answered(&key, &msg, "editor");
                     } else if self.late_answer(&key, &id, &msg) {
-                        // Answered by the host already (a cancel, an approve
-                        // or deny): the agent must not get a second answer.
+                        // Answered by the host already (a cancel, an allow
+                        // or reject): the agent must not get a second answer.
                         return;
                     }
                     // Otherwise it answers a request the host couldn't read,
@@ -829,14 +832,9 @@ impl Host {
     ) -> Option<String> {
         let pos = self.agent_requests.iter().position(|r| r.key == key)?;
         let req = self.agent_requests.remove(pos);
-        if let Some(handle) = &req.handle {
-            self.emit(json!({
-                "event": "permission_resolved",
-                "session": req.session,
-                "request": handle,
-                "outcome": msg.get("result").map(|r| r["outcome"].clone()),
-                "by": by,
-            }));
+        if req.handle.is_some() {
+            let outcome = msg.get("result").map_or(Value::Null, |r| r["outcome"].clone());
+            self.emit(resolved_event(&req, &outcome, None, by));
         }
         req.session
     }
@@ -862,16 +860,20 @@ impl Host {
         }
     }
 
-    /// Answers permission request `handle`: with `option` if given (not one
-    /// of the other kind: a deny can't pick an allow option), else the first
-    /// allow (or reject) option. Denying a request that offers no reject
-    /// option cancels it. On an editor's session, where this is the
-    /// experimental `approve` (see experimental.rs), the request is then
-    /// withdrawn from the editor.
+    /// Answers permission request `handle` with the option of one kind
+    /// (ADR 63): `allow_once`, `allow_always` with `always`, `reject_once`
+    /// or `reject_always`. No other kind stands in for it, and a reject is
+    /// never `cancelled`: without that kind, or with two options of it, it
+    /// fails, listing the options (P4). `option` names the option instead:
+    /// one of a kind ACP has must be on the choice's side, and with `always`
+    /// the always kind; one of a kind brnr doesn't know goes with either. On
+    /// an editor's session, where this is the experimental `permission` (see
+    /// experimental.rs), the request is then withdrawn from the editor.
     pub(super) fn resolve_permission(
         &mut self,
         handle: &str,
         choice: Choice,
+        always: bool,
         option: Option<&str>,
         by: &str,
     ) -> Result<Value, String> {
@@ -885,72 +887,76 @@ impl Host {
         }
         let options =
             self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
-        // An option's kind, if the schema knows it.
-        let kind = |o: &Value| schema::read::<PermissionOptionKind>(&o["kind"]);
         let allow = matches!(choice, Choice::Allow);
-        let outcome = match option {
+        let wanted = kind_of(choice, always);
+        let listed = || {
+            let all: Vec<String> = options.iter().map(option_text).collect();
+            format!("options: {}", all.join(", "))
+        };
+        let chosen = match option {
             Some(option) => {
                 let Some(chosen) = options.iter().find(|o| o["optionId"] == option) else {
-                    let ids: Vec<&str> =
-                        options.iter().filter_map(|o| o["optionId"].as_str()).collect();
-                    return Err(format!(
-                        "{handle} has no option {option} (options: {})",
-                        ids.join(", ")
-                    ));
+                    return Err(format!("{handle} has no option {option} ({})", listed()));
                 };
-                if kind(chosen).is_some_and(|k| allows(k) != allow) {
-                    let kind = chosen["kind"].as_str().unwrap_or_default();
-                    let verb = if allow { "deny" } else { "approve" };
-                    return Err(format!("{handle}: {option} ({kind}) is for brnr {verb}"));
+                let kind = chosen["kind"].as_str().unwrap_or_default();
+                match known_kind(chosen) {
+                    Some(k) if allows(k) != allow => {
+                        let verb = if allow { "reject" } else { "allow" };
+                        return Err(format!(
+                            "{handle}: {option} ({kind}) is for brnr permission {verb}"
+                        ));
+                    }
+                    Some(_) if always && kind != wanted => {
+                        return Err(format!(
+                            "{handle}: {option} is {kind}, not {wanted} as --always asks"
+                        ));
+                    }
+                    _ => chosen,
                 }
-                json!({ "outcome": "selected", "optionId": option })
             }
             None => {
-                use PermissionOptionKind::{AllowAlways, AllowOnce, RejectAlways, RejectOnce};
-                let kinds =
-                    if allow { [AllowOnce, AllowAlways] } else { [RejectOnce, RejectAlways] };
-                match kinds.iter().find_map(|k| options.iter().find(|o| kind(o) == Some(*k))) {
-                    Some(o) => json!({ "outcome": "selected", "optionId": o["optionId"] }),
-                    None if matches!(choice, Choice::Deny) => json!({ "outcome": "cancelled" }),
-                    None => return Err(format!("{handle} offers no allow option")),
+                let of_kind: Vec<&Value> = options.iter().filter(|o| o["kind"] == wanted).collect();
+                match of_kind[..] {
+                    [chosen] => chosen,
+                    [] => {
+                        return Err(format!(
+                            "{handle} has no {wanted} option ({}); --option <id> picks one",
+                            listed()
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{handle} has {} {wanted} options ({}); --option <id> picks one",
+                            of_kind.len(),
+                            listed()
+                        ));
+                    }
                 }
             }
         };
+        let outcome = json!({ "outcome": "selected", "optionId": chosen["optionId"] });
         let req = self.agent_requests.remove(pos);
         self.respond(&req, json!({ "result": { "outcome": outcome } }));
-        let how = match choice {
-            Choice::Allow => "approved",
-            Choice::Deny => "denied",
-        };
+        let how = if allow { "allowed" } else { "rejected" };
         self.withdraw(&req, how, by);
-        self.emit(json!({
-            "event": "permission_resolved",
-            "session": req.session,
-            "request": handle,
-            "outcome": outcome,
-            "by": by,
-        }));
+        self.emit(resolved_event(&req, &outcome, Some(how), by));
         Ok(outcome)
     }
 
     /// ACP: a client that cancels a turn answers that session's pending
-    /// permission requests with `cancelled`. If the editor is showing one,
-    /// it is withdrawn, and its late answer dropped (see experimental.rs).
-    fn cancel_permissions(&mut self, session: &str) {
+    /// permission requests with `cancelled`, `by` `cancel` or `timeout`. If
+    /// the editor is showing one, it is withdrawn, and its late answer
+    /// dropped (see experimental.rs).
+    fn cancel_permissions(&mut self, session: &str, by: &str) {
         let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
             .into_iter()
             .partition(|r| r.handle.is_some() && r.session.as_deref() == Some(session));
         self.agent_requests = keep;
         for req in cancel {
-            self.respond(&req, json!({ "result": { "outcome": { "outcome": "cancelled" } } }));
-            self.withdraw(&req, "cancelled", "cancel");
-            self.emit(json!({
-                "event": "permission_resolved",
-                "session": req.session,
-                "request": req.handle,
-                "outcome": { "outcome": "cancelled" },
-                "by": "cancel",
-            }));
+            let outcome = json!({ "outcome": "cancelled" });
+            self.respond(&req, json!({ "result": { "outcome": outcome } }));
+            self.withdraw(&req, "cancelled", by);
+            self.emit(resolved_event(&req, &outcome, Some("cancelled"), by));
         }
     }
 
@@ -1113,7 +1119,7 @@ impl Host {
         self.drop_all(i, "close");
         if !self.is_idle(i) {
             let session = self.sessions[i].id.clone();
-            self.cancel(&session);
+            self.cancel(&session, "cancel");
         }
         if self.sessions[i].prompts.is_empty() {
             self.send_close(i, peer, req_id, by);
@@ -1369,8 +1375,12 @@ impl Host {
         }));
     }
 
-    /// Denies permission requests nobody answered within
-    /// `permission_timeout`.
+    /// Answers permission requests nobody answered within
+    /// `permission_timeout` with their `reject_once` option (ADR 63). One
+    /// without one (or with two: which, brnr can't say) has its turn
+    /// cancelled, which answers it and every request pending in its session
+    /// `cancelled`, as ACP requires. Never `reject_always`, which nobody
+    /// chose, and never an allow.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
         if self.editor_attached() {
             return;
@@ -1382,12 +1392,29 @@ impl Host {
             .filter_map(|r| r.handle.clone())
             .collect();
         for handle in expired {
-            if let Some(req) =
+            // Gone already: answered `cancelled` with an earlier one's turn.
+            let Some(req) =
                 self.agent_requests.iter_mut().find(|r| r.handle.as_ref() == Some(&handle))
-            {
-                req.deadline = None;
-            }
-            if let Err(err) = self.resolve_permission(&handle, Choice::Deny, None, "timeout") {
+            else {
+                continue;
+            };
+            req.deadline = None;
+            let options = req.params["options"].as_array().into_iter().flatten();
+            let once = options.filter(|o| o["kind"] == "reject_once").count();
+            let session = req.session.clone();
+            let result = if once == 1 {
+                self.resolve_permission(&handle, Choice::Reject, false, None, "timeout")
+            } else if self.status.is_some() || self.agent_in.is_none() {
+                Err("the agent is no longer accepting input".to_owned())
+            } else if let Some(session) = session {
+                let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
+                self.sink.note(Some(&session), event);
+                self.cancel(&session, "timeout");
+                Ok(Value::Null)
+            } else {
+                Err("no reject_once option, and no session to cancel".to_owned())
+            };
+            if let Err(err) = result {
                 let event = json!({ "event": "timeout-failed", "request": handle, "error": err });
                 self.sink.note(None, event);
             }
@@ -1402,7 +1429,9 @@ impl Host {
         self.agent_requests.iter().filter_map(|r| r.deadline).min()
     }
 
-    pub(super) fn cancel(&mut self, session: &str) {
+    /// Cancels `session`'s turn (`session/cancel`), answering its pending
+    /// permission requests `cancelled`, `by` `cancel` or `timeout`.
+    pub(super) fn cancel(&mut self, session: &str, by: &str) {
         let msg = json!({
             "jsonrpc": "2.0",
             "method": "session/cancel",
@@ -1412,7 +1441,7 @@ impl Host {
         line.push(b'\n');
         self.record(Some(session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
-        self.cancel_permissions(session);
+        self.cancel_permissions(session, by);
     }
 
     /// Shows the editor an injected message, as a completed tool call:
@@ -1614,6 +1643,57 @@ fn param_session(msg: &Map<String, Value>) -> Option<String> {
 /// rejecting it.
 fn allows(kind: PermissionOptionKind) -> bool {
     matches!(kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)
+}
+
+/// A permission option's kind, if ACP's schema has it (v2 allows `_…` kinds
+/// of an agent's own).
+fn known_kind(option: &Value) -> Option<PermissionOptionKind> {
+    schema::read::<PermissionOptionKind>(&option["kind"])
+}
+
+/// The kind `choice` answers with, once or `always`.
+fn kind_of(choice: Choice, always: bool) -> &'static str {
+    match (choice, always) {
+        (Choice::Allow, false) => "allow_once",
+        (Choice::Allow, true) => "allow_always",
+        (Choice::Reject, false) => "reject_once",
+        (Choice::Reject, true) => "reject_always",
+    }
+}
+
+/// An option as errors list it: `allow (allow_once)`.
+fn option_text(option: &Value) -> String {
+    let id = option["optionId"].as_str().unwrap_or("?");
+    format!("{id} ({})", option["kind"].as_str().unwrap_or("?"))
+}
+
+/// `permission_resolved` for `req`, answered with `outcome` (ACP's) by
+/// `by`: `answer` says `allowed`, `rejected` or `cancelled`, which brnr
+/// knows when it answered, and `option_kind` the chosen option's kind. An
+/// editor's answer is told by the kind, so an option of a kind brnr doesn't
+/// know has no `answer` (null).
+fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &str) -> Value {
+    let chosen = req.params["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| outcome["outcome"] == "selected" && o["optionId"] == outcome["optionId"]);
+    let option_kind = chosen.map_or(Value::Null, |o| o["kind"].clone());
+    let answer = how.map(str::to_owned).or_else(|| match chosen.and_then(known_kind) {
+        _ if outcome["outcome"] == "cancelled" => Some("cancelled".to_owned()),
+        Some(k) if allows(k) => Some("allowed".to_owned()),
+        Some(_) => Some("rejected".to_owned()),
+        None => None,
+    });
+    json!({
+        "event": "permission_resolved",
+        "session": req.session,
+        "request": req.handle,
+        "answer": answer,
+        "option_kind": option_kind,
+        "outcome": outcome,
+        "by": by,
+    })
 }
 
 fn permission_event(req: &AgentRequest, owner: &str) -> Value {

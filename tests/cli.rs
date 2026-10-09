@@ -122,8 +122,8 @@ fn adr_0021_send_wait_reports_a_permission_request() {
         assert!(err.read_line(&mut line).unwrap() > 0, "no approval notice");
     }
     assert!(line.contains("p1: Edit src/lib.rs"), "{line}");
-    assert!(line.contains("brnr approve sess-1 p1"), "{line}");
-    env.ok(&["approve", "sess-1", "p1"]);
+    assert!(line.contains("brnr permission allow sess-1 p1"), "{line}");
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
     assert!(wait_exit(&mut send, Duration::from_secs(10)));
     assert!(send.wait().unwrap().success());
 }
@@ -202,7 +202,7 @@ fn adr_0021_huge_timeouts_are_never() {
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
     let forever = u64::MAX.to_string();
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", &forever]);
-    env.ok(&["approve", "sess-1", "p1"]);
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
     env.ok(&["prompt", "send", "sess-1", "--wait", "--timeout", &forever, "reply done"]);
     assert_eq!(code(&env.run(&["event", "wait", "sess-1", "--timeout", &forever])), 0);
     env.ok(&["session", "status", "sess-1"]);
@@ -1624,17 +1624,6 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 }
 
 #[test]
-fn adr_0027_unanswered_permission_times_out_as_deny() {
-    let env = Env::new("c-permtimeout");
-    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
-    env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
-    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
-    assert!(env.ok(&["event", "log", "sess-1"]).contains("permission p1 -> reject (by timeout)"));
-}
-
-#[test]
 fn adr_0027_show_explains_a_permission_request() {
     let env = Env::new("c-show");
     env.start(&[]);
@@ -1649,7 +1638,7 @@ fn adr_0027_show_explains_a_permission_request() {
         "Edit src/lib.rs\nkind: edit\npath: src/lib.rs:2",
         "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,3 +1,3 @@\n one\n-old line\n+new line\n three",
         "options: allow (allow_once), reject (reject_once)",
-        "brnr approve sess-1 p1",
+        "brnr permission allow sess-1 p1 or reject sess-1 p1",
     ] {
         assert!(show.contains(want), "missing {want:?} in\n{show}");
     }
@@ -1660,10 +1649,13 @@ fn adr_0027_show_explains_a_permission_request() {
         serde_json::from_str(&env.ok(&["permission", "requests", "--json"])).unwrap();
     assert_eq!(pending[0]["session"], "sess-1");
     assert_eq!(pending[0]["options"][0]["option"], "allow");
-    assert!(env.fails(&["approve", "sess-1"]).contains("usage:"), "a request is needed");
-    assert!(env.fails(&["approve", "sess-1", "p9"]).contains("no pending request p9"));
+    assert!(
+        env.fails(&["permission", "allow", "sess-1"]).contains("usage:"),
+        "a request is needed"
+    );
+    assert!(env.fails(&["permission", "allow", "sess-1", "p9"]).contains("no pending request p9"));
     let json: Value =
-        serde_json::from_str(&env.ok(&["approve", "sess-1", "p1", "--json"])).unwrap();
+        serde_json::from_str(&env.ok(&["permission", "allow", "sess-1", "p1", "--json"])).unwrap();
     assert_eq!(json["outcome"]["optionId"], "allow");
 }
 
@@ -1691,22 +1683,143 @@ fn adr_0027_show_escapes_a_spoofed_command() {
     assert_eq!(json["tool_call"]["rawInput"]["command"], command);
 }
 
-/// `--option` must be of the kind its verb says: `deny --option allow`
-/// would allow.
-#[test]
-fn adr_0027_an_option_of_the_other_kind_is_refused() {
-    let env = Env::new("c-optkind");
-    env.start(&[]);
+/// Sends `perm edit` and waits for its request, `p<n>`.
+fn ask(env: &Env) {
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
-    let err = env.fails(&["deny", "sess-1", "p1", "--option", "allow"]);
-    assert!(err.contains("p1: allow (allow_once) is for brnr approve"), "{err}");
-    let err = env.fails(&["approve", "sess-1", "p1", "--option", "reject"]);
-    assert!(err.contains("p1: reject (reject_once) is for brnr deny"), "{err}");
+}
+
+/// The fake agent's answers, in order: its requests are each `perm-1` while
+/// no other is waiting.
+fn answers(env: &Env) -> Vec<Value> {
+    (env.calls().into_iter())
+        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .map(|c| c["result"]["outcome"].clone())
+        .collect()
+}
+
+/// The `permission_resolved` events of sess-1, in order.
+fn resolved(env: &Env) -> Vec<Value> {
+    events(env, "sess-1").into_iter().filter(|e| e["event"] == "permission_resolved").collect()
+}
+
+/// Each verb answers with the option of its kind, whatever their order:
+/// `allow` allow_once, `allow --always` allow_always, `reject` reject_once,
+/// `reject --always` reject_always. `permission_resolved` says which.
+#[test]
+fn adr_0063_allow_and_reject_pick_by_kind() {
+    let options = r#"[{"optionId": "never", "name": "Never", "kind": "reject_always"},
+        {"optionId": "yes", "name": "Always", "kind": "allow_always"},
+        {"optionId": "no", "name": "No", "kind": "reject_once"},
+        {"optionId": "once", "name": "Once", "kind": "allow_once"}]"#;
+    let env = Env::new("c-bykind").agent("PERM_OPTIONS", options);
+    env.start(&[]);
+    let cases: [(&[&str], &str, &str, &str); 4] = [
+        (&["allow"], "once", "allow_once", "allowed"),
+        (&["allow", "--always"], "yes", "allow_always", "allowed"),
+        (&["reject"], "no", "reject_once", "rejected"),
+        (&["reject", "--always"], "never", "reject_always", "rejected"),
+    ];
+    for (n, (verb, option, kind, answer)) in cases.into_iter().enumerate() {
+        ask(&env);
+        let request = format!("p{}", n + 1);
+        let mut args = vec!["permission", verb[0], "sess-1", &request];
+        args.extend(&verb[1..]);
+        assert_eq!(env.ok(&args), format!("{request} {option}\n"), "{verb:?}");
+        settled(&env);
+        assert_eq!(answers(&env)[n]["optionId"], option);
+        let event = &resolved(&env)[n];
+        assert_eq!((&event["answer"], &event["option_kind"]), (&answer.into(), &kind.into()));
+        let text = format!("permission {request} {answer} with {option} ({kind}), by socket#");
+        assert!(env.ok(&["event", "log", "sess-1"]).contains(&text), "no {text:?}");
+    }
+    // The socket's `allow` and `reject`, with `always`, are the same.
+    ask(&env);
+    let json: Value = serde_json::from_str(&env.ok(&[
+        "permission",
+        "reject",
+        "sess-1",
+        "p5",
+        "--always",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(json["outcome"], serde_json::json!({ "outcome": "selected", "optionId": "never" }));
+}
+
+/// A request without an option of the kind asked for, or with two of it,
+/// isn't answered: the command fails and lists the options. No other kind
+/// stands in, and `reject` never answers `cancelled`.
+#[test]
+fn adr_0063_a_missing_or_doubled_kind_fails() {
+    let options = r#"[{"optionId": "a", "name": "A", "kind": "allow_once"},
+        {"optionId": "b", "name": "B", "kind": "allow_once"},
+        {"optionId": "ever", "name": "Always", "kind": "allow_always"}]"#;
+    let env = Env::new("c-nokind").agent("PERM_OPTIONS", options);
+    env.start(&[]);
+    ask(&env);
+    let listed = "(options: a (allow_once), b (allow_once), ever (allow_always))";
+    for (args, says) in [
+        (&["reject"][..], "p1 has no reject_once option"),
+        (&["reject", "--always"], "p1 has no reject_always option"),
+        (&["allow"], "p1 has 2 allow_once options"),
+    ] {
+        let mut all = vec!["permission", args[0], "sess-1", "p1"];
+        all.extend(&args[1..]);
+        let err = env.fails(&all);
+        assert!(err.contains(&format!("{says} {listed}; --option <id> picks one")), "{err}");
+    }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
-    env.ok(&["deny", "sess-1", "p1", "--option", "reject"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
-    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+    assert!(env.ok(&["permission", "requests", "sess-1"]).contains("p1"));
+    assert_eq!(env.ok(&["permission", "allow", "sess-1", "p1", "--option", "b"]), "p1 b\n");
+    settled(&env);
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "b");
+}
+
+/// `--option` names the option: one of an ACP kind on the verb's side, and
+/// with `--always` the always kind; one of a kind brnr doesn't know with
+/// either verb.
+#[test]
+fn adr_0063_option_must_be_on_the_verbs_side() {
+    let options = r#"[{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "always", "name": "Always", "kind": "allow_always"},
+        {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+        {"optionId": "mine", "name": "Mine", "kind": "_mine"}]"#;
+    let env = Env::new("c-optkind").agent("PERM_OPTIONS", options);
+    env.start(&[]);
+    ask(&env);
+    for (args, says) in [
+        (
+            &["reject", "--option", "allow"][..],
+            "p1: allow (allow_once) is for brnr permission allow",
+        ),
+        (
+            &["reject", "--option", "always"],
+            "p1: always (allow_always) is for brnr permission allow",
+        ),
+        (
+            &["allow", "--option", "reject"],
+            "p1: reject (reject_once) is for brnr permission reject",
+        ),
+        (&["allow", "--always", "--option", "allow"], "p1: allow is allow_once, not allow_always"),
+        (&["allow", "--option", "nope"], "p1 has no option nope (options: allow (allow_once),"),
+    ] {
+        let mut all = vec!["permission", args[0], "sess-1", "p1"];
+        all.extend(&args[1..]);
+        let err = env.fails(&all);
+        assert!(err.contains(says), "{args:?}: {err}");
+    }
+    assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
+    // A kind brnr doesn't know goes with either verb, which the event says.
+    assert_eq!(env.ok(&["permission", "reject", "sess-1", "p1", "--option", "mine"]), "p1 mine\n");
+    settled(&env);
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "mine");
+    let event = &resolved(&env)[0];
+    assert_eq!((&event["answer"], &event["option_kind"]), (&"rejected".into(), &"_mine".into()));
+    ask(&env);
+    env.ok(&["permission", "allow", "sess-1", "p2", "--always", "--option", "always"]);
+    settled(&env);
+    assert_eq!(answers(&env)[1]["optionId"], "always");
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -1916,7 +2029,7 @@ fn adr_0033_profile_layout_errors_say_where() {
         ),
         (
             "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
-            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, approve, config, close)"#,
+            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, permission, config, close)"#,
         ),
         // `settings` is `config` now (ADR 63).
         (
@@ -1950,7 +2063,9 @@ fn adr_0033_profile_layout_errors_say_where() {
     // The same, laid out right.
     env.write_config(
         "[profiles.default]\nlog = false\nstrict = false\n\n[profiles.default.headless]\nstop_when_idle = 600\n\n\
-         [profiles.default.editor]\nexperimental = [\"send\", \"context\", \"cancel\", \"approve\", \"config\", \"close\"]\n\
+         [profiles.default.editor]
+experimental = [\"send\", \"context\", \"cancel\", \"permission\", \"config\", \"close\"]
+\
          features = [\"shared_sessions\"]\n",
     );
     env.start(&[]);
@@ -2320,7 +2435,8 @@ fn adr_0063_old_commands_are_unknown() {
     env.start(&["--wait", "--prompt", "reply hi"]);
     let old = [
         "ps", "stop", "status", "fork", "close", "send", "cancel", "commands", "queue", "pending",
-        "show", "log", "watch", "notify", "wait", "mode", "model", "config", "start",
+        "show", "log", "watch", "notify", "wait", "mode", "model", "config", "start", "approve",
+        "deny",
     ];
     for cmd in old {
         let err = env.fails(&[cmd, "sess-1"]);
@@ -2666,9 +2782,15 @@ fn adr_0063_permission_timeout_flag_wins_over_the_profile() {
     env.write_config("[profiles.default.headless]\npermission_timeout = 600\n");
     env.start(&["--permission-timeout", "1"]);
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never denied");
+    assert!(
+        wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()),
+        "never rejected"
+    );
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
-    assert!(env.ok(&["event", "log", "sess-1"]).contains("permission p1 -> reject (by timeout)"));
+    assert!(
+        env.ok(&["event", "log", "sess-1"])
+            .contains("permission p1 rejected with reject (reject_once), by timeout")
+    );
     env.stop();
 
     let env = Env::new("c-permflag2");

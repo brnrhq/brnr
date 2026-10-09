@@ -26,7 +26,9 @@
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
-//! - `approve` / `deny` `{session, request, option?}`
+//! - `allow` / `reject` `{session, request, always?, option?}`: with the
+//!   option of kind `allow_once` (`allow_always` with `always`), or
+//!   `reject_once` (`reject_always`), or the option named (ADR 63)
 //! - `set_config` `{session, mode?, model?, thought_level?, options?: {id:
 //!   value}}` (`config set`, ADR 63): resolved as a start's settings are
 //!   (ADR 58), sent one at a time, and answered once the agent has set them
@@ -40,7 +42,7 @@
 //!   agent's process group)
 //!
 //! On an editor's session every command that acts on it (`send`, `cancel`,
-//! `queue --clear-context`, `approve`, `deny`, `set_config` and `close`) is
+//! `queue --clear-context`, `allow`, `reject`, `set_config` and `close`) is
 //! experimental: refused unless the editor's profile enables it (ADR 4, see
 //! experimental.rs). Bridges observe it freely.
 //!
@@ -487,8 +489,8 @@ impl Host {
             Some("pending") => {
                 Ok(Some(json!({ "ok": true, "pending": self.pending_permissions() })))
             }
-            Some("approve") => now(self.answer(peer, req, Choice::Allow)),
-            Some("deny") => now(self.answer(peer, req, Choice::Deny)),
+            Some("allow") => now(self.answer(peer, req, Choice::Allow)),
+            Some("reject") => now(self.answer(peer, req, Choice::Reject)),
             Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
             Some("stop") => {
                 if self.status.is_some() {
@@ -544,7 +546,7 @@ impl Host {
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
         let i = self.session_index(req)?;
-        self.check_experimental(Experimental::Approve)?;
+        self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let ours = self
@@ -555,14 +557,17 @@ impl Host {
             return Err(format!("no pending request {handle} in session {session}"));
         }
         let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
-        let outcome = self.resolve_permission(&handle, choice, req["option"].as_str(), &by)?;
+        let always = req["always"].as_bool() == Some(true);
+        let outcome =
+            self.resolve_permission(&handle, choice, always, req["option"].as_str(), &by)?;
         Ok(json!({ "ok": true, "session": session, "request": handle, "outcome": outcome }))
     }
 
     fn pending_permissions(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
-        // Whether `brnr approve` would be taken, and if not, why (ADR 4).
-        let why_not = self.check_experimental(Experimental::Approve).err();
+        // Whether `brnr permission allow` would be taken, and if not, why
+        // (ADR 4).
+        let why_not = self.check_experimental(Experimental::Permission).err();
         self.agent_requests
             .iter()
             .filter(|r| r.handle.is_some())
@@ -712,7 +717,7 @@ impl Host {
                 let s = &mut self.sessions[i];
                 s.held.insert(s.interrupts, held);
                 s.interrupts += 1;
-                self.cancel(&session);
+                self.cancel(&session, "cancel");
                 "interrupting"
             }
             _ => {
@@ -757,7 +762,7 @@ impl Host {
         };
         let busy = !self.sessions[i].prompts.is_empty();
         if busy {
-            self.cancel(&session);
+            self.cancel(&session, "cancel");
         }
         let status = if busy { "cancelling" } else { "idle" };
         self.sink.note(Some(&session), json!({ "event": "cancel", "status": status }));

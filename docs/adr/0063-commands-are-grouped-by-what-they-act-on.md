@@ -243,11 +243,23 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     two values for it from one source, or an agent without one, fail the
     start before anything is set.
   - `adr_0063_permission_timeout_flag_wins_over_the_profile`: a shorter
-    `--permission-timeout` denies before the profile's would, and a longer
+    `--permission-timeout` rejects before the profile's would, and a longer
     one keeps the profile's from answering.
+  - `adr_0063_allow_and_reject_pick_by_kind`: each verb, with and without
+    `--always`, answers with the option of its kind, whatever their order,
+    and `permission_resolved` says `allowed` or `rejected` and the kind.
+  - `adr_0063_a_missing_or_doubled_kind_fails`: no option of the kind, or
+    two, fails listing the options, and nothing is answered; `reject` never
+    answers `cancelled`.
+  - `adr_0063_option_must_be_on_the_verbs_side`: `--option` of the other
+    side, or of the once kind with `--always`, fails; one of a kind brnr
+    doesn't know goes with either verb.
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0063_timeout_rejects_once_else_cancels_the_turn`: the timeout
+    answers `reject_once`; without it, `session/cancel` goes first and the
+    request is answered `cancelled`, and the turn ends.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and
 `--include`; `session delete` with and without `--purge`, and an editor's
-delete through `brnr acp`; `allow` and `reject` by kind, by `--option`, and
-their failures; the timeout's reject and cancel; `queue clear`'s flags.
+delete through `brnr acp`; `queue clear`'s flags.

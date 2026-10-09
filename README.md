@@ -147,7 +147,7 @@ enables it by name (without `--profile`, the profile is `default`):
 
 ```toml
 [profiles.work.editor]
-experimental = ["send", "approve"]
+experimental = ["send", "permission"]
 ```
 
 | Action | Commands | What brnr does for the editor |
@@ -155,7 +155,7 @@ experimental = ["send", "approve"]
 | `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
 | `context` | `prompt send --context`, `queue list --clear-context` | Added to the editor's next prompt, shown as "Context via brnr". |
 | `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
-| `approve` | `approve`, `deny` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Approved via brnr", "Denied via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
+| `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `session close`, `session resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
 
@@ -271,14 +271,31 @@ for `session new` and `resume`).
 ```sh
 brnr permission requests           # approvals waiting, in every session
 brnr permission show $s p1         # one in full: the command, paths, the diff
-brnr approve $s p1                 # or: brnr deny $s p1, --option <id>
+brnr permission allow $s p1        # with its allow_once option; --always: allow_always
+brnr permission reject $s p1       # with its reject_once option; --always: reject_always
 ```
+
+`allow` and `reject` answer with the request's option of that kind, whatever
+the order the agent gives them in. No other kind stands in for it: a request
+without one, or with two, isn't answered, and the command fails, listing the
+options. `--option <id>` names the option instead (for two of one kind, or a
+kind ACP doesn't have): one of an ACP kind must be on the verb's side, and the
+always kind with `--always`; one of a kind brnr doesn't know goes with either
+verb. `reject` never answers `cancelled`, which ACP keeps for a cancelled
+turn: `prompt cancel` is what does that.
+
+A headless request waits until it is answered, or for `permission_timeout`
+(in the profile's headless part), if set: then it is answered with its
+`reject_once` option, or, without exactly one, its turn is cancelled
+(`session/cancel`), which answers it and every request pending in the session
+`cancelled`. A timeout never allows, nor answers `reject_always`: nobody chose
+that.
 
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `permission show`
 says when a command has any. `--json` has the text as the agent sent it. On an
 editor's session `permission show` says the request is waiting in the editor,
-and that it can be answered here too, experimentally, where `approve` is
+and that it can be answered here too, experimentally, where `permission` is
 enabled, or else why it can't (`answerable` and `why_not` in `--json`).
 
 ### Settings
@@ -368,7 +385,7 @@ show the same events, live or read back from the transcript:
 | `tool_progress` | a tool call's status changing in between (`in_progress`) |
 | `plan`, `usage` | the plan; the context window and cost, as the agent reports them |
 | `session_changed` | the title, mode, config options or commands: what changed |
-| `permission_request`, `permission_resolved` | an approval waiting; its answer, and who gave it |
+| `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
 | `turn_ended` | its `stop_reason` or `error`, and the `messages` it carried |
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
@@ -455,7 +472,7 @@ setting the agent has no option for.
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
-process stops instead. `--permission-timeout <s>` denies an approval nobody
+process stops instead. `--permission-timeout <s>` rejects an approval nobody
 answered in that many seconds. Each wins over the profile's
 `stop_when_idle` and `permission_timeout`.
 
@@ -478,8 +495,7 @@ brnr: turns taken in the agent's own client, or with `log = false`, aren't
 in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
-`brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody
-answers), elicitation is declined, and anything else is answered with
+`brnr permission allow`/`reject` or a bridge, elicitation is declined, and anything else is answered with
 "method not found". How much the agent asks is the agent's own setting: its
 mode (`--mode`, `brnr config set --mode`). brnr doesn't log in for you. If the agent needs
 a login, the start fails with the agent's methods: log in with the agent's own
@@ -550,7 +566,7 @@ mode = "plan"                       # the agent's mode, model, thought level
 model = "opus"                      #   and config options by id, set before
 thought_level = "high"              #   the first prompt; the flags win
 options = { effort = "high" }
-permission_timeout = 600            # deny what nobody answered in 10 minutes
+permission_timeout = 600            # reject what nobody answered in 10 minutes
 stop_when_idle = 600                # close a session idle 10 minutes
 # auth = "api-key"                  # a login method to run first (codex-acp's)
 
@@ -561,7 +577,7 @@ args = ["stdio"]
 env = { GITHUB_TOKEN = "…" }
 
 [profiles.work.editor]              # brnr acp
-experimental = ["send", "approve"]  # actions on the editor's session
+experimental = ["send", "permission"] # actions on the editor's session
 features = ["shared_sessions"]      # process management
 ```
 
@@ -578,7 +594,7 @@ as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
-`pending`, `approve`, `deny`, `set_config`, `fork`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`pending`, `allow`, `reject`, `set_config`, `fork`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.

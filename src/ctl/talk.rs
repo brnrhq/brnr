@@ -189,7 +189,7 @@ pub(super) fn wait_for_message(
             "permission_request" if ours => {
                 let request = e["request"].as_str().unwrap_or("?");
                 errln!(
-                    "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr approve {arg} {request})",
+                    "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr permission allow {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
                 );
             }

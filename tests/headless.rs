@@ -454,7 +454,7 @@ fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
 /// Answering a permission request while the agent is being stopped can't
 /// reach it, so it fails rather than claiming success.
 #[test]
-fn adr_0027_approve_during_stop_fails() {
+fn adr_0027_allow_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
     env.start(&["--prompt", "edit it"]);
     let waiting = || {
@@ -463,8 +463,8 @@ fn adr_0027_approve_during_stop_fails() {
     };
     assert!(wait_for(Duration::from_secs(5), waiting), "no permission request");
     assert!(env.run(&["process", "stop", &env.pid()]).status.success());
-    let out = env.run(&["approve", "sess-1", "p1"]);
-    assert!(!out.status.success(), "approve succeeded during stop");
+    let out = env.run(&["permission", "allow", "sess-1", "p1"]);
+    assert!(!out.status.success(), "allow succeeded during stop");
     assert!(stderr(&out).contains("no longer"), "{}", stderr(&out));
 }
 
@@ -1855,7 +1855,7 @@ fn adr_0008_acp_hands_over_one_request() {
     let env = Env::new("ed-request");
     env.write_config(
         "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
-         [profiles.default.editor]\nexperimental = [\"send\", \"approve\"]\nfeatures = [\"shared_sessions\"]\n",
+         [profiles.default.editor]\nexperimental = [\"send\", \"permission\"]\nfeatures = [\"shared_sessions\"]\n",
     );
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let request = started_record(&env)["request"].clone();
@@ -1863,7 +1863,7 @@ fn adr_0008_acp_hands_over_one_request() {
     assert_eq!(request["log"], "events");
     let part = &request["role"]["editor"];
     assert_eq!(part["proxy_pid"], editor.id(), "{request}");
-    assert_eq!(part["experimental"], serde_json::json!(["send", "approve"]));
+    assert_eq!(part["experimental"], serde_json::json!(["send", "permission"]));
     assert_eq!(part["features"], serde_json::json!(["shared_sessions"]));
     assert!(part["sigmask"].is_array());
     assert!(request["role"].get("headless").is_none(), "{request}");
@@ -2474,8 +2474,8 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
         (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
         (&["queue", "list", "sess-1", "--clear-context"], "context"),
         (&["prompt", "cancel", "sess-1"], "cancel"),
-        (&["approve", "sess-1", "p1"], "approve"),
-        (&["deny", "sess-1", "p1"], "approve"),
+        (&["permission", "allow", "sess-1", "p1"], "permission"),
+        (&["permission", "reject", "sess-1", "p1"], "permission"),
         (&["config", "set", "sess-1", "--mode", "plan"], "config"),
         (&["config", "set", "sess-1", "--model", "large"], "config"),
         (&["config", "set", "sess-1", "--option", "model=large"], "config"),
@@ -2507,7 +2507,7 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     // show says where it can be answered, and why not here.
     let show = env.ok(&["permission", "show", "sess-1", "p1"]);
     assert!(show.contains("p1, session sess-1, waiting in the editor"), "{show}");
-    let why = "answer it in the editor (`approve` on an editor's session is experimental";
+    let why = "answer it in the editor (`permission` on an editor's session is experimental";
     assert!(show.contains(why), "{show}");
     for method in ["session/cancel", "session/set_mode", "session/set_config_option"] {
         assert!(env.calls_of(method).is_empty(), "the agent got {method}");
@@ -2517,6 +2517,14 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
     assert_eq!(answers.len(), 1, "{answers:?}");
     assert_eq!(env.prompts(), ["perm edit"]);
+    // The editor's answer is told by its option's kind (ADR 63).
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "permission_resolved"]);
+    let resolved: Value = serde_json::from_str(log.lines().next().unwrap_or_default()).unwrap();
+    assert_eq!(
+        (&resolved["answer"], &resolved["option_kind"], &resolved["by"]),
+        (&"allowed".into(), &"allow_once".into(), &"editor".into()),
+        "{resolved}"
+    );
 }
 
 /// In strict mode an editor's session has no experimental actions, whatever
@@ -2526,7 +2534,8 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
     let env = Env::new("ex-strict");
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.editor]\nexperimental = \
-         [\"send\", \"context\", \"cancel\", \"approve\", \"config\", \"close\"]\n",
+         [\"send\", \"context\", \"cancel\", \"permission\", \"config\", \"close\"]
+",
     );
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2535,8 +2544,8 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
         (&["prompt", "send", "sess-1", "hi"], "send"),
         (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
         (&["prompt", "cancel", "sess-1"], "cancel"),
-        (&["approve", "sess-1", "p1"], "approve"),
-        (&["deny", "sess-1", "p1"], "approve"),
+        (&["permission", "allow", "sess-1", "p1"], "permission"),
+        (&["permission", "reject", "sess-1", "p1"], "permission"),
         (&["config", "set", "sess-1", "--mode", "plan"], "config"),
         (&["session", "close", "sess-1"], "close"),
     ];
@@ -2641,18 +2650,18 @@ fn adr_0004_cancel_withdraws_the_editors_requests() {
     assert_eq!(answers[0]["result"]["outcome"]["outcome"], "cancelled");
 }
 
-/// `approve` and `deny` answer the agent in the editor's place: the request
-/// is withdrawn from the editor, its tool call updated, and the editor told
-/// who answered. The editor's own answer after that is dropped, and it is
+/// `permission allow` and `reject` answer the agent in the editor's place:
+/// the request is withdrawn from the editor, its tool call updated, and the
+/// editor told who answered. The editor's own answer after that is dropped, and it is
 /// told who answered first.
 #[test]
 fn adr_0004_approve_answers_in_the_editors_place() {
     let env = Env::new("ex-approve");
-    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["approve"]);
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["permission"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     let show = env.ok(&["permission", "show", "sess-1", "p1"]);
-    let here = "answer: in the editor, or brnr approve sess-1 p1, brnr deny sess-1 p1";
+    let here = "answer: in the editor, or brnr permission allow sess-1 p1 or reject sess-1 p1";
     assert!(show.contains(here), "{show}");
     let json: Value =
         serde_json::from_str(&env.ok(&["permission", "show", "sess-1", "p1", "--json"])).unwrap();
@@ -2661,30 +2670,30 @@ fn adr_0004_approve_answers_in_the_editors_place() {
         (&Value::Bool(true), &Value::Null),
         "{json}"
     );
-    assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
+    assert_eq!(env.ok(&["permission", "allow", "sess-1", "p1"]), "p1 allow\n");
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"in_progress".into()));
     let told = update(&mut from_agent, "tool_call");
-    assert_eq!(told["title"], "Approved via brnr", "{told}");
+    assert_eq!(told["title"], "Allowed via brnr", "{told}");
     let text = told["content"][0]["content"]["text"].as_str().unwrap_or_default();
-    let says = "\"Edit src/lib.rs\" was approved through brnr's control socket";
+    let says = "\"Edit src/lib.rs\" was allowed through brnr's control socket";
     assert!(text.contains(says), "{text}");
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
     writeln!(to_agent, "{ALLOW}").unwrap();
     let note = update(&mut from_agent, "tool_call");
-    assert_eq!(note["title"], "Already approved via brnr", "{note}");
+    assert_eq!(note["title"], "Already allowed via brnr", "{note}");
     let text = note["content"][0]["content"]["text"].as_str().unwrap_or_default();
-    let says = "\"Edit src/lib.rs\" was already approved through brnr's control socket";
+    let says = "\"Edit src/lib.rs\" was already allowed through brnr's control socket";
     assert!(text.contains(says), "{text}");
-    // A denied tool call has failed.
+    // A rejected tool call has failed.
     writeln!(to_agent, "{}", editor_prompt(4, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
-    assert_eq!(env.ok(&["deny", "sess-1", "p2"]), "p2 reject\n");
+    assert_eq!(env.ok(&["permission", "reject", "sess-1", "p2"]), "p2 reject\n");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"failed".into()));
-    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Denied via brnr");
+    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Rejected via brnr");
     response(&mut from_agent, 4);
     let answers: Vec<Value> = (env.calls().into_iter())
         .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())

@@ -84,7 +84,7 @@ agent = ["brnr-claude-adapter"]
 [profiles.work.headless]
 cwd = "~/work/project"
 stop_when_idle = 600                # close a worker idle 10 minutes
-permission_timeout = 1800           # deny what nobody answered in 30 minutes
+permission_timeout = 1800           # reject what nobody answered in 30 minutes
 ```
 
 ```sh

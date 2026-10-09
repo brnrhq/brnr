@@ -30,7 +30,7 @@ the brnr that printed it (`brnr skill`).
    `session status`. The exit
    status is the result: 0 the turn ended normally, 1 it failed, stopped or
    its message was dropped, 124 your timeout passed (the worker goes on).
-4. **Approvals belong to the user.** Don't `approve` or `deny` unless the
+4. **Approvals belong to the user.** Don't `permission allow` or `reject` unless the
    user told you to, explicitly, for that session and that kind of request.
    Otherwise show the request (`brnr permission show`), say in a sentence
    what it would do, and wait for the user's answer. Don't switch a worker to a mode that

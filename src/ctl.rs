@@ -11,7 +11,7 @@
 //! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
 //!   `doctor`; skill.rs: `skill`
 //! - here: `process list`, `process stop`, `list`, `session status`,
-//!   `permission requests`, `approve`, `deny`, `event watch`
+//!   `permission requests`, `permission allow` and `reject`, `event watch`
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
@@ -104,8 +104,8 @@ queue
 permission
   brnr permission requests [<session>] [--json]
   brnr permission show <session> <request> [--json]
-  brnr approve <session> <request> [--option <id>] [--json]
-  brnr deny <session> <request> [--option <id>] [--json]
+  brnr permission allow <session> <request> [--always] [--option <id>] [--json]
+  brnr permission reject <session> <request> [--always] [--option <id>] [--json]
 
 config
   brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
@@ -162,6 +162,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("queue", Some("drop")) => talk::queue_drop(rest),
         ("permission", Some("requests")) => done(pending(rest)),
         ("permission", Some("show")) => show::show(rest),
+        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
         ("config", Some("get")) => settings::config_get(rest),
         ("config", Some("set")) => settings::config_set(rest),
         ("event", Some("log")) => history::log(rest),
@@ -178,8 +179,6 @@ pub fn main(args: Vec<String>) -> ExitCode {
         (_, None) if grouped => Err(USAGE.to_owned()),
         ("sessions", _) => settings::sessions(rest),
         ("list", _) => done(list(rest)),
-        ("approve", _) => done(answer(rest, "approve")),
-        ("deny", _) => done(answer(rest, "deny")),
         ("doctor", _) => done(doctor::main(rest)),
         ("skill", _) => done(skill::skill(rest)),
         ("-h" | "--help", _) => {
@@ -846,13 +845,18 @@ fn pending(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `permission allow` and `reject` (`cmd`): the request's option of one
+/// kind, or the one `--option` names; the host picks it, and says why it
+/// can't (ADR 63).
 fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut option = None;
+    let mut always = false;
     let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--always" => always = true,
             "--option" => option = Some(it.next().ok_or("--option needs an id")?.clone()),
             "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
@@ -862,7 +866,13 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let req = json!({ "cmd": cmd, "session": session, "request": request_id, "option": option });
+    let req = json!({
+        "cmd": cmd,
+        "session": session,
+        "request": request_id,
+        "always": always,
+        "option": option,
+    });
     let response = call(host, &req)?;
     let outcome = &response["outcome"];
     if json_out {

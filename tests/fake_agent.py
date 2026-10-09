@@ -54,6 +54,8 @@ with environment variables:
                     (a line that isn't JSON is then skipped)
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
+  PERM_OPTIONS=<json>  a permission request offers these options (a JSON
+                    array of ACP permission options) instead
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
 
@@ -404,6 +406,8 @@ def run(mid, sid, text):
         ]
         if env("ALLOW_ONLY"):
             options = options[:1]
+        if env("PERM_OPTIONS"):
+            options = json.loads(env("PERM_OPTIONS"))
         tool = {
             "toolCallId": request,
             "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",

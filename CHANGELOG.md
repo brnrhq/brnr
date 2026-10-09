@@ -77,6 +77,26 @@ brnr's own conventions:
   `model` and `thought_level`: `config = { model = "opus" }` becomes
   `model = "opus"` (or `options = { model = "opus" }`). A profile with
   `config` fails to load, and `brnr doctor` says so (ADR 33, ADR 63).
+- **Breaking:** `approve` and `deny` are `brnr permission allow` and
+  `brnr permission reject <session> <request> [--always] [--option <id>]`,
+  and answer with the request's option of one kind: `allow_once`,
+  `allow_always` (`--always`), `reject_once` or `reject_always`. No other
+  kind stands in, so a request without that kind, or with two, fails,
+  listing the options: where `approve` took `allow_always` and `deny`
+  answered `cancelled`, name the option with `--option`, or cancel the turn
+  with `prompt cancel`. `--option` of an ACP kind must be on the verb's side,
+  and the always kind with `--always`. The socket's `approve` and
+  `deny {option}` are `allow` and `reject {always, option}`, and the editor's
+  experimental action `approve` is `permission` (ADR 63).
+- **Breaking:** `permission_timeout` answers with the `reject_once` option;
+  a request without one has its turn cancelled (`session/cancel`), which
+  answers every request pending in the session `cancelled`. It never
+  answers `reject_always`, which it took where there was no `reject_once`
+  (ADR 63).
+- **Breaking:** `permission_resolved` has `answer` (`allowed`, `rejected` or
+  `cancelled`) and `option_kind`, the chosen option's kind, and reads
+  `permission p1 allowed with allow (allow_once), by …` as text. The
+  editor is told "Allowed via brnr" or "Rejected via brnr" (ADR 63).
 
 ## [0.7.0] - 2026-10-09
 

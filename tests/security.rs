@@ -1,6 +1,6 @@
 //! The claims of docs/threat-model.md that no other test checks: who can
 //! reach a process and its files (P13), what the agent's text can't do
-//! (P8), how approvals end unanswered (ADR 27), what is recorded of secrets
+//! (P8), how approvals end unanswered (ADR 27, 63), what is recorded of secrets
 //! (ADR 25), and what `brnr acp` passes unchanged (P1). Against the fake
 //! agent (fake_agent.py), each test in its own directories.
 
@@ -119,7 +119,7 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
         &["list"][..],
         &["process", "list"],
         &["permission", "requests"],
-        &["approve", "sess-1", "p1"],
+        &["permission", "allow", "sess-1", "p1"],
     ] {
         private_dir_error(&env.fails(args));
     }
@@ -202,11 +202,11 @@ fn no_approval_goes_through_a_dir_others_can_use() {
         .contains("p1")));
     let run = env.dir.join("run");
     chmod(&run, 0o770);
-    private_dir_error(&env.fails(&["approve", "sess-1", "p1"]));
+    private_dir_error(&env.fails(&["permission", "allow", "sess-1", "p1"]));
     chmod(&run, 0o700);
     assert!(env.ok(&["permission", "requests"]).contains("p1"));
     assert!(outcome(&env, "perm-1").is_none());
-    env.ok(&["deny", "sess-1", "p1"]);
+    env.ok(&["permission", "reject", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
 }
 
@@ -410,13 +410,13 @@ fn adr_0027_an_unanswered_request_waits() {
     sleep(Duration::from_secs(3));
     assert!(outcome(&env, "perm-1").is_none(), "answered for the user");
     assert!(env.ok(&["permission", "requests"]).contains("p1"));
-    env.ok(&["approve", "sess-1", "p1"]);
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
 }
 
-/// A timeout only ever denies: a request that offers nothing to reject with
-/// is cancelled, never allowed.
+/// A timeout never allows: a request that offers nothing to reject with has
+/// its turn cancelled, and is answered `cancelled`.
 #[test]
 fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
@@ -426,6 +426,43 @@ fn adr_0027_a_timeout_never_allows() {
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
     assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
     assert!(env.ok(&["event", "log", "sess-1"]).contains("by timeout"));
+    env.stop();
+}
+
+/// The permission timeout answers with the request's `reject_once` option;
+/// one without has its turn cancelled (`session/cancel`), which answers it
+/// `cancelled`. Never `reject_always`, which nobody chose.
+#[test]
+fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
+    let timeout = "[profiles.default.headless]\npermission_timeout = 1\n";
+    let env = Env::new("s-timeoutonce");
+    env.write_config(timeout);
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "unanswered");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+    assert!(env.calls_of("session/cancel").is_empty(), "cancelled a turn it could answer");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("permission p1 rejected with reject (reject_once), by timeout"), "{log}");
+    env.stop();
+
+    let options = r#"[{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "never", "name": "Never", "kind": "reject_always"}]"#;
+    let env = Env::new("s-timeoutcancel").agent("PERM_OPTIONS", options);
+    env.write_config(timeout);
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "unanswered");
+    assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
+    let calls = env.calls();
+    let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what);
+    let cancel = at(&|c| c["method"] == "session/cancel" && c["params"]["sessionId"] == "sess-1");
+    let answer = at(&|c| c["id"] == "perm-1" && c.get("method").is_none());
+    assert!(cancel.is_some() && cancel < answer, "{calls:?}");
+    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("permission p1 cancelled, by timeout"), "{log}");
     env.stop();
 }
 
@@ -439,7 +476,7 @@ fn adr_0027_a_request_is_answered_only_in_its_session() {
     assert!(wait_for(Duration::from_secs(5), || env
         .ok(&["permission", "requests"])
         .contains("p1")));
-    let err = env.fails(&["approve", "sess-2", "p1"]);
+    let err = env.fails(&["permission", "allow", "sess-2", "p1"]);
     assert!(err.contains("no pending request p1 in session sess-2"), "{err}");
     assert!(outcome(&env, "perm-1").is_none());
     env.stop();

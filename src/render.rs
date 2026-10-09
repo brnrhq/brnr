@@ -85,11 +85,21 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
                 options.join(" ")
             )
         }
+        // Allowed, rejected or cancelled (ADR 63), with the option and its
+        // kind; an editor's answer of a kind brnr doesn't know, answered.
         "permission_resolved" => {
-            let outcome = &e["outcome"];
-            let chosen =
-                outcome["optionId"].as_str().or(outcome["outcome"].as_str()).unwrap_or("?");
-            format!("permission {} -> {chosen} (by {})", s(&e["request"]), s(&e["by"]))
+            let (request, by) = (s(&e["request"]), s(&e["by"]));
+            match (e["answer"].as_str(), e["outcome"]["optionId"].as_str()) {
+                (Some("cancelled"), _) => format!("permission {request} cancelled, by {by}"),
+                (answer, Some(option)) => format!(
+                    "permission {request} {} with {option} ({}), by {by}",
+                    answer.unwrap_or("answered"),
+                    e["option_kind"].as_str().unwrap_or("?")
+                ),
+                (answer, None) => {
+                    format!("permission {request} {}, by {by}", answer.unwrap_or("answered"))
+                }
+            }
         }
         "turn_ended" => match e["error"].as_object() {
             Some(error) => format!("turn failed: {} ({})", error["message"], s(&e["by"])),

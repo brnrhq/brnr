@@ -202,12 +202,12 @@
     </div>
 
     <figure class="phone-wrap" style="margin:0">
-      <div class="phone" role="img" aria-label="An agent's messages on a phone screen: it asks to edit src/api.rs, you approve, it finishes, and you ask it to update the changelog.">
+      <div class="phone" role="img" aria-label="An agent's messages on a phone screen: it asks to edit src/api.rs, you allow it, it finishes, and you ask it to update the changelog.">
         <div class="lcd">
           <div class="status"><span class="bars">▂▄▆</span><span>demo</span><span>▮▮▮▯</span></div>
           <ol class="thread" aria-hidden="true">
             <li class="from">Edit src/api.rs?</li>
-            <li class="me">approve</li>
+            <li class="me">allow</li>
             <li class="from">Done. 3 files changed.</li>
             <li class="me">also update the changelog</li>
             <li class="from">On it.</li>
@@ -215,7 +215,7 @@
         </div>
         <div class="keys" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
       </div>
-      <figcaption class="caption">That's <code>brnr approve $s p1</code> and <code>brnr prompt send $s</code>.</figcaption>
+      <figcaption class="caption">That's <code>brnr permission allow $s p1</code> and <code>brnr prompt send $s</code>.</figcaption>
     </figure>
   </div>
 
@@ -269,9 +269,9 @@ brnr prompt send $s --steer "and the tests too"   <span class="c"># into the run
 brnr prompt send $s --interrupt "stop, wrong branch"
 brnr event watch $s                <span class="c"># messages, tools, plan and approvals, live</span>
 brnr permission requests           <span class="c"># approvals waiting for an answer</span>
-brnr approve $s p1
+brnr permission allow $s p1
 brnr session close $s</pre>
-        <p>Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs. In an editor's session, <code>prompt send</code> and <code>approve</code> work once its profile enables them.</p>
+        <p>Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs. In an editor's session, <code>prompt send</code> and <code>permission allow</code> work once its profile enables them.</p>
       </div>
     </div>
   </section>
@@ -284,7 +284,7 @@ brnr session close $s</pre>
       </div>
       <div class="body">
 <pre>brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
-        <p>Approvals wait for <code>brnr approve</code>, <code>brnr deny</code> or a bridge; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, in folders named like those of Claude Code's own transcripts.</p>
+        <p>Approvals wait for <code>brnr permission allow</code>, <code>reject</code> or a bridge; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, in folders named like those of Claude Code's own transcripts.</p>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]

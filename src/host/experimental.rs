@@ -7,9 +7,9 @@
 //! - `send` goes only while no prompt runs: the editor controls its turns,
 //!   so nothing is held, steered or interrupts. It is echoed (`echo` in
 //!   acp.rs, ADR 5), and so is `context` as it joins the editor's prompt.
-//! - `cancel` and `approve`: a permission request the host answers is
-//!   withdrawn from the editor with `$/cancel_request`, and for an approve
-//!   or a deny its tool call is updated. If the editor answers anyway, its
+//! - `cancel` and `permission`: a permission request the host answers is
+//!   withdrawn from the editor with `$/cancel_request`, and for an allow
+//!   or a reject its tool call is updated. If the editor answers anyway, its
 //!   answer is dropped, so the agent never gets two, and the editor is told
 //!   in the session.
 //! - `config`: the agent answers a change only to whoever asked (ADR 28),
@@ -35,7 +35,7 @@ pub(super) struct Answered {
     session: Option<String>,
     /// The tool call's title, as the request has it.
     title: String,
-    /// `approved`, `denied` or `cancelled`.
+    /// `allowed`, `rejected` or `cancelled`.
     how: &'static str,
     /// Who answered it: `cancel`, or a peer's label.
     by: String,
@@ -86,11 +86,11 @@ impl Host {
 
     // ---- approvals ------------------------------------------------------
 
-    /// The host answered the agent's request `req`, `how` (`approved`,
-    /// `denied` or `cancelled`), which the editor was shown too: it is
-    /// withdrawn from the editor. An approved tool call is in progress, a
-    /// denied one has failed: the status the agent's own updates take it
-    /// on from, so neither contradicts the other. An approval or denial is
+    /// The host answered the agent's request `req`, `how` (`allowed`,
+    /// `rejected` or `cancelled`), which the editor was shown too: it is
+    /// withdrawn from the editor. An allowed tool call is in progress, a
+    /// rejected one has failed: the status the agent's own updates take it
+    /// on from, so neither contradicts the other. An allow or a reject is
     /// also told in the session, saying by whom.
     pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &str) {
         if !self.editor_attached() {
@@ -105,8 +105,8 @@ impl Host {
         let msg = json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": params });
         self.send_editor(req.session.as_deref(), &msg);
         let status = match how {
-            "approved" => "in_progress",
-            "denied" => "failed",
+            "allowed" => "in_progress",
+            "rejected" => "failed",
             _ => return,
         };
         let Some(session) = &req.session else { return };
@@ -116,7 +116,7 @@ impl Host {
             self.update_editor(session, update);
         }
         let text = format!("\"{title}\" was {how} {}.", who(by));
-        let note = if how == "approved" { "Approved via brnr" } else { "Denied via brnr" };
+        let note = if how == "allowed" { "Allowed via brnr" } else { "Rejected via brnr" };
         self.echo(session, note, &[text_block(&text)]);
     }
 

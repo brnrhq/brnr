@@ -61,7 +61,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "usage", "session": "0f6c…", "usage": {"used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}}}
 {"event": "session_changed", "session": "0f6c…", "what": "title", "value": "Fix the failing tests"}
 {"event": "permission_request", "session": "0f6c…", "request": "p1", "owner": "headless", "title": "Edit src/lib.rs", "kind": "edit", "tool_call": {}, "options": []}
-{"event": "permission_resolved", "session": "0f6c…", "request": "p1", "outcome": {"outcome": "selected", "optionId": "allow"}, "by": "socket#18"}
+{"event": "permission_resolved", "session": "0f6c…", "request": "p1", "answer": "allowed", "option_kind": "allow_once", "outcome": {"outcome": "selected", "optionId": "allow"}, "by": "socket#18"}
 {"event": "turn_ended", "session": "0f6c…", "by": "control", "messages": ["m1"], "stop_reason": "end_turn", "error": null}
 {"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
@@ -76,6 +76,10 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `status` `completed` or `failed`.
 - `session_changed`: `what` is `title`, `mode`, `config` or `commands`; for
   config options and commands `value` is a JSON merge patch by id or name.
+- `permission_resolved`: `answer` is `allowed`, `rejected` or `cancelled`
+  (null for an editor's answer of a kind brnr doesn't know), `option_kind`
+  the chosen option's kind, `by` who answered (`editor`, `cancel`,
+  `timeout`, or a connection).
 - `turn_ended`: `stop_reason` (`end_turn`, `cancelled`, …) or an `error`
   (`{code, message}`), and the `messages` the turn carried.
 - `message_dropped`: `by` `cancel`, `queue`, `close`, `exit` or `steer`;

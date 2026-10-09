@@ -73,8 +73,8 @@ queue
 permission
   brnr permission requests [<session>] [--json]
   brnr permission show <session> <request> [--json]
-  brnr approve <session> <request> [--option <id>] [--json]
-  brnr deny <session> <request> [--option <id>] [--json]
+  brnr permission allow <session> <request> [--always] [--option <id>] [--json]
+  brnr permission reject <session> <request> [--always] [--option <id>] [--json]
 
 config
   brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
@@ -124,7 +124,7 @@ with the agent's capabilities.
 | `brnr queue drop` | Drops one held message by ID. | As `queue list`, with the message in `dropped`. |
 | `brnr permission requests` | Lists pending approvals across hosts, optionally filtered by session. | Table or JSON array of approval objects. |
 | `brnr permission show` | Displays one pending approval in full. | Tool/command/diff details; JSON approval object includes `request`, `session`, `owner`, `answerable`, `why_not`, `title`, `kind`, `tool_call`, `options`, `timeout_seconds`. |
-| `brnr approve`, `brnr deny` | Resolves an approval, optionally choosing the agent's exact option ID. | Acknowledgment with `session`, `request`, `outcome`. An unavailable/invalid choice fails. |
+| `brnr permission allow`, `brnr permission reject` | Answers an approval with its option of kind `allow_once` (`allow_always` with `--always`) or `reject_once` (`reject_always`); `--option` names the agent's option ID instead, of the verb's side if its kind is ACP's (and the always kind with `--always`). | Acknowledgment with `session`, `request`, `outcome` (ACP's). A missing or doubled kind, or an option of the other side, fails, listing the options; nothing is answered. |
 | `brnr list` | Running sessions by default; `--inactive` only saved inactive sessions; `--all` both. | Session table or JSON array with `session`, `title`, `state`, `pid`, `agent`, `cwd`, `last_active`. |
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr sessions` | Starts an agent to query its own session list for the selected cwd. | Session table or JSON array with `session`, `title`, `state`, `pid`, `last_active`, `cwd`; unknown state/PID can be null. |
@@ -228,8 +228,8 @@ names fail to load. `doctor` validates every profile.
 | Section | Keys and input types |
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
-| `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. |
-| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `approve`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
+| `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. A permission timeout answers with the `reject_once` option, else cancels the turn. |
+| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
 
@@ -283,7 +283,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `queue` | `session`; optional `drop` (message ID), `clear`, `clear_context` (booleans). | `session`, `held`, `context`, `dropped`. |
 | `subscribe` | Optional `events`: array of event names or string `"all"`. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. |
 | `pending` | None | `pending`: approval objects for the host's sessions. |
-| `approve`, `deny` | `session`, `request`; optional `option` string. | `session`, `request`, `outcome`. |
+| `allow`, `reject` | `session`, `request`; optional `always` boolean, `option` string. | `session`, `request`, `outcome`. |
 | `set_config` | `session`; optional `mode`, `model`, `thought_level` strings and `options` (object of option IDs to strings), at least one. Resolved and sent as `config set` does; answered once all are set, or with the first failure, which names what was already set. | `session`, `set` (`option`, `category`, `value` for each setting sent), `mode`, updated `config`. |
 | `fork` | `session`. | New `session` ID. |
 | `close` | `session`; optional `take_over` destination PID, used by brnr's resume flow. | Closed `session` ID after agent acknowledgment. |
