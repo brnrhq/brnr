@@ -39,7 +39,7 @@ use brnr::{config, lock, paths, signals, spawn, sys};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
-    print_json, read_stdin, response_json, running_session, settings, text,
+    print_json, process, read_stdin, response_json, running_session, settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -82,18 +82,28 @@ impl Conn {
     }
 
     /// A request whose failure is an error.
-    pub(super) fn call(&mut self, mut req: Value) -> Result<Value, String> {
+    pub(super) fn call(&mut self, req: Value) -> Result<Value, String> {
+        self.call_until(req, None)?.ok_or_else(|| "the process closed the connection".into())
+    }
+
+    /// A request whose failure is an error, answered by `deadline`;
+    /// `Ok(None)` when it passes first.
+    fn call_until(
+        &mut self,
+        mut req: Value,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Value>, String> {
         self.next_req += 1;
         let id = format!("r{}", self.next_req);
         req["req_id"] = json!(id);
         writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
         loop {
-            let msg = self.read(None)?.ok_or("the process closed the connection")?;
+            let Some(msg) = self.read(deadline)? else { return Ok(None) };
             if msg["req_id"] == id.as_str() {
                 if msg["ok"].as_bool() != Some(true) {
                     return Err(msg["error"].as_str().unwrap_or("request failed").to_owned());
                 }
-                return Ok(msg);
+                return Ok(Some(msg));
             }
             if msg.get("event").is_some() {
                 self.events.push_back(msg);
@@ -336,7 +346,8 @@ fn base64(data: &[u8]) -> String {
 // process reports on the start channel, a socketpair at its fd 3: the start
 // commits at its ready report, after which the process sends the prompt
 // itself. Until then, the command going away (or giving up) stops it, and
-// the prompt is never sent.
+// the prompt is never sent. With `--pid` the process is running already, and
+// its answer on the control socket is the commit (see `start_in`).
 
 #[derive(Default)]
 struct StartArgs {
@@ -349,6 +360,8 @@ struct StartArgs {
     settings: request::Settings,
     /// The session `resume` resumes; none for `new`.
     resume: Option<String>,
+    /// `--pid`: the running process to open it in.
+    pid: Option<String>,
     take_over: bool,
     stop_when_idle: Option<u64>,
     permission_timeout: Option<u64>,
@@ -360,6 +373,8 @@ struct StartArgs {
     quiet: bool,
     json: bool,
     agent: Vec<String>,
+    /// `--` was given, with or without an agent after it.
+    agent_given: bool,
 }
 
 /// `session new`'s flags, or (`resume`) `session resume`'s, which also
@@ -383,6 +398,7 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
         }
         let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
+            "--pid" => a.pid = Some(value("--pid")?),
             "--profile" => a.profile = Some(value("--profile")?),
             "--cwd" => a.cwd = Some(value("--cwd")?),
             "--prompt" => a.prompt = Some(value("--prompt")?),
@@ -407,6 +423,7 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             "--json" => a.json = true,
             "--" => {
                 a.agent = it.by_ref().cloned().collect();
+                a.agent_given = true;
                 break;
             }
             other if other.starts_with('-') && other != "-" => {
@@ -418,6 +435,25 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
     }
     if resume && a.resume.is_none() {
         return Err(USAGE.to_owned());
+    }
+    // The process is running: what starts one has nothing to do (P7).
+    if let Some(pid) = &a.pid {
+        let process = [
+            ("--profile", a.profile.is_some()),
+            ("--auth", a.auth.is_some()),
+            ("--strict", a.strict),
+            ("--stop-when-idle", a.stop_when_idle.is_some()),
+            ("--permission-timeout", a.permission_timeout.is_some()),
+            ("--foreground", a.foreground),
+            ("--quiet", a.quiet),
+            ("-- <agent>", a.agent_given),
+        ];
+        if let Some((flag, _)) = process.iter().find(|(_, given)| *given) {
+            return Err(format!(
+                "{flag} is for starting a process, and doesn't go with --pid: process {pid} is \
+                 running already"
+            ));
+        }
     }
     let [(_, mode), (_, model), (_, thought_level)] = by_category;
     let options = settings::options("--option", &pairs)?;
@@ -454,13 +490,21 @@ pub(super) fn resume(args: &[String]) -> Result<ExitCode, String> {
     start(parse_start(args, true)?)
 }
 
+/// How long a start may take until it commits (`BRNR_START_TIMEOUT`).
+fn start_timeout() -> Result<u64, String> {
+    match env::var("BRNR_START_TIMEOUT") {
+        Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}")),
+        Err(_) => Ok(START_TIMEOUT),
+    }
+}
+
 fn start(mut a: StartArgs) -> Result<ExitCode, String> {
+    if let Some(pid) = a.pid.take() {
+        return start_in(a, &pid);
+    }
     let command = if a.resume.is_some() { "session resume" } else { "session new" };
     let blocks = attachments(&a.files, &a.images)?;
-    let timeout = match env::var("BRNR_START_TIMEOUT") {
-        Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}"))?,
-        Err(_) => START_TIMEOUT,
-    };
+    let timeout = start_timeout()?;
     let mut resume_cwd = None;
     let hosts = if a.resume.is_some() { discover()? } else { Vec::new() };
     // --take-over: the process holding the session, and the session. It
@@ -618,23 +662,140 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     if let Some(child) = child {
         return Ok(exit_status(child));
     }
+    // The turn's events follow the report on the same channel.
+    started(&mut conn, &ready, a.wait, a.json, a.timeout)
+}
+
+/// What a start says once it has committed with `ready`, `{session, pid,
+/// message}`: the session and its process, or with `wait` the turn,
+/// followed on `conn` until `timeout`.
+fn started(
+    conn: &mut Conn,
+    ready: &Value,
+    wait: bool,
+    json: bool,
+    timeout: Option<u64>,
+) -> Result<ExitCode, String> {
     let session = text(&ready["session"]);
     // The prompt's id, as `send` gives it (ADR 17); null without one.
     let about = json!({ "session": session, "pid": ready["pid"], "message": ready["message"] });
-    if !a.wait {
-        if a.json {
+    if !wait {
+        if json {
             print_json(&about)?;
         } else {
             outln!("{}", describe_started(&about));
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if !a.json {
+    if !json {
         errln!("{}", describe_started(&about));
     }
-    // The turn's events follow the report on the same channel.
-    let (message, json_out) = (text(&ready["message"]), a.json.then_some(about));
-    wait_for_message(&mut conn, &session, &session, &message, deadline(a.timeout), json_out)
+    let (message, json_out) = (text(&ready["message"]), json.then_some(about));
+    wait_for_message(conn, &session, &session, &message, deadline(timeout), json_out)
+}
+
+/// `session new --pid` and `session resume --pid` (ADR 63): a session opened
+/// in process `pid`, which is running, with the socket's `new` or `resume`.
+/// The process answers once the session is open and its settings are set,
+/// and only then sends the prompt: the answer is the commit, as a start's
+/// ready report is (ADR 7). Gone before it (the start timeout, Ctrl-C), the
+/// command closes its connection, and the process closes the session again.
+fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
+    let blocks = attachments(&a.files, &a.images)?;
+    let timeout = start_timeout()?;
+    let hosts = discover()?;
+    let host = process(&hosts, pid)?;
+    let mut req = json!({ "cmd": "new" });
+    let mut cwd = a.cwd.clone();
+    // --take-over: the process holding the session, to close it there.
+    let mut owner = None;
+    if let Some(wanted) = &a.resume {
+        req = json!({ "cmd": "resume", "session": wanted });
+        let here = format!("{wanted} is already open in process {pid}");
+        let found = match lock::holder(wanted) {
+            Some(holder) if holder.to_string() == pid => return Err(here),
+            Some(holder) if !a.take_over => {
+                return Err(format!(
+                    "{wanted} is running in process {holder} (--take-over closes it there and \
+                     resumes it in process {pid})"
+                ));
+            }
+            Some(holder) => {
+                let (owner_host, running) = settings::held(&hosts, wanted, holder)?;
+                owner = Some(owner_host);
+                Some(running)
+            }
+            // A session brnr has no transcript of goes to the agent as
+            // given, in --cwd or here.
+            None => match find_session(&hosts, wanted) {
+                Ok(Found::Running(h, _)) if h.id() == pid => return Err(here),
+                Ok(Found::Running(h, _)) => {
+                    return Err(format!("{wanted} is running in process {}", h.id()));
+                }
+                Ok(Found::Inactive(past)) => Some(past),
+                Err(_) => None,
+            },
+        };
+        if cwd.is_none() {
+            cwd = found.and_then(|past| past["cwd"].as_str().map(str::to_owned));
+        }
+    }
+    let cwd = match cwd {
+        Some(dir) => paths::expand(&dir),
+        None => env::current_dir().map_err(|e| format!("cwd: {e}"))?,
+    };
+    let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
+    if !cwd.is_dir() {
+        return Err(format!("{}: not a directory", cwd.display()));
+    }
+    let request::Settings { mode, model, thought_level, options } = &a.settings;
+    for (key, value) in [
+        ("cwd", json!(cwd.to_string_lossy())),
+        ("mode", json!(mode)),
+        ("model", json!(model)),
+        ("thought_level", json!(thought_level)),
+        ("options", json!(options)),
+        ("text", json!(a.prompt.as_deref().unwrap_or_default())),
+        ("blocks", json!(blocks)),
+    ] {
+        req[key] = value;
+    }
+    if let (Some(owner), Some(session)) = (owner, &a.resume) {
+        // What the process would refuse is refused before the session is
+        // closed where it runs.
+        refused_in(host)?;
+        let to = pid.parse().map_err(|_| format!("no brnr process {pid}"))?;
+        settings::take_over(owner, session, to)?;
+    }
+    let mut conn = Conn::open(host)?;
+    if a.wait {
+        // Before the prompt can go, so no event of its turn is missed.
+        conn.subscribe(TURN_EVENTS)?;
+    }
+    let until = Instant::now().checked_add(Duration::from_secs(timeout));
+    let ready = match conn.call_until(req, until)? {
+        Some(ready) => ready,
+        None => return Err("timed out waiting for the session".into()),
+    };
+    started(&mut conn, &ready, a.wait, a.json, a.timeout)
+}
+
+/// Why `host` would refuse to open a session, as its status says: an
+/// editor's process (ADR 4), or `stop_when_idle` with an agent that can't
+/// close sessions (ADR 12). The process checks the same itself.
+fn refused_in(host: &Host) -> Result<(), String> {
+    let Some(status) = &host.status else {
+        return Err(format!("process {} is not answering", host.id()));
+    };
+    if status["owner"] == "editor" {
+        return Err("the editor owns this process; open sessions there".into());
+    }
+    if !status["stop_when_idle"].is_null() && status["capabilities"]["close"] != true {
+        return Err("the agent can't close sessions: with stop_when_idle, a second session would \
+                    never close"
+            .into());
+    }
+    Ok(())
 }
 
 /// `started sess-1 (process 4466)`.

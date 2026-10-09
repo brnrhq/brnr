@@ -300,10 +300,34 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     until the session is closed.
   - `adr_0063_delete_needs_an_agent_that_can_delete`: an agent without
     `sessionCapabilities.delete` isn't asked, and nothing is deleted.
+  - `adr_0063_new_in_a_running_process`: `session new --pid` opens a
+    session in the process, no process of its own, with its MCP servers,
+    in `--cwd`, its settings over the profile's before the prompt; in
+    strict mode too; `--json` as `session new`'s.
+  - `adr_0063_resume_in_a_running_process`: `session resume --pid` resumes
+    in the recorded cwd; one open there already is refused, `--take-over`
+    or not; one another process holds is refused, and with `--take-over`
+    closed there and resumed here.
+  - `adr_0063_resume_in_a_running_process_by_loading`: `session/load` where
+    the agent has only that, its replay not recorded again.
+  - `adr_0063_pid_refuses_process_flags`: each process flag, and
+    `-- <agent>`, fails with `--pid`, and nothing is sent.
+  - `adr_0063_pid_refused_when_it_could_never_close`: with
+    `stop_when_idle` and an agent that can't close sessions, neither is
+    sent.
+  - `adr_0063_pid_settings_that_fail_close_the_session`: a setting refused
+    after the session opened closes it, saying what was set, and the prompt
+    isn't sent; an agent that can't close sessions keeps it, named.
+  - `adr_0063_pid_session_that_cant_be_locked_is_closed`: a new session
+    that can't be locked is closed again; a resume of one isn't sent.
+  - `adr_0063_pid_given_up_before_its_commit_sends_no_prompt`: a command
+    that times out first leaves the session closed, and no prompt.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0063_an_editors_delete_is_recorded`: the editor's `session/delete`
     reaches the agent; once answered, `session_deleted` by the editor is in
     the transcript, and an open session closes.
+  - `adr_0063_pid_refused_in_an_editors_process`: an editor's process opens
+    no session for `--pid`, new or resumed.
 - [tests/security.rs](../../tests/security.rs)
   - `adr_0063_timeout_rejects_once_else_cancels_the_turn`: the timeout
     answers `reject_once`; without it, `session/cancel` goes first and the
@@ -312,6 +336,3 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     points at, nor an id that climbs names, is deleted.
 - [src/render.rs](../../src/render.rs)
   - `adr_0063_a_deletion_is_shown_with_who_deleted`.
-
-Not implemented yet, each to come with `adr_0063_` tests naming its claims:
-`session new --pid` and its refusals.

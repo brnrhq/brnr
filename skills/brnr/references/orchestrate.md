@@ -121,6 +121,18 @@ parallel; a session that is idle already returns at once, so the order
 doesn't matter. Report each worker's result to the user by its task, not by
 its id alone.
 
+A worker on the same agent can share a process you started: `--pid` opens
+its session there, with that process's agent and profile, and takes the
+session and prompt flags only (`--profile`, `--stop-when-idle` and
+`-- <agent>` are the process's, and an error with it).
+
+```sh
+brnr session new --pid 4466 --json --cwd ~/work/docs --prompt "update the docs to match"
+```
+
+If it fails, no prompt was sent: a setting the agent refused closes the
+session again and the error says so, or it names the session left open.
+
 ## Changing course
 
 ```sh

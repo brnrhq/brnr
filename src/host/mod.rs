@@ -417,6 +417,8 @@ struct Host {
     transcript: bool,
     /// Headless start: what its flags and its profile set, resolved once
     /// the session is open and the agent has said which option is which.
+    /// The flags go with the first session; the profile's stay, for the
+    /// sessions a bridge opens (`new`, `resume`).
     settings: (Settings, Settings),
     /// MCP servers for the sessions the host opens, as ACP has them.
     mcp_servers: Vec<Value>,

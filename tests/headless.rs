@@ -2584,6 +2584,24 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     );
 }
 
+/// An editor's process opens no session for `--pid`, new or resumed, as
+/// it forks none: the session would be a headless one in a process that
+/// ends with the editor (ADR 4, ADR 63).
+#[test]
+fn adr_0063_pid_refused_in_an_editors_process() {
+    let env = Env::new("ex-pid");
+    let (_editor, _to_agent, _from_agent) = open_editor(&env);
+    let pid = env.pid();
+    for args in
+        [&["session", "new", "--pid", &pid][..], &["session", "resume", "--pid", &pid, "old-1"]]
+    {
+        let err = env.fails(args);
+        assert!(err.contains("the editor owns this process; open sessions there"), "{err}");
+    }
+    assert_eq!(env.calls_of("session/new").len(), 1);
+    assert!(env.calls_of("session/resume").is_empty());
+}
+
 /// In strict mode an editor's session has no experimental actions, whatever
 /// its profile enables (ADR 41), and fork stays refused.
 #[test]

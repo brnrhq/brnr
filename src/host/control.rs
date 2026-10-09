@@ -35,6 +35,17 @@
 //!   (ADR 58), sent one at a time, and answered once the agent has set them
 //!   all (`set`, what was sent) or refused one
 //! - `fork` `{session}`: never in an editor's process
+//! - `new` `{cwd?, mode?, model?, thought_level?, options?, text?, blocks?}`
+//!   and `resume` `{session, …}` (`session new --pid`, `session resume
+//!   --pid`, ADR 63): a session opened in this process (`session/new`, or
+//!   `session/resume` or `session/load`), in `cwd` (the process's by
+//!   default), with the process's MCP servers, then its settings, over the
+//!   profile's as a start's are, then the prompt `text` and `blocks` if
+//!   any. Answered `{session, pid, message}` once it is set up, before the
+//!   prompt goes: the commit, as a start's ready report is (ADR 7). One that
+//!   fails after the agent opened it is closed again, and the answer says
+//!   so. Never in an editor's process, nor with `stop_when_idle` when the
+//!   agent can't close sessions, as `fork`
 //! - `close` `{session, take_over?}`: cancels a running turn first, and is
 //!   answered once the agent has closed the session; a headless process
 //!   whose last session closes stops. `take_over` is the pid of the process
@@ -67,7 +78,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -79,13 +90,13 @@ use std::time::{Instant, SystemTime};
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::{Choice, Held};
-use super::requests::{PeerOp, Setup, resolve_settings};
+use super::acp::{Choice, Held, Replay};
+use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
-use crate::request::Settings;
+use crate::request::{Prompt, Settings};
 use crate::{json, paths, render, sys};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
@@ -495,6 +506,7 @@ impl Host {
             Some("allow") => now(self.answer(peer, req, Choice::Allow)),
             Some("reject") => now(self.answer(peer, req, Choice::Reject)),
             Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
+            Some("new" | "resume") => self.open(peer, req).map(|()| None),
             Some("stop") => {
                 if self.status.is_some() {
                     return Err("the agent has already exited".into());
@@ -848,12 +860,8 @@ impl Host {
                 if steps.is_empty() {
                     return Err("nothing to set".into());
                 }
-                self.run_setup(Setup {
-                    session,
-                    steps,
-                    done: Vec::new(),
-                    peer: Some((peer, req_id)),
-                });
+                let of = SetupOf::Config(peer, req_id);
+                self.run_setup(Setup { session, steps, done: Vec::new(), of });
             }
             "fork" => {
                 // A forked session would be a headless one in a process that
@@ -890,6 +898,84 @@ impl Host {
         Ok(())
     }
 
+    /// `new` and `resume` (`session new --pid`, `session resume --pid`,
+    /// ADR 63): a session opened in this process with `session/new`, or
+    /// `session/resume` or `session/load` (ADR 14), its settings set, and its
+    /// prompt sent, committed as one as a start is (see requests.rs). Refused
+    /// where `fork` is but in strict mode: these are stable ACP.
+    fn open(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+        if self.status.is_some() || self.agent_in.is_none() || self.stop_requested {
+            return Err("the agent is no longer accepting input".into());
+        }
+        // A session opened here would be a headless one in a process that
+        // ends with the editor, which ACP can't tell of it (ADR 4).
+        if self.editor_attached() {
+            return Err("the editor owns this process; open sessions there".into());
+        }
+        if !self.start_done {
+            return Err("the process is still starting".into());
+        }
+        let caps = self.caps;
+        // A second session could never close when idle, and the process
+        // would never stop (ADR 12).
+        if self.stop_when_idle.is_some() && !caps.close {
+            return Err("the agent can't close sessions: with stop_when_idle, a second session \
+                        would never close"
+                .into());
+        }
+        let cwd = match &req["cwd"] {
+            Value::Null => self.cwd.clone(),
+            Value::String(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
+            _ => return Err("cwd isn't an absolute path".into()),
+        };
+        let settings = settings_of(req)?;
+        let text = req["text"].as_str().unwrap_or_default().to_owned();
+        let blocks = match &req["blocks"] {
+            Value::Null => Vec::new(),
+            Value::Array(blocks) => blocks.clone(),
+            _ => return Err("blocks must be a list of ACP content blocks".into()),
+        };
+        self.check_blocks(&blocks)?;
+        let prompt =
+            (!text.trim().is_empty() || !blocks.is_empty()).then(|| Prompt { text, blocks });
+        let req_id = req.get("req_id").cloned();
+        let dir = cwd.to_string_lossy().into_owned();
+        let opening = Box::new(Opening { peer, req_id, cwd, settings, prompt });
+        let mcp = json!(self.mcp_servers);
+        if req["cmd"] == "new" {
+            let params = json!({ "cwd": dir, "mcpServers": mcp });
+            self.host_request("session/new", params, HostRequest::Opening(Open::New, opening));
+            return Ok(());
+        }
+        let session = req["session"].as_str().ok_or("missing session")?.to_owned();
+        if self.find(&session).is_some() || self.claimed.contains_key(&session) {
+            return Err(format!("{session} is already open in this process"));
+        }
+        if !caps.resume && !caps.load {
+            return Err(
+                "the agent can't resume sessions (no session/resume or session/load)".into()
+            );
+        }
+        // Taken before the agent hears of it: a session another process
+        // holds is refused (ADR 3).
+        self.own(&session)?;
+        let params = json!({ "sessionId": session, "cwd": dir, "mcpServers": mcp });
+        if caps.resume {
+            let open = HostRequest::Opening(Open::Resume(session), opening);
+            self.host_request("session/resume", params, open);
+        } else {
+            // The agent replays the history: recorded unless the transcript
+            // has it already (ADR 57).
+            let record = !paths::session_log(&opening.cwd, &session).exists();
+            let i = self.open_session(&session, Some(&dir));
+            self.sessions[i].opening = true;
+            self.sessions[i].replay = Some(Replay { record, updates: 0 });
+            let open = HostRequest::Opening(Open::Load(session), opening);
+            self.host_request("session/load", params, open);
+        }
+        Ok(())
+    }
+
     /// The session a request names, by its exact id. One that is closing
     /// takes no more requests.
     fn session_index(&self, req: &Value) -> Result<usize, String> {
@@ -897,6 +983,9 @@ impl Host {
         let i = self.find(wanted).ok_or_else(|| format!("no session {wanted}"))?;
         if self.sessions[i].closing.is_some() {
             return Err(format!("{wanted} is closing"));
+        }
+        if self.sessions[i].opening {
+            return Err(format!("{wanted} is still opening"));
         }
         Ok(i)
     }

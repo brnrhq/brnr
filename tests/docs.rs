@@ -126,6 +126,8 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr prompt commands $s", Idle, Says("compact")),
     // Sessions and processes
     ("brnr session fork $s", Idle, Says("forked")),
+    (r#"brnr session new --pid 4466 --prompt "review the diff""#, Idle, Says("started sess-2")),
+    ("brnr session resume --pid 4466 <id>", Idle, Says("started old-1")),
     ("brnr session close $s", Idle, Says("closed")),
     ("brnr session delete $s", Ended, Says("deleted sess-1; brnr's transcript of it stays")),
     ("brnr session delete $s --purge", Ended, Says("deleted sess-1, and brnr's transcript")),
@@ -220,6 +222,11 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""session": "sess-1""#),
     ),
     (
+        r#"brnr session new --pid 4466 --json --cwd ~/work/docs --prompt "update the docs to match""#,
+        Idle,
+        Says(r#""session": "sess-2""#),
+    ),
+    (
         r#"brnr prompt send $s --steer --json "use the existing helper in src/util.rs""#,
         Turn,
         Says(r#""status": "steered""#),
@@ -296,6 +303,7 @@ const STAND_INS: &[(&str, &str)] = &[
     ("~/work/project", "{dir}/project"),
     ("~/work/api", "{dir}/project"),
     ("~/work/web", "{dir}/project"),
+    ("~/work/docs", "{dir}/project"),
     // The fake agent's models are small and large; its one config option
     // is model, and its login method fake-login.
     ("opus", "large"),

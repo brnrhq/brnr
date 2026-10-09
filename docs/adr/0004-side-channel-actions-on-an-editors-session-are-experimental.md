@@ -8,7 +8,9 @@ updates carry on from; the editor's acknowledgement of a `$/cancel_request`
 (an error) is dropped without telling it. Not yet tried against real editors
 (see Consequences).
 Amends former decisions 9 and 11; resolves review item 6 with ADR 28.
-Amended by 63: the `settings` action is `config` (`config set`).
+Amended by 63: the `settings` action is `config` (`config set`);
+`session new --pid` and `session resume --pid` are refused on an editor's
+process, as `fork` is.
 
 ## Context
 

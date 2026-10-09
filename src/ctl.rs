@@ -76,9 +76,10 @@ process
   brnr process stop <pid>
 
 session
-  brnr session new [<new flags>] [-- <agent> [args...]]
-                   a process for a headless session, in the background (or the foreground)
-  brnr session resume <session> [--take-over] [<new flags>] [-- <agent> [args...]]
+  brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
+                   a process for a headless session, in the background (or the foreground);
+                   --pid: a session in that running process, without the process flags
+  brnr session resume [--pid <pid>] <session> [--take-over] [<new flags>] [-- <agent> [args...]]
                    the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]

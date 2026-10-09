@@ -328,6 +328,8 @@ anything else for it fails before it reaches the agent.
 
 ```sh
 brnr session fork $s               # a copy of the session, in the same process
+brnr session new --pid 4466 --prompt "review the diff"   # a session of its own, in a running process
+brnr session resume --pid 4466 <id>                      # or one carried on there
 brnr session close $s              # cancel a running turn, then close the session
 brnr session delete $s             # the agent deletes its copy; brnr's transcript stays
 brnr session delete $s --purge     # and brnr's transcript of it goes too
@@ -361,6 +363,20 @@ locked, and `doctor` what is in the way.
 `session fork` is refused in an editor's process, in strict mode, when the
 agent can't fork, and with `stop_when_idle` when the agent can't close
 sessions.
+
+`session new --pid <pid>` opens a session in a running process, with its
+agent, profile and MCP servers, in `--cwd` (or here), and
+`session resume --pid <pid> <id>` resumes one there (in its recorded cwd),
+taking its lock as any resume does, with `--take-over` as without `--pid`.
+What starts a process (`--profile`, `--auth`, `--strict`, `--stop-when-idle`,
+`--permission-timeout`, `--foreground`, `-- <agent>`) is an error with it.
+The session, its settings (over the profile's) and its prompt commit as one,
+as a start does: a setting that fails after the agent opened the session
+closes it again, and the error says so (an agent that can't close sessions
+keeps it, and the error names it), and a command that gives up first (the
+start timeout, Ctrl-C) leaves no session and sends no prompt. It is refused
+where `session fork` is, but for strict mode: `session/new` and
+`session/resume` are stable ACP.
 
 `brnr session list` on its own is brnr's index, with nothing started: every
 session open in brnr's processes and every one it has a transcript of, in
@@ -625,7 +641,7 @@ as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
-`pending`, `allow`, `reject`, `set_config`, `fork`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`pending`, `allow`, `reject`, `set_config`, `fork`, `new`, `resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.

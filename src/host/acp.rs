@@ -164,6 +164,10 @@ pub(super) struct Session {
     /// A close asked for, until the agent has closed it: meanwhile the
     /// session takes no more requests (see `close`).
     pub(super) closing: Option<Close>,
+    /// Opened for a bridge's `new` or `resume`, which hasn't committed yet
+    /// (see requests.rs): it takes no requests, and its idle time doesn't
+    /// count.
+    pub(super) opening: bool,
 }
 
 /// How a process holds a session it serves (ADR 3).
@@ -1148,7 +1152,13 @@ impl Host {
         let session = self.sessions[i].id.clone();
         self.sessions[i].closing = Some(Close::Sent);
         let params = json!({ "sessionId": session });
-        self.peer_op(peer, req_id, PeerOp::Close { session, by }, "session/close", params);
+        self.peer_op(
+            peer,
+            req_id,
+            PeerOp::Close { session, by, failed: None },
+            "session/close",
+            params,
+        );
     }
 
     /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
@@ -1201,7 +1211,7 @@ impl Host {
             return;
         }
         for i in 0..self.sessions.len() {
-            let idle = self.is_idle(i);
+            let idle = self.is_idle(i) && !self.sessions[i].opening;
             let s = &mut self.sessions[i];
             if !idle {
                 (s.idle_since, s.idle_done) = (None, false);
@@ -1236,7 +1246,9 @@ impl Host {
         // A session that just went idle has no `idle_since` until the loop
         // comes round; this wakes it then.
         (0..self.sessions.len())
-            .filter(|&i| !self.sessions[i].idle_done && self.is_idle(i))
+            .filter(|&i| {
+                !self.sessions[i].idle_done && !self.sessions[i].opening && self.is_idle(i)
+            })
             .filter_map(|i| match self.sessions[i].idle_since {
                 None => Some(Instant::now()),
                 Some(t) => t.checked_add(limit), // None: never.
@@ -1590,6 +1602,7 @@ impl Host {
             last_turn: None,
             hold,
             closing: None,
+            opening: false,
         });
         self.sessions.len() - 1
     }

@@ -2992,9 +2992,9 @@ fn adr_0063_new_and_resume_replace_start() {
             new_args(&["--permission-timeout", "soon"]),
             "brnr: --permission-timeout: not a number of seconds: soon",
         ),
-        (new_args(&["sess-1"]), "usage:\n  brnr session new [<new flags>]"),
-        (vec!["session", "resume"], "usage:\n  brnr session resume <session> [--take-over]"),
-        (resume_args("sess-1", &["sess-2"]), "usage:\n  brnr session resume <session>"),
+        (new_args(&["sess-1"]), "usage:\n  brnr session new [--pid <pid>] [<new flags>]"),
+        (vec!["session", "resume"], "usage:\n  brnr session resume [--pid <pid>] <session>"),
+        (resume_args("sess-1", &["sess-2"]), "usage:\n  brnr session resume [--pid <pid>]"),
     ] {
         let err = env.fails(&args);
         assert!(err.starts_with(says), "{args:?}: {err}");
@@ -3006,7 +3006,266 @@ fn adr_0063_new_and_resume_replace_start() {
     for flag in ["--permission-timeout <s>", "--thought-level <l>", "--option <o>=<v>", "--wait"] {
         assert!(usage.contains(flag), "{flag}: {usage}");
     }
-    assert!(env.ok(&["session", "--help"]).contains("brnr session new [<new flags>]"));
+    assert!(
+        env.ok(&["session", "--help"]).contains("brnr session new [--pid <pid>] [<new flags>]")
+    );
+}
+
+/// `session new --pid` opens a session in a running process, with no
+/// process of its own: `session/new` with the process's MCP servers, in
+/// `--cwd` (or here), its settings over the profile's, then the prompt, and
+/// it says what a start says. Strict mode allows it: it is stable ACP
+/// (ADR 63).
+#[test]
+fn adr_0063_new_in_a_running_process() {
+    let env = Env::new("c-pid-new");
+    env.write_config(
+        "[profiles.default.headless]\nmodel = \"large\"\n\n\
+         [[profiles.default.headless.mcp_servers]]\nname = \"files\"\ncommand = \"true\"\n",
+    );
+    env.start(&["--strict"]);
+    let pid = env.pid();
+    let dir = env.dir.join("elsewhere");
+    fs::create_dir(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let args = ["--cwd", dir.to_str().unwrap(), "--mode", "plan", "--wait"];
+    let args = [&["session", "new", "--pid", &pid], &args[..], &["--prompt", "reply two"]].concat();
+    let out = env.run(&args);
+    assert_eq!((code(&out), stdout(&out)), (0, "two\n".into()), "{}", stderr(&out));
+    assert_eq!(stderr(&out), format!("started sess-2 (process {pid})\n"));
+    assert_eq!(env.host_pid().to_string(), pid, "no process of its own");
+    let new = env.calls_of("session/new");
+    assert_eq!(new[1]["params"]["cwd"], dir.to_str().unwrap());
+    assert_eq!(new[1]["params"]["mcpServers"], new[0]["params"]["mcpServers"]);
+    assert_eq!(new[1]["params"]["mcpServers"][0]["name"], "files");
+    // The mode, then the profile's model, then the prompt.
+    let calls = env.calls();
+    let second: Vec<String> = calls
+        .iter()
+        .skip_while(|c| c["id"] != new[1]["id"])
+        .filter(|c| c["params"]["sessionId"] == "sess-2" && c["id"].is_string())
+        .map(|c| c["method"].as_str().unwrap().to_owned())
+        .collect();
+    let want = ["session/set_mode", "session/set_config_option", "session/prompt"];
+    assert_eq!(second, want);
+    let status = env.ok(&["session", "status", "sess-2", "--json"]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!((&status["mode"], &status["model"]), (&"plan".into(), &"large".into()));
+    assert_eq!(status["cwd"], dir.to_str().unwrap());
+
+    // Without a prompt or --wait, as `session new` prints it.
+    let out: Value =
+        serde_json::from_str(&env.ok(&["session", "new", "--pid", &pid, "--json"])).unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({ "session": "sess-3", "pid": env.host_pid(), "message": null })
+    );
+    assert_eq!(
+        env.calls_of("session/new")[2]["params"]["cwd"],
+        env.dir.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(env.prompts(), ["reply two"]);
+    let err = env.fails(&["session", "new", "--pid", "1"]);
+    assert!(err.contains("no brnr process 1"), "{err}");
+}
+
+/// `session resume --pid` resumes a session in a running process, in its
+/// recorded cwd, taking its lock (ADR 3): one open there already is
+/// refused, `--take-over` or not; one another process holds is refused
+/// unless `--take-over`, which closes it there first (ADR 63).
+#[test]
+fn adr_0063_resume_in_a_running_process() {
+    let env = Env::new("c-pid-resume");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "new", "--pid", &pid, "--prompt", "reply one"]);
+    env.ok(&["session", "close", "sess-2"]);
+    let out = env.run(&[
+        "session",
+        "resume",
+        "--pid",
+        &pid,
+        "sess-2",
+        "--wait",
+        "--prompt",
+        "reply back",
+    ]);
+    assert_eq!((code(&out), stdout(&out)), (0, "back\n".into()), "{}", stderr(&out));
+    let resumed = &env.calls_of("session/resume")[0]["params"];
+    assert_eq!(
+        (&resumed["sessionId"], &resumed["cwd"]),
+        (&"sess-2".into(), &env.calls_of("session/new")[1]["params"]["cwd"])
+    );
+    assert!(env.ok(&["event", "log", "sess-2"]).contains("agent: back"));
+    for extra in [&[][..], &["--take-over"]] {
+        let args = [&["session", "resume", "--pid", &pid, "sess-1"], extra].concat();
+        let err = env.fails(&args);
+        assert!(err.contains(&format!("sess-1 is already open in process {pid}")), "{err}");
+    }
+
+    // Held by another process: refused, then taken over.
+    env.ok(&["session", "close", "sess-2"]);
+    env.resume("sess-2", &[]);
+    let other = env.hosts().into_iter().map(|h| h["host_pid"].to_string()).find(|p| *p != pid);
+    let other = other.unwrap();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "sess-2"]);
+    assert!(err.contains(&format!("sess-2 is running in process {other} (--take-over")), "{err}");
+    let out = env.run(&["session", "resume", "--pid", &pid, "sess-2", "--take-over", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("closed sess-2 in process {other}")),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(lock_holder(&env, "sess-2"), pid);
+    let gone = || env.hosts().len() == 1;
+    assert!(wait_for(Duration::from_secs(15), gone), "the other process kept running");
+}
+
+/// An agent with `session/load` only is loaded, and a load of a session
+/// brnr has a transcript of doesn't record the replay again (ADR 14,
+/// ADR 57, ADR 63).
+#[test]
+fn adr_0063_resume_in_a_running_process_by_loading() {
+    let env = Env::new("c-pid-load").agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "new", "--pid", &pid]);
+    env.ok(&["session", "close", "sess-2"]);
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2"]);
+    assert_eq!(env.calls_of("session/load")[0]["params"]["sessionId"], "sess-2");
+    let history = events(&env, "sess-2").into_iter().find(|e| e["event"] == "history").unwrap();
+    assert_eq!(history["recorded"], false);
+}
+
+/// With `--pid`, the flags that start a process, and `-- <agent>`, are an
+/// error, and nothing is sent (P7, ADR 63).
+#[test]
+fn adr_0063_pid_refuses_process_flags() {
+    let env = Env::new("c-pid-flags");
+    env.start(&[]);
+    let pid = env.pid();
+    let flags: [&[&str]; 9] = [
+        &["--profile", "default"],
+        &["--auth", "fake-login"],
+        &["--strict"],
+        &["--stop-when-idle", "5"],
+        &["--permission-timeout", "5"],
+        &["--foreground"],
+        &["--foreground", "--quiet"],
+        &["--", AGENT],
+        &["--"],
+    ];
+    for flag in flags {
+        for verb in
+            [&["session", "new", "--pid", &pid][..], &["session", "resume", "--pid", &pid, "old-1"]]
+        {
+            let err = env.fails(&[verb, flag].concat());
+            let name = if flag[0] == "--" { "-- <agent>" } else { flag[0] };
+            let says = format!("brnr: {name} is for starting a process, and doesn't go with --pid");
+            assert!(err.starts_with(&says), "{flag:?}: {err}");
+        }
+    }
+    assert_eq!(env.calls_of("session/new").len(), 1);
+    assert!(env.calls_of("session/resume").is_empty());
+    assert_eq!(env.hosts().len(), 1);
+}
+
+/// With `stop_when_idle`, a session the agent could never close isn't
+/// opened in a running process, as a fork isn't (ADR 12, ADR 63).
+#[test]
+fn adr_0063_pid_refused_when_it_could_never_close() {
+    let env = Env::new("c-pid-idle").agent("NO_CLOSE", "1");
+    env.start(&["--stop-when-idle", "60"]);
+    let pid = env.pid();
+    for args in
+        [&["session", "new", "--pid", &pid][..], &["session", "resume", "--pid", &pid, "old-1"]]
+    {
+        let err = env.fails(args);
+        assert!(err.contains("the agent can't close sessions: with stop_when_idle"), "{err}");
+    }
+    assert_eq!(env.calls_of("session/new").len(), 1);
+    assert!(env.calls_of("session/resume").is_empty());
+    env.stop();
+}
+
+/// A setting that fails after the agent opened the session closes it again,
+/// and the command says so, with what was set; the prompt is never sent. An
+/// agent that can't close sessions keeps it, and the command names it
+/// (P3, ADR 63).
+#[test]
+fn adr_0063_pid_settings_that_fail_close_the_session() {
+    let env = Env::new("c-pid-settings");
+    env.start(&[]);
+    let pid = env.pid();
+    let args = [
+        "session", "new", "--pid", &pid, "--mode", "plan", "--model", "huge", "--wait", "--prompt",
+        "reply no",
+    ];
+    let err = env.fails(&args);
+    let says = "brnr: setting model huge failed: bad option model=huge (already set: mode plan); \
+                sess-2 was closed\n";
+    assert_eq!(err, says);
+    assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
+    assert!(env.prompts().is_empty());
+    assert!(env.fails(&["session", "status", "sess-2"]).contains("sess-2 isn't running"));
+    let closed = events(&env, "sess-2").into_iter().any(|e| e["event"] == "session_closed");
+    assert!(closed, "the transcript says it closed");
+    // One the agent doesn't have fails before anything is set.
+    let err = env.fails(&["session", "new", "--pid", &pid, "--thought-level", "high"]);
+    assert!(err.contains("the agent offers no thought level; sess-3 was closed"), "{err}");
+    assert!(env.calls_of("session/set_config_option").len() == 1);
+
+    let env = Env::new("c-pid-settings-open").agent("NO_CLOSE", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err =
+        env.fails(&["session", "new", "--pid", &pid, "--model", "huge", "--prompt", "reply no"]);
+    let says = format!("the agent can't close sessions, so sess-2 is left open in process {pid}");
+    assert!(err.contains(&says), "{err}");
+    assert!(env.prompts().is_empty());
+    env.ok(&["prompt", "send", "sess-2", "reply still here"]);
+}
+
+/// A session opened in a running process that can't be locked isn't served
+/// there: the agent closes it again, and no prompt is sent; a resume of one
+/// is refused before the agent hears of it (ADR 50, ADR 63).
+#[test]
+fn adr_0063_pid_session_that_cant_be_locked_is_closed() {
+    let env = Env::new("c-pid-nolock");
+    env.start(&[]);
+    let pid = env.pid();
+    let lock = unlockable(&env, "sess-2");
+    let err = env.fails(&["session", "new", "--pid", &pid, "--prompt", "reply no"]);
+    let said = format!("the agent opened sess-2, which can't be locked: {}: ", lock.display());
+    assert!(err.contains(&said) && err.ends_with("; sess-2 was closed\n"), "{err}");
+    assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
+    let err = env.fails(&["session", "resume", "--pid", &pid, "sess-2"]);
+    assert!(err.contains("sess-2 can't be locked"), "{err}");
+    assert!(env.calls_of("session/resume").is_empty());
+    assert!(env.prompts().is_empty());
+}
+
+/// A `session new --pid` that gives up before the process has answered
+/// (`BRNR_START_TIMEOUT`) leaves no session: the process closes it once the
+/// agent has opened it, and the prompt is never sent (ADR 7, ADR 63).
+#[test]
+fn adr_0063_pid_given_up_before_its_commit_sends_no_prompt() {
+    let env = Env::new("c-pid-gone").agent("NEW_DELAY", "2");
+    env.start(&[]);
+    let pid = env.pid();
+    let out = env
+        .brnr(&["session", "new", "--pid", &pid, "--prompt", "reply never"])
+        .env("BRNR_START_TIMEOUT", "1")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1);
+    assert!(stderr(&out).contains("timed out waiting for the session"), "{}", stderr(&out));
+    let closed =
+        || env.calls_of("session/close").iter().any(|c| c["params"]["sessionId"] == "sess-2");
+    assert!(wait_for(Duration::from_secs(10), closed), "sess-2 wasn't closed");
+    assert!(env.prompts().is_empty());
+    assert!(env.ok(&["session", "status", "sess-1"]).contains("session sess-1"));
 }
 
 /// `--thought-level`, and a profile's `thought_level`, are the option of

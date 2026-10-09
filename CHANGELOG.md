@@ -38,6 +38,16 @@ brnr's own conventions:
   events and raw ACP files, not the host logs) whatever the agent answered,
   and exits non-zero unless the agent deleted the session or doesn't have it
   (`resource_not_found`) (ADR 63).
+- `session new --pid <pid>` and `session resume --pid <pid> <session>` open
+  a session in a running process, with its agent, profile and MCP servers,
+  and the socket and bridges have the same as `new` and `resume`. The
+  session, its settings and its prompt commit as one, as a start's do: a
+  setting that fails closes the session again and says so (or names the
+  session left open, for an agent that can't close sessions), and a command
+  that gives up first leaves no session. The process flags and
+  `-- <agent>` are an error with `--pid`; an editor's process refuses, as
+  does one with `stop_when_idle` whose agent can't close sessions;
+  `--take-over` works as without `--pid` (ADR 63).
 
 ### Changed
 

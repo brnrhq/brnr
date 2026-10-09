@@ -10,6 +10,13 @@
 //! - what bridges ask of the agent through the host: settings (`config set`,
 //!   resolved as a start's are, ADR 63), fork or close a session. The bridge
 //!   gets its answer when the agent's arrives;
+//! - a session a bridge opens in the running process (`new`, `resume`:
+//!   `session new --pid`, `session resume --pid`, ADR 63), opened, set up and
+//!   committed as a start's is. The commit is the bridge's answer, queued for
+//!   it while it is still connected, and then the prompt goes. Whatever fails
+//!   after the agent opened the session (a setting, the bridge going away)
+//!   closes it again where the agent can close sessions, and says so; where
+//!   it can't, the answer names the session left open (P3);
 //! - steering a message into a running turn (`_session/steering`, see
 //!   acp.rs).
 
@@ -19,17 +26,19 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{ClientRequest, Held, Replay, Requester, new_session};
+use super::acp::{ClientRequest, Close, Held, Replay, Requester, new_session};
 use super::state::SessionState;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
-use crate::request::Settings;
+use crate::request::{Prompt, Settings};
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, error_message};
 
 pub(super) enum HostRequest {
     Initialize,
     Authenticate(String),
     Open(Open),
+    /// A peer's `new` or `resume`.
+    Opening(Open, Box<Opening>),
     /// The step the agent is answering, and what is left.
     Setup(SetupStep, Setup),
     Peer {
@@ -44,7 +53,7 @@ pub(super) enum HostRequest {
     },
 }
 
-/// How a headless start gets its session.
+/// How a headless start, or a peer's `new` or `resume`, gets its session.
 pub(super) enum Open {
     New,
     Resume(String),
@@ -84,22 +93,47 @@ impl SetupStep {
 }
 
 /// Settings being sent to `session`'s agent one at a time, each once the
-/// one before is answered: a headless start's, after which it commits, or
-/// a bridge's `set_config`, answered once all are set or one fails.
+/// one before is answered: a headless start's, after which it commits, a
+/// bridge's `set_config`, answered once all are set or one fails, or a
+/// bridge's `new` or `resume`, which then commits as a start does.
 pub(super) struct Setup {
     pub(super) session: String,
     pub(super) steps: VecDeque<SetupStep>,
     /// Those the agent has set, for the bridge's answer.
     pub(super) done: Vec<SetupStep>,
-    /// The bridge, and its request's `req_id`; none for a start.
-    pub(super) peer: Option<(u64, Option<Value>)>,
+    pub(super) of: SetupOf,
+}
+
+/// Whose settings a [`Setup`] sends.
+pub(super) enum SetupOf {
+    /// The headless start's.
+    Start,
+    /// A bridge's `set_config`: the bridge, and its request's `req_id`.
+    Config(u64, Option<Value>),
+    /// A bridge's `new` or `resume`.
+    Open(Box<Opening>),
+}
+
+/// A session a bridge opens in this process (`new`, `resume`, ADR 63): who
+/// asked, and what it commits with.
+pub(super) struct Opening {
+    pub(super) peer: u64,
+    pub(super) req_id: Option<Value>,
+    /// Where the session runs.
+    pub(super) cwd: PathBuf,
+    /// Its flags, over the process's profile's as a start's are (ADR 58).
+    pub(super) settings: Settings,
+    /// Sent once it commits.
+    pub(super) prompt: Option<Prompt>,
 }
 
 /// What a bridge asked the agent for. A close is `by` `close`, or `idle` for
-/// `stop_when_idle`, as `session_closed` has it.
+/// `stop_when_idle`, as `session_closed` has it; one with `failed` closes the
+/// session a bridge's `new` or `resume` opened, and `failed`, why, is the
+/// bridge's answer.
 pub(super) enum PeerOp {
     Fork { cwd: PathBuf },
-    Close { session: String, by: &'static str },
+    Close { session: String, by: &'static str, failed: Option<String> },
 }
 
 impl Host {
@@ -145,6 +179,9 @@ impl Host {
         if let HostRequest::Setup(step, setup) = request {
             return self.setup_answered(step, setup, msg);
         }
+        if let HostRequest::Opening(open, opening) = request {
+            return self.peer_opened(open, opening, msg);
+        }
         if let Some(error) = msg.get("error") {
             let what = match &request {
                 HostRequest::Initialize => "initialize".to_owned(),
@@ -157,9 +194,10 @@ impl Host {
                     }
                     "session/load".to_owned()
                 }
-                HostRequest::Setup(..) | HostRequest::Peer { .. } | HostRequest::Steer { .. } => {
-                    unreachable!()
-                }
+                HostRequest::Opening(..)
+                | HostRequest::Setup(..)
+                | HostRequest::Peer { .. }
+                | HostRequest::Steer { .. } => unreachable!(),
             };
             let mut text = format!("{what} failed: {}", error_message(error));
             // The hint is for a login that wasn't asked for.
@@ -211,15 +249,19 @@ impl Host {
                 }
                 self.end_replay(i);
                 self.sessions[i].state.result(&result);
-                let (flags, profile) = std::mem::take(&mut self.settings);
-                match resolve_settings(&flags, &profile, &self.sessions[i].state) {
-                    Ok(steps) => self.run_setup(Setup { session, steps, done: vec![], peer: None }),
+                // The profile's are kept, for the sessions opened later.
+                let flags = std::mem::take(&mut self.settings.0);
+                match resolve_settings(&flags, &self.settings.1, &self.sessions[i].state) {
+                    Ok(steps) => {
+                        self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Start })
+                    }
                     Err(error) => self.fail_start(&error),
                 }
             }
-            HostRequest::Setup(..) | HostRequest::Peer { .. } | HostRequest::Steer { .. } => {
-                unreachable!()
-            }
+            HostRequest::Opening(..)
+            | HostRequest::Setup(..)
+            | HostRequest::Peer { .. }
+            | HostRequest::Steer { .. } => unreachable!(),
         }
     }
 
@@ -315,7 +357,7 @@ impl Host {
     /// Sends the next of `setup`'s settings, or, when there are none left,
     /// ends it: a start commits, a bridge is answered.
     pub(super) fn run_setup(&mut self, mut setup: Setup) {
-        if setup.peer.is_none() && self.stop_requested {
+        if matches!(setup.of, SetupOf::Start) && self.stop_requested {
             return; // The start already failed (timed out), or was stopped.
         }
         let Some(i) = self.find(&setup.session) else {
@@ -323,7 +365,11 @@ impl Host {
             return self.setup_failed(setup, &error);
         };
         let Some(step) = setup.steps.pop_front() else {
-            let Some((peer, req_id)) = setup.peer else { return self.finish_start(i) };
+            let (peer, req_id) = match setup.of {
+                SetupOf::Start => return self.finish_start(i),
+                SetupOf::Open(opening) => return self.commit_open(i, opening),
+                SetupOf::Config(peer, req_id) => (peer, req_id),
+            };
             let state = &self.sessions[i].state;
             let set: Vec<Value> = setup.done.iter().map(SetupStep::report).collect();
             let reply = json!({
@@ -360,7 +406,7 @@ impl Host {
     fn setup_answered(&mut self, step: SetupStep, mut setup: Setup, msg: &Map<String, Value>) {
         if let Some(error) = msg.get("error") {
             let mut text = format!("{} failed: {}", step.describe(), error_message(error));
-            if setup.peer.is_none() && is_auth_error(error) {
+            if matches!(setup.of, SetupOf::Start) && is_auth_error(error) {
                 text.push_str(&self.auth_hint());
             }
             return self.setup_failed(setup, &text);
@@ -384,17 +430,23 @@ impl Host {
         self.run_setup(setup);
     }
 
-    /// One of `setup`'s settings failed with `error`: a start fails, and a
-    /// bridge is told, with what was set before it (P3).
+    /// One of `setup`'s settings failed with `error`: a start fails, a
+    /// bridge is told, with what was set before it (P3), and a session a
+    /// bridge was opening is closed again.
     fn setup_failed(&mut self, setup: Setup, error: &str) {
-        let Some((peer, req_id)) = setup.peer else { return self.fail_start(error) };
         let mut error = error.to_owned();
-        if !setup.done.is_empty() {
+        if !matches!(setup.of, SetupOf::Start) && !setup.done.is_empty() {
             let done: Vec<String> =
                 setup.done.iter().map(|s| s.describe().replacen("setting ", "", 1)).collect();
             error.push_str(&format!(" (already set: {})", done.join(", ")));
         }
-        self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+        match setup.of {
+            SetupOf::Start => self.fail_start(&error),
+            SetupOf::Config(peer, req_id) => {
+                self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+            }
+            SetupOf::Open(o) => self.abandon_open(&setup.session, o.peer, o.req_id, error),
+        }
     }
 
     /// The commit (ADR 7): brnr session new hears of the session before the
@@ -455,6 +507,107 @@ impl Host {
 
     // ---- for bridges ---------------------------------------------------
 
+    /// The agent's answer to a bridge's `new` or `resume` (ADR 63): the
+    /// session opens as a start's does, locked (ADR 3, ADR 50), and then its
+    /// settings are set. Until it commits it takes no requests (see
+    /// `Session::opening`).
+    fn peer_opened(&mut self, open: Open, opening: Box<Opening>, msg: &Map<String, Value>) {
+        let (what, asked) = match open {
+            Open::New => ("session/new", None),
+            Open::Resume(session) => ("session/resume", Some(session)),
+            Open::Load(session) => ("session/load", Some(session)),
+        };
+        if let Some(error) = msg.get("error") {
+            if let Some(session) = &asked {
+                self.claimed.remove(session); // Its lock goes.
+                if let Some(i) = self.find(session) {
+                    self.sink.close_session(&self.sessions.remove(i).id); // A load's.
+                }
+            }
+            let error = format!("{what} failed: {}", error_message(error));
+            return self.reply(
+                opening.peer,
+                opening.req_id,
+                json!({ "ok": false, "error": error }),
+            );
+        }
+        let result = msg.get("result").cloned().unwrap_or(Value::Null);
+        let Some(session) = asked.or_else(|| new_session(&result)) else {
+            let error = format!("{what} returned no sessionId");
+            return self.reply(
+                opening.peer,
+                opening.req_id,
+                json!({ "ok": false, "error": error }),
+            );
+        };
+        let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
+        if let Some(why) = self.sessions[i].not_owned() {
+            self.sink.close_session(&self.sessions.remove(i).id);
+            let error = format!("the agent opened {session}, which {why}");
+            return self.abandon_open(&session, opening.peer, opening.req_id, error);
+        }
+        self.sessions[i].opening = true;
+        self.end_replay(i);
+        self.sessions[i].state.result(&result);
+        // The process's profile's settings, under the bridge's (ADR 58).
+        match resolve_settings(&opening.settings, &self.settings.1, &self.sessions[i].state) {
+            Ok(steps) => {
+                self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Open(opening) })
+            }
+            Err(error) => self.abandon_open(&session, opening.peer, opening.req_id, error),
+        }
+    }
+
+    /// The commit of a bridge's `new` or `resume`, as a start's ready report
+    /// is (ADR 7): the bridge is answered with the session and the message
+    /// its prompt will be, and then the prompt goes. A bridge gone before its
+    /// answer is queued (it gave up, or was stopped) is nobody to tell of the
+    /// session, which is closed again; one that goes after leaves it running,
+    /// as after any commit.
+    fn commit_open(&mut self, i: usize, opening: Box<Opening>) {
+        let session = self.sessions[i].id.clone();
+        let Opening { peer, req_id, prompt, .. } = *opening;
+        let message = prompt.is_some().then(|| self.message_id());
+        if self.peers.contains_key(&peer) {
+            let pid = std::process::id();
+            let ready = json!({ "ok": true, "pid": pid, "session": session, "message": message });
+            self.reply(peer, req_id.clone(), ready);
+        }
+        // Not there, or dropped as its answer was queued.
+        if !self.peers.contains_key(&peer) {
+            self.sink.note(Some(&session), json!({ "event": "open-abandoned" }));
+            return self.abandon_open(&session, peer, req_id, "nobody is waiting for it".into());
+        }
+        self.sessions[i].opening = false;
+        if let (Some(prompt), Some(id)) = (prompt, message) {
+            self.send_prompt(i, Held { id, text: prompt.text, blocks: prompt.blocks });
+        }
+    }
+
+    /// A bridge's `new` or `resume` failed with `error` after the agent
+    /// opened `session`: it is closed again (`session/close`), and the bridge
+    /// is answered once it is, saying so. An agent that can't close sessions
+    /// keeps it open, and the answer names it (P3).
+    fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: String) {
+        self.sink
+            .note(None, json!({ "event": "open-failed", "session_id": session, "error": error }));
+        if !self.caps.close {
+            if let Some(i) = self.find(session) {
+                self.sessions[i].opening = false; // Served as any other is.
+            }
+            let pid = std::process::id();
+            let error = format!(
+                "{error}; the agent can't close sessions, so {session} is left open in process {pid}"
+            );
+            return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+        }
+        if let Some(i) = self.find(session) {
+            self.sessions[i].closing = Some(Close::Sent);
+        }
+        let op = PeerOp::Close { session: session.to_owned(), by: "close", failed: Some(error) };
+        self.peer_op(peer, req_id, op, "session/close", json!({ "sessionId": session }));
+    }
+
     pub(super) fn peer_op(
         &mut self,
         peer: u64,
@@ -475,13 +628,23 @@ impl Host {
     ) {
         let reply = match msg.get("error") {
             Some(error) => {
-                if let PeerOp::Close { session, .. } = &op
-                    && let Some(i) = self.find(session)
-                {
-                    self.sessions[i].closing = None; // Still open: it takes requests again.
-                    self.close_failed(session, &error_message(error));
+                let mut said = error_message(error);
+                if let PeerOp::Close { session, failed, .. } = &op {
+                    if let Some(i) = self.find(session) {
+                        let s = &mut self.sessions[i];
+                        s.closing = None; // Still open: it takes requests again.
+                        s.opening = false;
+                        self.close_failed(session, &said);
+                    }
+                    if let Some(failed) = failed {
+                        let pid = std::process::id();
+                        said = format!(
+                            "{failed}; closing {session} failed too ({said}), so it is left \
+                             open in process {pid}"
+                        );
+                    }
                 }
-                json!({ "ok": false, "error": error_message(error) })
+                json!({ "ok": false, "error": said })
             }
             None => self.peer_result(op, msg.get("result").unwrap_or(&Value::Null)),
         };
@@ -505,14 +668,19 @@ impl Host {
                 self.sessions[i].state.result(result);
                 json!({ "ok": true, "session": session })
             }
-            PeerOp::Close { session, by } => {
+            PeerOp::Close { session, by, failed } => {
                 if let Some(i) = self.find(&session) {
                     self.close_session(i, by);
                 }
                 if self.sessions.is_empty() && !self.editor_attached() {
                     self.begin_stop();
                 }
-                json!({ "ok": true, "session": session })
+                match failed {
+                    Some(failed) => {
+                        json!({ "ok": false, "error": format!("{failed}; {session} was closed") })
+                    }
+                    None => json!({ "ok": true, "session": session }),
+                }
             }
         }
     }
