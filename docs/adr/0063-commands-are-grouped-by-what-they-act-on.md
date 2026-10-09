@@ -278,8 +278,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     `--profile`, the agent is asked for every page; brnr's sessions in the
     cwd are joined with the agent's on the id (`both`), one only the agent
     knows is `inactive` with source `agent`, the agent's title and time win
-    where it gives them, and another cwd's are left out; an agent that can't
-    list fails.
+    where it gives them, over brnr's title too, and another cwd's are left
+    out; an agent that can't list fails.
   - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
     with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
     named or not, and the open one the agent lists is `both` and `active`,

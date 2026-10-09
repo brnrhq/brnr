@@ -25,6 +25,7 @@ with environment variables:
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
+  LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
                     authenticate with fake-login came first
@@ -582,6 +583,8 @@ for line in sys.stdin.buffer:
             "updatedAt": "2026-10-01T10:00:00Z",
         }
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
+        if env("LIST_TITLE"):
+            known["title"] = env("LIST_TITLE")
         if params.get("cursor") == "2":
             result(mid, {"sessions": [known]})
         else:

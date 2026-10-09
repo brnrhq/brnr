@@ -1200,6 +1200,18 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert!(one["pid"].is_u64(), "{one}");
     // The agent gives sess-1 no title or time: brnr's.
     assert_eq!(one["title"], "Fake session");
+    {
+        // Where it gives one, the agent's title wins over brnr's.
+        let out = env
+            .brnr(&["session", "list", "--json", "--", AGENT])
+            .env("LIST_TITLE", "The agent's title")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let titled: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let one = row(titled.as_array().unwrap(), "sess-1");
+        assert_eq!((&one["source"], &one["title"]), (&"both".into(), &"The agent's title".into()));
+    }
     assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00Z", "{one}");
     assert_eq!((&mine["state"], &mine["source"]), (&"inactive".into(), &"brnr".into()));
     assert_eq!(rows.last().unwrap()["session"], "old-1", "{rows:?}");
