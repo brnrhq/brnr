@@ -379,14 +379,27 @@ fn adr_0063_queue_show() {
     assert!(env.fails(&["queue", "show", "sess-1", "m9"]).contains("no held message m9"));
     let err = env.fails(&["queue", "show", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue show <session> <message>"), "{err}");
-    // The socket's show goes alone: with a drop, it does neither.
-    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
-    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    writeln!(conn, r#"{{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}}"#).unwrap();
-    let mut answer = String::new();
-    BufReader::new(conn).read_line(&mut answer).unwrap();
-    let answer: Value = serde_json::from_str(&answer).unwrap();
+    // The socket's show goes alone: with a drop, it does neither. A show
+    // that isn't an id is refused, not taken as absent, so it neither
+    // clears nor lists.
+    let socket = env.hosts()[0]["socket"].as_str().unwrap().to_owned();
+    let ask = |req: &str| -> Value {
+        let mut conn = UnixStream::connect(&socket).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        writeln!(conn, "{req}").unwrap();
+        let mut answer = String::new();
+        BufReader::new(conn).read_line(&mut answer).unwrap();
+        serde_json::from_str(&answer).unwrap()
+    };
+    let answer = ask(r#"{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}"#);
     assert_eq!(answer["error"], "queue's show takes no drop or clear", "{answer}");
+    for show in ["2", "true", "null"] {
+        let answer =
+            ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show},"clear":true}}"#));
+        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+        let answer = ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show}}}"#));
+        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+    }
     // Showing drops nothing.
     let out = env.ok(&["queue", "list", "sess-1"]);
     assert_eq!(out, "m3 (interrupt): stop\nm2 (after turn): two\nlines\n");

@@ -256,8 +256,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     doesn't know goes with either verb.
   - `adr_0063_queue_show`: `queue show` prints one held message in full, its
     text, whether it interrupts, and its attachments, in text and `--json`
-    (the content blocks), and drops nothing; a message not held fails, and
-    the socket's `show` goes alone.
+    (the content blocks), and drops nothing; a message not held fails; the
+    socket's `show` goes alone, and one that isn't a message id is refused.
   - `adr_0063_queue_clear_flags`: `queue clear --messages` drops the held
     messages only, `--context` the held context only, and both flags or
     neither drop both, each with its event; `queue list` takes neither
