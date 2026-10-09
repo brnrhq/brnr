@@ -39,7 +39,8 @@ use serde_json::Value;
 pub use agent_client_protocol_schema::ProtocolVersion;
 pub use agent_client_protocol_schema::v1::{
     AgentCapabilities, AuthMethod, ContentBlock, Error, ErrorCode, ListSessionsResponse, MessageId,
-    NewSessionResponse, PermissionOptionKind, SessionInfo, SessionUpdate, ToolCallStatus, ToolKind,
+    NewSessionResponse, PermissionOptionKind, SessionConfigOptionValue, SessionInfo, SessionUpdate,
+    SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
 };
 
 /// `value`, a part of a message as json.rs read it, as the schema's `T`, if

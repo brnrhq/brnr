@@ -31,6 +31,7 @@ use common::{AGENT, Env, kill, script, wait_for};
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
     "README.md",
+    "docs/interface.md",
     "site/index.html",
     "skills/brnr/SKILL.md",
     "skills/brnr/references/orchestrate.md",
@@ -372,6 +373,20 @@ fn the_readme_has_every_command_and_option() {
 }
 
 // ---- the documents --------------------------------------------------------
+
+#[test]
+fn the_interface_reference_matches_cli_help() {
+    let help = Env::new("reference-help").ok(&["--help"]);
+    let reference = read("docs/interface.md");
+    let synopsis = reference
+        .split_once("```text\n")
+        .expect("interface reference needs the CLI synopsis")
+        .1
+        .split_once("\n```")
+        .expect("CLI synopsis must end")
+        .0;
+    assert_eq!(synopsis, help.trim_end(), "update the reference when CLI syntax changes");
+}
 
 fn read(doc: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(doc)).unwrap()

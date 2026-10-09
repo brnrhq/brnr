@@ -117,7 +117,7 @@ written for this document.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| A session id becomes a file name only sanitized: it can't leave the project folder or the locks' directory (P8). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files` |
+| A session id becomes a file name only escaped: it can't leave the project folder or the locks' directory, and distinct ids never share a transcript or a lock (P8, ADR 53). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files`, `adr_0053_distinct_ids_get_distinct_names`; `headless.rs`: `adr_0053_distinct_ids_never_share_a_transcript`, `adr_0053_distinct_ids_never_share_a_lock` |
 | The agent's text is shown with control characters and bidi overrides escaped, and `show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
 | The agent's text never reaches a command line: `notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
