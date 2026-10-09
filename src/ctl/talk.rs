@@ -765,7 +765,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     }
     if let (Some(owner), Some(session)) = (owner, &a.resume) {
         // What the process would refuse is refused before the session is
-        // closed where it runs.
+        // closed where it runs, or it would be open nowhere.
         refused_in(host)?;
         let to = pid.parse().map_err(|_| format!("no brnr process {pid}"))?;
         settings::take_over(owner, session, to)?;
@@ -786,15 +786,27 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     started(&mut conn, &ready, a.wait, a.json, a.timeout)
 }
 
-/// Why `host` would refuse to open a session, as its status says: an
-/// editor's process (ADR 4), or `stop_when_idle` with an agent that can't
-/// close sessions (ADR 12). The process checks the same itself.
+/// Why `host` would refuse to resume a session, as its status says: a
+/// process starting or stopping, an editor's (ADR 4), `stop_when_idle` with
+/// an agent that can't close sessions (ADR 12), or an agent with neither
+/// `session/resume` nor `session/load` (ADR 14). The process checks the same
+/// itself.
 fn refused_in(host: &Host) -> Result<(), String> {
     let Some(status) = &host.status else {
         return Err(format!("process {} is not answering", host.id()));
     };
+    if status["starting"] != false {
+        return Err(format!("process {} is still starting", host.id()));
+    }
+    if status["stopping"] == true {
+        return Err(format!("process {} is stopping", host.id()));
+    }
     if status["owner"] == "editor" {
         return Err("the editor owns this process; open sessions there".into());
+    }
+    let caps = &status["capabilities"];
+    if caps["resume"] != true && caps["load"] != true {
+        return Err("the agent can't resume sessions (no session/resume or session/load)".into());
     }
     if !status["stop_when_idle"].is_null() && status["capabilities"]["close"] != true {
         return Err("the agent can't close sessions: with stop_when_idle, a second session would \

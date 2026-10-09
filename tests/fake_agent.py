@@ -24,6 +24,7 @@ with environment variables:
   PERMISSION=1      ask permission (kind edit) before answering a prompt
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
+  NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
@@ -541,7 +542,7 @@ for line in sys.stdin.buffer:
         if not env("NO_DELETE"):
             session_caps["delete"] = {}
         caps = {
-            "loadSession": True,
+            "loadSession": not env("NO_LOAD"),
             "promptCapabilities": {"image": not env("NO_IMAGE")},
             "mcpCapabilities": {"http": True, "sse": False},
             "sessionCapabilities": session_caps,

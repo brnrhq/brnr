@@ -3375,6 +3375,33 @@ fn adr_0063_pid_opening_in_a_stopping_process_fails() {
     assert!(env.prompts().is_empty());
 }
 
+/// `--take-over` with `--pid` checks first that the process would resume
+/// the session: one whose agent has neither `session/resume` nor
+/// `session/load` refuses, and the session stays open where it was, rather
+/// than be closed there and open nowhere (ADR 3, ADR 63).
+#[test]
+fn adr_0063_pid_take_over_refused_before_closing() {
+    let env = Env::new("c-pid-take-noresume");
+    env.start(&[]);
+    let holder = env.pid();
+    let args = new_args(&[]);
+    let out = env
+        .brnr(&args)
+        .env("NO_RESUME", "1")
+        .env("NO_LOAD", "1")
+        .env("FIRST_SESSION", "10")
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let pid = env.hosts().into_iter().map(|h| h["host_pid"].to_string()).find(|p| *p != holder);
+    let pid = pid.unwrap();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "sess-1", "--take-over"]);
+    let says = "brnr: the agent can't resume sessions (no session/resume or session/load)\n";
+    assert_eq!(err, says);
+    assert!(env.calls_of("session/close").is_empty());
+    assert_eq!(lock_holder(&env, "sess-1"), holder);
+}
+
 /// `--thought-level`, and a profile's `thought_level`, are the option of
 /// category `thought_level`, whatever its id, as `--model` and `model` are
 /// the model's: one setting with `--option` by its id, the flag winning

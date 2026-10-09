@@ -611,6 +611,7 @@ impl Host {
         report["pending"] = json!(self.pending_permissions().len());
         report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
+        report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
         report["bridges"] = json!(
             self.peers
