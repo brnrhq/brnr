@@ -124,6 +124,19 @@ brnr's own conventions:
   forwarded untouched (ADR 26, 43).
 - A GitHub release's notes are its section of this file, not the titles of
   the pull requests it merged (ADR 40).
+- **Breaking:** between `brnr acp` and its process, the process sends `EOF`
+  once the agent's stdout ends, and a `STDERR` frame for each read of the
+  agent's stderr rather than for each line. Run both from the same version,
+  as `brnr acp` starts them (ADR 62).
+- **Breaking:** the host log records the agent's stderr as lines alongside
+  forwarding it: one `agent-stderr` record per line, or per 64 KiB of a
+  longer one, with a line still unfinished recorded when stderr ends or the
+  process exits. For when bytes reached the editor, read its stderr, not the
+  host log (ADR 62).
+- **Breaking:** the host log has two new notes: `agent-stdout-ended`, and
+  `not-sent-to-editor` for a line of brnr's own (a sent message's tool call,
+  a refusal, a withdrawal) not written because the editor's stdout had
+  already ended (ADR 62).
 
 ### Removed
 
@@ -157,6 +170,12 @@ brnr's own conventions:
   request can't disguise its command with control characters, and terminal
   sequences (OSC 52, titles) don't reach the terminal; `show` warns about a
   command with control characters (ADR 1, P8).
+- Through `brnr acp`, the editor's stdout ends when the agent closes its
+  stdout, even while the agent runs on, and the agent's stderr reaches the
+  editor as it is written, without waiting for a newline, as it would from
+  the agent run directly. A failed start's error includes the stderr line
+  the agent is still writing, such as a login prompt (GHSA-4q62-fhcc-rgf2;
+  ADR 62).
 - Every command refuses a runtime directory other users can access, as the
   process already did, and ignores metadata whose socket isn't next to it
   (ADR 1, P13).
