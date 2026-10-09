@@ -35,6 +35,30 @@ brnr's own conventions:
   profile's bridge that runs `brnr notify` runs `brnr event notify` instead.
   `brnr --help` has a section per group, and `brnr <group> --help` lists a
   group's commands (ADR 63).
+- **Breaking:** `brnr mode`, `brnr model` and `brnr config` are
+  `brnr config get <s>` and `brnr config set <s>`. `get` lists every option
+  with its category, value and choices, and the agent's v1 modes as a row
+  with no option; `--mode`, `--model`, `--thought-level` and
+  `--option <o>` narrow it. `set` takes `--mode <m>`, `--model <m>`,
+  `--thought-level <l>` (the option of that category) and
+  `--option <o>=<v>` (by id) together, resolved as a start's settings are:
+  `brnr mode $s plan` is `brnr config set $s --mode plan`, and
+  `brnr config $s effort=high` is `brnr config set $s --option effort=high`.
+  A setting the agent has no option for fails ("the agent offers no thought
+  level"), as do two values for one setting, and a v1 mode the agent doesn't
+  list fails before anything is sent, a start's too (ADR 63).
+- **Breaking:** an agent with a config option of category `mode` has its
+  mode set through that option, and `session status` reports its value,
+  even where the agent has v1 modes too; `session/set_mode` is sent only
+  with v1 modes and no mode option. `session status --json` has `modes` as
+  the agent gave them (`currentModeId`, `availableModes`) (ADR 63).
+- **Breaking:** the socket's `set_mode`, `set_model` and `set_config` are
+  one `set_config`, with `mode`, `model`, `thought_level` and `options` (an
+  object of option ids to values), answered once every setting is set with
+  what was sent (`set`); a failure names what was set before it (ADR 63).
+- **Breaking:** the editor's experimental action `settings` is `config`:
+  `experimental = ["config"]` under `[profiles.<name>.editor]`; `settings`
+  fails to load (ADR 4, ADR 63).
 
 ## [0.7.0] - 2026-10-09
 

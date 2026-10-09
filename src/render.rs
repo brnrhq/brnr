@@ -60,7 +60,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         "session_changed" => match e["what"].as_str() {
             Some("title") => format!("title: {}", s(&e["value"])),
             Some("mode") => format!("mode: {}", s(&e["value"])),
-            // What changed: an option as `brnr config` sets it (`model=opus`),
+            // What changed: an option as `config set` reports it (`model=opus`),
             // a command added (`+review`), `-<name>` for one gone.
             Some(what @ ("config" | "commands")) => {
                 let changes =

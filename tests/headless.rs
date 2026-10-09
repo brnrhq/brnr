@@ -121,8 +121,8 @@ fn adr_0008_start_hands_over_one_request() {
     let headless = &request["role"]["headless"];
     // The flags' settings and the profile's, apart (ADR 58).
     assert_eq!(headless["defaults"]["mode"], "plan", "{request}");
-    assert_eq!(headless["settings"]["config"]["model"], "large");
-    assert!(headless["settings"]["mode"].is_null() && headless["defaults"]["config"] == json!({}));
+    assert_eq!(headless["settings"]["options"]["model"], "large");
+    assert!(headless["settings"]["mode"].is_null() && headless["defaults"]["options"] == json!({}));
     assert_eq!(headless["stop_when_idle"], 60);
     assert_eq!(headless["start_timeout"], 120);
     assert_eq!(headless["prompt"]["text"], "hello");
@@ -294,14 +294,16 @@ fn stop_reaches_an_agent_out_of_its_group() {
     assert!(wait_for(Duration::from_secs(20), || !alive(host)), "host still running");
 }
 
-/// A start that fails after the session opened (setting its mode) fails in
-/// the foreground too: it says why, and doesn't exit 0.
+/// A start that fails after the session opened (setting its model, which
+/// the agent refuses) fails in the foreground too: it says why, and doesn't
+/// exit 0.
 #[test]
 fn adr_0009_foreground_start_failure_is_reported() {
     let env = Env::new("fg-mode");
-    let out = env.run(&start_args(&["--foreground", "--mode", "bogus"]));
+    let out = env.run(&start_args(&["--foreground", "--model", "huge"]));
     assert!(!out.status.success(), "exited 0: {}", stderr(&out));
-    assert!(stderr(&out).contains("setting mode bogus failed: no mode bogus"), "{}", stderr(&out));
+    let says = "setting model huge failed: bad option model=huge";
+    assert!(stderr(&out).contains(says), "{}", stderr(&out));
 }
 
 /// Closing the last session ends a foreground process as it should: no
@@ -2473,9 +2475,9 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
         (&["prompt", "cancel", "sess-1"], "cancel"),
         (&["approve", "sess-1", "p1"], "approve"),
         (&["deny", "sess-1", "p1"], "approve"),
-        (&["mode", "sess-1", "plan"], "settings"),
-        (&["model", "sess-1", "large"], "settings"),
-        (&["config", "sess-1", "model=large"], "settings"),
+        (&["config", "set", "sess-1", "--mode", "plan"], "config"),
+        (&["config", "set", "sess-1", "--model", "large"], "config"),
+        (&["config", "set", "sess-1", "--option", "model=large"], "config"),
         (&["session", "close", "sess-1"], "close"),
     ];
     for (args, action) in actions {
@@ -2492,9 +2494,9 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
         &["permission", "requests", "sess-1"],
         &["permission", "show", "sess-1", "p1"],
         &["queue", "list", "sess-1"],
-        &["mode", "sess-1"],
-        &["model", "sess-1"],
-        &["config", "sess-1"],
+        &["config", "get", "sess-1", "--mode"],
+        &["config", "get", "sess-1", "--model"],
+        &["config", "get", "sess-1"],
         &["prompt", "commands", "sess-1"],
         &["event", "log", "sess-1"],
     ];
@@ -2523,7 +2525,7 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
     let env = Env::new("ex-strict");
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.editor]\nexperimental = \
-         [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n",
+         [\"send\", \"context\", \"cancel\", \"approve\", \"config\", \"close\"]\n",
     );
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
@@ -2534,7 +2536,7 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
         (&["prompt", "cancel", "sess-1"], "cancel"),
         (&["approve", "sess-1", "p1"], "approve"),
         (&["deny", "sess-1", "p1"], "approve"),
-        (&["mode", "sess-1", "plan"], "settings"),
+        (&["config", "set", "sess-1", "--mode", "plan"], "config"),
         (&["session", "close", "sess-1"], "close"),
     ];
     for (args, action) in actions {
@@ -2695,25 +2697,25 @@ fn adr_0004_approve_answers_in_the_editors_place() {
 #[test]
 fn adr_0004_settings_are_told_to_the_editor() {
     let env = Env::new("ex-settings").agent("QUIET_MODE", "1");
-    let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
-    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["config"]);
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
     assert_eq!(update(&mut from_agent, "current_mode_update")["currentModeId"], "plan");
-    env.ok(&["model", "sess-1", "large"]);
+    env.ok(&["config", "set", "sess-1", "--model", "large"]);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][0]["currentValue"], "large", "{config}");
-    env.ok(&["config", "sess-1", "model=small"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][0]["currentValue"], "small", "{config}");
 }
 
 /// An editor that negotiates boolean config options gets them from the
-/// agent, and `config` sets one as ACP has it: `type: "boolean"` and a JSON
+/// agent, and `config set` sets one as ACP has it: `type: "boolean"` and a JSON
 /// boolean. A value that isn't `true` or `false` fails before it reaches the
 /// agent; a select option is still set by its value id.
 #[test]
 fn adr_0028_a_boolean_option_is_set_as_a_boolean() {
     let env = Env::new("ex-boolean");
-    env.write_config("[profiles.default.editor]\nexperimental = [\"settings\"]\n");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"config\"]\n");
     let args = ["acp", "--", AGENT];
     let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
@@ -2728,21 +2730,21 @@ fn adr_0028_a_boolean_option_is_set_as_a_boolean() {
     writeln!(to_agent, "{new}").unwrap();
     let options = response(&mut from_agent, 2)["result"]["configOptions"].clone();
     assert_eq!(options[1]["type"], "boolean", "{options}");
-    assert!(env.ok(&["config", "sess-1"]).contains("fast    false"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("fast    -         false"));
 
-    assert_eq!(env.ok(&["config", "sess-1", "fast=true"]), "fast=true\n");
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--option", "fast=true"]), "fast=true\n");
     let set = env.calls_of("session/set_config_option")[0]["params"].clone();
     let typed = serde_json::json!({ "sessionId": "sess-1", "configId": "fast", "type": "boolean", "value": true });
     assert_eq!(set, typed);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][1]["currentValue"], true, "{config}");
-    assert!(env.ok(&["config", "sess-1"]).contains("fast    true"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("fast    -         true"));
 
-    let err = env.fails(&["config", "sess-1", "fast=yes"]);
+    let err = env.fails(&["config", "set", "sess-1", "--option", "fast=yes"]);
     assert!(err.contains("fast is a boolean option: true or false, not yes"), "{err}");
     assert_eq!(env.calls_of("session/set_config_option").len(), 1, "yes reached the agent");
 
-    env.ok(&["config", "sess-1", "model=large"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
     let set = env.calls_of("session/set_config_option")[1]["params"].clone();
     let id = serde_json::json!({ "sessionId": "sess-1", "configId": "model", "value": "large" });
     assert_eq!(set, id);
@@ -2907,20 +2909,20 @@ fn turns_ended(env: &Env) -> Vec<Value> {
 }
 
 /// An editor's prompt whose id is one the host gives its own requests
-/// (`brnr-1`) runs on while `mode`, `model` and `config` are answered: the
+/// (`brnr-1`) runs on while `config set`s are answered: the
 /// session is busy until the agent answers the prompt itself, and the editor
 /// gets that answer, with its id.
 #[test]
 fn adr_0061_an_editors_prompt_ends_only_with_its_own_answer() {
     let env = Env::new("id-prompt");
-    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["config"]);
     writeln!(to_agent, "{}", prompt_with_id(r#""brnr-1""#, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     assert_eq!(state(&env), "busy");
-    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
     assert_eq!(state(&env), "busy", "the mode's answer ended the editor's turn");
-    env.ok(&["model", "sess-1", "large"]);
-    env.ok(&["config", "sess-1", "model=small"]);
+    env.ok(&["config", "set", "sess-1", "--model", "large"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
     assert_eq!(state(&env), "busy");
     assert!(turns_ended(&env).is_empty());
     writeln!(to_agent, "{CANCEL}").unwrap();

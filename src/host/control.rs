@@ -27,9 +27,10 @@
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
 //! - `approve` / `deny` `{session, request, option?}`
-//! - `set_mode` `{session, mode}`, `set_config` `{session, option, value}`,
-//!   `set_model` `{session, model}` (the config option whose category is
-//!   `model`): answered once the agent has
+//! - `set_config` `{session, mode?, model?, thought_level?, options?: {id:
+//!   value}}` (`config set`, ADR 63): resolved as a start's settings are
+//!   (ADR 58), sent one at a time, and answered once the agent has set them
+//!   all (`set`, what was sent) or refused one
 //! - `fork` `{session}`: never in an editor's process
 //! - `close` `{session, take_over?}`: cancels a running turn first, and is
 //!   answered once the agent has closed the session; a headless process
@@ -39,7 +40,7 @@
 //!   agent's process group)
 //!
 //! On an editor's session every command that acts on it (`send`, `cancel`,
-//! `queue --clear-context`, `approve`, `deny`, the settings and `close`) is
+//! `queue --clear-context`, `approve`, `deny`, `set_config` and `close`) is
 //! experimental: refused unless the editor's profile enables it (ADR 4, see
 //! experimental.rs). Bridges observe it freely.
 //!
@@ -75,11 +76,12 @@ use libc::pid_t;
 use serde_json::{Value, json};
 
 use super::acp::{Choice, Held};
-use super::requests::PeerOp;
+use super::requests::{PeerOp, Setup, resolve_settings};
 use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
+use crate::request::Settings;
 use crate::{json, paths, render, sys};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
@@ -487,9 +489,7 @@ impl Host {
             }
             Some("approve") => now(self.answer(peer, req, Choice::Allow)),
             Some("deny") => now(self.answer(peer, req, Choice::Deny)),
-            Some("set_mode" | "set_config" | "set_model" | "fork" | "close") => {
-                self.agent_op(peer, req).map(|()| None)
-            }
+            Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
             Some("stop") => {
                 if self.status.is_some() {
                     return Err("the agent has already exited".into());
@@ -810,70 +810,21 @@ impl Host {
         let caps = self.caps;
         let i = self.session_index(req)?;
         let session = self.sessions[i].id.clone();
-        let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
-        if cmd.starts_with("set_") {
-            self.check_experimental(Experimental::Settings)?;
-        }
         match cmd {
-            "set_mode" => {
-                let mode = text("mode")?;
-                let state = &self.sessions[i].state;
-                let params = json!({ "sessionId": session, "modeId": mode });
-                let option = state.option("mode").map(|o| o["id"].as_str().unwrap_or_default());
-                if let Some(modes) = &state.modes {
-                    let known = modes["availableModes"]
-                        .as_array()
-                        .is_none_or(|m| m.iter().any(|x| x["id"] == mode.as_str()));
-                    if !known {
-                        return Err(format!("no mode {mode} (see brnr mode)"));
-                    }
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Mode { session, mode },
-                        "session/set_mode",
-                        params,
-                    );
-                } else if let Some(id) = option {
-                    // An agent with modes only as a config option.
-                    let params = state.config_params(&session, id, &mode)?;
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Config { session },
-                        "session/set_config_option",
-                        params,
-                    );
-                } else {
-                    return Err("the agent offers no modes".into());
-                }
-            }
             "set_config" => {
-                let (option, value) = (text("option")?, text("value")?);
-                let params = self.sessions[i].state.config_params(&session, &option, &value)?;
-                self.peer_op(
-                    peer,
-                    req_id,
-                    PeerOp::Config { session },
-                    "session/set_config_option",
-                    params,
-                );
-            }
-            "set_model" => {
-                // The config option of category `model`; never
-                // `session/set_model` (ADR 28).
-                let model = text("model")?;
+                self.check_experimental(Experimental::Config)?;
+                let settings = settings_of(req)?;
                 let state = &self.sessions[i].state;
-                let option = state.option("model").ok_or("the agent offers no model choice")?;
-                let id = option["id"].as_str().unwrap_or_default();
-                let params = state.config_params(&session, id, &model)?;
-                self.peer_op(
-                    peer,
-                    req_id,
-                    PeerOp::Config { session },
-                    "session/set_config_option",
-                    params,
-                );
+                let steps = resolve_settings(&settings, &Settings::default(), state, "--option")?;
+                if steps.is_empty() {
+                    return Err("nothing to set".into());
+                }
+                self.run_setup(Setup {
+                    session,
+                    steps,
+                    done: Vec::new(),
+                    peer: Some((peer, req_id)),
+                });
             }
             "fork" => {
                 // A forked session would be a headless one in a process that
@@ -920,6 +871,29 @@ impl Host {
         }
         Ok(i)
     }
+}
+
+/// A `set_config`'s settings: `mode`, `model`, `thought_level`, and
+/// `options` by id, each value a string.
+fn settings_of(req: &Value) -> Result<Settings, String> {
+    let text = |key: &str| match &req[key] {
+        Value::Null => Ok(None),
+        Value::String(v) => Ok(Some(v.clone())),
+        _ => Err(format!("{key} isn't a string")),
+    };
+    let mut options = std::collections::BTreeMap::new();
+    match &req["options"] {
+        Value::Null => {}
+        Value::Object(map) => {
+            for (id, value) in map {
+                let value = value.as_str().ok_or(format!("options: {id} isn't a string"))?;
+                options.insert(id.clone(), value.to_owned());
+            }
+        }
+        _ => return Err("options isn't an object".into()),
+    }
+    let (mode, model, thought_level) = (text("mode")?, text("model")?, text("thought_level")?);
+    Ok(Settings { mode, model, thought_level, options })
 }
 
 #[cfg(test)]

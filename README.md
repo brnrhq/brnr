@@ -156,7 +156,7 @@ experimental = ["send", "approve"]
 | `context` | `prompt send --context`, `queue list --clear-context` | Added to the editor's next prompt, shown as "Context via brnr". |
 | `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
 | `approve` | `approve`, `deny` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Approved via brnr", "Denied via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
-| `settings` | `mode`, `model`, `config` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
+| `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `session close`, `start --resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
 
 `session fork` is never available in an editor's process, and in strict mode
@@ -284,11 +284,22 @@ enabled, or else why it can't (`answerable` and `why_not` in `--json`).
 ### Settings
 
 ```sh
-brnr mode $s [plan]                # list or set the session's mode
-brnr model $s [<model>]            # list or set the model (the config option of category model)
-brnr config $s [effort=high]       # any of the agent's config options
+brnr config get $s [--model]       # the options, their values and choices, and the modes
+brnr config set $s --mode plan     # the option of category mode (or the agent's modes)
+brnr config set $s --model opus    # the option of category model
+brnr config set $s --option effort=high   # any of the agent's config options, by id
 brnr prompt commands $s            # the agent's slash commands (send them as text)
 ```
+
+`--mode`, `--model` and `--thought-level` find the option of that category
+(`mode`, `model`, `thought_level`), whatever its id, and `--option <o>=<v>` an
+option by id; they go together, and `config get` takes the same, without
+values, to list only those options. A setting the agent has no option for
+fails ("the agent offers no thought level"), as two values for one setting do
+(`--model large --option llm=small`, when `llm` is the model); each is sent
+once, the mode first. A mode is the agent's own `session/set_mode` only for an
+agent with modes and no mode option. `config get`'s list has the agent's modes
+as a row with no option (`-`, `null` in `--json`).
 
 A boolean option (one an editor's session has when the editor advertises
 boolean config options) takes `true` or `false`, and is sent as a boolean;
@@ -463,7 +474,7 @@ With no editor attached brnr is the agent's client: approvals wait for
 `brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody
 answers), elicitation is declined, and anything else is answered with
 "method not found". How much the agent asks is the agent's own setting: its
-mode (`--mode`, `brnr mode`). brnr doesn't log in for you. If the agent needs
+mode (`--mode`, `brnr config set --mode`). brnr doesn't log in for you. If the agent needs
 a login, the start fails with the agent's methods: log in with the agent's own
 CLI first, or name a method that needs no terminal with `--auth <id>` (`auth`
 in the profile), such as codex-acp's `api-key`.
@@ -558,8 +569,7 @@ as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
-`pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
-`close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`pending`, `approve`, `deny`, `set_config`, `fork`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.

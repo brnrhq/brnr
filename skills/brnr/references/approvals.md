@@ -21,7 +21,7 @@ delegation for another session or another kind of request, or "it looks
 safe". When a request is outside what was delegated, ask, however close it
 is. Deny, too, is an answer: give it only when the user did, or delegated it.
 
-Don't get around the rule by changing a worker's mode (`brnr mode`, or
+Don't get around the rule by changing a worker's mode (`brnr config set --mode`, or
 `--mode` at start) to one that asks less, such as `acceptEdits` or
 `bypassPermissions`. How much an agent asks is the user's choice; use the
 mode they chose.

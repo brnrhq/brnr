@@ -150,7 +150,7 @@ pub enum Experimental {
     Context,
     Cancel,
     Approve,
-    Settings,
+    Config,
     Close,
 }
 
@@ -160,7 +160,7 @@ impl Experimental {
         Experimental::Context,
         Experimental::Cancel,
         Experimental::Approve,
-        Experimental::Settings,
+        Experimental::Config,
         Experimental::Close,
     ];
 
@@ -170,7 +170,7 @@ impl Experimental {
             Experimental::Context => "context",
             Experimental::Cancel => "cancel",
             Experimental::Approve => "approve",
-            Experimental::Settings => "settings",
+            Experimental::Config => "config",
             Experimental::Close => "close",
         }
     }

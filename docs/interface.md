@@ -71,17 +71,17 @@ permission
   brnr approve <session> <request> [--option <id>] [--json]
   brnr deny <session> <request> [--option <id>] [--json]
 
+config
+  brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
+  brnr config set <session> [--mode <m>] [--model <m>] [--thought-level <l>]
+                  [--option <o>=<v>]... [--json]
+
 event
   brnr event log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
   brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
   brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
                     -- <command> [args...]
   brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
-
-settings
-  brnr mode <session> [<mode>] [--json]
-  brnr model <session> [<model>] [--json]
-  brnr config <session> [<option>=<value>...] [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -128,8 +128,8 @@ with the agent's capabilities.
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
-| `brnr mode`, `brnr model` | Lists choices/current value or sets the supplied ID. | Choices with current selection; JSON has `session`, `mode`/`model`, and `modes`/`models` when listing. |
-| `brnr config` | Lists options or sets repeatable `option=value` pairs. | JSON has `session` and `options` when listing, or `set` when updating. Listed options contain `option`, `value`, `choices`, `name`. |
+| `brnr config get` | Lists the config options and the agent's v1 modes; `--mode`, `--model`, `--thought-level` (by category) and repeatable `--option <id>` narrow it. One the agent doesn't have fails. | Table or JSON with `session` and `options`, each with `option` (null for the v1 modes), `category`, `value`, `choices` (values), `name`. |
+| `brnr config set` | Sets `--mode`, `--model`, `--thought-level` (the option of that category; a mode is `session/set_mode` only with v1 modes and no mode option) and repeatable `--option <id>=<value>`, resolved as `start`'s settings are: two values for one setting fail, each is sent once, the mode first. | One `<option>=<value>` line per setting sent (`mode=` for v1 modes); JSON has `session` and `set`, each with `option`, `category`, `value`. |
 | `brnr prompt commands` | Lists the agent's advertised slash commands; invoke them by sending text. | JSON has `session` and `commands`, each with `command`, `hint`, `description`. |
 | `brnr doctor` | Checks configuration, permissions, processes and transcripts; `--fix` performs the documented safe repairs. | Check lines or JSON array of `level`, `check`, `message`. `--report` produces Markdown; with `--json`, an object containing `brnr`, `os`, `adapters`, `checks`, `host_logs`. |
 | `brnr skill` | Reads embedded guidance, or a named reference: `orchestrate`, `approvals`, `observe`, `setup`. `install` writes it into each directory's `brnr/` subdirectory. | Markdown, or installed-path messages. Default install roots: `~/.claude/skills`, `~/.agents/skills`. No JSON mode. |
@@ -221,7 +221,7 @@ names fail to load. `doctor` validates every profile.
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
 | `profiles.<name>.headless` | `cwd`, `mode`, `auth`: strings; `config`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. |
-| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `approve`, `settings`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
+| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `approve`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
 
@@ -276,9 +276,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `subscribe` | Optional `events`: array of event names or string `"all"`. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. |
 | `pending` | None | `pending`: approval objects for the host's sessions. |
 | `approve`, `deny` | `session`, `request`; optional `option` string. | `session`, `request`, `outcome`. |
-| `set_mode` | `session`, `mode` string. | `session`, `mode`, or updated `config` when the agent represents modes as config options. |
-| `set_config` | `session`, `option`, `value` strings. | `session`, updated `config`. |
-| `set_model` | `session`, `model` string. | `session`, updated `config`. Uses the agent's config option whose category is `model`. |
+| `set_config` | `session`; optional `mode`, `model`, `thought_level` strings and `options` (object of option IDs to strings), at least one. Resolved and sent as `config set` does; answered once all are set, or with the first failure, which names what was already set. | `session`, `set` (`option`, `category`, `value` for each setting sent), `mode`, updated `config`. |
 | `fork` | `session`. | New `session` ID. |
 | `close` | `session`; optional `take_over` destination PID, used by brnr's resume flow. | Closed `session` ID after agent acknowledgment. |
 | `stop` | None. | `status:"stopping"`; does not wait for final exit. |

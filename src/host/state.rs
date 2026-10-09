@@ -78,12 +78,13 @@ impl SessionState {
         changed
     }
 
-    /// The mode, or with no modes the config option of category `mode`, as
-    /// `brnr mode` has it (ADR 28).
+    /// The mode, as `config set --mode` sets it (ADR 63): the config option
+    /// of category `mode`, or with none the v1 modes' current one.
     pub(super) fn current_mode(&self) -> Option<&str> {
-        match &self.modes {
-            Some(modes) => modes["currentModeId"].as_str(),
-            None => self.option("mode")?["currentValue"].as_str(),
+        match (self.option("mode"), &self.modes) {
+            (Some(option), _) => option["currentValue"].as_str(),
+            (None, Some(modes)) => modes["currentModeId"].as_str(),
+            (None, None) => None,
         }
     }
 
@@ -133,7 +134,7 @@ impl SessionState {
         json!({
             "title": self.title,
             "mode": self.current_mode(),
-            "modes": self.modes.as_ref().map(|m| m["availableModes"].clone()),
+            "modes": self.modes,
             "model": self.current_model(),
             "config": self.config,
             "commands": self.commands,

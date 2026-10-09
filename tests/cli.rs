@@ -655,45 +655,53 @@ fn adr_0034_status_summarizes_the_session() {
 
 // ---- settings ------------------------------------------------------------
 
+/// The v1 modes are listed by `config get --mode` and set by `config set
+/// --mode` (`session/set_mode`) for an agent with no mode option (ADR 28,
+/// ADR 63).
 #[test]
 fn adr_0028_mode_lists_and_switches() {
     let env = Env::new("c-mode");
     env.start(&[]);
-    let modes = env.ok(&["mode", "sess-1"]);
-    assert!(modes.contains("* default") && modes.contains("  plan"), "{modes}");
-    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
-    let json: Value = serde_json::from_str(&env.ok(&["mode", "sess-1", "--json"])).unwrap();
-    assert_eq!(json["mode"], "plan");
-    assert!(env.ok(&["mode", "sess-1"]).contains("* plan"));
-    assert!(env.fails(&["mode", "sess-1", "warp"]).contains("no mode warp"));
+    let modes = env.ok(&["config", "get", "sess-1", "--mode"]);
+    assert!(modes.contains("-       mode      default  default plan"), "{modes}");
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
+    assert_eq!(env.calls_of("session/set_mode")[0]["params"]["modeId"], "plan");
+    let get = env.ok(&["config", "get", "sess-1", "--mode", "--json"]);
+    let json: Value = serde_json::from_str(&get).unwrap();
+    assert_eq!(json["options"][0]["value"], "plan");
+    let err = env.fails(&["config", "set", "sess-1", "--mode", "warp"]);
+    assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
+    assert_eq!(env.calls_of("session/set_mode").len(), 1, "warp reached the agent");
 }
 
 #[test]
 fn adr_0028_model_and_config() {
     let env = Env::new("c-model");
     env.start(&[]);
-    assert!(env.ok(&["model", "sess-1"]).contains("* small"));
-    env.ok(&["model", "sess-1", "large"]);
-    assert!(env.ok(&["model", "sess-1"]).contains("* large"));
+    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("small  small large"));
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--model", "large"]), "model=large\n");
+    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("large  small large"));
     assert_eq!(env.calls_of("session/set_config_option")[0]["params"]["value"], "large");
-    let config = env.ok(&["config", "sess-1"]);
+    let config = env.ok(&["config", "get", "sess-1"]);
     assert!(config.contains("model") && config.contains("small large"), "{config}");
-    env.ok(&["config", "sess-1", "model=small"]);
-    assert!(env.fails(&["config", "sess-1", "model=huge"]).contains("bad option"));
+    env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
+    let err = env.fails(&["config", "set", "sess-1", "--option", "model=huge"]);
+    assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
 }
 
-/// `brnr model` is `config` for the option whose category is `model`,
-/// whatever its id, and so is `start --model`. Without one the agent offers
-/// no model choice, an option that is only called `model` and the unstable
-/// `session/set_model` notwithstanding (ADR 28).
+/// `config set --model` and `config get --model` find the option whose
+/// category is `model`, whatever its id, and so does `start --model`.
+/// Without one the agent offers no model choice, an option that is only
+/// called `model` and the unstable `session/set_model` notwithstanding
+/// (ADR 28).
 #[test]
 fn adr_0028_model_is_the_option_of_category_model() {
     let env = Env::new("c-modelcat").agent("MODEL_ID", "llm");
     env.start(&["--model", "large"]);
     let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
     assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"llm".into(), &"large".into()));
-    assert!(env.ok(&["model", "sess-1"]).contains("* large"));
-    env.ok(&["model", "sess-1", "small"]);
+    assert!(env.ok(&["config", "get", "sess-1", "--model"]).contains("llm     model     large"));
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--model", "small"]), "llm=small\n");
     assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"llm".into(), &"small".into()));
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
@@ -701,15 +709,18 @@ fn adr_0028_model_is_the_option_of_category_model() {
 
     let env = Env::new("c-modelnone").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
     env.start(&[]);
-    for args in [&["model", "sess-1"][..], &["model", "sess-1", "large"]] {
+    for args in [
+        &["config", "get", "sess-1", "--model"][..],
+        &["config", "set", "sess-1", "--model", "large"],
+    ] {
         let err = env.fails(args);
         assert!(err.contains("the agent offers no model choice"), "{err}");
     }
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     assert!(status["model"].is_null(), "{status}");
-    // `config` is by id, as ever.
-    env.ok(&["config", "sess-1", "model=large"]);
+    // `--option` is by id, as ever.
+    env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
     assert!(env.calls_of("session/set_model").is_empty());
 
     let env = Env::new("c-modelstart").agent("MODEL_CATEGORY", "").agent("LEGACY_MODELS", "1");
@@ -718,18 +729,34 @@ fn adr_0028_model_is_the_option_of_category_model() {
     assert!(env.calls_of("session/set_model").is_empty() && env.prompts().is_empty());
 }
 
-/// An agent with no modes, but a config option of category `mode`: that is
-/// its mode, for `brnr mode` and `start --mode`.
+/// An agent with a config option of category `mode`: that is its mode, for
+/// `config set --mode` and `start --mode`, also when it has v1 modes as
+/// well; `session/set_mode` isn't sent (ADR 28, ADR 63).
 #[test]
 fn adr_0028_mode_as_a_config_option() {
-    let env = Env::new("c-modeopt").agent("MODE_OPTION", "approvals");
-    env.start(&["--mode", "plan"]);
-    let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
-    assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"approvals".into(), &"plan".into()));
-    assert!(env.ok(&["mode", "sess-1"]).contains("* plan"));
-    assert_eq!(env.ok(&["mode", "sess-1", "default"]), "mode default\n");
-    assert_eq!((&set(1)["configId"], &set(1)["value"]), (&"approvals".into(), &"default".into()));
-    assert!(env.calls_of("session/set_mode").is_empty());
+    for both in [false, true] {
+        let mut env = Env::new(if both { "c-modeboth" } else { "c-modeopt" });
+        env = env.agent("MODE_OPTION", "approvals");
+        if both {
+            env = env.agent("BOTH_MODES", "1");
+        }
+        env.start(&["--mode", "plan"]);
+        let set = |n: usize| env.calls_of("session/set_config_option")[n]["params"].clone();
+        assert_eq!((&set(0)["configId"], &set(0)["value"]), (&"approvals".into(), &"plan".into()));
+        let modes = env.ok(&["config", "get", "sess-1", "--mode"]);
+        assert!(modes.contains("approvals  mode      plan"), "{modes}");
+        assert_eq!(modes.lines().count(), 2, "{modes}");
+        let set_mode = ["config", "set", "sess-1", "--mode", "default"];
+        assert_eq!(env.ok(&set_mode), "approvals=default\n");
+        assert_eq!(
+            (&set(1)["configId"], &set(1)["value"]),
+            (&"approvals".into(), &"default".into())
+        );
+        assert!(env.calls_of("session/set_mode").is_empty());
+        let status: Value =
+            serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+        assert_eq!(status["mode"], "default");
+    }
 }
 
 /// The start's flags win over its profile's settings, one setting at a time,
@@ -842,14 +869,19 @@ fn adr_0028_start_applies_mode_and_model_before_the_prompt() {
             "session/prompt"
         ]
     );
-    // Another agent, whose sessions aren't the first one's.
+    // Another agent, whose sessions aren't the first one's: a mode it
+    // doesn't list fails before anything is sent, a value it refuses as it
+    // answers.
     let out = env.brnr(&start_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
     let err = stderr(&out.unwrap());
-    assert!(err.contains("setting mode warp failed"), "{err}");
+    assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
+    let out = env.brnr(&start_args(&["--model", "huge"])).env("FIRST_SESSION", "2").output();
+    let err = stderr(&out.unwrap());
+    assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
 }
 
 /// `session_changed` says what changed of the config options and the
-/// commands, live and in the transcript alike; `brnr config` and `brnr
+/// commands, live and in the transcript alike; `config get` and `prompt
 /// commands` have them in full (ADR 22).
 #[test]
 fn adr_0022_session_changed_says_what_changed() {
@@ -858,11 +890,11 @@ fn adr_0022_session_changed_says_what_changed() {
     let args = ["event", "watch", "sess-1", "--events", "session_changed", "--json"];
     let watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
     sleep(Duration::from_millis(300));
-    // The agent's answer to brnr config changes the model; saying so again
+    // The agent's answer to config set changes the model; saying so again
     // changes nothing.
-    env.ok(&["config", "sess-1", "model=large"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
     env.ok(&["prompt", "send", "sess-1", "--wait", "settings large"]);
-    assert!(env.ok(&["config", "sess-1"]).contains("small large"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("small large"));
     env.ok(&["prompt", "send", "sess-1", "--wait", "commands"]);
     let commands = env.ok(&["prompt", "commands", "sess-1"]);
     assert!(commands.contains("/review") && !commands.contains("/compact"), "{commands}");
@@ -1857,7 +1889,12 @@ fn adr_0033_profile_layout_errors_say_where() {
         ),
         (
             "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
-            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, approve, settings, close)"#,
+            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, approve, config, close)"#,
+        ),
+        // `settings` is `config` now (ADR 63).
+        (
+            "[profiles.default.editor]\nexperimental = [\"settings\"]\n",
+            r#"profiles.default.editor.experimental: unknown action "settings""#,
         ),
         (
             "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
@@ -1886,7 +1923,7 @@ fn adr_0033_profile_layout_errors_say_where() {
     // The same, laid out right.
     env.write_config(
         "[profiles.default]\nlog = false\nstrict = false\n\n[profiles.default.headless]\nstop_when_idle = 600\n\n\
-         [profiles.default.editor]\nexperimental = [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n\
+         [profiles.default.editor]\nexperimental = [\"send\", \"context\", \"cancel\", \"approve\", \"config\", \"close\"]\n\
          features = [\"shared_sessions\"]\n",
     );
     env.start(&[]);
@@ -2256,7 +2293,7 @@ fn adr_0063_old_commands_are_unknown() {
     env.start(&["--wait", "--prompt", "reply hi"]);
     let old = [
         "ps", "stop", "status", "fork", "close", "send", "cancel", "commands", "queue", "pending",
-        "show", "log", "watch", "notify", "wait",
+        "show", "log", "watch", "notify", "wait", "mode", "model", "config",
     ];
     for cmd in old {
         let err = env.fails(&[cmd, "sess-1"]);
@@ -2264,6 +2301,8 @@ fn adr_0063_old_commands_are_unknown() {
     }
     assert_eq!(env.prompts(), ["reply hi"], "nothing was sent");
     assert!(env.calls_of("session/fork").is_empty() && env.calls_of("session/close").is_empty());
+    assert!(env.calls_of("session/set_mode").is_empty());
+    assert!(env.calls_of("session/set_config_option").is_empty());
     env.stop();
 }
 
@@ -2274,7 +2313,7 @@ fn adr_0063_old_commands_are_unknown() {
 fn adr_0063_help_lists_the_groups_and_their_commands() {
     let env = Env::new("c-groups");
     let help = env.ok(&["--help"]);
-    for group in ["process", "session", "prompt", "queue", "permission", "event"] {
+    for group in ["process", "session", "prompt", "queue", "permission", "config", "event"] {
         assert!(help.lines().any(|l| l == group), "no {group} in\n{help}");
         let usage = env.ok(&[group, "--help"]);
         assert!(usage.starts_with(&format!("usage:\n  brnr {group} ")), "{usage}");
@@ -2288,6 +2327,175 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
     let err = env.fails(&["queue", "drop", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue drop <session> <message>"), "{err}");
     assert!(!err.contains("queue list"), "{err}");
+}
+
+/// `config get` lists every config option, its category, value and
+/// choices, and the v1 modes after them, as a row with no option; the JSON
+/// has the same rows (ADR 63).
+#[test]
+fn adr_0063_config_get_lists_options_choices_and_modes() {
+    let env = Env::new("c-get")
+        .agent("MODE_OPTION", "approvals")
+        .agent("BOTH_MODES", "1")
+        .agent("THOUGHT_OPTION", "effort");
+    env.start(&[]);
+    let get = env.ok(&["config", "get", "sess-1"]);
+    let want = "OPTION     CATEGORY       VALUE    CHOICES       NAME\n\
+                approvals  mode           default  default plan  Mode\n\
+                model      model          small    small large   Model\n\
+                effort     thought_level  low      low high      Effort\n\
+                -          mode           default  default plan\n";
+    assert_eq!(get, want);
+    let json: Value =
+        serde_json::from_str(&env.ok(&["config", "get", "sess-1", "--json"])).unwrap();
+    assert_eq!(json["session"], "sess-1");
+    let v1 = serde_json::json!({
+        "option": null, "category": "mode", "value": "default",
+        "choices": ["default", "plan"], "name": null,
+    });
+    assert_eq!(json["options"][3], v1);
+    let effort = serde_json::json!({
+        "option": "effort", "category": "thought_level", "value": "low",
+        "choices": ["low", "high"], "name": "Effort",
+    });
+    assert_eq!(json["options"][2], effort);
+    assert_eq!(json["options"].as_array().unwrap().len(), 4);
+
+    // No options and no modes is an empty list, not a failure.
+    let env = Env::new("c-get-none").agent("MODE_OPTION", "approvals");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "settings none"]);
+    assert_eq!(env.ok(&["config", "get", "sess-1"]), "the agent has no config options\n");
+    let json: Value =
+        serde_json::from_str(&env.ok(&["config", "get", "sess-1", "--json"])).unwrap();
+    assert_eq!(json["options"], serde_json::json!([]));
+}
+
+/// `config get --mode`, `--model`, `--thought-level` and `--option <o>`
+/// narrow the list to those options, found as `config set` finds them,
+/// in the list's order; one the agent doesn't have fails (P7).
+#[test]
+fn adr_0063_config_get_narrows_by_category_and_id() {
+    let env = Env::new("c-narrow").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
+    env.start(&[]);
+    let options = |args: &[&str]| -> Vec<Value> {
+        let mut argv = vec!["config", "get", "sess-1", "--json"];
+        argv.extend(args);
+        let json: Value = serde_json::from_str(&env.ok(&argv)).unwrap();
+        json["options"].as_array().unwrap().iter().map(|o| o["option"].clone()).collect()
+    };
+    assert_eq!(options(&["--thought-level"]), ["effort"]);
+    assert_eq!(options(&["--model"]), ["llm"]);
+    assert_eq!(options(&["--option", "effort", "--model", "--model"]), ["llm", "effort"]);
+    // v1 modes, with no mode option, are the mode.
+    assert_eq!(options(&["--mode"]), [Value::Null]);
+    let text = env.ok(&["config", "get", "sess-1", "--thought-level"]);
+    assert_eq!(
+        text,
+        "OPTION  CATEGORY       VALUE  CHOICES   NAME\neffort  thought_level  low    low high  Effort\n"
+    );
+    let err = env.fails(&["config", "get", "sess-1", "--option", "nope"]);
+    assert!(err.contains("the agent has no option nope"), "{err}");
+    // By id only: the model option's id is llm.
+    assert!(
+        env.fails(&["config", "get", "sess-1", "--option", "model"]).contains("no option model")
+    );
+
+    let env = Env::new("c-narrow-none").agent("MODE_OPTION", "approvals");
+    env.start(&[]);
+    let err = env.fails(&["config", "get", "sess-1", "--thought-level"]);
+    assert!(err.contains("the agent offers no thought level"), "{err}");
+    env.ok(&["prompt", "send", "sess-1", "--wait", "settings none"]);
+    let err = env.fails(&["config", "get", "sess-1", "--mode"]);
+    assert!(err.contains("the agent offers no modes"), "{err}");
+}
+
+/// `config set` finds `--mode`, `--model` and `--thought-level` by
+/// category and `--option` by id, resolved as a start's settings are
+/// (ADR 58): each sent once, the mode first, then the model, the thought
+/// level and the rest; two values for one setting fail before anything is
+/// sent, as does one the agent has no option for (P7); one the agent
+/// refuses says what was set before it (P3).
+#[test]
+fn adr_0063_config_set_by_category_and_by_id() {
+    let env = Env::new("c-set").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
+    env.start(&[]);
+    let sent = || -> Vec<String> {
+        let calls = env
+            .calls()
+            .into_iter()
+            .filter(|c| c["method"].as_str().is_some_and(|m| m.starts_with("session/set_")));
+        calls
+            .map(|c| match c["method"].as_str().unwrap() {
+                "session/set_mode" => format!("mode {}", c["params"]["modeId"].as_str().unwrap()),
+                _ => format!(
+                    "{}={}",
+                    c["params"]["configId"].as_str().unwrap(),
+                    c["params"]["value"].as_str().unwrap()
+                ),
+            })
+            .collect()
+    };
+    let args = [
+        "config",
+        "set",
+        "sess-1",
+        "--option",
+        "effort=high",
+        "--model",
+        "large",
+        "--mode",
+        "plan",
+    ];
+    assert_eq!(env.ok(&args), "mode=plan\nllm=large\neffort=high\n");
+    assert_eq!(sent(), ["mode plan", "llm=large", "effort=high"]);
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!((&status["mode"], &status["model"]), (&"plan".into(), &"large".into()));
+
+    let args = ["config", "set", "sess-1", "--thought-level", "low", "--json"];
+    let json: Value = serde_json::from_str(&env.ok(&args)).unwrap();
+    let low =
+        serde_json::json!([{ "option": "effort", "category": "thought_level", "value": "low" }]);
+    assert_eq!((&json["session"], &json["set"]), (&"sess-1".into(), &low));
+    // The same value twice is one setting.
+    env.ok(&["config", "set", "sess-1", "--model", "small", "--option", "llm=small"]);
+    assert_eq!(sent().len(), 5);
+
+    for (args, says) in [
+        (
+            &["--thought-level", "high", "--option", "effort=low"][..],
+            "--thought-level high and --option effort=low both set the thought level",
+        ),
+        (
+            &["--option", "effort=low", "--option", "effort=high"],
+            "--option effort=low and --option effort=high disagree",
+        ),
+        (&["--mode", "plan", "--mode", "default"], "--mode plan and --mode default disagree"),
+        (&["--mode", "warp", "--model", "large"], "setting mode warp: the agent has no mode warp"),
+        (&["--option", "effort"], "--option takes <option>=<value>, not effort"),
+    ] {
+        let mut argv = vec!["config", "set", "sess-1"];
+        argv.extend(args);
+        let err = env.fails(&argv);
+        assert!(err.contains(says), "{args:?}: {err}");
+    }
+    assert_eq!(sent().len(), 5, "a setting that failed reached the agent");
+    assert!(env.fails(&["config", "set", "sess-1"]).starts_with("usage:\n  brnr config set"));
+
+    // The agent refuses one: those before it are set, and said.
+    let err = env.fails(&["config", "set", "sess-1", "--mode", "default", "--option", "bogus=1"]);
+    assert!(
+        err.contains("setting bogus=1 failed: bad option bogus=1 (already set: mode default)"),
+        "{err}"
+    );
+    assert_eq!(sent()[5..], ["mode default", "bogus=1"]);
+
+    let env = Env::new("c-set-none");
+    env.start(&[]);
+    let err = env.fails(&["config", "set", "sess-1", "--thought-level", "high"]);
+    assert!(err.contains("setting thought level high: the agent offers no thought level"), "{err}");
+    assert!(env.calls_of("session/set_config_option").is_empty());
 }
 
 // ---- the skill (ADR 46) --------------------------------------------------
@@ -2387,7 +2595,7 @@ fn adr_0029_agent_requests_wait_for_their_answer_without_blocking_the_host() {
     let mut conn = UnixStream::connect(env.dir.join(format!("run/{}.sock", env.pid()))).unwrap();
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut reader = BufReader::new(conn.try_clone().unwrap());
-    writeln!(conn, r#"{{"cmd":"set_mode","session":"sess-1","mode":"plan","req_id":"mode"}}"#)
+    writeln!(conn, r#"{{"cmd":"set_config","session":"sess-1","mode":"plan","req_id":"mode"}}"#)
         .unwrap();
     assert!(wait_for(Duration::from_secs(5), || !env.calls_of("session/set_mode").is_empty()));
     writeln!(conn, r#"{{"cmd":"status","req_id":"status"}}"#).unwrap();
@@ -2402,5 +2610,9 @@ fn adr_0029_agent_requests_wait_for_their_answer_without_blocking_the_host() {
     assert_eq!(response["req_id"], "mode");
     assert_eq!(response["ok"], true);
     assert_eq!(env.calls_of("session/set_mode")[0]["params"]["modeId"], "plan");
-    assert!(env.ok(&["mode", "sess-1"]).contains("* plan"));
+    assert_eq!(
+        response["set"][0],
+        serde_json::json!({ "option": null, "category": "mode", "value": "plan" })
+    );
+    assert!(env.ok(&["config", "get", "sess-1", "--mode"]).contains("plan"));
 }

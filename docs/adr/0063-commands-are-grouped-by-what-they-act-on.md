@@ -222,10 +222,19 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
     usage; a command used wrongly shows its own.
+  - `adr_0063_config_get_lists_options_choices_and_modes`: every option with
+    its category, value and choices, and the v1 modes as a row with no
+    option, the same in text and JSON.
+  - `adr_0063_config_get_narrows_by_category_and_id`: `--mode`, `--model`,
+    `--thought-level` and `--option` narrow the list, in its order; one the
+    agent doesn't have fails.
+  - `adr_0063_config_set_by_category_and_by_id`: each setting is sent once,
+    the mode first; two values for one setting, or a setting the agent has
+    no option for, fail before anything is sent; a refused one says what was
+    set before it.
 
 Not implemented yet, each to come with `adr_0063_` tests naming its claims:
 `session new --pid` and its refusals; `session list`'s join, SOURCE and
 `--include`; `session delete` with and without `--purge`, and an editor's
 delete through `brnr acp`; `allow` and `reject` by kind, by `--option`, and
-their failures; the timeout's reject and cancel; `config set` by category and
-by id; `queue clear`'s flags.
+their failures; the timeout's reject and cancel; `queue clear`'s flags.

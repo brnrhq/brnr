@@ -12,7 +12,7 @@
 //!   or a deny its tool call is updated. If the editor answers anyway, its
 //!   answer is dropped, so the agent never gets two, and the editor is told
 //!   in the session.
-//! - `settings`: the agent answers a change only to whoever asked (ADR 28),
+//! - `config`: the agent answers a change only to whoever asked (ADR 28),
 //!   so the editor is sent the `current_mode_update` or
 //!   `config_option_update` here.
 //! - `close`, and `start --resume --take-over` of an editor's session: the
@@ -142,7 +142,7 @@ impl Host {
         true
     }
 
-    // ---- settings -------------------------------------------------------
+    // ---- config ---------------------------------------------------------
 
     /// The agent set `session`'s mode at a bridge's request.
     pub(super) fn mode_set(&mut self, session: &str, mode: &str) {

@@ -71,7 +71,7 @@ use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
-use requests::{Capabilities, SetupStep};
+use requests::Capabilities;
 use start::StartChannel;
 
 /// Where the editor link or the start channel is: a socket either way.
@@ -415,13 +415,9 @@ struct Host {
     /// Headless start: brnr has a transcript of the session resumed, so a
     /// load's replay isn't recorded again (ADR 57).
     transcript: bool,
-    /// Headless start: what its flags and its profile set, made `setup` once
+    /// Headless start: what its flags and its profile set, resolved once
     /// the session is open and the agent has said which option is which.
     settings: (Settings, Settings),
-    /// Headless start: mode and config options to set before the prompt.
-    setup: std::collections::VecDeque<SetupStep>,
-    /// Headless start: the session being opened.
-    starting: Option<String>,
     /// MCP servers for the sessions the host opens, as ACP has them.
     mcp_servers: Vec<Value>,
     /// Close a session idle this long (see `fire_idle_timers`).
@@ -632,8 +628,6 @@ impl Host {
             resume: h.resume,
             transcript: h.transcript,
             settings: (h.settings, h.defaults),
-            setup: Default::default(),
-            starting: None,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
             show_events,

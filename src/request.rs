@@ -95,14 +95,16 @@ pub struct Headless {
     pub foreground: Option<Foreground>,
 }
 
-/// The mode, the model (the config option whose category is `model`,
-/// ADR 28) and config options by id, to set before the prompt.
+/// The mode, the model and the thought level (the config options of those
+/// categories, ADR 28) and config options by id: what one source sets, a
+/// start's flags or its profile, or `config set` (ADR 58, ADR 63).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub mode: Option<String>,
     pub model: Option<String>,
-    pub config: BTreeMap<String, String>,
+    pub thought_level: Option<String>,
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]

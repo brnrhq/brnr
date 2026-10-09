@@ -40,6 +40,9 @@ with environment variables:
   MODEL_ID=<id>     the model config option's id (model by default)
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
+  BOTH_MODES=1      with MODE_OPTION, the modes too (session/set_mode)
+  THOUGHT_OPTION=<id>  a config option of category thought_level, id <id>
+                    (low or high)
   LEGACY_MODELS=1   also offer the unstable models and session/set_model
   STDERR=<text>     write text on stderr as it starts
   EXIT=<code>       exit with code as it starts (after STDERR), reading
@@ -124,6 +127,7 @@ MODES = {
 
 MODEL_ID = env("MODEL_ID", "model")
 MODE_ID = env("MODE_OPTION")
+THOUGHT_ID = env("THOUGHT_OPTION")
 
 
 def config(model="small"):
@@ -150,6 +154,18 @@ def config(model="small"):
     if env("MODEL_CATEGORY", "model"):
         option["category"] = env("MODEL_CATEGORY", "model")
     options.append(option)
+    if THOUGHT_ID:
+        levels = [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]
+        options.append(
+            {
+                "id": THOUGHT_ID,
+                "name": "Effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": effort,
+                "options": levels,
+            }
+        )
     if fast is not None:
         options.append({"id": "fast", "name": "Fast", "type": "boolean", "currentValue": fast})
     return options
@@ -157,7 +173,7 @@ def config(model="small"):
 
 def settings(answer):
     """The modes (unless MODE_OPTION) and config options, in answer."""
-    if not MODE_ID:
+    if not MODE_ID or env("BOTH_MODES"):
         answer["modes"] = MODES
     answer["configOptions"] = config(model)
     return answer
@@ -453,6 +469,7 @@ if env("FAULT") not in (None, "crash", "hang", "flood"):
 
 model = "small"
 mode = "default"
+effort = "low"
 fast = None  # the boolean option's value, once the client says it takes booleans
 sessions = int(env("FIRST_SESSION") or 0)
 authenticated = False
@@ -583,6 +600,13 @@ for line in sys.stdin.buffer:
             and params.get("value") in ("default", "plan")
         ):
             mode = params["value"]
+            result(mid, {"configOptions": config(model)})
+        elif (
+            THOUGHT_ID
+            and params.get("configId") == THOUGHT_ID
+            and params.get("value") in ("low", "high")
+        ):
+            effort = params["value"]
             result(mid, {"configOptions": config(model)})
         elif (
             fast is not None

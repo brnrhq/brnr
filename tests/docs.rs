@@ -117,9 +117,10 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr permission show $s p1", Approval, Says("Edit src/lib.rs")),
     ("brnr approve $s p1", Approval, Succeeds),
     // Settings: each runs without its optional argument and with it.
-    ("brnr mode $s [plan]", Idle, Succeeds),
-    ("brnr model $s [<model>]", Idle, Succeeds),
-    ("brnr config $s [effort=high]", Idle, Succeeds),
+    ("brnr config get $s [--model]", Idle, Says("small large")),
+    ("brnr config set $s --mode plan", Idle, Says("mode=plan")),
+    ("brnr config set $s --model opus", Idle, Says("model=large")),
+    ("brnr config set $s --option effort=high", Idle, Says("model=large")),
     ("brnr prompt commands $s", Idle, Says("compact")),
     // Sessions and processes
     ("brnr session fork $s", Idle, Says("forked")),

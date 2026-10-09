@@ -5,7 +5,7 @@
 //!
 //! - talk.rs: `start`, `prompt send`, `prompt cancel`, `event wait`, `queue`
 //! - history.rs: `event log`
-//! - settings.rs: `mode`, `config`, `model`, `prompt commands`, `sessions`,
+//! - settings.rs: `config get`, `config set`, `prompt commands`, `sessions`,
 //!   `session fork`, `session close`
 //! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
 //!   `doctor`; skill.rs: `skill`
@@ -60,7 +60,7 @@ mod talk;
 
 /// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
 /// its commands act on.
-const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "event"];
+const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "config", "event"];
 
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
@@ -101,17 +101,17 @@ permission
   brnr approve <session> <request> [--option <id>] [--json]
   brnr deny <session> <request> [--option <id>] [--json]
 
+config
+  brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
+  brnr config set <session> [--mode <m>] [--model <m>] [--thought-level <l>]
+                  [--option <o>=<v>]... [--json]
+
 event
   brnr event log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
   brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
   brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
                     -- <command> [args...]
   brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
-
-settings
-  brnr mode <session> [<mode>] [--json]
-  brnr model <session> [<model>] [--json]
-  brnr config <session> [<option>=<value>...] [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -154,6 +154,8 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("queue", Some("drop")) => talk::queue_drop(rest),
         ("permission", Some("requests")) => done(pending(rest)),
         ("permission", Some("show")) => show::show(rest),
+        ("config", Some("get")) => settings::config_get(rest),
+        ("config", Some("set")) => settings::config_set(rest),
         ("event", Some("log")) => history::log(rest),
         ("event", Some("watch")) => done(watch(rest)),
         ("event", Some("notify")) => notify::notify(rest),
@@ -167,9 +169,6 @@ pub fn main(args: Vec<String>) -> ExitCode {
         }
         (_, None) if grouped => Err(USAGE.to_owned()),
         ("start", _) => talk::start(rest),
-        ("mode", _) => settings::mode(rest),
-        ("model", _) => settings::model(rest),
-        ("config", _) => settings::config(rest),
         ("sessions", _) => settings::sessions(rest),
         ("list", _) => done(list(rest)),
         ("approve", _) => done(answer(rest, "approve")),

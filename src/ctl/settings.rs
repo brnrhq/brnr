@@ -1,7 +1,7 @@
-//! A session's settings and the sessions themselves: `mode`, `config`,
-//! `model`, `prompt commands`, `sessions`, `session fork` and
-//! `session close`.
+//! A session's settings and the sessions themselves: `config get`, `config
+//! set`, `prompt commands`, `sessions`, `session fork` and `session close`.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
@@ -72,161 +72,193 @@ fn s(v: &Value) -> &str {
     v.as_str().unwrap_or("?")
 }
 
-pub(super) fn mode(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, rest, json_out) = session_args(args)?;
-    let (host, status) = session_status(&arg)?;
-    let id = s(&status["session_id"]).to_owned();
-    match &rest[..] {
-        [] => {
-            let current = status["mode"].as_str();
-            let mut modes: Vec<Value> = status["modes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|m| json!({ "mode": m["id"], "name": m["name"], "description": m["description"] }))
-                .collect();
-            let mut current = current.map(str::to_owned);
-            if modes.is_empty() {
-                // An agent with modes only as a config option.
-                let option = option(&status, "mode");
-                let option = option.ok_or("the agent offers no modes")?;
-                modes = choices(option)
-                    .into_iter()
-                    .map(
-                        |(value, name)| json!({ "mode": value, "name": name, "description": null }),
-                    )
-                    .collect();
-                current = option["currentValue"].as_str().map(str::to_owned);
+/// What `config get` narrows to: an option found by category, as `config
+/// set` finds it, or by id.
+enum Wanted {
+    Category(&'static str),
+    Id(String),
+}
+
+/// `config get`: every config option with its value and choices, and the
+/// v1 modes where the agent has them (`option` null); `--mode`, `--model`,
+/// `--thought-level` and `--option <o>` narrow it to those, found as
+/// `config set` finds them (ADR 63).
+pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
+    let (mut session, mut json_out, mut wanted) = (None, false, Vec::new());
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--json" => json_out = true,
+            "--mode" => wanted.push(Wanted::Category("mode")),
+            "--model" => wanted.push(Wanted::Category("model")),
+            "--thought-level" => wanted.push(Wanted::Category("thought_level")),
+            "--option" => {
+                wanted.push(Wanted::Id(it.next().ok_or("--option needs an option's id")?.clone()));
             }
-            if json_out {
-                print_json(&json!({ "session": id, "mode": current, "modes": modes }))?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            for m in &modes {
-                let mark = if m["mode"].as_str() == current.as_deref() { "*" } else { " " };
-                let about = m["description"].as_str().or(m["name"].as_str());
-                let about = about.map(|d| format!("  {d}")).unwrap_or_default();
-                outln!("{mark} {}{about}", s(&m["mode"]));
-            }
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ if session.is_none() => session = Some(arg.clone()),
+            _ => return Err(USAGE.to_owned()),
         }
-        [mode] => {
-            agent_call(&host, &json!({ "cmd": "set_mode", "session": id, "mode": mode }))?;
-            if json_out {
-                print_json(&json!({ "session": id, "mode": mode }))?;
-            } else {
-                outln!("mode {mode}");
-            }
-        }
-        _ => return Err(USAGE.to_owned()),
     }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// The config option of ACP's `category` (`mode`, `model`, …), in a
-/// session's status: by category only, never by id (ADR 28).
-fn option<'a>(status: &'a Value, category: &str) -> Option<&'a Value> {
-    status["config"].as_array()?.iter().find(|o| o["category"] == category)
-}
-
-/// A select option's values and their names.
-fn choices(option: &Value) -> Vec<(Value, Value)> {
-    option["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|c| (c["value"].clone(), c["name"].clone()))
-        .collect()
-}
-
-pub(super) fn config(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, rest, json_out) = session_args(args)?;
-    let (host, status) = session_status(&arg)?;
+    let (_, status) = session_status(&session.ok_or(USAGE)?)?;
     let id = s(&status["session_id"]).to_owned();
-    if rest.is_empty() {
-        let options: Vec<Value> = status["config"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|o| {
-                let choices: Vec<Value> = choices(o).into_iter().map(|(v, _)| v).collect();
-                json!({ "option": o["id"], "value": o["currentValue"], "choices": choices, "name": o["name"] })
+    let options = status["config"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut rows: Vec<Value> = options
+        .iter()
+        .map(|o| {
+            json!({
+                "option": o["id"],
+                "category": o["category"],
+                "value": o["currentValue"],
+                "choices": choices(o),
+                "name": o["name"],
             })
-            .collect();
-        if json_out {
-            print_json(&json!({ "session": id, "options": options }))?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        if options.is_empty() {
-            return Err("the agent has no config options".into());
-        }
-        let mut rows = vec![["OPTION", "VALUE", "CHOICES", "NAME"].map(String::from)];
-        for o in &options {
-            let value = match &o["value"] {
-                Value::String(v) => v.clone(),
-                other => other.to_string(),
-            };
-            let choices: Vec<&str> =
-                o["choices"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            rows.push([
-                s(&o["option"]).to_owned(),
-                value,
-                choices.join(" "),
-                o["name"].as_str().unwrap_or("").to_owned(),
-            ]);
-        }
-        print_table(rows);
-        return Ok(ExitCode::SUCCESS);
+        })
+        .collect();
+    // After the options, so that a mode option is the mode, as for `set`.
+    if let Some(modes) = status["modes"].as_object() {
+        let available = modes.get("availableModes").and_then(Value::as_array);
+        let choices: Vec<&Value> = available.into_iter().flatten().map(|m| &m["id"]).collect();
+        rows.push(json!({
+            "option": null,
+            "category": "mode",
+            "value": modes.get("currentModeId"),
+            "choices": choices,
+            "name": null,
+        }));
     }
-    let mut set = Vec::new();
-    for pair in &rest {
-        let (option, value) =
-            pair.split_once('=').ok_or(format!("<option>=<value>, not {pair}"))?;
-        agent_call(
-            &host,
-            &json!({ "cmd": "set_config", "session": id, "option": option, "value": value }),
-        )?;
-        if !json_out {
-            outln!("{option}={value}");
+    if !wanted.is_empty() {
+        let mut keep = Vec::new();
+        for want in &wanted {
+            let found = match want {
+                Wanted::Category(c) => rows.iter().position(|r| r["category"] == *c).ok_or(
+                    match *c {
+                        "mode" => "the agent offers no modes",
+                        "model" => "the agent offers no model choice",
+                        _ => "the agent offers no thought level",
+                    }
+                    .to_owned(),
+                ),
+                Wanted::Id(o) => rows
+                    .iter()
+                    .position(|r| r["option"] == o.as_str())
+                    .ok_or(format!("the agent has no option {o}")),
+            };
+            keep.push(found?);
         }
-        set.push(json!({ "option": option, "value": value }));
+        keep.sort_unstable();
+        keep.dedup();
+        rows = keep.into_iter().map(|n| rows[n].clone()).collect();
     }
     if json_out {
-        print_json(&json!({ "session": id, "set": set }))?;
+        print_json(&json!({ "session": id, "options": rows }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if rows.is_empty() {
+        outln!("the agent has no config options");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let shown = |v: &Value| match v {
+        Value::String(v) => v.clone(),
+        Value::Null => "-".to_owned(),
+        other => other.to_string(),
+    };
+    let mut table = vec![["OPTION", "CATEGORY", "VALUE", "CHOICES", "NAME"].map(String::from)];
+    for r in &rows {
+        let choices: Vec<String> =
+            r["choices"].as_array().into_iter().flatten().map(shown).collect();
+        table.push([
+            shown(&r["option"]),
+            shown(&r["category"]),
+            shown(&r["value"]),
+            choices.join(" "),
+            r["name"].as_str().unwrap_or("").to_owned(),
+        ]);
+    }
+    print_table(table);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A select option's values, its groups' too.
+fn choices(option: &Value) -> Vec<&Value> {
+    let mut values = Vec::new();
+    for c in option["options"].as_array().into_iter().flatten() {
+        match c["options"].as_array() {
+            Some(group) => values.extend(group.iter().map(|c| &c["value"])),
+            None => values.push(&c["value"]),
+        }
+    }
+    values
+}
+
+/// `config set`: `--mode`, `--model` and `--thought-level` find their option
+/// by category, `--option <o>=<v>` by id, resolved by the process as a
+/// start's settings are (ADR 58, ADR 63) and sent one at a time.
+pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
+    let (mut session, mut json_out, mut pairs) = (None, false, Vec::new());
+    let mut by_category: [(&str, Option<String>); 3] =
+        [("mode", None), ("model", None), ("thought-level", None)];
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let flag = arg.strip_prefix("--");
+        if let Some((name, set)) = by_category.iter_mut().find(|(name, _)| Some(*name) == flag) {
+            let value = it.next().ok_or(format!("--{name} needs a value"))?;
+            if let Some(was) = set.replace(value.clone())
+                && was != *value
+            {
+                return Err(format!("--{name} {was} and --{name} {value} disagree"));
+            }
+            continue;
+        }
+        match arg.as_str() {
+            "--json" => json_out = true,
+            "--option" => pairs.push(it.next().ok_or("--option needs <option>=<value>")?.clone()),
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ if session.is_none() => session = Some(arg.clone()),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    let options = options("--option", &pairs)?;
+    let [(_, mode), (_, model), (_, thought_level)] = by_category;
+    if mode.is_none() && model.is_none() && thought_level.is_none() && options.is_empty() {
+        return Err(USAGE.to_owned());
+    }
+    let (host, status) = session_status(&session.ok_or(USAGE)?)?;
+    let id = s(&status["session_id"]).to_owned();
+    let req = json!({
+        "cmd": "set_config",
+        "session": id,
+        "mode": mode,
+        "model": model,
+        "thought_level": thought_level,
+        "options": options,
+    });
+    let response = agent_call(&host, &req)?;
+    if json_out {
+        print_json(&json!({ "session": id, "set": response["set"] }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    for set in response["set"].as_array().into_iter().flatten() {
+        // A v1 mode has no option.
+        outln!("{}={}", set["option"].as_str().unwrap_or("mode"), s(&set["value"]));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) fn model(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, rest, json_out) = session_args(args)?;
-    let (host, status) = session_status(&arg)?;
-    let id = s(&status["session_id"]).to_owned();
-    match &rest[..] {
-        [] => {
-            let option = option(&status, "model").ok_or("the agent offers no model choice")?;
-            let models: Vec<Value> = choices(option)
-                .into_iter()
-                .map(|(value, name)| json!({ "model": value, "name": name }))
-                .collect();
-            if json_out {
-                print_json(&json!({ "session": id, "model": status["model"], "models": models }))?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            for m in &models {
-                let mark = if m["model"] == status["model"] { "*" } else { " " };
-                outln!("{mark} {}  {}", s(&m["model"]), m["name"].as_str().unwrap_or(""));
-            }
+/// `<option>=<value>` pairs, given with `flag`, by option; the same option
+/// twice with two values fails (ADR 58).
+pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, String>, String> {
+    let mut options = BTreeMap::new();
+    for pair in pairs {
+        let (option, value) =
+            pair.split_once('=').ok_or(format!("{flag} takes <option>=<value>, not {pair}"))?;
+        if let Some(was) = options.insert(option.to_owned(), value.to_owned())
+            && was != value
+        {
+            return Err(format!("{flag} {option}={was} and {flag} {option}={value} disagree"));
         }
-        [model] => {
-            agent_call(&host, &json!({ "cmd": "set_model", "session": id, "model": model }))?;
-            if json_out {
-                print_json(&json!({ "session": id, "model": model }))?;
-            } else {
-                outln!("model {model}");
-            }
-        }
-        _ => return Err(USAGE.to_owned()),
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(options)
 }
 
 pub(super) fn commands(args: &[String]) -> Result<ExitCode, String> {

@@ -20,7 +20,7 @@
 //! - `--context`: no turn; appended to the next prompt, whoever sends it.
 //!   `--replace` replaces the last held context instead of adding to it.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
@@ -491,17 +491,14 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     }
     let mcp_servers =
         h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
-    let mut config = BTreeMap::new();
-    for (option, value) in a.set.iter().filter_map(|s| s.split_once('=')) {
-        if let Some(was) = config.insert(option.to_owned(), value.to_owned())
-            && was != value
-        {
-            return Err(format!("--set {option}={was} and --set {option}={value} disagree"));
-        }
-    }
-    let settings = request::Settings { mode: a.mode, model: a.model, config };
-    let defaults =
-        request::Settings { mode: h.mode.clone(), model: None, config: h.config.clone() };
+    let options = settings::options("--set", &a.set)?;
+    let settings = request::Settings { mode: a.mode, model: a.model, thought_level: None, options };
+    let defaults = request::Settings {
+        mode: h.mode.clone(),
+        model: None,
+        thought_level: None,
+        options: h.config.clone(),
+    };
     let has_prompt = a.prompt.is_some() || !blocks.is_empty();
     let prompt = has_prompt.then(|| request::Prompt { text: a.prompt.unwrap_or_default(), blocks });
     let events =
