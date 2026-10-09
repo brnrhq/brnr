@@ -40,7 +40,7 @@ mod strict;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::io::{self, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
 use std::mem::{take, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
@@ -106,9 +106,11 @@ const EVENTS_QUEUED: usize = 1024;
 const STDERR_TAIL: usize = 20;
 const STDERR_LINE: usize = 2000;
 
-/// The most of a line of the agent's stderr the host holds: a longer one
-/// goes on in pieces of this, as it comes (ADR 51). Nobody reads stderr as
-/// lines but people, and the host log.
+/// The most of the agent's stderr read at once, and of a line of it the host
+/// log takes as one record: a longer line is recorded in pieces of this
+/// (ADR 51). Nobody reads stderr as lines but people, and the host log; what
+/// is read goes on to the editor or the terminal at once, newline or not
+/// (ADR 62).
 const PIECE: usize = 64 << 10;
 
 /// `brnr stop`: stdin is closed once what is queued for it is written, then
@@ -268,7 +270,8 @@ enum Ev {
         end: bool,
     },
     AgentStdoutEof,
-    /// Agent stderr: a line, or a piece of a long one (ADR 51).
+    /// Agent stderr, as one read returned it: up to `PIECE` bytes, not
+    /// necessarily a line (ADR 62).
     AgentStderr(Vec<u8>),
     AgentStderrEof,
     /// The agent has terminated; it has not been reaped yet.
@@ -394,7 +397,10 @@ struct Host {
     /// from the agent, until its newline (ADR 51).
     editor_long: bool,
     agent_long: bool,
-    /// The last piece of the agent's stderr didn't end its line.
+    /// The line of the agent's stderr still coming, for the host log and
+    /// the tail (ADR 10): what came of it is sent on already (ADR 62).
+    stderr_line: Vec<u8>,
+    /// The last piece of the agent's stderr the log has didn't end its line.
     stderr_mid_line: bool,
     /// How deeply what the host holds may nest, and how deeply the stack it
     /// is running on takes (see `deep`).
@@ -448,6 +454,8 @@ struct Host {
     bridge_pids: Vec<pid_t>,
 
     status: Option<c_int>,
+    /// The agent's stdout hasn't ended: once it has, so has the editor's
+    /// (`agent_stdout_ended`).
     stdout_open: bool,
     stderr_open: bool,
     drain_until: Option<Instant>,
@@ -616,6 +624,7 @@ impl Host {
             editor_buf: Vec::new(),
             editor_long: false,
             agent_long: false,
+            stderr_line: Vec::new(),
             stderr_mid_line: false,
             deepest: 0,
             stack: json::SHALLOW,
@@ -898,6 +907,9 @@ impl Host {
     }
 
     fn finish(mut self, died: Option<&str>) -> ExitCode {
+        // The agent's last bytes on stderr, sent on already, if they ended no
+        // line: in the host log and the tail too, before `exited`.
+        self.stderr_piece();
         if let Some(reason) = died {
             return self.died(reason);
         }
@@ -1097,14 +1109,18 @@ impl Host {
                 self.agent_piece(bytes, end);
                 self.from_agent.done(n);
             }
-            Ev::AgentStdoutEof => self.stdout_open = false,
+            Ev::AgentStdoutEof => self.agent_stdout_ended(),
             Ev::AgentStderr(bytes) => {
-                self.sink.msg(None, Dir::AgentStderr, &bytes);
+                // On at once, then into lines for the log: nothing that keeps
+                // stderr as lines holds it up (ADR 62).
                 self.send_link(frame::STDERR, &bytes);
                 self.from_agent.done(bytes.len());
-                self.keep_stderr(&bytes);
+                self.stderr_lines(&bytes);
             }
-            Ev::AgentStderrEof => self.stderr_open = false,
+            Ev::AgentStderrEof => {
+                self.stderr_piece();
+                self.stderr_open = false;
+            }
             Ev::AgentExited => {
                 // Whatever the agent left running goes too, including after
                 // a spontaneous exit or a crash during setup (ADR 11, P14).
@@ -1149,29 +1165,57 @@ impl Host {
         }
     }
 
-    /// Until the start is over, the agent's last lines on stderr, for the
-    /// error if it fails (ADR 10).
-    fn keep_stderr(&mut self, bytes: &[u8]) {
+    /// The agent's stderr, sent on already, as lines for the host log and
+    /// the tail: each line is recorded once it ends, a longer one than
+    /// `PIECE` in pieces of that (ADR 51).
+    fn stderr_lines(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let room = PIECE - self.stderr_line.len();
+            let (n, end) = match bytes[..bytes.len().min(room)].iter().position(|&b| b == b'\n') {
+                Some(i) => (i + 1, true),
+                None => (bytes.len().min(room), false),
+            };
+            self.stderr_line.extend_from_slice(&bytes[..n]);
+            bytes = &bytes[n..];
+            if end || self.stderr_line.len() == PIECE {
+                self.stderr_piece();
+            }
+        }
+    }
+
+    /// The line of stderr so far, whole or not, into the host log and the
+    /// tail.
+    fn stderr_piece(&mut self) {
+        let piece = take(&mut self.stderr_line);
+        if piece.is_empty() {
+            return;
+        }
+        self.sink.msg(None, Dir::AgentStderr, &piece);
         // The rest of a long line, whose start is kept already (ADR 51).
-        let rest = std::mem::replace(&mut self.stderr_mid_line, !bytes.ends_with(b"\n"));
+        let rest = std::mem::replace(&mut self.stderr_mid_line, !piece.ends_with(b"\n"));
         if self.start_done || rest {
             return;
         }
-        let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
         if self.stderr_tail.len() == STDERR_TAIL {
             self.stderr_tail.pop_front();
         }
-        let line = &line[..line.len().min(STDERR_LINE)];
-        self.stderr_tail.push_back(String::from_utf8_lossy(line).into_owned());
+        self.stderr_tail.push_back(tail_line(&piece));
     }
 
-    /// `error`, ending with the agent's last lines on stderr if it wrote any.
+    /// `error`, ending with the agent's last lines on stderr if it wrote any,
+    /// the one it is in the middle of too: a prompt that waits for an answer
+    /// ends none ("login required: ").
     pub(super) fn with_stderr(&self, error: &str) -> String {
-        if self.stderr_tail.is_empty() {
+        let partial = (!self.stderr_mid_line && !self.stderr_line.is_empty())
+            .then(|| tail_line(&self.stderr_line));
+        let skip = usize::from(partial.is_some() && self.stderr_tail.len() == STDERR_TAIL);
+        let lines: String = (self.stderr_tail.iter().skip(skip))
+            .chain(&partial)
+            .map(|l| format!("\n  {l}"))
+            .collect();
+        if lines.is_empty() {
             return error.to_owned();
         }
-        let lines: String = self.stderr_tail.iter().map(|l| format!("\n  {l}")).collect();
         format!("{error}. The agent's last lines on stderr:{lines}")
     }
 
@@ -1197,6 +1241,17 @@ impl Host {
         }
         self.sink.note(None, json!({ "event": "editor-closed-stdin" }));
         self.agent_in = None;
+    }
+
+    /// The agent's stdout has ended: the agent closed it or exited, or the
+    /// editor stopped reading it (`editor_stopped_reading`). So does the
+    /// editor's, after what came before, while the agent may run on and
+    /// write on stderr, as with the agent run directly (P1, ADR 62). brnr
+    /// writes nothing more there of its own either (`write_editor`).
+    fn agent_stdout_ended(&mut self) {
+        self.stdout_open = false;
+        self.sink.note(None, json!({ "event": "agent-stdout-ended" }));
+        self.send_link(frame::EOF, &[]);
     }
 
     fn editor_stopped_reading(&mut self) {
@@ -1505,41 +1560,28 @@ fn read_agent_stdout(
     let _ = tx.send(Ev::AgentStdoutEof);
 }
 
-/// The agent's stderr, line by line, held back as its stdout is; a line
-/// longer than `PIECE` goes on in pieces of that, as it comes
-/// (ADR 51). In the foreground (`shown`) it also goes to stderr as it comes,
-/// unchanged (ADR 10): written from here, the agent blocks on a terminal
-/// that does.
-fn read_agent_stderr(err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
+/// The agent's stderr, as it comes: what each read returns goes on at once,
+/// newline or not, held back as its stdout is (ADR 62). In the foreground
+/// (`shown`) it also goes to stderr, unchanged (ADR 10): written from here,
+/// the agent blocks on a terminal that does.
+fn read_agent_stderr(mut err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
     let mut terminal = shown.then(|| sys::stdio(2));
-    let mut reader = BufReader::new(err);
-    let mut line = Vec::new();
-    let mut open = true;
-    while open {
+    let mut buf = vec![0; PIECE];
+    loop {
         from_agent.room(None);
-        let read = match reader.fill_buf() {
-            Ok(read) => read,
+        let n = match err.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => &[],
+            Err(_) => break,
         };
-        let room = PIECE - line.len();
-        let (n, end) = match read[..read.len().min(room)].iter().position(|&b| b == b'\n') {
-            Some(i) => (i + 1, true),
-            None => (read.len().min(room), false),
-        };
-        open = !read.is_empty();
-        line.extend_from_slice(&read[..n]);
-        reader.consume(n);
-        if line.is_empty() || (open && !end && line.len() < PIECE) {
-            continue;
-        }
         if let Some(out) = &mut terminal
-            && crate::proxy::write_all(out, &line).is_err()
+            && crate::proxy::write_all(out, &buf[..n]).is_err()
         {
             terminal = None;
         }
-        from_agent.add(line.len());
-        if tx.send(Ev::AgentStderr(take(&mut line))).is_err() {
+        from_agent.add(n);
+        if tx.send(Ev::AgentStderr(buf[..n].to_vec())).is_err() {
             break;
         }
     }
@@ -1616,6 +1658,14 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
 /// it is still the process that recorded it: see `gone` in ctl.rs.
 pub fn alive(pid: i64) -> bool {
     pid > 0 && sys::kill(pid as pid_t, 0)
+}
+
+/// A line of stderr as the tail keeps it: without its line ending, and
+/// `STDERR_LINE` bytes of it at most.
+fn tail_line(bytes: &[u8]) -> String {
+    let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    String::from_utf8_lossy(&line[..line.len().min(STDERR_LINE)]).into_owned()
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.

@@ -175,6 +175,17 @@ session: it stops an editor's process as it does any other.
   starts is one the editor didn't start.
 - The editor's acknowledgement of a `$/cancel_request` (an error) is dropped
   without telling it.
+- The agent's stdout and stderr reach the editor as they would directly: stdout
+  ends when the agent closes it, even if the agent runs on, and stderr comes as
+  it is written, newline or not. From when stdout ends, brnr's own notes to the
+  editor (a message sent from outside, a refusal) aren't shown; the host log
+  says which ([ADR 62](docs/adr/0062-stdout-ends-and-stderr-comes-as-written.md)).
+- Both streams come through one connection, in order, with 16 MiB in flight
+  rather than a pipe's 64 KiB: an editor that stops reading one of them holds
+  up the other too, once that much is waiting. The editor's stderr is also
+  `brnr acp`'s own, for its errors, so it ends when `brnr acp` exits rather
+  than when the agent closes its stderr, and an editor closing it doesn't give
+  the agent EPIPE.
 - None of the compensations above has been tried against real editors yet
   (Zed, IntelliJ's AIR plugin): how each shows them is still to be seen.
 
@@ -567,7 +578,8 @@ and brnr reads a line of up to 32 MiB, held beside that while it waits for
 its newline. A longer one goes on as it comes,
 unread and unrecorded, to the editor or the agent unchanged, or is dropped
 headless, and a `line_too_long` event says so. The agent's stderr
-goes on in pieces of 64 KiB at most, every byte.
+goes on as it is written, newline or not, 64 KiB at most at a time, every
+byte.
 
 ## Transcripts
 

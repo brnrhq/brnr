@@ -473,10 +473,7 @@ impl Host {
         self.sink.note(None, event);
         let msg =
             json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": error } });
-        let mut line = serde_json::to_vec(&msg).unwrap();
-        line.push(b'\n');
-        self.record(None, Dir::ControlToEditor, &line);
-        self.send_link(frame::DATA, &line);
+        self.write_editor(None, &msg);
     }
 
     fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
@@ -1357,7 +1354,25 @@ impl Host {
     /// A message of brnr's own for the editor, recorded as such; none
     /// without an editor.
     pub(super) fn send_editor(&mut self, session: Option<&str>, msg: &Value) {
-        if !self.editor_attached() {
+        if self.editor_attached() {
+            self.write_editor(session, msg);
+        }
+    }
+
+    /// A line of brnr's own on the editor's stdout, which is the agent's
+    /// (ADR 2): none once the agent's stdout has ended, after which the
+    /// editor has seen it end (ADR 62). The host log says what wasn't sent
+    /// (P3).
+    fn write_editor(&mut self, session: Option<&str>, msg: &Value) {
+        if !self.stdout_open {
+            let event = json!({
+                "event": "not-sent-to-editor",
+                "reason": "the agent's stdout has ended",
+                "session_id": session,
+                "method": msg.get("method"),
+                "id": msg.get("id"),
+            });
+            self.sink.note(None, event);
             return;
         }
         let mut line = serde_json::to_vec(msg).unwrap();

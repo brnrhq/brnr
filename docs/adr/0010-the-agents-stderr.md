@@ -6,6 +6,10 @@ Resolves review item 9.
 Amended by 51: a line longer than 64 KiB goes on in pieces of that, every
 byte, as it comes.
 
+Amended by 62: it goes on as it is read, newline or not; the host log and a
+failed start's tail keep it as lines alongside, the tail with the line still
+coming.
+
 ## Context
 
 The agent's stderr went to the host log, and with an editor through the
