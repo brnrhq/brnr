@@ -675,4 +675,4 @@ the remaining work; an exemption is not an audit. Report vulnerabilities private
 
 ## License
 
-Apache-2.0.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
