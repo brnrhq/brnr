@@ -41,6 +41,13 @@ no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)). Who can
 reach a session, and what keeps others out, is in the
 [threat model](docs/threat-model.md).
 
+## Interface reference
+
+The [external interface reference](docs/interface.md) describes command
+syntax, inputs and outputs, JSON results, exit codes, configuration, and
+the bridge/control-socket protocol. Use it when writing scripts or bridges;
+the sections below provide examples and explain the workflows.
+
 ## Install
 
 ```sh
@@ -507,7 +514,7 @@ environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
-`close`, `stop` (see `src/host/control.rs`); those about a session name it by
+`close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
