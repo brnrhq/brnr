@@ -858,9 +858,11 @@ fn adr_0006_slow_watcher_is_disconnected() {
         .unwrap();
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
-    assert!(env.run(&["send", "sess-1", "go"]).status.success());
-    assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 1));
-    sleep(Duration::from_secs(3));
+    // Stopped until the turn has ended, so every event came while it was:
+    // continued sooner, it would be reading again when the turn's 20 MB
+    // message came, which a peer that keeps up takes (ADR 60).
+    let out = env.run(&["send", "sess-1", "--wait", "go"]);
+    assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
     assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
@@ -935,6 +937,66 @@ fn adr_0006_huge_message_reaches_watchers() {
     assert!(preview.chars().count() <= 4001, "status quotes {} chars", preview.chars().count());
     let _ = watch.kill();
     let _ = watch.wait();
+}
+
+/// A reply bigger than a peer's whole queue reaches every kind of peer that
+/// keeps up, and none is cut off for it (ADR 60): `start --wait`, `send
+/// --wait`, a watcher and a bridge, the last two asking for `acp` too, so
+/// that the reply comes to them twice at once, as its ACP message and as
+/// its event.
+#[test]
+fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
+    let env = Env::new("hugeall");
+    let got = env.dir.join("bridge-events");
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", \"exec cat > '{}'\"]\n\
+         events = [\"acp\", \"agent_message\", \"turn_ended\"]\n",
+        got.display()
+    ));
+    let size = 20_000_000;
+    let out = env.run(&start_args(&["--wait", "--prompt", &format!("big {size}")]));
+    assert!(out.status.success(), "start --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "start --wait: {}", stderr(&out));
+
+    let mut watch = env
+        .brnr(&["watch", "sess-1", "--json", "--events", "all"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        let mut sizes = Vec::new();
+        for line in lines {
+            let event: Value = serde_json::from_str(&line).unwrap();
+            if event["event"] == "agent_message" {
+                sizes.push(event["text"].as_str().unwrap().len());
+            }
+        }
+        sizes
+    });
+    sleep(Duration::from_millis(300));
+    let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+    assert!(out.status.success(), "send --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "send --wait: {}", stderr(&out));
+    let out = env.run(&["send", "sess-1", "--wait", "--json", &format!("big {size}")]);
+    assert!(out.status.success(), "send --wait --json: {}", stderr(&out));
+    let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(turn["reply"].as_str().unwrap().len(), size);
+
+    assert!(watch.try_wait().unwrap().is_none(), "the watcher was cut off");
+    let turns = || fs::read_to_string(&got).unwrap_or_default().matches(r#""turn_ended""#).count();
+    assert!(wait_for(Duration::from_secs(30), || turns() == 3), "the bridge was cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    assert_eq!(lines.join().unwrap(), [size, size], "the watcher's messages");
+    let bridge = fs::read_to_string(&got).unwrap();
+    let messages = bridge.lines().filter(|l| l.contains(r#""event":"agent_message""#));
+    assert!(messages.map(str::len).all(|n| n > size), "the bridge's messages");
 }
 
 /// A watcher some way behind when a long message comes, one that takes it
@@ -1247,6 +1309,79 @@ fn adr_0022_transcripts_are_two_files() {
     assert_eq!(project(&env).1, names, "resumed into other files");
     let acp = env.ok(&["log", "sess-1", "--events", "acp", "--json"]);
     assert_eq!(acp.matches(r#""method":"session/prompt""#).count(), 2, "{acp}");
+}
+
+/// Session ids the former `_` for anything unsafe in a file name, or a file
+/// system that ignores case or Unicode normalization, put in one file.
+const COLLIDING: &[&str] =
+    &["a/b", "a_b", "x.acp", "x_acp", "Sess-1", "sess-1", "\u{e9}", "e\u{301}"];
+
+/// `brnr start` of the fake agent, its session `id`.
+fn start_as(env: &Env, id: &str) {
+    let out =
+        env.brnr(&start_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
+    let out = out.unwrap();
+    assert!(out.status.success(), "start {id:?}: {}", stderr(&out));
+}
+
+/// Distinct session ids have distinct transcripts, one after the other in
+/// one folder, and each is listed, by its own id (ADR 53).
+#[test]
+fn adr_0053_distinct_ids_never_share_a_transcript() {
+    let env = Env::new("colliding");
+    for id in COLLIDING {
+        start_as(&env, id);
+        env.stop();
+        assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    }
+    let (dir, names) = project(&env);
+    let events: Vec<&String> = names.iter().filter(|n| !n.ends_with(".acp.jsonl")).collect();
+    assert_eq!(events.len(), COLLIDING.len(), "{names:?}");
+    for name in events {
+        let ids: Vec<Value> =
+            records(&dir.join(name)).iter().map(|r| r["session_id"].clone()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]), "{name}: {ids:?}");
+    }
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    let mut listed: Vec<&str> =
+        list.as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
+    listed.sort();
+    let mut want = COLLIDING.to_vec();
+    want.sort();
+    assert_eq!(listed, want);
+    for id in COLLIDING {
+        let log = env.ok(&["log", id, "--json"]);
+        assert_eq!(log.matches(r#""event":"turn_ended""#).count(), 1, "{id:?}: {log}");
+    }
+}
+
+/// Distinct session ids are owned apart: each running process holds a lock
+/// of its own, and each session is reached in its own (ADR 3, ADR 53).
+#[test]
+fn adr_0053_distinct_ids_never_share_a_lock() {
+    let env = Env::new("colliding-locks");
+    for id in COLLIDING {
+        start_as(&env, id);
+    }
+    // Each lock names its own session and process.
+    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("run/sessions"))
+        .unwrap()
+        .map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap())
+        .map(|l: Value| (l["session"].as_str().unwrap().to_owned(), l["pid"].clone()))
+        .collect();
+    locked.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut want = COLLIDING.to_vec();
+    want.sort();
+    assert_eq!(locked.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), want);
+    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let rows = list.as_array().unwrap();
+    assert_eq!(rows.len(), COLLIDING.len(), "{list}");
+    for (id, pid) in &locked {
+        let row =
+            rows.iter().find(|r| r["session"] == id.as_str()).unwrap_or_else(|| panic!("{id:?}"));
+        assert_eq!((&row["state"], &row["pid"]), (&Value::from("idle"), pid), "{id:?}: {list}");
+        env.ok(&["send", id, "reply again"]);
+    }
 }
 
 /// `log = "events"` leaves out the raw ACP file, and `log --events acp`
@@ -2439,6 +2574,50 @@ fn adr_0004_settings_are_told_to_the_editor() {
     env.ok(&["config", "sess-1", "model=small"]);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][0]["currentValue"], "small", "{config}");
+}
+
+/// An editor that negotiates boolean config options gets them from the
+/// agent, and `config` sets one as ACP has it: `type: "boolean"` and a JSON
+/// boolean. A value that isn't `true` or `false` fails before it reaches the
+/// agent; a select option is still set by its value id.
+#[test]
+fn adr_0028_a_boolean_option_is_set_as_a_boolean() {
+    let env = Env::new("ex-boolean");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"settings\"]\n");
+    let args = ["acp", "--", AGENT];
+    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"session":{"configOptions":{"boolean":{}}}}}}"#;
+    writeln!(to_agent, "{initialize}").unwrap();
+    response(&mut from_agent, 1);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{new}").unwrap();
+    let options = response(&mut from_agent, 2)["result"]["configOptions"].clone();
+    assert_eq!(options[1]["type"], "boolean", "{options}");
+    assert!(env.ok(&["config", "sess-1"]).contains("fast    false"));
+
+    assert_eq!(env.ok(&["config", "sess-1", "fast=true"]), "fast=true\n");
+    let set = env.calls_of("session/set_config_option")[0]["params"].clone();
+    let typed = serde_json::json!({ "sessionId": "sess-1", "configId": "fast", "type": "boolean", "value": true });
+    assert_eq!(set, typed);
+    let config = update(&mut from_agent, "config_option_update");
+    assert_eq!(config["configOptions"][1]["currentValue"], true, "{config}");
+    assert!(env.ok(&["config", "sess-1"]).contains("fast    true"));
+
+    let err = env.fails(&["config", "sess-1", "fast=yes"]);
+    assert!(err.contains("fast is a boolean option: true or false, not yes"), "{err}");
+    assert_eq!(env.calls_of("session/set_config_option").len(), 1, "yes reached the agent");
+
+    env.ok(&["config", "sess-1", "model=large"]);
+    let set = env.calls_of("session/set_config_option")[1]["params"].clone();
+    let id = serde_json::json!({ "sessionId": "sess-1", "configId": "model", "value": "large" });
+    assert_eq!(set, id);
+    let _ = editor.kill();
+    let _ = editor.wait();
 }
 
 /// `close` cancels the editor's turn, tells it in the session, and closes the

@@ -275,27 +275,27 @@ impl Host {
         let session = self.sessions[i].id.clone();
         let Some(step) = self.setup.pop_front() else { return self.finish_start(i) };
         let state = &self.sessions[i].state;
-        let option = |category| state.option(category).map(|o| o["id"].clone());
-        let set = |id, value| {
-            let params = json!({ "sessionId": session, "configId": id, "value": value });
-            ("session/set_config_option", params)
+        let option =
+            |category| state.option(category).map(|o| o["id"].as_str().unwrap_or_default());
+        let set = |id: &str, value: &str| {
+            Ok(("session/set_config_option", state.config_params(&session, id, value)?))
         };
-        let (method, params) = match &step {
+        let request = match &step {
             // An agent with modes only as a config option.
             SetupStep::Mode(mode) if state.modes.is_none() => match option("mode") {
                 Some(id) => set(id, mode),
-                None => {
-                    let error = format!("{}: the agent offers no modes", step.describe());
-                    return self.fail_start(&error);
-                }
+                None => Err("the agent offers no modes".to_owned()),
             },
             SetupStep::Mode(mode) => {
-                ("session/set_mode", json!({ "sessionId": session, "modeId": mode }))
+                Ok(("session/set_mode", json!({ "sessionId": session, "modeId": mode })))
             }
-            SetupStep::Model(id, model) => set(json!(id), model),
-            SetupStep::Config(id, value) => set(json!(id), value),
+            SetupStep::Model(id, model) => set(id, model),
+            SetupStep::Config(id, value) => set(id, value),
         };
-        self.host_request(method, params, HostRequest::Setup(step));
+        match request {
+            Ok((method, params)) => self.host_request(method, params, HostRequest::Setup(step)),
+            Err(error) => self.fail_start(&format!("{}: {error}", step.describe())),
+        }
     }
 
     /// The commit (ADR 7): brnr start hears of the session before the agent
@@ -499,6 +499,13 @@ pub(super) fn setup_steps(
     let mut config = profile.config;
     config.extend(flags.config);
     steps.extend(config.into_iter().map(|(k, v)| SetupStep::Config(k, v)));
+    // A value its option's type doesn't take (ADR 28) fails the start before
+    // any of them is sent.
+    for step in &steps {
+        if let SetupStep::Model(id, value) | SetupStep::Config(id, value) = step {
+            state.config_params("", id, value).map_err(|e| format!("{}: {e}", step.describe()))?;
+        }
+    }
     Ok(steps)
 }
 
@@ -590,5 +597,30 @@ mod tests {
         let forks = json!({ "agentCapabilities": { "sessionCapabilities": { "fork": {} } } });
         let forks = Capabilities::of(&forks);
         assert!(forks.fork && !forks.resume && !forks.steering);
+    }
+
+    #[test]
+    fn adr_0028_a_start_refuses_a_boolean_it_cant_send_before_sending_any() {
+        let state = SessionState {
+            config: Some(json!([
+                { "id": "model", "category": "model", "type": "select", "currentValue": "small" },
+                { "id": "fast", "type": "boolean", "currentValue": false },
+            ])),
+            ..SessionState::default()
+        };
+        let flags = |fast: &str| Settings {
+            model: Some("large".into()),
+            config: BTreeMap::from([("fast".into(), fast.into())]),
+            ..Settings::default()
+        };
+        let steps = setup_steps(&flags("true"), &Settings::default(), &state).unwrap();
+        let steps: Vec<_> = steps.into_iter().collect();
+        let want = [
+            SetupStep::Model("model".into(), "large".into()),
+            SetupStep::Config("fast".into(), "true".into()),
+        ];
+        assert_eq!(steps, want);
+        let error = setup_steps(&flags("on"), &Settings::default(), &state).unwrap_err();
+        assert_eq!(error, "setting fast=on: fast is a boolean option: true or false, not on");
     }
 }

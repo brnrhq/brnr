@@ -79,8 +79,10 @@ of to-resolve; the map at the end says where each went.
 | [50](0050-a-session-that-cant-be-locked.md) | A session that can't be locked isn't served headless | yes |
 | [51](0051-lines-too-long-to-read.md) | Lines too long to read | yes |
 | [52](0052-reproducible-builds-and-sbom.md) | Release builds are checked for reproducibility and carry an SBOM | yes |
+| [53](0053-one-file-name-per-session-id.md) | One file name per session id | yes |
 | [56](0056-a-turn-ends-once-its-steers-are-answered.md) | A turn ends once its steers are answered | yes |
 | [58](0058-a-starts-flags-win-over-its-profile.md) | A start's flags win over its profile, setting by setting | yes |
+| [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up (proposed) | yes |
 
 ## Where the former entries went
 

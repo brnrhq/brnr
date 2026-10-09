@@ -54,6 +54,10 @@ with environment variables:
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would. session/load replays a question, an answer and a title.
 
+A client whose initialize advertises boolean config options
+(clientCapabilities.session.configOptions.boolean) also gets a boolean option,
+fast, which takes only type "boolean" and a JSON boolean.
+
 _session/steering is answered as claude-agent-acp's steer() answers it:
 injected while a turn runs (the turn goes on with the steered text, as it
 would with a prompt's, and ends once that is answered), promptRequired when
@@ -140,7 +144,10 @@ def config(model="small"):
     }
     if env("MODEL_CATEGORY", "model"):
         option["category"] = env("MODEL_CATEGORY", "model")
-    return options + [option]
+    options.append(option)
+    if fast is not None:
+        options.append({"id": "fast", "name": "Fast", "type": "boolean", "currentValue": fast})
+    return options
 
 
 def settings(answer):
@@ -441,6 +448,7 @@ if env("FAULT") not in (None, "crash", "hang", "flood"):
 
 model = "small"
 mode = "default"
+fast = None  # the boolean option's value, once the client says it takes booleans
 sessions = int(env("FIRST_SESSION") or 0)
 authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
@@ -463,6 +471,9 @@ for line in sys.stdin.buffer:
     if env("FAULT") and env("FAULT_PHASE") == "setup" and method == fault_setup:
         fault(method)
     if method == "initialize":
+        client_session = (params.get("clientCapabilities") or {}).get("session") or {}
+        if (client_session.get("configOptions") or {}).get("boolean") is not None:
+            fast = False
         session_caps = {"list": {}, "fork": {}, "close": {}}
         if not env("NO_RESUME"):
             session_caps["resume"] = {}
@@ -563,6 +574,14 @@ for line in sys.stdin.buffer:
             and params.get("value") in ("default", "plan")
         ):
             mode = params["value"]
+            result(mid, {"configOptions": config(model)})
+        elif (
+            fast is not None
+            and params.get("configId") == "fast"
+            and params.get("type") == "boolean"
+            and isinstance(params.get("value"), bool)
+        ):
+            fast = params["value"]
             result(mid, {"configOptions": config(model)})
         else:
             error(mid, -32602, f"bad option {params.get('configId')}={params.get('value')}")
