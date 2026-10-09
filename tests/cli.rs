@@ -123,6 +123,8 @@ fn adr_0021_send_wait_reports_a_permission_request() {
     }
     assert!(line.contains("p1: Edit src/lib.rs"), "{line}");
     assert!(line.contains("brnr approve sess-1 p1"), "{line}");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    assert!(status.contains("1 approval(s) waiting: brnr permission requests sess-1"), "{status}");
     env.ok(&["approve", "sess-1", "p1"]);
     assert!(wait_exit(&mut send, Duration::from_secs(10)));
     assert!(send.wait().unwrap().success());
@@ -322,6 +324,9 @@ fn adr_0020_queue_lists_and_drops() {
     env.ok(&["prompt", "send", "sess-1", "--context", "some context"]);
     let out = env.ok(&["queue", "list", "sess-1"]);
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    let held = "held: 2 message(s), 1 context (brnr queue list sess-1)";
+    assert!(status.contains(held), "{status}");
     let out = env.ok(&["queue", "drop", "sess-1", "m2"]);
     assert_eq!(out, "dropped m2: first\nm3 (after turn): second\ncontext: some context\n");
     let out = env.ok(&["queue", "list", "sess-1", "--clear-context"]);
