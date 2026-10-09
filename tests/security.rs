@@ -154,7 +154,7 @@ fn lock_failed(env: &Env) -> bool {
 /// headless session are refused when their lock can't be taken (ADR 50),
 /// and the host log says why the new session failed.
 #[test]
-fn session_locks_are_private_and_never_followed() {
+fn adr_0003_session_locks_are_private_and_never_followed() {
     let env = Env::new("s-locks");
     let sessions = session_locks(&env, 0o777);
     private_dir_error(&stderr(&env.run(&start_args(&["--resume", "old-1"]))));
@@ -296,7 +296,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 /// Without `permission_timeout` a request waits for an answer for as long as
 /// it takes: nothing answers it for the user.
 #[test]
-fn an_unanswered_request_waits() {
+fn adr_0027_an_unanswered_request_waits() {
     let env = Env::new("s-waits");
     env.start(&[]);
     env.ok(&["send", "sess-1", "perm execute"]);
@@ -312,7 +312,7 @@ fn an_unanswered_request_waits() {
 /// A timeout only ever denies: a request that offers nothing to reject with
 /// is cancelled, never allowed.
 #[test]
-fn a_timeout_never_allows() {
+fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
     env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
     env.start(&[]);
@@ -325,7 +325,7 @@ fn a_timeout_never_allows() {
 
 /// A request is answered only as the request of its own session.
 #[test]
-fn a_request_is_answered_only_in_its_session() {
+fn adr_0027_a_request_is_answered_only_in_its_session() {
     let env = Env::new("s-othersession");
     env.start(&[]);
     env.ok(&["fork", "sess-1"]);
@@ -342,7 +342,7 @@ fn a_request_is_answered_only_in_its_session() {
 /// The MCP servers' secrets of a resumed session, by `session/resume` or
 /// `session/load`, reach the agent, and nothing brnr records or shows.
 #[test]
-fn a_resumed_sessions_secrets_are_redacted() {
+fn adr_0025_a_resumed_sessions_secrets_are_redacted() {
     for (name, method, agent) in
         [("s-resume", "session/resume", None), ("s-load", "session/load", Some("NO_RESUME"))]
     {
@@ -377,7 +377,7 @@ env = { GITHUB_TOKEN = "resume-secret" }
 /// A started bridge gets the events, but not the raw ACP unless it asks for
 /// it by name; asked for, the MCP servers' secrets in it are redacted.
 #[test]
-fn a_bridge_gets_no_raw_acp_unless_it_asks() {
+fn adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks() {
     let env = Env::new("s-bridge");
     let (events, acp) = (env.dir.join("events"), env.dir.join("acp"));
     env.write_config(&format!(
@@ -435,7 +435,7 @@ fn lines_until(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Vec<String> 
 /// aren't JSON among them; the agent's reach the editor the same way. Only
 /// what brnr records has the secrets redacted.
 #[test]
-fn acp_passes_bytes_unchanged() {
+fn adr_0002_acp_passes_bytes_unchanged() {
     let env = Env::new("s-bytes");
     let raw = env.dir.join("raw");
     let mut editor = env
@@ -501,7 +501,7 @@ fn acp_passes_bytes_unchanged() {
 /// The agent's stderr comes out of `brnr acp`'s stderr as it was written,
 /// and `brnr acp` exits as the agent did.
 #[test]
-fn acp_passes_stderr_and_the_exit_status() {
+fn adr_0002_acp_passes_stderr_and_the_exit_status() {
     let text = "agent: \x1b[1mbold\x1b[0m caf\u{e9}";
     let env = Env::new("s-stderr").agent("STDERR", text).agent("EXIT", "3");
     let out = env.run_with_stdin(&["acp", "--", AGENT], b"");

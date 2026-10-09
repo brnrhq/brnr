@@ -30,3 +30,11 @@ Accepted (former decisions 27 and 28); reviewed 2026-10-07. Implemented.
   which one ran would depend on PATH order.
 - Looking only next to the running binary: on Linux, through Homebrew's
   symlink, the adapters weren't found.
+
+## Tests
+
+Run `cargo test --release adr_0038_`. Named claims and their assertions:
+
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0038_adapters_next_to_a_symlinked_brnr`.
+  - `adr_0038_bridges_next_to_a_symlinked_brnr`.

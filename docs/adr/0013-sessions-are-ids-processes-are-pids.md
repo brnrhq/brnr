@@ -42,3 +42,11 @@ unless in use, and an index of it all under `~/.brnr`.
 - Names: brnr's own layer over ACP's sessions, and a policy to learn (which
   session a name means, when one is taken, what resuming does to it) rather
   than a description of the agent's sessions (P2).
+
+## Tests
+
+Run `cargo test --release adr_0013_`. Named claims and their assertions:
+
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0013_ps_lists_the_processes`.
+  - `adr_0013_session_targets_are_exact_ids_not_prefixes_or_pids`.

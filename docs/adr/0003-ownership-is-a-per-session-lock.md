@@ -86,3 +86,17 @@ a session a headless process was running.
   answered from either side. It is what `shared_sessions` turns on.
 - Refusing in the default mode and passing through in strict mode: what
   happens here isn't a question of following the protocol.
+
+## Tests
+
+Run `cargo test --release adr_0003_`. Named claims and their assertions:
+
+- [tests/security.rs](../../tests/security.rs)
+  - `adr_0003_session_locks_are_private_and_never_followed`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0003_an_editors_load_of_a_held_session_is_refused`.
+- [tests/cli.rs](../../tests/cli.rs)
+  - `adr_0003_resume_of_a_held_session_is_refused`.
+  - `adr_0003_take_over_moves_a_session`.
+  - `adr_0003_a_silent_process_keeps_its_session`.
+  - `adr_0003_a_dead_process_lets_go`.

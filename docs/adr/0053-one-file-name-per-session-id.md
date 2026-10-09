@@ -64,3 +64,13 @@ and `sess-1`, or `é` composed and decomposed, were one file too.
 - Keeping capitals: one name per id on Linux, two ids in one file on macOS.
 - Escaping the project folder too: it would no longer be the agent's own
   folder name, which is what joining with its transcripts relies on.
+
+## Tests
+
+Run `cargo test --release adr_0053_`. Named claims and their assertions:
+
+- [src/paths.rs](../../src/paths.rs)
+  - `adr_0053_distinct_ids_get_distinct_names`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0053_distinct_ids_never_share_a_transcript`.
+  - `adr_0053_distinct_ids_never_share_a_lock`.

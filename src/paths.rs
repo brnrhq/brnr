@@ -190,7 +190,7 @@ mod tests {
     ];
 
     #[test]
-    fn distinct_ids_get_distinct_names() {
+    fn adr_0053_distinct_ids_get_distinct_names() {
         let dir = session_log(Path::new("/w"), "s").parent().unwrap().to_owned();
         let mut seen = std::collections::HashMap::new();
         for id in COLLIDING {
