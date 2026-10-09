@@ -102,7 +102,7 @@ report, also the host's, in `/tmp/reports`:
 
 ```sh
 mkdir -p /tmp/reports
-RUSTFLAGS="-Zsanitizer=address --cfg sanitized" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
+RUSTFLAGS="-Zsanitizer=address --cfg sanitized -Cdebug-assertions" ASAN_OPTIONS=detect_leaks=1:log_path=/tmp/reports/asan \
   cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu --release
 ls /tmp/reports                # empty: nothing was found
 ```
