@@ -156,6 +156,15 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 What brnr doesn't enforce, or doesn't test, today.
 
+- **SIGKILL of the host bypasses child cleanup.** The host is the sole
+  supervisor. Its death closes the agent and bridge pipes, but an agent or
+  bridge that ignores EOF, is blocked, or leaves descendants can survive it.
+  `doctor --fix` repairs stale metadata and locks; it does not kill those
+  survivors. `chaos.rs` checks a flooding agent exits on its broken pipe,
+  and that killing the proxy during a hung turn lets the surviving host
+  stop its agent. Neither establishes unconditional cleanup after host
+  SIGKILL; that would require a separate lifetime supervisor on both macOS
+  and Linux.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
 - **No peer credentials on the socket.** The process doesn't check who
