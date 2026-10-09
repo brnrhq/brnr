@@ -1021,6 +1021,8 @@ impl Host {
         self.drop_all(i, "close");
         let session = self.sessions.remove(i).id;
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
+        // After its last record, so nothing of it is lost (ADR 22).
+        self.sink.close_session(&session);
     }
 
     /// Whether session `i` has nothing running, held or waiting for an

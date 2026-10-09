@@ -20,7 +20,7 @@
 //! - `--context`: no turn; appended to the next prompt, whoever sends it.
 //!   `--replace` replaces the last held context instead of adding to it.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
@@ -491,10 +491,17 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     }
     let mcp_servers =
         h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
-    let mut config = h.config.clone();
+    let mut config = BTreeMap::new();
     for (option, value) in a.set.iter().filter_map(|s| s.split_once('=')) {
-        config.insert(option.into(), value.into());
+        if let Some(was) = config.insert(option.to_owned(), value.to_owned())
+            && was != value
+        {
+            return Err(format!("--set {option}={was} and --set {option}={value} disagree"));
+        }
     }
+    let settings = request::Settings { mode: a.mode, model: a.model, config };
+    let defaults =
+        request::Settings { mode: h.mode.clone(), model: None, config: h.config.clone() };
     let has_prompt = a.prompt.is_some() || !blocks.is_empty();
     let prompt = has_prompt.then(|| request::Prompt { text: a.prompt.unwrap_or_default(), blocks });
     let events =
@@ -502,9 +509,8 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
     let headless = request::Headless {
         resume: a.resume,
         transcript,
-        mode: a.mode.or(h.mode.clone()),
-        model: a.model,
-        config,
+        settings,
+        defaults,
         mcp_servers,
         auth: a.auth.or(h.auth.clone()),
         prompt,
@@ -514,7 +520,7 @@ pub(super) fn start(args: &[String]) -> Result<ExitCode, String> {
         events,
         foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
     };
-    let role = Role::Headless(headless);
+    let role = Role::Headless(Box::new(headless));
     let mut request = Request::new(a.profile, &cfg, a.agent, cwd.clone(), role)?;
     request.strict |= a.strict;
 
