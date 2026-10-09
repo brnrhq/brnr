@@ -92,7 +92,15 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   there (P7); an editor's process refuses, as it refuses `fork` (ADR 4);
   with `stop_when_idle` and an agent that can't close sessions, a second
   session is refused, as `fork` is (ADR 12). `--take-over` works with
-  `--pid` as without.
+  `--pid` as without, refused before the session is closed where it runs if
+  the process would refuse it (starting, stopping, or an agent with neither
+  `session/resume` nor `session/load`), rather than leave it open in neither.
+  The session, its settings and its prompt commit as one, as a start's do
+  (ADR 7): the start timeout goes to the process, which abandons the opening
+  once it passes, as it does when a setting fails, the process is stopping
+  or the command has gone; the command waits 10 s longer, as a start's
+  does. A session being opened counts as one of the process's: its others
+  closing or going idle meanwhile don't stop it (ADR 12).
 - **`--permission-timeout <s>`** is the profile's headless
   `permission_timeout` as a flag, winning over it as ADR 58's flags do.
 - **`session list`** joins brnr's index and the agent's, superseding ADR 15:
@@ -173,8 +181,8 @@ The same names reach brnr's other interfaces, so one word means one thing
 - Socket and bridge commands (ADR 35): `approve`/`deny` become `allow`/
   `reject` with `always` and `option`; `set_mode`, `set_model` and `set_config` become
   one `set_config` taking `mode`, `model`, `thought_level` and `options`;
-  `new` and `resume` are added for `--pid`. `send` stays: it is the
-  message, whatever its mode.
+  `new` and `resume` are added for `--pid`, with the command's `timeout`.
+  `send` stays: it is the message, whatever its mode.
 - A profile's headless part (ADR 33): `mode`, `model`, `thought_level`,
   `options` (was `config`), `permission_timeout`, `stop_when_idle`.
 - The editor's `experimental` actions (ADR 4): `approve` becomes
@@ -317,7 +325,20 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
   - `adr_0063_pid_session_that_cant_be_locked_is_closed`: a new session
     that can't be locked is closed again; a resume of one isn't sent.
   - `adr_0063_pid_given_up_before_its_commit_sends_no_prompt`: a command
-    that times out first leaves the session closed, and no prompt.
+    gone first leaves the session closed, and no prompt.
+  - `adr_0063_pid_timeout_abandons_the_opening`: the process abandons an
+    opening past the command's timeout, whether the agent was opening the
+    session or setting it up: closed again, the command saying so, and no
+    prompt.
+  - `adr_0063_pid_opening_keeps_the_process_running`: the last other session
+    going idle under `stop_when_idle`, or closed, while one is being opened
+    doesn't stop the process, and the new one commits and gets its prompt.
+  - `adr_0063_pid_opening_in_a_stopping_process_fails`: a process stopping
+    while the agent opens the session doesn't commit it, and the command
+    says so.
+  - `adr_0063_pid_take_over_refused_before_closing`: `--take-over` into a
+    process whose agent can't resume is refused, and the session stays open
+    where it was.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0063_an_editors_delete_is_recorded`: the editor's `session/delete`
     reaches the agent; once answered, `session_deleted` by the editor is in

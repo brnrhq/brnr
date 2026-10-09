@@ -42,12 +42,15 @@ brnr's own conventions:
   a session in a running process, with its agent, profile and MCP servers,
   and the socket and bridges have the same as `new` and `resume`. The
   session, its settings and its prompt commit as one, as a start's do: a
-  setting that fails closes the session again and says so (or names the
-  session left open, for an agent that can't close sessions), and a command
-  that gives up first leaves no session. The process flags and
-  `-- <agent>` are an error with `--pid`; an editor's process refuses, as
-  does one with `stop_when_idle` whose agent can't close sessions;
-  `--take-over` works as without `--pid` (ADR 63).
+  setting that fails, or the start timeout passing (the process's, as for a
+  start), closes the session again and says so (or names the session left
+  open, for an agent that can't close sessions); the process stopping fails
+  it; and a command gone first leaves no session. A session being opened
+  keeps the process from stopping as its other sessions close or go idle.
+  The process flags and `-- <agent>` are an error with `--pid`; an editor's
+  process refuses, as does one with `stop_when_idle` whose agent can't close
+  sessions; `--take-over` works as without `--pid`, and first checks that
+  the process would resume the session (ADR 63).
 
 ### Changed
 

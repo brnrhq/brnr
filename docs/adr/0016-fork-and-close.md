@@ -2,7 +2,8 @@
 
 Amended by 63: a new session in a running process is offered after all,
 `session new --pid` (and `session resume --pid`), refused where `fork` is
-but in strict mode: `session/new` and `session/resume` are stable ACP.
+but in strict mode: `session/new` and `session/resume` are stable ACP. A
+headless process with no session left stops unless one is being opened.
 
 Accepted (former decision 11); reviewed 2026-10-07. Implemented; on an
 editor's session `close` is ADR 4's experimental action.

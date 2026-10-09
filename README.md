@@ -369,14 +369,20 @@ agent, profile and MCP servers, in `--cwd` (or here), and
 `session resume --pid <pid> <id>` resumes one there (in its recorded cwd),
 taking its lock as any resume does, with `--take-over` as without `--pid`.
 What starts a process (`--profile`, `--auth`, `--strict`, `--stop-when-idle`,
-`--permission-timeout`, `--foreground`, `-- <agent>`) is an error with it.
-The session, its settings (over the profile's) and its prompt commit as one,
-as a start does: a setting that fails after the agent opened the session
-closes it again, and the error says so (an agent that can't close sessions
-keeps it, and the error names it), and a command that gives up first (the
-start timeout, Ctrl-C) leaves no session and sends no prompt. It is refused
-where `session fork` is, but for strict mode: `session/new` and
-`session/resume` are stable ACP.
+`--permission-timeout`, `--foreground`, `--quiet`, `-- <agent>`) is an error
+with it. The session, its settings (over the profile's) and its prompt commit
+as one, as a start does, and the prompt goes only then. A setting that fails
+after the agent opened the session closes it again, and the error says so (an
+agent that can't close sessions keeps it, and the error names it); so does
+the start timeout passing first, which the process keeps too. A process
+stopping meanwhile fails it, and the session ends with the process. A command
+gone first (Ctrl-C) leaves no session. A session being opened counts as one:
+the process doesn't stop as its others close or go idle meanwhile. It is
+refused where `session fork` is, but for strict mode:
+`session/new` and `session/resume` are stable ACP. With `--take-over`, what
+the process would refuse (it is still starting or stopping, or its agent
+can't resume sessions) is refused before the session is closed where it
+runs.
 
 `brnr session list` on its own is brnr's index, with nothing started: every
 session open in brnr's processes and every one it has a transcript of, in

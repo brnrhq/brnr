@@ -17,7 +17,7 @@ come from `prompt send`. A PID identifies the brnr host that can own multiple
 sessions.
 
 Most commands are `brnr <group> <verb>`, grouped by what they act on:
-`process`, `session`, `prompt`, `queue`, `permission` and `event`
+`process`, `session`, `prompt`, `queue`, `permission`, `config` and `event`
 ([ADR 63](adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 `brnr <group> --help` prints one group's syntax, as does a group without a
 verb (exiting 1). A command brnr doesn't have, such as the names these
@@ -169,12 +169,17 @@ with the agent's capabilities.
   `-- <agent>` are an error with it. An editor's process refuses, and so
   does one with `stop_when_idle` whose agent can't close sessions. A session
   open in that process already is refused; one another process holds is
-  refused unless `--take-over`. The session, its settings (over the
-  profile's) and the prompt commit as one: a setting that fails after the
-  agent opened the session closes it again, and the error says so, or, for
-  an agent that can't close sessions, names the session left open. A
-  command that gives up first (the start timeout, Ctrl-C) leaves no session
-  and sends no prompt.
+  refused unless `--take-over`, which first checks that the process would
+  take it (it isn't starting or stopping, and its agent can resume
+  sessions). The session, its settings (over the profile's) and the prompt
+  commit as one: a setting that fails after the agent opened the session
+  closes it again, and the error says so, or, for an agent that can't close
+  sessions, names the session left open. The start timeout goes to the
+  process, which abandons the opening the same way once it passes; the
+  command waits 10 s longer. A process stopping meanwhile fails it. A
+  command gone first (Ctrl-C) leaves no session. None of these sends the
+  prompt. A process with a session being opened doesn't stop as its other
+  sessions close or go idle meanwhile.
 - `--mode`, `--model`, `--thought-level` and repeatable `--option <id>=<value>`
   request startup settings, winning over the profile's, setting by setting.
   `--stop-when-idle` and `--permission-timeout` are numbers of seconds,
@@ -297,7 +302,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 
 | `cmd` | Additional request fields | Success reply, in addition to `ok` and optional `req_id` |
 |---|---|---|
-| `status` | None | Host metadata, owner, uptime, stopping/idle settings, pending count, bridge labels, and `sessions` array. Sessions use `session_id`, not the CLI's `session`. |
+| `status` | None | Host metadata, owner, uptime, `starting` (until the first session commits), `stopping`, the idle setting, `capabilities`, pending count, bridge labels, and `sessions` array. Sessions use `session_id`, not the CLI's `session`. |
 | `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer; inspect recorded gaps/errors for lost data. |
 | `send` | `session`; optional `text`, `blocks` (ACP content-block array), `mode` (`prompt`, `steer`, `interrupt`, `context`), `replace` (boolean). | `session`, `status`, `message`; context mode returns `status:"held"` without a message ID. |
 | `cancel` | `session`; optional boolean `keep_held`. | `session`, `status`, `dropped` objects (`message`, `text`). |
@@ -307,7 +312,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `allow`, `reject` | `session`, `request`; optional `always` boolean, `option` string. | `session`, `request`, `outcome`. |
 | `set_config` | `session`; optional `mode`, `model`, `thought_level` strings and `options` (object of option IDs to strings), at least one. Resolved and sent as `config set` does; answered once all are set, or with the first failure, which names what was already set. | `session`, `set` (`option`, `category`, `value` for each setting sent), `mode`, updated `config`. |
 | `fork` | `session`. | New `session` ID. |
-| `new` | Optional `cwd` (absolute; the process's by default); `mode`, `model`, `thought_level`, `options` as for `set_config`; `text`, `blocks` as for `send`, the first prompt. Opens a session (`session/new`, with the process's MCP servers), sets its settings over the profile's, then sends the prompt, if any. Refused by an editor's process, and with `stop_when_idle` when the agent can't close sessions. | `session`, `pid`, `message` (null without a prompt): answered before the prompt goes. A failure after the agent opened the session closes it, and the error says so (or names it, left open, when the agent can't close sessions). |
+| `new` | Optional `cwd` (absolute; the process's by default); `mode`, `model`, `thought_level`, `options` as for `set_config`; `text`, `blocks` as for `send`, the first prompt; `timeout`, seconds. Opens a session (`session/new`, with the process's MCP servers), sets its settings over the profile's, then sends the prompt, if any. Refused by an editor's process, and with `stop_when_idle` when the agent can't close sessions. | `session`, `pid`, `message` (null without a prompt): answered before the prompt goes. A failure after the agent opened the session (a setting, `timeout` passing, the process stopping) fails it, and the prompt isn't sent; the session is closed again (or ends with a stopping process), and the error says so (or names it, left open, when the agent can't close sessions). |
 | `resume` | `session`, and the fields of `new`, `cwd` being the session's. `session/resume`, or `session/load` where the agent has only that; the session's lock is taken first, so one another process holds, or this one serves, is refused. | As `new`. |
 | `close` | `session`; optional `take_over` destination PID, used by brnr's resume flow. | Closed `session` ID after agent acknowledgment. |
 | `stop` | None. | `status:"stopping"`; does not wait for final exit. |
