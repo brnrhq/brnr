@@ -430,8 +430,9 @@ fn stop(args: &[String]) -> Result<(), String> {
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
 /// file are read: the first names the cwd, the last says when and in which
-/// process the session was last active. That process's log says which
-/// agent it ran.
+/// process the session was last active, or, if it is a deletion's, a record
+/// of no process's (ADR 63), the last that names a process does. That
+/// process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
     // session id alone can repeat across folders.
@@ -475,7 +476,8 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         past.push(json!({
             "session_id": session,
             "cwd": first["event"]["cwd"],
-            "last_active": last["ts"],
+            // When a process last served it: a deletion isn't activity.
+            "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
             "profile": info["profile"],
             "agent": info["agent"],
             "log": file.to_string_lossy(),

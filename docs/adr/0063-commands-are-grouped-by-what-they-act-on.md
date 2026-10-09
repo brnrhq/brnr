@@ -127,7 +127,8 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   command succeeds only if the agent deleted the session or doesn't have it
   (ACP's `resource_not_found`, -32002), which is said; any other error, or
   no answer, is said and fails the command, the transcript deleted all the
-  same: the agent may still have the session (P3, P7).
+  same: the agent may still have the session (P3, P7). A deletion isn't
+  activity: LAST ACTIVE stays when a process last served the session.
   `session_deleted` is recorded in the session's transcript: by the command,
   as a record of no process's (`host_id` null), since no process has the
   session open; by the editor's process, which closes the session if it had
@@ -288,7 +289,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     ignoring SIGTERM, is killed with what it started.
   - `adr_0063_delete_keeps_the_transcript`: `session delete` asks the
     recorded agent, which deletes its copy; the transcript stays, listed,
-    with `session_deleted` in it, and the agent is still found for it.
+    with `session_deleted` in it, its LAST ACTIVE unchanged, and the agent
+    is still found for it.
   - `adr_0063_delete_a_session_only_the_agent_knows`: one brnr has no
     transcript of needs its agent named, and records nothing.
   - `adr_0063_delete_purge`: `--purge` deletes the session's two files, not

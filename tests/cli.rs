@@ -3131,6 +3131,9 @@ fn transcript_files(env: &Env) -> Vec<String> {
 fn adr_0063_delete_keeps_the_transcript() {
     let env = Env::new("c-delete");
     ended(&env, &[]);
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let active = list[0]["last_active"].clone();
+    assert!(active.is_string(), "{list}");
     let out = env.ok(&["session", "delete", "sess-1"]);
     assert_eq!(out, "deleted sess-1; brnr's transcript of it stays (brnr event log sess-1)\n");
     let deletes = env.calls_of("session/delete");
@@ -3153,6 +3156,9 @@ fn adr_0063_delete_keeps_the_transcript() {
     assert_eq!(json["recorded"].as_array().map(Vec::len), Some(1), "{json}");
     assert_eq!(json["purged"], serde_json::json!([]), "{json}");
     assert_eq!(env.calls_of("session/delete").len(), 2);
+    // A deletion isn't activity: LAST ACTIVE is when a process last served it.
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    assert_eq!(list[0]["last_active"], active, "{list}");
 }
 
 /// A session brnr has no transcript of takes its agent from `--profile` or
