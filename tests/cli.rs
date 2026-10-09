@@ -1121,21 +1121,119 @@ fn adr_0014_resume_continues_a_session() {
     assert!(env.fails(&["start", "--resume", "sess-1"]).contains("sess-1 is running in process"));
 }
 
+/// `session`'s events named `names` in its transcript, as JSON.
+fn logged(env: &Env, session: &str, names: &str) -> Vec<Value> {
+    let log = env.ok(&["log", session, "--json", "--events", names]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// The texts of `session`'s replayed messages, the user's and the agent's,
+/// in order.
+fn replayed(env: &Env, session: &str) -> Vec<String> {
+    let all = logged(env, session, "user_message,agent_message");
+    let replayed = all.iter().filter(|e| e["replayed"] == true);
+    replayed.map(|e| e["text"].as_str().unwrap().to_owned()).collect()
+}
+
+/// A load of a session brnr has a transcript of keeps the replay out of it,
+/// however many times it loads: the transcript has the history (ADR 57).
 #[test]
 fn adr_0014_resume_by_loading_keeps_the_replay_out_of_the_transcript() {
     let env = Env::new("c-load").agent("NO_RESUME", "1");
     env.start(&["--wait", "--prompt", "reply first"]);
-    env.stop();
-    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
-    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
-    assert_eq!(env.calls_of("session/load").len(), 1);
+    for again in ["reply again", "reply third"] {
+        env.stop();
+        assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+        env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", again]);
+    }
+    assert_eq!(env.calls_of("session/load").len(), 2);
     let all = env.ok(&["log", "sess-1", "--events", "all"]);
     assert!(!all.contains("replayed history"), "replay recorded:\n{all}");
-    assert!(env.ok(&["log", "sess-1"]).contains("agent: again"));
+    assert!(!all.contains("old question"), "replay recorded:\n{all}");
+    let log = env.ok(&["log", "sess-1"]);
+    assert!(log.contains("agent: again") && log.contains("agent: third"), "{log}");
     // What the replay says the session is now, it still is.
     assert!(!all.contains("Loaded session"), "replay recorded:\n{all}");
     let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
     assert_eq!(status["title"], "Loaded session");
+    // And each load says what it left out.
+    let history = logged(&env, "sess-1", "history");
+    assert_eq!(history.len(), 2, "{history:?}");
+    for h in &history {
+        assert_eq!((&h["updates"], &h["recorded"]), (&3.into(), &false.into()), "{h}");
+    }
+    let said = "history: 3 updates replayed by the agent, not recorded: brnr's transcript has";
+    assert!(log.contains(said), "{log}");
+}
+
+/// A load of a session brnr has no transcript of, one it has never seen,
+/// records the history the agent replays, marked as replayed; a load after
+/// that finds it in the transcript, and doesn't record it again (ADR 57).
+#[test]
+fn adr_0057_a_first_load_records_the_replayed_history() {
+    let env = Env::new("c-load-first").agent("NO_RESUME", "1");
+    let out = env.run(&start_args(&["--resume", "old-1", "--json"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    assert!(history[0].get("replayed").is_none(), "{}", history[0]);
+    let title = logged(&env, "old-1", "session_changed");
+    let title = (&title[0]["value"], &title[0]["replayed"]);
+    assert_eq!(title, (&"Loaded session".into(), &true.into()));
+    // The raw ACP has the replay too.
+    let acp = env.ok(&["log", "old-1", "--events", "acp", "--json"]);
+    assert!(acp.contains("old question"), "{acp}");
+    let text = env.ok(&["log", "old-1"]);
+    assert!(text.contains("(replayed) user: old question"), "{text}");
+    assert!(text.contains("(replayed) agent: replayed history"), "{text}");
+    assert!(text.contains("history: 3 updates replayed by the agent, recorded"), "{text}");
+    let status: Value = serde_json::from_str(&env.ok(&["status", "old-1", "--json"])).unwrap();
+    assert_eq!(status["title"], "Loaded session");
+    assert_eq!(status["last_message"], "replayed history");
+
+    // Loaded again, the history is in the transcript once.
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    env.ok(&["start", "--resume", "old-1", "--wait", "--prompt", "reply new"]);
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    let recorded: Vec<&Value> = history.iter().map(|h| &h["recorded"]).collect();
+    assert_eq!(recorded, [&Value::Bool(true), &Value::Bool(false)]);
+    assert!(env.ok(&["log", "old-1"]).contains("agent: new"));
+}
+
+/// A session whose transcript is gone is, to brnr, one it has never seen:
+/// its next load records the history again (ADR 57).
+#[test]
+fn adr_0057_a_load_without_the_transcript_records_the_history() {
+    let env = Env::new("c-load-gone").agent("NO_RESUME", "1");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    for folder in fs::read_dir(env.dir.join("home/projects")).unwrap().flatten() {
+        fs::remove_dir_all(folder.path()).unwrap();
+    }
+    let out = env.run(&start_args(&["--resume", "sess-1"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(replayed(&env, "sess-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "sess-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], true);
+}
+
+/// A load whose agent replays nothing says so: no updates, none recorded.
+#[test]
+fn adr_0057_a_load_of_an_empty_history_says_so() {
+    let env = Env::new("c-load-empty").agent("NO_RESUME", "1").agent("NO_HISTORY", "1");
+    let out = env.run(&start_args(&["--resume", "old-1"]));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(replayed(&env, "old-1").is_empty());
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&0.into(), &true.into()));
 }
 
 // ---- ownership -----------------------------------------------------------

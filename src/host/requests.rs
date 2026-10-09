@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{Held, new_session};
+use super::acp::{Held, Replay, new_session};
 use super::state::SessionState;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
@@ -183,7 +183,7 @@ impl Host {
                     self.sessions.remove(i);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
                 }
-                self.sessions[i].replaying = false;
+                self.end_replay(i);
                 self.sessions[i].state.result(&result);
                 self.starting = Some(session);
                 let (flags, profile) = std::mem::take(&mut self.settings);
@@ -266,13 +266,34 @@ impl Host {
         if caps.resume {
             self.host_request("session/resume", params, HostRequest::Open(Open::Resume(session)));
         } else if caps.load {
-            // The agent replays the history; it is in the transcript already.
+            // The agent replays the history: recorded unless the transcript
+            // has it already (ADR 57).
             let i = self.open_session(&session, None);
-            self.sessions[i].replaying = true;
+            self.sessions[i].replay = Some(Replay { record: !self.transcript, updates: 0 });
             self.host_request("session/load", params, HostRequest::Open(Open::Load(session)));
         } else {
             self.fail_start("the agent can't resume sessions (no session/resume or session/load)");
         }
+    }
+
+    /// The end of a load's replay, when the agent answers it: the history
+    /// event says how many updates it replayed, and whether they were
+    /// recorded (ADR 57).
+    fn end_replay(&mut self, i: usize) {
+        // The last replayed message, while it is still marked as replayed.
+        self.flush_agent_message(i);
+        let Some(replay) = self.sessions[i].replay.take() else { return };
+        if replay.record {
+            // A tool call history left unfinished isn't running now.
+            self.sessions[i].state.tools.clear();
+        }
+        let session = self.sessions[i].id.clone();
+        self.emit(json!({
+            "event": "history",
+            "session": session,
+            "updates": replay.updates,
+            "recorded": replay.record,
+        }));
     }
 
     /// The next mode or config step of a headless start, or, when there are
