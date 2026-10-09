@@ -25,8 +25,8 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   current sequence of events, traced from the code, as a numbered diagram
   before asking questions about a flow. Recommend, citing principles.
 - No backwards compatibility before 1.0: a rename or change replaces the old
-  form, with no aliases or shims. Say so in the pull request, for the
-  release notes.
+  form, with no aliases or shims. Say so in the pull request, and under
+  Breaking in CHANGELOG.md's Unreleased, the next release's notes.
 
 ## Where things are
 
@@ -89,7 +89,8 @@ runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version
   guesses or picks for the user (P4), and never drops something silently
   (P3): an error, an exit status or an event says so.
 - A behaviour change comes with a test that shows it, and the README and the
-  ADRs say what the code now does.
+  ADRs say what the code now does. What users notice gets its line under
+  Unreleased in CHANGELOG.md, with its ADR.
 
 ## Git
 

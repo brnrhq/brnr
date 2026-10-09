@@ -3,6 +3,8 @@
 Accepted (former decision 31); reviewed 2026-10-07. Implemented.
 Amended by 47: `release.sh tag` also checks crates.io.
 Amended by 52: the workflow checks reproducibility, attaches an SBOM and tests Homebrew after publication.
+Amended 2026-10-09 (#105): a release's notes are its section of
+CHANGELOG.md, where they were the titles of the pull requests it merged.
 
 ## Decision
 
@@ -13,12 +15,46 @@ merge, checks that CI passed on main, tags, follows the release workflow and
 checks the tap. `release.sh notes` prints what the release pull request
 would say.
 
+A release's notes are its section of `CHANGELOG.md`: what someone upgrading
+notices, under Breaking, Added, Changed, Fixed and Security (a fixed
+advisory, by its id), each entry with the ADR it follows (P9: release notes
+say what changed).
+
+- A pull request that changes what users see adds its entry under
+  `## Unreleased`.
+- `release.sh <bump>` refuses an empty Unreleased, and on the release branch
+  heads what it has `## X.Y.Z - YYYY-MM-DD`, under a new, empty Unreleased.
+  The release pull request shows the section, to be edited there.
+- `release.sh tag` refuses a version CHANGELOG.md has no section for. The
+  release workflow publishes the section with `gh release create
+  --notes-file`, and fails before the build if there is none.
+- `release.sh changelog [<version>]` prints a version's section, the one
+  reading of the file both use, with each paragraph and list item on a line,
+  since GitHub shows line breaks as they are.
+
 ## Considered
 
 - One command that pushes the bump to main and tags: it skips review.
 - Doing it all in a workflow (`workflow_dispatch`): it works, but is harder
   to run and debug than a script you can read.
+- `gh release create --generate-notes`: the pull requests' titles, which
+  say what changed to whoever reviewed it, not what to do to whoever
+  upgrades.
+- Release notes written in the release pull request: once, by whoever
+  releases, long after the change. An Unreleased entry is written with the
+  change, by whoever made it.
 
 ## Tests
 
-Test exemption: Tagging, publishing and updating the tap mutate external repositories and registries, so the runtime suite cannot execute this workflow. release.sh runs its checks before creating a release PR; release.yml and the post-publication checks are the integration evidence. There is no sandboxed end-to-end release.sh test yet.
+Run `cargo test --release adr_0040_`. Named claims and their assertions:
+
+- [tests/release.rs](../../tests/release.rs)
+  - `adr_0040_a_releases_notes_are_its_changelog_section`.
+  - `adr_0040_a_version_without_a_section_has_no_notes`.
+  - `adr_0040_the_version_being_built_has_its_notes`: so a release pull
+    request without them fails CI, before `release.sh tag`.
+
+Tagging, publishing and updating the tap mutate external repositories and
+registries, so the suite can't run them; release.yml and release.sh's
+checks after publication are the evidence. There is no sandboxed end-to-end
+release.sh test, of `<bump>` naming Unreleased either.
