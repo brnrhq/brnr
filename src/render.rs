@@ -1,6 +1,6 @@
-//! Events as text, the one way brnr shows a session: `brnr event watch`, `brnr
-//! log` and a session in the foreground all use it. Also a tool call in
-//! full (input, paths, diffs), for `brnr permission show`.
+//! Events as text, the one way brnr shows a session: `brnr event watch`,
+//! `brnr event log` and a session in the foreground all use it. Also a tool
+//! call in full (input, paths, diffs), for `brnr permission show`.
 //!
 //! What the agent sends reaches a terminal only through [`clean`], so its
 //! text can't move the cursor, rewrite the line or talk to the terminal

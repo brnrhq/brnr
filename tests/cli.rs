@@ -123,6 +123,8 @@ fn adr_0021_send_wait_reports_a_permission_request() {
     }
     assert!(line.contains("p1: Edit src/lib.rs"), "{line}");
     assert!(line.contains("brnr approve sess-1 p1"), "{line}");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    assert!(status.contains("1 approval(s) waiting: brnr permission requests sess-1"), "{status}");
     env.ok(&["approve", "sess-1", "p1"]);
     assert!(wait_exit(&mut send, Duration::from_secs(10)));
     assert!(send.wait().unwrap().success());
@@ -319,6 +321,9 @@ fn adr_0020_queue_lists_and_drops() {
     env.ok(&["prompt", "send", "sess-1", "--context", "some context"]);
     let out = env.ok(&["queue", "list", "sess-1"]);
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    let held = "held: 2 message(s), 1 context (brnr queue list sess-1)";
+    assert!(status.contains(held), "{status}");
     let out = env.ok(&["queue", "drop", "sess-1", "m2"]);
     assert_eq!(out, "dropped m2: first\nm3 (after turn): second\ncontext: some context\n");
     let out = env.ok(&["queue", "list", "sess-1", "--clear-context"]);
@@ -2356,6 +2361,25 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
     let err = env.fails(&["queue", "drop", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue drop <session> <message>"), "{err}");
     assert!(!err.contains("queue list"), "{err}");
+    // A verb's --help, or -h, is its usage, wherever it is before a `--`.
+    for (args, want) in [
+        (&["session", "status", "--help"][..], "brnr session status <session> [--json]"),
+        (&["process", "stop", "--help"], "brnr process stop <pid>"),
+        (&["queue", "drop", "sess-1", "-h"], "brnr queue drop <session> <message> [--json]"),
+        (&["prompt", "send", "sess-1", "--wait", "--help"], "brnr prompt send <session> ["),
+    ] {
+        let usage = env.ok(args);
+        assert!(usage.starts_with(&format!("usage:\n  {want}")), "{args:?}: {usage}");
+        assert!(usage.ends_with("(brnr --help for every command)\n"), "{args:?}: {usage}");
+        assert_eq!(usage.matches("\n  brnr ").count(), 1, "{args:?}: {usage}");
+    }
+    let send = env.ok(&["prompt", "send", "--help"]);
+    assert!(send.contains("(<text>... | -)"), "its usage's every line: {send}");
+    // After `--`, it is the command's (or the message's).
+    let err = env.fails(&["event", "notify", "nosuch", "--", "echo", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
+    let err = env.fails(&["prompt", "send", "nosuch", "--", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
 }
 
 /// `config get` lists every config option, its category, value and
@@ -2418,7 +2442,8 @@ fn adr_0063_config_get_lists_options_choices_and_modes() {
 
 /// `config get --mode`, `--model`, `--thought-level` and `--option <o>`
 /// narrow the list to those options, found as `config set` finds them,
-/// in the list's order; one the agent doesn't have fails (P7).
+/// in the list's order. It lists only the options the agent advertised, so
+/// one the agent doesn't have fails (P7).
 #[test]
 fn adr_0063_config_get_narrows_by_category_and_id() {
     let env = Env::new("c-narrow").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2460,8 +2485,10 @@ fn adr_0063_config_get_narrows_by_category_and_id() {
 /// category and `--option` by id, resolved as a start's settings are
 /// (ADR 58): each sent once, the mode first, then the model, the thought
 /// level and the rest; two values for one setting fail before anything is
-/// sent, as does one the agent has no option for (P7); one the agent
-/// refuses says what was set before it (P3).
+/// sent, as does a mode, model or thought level the agent has no option
+/// for (P7); an option by id the agent hasn't advertised is sent (ADR 28),
+/// and when the agent refuses it the error says what was set before it
+/// (P3).
 #[test]
 fn adr_0063_config_set_by_category_and_by_id() {
     let env = Env::new("c-set").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2529,7 +2556,8 @@ fn adr_0063_config_set_by_category_and_by_id() {
     assert_eq!(sent().len(), 5, "a setting that failed reached the agent");
     assert!(env.fails(&["config", "set", "sess-1"]).starts_with("usage:\n  brnr config set"));
 
-    // The agent refuses one: those before it are set, and said.
+    // An option the agent hasn't advertised is sent, after the mode, and
+    // the agent refuses it: the mode before it is set, and said.
     let err = env.fails(&["config", "set", "sess-1", "--mode", "default", "--option", "bogus=1"]);
     assert!(
         err.contains("setting bogus=1 failed: bad option bogus=1 (already set: mode default)"),
