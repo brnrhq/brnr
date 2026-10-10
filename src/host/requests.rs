@@ -774,9 +774,11 @@ impl Capabilities {
 /// (ADR 28), so `--model` and an option set by the model option's id are
 /// one setting; `options` are by id. A mode is `session/set_mode` only for
 /// an agent with v1 modes and no mode option. Two values for one setting
-/// from one source fail (P4); a setting the agent has no option for, a v1
-/// mode it doesn't list, or a value its option's type doesn't take fails
-/// before any is sent (P7). The mode goes first, then the model, the
+/// from one source fail (P4); a mode, model or thought level the agent has
+/// no option for, a v1 mode it doesn't list, or a value its option's type
+/// doesn't take fails before any is sent (P7). An option by id the agent
+/// hasn't advertised is sent, its value as a value id, for the agent to
+/// take or refuse (ADR 28). The mode goes first, then the model, the
 /// thought level, and the other options by id.
 pub(super) fn resolve_settings(
     flags: &Settings,

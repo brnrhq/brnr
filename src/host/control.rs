@@ -23,7 +23,8 @@
 //!   messages are dropped (and listed) unless `keep_held`
 //! - `queue` `{session, drop?, clear?, clear_context?}`: the held messages
 //!   and context, after removing what was asked; `{session, show}`: the held
-//!   message `show` in full, its content `blocks` included
+//!   message `show` (an id; anything else is refused) in full, its content
+//!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
@@ -791,7 +792,10 @@ impl Host {
     /// `clear_context`).
     fn queue(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
-        if let Some(id) = req["show"].as_str() {
+        // A show that isn't an id is refused, not taken as absent: read as
+        // absent, `{show: 2, clear: true}` would clear everything (P3).
+        if let Some(show) = req.get("show") {
+            let id = show.as_str().ok_or("show must be a message id")?;
             if ["drop", "clear", "clear_context"].iter().any(|k| req.get(k).is_some()) {
                 return Err("queue's show takes no drop or clear".into());
             }

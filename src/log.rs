@@ -25,7 +25,8 @@
 //! What a record goes into, from the state directory down, is the user's own
 //! and private before anything is written to it (P13, ADR 59): a file or
 //! directory others can reach is made private, and noted in the host log as
-//! `made-private`; a symlink, or one that isn't the user's, is refused.
+//! `made-private` (on stderr by `brnr session delete`, which has no host
+//! log); a symlink, or one that isn't the user's, is refused.
 //!
 //! What is queued for the logger is bounded (ADR 6 in docs/adr), in bytes,
 //! counted from when a record is queued until the logger has written it.
@@ -768,7 +769,7 @@ pub fn redact_record(record: &mut Value) {
 }
 
 /// What [`open_private`] made private: each path, and the mode it had.
-type Made = Vec<(PathBuf, u32)>;
+pub type Made = Vec<(PathBuf, u32)>;
 
 /// Opens `path`, under the state directory, for appending, so a session's
 /// file grows across hosts that serve it. Transcripts hold prompts and tool
@@ -881,12 +882,15 @@ fn at(path: &Path, err: io::Error) -> io::Error {
 
 /// `session`'s events files under the state directory: in each project
 /// folder, the one named for its id (ADR 53), where there is one. A session
-/// resumed in another folder has one in each.
+/// resumed in another folder has one in each. A symlinked folder isn't
+/// looked in, as [`purge`] doesn't: what is written there is refused anyway
+/// (ADR 59).
 pub fn transcripts(session: &str) -> Vec<PathBuf> {
     let name = format!("{}.jsonl", paths::file_name(session));
     let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
     let mut found: Vec<PathBuf> = folders
         .flatten()
+        .filter(|folder| folder.file_type().is_ok_and(|t| t.is_dir()))
         .map(|folder| folder.path().join(&name))
         .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()))
         .collect();
@@ -899,12 +903,14 @@ pub fn transcripts(session: &str) -> Vec<PathBuf> {
 /// `host_id`, `host_pid` and `proxy_pid` null, with the pid of the agent
 /// `brnr session delete` started (ADR 63). Written as the logger writes:
 /// private, never through a symlink (ADR 59), on a line of its own (ADR
-/// 55). The files written to.
+/// 55). The files written to, what couldn't be written to and why, each
+/// file tried whatever the one before did, and what was made private, with
+/// the mode it had: there is no host log to note it in.
 pub fn record_in_transcripts(
     session: &str,
     agent_pid: u32,
     event: &Value,
-) -> Result<Vec<PathBuf>, String> {
+) -> (Vec<PathBuf>, Vec<String>, Made) {
     let mut record = format!(
         r#"{{"ts":"{}","host_id":null,"host_pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session_id":{},"#,
         rfc3339(SystemTime::now()),
@@ -912,13 +918,19 @@ pub fn record_in_transcripts(
     )
     .into_bytes();
     record.extend_from_slice(&event_body(event));
-    let mut written = Vec::new();
+    let (mut written, mut failed, mut made) = (Vec::new(), Vec::new(), Made::new());
     for path in transcripts(session) {
-        let (mut out, _) = open_append(&path).map_err(|e| e.to_string())?;
-        out.put(&record).map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(path);
+        let put = open_append(&path).and_then(|(mut out, opened)| {
+            made.extend(opened);
+            out.put(&record)
+                .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+        });
+        match put {
+            Ok(()) => written.push(path),
+            Err(e) => failed.push(e.to_string()),
+        }
     }
-    Ok(written)
+    (written, failed, made)
 }
 
 /// Deletes `session`'s transcripts (ADR 63): in each project folder under
