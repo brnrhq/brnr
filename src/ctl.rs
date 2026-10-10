@@ -156,6 +156,10 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
     let result = match (cmd, verb) {
+        (group, Some(verb)) if grouped && asks_help(rest) && has_usage(group, verb) => {
+            outln!("{}", usage_of(group, Some(verb)));
+            Ok(ExitCode::SUCCESS)
+        }
         ("process", Some("list")) => done(ps(rest)),
         ("process", Some("stop")) => done(stop(rest)),
         ("session", Some("new")) => talk::new(rest),
@@ -213,6 +217,17 @@ pub fn main(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
+/// `--`, after which they are the agent's or the command's.
+fn asks_help(args: &[String]) -> bool {
+    args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help")
+}
+
+/// Whether [`USAGE`] has `brnr <group> <verb>`.
+fn has_usage(group: &str, verb: &str) -> bool {
+    USAGE.lines().any(|l| l.split_whitespace().take(3).eq(["brnr", group, verb]))
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
@@ -431,8 +446,9 @@ fn stop(args: &[String]) -> Result<(), String> {
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
 /// file are read: the first names the cwd, the last says when and in which
-/// process the session was last active. That process's log says which
-/// agent it ran.
+/// process the session was last active, or, if it is a deletion's, a record
+/// of no process's (ADR 63), the last that names a process does. That
+/// process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
     // session id alone can repeat across folders.
@@ -476,7 +492,8 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         past.push(json!({
             "session_id": session,
             "cwd": first["event"]["cwd"],
-            "last_active": last["ts"],
+            // When a process last served it: a deletion isn't activity.
+            "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
             "profile": info["profile"],
             "agent": info["agent"],
             "log": file.to_string_lossy(),

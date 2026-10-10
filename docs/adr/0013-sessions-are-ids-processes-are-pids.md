@@ -2,6 +2,11 @@
 
 Accepted (former decisions 37, 38 and 39); reviewed 2026-10-07. Implemented.
 
+Amended by 63: `ps`, `stop` and `close` are `process list`, `process stop`
+and `session close`; `list` and `status` are `session list` and
+`session status`; `watch` and `notify` are `event watch` and
+`event notify`; and `start --json` is `session new --json`.
+
 ## Context
 
 A `<target>` used to be a host id (the process's pid), a host's `--name`, a

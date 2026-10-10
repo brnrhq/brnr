@@ -4,8 +4,10 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -16,7 +18,10 @@ use serde_json::{Value, json};
 use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
 use brnr::{config, json, lock, paths, spawn, sys};
 
-use super::{Host, USAGE, agent_name, discover, inactive_sessions, print_json, print_table, when};
+use super::{
+    Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,
+    when,
+};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,15 +76,21 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
     let hosts = discover()?;
     let mut rows = brnr_rows(&hosts);
     if let Some(cwd) = &cwd {
-        // An unreachable session's cwd is unknown (its process doesn't say):
-        // it is this one's if the agent lists it here, a session's lock being
-        // one per id whatever its cwd (ADR 53).
+        // The cwd's, however a row spells it (a trailing slash, a symlink).
+        // One open in a process is the cwd's whatever its recorded cwd if the
+        // agent lists it here, a session's lock being one per id (ADR 53);
+        // an unreachable one's cwd is unknown (its process doesn't say), so it
+        // is the cwd's if the agent lists it or brnr has its transcript here.
         let ids: HashSet<String> = listed.iter().map(|x| x.session_id.to_string()).collect();
-        let here = |r: &Value| match r["cwd"].as_str() {
-            Some(dir) => dir == cwd,
-            None => r["session"].as_str().is_some_and(|id| ids.contains(id)),
-        };
-        rows.retain(here);
+        let dir = same_dir(cwd);
+        rows.retain(|r| {
+            let id = r["session"].as_str().unwrap_or_default();
+            match r["cwd"].as_str() {
+                _ if r["state"] != "inactive" && ids.contains(id) => true,
+                Some(recorded) => same_dir(recorded) == dir,
+                None => transcript_in(id, &dir),
+            }
+        });
     }
     // Joined on the id, exactly: never on which recorded agent the command
     // line might be (P4). The agent's title and time, where it gives them.
@@ -146,6 +157,28 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
     }
     print_table(table);
     Ok(ExitCode::SUCCESS)
+}
+
+/// `dir` as the system has it, where it exists, so that two spellings of
+/// one directory compare equal; as given where it doesn't (a [`PathBuf`]
+/// ignores a trailing slash either way).
+fn same_dir(dir: &str) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| PathBuf::from(dir))
+}
+
+/// Whether brnr has a transcript of session `id` that began in `dir`: the
+/// file `inactive_sessions` reads, in whichever spelling of `dir` it was
+/// opened with.
+fn transcript_in(id: &str, dir: &Path) -> bool {
+    let Some(file) = paths::session_log(Path::new("/"), id).file_name().map(PathBuf::from) else {
+        return false;
+    };
+    let projects = fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
+    projects.flatten().map(|p| p.path().join(&file)).any(|log| {
+        first_record(&log)
+            .and_then(|first| first["event"]["cwd"].as_str().map(same_dir))
+            .is_some_and(|recorded| recorded == dir)
+    })
 }
 
 /// `--include`'s states, each of [`STATES`].

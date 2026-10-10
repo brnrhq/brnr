@@ -16,7 +16,9 @@
 //! agent answered. An agent that doesn't have the session (ACP's
 //! `resource_not_found`) is said, and the command succeeds; any other error,
 //! or no answer, is said, and the command fails: the agent may still have
-//! the session (P3, P7).
+//! the session (P3, P7). A file that couldn't be deleted, or have
+//! `session_deleted` recorded in it, is said and fails the command too,
+//! the others done all the same.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -96,23 +98,32 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     if let (Err(error), false) = (&answer, purge) {
         return Err(error.clone());
     }
-    let (mut recorded, mut purged, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-    if purge {
-        (purged, failed) = log::purge(&id);
+    let (recorded, purged, failed) = if purge {
+        let (purged, failed) = log::purge(&id);
         if let Err(error) = &answer {
             if purged.is_empty() && failed.is_empty() {
                 return Err(format!("{error}; brnr has no transcript of {id}"));
             }
-            match gone {
-                true => errln!(
-                    "brnr: the agent doesn't have {id} ({error}); deleted brnr's transcript of it"
+            // What --purge did, said only as far as it went: what wasn't
+            // deleted follows, `not deleted`.
+            let transcript = match (purged.is_empty(), failed.is_empty()) {
+                (false, true) => "deleted brnr's transcript of it",
+                (false, false) => "deleted part of brnr's transcript of it",
+                (true, _) => "brnr's transcript of it isn't deleted",
+            };
+            match (gone, purged.is_empty()) {
+                (true, _) => errln!("brnr: the agent doesn't have {id} ({error}); {transcript}"),
+                (false, false) => errln!(
+                    "brnr: the agent didn't delete {id} ({error}): it may still have it; \
+                     {transcript} all the same"
                 ),
-                false => errln!(
-                    "brnr: the agent didn't delete {id} ({error}): it may still have it; deleted \
-                     brnr's transcript of it all the same"
+                (false, true) => errln!(
+                    "brnr: the agent didn't delete {id} ({error}): it may still have it; \
+                     {transcript} either"
                 ),
             }
         }
+        (Vec::new(), purged, failed)
     } else {
         let event = json!({
             "event": "session_deleted",
@@ -121,9 +132,13 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
             "ts": log::rfc3339(SystemTime::now()),
             "host_id": null,
         });
-        recorded = log::record_in_transcripts(&id, agent_pid, &event)
-            .map_err(|e| format!("deleted {id}, but its session_deleted isn't recorded: {e}"))?;
-    }
+        let (recorded, failed, made) = log::record_in_transcripts(&id, agent_pid, &event);
+        // As the host log's `made-private` would (ADR 59): the command has none.
+        for (path, mode) in made {
+            errln!("brnr: made-private: {} (its mode was {mode:o})", path.display());
+        }
+        (recorded, Vec::new(), failed)
+    };
     drop(held);
     let paths = |files: &[PathBuf]| -> Vec<String> {
         files.iter().map(|p| p.to_string_lossy().into_owned()).collect()
@@ -138,22 +153,28 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
             "failed": failed,
         }))?;
     } else if !purge {
-        match recorded.is_empty() {
+        match recorded.is_empty() && failed.is_empty() {
             true => outln!("deleted {id}; brnr has no transcript of it"),
             false => outln!("deleted {id}; brnr's transcript of it stays (brnr event log {id})"),
         }
     } else {
         let what = if answer.is_ok() { format!("deleted {id}, and") } else { "deleted".to_owned() };
-        match purged.is_empty() {
-            true => outln!("deleted {id}; brnr had no transcript of it"),
-            false => outln!("{what} brnr's transcript of {id}:"),
+        match (purged.is_empty(), failed.is_empty(), answer.is_ok()) {
+            (true, true, _) => outln!("deleted {id}; brnr had no transcript of it"),
+            (true, false, true) => outln!("deleted {id}, but not brnr's transcript of it"),
+            // Neither: stderr says why.
+            (true, false, false) => {}
+            (false, ..) => outln!("{what} brnr's transcript of {id}:"),
         }
         for path in paths(&purged) {
             outln!("  {path}");
         }
     }
     for why in &failed {
-        errln!("brnr: not deleted: {why}");
+        match purge {
+            true => errln!("brnr: not deleted: {why}"),
+            false => errln!("brnr: session_deleted isn't recorded: {why}"),
+        }
     }
     match failed.is_empty() && (answer.is_ok() || gone) {
         true => Ok(ExitCode::SUCCESS),

@@ -698,8 +698,10 @@ fn started(
 /// in process `pid`, which is running, with the socket's `new` or `resume`.
 /// The process answers once the session is open and its settings are set,
 /// and only then sends the prompt: the answer is the commit, as a start's
-/// ready report is (ADR 7). Gone before it (the start timeout, Ctrl-C), the
-/// command closes its connection, and the process closes the session again.
+/// ready report is (ADR 7). The start timeout goes with the request, and is
+/// the process's: past it, the process closes the session again and says
+/// so. Gone before it (Ctrl-C), the command closes its connection, and the
+/// process does the same.
 fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let blocks = attachments(&a.files, &a.images)?;
     let timeout = start_timeout()?;
@@ -757,12 +759,13 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         ("options", json!(options)),
         ("text", json!(a.prompt.as_deref().unwrap_or_default())),
         ("blocks", json!(blocks)),
+        ("timeout", json!(timeout)),
     ] {
         req[key] = value;
     }
     if let (Some(owner), Some(session)) = (owner, &a.resume) {
         // What the process would refuse is refused before the session is
-        // closed where it runs.
+        // closed where it runs, or it would be open nowhere.
         refused_in(host)?;
         let to = pid.parse().map_err(|_| format!("no brnr process {pid}"))?;
         settings::take_over(owner, session, to)?;
@@ -772,7 +775,10 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         // Before the prompt can go, so no event of its turn is missed.
         conn.subscribe(TURN_EVENTS)?;
     }
-    let until = Instant::now().checked_add(Duration::from_secs(timeout));
+    // The process abandons the opening when its timeout passes, and says
+    // so; this is for a process stuck too badly to (ADR 7).
+    let until =
+        Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
     let ready = match conn.call_until(req, until)? {
         Some(ready) => ready,
         None => return Err("timed out waiting for the session".into()),
@@ -780,15 +786,27 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     started(&mut conn, &ready, a.wait, a.json, a.timeout)
 }
 
-/// Why `host` would refuse to open a session, as its status says: an
-/// editor's process (ADR 4), or `stop_when_idle` with an agent that can't
-/// close sessions (ADR 12). The process checks the same itself.
+/// Why `host` would refuse to resume a session, as its status says: a
+/// process starting or stopping, an editor's (ADR 4), `stop_when_idle` with
+/// an agent that can't close sessions (ADR 12), or an agent with neither
+/// `session/resume` nor `session/load` (ADR 14). The process checks the same
+/// itself.
 fn refused_in(host: &Host) -> Result<(), String> {
     let Some(status) = &host.status else {
         return Err(format!("process {} is not answering", host.id()));
     };
+    if status["starting"] != false {
+        return Err(format!("process {} is still starting", host.id()));
+    }
+    if status["stopping"] == true {
+        return Err(format!("process {} is stopping", host.id()));
+    }
     if status["owner"] == "editor" {
         return Err("the editor owns this process; open sessions there".into());
+    }
+    let caps = &status["capabilities"];
+    if caps["resume"] != true && caps["load"] != true {
+        return Err("the agent can't resume sessions (no session/resume or session/load)".into());
     }
     if !status["stop_when_idle"].is_null() && status["capabilities"]["close"] != true {
         return Err("the agent can't close sessions: with stop_when_idle, a second session would \

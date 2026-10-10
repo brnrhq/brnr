@@ -1202,7 +1202,8 @@ impl Host {
     }
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
-    /// process stops with its last session. Idle time counts from the
+    /// process stops with its last session, one a bridge is opening
+    /// counting (`opening_in_flight`). Idle time counts from the
     /// commit too, so a session started without a prompt doesn't run
     /// forever; one with a prompt is busy from then.
     pub(super) fn fire_idle_timers(&mut self, now: Instant) {
@@ -1229,7 +1230,8 @@ impl Host {
         self.sessions[i].idle_done = true;
         let session = self.sessions[i].id.clone();
         self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
-        if self.sessions.len() == 1 {
+        // A session a bridge is opening keeps the process going.
+        if self.sessions.len() == 1 && !self.opening_in_flight() {
             self.begin_stop();
         } else if self.caps.close {
             // As `brnr session close` would, with nobody to answer (peer 0).

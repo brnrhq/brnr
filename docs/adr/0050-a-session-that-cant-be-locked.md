@@ -2,6 +2,10 @@
 
 Accepted 2026-10-08. Implemented. Amends 3; resolves #57.
 
+Amended by 63: `brnr start` and `start --resume` are `brnr session new`
+and `session resume`, `fork` is `session fork`, and `status` is
+`session status`.
+
 ## Context
 
 ADR 3 makes taking a session taking its lock, and says what happens when

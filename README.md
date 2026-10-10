@@ -312,10 +312,14 @@ brnr prompt commands $s            # the agent's slash commands (send them as te
 `--mode`, `--model` and `--thought-level` find the option of that category
 (`mode`, `model`, `thought_level`), whatever its id, and `--option <o>=<v>` an
 option by id; they go together, and `config get` takes the same, without
-values, to list only those options. A setting the agent has no option for
-fails ("the agent offers no thought level"), as two values for one setting do
+values, to list only those options; it lists only options the agent
+advertised, so one it doesn't have fails. A mode, model or thought level the
+agent has no option for fails ("the agent offers no thought level") before
+anything is sent, as two values for one setting do
 (`--model large --option llm=small`, when `llm` is the model); each is sent
-once, the mode first. A mode is the agent's own `session/set_mode` only for an
+once, the mode first. An `--option` id the agent hasn't advertised is sent
+too, for the agent to take or refuse; when it refuses, the error says what
+was already set. A mode is the agent's own `session/set_mode` only for an
 agent with modes and no mode option. `config get` lists each option's choices
 under it, the current one marked `*`, with their names and descriptions, and
 has the agent's modes as a row with no option (`-`, `null` in `--json`).
@@ -369,14 +373,20 @@ agent, profile and MCP servers, in `--cwd` (or here), and
 `session resume --pid <pid> <id>` resumes one there (in its recorded cwd),
 taking its lock as any resume does, with `--take-over` as without `--pid`.
 What starts a process (`--profile`, `--auth`, `--strict`, `--stop-when-idle`,
-`--permission-timeout`, `--foreground`, `-- <agent>`) is an error with it.
-The session, its settings (over the profile's) and its prompt commit as one,
-as a start does: a setting that fails after the agent opened the session
-closes it again, and the error says so (an agent that can't close sessions
-keeps it, and the error names it), and a command that gives up first (the
-start timeout, Ctrl-C) leaves no session and sends no prompt. It is refused
-where `session fork` is, but for strict mode: `session/new` and
-`session/resume` are stable ACP.
+`--permission-timeout`, `--foreground`, `--quiet`, `-- <agent>`) is an error
+with it. The session, its settings (over the profile's) and its prompt commit
+as one, as a start does, and the prompt goes only then. A setting that fails
+after the agent opened the session closes it again, and the error says so (an
+agent that can't close sessions keeps it, and the error names it); so does
+the start timeout passing first, which the process keeps too. A process
+stopping meanwhile fails it, and the session ends with the process. A command
+gone first (Ctrl-C) leaves no session. A session being opened counts as one:
+the process doesn't stop as its others close or go idle meanwhile. It is
+refused where `session fork` is, but for strict mode:
+`session/new` and `session/resume` are stable ACP. With `--take-over`, what
+the process would refuse (it is still starting or stopping, or its agent
+can't resume sessions) is refused before the session is closed where it
+runs.
 
 `brnr session list` on its own is brnr's index, with nothing started: every
 session open in brnr's processes and every one it has a transcript of, in
@@ -384,7 +394,9 @@ every folder (`--cwd` for one). With an agent named (`-- <agent>` or
 `--profile`), it shows only this folder's (or `--cwd`'s), starts the agent
 just to ask it (`session/list`, every page) and joins the two on the session
 id, so it includes sessions started outside brnr; an agent that can't list
-fails it. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
+fails it. A folder is the same however it is spelled (a trailing slash, a
+symlink), and an `unreachable` session is a folder's if the agent lists it
+there or brnr has its transcript there. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
 text and `--json` alike, most recently active first: STATE is `idle`, `busy`
 or `waiting` for one open in a process, `unreachable` for one whose process
 holds it but doesn't answer, `inactive` for one no process has open; SOURCE
@@ -408,9 +420,19 @@ are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
 error, or no answer, is said and exits non-zero: the agent may still have
-the session. An editor's `session/delete` through `brnr acp` goes to the
-agent as it is; once the agent has deleted the session, the editor's process
-records `session_deleted` too, and closes the session if it had it open.
+the session. Only `resource_not_found` counts as not having it:
+`brnr-codex-adapter` (codex-acp) answers a session it doesn't have as
+deleted, so `--purge` succeeds, but `brnr-claude-adapter` (claude-agent-acp)
+answers with another error (`-32603`, internal error), so `--purge` of a
+session it has already deleted exits non-zero, brnr's transcript deleted all
+the same. A file that can't be deleted, or have `session_deleted` recorded
+in it, is said (`not deleted: …`, `session_deleted isn't recorded: …`) and
+exits non-zero, the others done all the same; a transcript made private
+first is said too on stderr (`made-private: <path> (its mode was …)`): there
+is no host log for it. An editor's `session/delete` through `brnr acp` goes
+to the agent as it is; once the agent has deleted the session, the editor's
+process records `session_deleted` too, and closes the session if it had it
+open.
 
 `brnr process stop` signals the agent's whole process group, so whatever the
 agent started in that group goes with it. The same cleanup runs when the agent
@@ -519,9 +541,11 @@ setting the agent has no option for.
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
-process stops instead. `--permission-timeout <s>` rejects an approval nobody
-answered in that many seconds. Each wins over the profile's
-`stop_when_idle` and `permission_timeout`.
+process stops instead. `--permission-timeout <s>` answers an approval nobody
+answered in that many seconds as `permission_timeout` does: with its
+`reject_once` option, or, without exactly one, by cancelling its turn, which
+answers every request pending in the session `cancelled`. Each wins over the
+profile's `stop_when_idle` and `permission_timeout`.
 
 `--foreground` keeps the session in the terminal, for a supervisor such as
 systemd or a container. It shows the session's events on stdout (`--json`: as
@@ -575,9 +599,9 @@ already implement alike, ahead of the spec: `_session/steering` (for
 `prompt send --steer`), `session/fork`, unstable in ACP v1 (for
 `brnr session fork`), and dropping the editor's `fs` and `terminal`
 capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
-`--strict` on `acp` and `session new`) is stable ACP to the letter: no steering, no
-fork, the editor's capabilities passed through, and no experimental actions.
-What it refuses says why.
+`--strict` on `acp`, `session new` and `session resume`) is stable ACP to
+the letter: no steering, no fork, the editor's capabilities passed through,
+and no experimental actions. What it refuses says why.
 
 Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr session list` with an agent)
 whose agent answers `initialize` with another version, or one brnr can't
@@ -613,7 +637,8 @@ mode = "plan"                       # the agent's mode, model, thought level
 model = "opus"                      #   and config options by id, set before
 thought_level = "high"              #   the first prompt; the flags win
 options = { effort = "high" }
-permission_timeout = 600            # reject what nobody answered in 10 minutes
+permission_timeout = 600            # reject once (else cancel the turn) what
+                                    #   nobody answered in 10 minutes
 stop_when_idle = 600                # close a session idle 10 minutes
 # auth = "api-key"                  # a login method to run first (codex-acp's)
 
@@ -727,7 +752,8 @@ it and the file must be yours, with no group or other access, before a record
 goes in, whether brnr made them or found them there. It creates them 0700 and
 0600; one restored, copied or chmod'ed so that others can reach it is made
 private when a process opens it, and the host log has a `made-private`
-record (`path`, and the `mode` it had). Symlinks are never followed, the
+record (`path`, and the `mode` it had; `session delete`, which has no host
+log, says so on stderr). Symlinks are never followed, the
 state directory included (set `BRNR_HOME` to where one points instead), and
 what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),

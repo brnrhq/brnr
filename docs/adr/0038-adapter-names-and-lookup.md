@@ -2,6 +2,9 @@
 
 Accepted (former decisions 27 and 28); reviewed 2026-10-07. Implemented.
 
+Amended by 63: `brnr start` is `brnr session new` (and
+`session resume`).
+
 ## Decision
 
 - The compiled adapters are called `brnr-claude-adapter` and

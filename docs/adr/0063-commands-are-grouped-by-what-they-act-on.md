@@ -1,7 +1,8 @@
 # 63. Commands are grouped by what they act on, with ACP's verbs
 
-Proposed 2026-10-09. Implemented. Supersedes 15. Amends 3, 4, 7, 12, 14,
-16, 18, 19, 20, 21, 27, 28, 33, 35 and 58.
+Proposed 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 7, 9,
+11, 12, 13, 14, 16, 18, 19, 20, 21, 27, 28, 33, 35, 36, 38, 39, 41, 45, 46,
+50, 54, 57 and 58.
 
 ## Context
 
@@ -92,7 +93,15 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   there (P7); an editor's process refuses, as it refuses `fork` (ADR 4);
   with `stop_when_idle` and an agent that can't close sessions, a second
   session is refused, as `fork` is (ADR 12). `--take-over` works with
-  `--pid` as without.
+  `--pid` as without, refused before the session is closed where it runs if
+  the process would refuse it (starting, stopping, or an agent with neither
+  `session/resume` nor `session/load`), rather than leave it open in neither.
+  The session, its settings and its prompt commit as one, as a start's do
+  (ADR 7): the start timeout goes to the process, which abandons the opening
+  once it passes, as it does when a setting fails, the process is stopping
+  or the command has gone; the command waits 10 s longer, as a start's
+  does. A session being opened counts as one of the process's: its others
+  closing or going idle meanwhile don't stop it (ADR 12).
 - **`--permission-timeout <s>`** is the profile's headless
   `permission_timeout` as a flag, winning over it as ADR 58's flags do.
 - **`session list`** joins brnr's index and the agent's, superseding ADR 15:
@@ -102,7 +111,15 @@ command's. `--profile` and `-- <agent>` combine as they do today.
     are narrowed to that cwd, the agent is started and asked
     (`session/list`, every page), and the two are joined on the session id:
     exact, so brnr never guesses which recorded agent a command line is
-    (P4). An agent that can't list fails the command (P7).
+    (P4). A session open in a process that the agent lists there is joined
+    whatever cwd brnr recorded for it, its lock being one per id (ADR 53).
+    An agent that can't list fails the command (P7).
+  - A cwd is the same however it is spelled: `--cwd` and a row's cwd are
+    compared as the directories they name (a trailing slash or a symlink
+    makes no difference). An `unreachable` session's cwd is unknown (its
+    process doesn't answer), so it is the cwd's if the agent lists it there
+    or brnr has its transcript there; its CWD stays null unless the agent
+    gives one.
   - `--include` filters by state: `active` is open in a process (`idle`,
     `busy`, `waiting`, `unreachable`), `inactive` isn't, whoever knows it;
     both by default.
@@ -123,7 +140,18 @@ command's. `--profile` and `-- <agent>` combine as they do today.
   command succeeds only if the agent deleted the session or doesn't have it
   (ACP's `resource_not_found`, -32002), which is said; any other error, or
   no answer, is said and fails the command, the transcript deleted all the
-  same: the agent may still have the session (P3, P7).
+  same: the agent may still have the session (P3, P7). Only an agent that
+  answers `resource_not_found` doesn't have it: the Codex adapter (codex-acp
+  2.1.1) answers an unknown session as deleted, so `--purge` succeeds, but
+  the Claude adapter (claude-agent-acp 0.85.1, whose SDK throws a plain
+  error) answers -32603, so `--purge` of a session it already deleted fails.
+  A file that can't be deleted, or have `session_deleted` recorded in it, is
+  said and fails the command, the others done all the same (P3); what was
+  and wasn't deleted is said as it is, not as "no transcript" or "deleted
+  all the same". A symlinked project folder isn't looked in, and a
+  transcript made private first (ADR 59) is said on stderr: the command has
+  no host log for `made-private`. A deletion isn't activity: LAST ACTIVE
+  stays when a process last served the session.
   `session_deleted` is recorded in the session's transcript: by the command,
   as a record of no process's (`host_id` null), since no process has the
   session open; by the editor's process, which closes the session if it had
@@ -173,8 +201,8 @@ The same names reach brnr's other interfaces, so one word means one thing
 - Socket and bridge commands (ADR 35): `approve`/`deny` become `allow`/
   `reject` with `always` and `option`; `set_mode`, `set_model` and `set_config` become
   one `set_config` taking `mode`, `model`, `thought_level` and `options`;
-  `new` and `resume` are added for `--pid`. `send` stays: it is the
-  message, whatever its mode.
+  `new` and `resume` are added for `--pid`, with the command's `timeout`.
+  `send` stays: it is the message, whatever its mode.
 - A profile's headless part (ADR 33): `mode`, `model`, `thought_level`,
   `options` (was `config`), `permission_timeout`, `stop_when_idle`.
 - The editor's `experimental` actions (ADR 4): `approve` becomes
@@ -223,21 +251,28 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0063_old_commands_are_unknown`: each command moved into a group
     fails under its old name as an unknown command, and does nothing.
+  - `adr_0063_old_socket_commands_are_unknown`: the socket's `approve`,
+    `deny`, `set_mode` and `set_model` are unknown commands, and do nothing.
+  - `adr_0063_profile_keys_and_actions_have_the_new_names`: a profile's
+    headless `config`, and the experimental actions `approve` and
+    `settings`, fail to load; `options`, `permission` and `config` load.
   - `adr_0063_help_lists_the_groups_and_their_commands`: `brnr --help` has a
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
-    usage; a command used wrongly shows its own.
+    usage; a command used wrongly shows its own; a verb's `--help` or `-h`,
+    before any `--`, prints its usage, and after `--` is the command's.
   - `adr_0063_config_get_lists_options_choices_and_modes`: every option with
     its category, value and choices, each choice with its name and
     description, and the v1 modes as a row with no option, the same in text
     and JSON.
   - `adr_0063_config_get_narrows_by_category_and_id`: `--mode`, `--model`,
-    `--thought-level` and `--option` narrow the list, in its order; one the
-    agent doesn't have fails.
+    `--thought-level` and `--option` narrow the list, in its order; it
+    lists only options the agent advertised, so one it doesn't have fails.
   - `adr_0063_config_set_by_category_and_by_id`: each setting is sent once,
-    the mode first; two values for one setting, or a setting the agent has
-    no option for, fail before anything is sent; a refused one says what was
-    set before it.
+    the mode first; two values for one setting, or a mode, model or thought
+    level the agent has no option for, fail before anything is sent; an
+    option by id the agent hasn't advertised is sent (ADR 28), and when the
+    agent refuses it the error says what was set before it.
   - `adr_0063_new_and_resume_replace_start`: `session new` opens a session
     and `session resume` resumes it (`session/resume`) with the recorded
     agent; `--set`, `--resume` and `--take-over` on `new` fail; each
@@ -261,8 +296,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     doesn't know goes with either verb.
   - `adr_0063_queue_show`: `queue show` prints one held message in full, its
     text, whether it interrupts, and its attachments, in text and `--json`
-    (the content blocks), and drops nothing; a message not held fails, and
-    the socket's `show` goes alone.
+    (the content blocks), and drops nothing; a message not held fails; the
+    socket's `show` goes alone, and one that isn't a message id is refused.
   - `adr_0063_queue_clear_flags`: `queue clear --messages` drops the held
     messages only, `--context` the held context only, and both flags or
     neither drop both, each with its event; `queue list` takes neither
@@ -275,8 +310,12 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     `--profile`, the agent is asked for every page; brnr's sessions in the
     cwd are joined with the agent's on the id (`both`), one only the agent
     knows is `inactive` with source `agent`, the agent's title and time win
-    where it gives them, and another cwd's are left out; an agent that can't
-    list fails.
+    where it gives them, over brnr's title too, and another cwd's are left
+    out; an agent that can't list fails.
+  - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
+    with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
+    named or not, and the open one the agent lists is `both` and `active`,
+    not one only the agent knows.
   - `adr_0063_list_include_filters_by_state`: `--include active` keeps the
     sessions open in a process, `inactive` the others, whoever knows them;
     both by default; an unknown state fails.
@@ -284,7 +323,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     ignoring SIGTERM, is killed with what it started.
   - `adr_0063_delete_keeps_the_transcript`: `session delete` asks the
     recorded agent, which deletes its copy; the transcript stays, listed,
-    with `session_deleted` in it, and the agent is still found for it.
+    with `session_deleted` in it, its LAST ACTIVE unchanged, and the agent
+    is still found for it.
   - `adr_0063_delete_a_session_only_the_agent_knows`: one brnr has no
     transcript of needs its agent named, and records nothing.
   - `adr_0063_delete_purge`: `--purge` deletes the session's two files, not
@@ -292,6 +332,14 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     doesn't have the session (-32002), saying so, and succeeding.
   - `adr_0063_delete_purge_fails_when_the_agent_does`: for any other error,
     the transcript is deleted too, the error said, and the command fails.
+  - `adr_0063_delete_purge_says_what_it_couldnt_delete`: a transcript in a
+    folder brnr can't write to isn't deleted, which is said, not "no
+    transcript" nor "all the same", and the command fails, whatever the
+    agent answered.
+  - `adr_0063_delete_records_in_each_transcript_it_can`: `session_deleted`
+    goes into each transcript that can take it, one refused is said and
+    fails the command, a symlinked folder isn't looked in, and a transcript
+    made private first is said.
   - `adr_0063_delete_refuses_an_open_session`: refused, the agent not asked,
     until the session is closed.
   - `adr_0063_delete_needs_an_agent_that_can_delete`: an agent without
@@ -317,7 +365,20 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
   - `adr_0063_pid_session_that_cant_be_locked_is_closed`: a new session
     that can't be locked is closed again; a resume of one isn't sent.
   - `adr_0063_pid_given_up_before_its_commit_sends_no_prompt`: a command
-    that times out first leaves the session closed, and no prompt.
+    gone first leaves the session closed, and no prompt.
+  - `adr_0063_pid_timeout_abandons_the_opening`: the process abandons an
+    opening past the command's timeout, whether the agent was opening the
+    session or setting it up: closed again, the command saying so, and no
+    prompt.
+  - `adr_0063_pid_opening_keeps_the_process_running`: the last other session
+    going idle under `stop_when_idle`, or closed, while one is being opened
+    doesn't stop the process, and the new one commits and gets its prompt.
+  - `adr_0063_pid_opening_in_a_stopping_process_fails`: a process stopping
+    while the agent opens the session doesn't commit it, and the command
+    says so.
+  - `adr_0063_pid_take_over_refused_before_closing`: `--take-over` into a
+    process whose agent can't resume is refused, and the session stays open
+    where it was.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0063_an_editors_delete_is_recorded`: the editor's `session/delete`
     reaches the agent; once answered, `session_deleted` by the editor is in

@@ -5,9 +5,12 @@ Amended by 63: `brnr start` is `brnr session new`, and `start --resume`
 `brnr session resume`; each is a start as described here. With `--pid`, in
 a running process, the commit is the process's answer on the control
 socket, queued while the command is still connected; the command gone
-before it, or a setting failing, closes the session again (or, for an
-agent that can't close sessions, the error names it), and the prompt is
-never sent.
+before it, a setting failing, or the start timeout passing closes the
+session again (or, for an agent that can't close sessions, the error names
+it), and the prompt is never sent. The timeout goes in the socket request
+and is the process's, as it is in a start's; the command keeps the same
+fallback, 10 s later. The process stopping meanwhile fails the opening too,
+and the session ends with the process.
 Replaces former decision 4; amends former decisions 21 and 41; resolves
 review item 7.
 Made exact 2026-10-08 (#67): the process used to queue the report for a

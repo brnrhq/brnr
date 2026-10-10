@@ -14,14 +14,17 @@
 //!   `session new --pid`, `session resume --pid`, ADR 63), opened, set up and
 //!   committed as a start's is. The commit is the bridge's answer, queued for
 //!   it while it is still connected, and then the prompt goes. Whatever fails
-//!   after the agent opened the session (a setting, the bridge going away)
-//!   closes it again where the agent can close sessions, and says so; where
-//!   it can't, the answer names the session left open (P3);
+//!   after the agent opened the session (a setting, the bridge's timeout
+//!   passing, the bridge going away) closes it again where the agent can
+//!   close sessions, and says so; where it can't, the answer names the
+//!   session left open (P3). A process stopping meanwhile doesn't commit it,
+//!   and one with a session still opening doesn't stop for having none;
 //! - steering a message into a running turn (`_session/steering`, see
 //!   acp.rs).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -125,6 +128,10 @@ pub(super) struct Opening {
     pub(super) settings: Settings,
     /// Sent once it commits.
     pub(super) prompt: Option<Prompt>,
+    /// The command's timeout: past it the opening is abandoned rather than
+    /// committed, before the command, which waits a little longer, gives
+    /// up (ADR 7).
+    pub(super) deadline: Option<Instant>,
 }
 
 /// What a bridge asked the agent for. A close is `by` `close`, or `idle` for
@@ -360,6 +367,13 @@ impl Host {
         if matches!(setup.of, SetupOf::Start) && self.stop_requested {
             return; // The start already failed (timed out), or was stopped.
         }
+        // Before each setting, and before the commit.
+        if let SetupOf::Open(o) = &setup.of
+            && let Some(why) = self.open_refused(o)
+        {
+            let (peer, req_id) = (o.peer, o.req_id.clone());
+            return self.abandon_open(&setup.session, peer, req_id, why);
+        }
         let Some(i) = self.find(&setup.session) else {
             let error = format!("{} closed before its settings were set", setup.session);
             return self.setup_failed(setup, &error);
@@ -525,20 +539,14 @@ impl Host {
                 }
             }
             let error = format!("{what} failed: {}", error_message(error));
-            return self.reply(
-                opening.peer,
-                opening.req_id,
-                json!({ "ok": false, "error": error }),
-            );
+            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            return self.stop_if_empty();
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         let Some(session) = asked.or_else(|| new_session(&result)) else {
             let error = format!("{what} returned no sessionId");
-            return self.reply(
-                opening.peer,
-                opening.req_id,
-                json!({ "ok": false, "error": error }),
-            );
+            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            return self.stop_if_empty();
         };
         let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
         if let Some(why) = self.sessions[i].not_owned() {
@@ -584,13 +592,30 @@ impl Host {
         }
     }
 
+    /// Why a bridge's `new` or `resume` can't go on to commit: the process
+    /// is stopping, so the session would end unused with it, or the
+    /// command's timeout has passed (ADR 7).
+    fn open_refused(&self, opening: &Opening) -> Option<String> {
+        if self.stop_requested || self.agent_in.is_none() {
+            return Some("the process is stopping".into());
+        }
+        if opening.deadline.is_some_and(|t| Instant::now() >= t) {
+            return Some("timed out waiting for the session".into());
+        }
+        None
+    }
+
     /// A bridge's `new` or `resume` failed with `error` after the agent
     /// opened `session`: it is closed again (`session/close`), and the bridge
     /// is answered once it is, saying so. An agent that can't close sessions
-    /// keeps it open, and the answer names it (P3).
+    /// keeps it open, and the answer names it (P3). A stopping process can't
+    /// tell the agent any more: the session ends with it.
     fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: String) {
         self.sink
             .note(None, json!({ "event": "open-failed", "session_id": session, "error": error }));
+        if self.agent_in.is_none() {
+            return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+        }
         if !self.caps.close {
             if let Some(i) = self.find(session) {
                 self.sessions[i].opening = false; // Served as any other is.
@@ -606,6 +631,25 @@ impl Host {
         }
         let op = PeerOp::Close { session: session.to_owned(), by: "close", failed: Some(error) };
         self.peer_op(peer, req_id, op, "session/close", json!({ "sessionId": session }));
+    }
+
+    /// A headless process stops with its last session, unless a bridge's
+    /// `new` or `resume` is still waiting for the agent to open one.
+    fn stop_if_empty(&mut self) {
+        if self.sessions.is_empty() && !self.opening_in_flight() && !self.editor_attached() {
+            self.begin_stop();
+        }
+    }
+
+    /// Whether a bridge's `new` or `resume` is waiting for the agent's
+    /// answer: a session not among `sessions` yet, which keeps the process
+    /// from stopping as if it had none (see `stop_if_empty`,
+    /// `fire_idle_timers`).
+    pub(super) fn opening_in_flight(&self) -> bool {
+        let opening = |r: &ClientRequest| {
+            matches!(r.by, Requester::Host(HostRequest::Opening(Open::New | Open::Resume(_), _)))
+        };
+        self.client_requests.values().any(opening)
     }
 
     pub(super) fn peer_op(
@@ -672,9 +716,7 @@ impl Host {
                 if let Some(i) = self.find(&session) {
                     self.close_session(i, by);
                 }
-                if self.sessions.is_empty() && !self.editor_attached() {
-                    self.begin_stop();
-                }
+                self.stop_if_empty();
                 match failed {
                     Some(failed) => {
                         json!({ "ok": false, "error": format!("{failed}; {session} was closed") })
@@ -732,9 +774,11 @@ impl Capabilities {
 /// (ADR 28), so `--model` and an option set by the model option's id are
 /// one setting; `options` are by id. A mode is `session/set_mode` only for
 /// an agent with v1 modes and no mode option. Two values for one setting
-/// from one source fail (P4); a setting the agent has no option for, a v1
-/// mode it doesn't list, or a value its option's type doesn't take fails
-/// before any is sent (P7). The mode goes first, then the model, the
+/// from one source fail (P4); a mode, model or thought level the agent has
+/// no option for, a v1 mode it doesn't list, or a value its option's type
+/// doesn't take fails before any is sent (P7). An option by id the agent
+/// hasn't advertised is sent, its value as a value id, for the agent to
+/// take or refuse (ADR 28). The mode goes first, then the model, the
 /// thought level, and the other options by id.
 pub(super) fn resolve_settings(
     flags: &Settings,

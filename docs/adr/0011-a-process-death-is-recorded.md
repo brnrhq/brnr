@@ -23,6 +23,10 @@ only if the process with that pid started after the file was written.
 processes up drop them, removing their metadata and socket.
 From the review's "to investigate".
 
+Amended by 63: `brnr start` is `brnr session new` (and `start --resume`
+`session resume`), and `list`, `ps` and `status` are `session list`,
+`process list` and `session status`.
+
 ## Context
 
 Early in the review's editor-mode run, the host, its agent and the proxy

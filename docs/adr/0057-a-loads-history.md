@@ -3,6 +3,11 @@
 Accepted 2026-10-08 (proposed). Implemented. Amends 14 (what a load does
 with the replay) and 22 (brnr never recording a replay). Resolves #60.
 
+Amended by 63: `brnr start --resume` is `brnr session resume`;
+`brnr sessions` is `brnr session list` with an agent named, where a session
+only the agent knows is `inactive` with SOURCE `agent`; and `status` is
+`session status`.
+
 ## Context
 
 An agent without `session/resume` resumes a session with `session/load`,
