@@ -311,10 +311,14 @@ brnr prompt commands $s            # the agent's slash commands (send them as te
 `--mode`, `--model` and `--thought-level` find the option of that category
 (`mode`, `model`, `thought_level`), whatever its id, and `--option <o>=<v>` an
 option by id; they go together, and `config get` takes the same, without
-values, to list only those options. A setting the agent has no option for
-fails ("the agent offers no thought level"), as two values for one setting do
+values, to list only those options; it lists only options the agent
+advertised, so one it doesn't have fails. A mode, model or thought level the
+agent has no option for fails ("the agent offers no thought level") before
+anything is sent, as two values for one setting do
 (`--model large --option llm=small`, when `llm` is the model); each is sent
-once, the mode first. A mode is the agent's own `session/set_mode` only for an
+once, the mode first. An `--option` id the agent hasn't advertised is sent
+too, for the agent to take or refuse; when it refuses, the error says what
+was already set. A mode is the agent's own `session/set_mode` only for an
 agent with modes and no mode option. `config get` lists each option's choices
 under it, the current one marked `*`, with their names and descriptions, and
 has the agent's modes as a row with no option (`-`, `null` in `--json`).
@@ -530,9 +534,9 @@ already implement alike, ahead of the spec: `_session/steering` (for
 `prompt send --steer`), `session/fork`, unstable in ACP v1 (for
 `brnr session fork`), and dropping the editor's `fs` and `terminal`
 capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
-`--strict` on `acp` and `session new`) is stable ACP to the letter: no steering, no
-fork, the editor's capabilities passed through, and no experimental actions.
-What it refuses says why.
+`--strict` on `acp`, `session new` and `session resume`) is stable ACP to
+the letter: no steering, no fork, the editor's capabilities passed through,
+and no experimental actions. What it refuses says why.
 
 Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr sessions`)
 whose agent answers `initialize` with another version, or one brnr can't
