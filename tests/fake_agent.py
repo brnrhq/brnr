@@ -25,6 +25,7 @@ with environment variables:
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
+  LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   NO_DELETE=1       don't offer session/delete
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
@@ -95,7 +96,8 @@ and by the prompt's text:
   commands          its commands change: compact goes, review comes
   unknown           an update of a kind ACP's schema doesn't have (an
                     adapter's own) in the middle of a message, then answers
-  perm <kind>       asks permission for a tool call of that kind first
+  perm <kind> [<n>] asks permission for n tool calls of that kind (1) at once
+                    first, and answers once each is answered
   odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
                     surrogate (the title ends in half an emoji), deep (the
                     input nests n deep, 10000 by default) or garbled (the
@@ -402,50 +404,57 @@ def run(mid, sid, text):
         sys.stdout.flush()
     elif first == "perm" or env("PERMISSION"):
         kind = words[1] if first == "perm" and len(words) > 1 else "edit"
-        request = f"perm-{len(asking) + 1}"
-        asking[request] = mid
-        options = [
-            {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
-            {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
-        ]
-        if env("ALLOW_ONLY"):
-            options = options[:1]
-        if env("PERM_OPTIONS"):
-            options = json.loads(env("PERM_OPTIONS"))
-        tool = {
-            "toolCallId": request,
-            "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",
-            "kind": kind,
-            "locations": [{"path": "src/lib.rs", "line": 2}],
-            "rawInput": {"file_path": "src/lib.rs"},
-            "content": [
-                {
-                    "type": "diff",
-                    "path": "src/lib.rs",
-                    "oldText": "one\nold line\nthree\n",
-                    "newText": "one\nnew line\nthree\n",
-                }
-            ],
-        }
-        if env("PERM_COMMAND"):
-            command = env("PERM_COMMAND")
-            tool = {
-                "toolCallId": request,
-                "title": command,
-                "kind": "execute",
-                "rawInput": {"command": command},
-            }
-        params = {"sessionId": sid, "toolCall": tool, "options": options}
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": request,
-                "method": "session/request_permission",
-                "params": params,
-            }
-        )
+        n = int(words[2]) if first == "perm" and len(words) > 2 else 1
+        for _ in range(n):
+            ask(mid, sid, kind)
     else:
         end_turn(mid)
+
+
+def ask(mid, sid, kind):
+    """Asks permission for a tool call of kind, in prompt mid's turn."""
+    request = f"perm-{len(asking) + 1}"
+    asking[request] = mid
+    options = [
+        {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+    ]
+    if env("ALLOW_ONLY"):
+        options = options[:1]
+    if env("PERM_OPTIONS"):
+        options = json.loads(env("PERM_OPTIONS"))
+    tool = {
+        "toolCallId": request,
+        "title": "Edit src/lib.rs" if kind == "edit" else f"A {kind} tool",
+        "kind": kind,
+        "locations": [{"path": "src/lib.rs", "line": 2}],
+        "rawInput": {"file_path": "src/lib.rs"},
+        "content": [
+            {
+                "type": "diff",
+                "path": "src/lib.rs",
+                "oldText": "one\nold line\nthree\n",
+                "newText": "one\nnew line\nthree\n",
+            }
+        ],
+    }
+    if env("PERM_COMMAND"):
+        command = env("PERM_COMMAND")
+        tool = {
+            "toolCallId": request,
+            "title": command,
+            "kind": "execute",
+            "rawInput": {"command": command},
+        }
+    params = {"sessionId": sid, "toolCall": tool, "options": options}
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": request,
+            "method": "session/request_permission",
+            "params": params,
+        }
+    )
 
 
 if env("STDERR"):
@@ -594,6 +603,8 @@ for line in sys.stdin.buffer:
             "updatedAt": "2026-10-01T10:00:00Z",
         }
         known = {"sessionId": "sess-1", "cwd": params.get("cwd")}
+        if env("LIST_TITLE"):
+            known["title"] = env("LIST_TITLE")
         if params.get("cursor") == "2":
             result(mid, {"sessions": [known]})
         else:
@@ -676,7 +687,9 @@ for line in sys.stdin.buffer:
             error(hanging, -32800, "Request cancelled")
             hanging = None
     elif method is None and mid in asking:
-        end_turn(asking.pop(mid))
+        turn = asking.pop(mid)
+        if turn not in asking.values():
+            end_turn(turn)
     elif method is not None and mid is not None:
         error(mid, -32601, f"Method not found: {method}")
 

@@ -56,8 +56,9 @@ brnr's own conventions:
   `permission show`; `log`, `watch`, `notify` and `wait` are `event log`,
   `event watch`, `event notify` and `event wait`. Flags are unchanged. A
   profile's bridge that runs `brnr notify` runs `brnr event notify` instead.
-  `brnr --help` has a section per group, and `brnr <group> --help` lists a
-  group's commands (ADR 63).
+  `brnr --help` has a section per group, `brnr <group> --help` lists a
+  group's commands, and `brnr <group> <verb> --help` (or `-h`, before any
+  `--`) prints that command's usage (ADR 63).
 - **Breaking:** `brnr mode`, `brnr model` and `brnr config` are
   `brnr config get <s>` and `brnr config set <s>`. `get` lists every option
   with its category, value and choices, each choice with its name and
@@ -68,9 +69,11 @@ brnr's own conventions:
   `--option <o>=<v>` (by id) together, resolved as a start's settings are:
   `brnr mode $s plan` is `brnr config set $s --mode plan`, and
   `brnr config $s effort=high` is `brnr config set $s --option effort=high`.
-  A setting the agent has no option for fails ("the agent offers no thought
-  level"), as do two values for one setting, and a v1 mode the agent doesn't
-  list fails before anything is sent, a start's too (ADR 63).
+  A mode, model or thought level the agent has no option for fails ("the
+  agent offers no thought level"), as do two values for one setting, and a
+  v1 mode the agent doesn't list fails before anything is sent, a start's
+  too; an `--option` id the agent hasn't advertised is sent, and a refusal
+  says what was already set. `get` lists only advertised options (ADR 63).
 - **Breaking:** an agent with a config option of category `mode` has its
   mode set through that option, and `session status` reports its value,
   even where the agent has v1 modes too; `session/set_mode` is sent only
@@ -123,7 +126,9 @@ brnr's own conventions:
   `list --inactive`). With `--profile` or `-- <agent>` it is what `sessions`
   was, joined: the cwd's sessions (here, or `--cwd`) and the agent's, every
   page of `session/list`, on the session id; an agent that can't list fails
-  it. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
+  it. A cwd is the same however it is spelled (a trailing slash, a symlink),
+  and an `unreachable` session is the cwd's if the agent lists it there or
+  brnr has its transcript there. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
   `brnr`, `agent` or `both`; a session only the agent knows is `inactive`
   where it was `-`, and every row has its AGENT (ADR 63).
 

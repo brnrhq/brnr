@@ -80,8 +80,8 @@ fn adr_0021_start_wait_prints_the_reply_and_the_turns_result() {
     assert_eq!(prompt["params"]["prompt"][0]["text"], "reply done");
 }
 
-/// `start --json` gives the prompt's message id, as `send --json` does, or
-/// null without a prompt (ADR 17).
+/// `session new --json` gives the prompt's message id, as `prompt send
+/// --json` does, or null without a prompt (ADR 17).
 #[test]
 fn adr_0017_start_json_gives_the_prompts_message() {
     let env = Env::new("c-startmsg");
@@ -124,6 +124,8 @@ fn adr_0021_send_wait_reports_a_permission_request() {
     }
     assert!(line.contains("p1: Edit src/lib.rs"), "{line}");
     assert!(line.contains("brnr permission allow sess-1 p1"), "{line}");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    assert!(status.contains("1 approval(s) waiting: brnr permission requests sess-1"), "{status}");
     env.ok(&["permission", "allow", "sess-1", "p1"]);
     assert!(wait_exit(&mut send, Duration::from_secs(10)));
     assert!(send.wait().unwrap().success());
@@ -320,6 +322,9 @@ fn adr_0020_queue_lists_and_drops() {
     env.ok(&["prompt", "send", "sess-1", "--context", "some context"]);
     let out = env.ok(&["queue", "list", "sess-1"]);
     assert_eq!(out, "m2 (after turn): first\nm3 (after turn): second\ncontext: some context\n");
+    let status = env.ok(&["session", "status", "sess-1"]);
+    let held = "held: 2 message(s), 1 context (brnr queue list sess-1)";
+    assert!(status.contains(held), "{status}");
     let out = env.ok(&["queue", "drop", "sess-1", "m2"]);
     assert_eq!(out, "dropped m2: first\nm3 (after turn): second\ncontext: some context\n");
     let out = env.ok(&["queue", "clear", "sess-1", "--context"]);
@@ -379,14 +384,27 @@ fn adr_0063_queue_show() {
     assert!(env.fails(&["queue", "show", "sess-1", "m9"]).contains("no held message m9"));
     let err = env.fails(&["queue", "show", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue show <session> <message>"), "{err}");
-    // The socket's show goes alone: with a drop, it does neither.
-    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
-    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    writeln!(conn, r#"{{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}}"#).unwrap();
-    let mut answer = String::new();
-    BufReader::new(conn).read_line(&mut answer).unwrap();
-    let answer: Value = serde_json::from_str(&answer).unwrap();
+    // The socket's show goes alone: with a drop, it does neither. A show
+    // that isn't an id is refused, not taken as absent, so it neither
+    // clears nor lists.
+    let socket = env.hosts()[0]["socket"].as_str().unwrap().to_owned();
+    let ask = |req: &str| -> Value {
+        let mut conn = UnixStream::connect(&socket).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        writeln!(conn, "{req}").unwrap();
+        let mut answer = String::new();
+        BufReader::new(conn).read_line(&mut answer).unwrap();
+        serde_json::from_str(&answer).unwrap()
+    };
+    let answer = ask(r#"{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}"#);
     assert_eq!(answer["error"], "queue's show takes no drop or clear", "{answer}");
+    for show in ["2", "true", "null"] {
+        let answer =
+            ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show},"clear":true}}"#));
+        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+        let answer = ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show}}}"#));
+        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+    }
     // Showing drops nothing.
     let out = env.ok(&["queue", "list", "sess-1"]);
     assert_eq!(out, "m3 (interrupt): stop\nm2 (after turn): two\nlines\n");
@@ -626,11 +644,12 @@ fn adr_0022_log_reads_an_inactive_session() {
     assert!(exited.as_bytes()[2] == b':', "no time on {exited:?}");
 }
 
-/// `log` shows a running session as far as its process has recorded it
-/// when asked, though a thread of the process's own writes the transcript:
-/// the turn `start --wait` just reported is there (ADR 48). A process that
-/// hasn't written it in 5 s (a stalled disk: `BRNR_TEST_LOG_STALL` holds
-/// its logger) is shown as far as it has, and `log` says so.
+/// `event log` shows a running session as far as its process has recorded
+/// it when asked, though a thread of the process's own writes the
+/// transcript: the turn `session new --wait` just reported is there (ADR
+/// 48). A process that hasn't written it in 5 s (a stalled disk:
+/// `BRNR_TEST_LOG_STALL` holds its logger) is shown as far as it has, and
+/// `event log` says so.
 #[test]
 fn adr_0048_log_shows_what_the_process_has_recorded() {
     let env = Env::new("c-logged");
@@ -801,7 +820,7 @@ fn adr_0028_model_and_config() {
 }
 
 /// `config set --model` and `config get --model` find the option whose
-/// category is `model`, whatever its id, and so does `start --model`.
+/// category is `model`, whatever its id, and so does `session new --model`.
 /// Without one the agent offers no model choice, an option that is only
 /// called `model` and the unstable `session/set_model` notwithstanding
 /// (ADR 28).
@@ -841,8 +860,8 @@ fn adr_0028_model_is_the_option_of_category_model() {
 }
 
 /// An agent with a config option of category `mode`: that is its mode, for
-/// `config set --mode` and `start --mode`, also when it has v1 modes as
-/// well; `session/set_mode` isn't sent (ADR 28, ADR 63).
+/// `config set --mode` and `session new --mode`, also when it has v1 modes
+/// as well; `session/set_mode` isn't sent (ADR 28, ADR 63).
 #[test]
 fn adr_0028_mode_as_a_config_option() {
     for both in [false, true] {
@@ -1200,6 +1219,18 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert!(one["pid"].is_u64(), "{one}");
     // The agent gives sess-1 no title or time: brnr's.
     assert_eq!(one["title"], "Fake session");
+    {
+        // Where it gives one, the agent's title wins over brnr's.
+        let out = env
+            .brnr(&["session", "list", "--json", "--", AGENT])
+            .env("LIST_TITLE", "The agent's title")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let titled: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let one = row(titled.as_array().unwrap(), "sess-1");
+        assert_eq!((&one["source"], &one["title"]), (&"both".into(), &"The agent's title".into()));
+    }
     assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00Z", "{one}");
     assert_eq!((&mine["state"], &mine["source"]), (&"inactive".into(), &"brnr".into()));
     assert_eq!(rows.last().unwrap()["session"], "old-1", "{rows:?}");
@@ -1223,6 +1254,49 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert_eq!(code(&out), 1);
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions\n");
+}
+
+/// A session is the cwd's however brnr recorded it: `--cwd <dir>/`, or a
+/// symlink to `<dir>`, is `<dir>`'s, with an agent named or not. One open in
+/// a process that the agent lists is joined (`both`), whatever its recorded
+/// cwd, rather than shown as one only the agent knows.
+#[test]
+fn adr_0063_list_finds_a_cwd_however_it_is_spelled() {
+    let env = Env::new("c-list-spelled");
+    let real = env.dir.join("real");
+    fs::create_dir_all(&real).unwrap();
+    let link = env.dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = real.to_string_lossy().into_owned();
+    env.start(&["--cwd", &format!("{real}/")]);
+    let out = env
+        .brnr(&new_args(&["--cwd", &link.to_string_lossy()]))
+        .env("FIRST_SESSION", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let ids = |args: &[&str]| -> Vec<String> {
+        let rows = session_list(&env, args);
+        let mut ids: Vec<String> =
+            rows.iter().map(|r| r["session"].as_str().unwrap().to_owned()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&["--cwd", &real]), ["sess-1", "sess-2"]);
+
+    let rows = session_list(&env, &["--cwd", &real, "--", AGENT]);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let one = row(&rows, "sess-1");
+    assert_eq!((&one["state"], &one["source"]), (&"idle".into(), &"both".into()), "{one}");
+    assert!(one["pid"].is_u64(), "{one}");
+    let two = row(&rows, "sess-2");
+    assert_eq!((&two["state"], &two["source"]), (&"idle".into(), &"brnr".into()), "{two}");
+    assert_eq!(row(&rows, "old-1")["source"], "agent");
+    assert_eq!(ids(&["--include", "active", "--cwd", &real, "--", AGENT]), ["sess-1", "sess-2"]);
+    assert_eq!(ids(&["--include", "active", "--cwd", &format!("{real}/")]), ["sess-1", "sess-2"]);
+    let other = env.dir.join("other");
+    fs::create_dir_all(&other).unwrap();
+    assert!(ids(&["--cwd", &other.to_string_lossy()]).is_empty());
 }
 
 /// `--include` keeps sessions by state: `active` those open in a process,
@@ -1786,12 +1860,15 @@ fn adr_0003_take_over_moves_a_session() {
 
 /// A process that doesn't answer still holds its session's lock: it isn't
 /// resumed elsewhere, and session list (an active session's, joined with the
-/// agent's or not) and process list say which process has it without asking
-/// it.
+/// agent's or not, or its cwd's by its transcript) and process list say
+/// which process has it without asking it.
 #[test]
 fn adr_0003_a_silent_process_keeps_its_session() {
     let env = Env::new("c-silent");
     env.start(&[]);
+    // Its transcript written: what says it is this cwd's when its process
+    // can't.
+    env.ok(&["event", "log", "sess-1"]);
     let pid = env.host_pid();
     kill(pid, libc::SIGSTOP);
     // Each waits for the stopped process to answer, side by side.
@@ -1804,8 +1881,13 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     let ps = spawn(&["process", "list", "--json"]);
     let sessions = spawn(&["session", "list", "--json", "--", AGENT]);
     let table = spawn(&["session", "list", "--", AGENT]);
-    let [resume, take_over, list, ps, sessions, table] =
-        [resume, take_over, list, ps, sessions, table].map(|c| c.wait_with_output().unwrap());
+    let (dir, elsewhere) = (env.dir.to_string_lossy(), env.dir.join("elsewhere"));
+    fs::create_dir_all(&elsewhere).unwrap();
+    let in_dir = spawn(&["session", "list", "--json", "--cwd", &dir]);
+    let there = spawn(&["session", "list", "--json", "--cwd", &elsewhere.to_string_lossy()]);
+    let [resume, take_over, list, ps, sessions, table, in_dir, there] =
+        [resume, take_over, list, ps, sessions, table, in_dir, there]
+            .map(|c| c.wait_with_output().unwrap());
     kill(pid, libc::SIGCONT);
     let refused = format!("sess-1 is running in process {pid}");
     assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
@@ -1830,6 +1912,15 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     let table = stdout(&table);
     let row = table.lines().find(|l| l.starts_with("sess-1")).unwrap_or_else(|| panic!("{table}"));
     assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
+    // With --cwd and no agent, its transcript says which cwd's it is; its
+    // cwd still unknown.
+    let in_dir: Value = serde_json::from_slice(&in_dir.stdout).unwrap();
+    assert_eq!(in_dir.as_array().unwrap().len(), 1, "{in_dir}");
+    let (one, state) = (&in_dir[0]["session"], &in_dir[0]["state"]);
+    assert_eq!((one, state), (&"sess-1".into(), &"unreachable".into()), "{in_dir}");
+    assert_eq!(in_dir[0]["cwd"], Value::Null, "{in_dir}");
+    let there: Value = serde_json::from_slice(&there.stdout).unwrap();
+    assert_eq!(there, serde_json::json!([]));
     assert_eq!(env.hosts().len(), 1, "a second process started");
 }
 
@@ -2769,6 +2860,25 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
     let err = env.fails(&["queue", "drop", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr queue drop <session> <message>"), "{err}");
     assert!(!err.contains("queue list"), "{err}");
+    // A verb's --help, or -h, is its usage, wherever it is before a `--`.
+    for (args, want) in [
+        (&["session", "status", "--help"][..], "brnr session status <session> [--json]"),
+        (&["process", "stop", "--help"], "brnr process stop <pid>"),
+        (&["queue", "drop", "sess-1", "-h"], "brnr queue drop <session> <message> [--json]"),
+        (&["prompt", "send", "sess-1", "--wait", "--help"], "brnr prompt send <session> ["),
+    ] {
+        let usage = env.ok(args);
+        assert!(usage.starts_with(&format!("usage:\n  {want}")), "{args:?}: {usage}");
+        assert!(usage.ends_with("(brnr --help for every command)\n"), "{args:?}: {usage}");
+        assert_eq!(usage.matches("\n  brnr ").count(), 1, "{args:?}: {usage}");
+    }
+    let send = env.ok(&["prompt", "send", "--help"]);
+    assert!(send.contains("(<text>... | -)"), "its usage's every line: {send}");
+    // After `--`, it is the command's (or the message's).
+    let err = env.fails(&["event", "notify", "nosuch", "--", "echo", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
+    let err = env.fails(&["prompt", "send", "nosuch", "--", "--help"]);
+    assert!(err.contains("no session nosuch"), "{err}");
 }
 
 /// `config get` lists every config option, its category, value and
@@ -2831,7 +2941,8 @@ fn adr_0063_config_get_lists_options_choices_and_modes() {
 
 /// `config get --mode`, `--model`, `--thought-level` and `--option <o>`
 /// narrow the list to those options, found as `config set` finds them,
-/// in the list's order; one the agent doesn't have fails (P7).
+/// in the list's order. It lists only the options the agent advertised, so
+/// one the agent doesn't have fails (P7).
 #[test]
 fn adr_0063_config_get_narrows_by_category_and_id() {
     let env = Env::new("c-narrow").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2873,8 +2984,10 @@ fn adr_0063_config_get_narrows_by_category_and_id() {
 /// category and `--option` by id, resolved as a start's settings are
 /// (ADR 58): each sent once, the mode first, then the model, the thought
 /// level and the rest; two values for one setting fail before anything is
-/// sent, as does one the agent has no option for (P7); one the agent
-/// refuses says what was set before it (P3).
+/// sent, as does a mode, model or thought level the agent has no option
+/// for (P7); an option by id the agent hasn't advertised is sent (ADR 28),
+/// and when the agent refuses it the error says what was set before it
+/// (P3).
 #[test]
 fn adr_0063_config_set_by_category_and_by_id() {
     let env = Env::new("c-set").agent("MODEL_ID", "llm").agent("THOUGHT_OPTION", "effort");
@@ -2942,7 +3055,8 @@ fn adr_0063_config_set_by_category_and_by_id() {
     assert_eq!(sent().len(), 5, "a setting that failed reached the agent");
     assert!(env.fails(&["config", "set", "sess-1"]).starts_with("usage:\n  brnr config set"));
 
-    // The agent refuses one: those before it are set, and said.
+    // An option the agent hasn't advertised is sent, after the mode, and
+    // the agent refuses it: the mode before it is set, and said.
     let err = env.fails(&["config", "set", "sess-1", "--mode", "default", "--option", "bogus=1"]);
     assert!(
         err.contains("setting bogus=1 failed: bad option bogus=1 (already set: mode default)"),
@@ -3065,11 +3179,18 @@ fn adr_0063_thought_level_is_the_option_of_its_category() {
     env.start(&["--thought-level", "high"]);
     assert_eq!(sets(&env), ["effort=high"]);
 
-    // An agent with no thought level.
-    let env = Env::new("c-thought-none");
-    let err = env.fails(&new_args(&["--thought-level", "high", "--prompt", "hi"]));
+    // Two values for it from one flag fail before anything is set.
+    let err = env.fails(&new_args(&["--thought-level", "high", "--thought-level", "low"]));
+    assert!(err.contains("--thought-level high and --thought-level low disagree"), "{err}");
+    assert_eq!(sets(&env), ["effort=high"], "{err}");
+
+    // An agent with no thought level: nothing is set, not even the model,
+    // and nothing is prompted.
+    let env = Env::new("c-thought-none").agent("MODEL_ID", "llm");
+    let args = ["--thought-level", "high", "--model", "large", "--prompt", "hi"];
+    let err = env.fails(&new_args(&args));
     assert!(err.contains("setting thought level high: the agent offers no thought level"), "{err}");
-    assert!(env.prompts().is_empty());
+    assert!(sets(&env).is_empty() && env.prompts().is_empty(), "{err}");
 }
 
 /// `--permission-timeout` is the profile's `permission_timeout` as a flag,

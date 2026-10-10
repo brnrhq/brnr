@@ -623,6 +623,12 @@ fn adr_0045_a_panic_prints_a_link_to_report_it() {
     assert!(url.contains("&what=%60brnr%20session%20list%60%20panicked%3A"), "{url}");
     assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
     assert!(!url.contains(' '), "{url}");
+    // A group's command is named with its verb, not its arguments.
+    let args = ["prompt", "send", "sess-1", "x"];
+    let out = env.brnr(&args).env("BRNR_TEST_PANIC", "cli").output().unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(101), "{err}");
+    assert!(err.contains("&what=%60brnr%20prompt%20send%60%20panicked%3A"), "{err}");
 
     let args = new_args(&["--foreground", "--prompt", "hi"]);
     let out =
@@ -989,8 +995,8 @@ fn adr_0006_huge_message_reaches_watchers() {
 }
 
 /// A reply bigger than a peer's whole queue reaches every kind of peer that
-/// keeps up, and none is cut off for it (ADR 60): `start --wait`, `send
-/// --wait`, a watcher and a bridge, the last two asking for `acp` too, so
+/// keeps up, and none is cut off for it (ADR 60): `session new --wait`,
+/// `prompt send --wait`, a watcher and a bridge, the last two asking for `acp` too, so
 /// that the reply comes to them twice at once, as its ACP message and as
 /// its event.
 #[test]
@@ -1004,8 +1010,8 @@ fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
     ));
     let size = 20_000_000;
     let out = env.run(&new_args(&["--wait", "--prompt", &format!("big {size}")]));
-    assert!(out.status.success(), "start --wait: {}", stderr(&out));
-    assert_eq!(out.stdout.len(), size + 1, "start --wait: {}", stderr(&out));
+    assert!(out.status.success(), "session new --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "session new --wait: {}", stderr(&out));
 
     let mut watch = env
         .brnr(&["event", "watch", "sess-1", "--json", "--events", "all"])
