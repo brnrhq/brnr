@@ -1,5 +1,6 @@
 //! Strict mode (ADR 41 in docs/adr): stable ACP to the letter, chosen per
-//! process (`strict = true` in a profile, `--strict` on `acp` and `start`).
+//! process (`strict = true` in a profile, `--strict` on `acp`, `session new`
+//! and `session resume`).
 //!
 //! By default brnr also speaks the conventions current agents and editors
 //! implement alike, ahead of the spec. Strict mode doesn't: what needs one

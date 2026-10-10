@@ -430,40 +430,74 @@ fn adr_0027_a_timeout_never_allows() {
 }
 
 /// The permission timeout answers with the request's `reject_once` option;
-/// one without has its turn cancelled (`session/cancel`), which answers it
-/// `cancelled`. Never `reject_always`, which nobody chose.
+/// one without exactly one has its turn cancelled (`session/cancel`), which
+/// answers it, and every request pending in the session, `cancelled`. Never
+/// `reject_always`, which nobody chose. `permission show` says which it
+/// will be, before it is.
 #[test]
 fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
-    let timeout = "[profiles.default.headless]\npermission_timeout = 1\n";
+    // Long enough for `permission show` to be asked before it fires.
+    let timeout = "[profiles.default.headless]\npermission_timeout = 3\n";
+    let predicts = |env: &Env, how: &str| {
+        let pending = || env.ok(&["permission", "requests"]).contains("p1");
+        assert!(wait_for(Duration::from_secs(5), pending), "never asked");
+        let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
+        assert!(shown.contains(&format!("{how} in ")), "{shown}");
+        assert!(shown.contains("s if nobody answers"), "{shown}");
+        assert!(outcome(env, "perm-1").is_none(), "answered before it was shown");
+    };
     let env = Env::new("s-timeoutonce");
     env.write_config(timeout);
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "unanswered");
+    predicts(&env, "rejected once");
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
     assert!(env.calls_of("session/cancel").is_empty(), "cancelled a turn it could answer");
     let log = env.ok(&["event", "log", "sess-1"]);
     assert!(log.contains("permission p1 rejected with reject (reject_once), by timeout"), "{log}");
     env.stop();
 
-    let options = r#"[{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+    let never = r#"[{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
         {"optionId": "never", "name": "Never", "kind": "reject_always"}]"#;
-    let env = Env::new("s-timeoutcancel").agent("PERM_OPTIONS", options);
-    env.write_config(timeout);
-    env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "unanswered");
-    assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
-    let calls = env.calls();
-    let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what);
-    let cancel = at(&|c| c["method"] == "session/cancel" && c["params"]["sessionId"] == "sess-1");
-    let answer = at(&|c| c["id"] == "perm-1" && c.get("method").is_none());
-    assert!(cancel.is_some() && cancel < answer, "{calls:?}");
-    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
-    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
-    let log = env.ok(&["event", "log", "sess-1"]);
-    assert!(log.contains("permission p1 cancelled, by timeout"), "{log}");
-    env.stop();
+    let twice = r#"[{"optionId": "no", "name": "No", "kind": "reject_once"},
+        {"optionId": "nope", "name": "Nope", "kind": "reject_once"}]"#;
+    // No reject_once, and two; the second with two requests pending at once.
+    for (name, options, asks) in [("s-timeoutcancel", never, 1), ("s-timeouttwice", twice, 2)] {
+        let env = Env::new(name).agent("PERM_OPTIONS", options);
+        env.write_config(timeout);
+        env.start(&[]);
+        env.ok(&["prompt", "send", "sess-1", &format!("perm edit {asks}")]);
+        predicts(&env, "its turn cancelled");
+        let requests: Vec<String> = (1..=asks).map(|n| format!("perm-{n}")).collect();
+        let answered = || requests.iter().all(|r| outcome(&env, r).is_some());
+        assert!(wait_for(Duration::from_secs(10), answered), "{name}: unanswered");
+        let calls = env.calls();
+        let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what);
+        let cancels: Vec<_> = env.calls_of("session/cancel");
+        assert_eq!(cancels.len(), 1, "{name}: {cancels:?}");
+        let cancel =
+            at(&|c| c["method"] == "session/cancel" && c["params"]["sessionId"] == "sess-1");
+        for request in &requests {
+            assert_eq!(
+                outcome(&env, request).unwrap(),
+                json!({ "outcome": "cancelled" }),
+                "{name}"
+            );
+            let answer = at(&|c| c["id"] == request.as_str() && c.get("method").is_none());
+            assert!(cancel.is_some() && cancel < answer, "{name}: {calls:?}");
+        }
+        let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+        assert!(wait_for(Duration::from_secs(5), ended), "{name}: the turn didn't end");
+        let log = env.ok(&["event", "log", "sess-1"]);
+        for n in 1..=asks {
+            assert!(
+                log.contains(&format!("permission p{n} cancelled, by timeout")),
+                "{name}: {log}"
+            );
+        }
+        env.stop();
+    }
 }
 
 /// A request is answered only as the request of its own session.
