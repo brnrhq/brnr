@@ -91,12 +91,12 @@ fn recovered(env: &Env, unrecorded: bool) {
     };
     assert!(report.contains(want), "{report}");
     assert!(env.hosts().is_empty(), "runtime metadata survived: {:?}", env.hosts());
-    let listed: Value = serde_json::from_str(&env.ok(&["ps", "--json"])).unwrap();
+    let listed: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3).
-    env.start(&["--resume", "sess-1"]);
-    assert!(env.ok(&["list"]).contains("sess-1"));
+    env.resume("sess-1", &[]);
+    assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     env.stop();
 }
 
@@ -108,7 +108,7 @@ fn adr_0007_seeded_setup_failure_never_commits_a_prompt() {
                 .agent("FAULT_PHASE", "setup")
                 .agent("STUBBORN", "child");
             let mut start = env
-                .brnr(&start_args(&["--prompt", "must not run"]))
+                .brnr(&new_args(&["--prompt", "must not run"]))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -145,7 +145,7 @@ fn adr_0011_seeded_agent_crash_records_death_and_releases_session() {
         env.start(&[]);
         let (host, agent) = processes(&env);
         let descendant = Process::new(env.child_pid());
-        let _ = env.run(&["send", "sess-1", "fault"]);
+        let _ = env.run(&["prompt", "send", "sess-1", "fault"]);
         let fault = marker(&env);
         assert_eq!(fault["seed"], seed.parse::<u64>().unwrap());
         host.gone();
@@ -162,9 +162,9 @@ fn adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session() {
         let env = fixture(&format!("chaos-host-{seed}"), "flood", seed);
         env.start(&[]);
         let (host, agent) = processes(&env);
-        env.ok(&["send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "fault"]);
         marker(&env);
-        env.ok(&["log", "sess-1"]); // Flush the session identity before SIGKILL.
+        env.ok(&["event", "log", "sess-1"]); // Flush the session identity before SIGKILL.
         host.signal(libc::SIGKILL);
         host.gone();
         agent.gone(); // The severed output pipe, without test-assisted cleanup.
@@ -196,7 +196,9 @@ fn adr_0011_killed_proxy_mid_fault_stops_host_and_agent() {
             assert!(wait_for(WAIT, || env.calls_of("session/new").len() == 1));
             // Wait for the host to own the session, rather than assuming the
             // agent's receipt of session/new means its reply was processed.
-            assert!(wait_for(WAIT, || env.ok(&["list"]).contains("sess-1")));
+            assert!(wait_for(WAIT, || env
+                .ok(&["session", "list", "--include", "active"])
+                .contains("sess-1")));
             let (host, agent) = processes(&env);
             let descendant = Process::new(env.child_pid());
             writeln!(
@@ -232,7 +234,7 @@ fn adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         assert!(wait_for(WAIT, || fs::read_to_string(&path)
             .is_ok_and(|s| s.trim().parse::<i32>().is_ok())));
         let bridge = Process::new(fs::read_to_string(path).unwrap().trim().parse().unwrap());
-        env.ok(&["send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "fault"]);
         marker(&env);
         bridge.signal(libc::SIGKILL);
         bridge.gone();
@@ -240,7 +242,7 @@ fn adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         assert!(host.running() && agent.running());
         assert!(env.ok(&["doctor", "--fix"]).contains("no process died without recording it"));
         assert_eq!(env.host_pid(), host.pid);
-        assert!(env.fails(&start_args(&["--resume", "sess-1"])).contains("running in process"));
+        assert!(env.fails(&resume_args("sess-1", &[])).contains("running in process"));
         env.stop();
         host.gone();
         agent.gone();

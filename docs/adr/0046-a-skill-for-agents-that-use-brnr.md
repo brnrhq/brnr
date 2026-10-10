@@ -4,6 +4,14 @@ Proposed 2026-10-08. Implemented: `skills/brnr/`, printed and installed by
 `brnr skill`, its examples run as tests. Not yet: evals with a real agent
 (Consequences). Resolves #26.
 
+Amended by 63: the skill's commands are grouped: `start` is
+`session new`; `list` and `status` are `session list` and
+`session status`; `send` is `prompt send`; `pending`, `show`, `approve` and
+`deny` are `permission requests`, `permission show`, `permission allow` and
+`permission reject`; `close` is `session close`, and `stop` `process stop`;
+`wait`, `log`, `watch` and `notify` are `event wait`, `event log`,
+`event watch` and `event notify`.
+
 ## Context
 
 Agents won't only help people set brnr up. They will use it to run other

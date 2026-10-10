@@ -1,15 +1,15 @@
 //! The one request a brnr process is started with (ADR 8 in docs/adr).
 //!
-//! Whoever starts a process, `brnr start` or `brnr acp`, resolves everything
-//! first: the profile, the agent and the bridges' commands (a bare name
-//! installed next to brnr found there, see spawn.rs), the cwd, the role and
-//! what goes with it.
+//! Whoever starts a process, `brnr session new` (or `resume`) or `brnr acp`,
+//! resolves everything first: the profile, the agent and the bridges'
+//! commands (a bare name installed next to brnr found there, see spawn.rs),
+//! the cwd, the role and what goes with it.
 //! It writes the request as one JSON value on the process's stdin and closes
 //! it. The process reads its stdin to EOF before doing anything else, and
 //! refuses to start on a request cut short; it reads no config and takes no
 //! flags. Its fd 3 carries the editor link (`acp`) or the start channel
-//! (`start`, ADR 7); an editor's process has the proxy's signal link on fd 4
-//! as well (see frame.rs), and doesn't start without it.
+//! (`session new` and `resume`, ADR 7); an editor's process has the proxy's
+//! signal link on fd 4 as well (see frame.rs), and doesn't start without it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -27,7 +27,7 @@ use crate::{host, log, paths, spawn};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    /// The profile's name, for the record (`list --inactive`, `--resume`).
+    /// The profile's name, for the record (`session resume`).
     pub profile: Option<String>,
     /// The agent's command as it is run: an adapter found next to brnr (see
     /// spawn.rs), a profile's with `~` expanded.
@@ -63,7 +63,8 @@ pub struct Editor {
     pub features: BTreeSet<Feature>,
 }
 
-/// `brnr start`: a headless session, reported on the start channel at fd 3.
+/// `brnr session new` or `resume`: a headless session, reported on the
+/// start channel at fd 3.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Headless {
@@ -72,9 +73,10 @@ pub struct Headless {
     /// brnr has a transcript of the session resumed: what a `session/load`
     /// replays is in it already, and isn't recorded again (ADR 57).
     pub transcript: bool,
-    /// What the start's flags set (`--mode`, `--model`, `--set`), and what
-    /// the profile does (`mode`, `config`): the flags win, setting by
-    /// setting, once the agent has said which option is which (ADR 58).
+    /// What the start's flags set (`--mode`, `--model`, `--thought-level`,
+    /// `--option`), and what the profile does (`mode`, `model`,
+    /// `thought_level`, `options`): the flags win, setting by setting, once
+    /// the agent has said which option is which (ADR 58).
     pub settings: Settings,
     pub defaults: Settings,
     /// As ACP has them.
@@ -88,21 +90,23 @@ pub struct Headless {
     pub stop_when_idle: Option<u64>,
     pub permission_timeout: Option<u64>,
     /// What the start channel is subscribed to once the start commits: the
-    /// events `start --wait` follows its turn by; none without `--wait`.
+    /// events `--wait` follows its turn by; none without `--wait`.
     pub events: Vec<String>,
-    /// `start --foreground`: the process is `start`'s child, and shows the
-    /// session on its stdout.
+    /// `--foreground`: the process is the child of `session new` (or
+    /// `resume`), and shows the session on its stdout.
     pub foreground: Option<Foreground>,
 }
 
-/// The mode, the model (the config option whose category is `model`,
-/// ADR 28) and config options by id, to set before the prompt.
+/// The mode, the model and the thought level (the config options of those
+/// categories, ADR 28) and config options by id: what one source sets, a
+/// start's flags or its profile, or `config set` (ADR 58, ADR 63).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub mode: Option<String>,
     pub model: Option<String>,
-    pub config: BTreeMap<String, String>,
+    pub thought_level: Option<String>,
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]

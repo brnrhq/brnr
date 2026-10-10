@@ -3,6 +3,9 @@
 Accepted (former decisions 17 and 23); reviewed 2026-10-07. Implemented.
 Resolves review item 4 with ADR 35.
 
+Amended by 63: `brnr notify` is `brnr event notify`, with the same flags,
+and `watch` is `event watch`.
+
 ## Context
 
 Notifications are what most people want from a bridge: a message when an

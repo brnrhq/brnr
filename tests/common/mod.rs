@@ -78,10 +78,18 @@ impl Env {
         out
     }
 
-    /// `brnr start [args] -- fake_agent.py`, which must succeed.
+    /// `brnr session new [args] -- fake_agent.py`, which must succeed.
     pub fn start(&self, args: &[&str]) -> Output {
-        let out = self.run(&start_args(args));
-        assert!(out.status.success(), "start failed: {}", stderr(&out));
+        let out = self.run(&new_args(args));
+        assert!(out.status.success(), "session new failed: {}", stderr(&out));
+        out
+    }
+
+    /// `brnr session resume <session> [args] -- fake_agent.py`, which must
+    /// succeed.
+    pub fn resume(&self, session: &str, args: &[&str]) -> Output {
+        let out = self.run(&resume_args(session, args));
+        assert!(out.status.success(), "session resume failed: {}", stderr(&out));
         out
     }
 
@@ -100,14 +108,14 @@ impl Env {
         hosts[0]["host_pid"].as_i64().unwrap() as i32
     }
 
-    /// The one running process's pid, as `brnr ps` and `--pid` have it.
+    /// The one running process's pid, as `brnr process list` and `--pid` have it.
     pub fn pid(&self) -> String {
         self.host_pid().to_string()
     }
 
-    /// `brnr stop` for the one running process, which must succeed.
+    /// `brnr process stop` for the one running process, which must succeed.
     pub fn stop(&self) {
-        self.ok(&["stop", &self.pid()]);
+        self.ok(&["process", "stop", &self.pid()]);
     }
 
     pub fn prompts(&self) -> Vec<String> {
@@ -226,8 +234,17 @@ pub fn script(path: &Path, text: &str) {
     fs::remove_file(&draft).unwrap();
 }
 
-pub fn start_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
-    let mut all = vec!["start"];
+/// `session new [args] -- fake_agent.py`.
+pub fn new_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = vec!["session", "new"];
+    all.extend_from_slice(args);
+    all.extend_from_slice(&["--", AGENT]);
+    all
+}
+
+/// `session resume <session> [args] -- fake_agent.py`.
+pub fn resume_args<'a>(session: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = vec!["session", "resume", session];
     all.extend_from_slice(args);
     all.extend_from_slice(&["--", AGENT]);
     all

@@ -8,6 +8,15 @@ updates carry on from; the editor's acknowledgement of a `$/cancel_request`
 (an error) is dropped without telling it. Not yet tried against real editors
 (see Consequences).
 Amends former decisions 9 and 11; resolves review item 6 with ADR 28.
+Amended by 63: the table's commands are grouped: `send` is `prompt send`
+(`--context` too), `queue --clear-context` is `queue clear --context`,
+`cancel` is `prompt cancel`, `approve` and `deny` are `permission allow` and
+`reject`, `close` is `session close` and `start --resume --take-over` is
+`session resume --take-over`; `show` is `permission show`, `stop` is
+`process stop` and `fork` is `session fork`. The `approve` action is
+`permission` ("Allowed via brnr", "Rejected via brnr"), and `settings` is
+`config` (`config set`). `session new --pid` and `session resume --pid` are
+refused on an editor's process, as `fork` is.
 
 ## Context
 
@@ -41,7 +50,7 @@ always allowed.
 | `context` | `send --context`, `queue --clear-context` | Appended to the editor's own next prompt, and shown as "Context via brnr" (ADR 5). |
 | `cancel` | `cancel` | The host answers the agent's pending permission requests `cancelled`, as ACP requires of whoever cancels, and withdraws them from the editor with `$/cancel_request`; late answers are handled as for `approve`. |
 | `approve` | `approve`, `deny` | When a request is answered from outside, the host withdraws it from the editor with `$/cancel_request` (stable ACP: a notification that cancels a pending request), sends a `tool_call_update` for the request's tool call, and tells the editor in the session ("Approved via brnr" or "Denied via brnr", in the echo's form, ADR 5) that it was approved or denied, and by whom. If the editor answers anyway, its answer is dropped (the agent must not get two) and the editor is told in the session that it was already approved or denied, and by whom. |
-| `settings` | `mode`, `model`, `config` | The host sends the editor `current_mode_update`, or `config_option_update` made from the response's `configOptions`. The agent doesn't: the change was the host's request, and ACP answers the requester (ADR 28). |
+| `config` | `config set` | The host sends the editor `current_mode_update`, or `config_option_update` made from the response's `configOptions`. The agent doesn't: the change was the host's request, and ACP answers the requester (ADR 28). |
 | `close` | `close`, `start --resume --take-over` | Cancel a running turn; tell the editor in the session (a completed tool call, "Session closed via brnr", or "Session taken over by brnr (process 4466)"); `session/close` to the agent. Afterwards the host answers the editor's requests for that session with an error saying where it continues, but for a load or resume, which opens it again where no other process holds it (ADR 3). |
 
 - `brnr show` on an editor's request says where it can be answered: in the

@@ -18,13 +18,13 @@
 //! A panic on the main thread as the start is under way, before the event
 //! loop runs, unwinds to `Host::start`, which does the same with what the
 //! start has made by then: the agent, the log, bridges, the display; no
-//! sessions yet (see `Host::died_starting`). brnr start, or the editor, is
-//! told on fd 3, as of any start that fails, and the process exits 101.
+//! sessions yet (see `Host::died_starting`). brnr session new, or the editor,
+//! is told on fd 3, as of any start that fails, and the process exits 101.
 //!
 //! In the foreground, the hook also prints the link to report the panic
 //! (ADR 45), as the CLI does: there, stderr is the user's terminal or a
 //! supervisor's journal. Detached, stderr is the host log, and the link is
-//! for whoever is told of the panic: `brnr start` or `brnr acp`, for a
+//! for whoever is told of the panic: `brnr session new` or `brnr acp`, for a
 //! start that fails with it.
 //!
 //! What can't be told: a panic on the logger's thread leaves nothing to
@@ -54,9 +54,10 @@ static PANICKED: OnceLock<String> = OnceLock::new();
 /// The event loop's channel, to wake it.
 static WAKE: OnceLock<SyncSender<Ev>> = OnceLock::new();
 
-/// The process runs in the foreground (ADR 9): its stderr is where its user
-/// looks, so a panic's report link goes there too (ADR 45).
-static FOREGROUND: AtomicBool = AtomicBool::new(false);
+/// The process runs in the foreground (ADR 9), started by this command: its
+/// stderr is where its user looks, so a panic's report link goes there too
+/// (ADR 45).
+static FOREGROUND: OnceLock<&str> = OnceLock::new();
 
 /// `BRNR_TEST_PANIC` was set (see [`test_panic`]), and set to `start` (see
 /// [`test_panic_starting`]).
@@ -73,8 +74,8 @@ pub(super) fn install() {
     panic::set_hook(Box::new(move |info| {
         shown(info);
         let panic = bug::describe(info);
-        if FOREGROUND.load(Relaxed) {
-            eprintln!("{}", bug::link(&panic, "start --foreground"));
+        if let Some(command) = FOREGROUND.get() {
+            eprintln!("{}", bug::link(&panic, &format!("{command} --foreground")));
         }
         if PANICKED.set(panic).is_ok()
             && let Some(wake) = WAKE.get()
@@ -85,9 +86,10 @@ pub(super) fn install() {
     }));
 }
 
-/// The process runs in the foreground: a panic prints the link to report it.
-pub(super) fn foreground() {
-    FOREGROUND.store(true, Relaxed);
+/// The process runs in the foreground, started by `command` (`session
+/// new`): a panic prints the link to report it.
+pub(super) fn foreground(command: &'static str) {
+    let _ = FOREGROUND.set(command);
 }
 
 /// From now on a panic wakes the event loop on `wake`.

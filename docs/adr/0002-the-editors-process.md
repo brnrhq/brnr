@@ -9,6 +9,9 @@ Amended by 61: the editor's requests reach the agent with an id of the
 host's, and their answers come back with the editor's; in a line only the
 id changes.
 
+Amended by 63: `brnr start --resume <session>` is
+`brnr session resume <session>`.
+
 ## Context
 
 The editor runs brnr as its agent. brnr needs the agent in a process the

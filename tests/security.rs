@@ -1,6 +1,6 @@
 //! The claims of docs/threat-model.md that no other test checks: who can
 //! reach a process and its files (P13), what the agent's text can't do
-//! (P8), how approvals end unanswered (ADR 27), what is recorded of secrets
+//! (P8), how approvals end unanswered (ADR 27, 63), what is recorded of secrets
 //! (ADR 25), and what `brnr acp` passes unchanged (P1). Against the fake
 //! agent (fake_agent.py), each test in its own directories.
 
@@ -59,7 +59,7 @@ fn private_dir_error(err: &str) {
 #[test]
 fn what_brnr_makes_is_private_whatever_the_umask() {
     let env = Env::new("s-umask");
-    let mut start = env.brnr(&start_args(&["--prompt", "hello"]));
+    let mut start = env.brnr(&new_args(&["--prompt", "hello"]));
     let out = with_umask(&mut start, 0).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
@@ -69,7 +69,7 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     assert_eq!(mode(&run.join("sessions")), 0o700);
     assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
     // The transcripts are the logger thread's to write (ADR 48).
-    env.ok(&["log", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
     assert!(home.len() >= 7, "{home:?}");
     for path in home {
@@ -90,10 +90,15 @@ fn a_runtime_dir_others_can_use_is_refused() {
         let run = env.dir.join("run");
         fs::create_dir(&run).unwrap();
         chmod(&run, open);
-        private_dir_error(&stderr(&env.run(&start_args(&[]))));
+        private_dir_error(&stderr(&env.run(&new_args(&[]))));
         assert!(fs::read_dir(&run).unwrap().next().is_none(), "{open:o}: wrote into it");
         assert!(env.calls().is_empty(), "{open:o}: an agent was started");
-        for args in [&["list"][..], &["ps"], &["pending"], &["send", "sess-1", "hi"]] {
+        for args in [
+            &["session", "list"][..],
+            &["process", "list"],
+            &["permission", "requests"],
+            &["prompt", "send", "sess-1", "hi"],
+        ] {
             private_dir_error(&env.fails(args));
         }
         assert_eq!(mode(&run), open);
@@ -110,7 +115,12 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
     fs::create_dir(&target).unwrap();
     chmod(&target, 0o700);
     symlink(&target, env.dir.join("run")).unwrap();
-    for args in [&["list"][..], &["ps"], &["pending"], &["approve", "sess-1", "p1"]] {
+    for args in [
+        &["session", "list"][..],
+        &["process", "list"],
+        &["permission", "requests"],
+        &["permission", "allow", "sess-1", "p1"],
+    ] {
         private_dir_error(&env.fails(args));
     }
     assert!(fs::read_dir(&target).unwrap().next().is_none());
@@ -130,9 +140,9 @@ fn a_runtime_dir_of_another_users_is_refused() {
         return;
     };
     let env = Env::new("s-theirs");
-    let out = env.brnr(&start_args(&[])).env("BRNR_DIR", dir).output().unwrap();
+    let out = env.brnr(&new_args(&[])).env("BRNR_DIR", dir).output().unwrap();
     private_dir_error(&stderr(&out));
-    let out = env.brnr(&["list"]).env("BRNR_DIR", dir).output().unwrap();
+    let out = env.brnr(&["session", "list"]).env("BRNR_DIR", dir).output().unwrap();
     assert!(!out.status.success());
     private_dir_error(&stderr(&out));
 }
@@ -160,9 +170,9 @@ fn lock_failed(env: &Env) -> bool {
 fn adr_0003_session_locks_are_private_and_never_followed() {
     let env = Env::new("s-locks");
     let sessions = session_locks(&env, 0o777);
-    private_dir_error(&stderr(&env.run(&start_args(&["--resume", "old-1"]))));
+    private_dir_error(&stderr(&env.run(&resume_args("old-1", &[]))));
     assert!(env.calls_of("session/resume").is_empty());
-    private_dir_error(&env.fails(&start_args(&[])));
+    private_dir_error(&env.fails(&new_args(&[])));
     assert!(lock_failed(&env), "no lock-failed");
     assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
 
@@ -172,8 +182,8 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
     fs::write(&victim, "keep me").unwrap();
     symlink(&victim, sessions.join("old-1.lock")).unwrap();
     symlink(&victim, sessions.join("sess-1.lock")).unwrap();
-    assert!(!env.run(&start_args(&["--resume", "old-1"])).status.success());
-    let err = env.fails(&start_args(&[]));
+    assert!(!env.run(&resume_args("old-1", &[])).status.success());
+    let err = env.fails(&new_args(&[]));
     assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
     assert!(lock_failed(&env), "no lock-failed");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
@@ -186,15 +196,17 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
 fn no_approval_goes_through_a_dir_others_can_use() {
     let env = Env::new("s-approve");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
     let run = env.dir.join("run");
     chmod(&run, 0o770);
-    private_dir_error(&env.fails(&["approve", "sess-1", "p1"]));
+    private_dir_error(&env.fails(&["permission", "allow", "sess-1", "p1"]));
     chmod(&run, 0o700);
-    assert!(env.ok(&["pending"]).contains("p1"));
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
     assert!(outcome(&env, "perm-1").is_none());
-    env.ok(&["deny", "sess-1", "p1"]);
+    env.ok(&["permission", "reject", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
 }
 
@@ -265,7 +277,7 @@ fn the_process_listens_on_no_network() {
 
 /// Session `old-1`'s project folder, once a process has served it and gone.
 fn served_once(env: &Env) -> PathBuf {
-    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+    env.resume("old-1", &["--wait", "--prompt", "reply hi"]);
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
@@ -297,8 +309,8 @@ fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() 
         dirs.iter().for_each(|d| chmod(d, parents));
         chmod(&events, 0o644);
         chmod(&raw, 0o644);
-        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
-        env.ok(&["log", "old-1"]); // Once the transcript is written (ADR 48).
+        env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
+        env.ok(&["event", "log", "old-1"]); // Once the transcript is written (ADR 48).
         assert!(fs::read_to_string(&events).unwrap().contains("private-token"), "{name}");
         for path in tree(&home) {
             let want = if path.is_dir() { 0o700 } else { 0o600 };
@@ -326,7 +338,7 @@ fn adr_0059_a_symlinked_transcript_is_never_followed() {
     let events = project.join("old-1.jsonl");
     fs::remove_file(&events).unwrap();
     symlink(&victim, &events).unwrap();
-    env.start(&["--resume", "old-1", "--wait", "--prompt", "reply private-token"]);
+    env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
     let failed = || everything_in(&env.dir.join("home/hosts")).contains("session-log-failed");
     assert!(wait_for(Duration::from_secs(5), failed), "no session-log-failed");
     let hosts = everything_in(&env.dir.join("home/hosts"));
@@ -342,7 +354,7 @@ fn adr_0059_a_symlinked_transcript_is_never_followed() {
     let elsewhere = env.dir.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     symlink(&elsewhere, env.dir.join("home")).unwrap();
-    let err = env.fails(&start_args(&["--prompt", "private-token"]));
+    let err = env.fails(&new_args(&["--prompt", "private-token"]));
     assert!(err.contains("home: is a symlink, so brnr won't write a transcript there"), "{err}");
     assert!(env.prompts().is_empty(), "prompted");
     assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "wrote through it");
@@ -362,17 +374,61 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     // `-` and `_` is escaped, byte by byte.
     let file = "%2e%2e%2f%2e%2e%2f%2e%2e%2f%1b%5b2%4a%2fescape";
     // The transcript is the logger thread's to write (ADR 48).
-    env.ok(&["log", id]);
+    env.ok(&["event", "log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
     assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
     let made = tree(&env.dir);
     let escaped: Vec<_> = made.iter().filter(|p| p.ends_with("escape")).collect();
     assert!(escaped.is_empty(), "{escaped:?}");
-    let list = env.ok(&["list"]);
+    let list = env.ok(&["session", "list"]);
     assert!(!list.contains('\x1b') && list.contains("escape"), "{list:?}");
-    env.ok(&["send", id, "hi"]);
+    env.ok(&["prompt", "send", id, "hi"]);
     env.stop();
+}
+
+/// `session delete --purge` deletes only the session's own two files in
+/// each project folder under the state directory: not another session's,
+/// not the host logs, nothing a symlink in it points at (a project folder,
+/// or a file named like the transcript), and nothing an id that climbs
+/// could name (ADR 63).
+#[test]
+fn adr_0063_purge_deletes_only_that_sessions_files() {
+    let env = Env::new("s-purge");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let projects = env.dir.join("home/projects");
+    let folder = fs::read_dir(&projects).unwrap().next().unwrap().unwrap().path();
+    let outside = env.dir.join("outside");
+    fs::create_dir(&outside).unwrap();
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        fs::write(outside.join(name), "keep\n").unwrap();
+    }
+    symlink(&outside, projects.join("linked")).unwrap();
+    fs::create_dir(projects.join("other")).unwrap();
+    symlink(outside.join("target"), projects.join("other/sess-1.jsonl")).unwrap();
+    fs::write(folder.join("sess-2.jsonl"), "keep\n").unwrap();
+    let before_hosts = tree(&env.dir.join("home/hosts"));
+
+    env.ok(&["session", "delete", "sess-1", "--purge"]);
+    assert!(!folder.join("sess-1.jsonl").exists() && !folder.join("sess-1.acp.jsonl").exists());
+    // The link went, not what it pointed at; the linked folder wasn't looked in.
+    assert!(fs::symlink_metadata(projects.join("other/sess-1.jsonl")).is_err());
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        assert_eq!(fs::read_to_string(outside.join(name)).unwrap(), "keep\n", "{name}");
+    }
+    assert!(folder.join("sess-2.jsonl").is_file(), "another session's file went");
+    assert_eq!(tree(&env.dir.join("home/hosts")), before_hosts, "a host log went");
+
+    // An id is a file name only escaped: one that climbs names nothing.
+    for id in ["../outside/sess-1", "..", "../../outside/target"] {
+        env.ok(&["session", "delete", id, "--purge", "--", AGENT]);
+    }
+    for name in ["sess-1.jsonl", "sess-1.acp.jsonl", "target"] {
+        assert_eq!(fs::read_to_string(outside.join(name)).unwrap(), "keep\n", "{name}");
+    }
+    assert!(folder.join("sess-2.jsonl").is_file());
 }
 
 // ---- approvals (ADR 27) ------------------------------------------------
@@ -391,28 +447,101 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 fn adr_0027_an_unanswered_request_waits() {
     let env = Env::new("s-waits");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm execute"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
+    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
     sleep(Duration::from_secs(3));
     assert!(outcome(&env, "perm-1").is_none(), "answered for the user");
-    assert!(env.ok(&["pending"]).contains("p1"));
-    env.ok(&["approve", "sess-1", "p1"]);
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()));
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "allow");
 }
 
-/// A timeout only ever denies: a request that offers nothing to reject with
-/// is cancelled, never allowed.
+/// A timeout never allows: a request that offers nothing to reject with has
+/// its turn cancelled, and is answered `cancelled`.
 #[test]
 fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
     env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
     env.start(&[]);
-    env.ok(&["send", "sess-1", "perm execute"]);
+    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
     assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
-    assert!(env.ok(&["log", "sess-1"]).contains("by timeout"));
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("by timeout"));
     env.stop();
+}
+
+/// The permission timeout answers with the request's `reject_once` option;
+/// one without exactly one has its turn cancelled (`session/cancel`), which
+/// answers it, and every request pending in the session, `cancelled`. Never
+/// `reject_always`, which nobody chose. `permission show` says which it
+/// will be, before it is.
+#[test]
+fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
+    // Long enough for `permission show` to be asked before it fires.
+    let timeout = "[profiles.default.headless]\npermission_timeout = 3\n";
+    let predicts = |env: &Env, how: &str| {
+        let pending = || env.ok(&["permission", "requests"]).contains("p1");
+        assert!(wait_for(Duration::from_secs(5), pending), "never asked");
+        let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
+        assert!(shown.contains(&format!("{how} in ")), "{shown}");
+        assert!(shown.contains("s if nobody answers"), "{shown}");
+        assert!(outcome(env, "perm-1").is_none(), "answered before it was shown");
+    };
+    let env = Env::new("s-timeoutonce");
+    env.write_config(timeout);
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    predicts(&env, "rejected once");
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
+    assert!(env.calls_of("session/cancel").is_empty(), "cancelled a turn it could answer");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("permission p1 rejected with reject (reject_once), by timeout"), "{log}");
+    env.stop();
+
+    let never = r#"[{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "never", "name": "Never", "kind": "reject_always"}]"#;
+    let twice = r#"[{"optionId": "no", "name": "No", "kind": "reject_once"},
+        {"optionId": "nope", "name": "Nope", "kind": "reject_once"}]"#;
+    // No reject_once, and two; the second with two requests pending at once.
+    for (name, options, asks) in [("s-timeoutcancel", never, 1), ("s-timeouttwice", twice, 2)] {
+        let env = Env::new(name).agent("PERM_OPTIONS", options);
+        env.write_config(timeout);
+        env.start(&[]);
+        env.ok(&["prompt", "send", "sess-1", &format!("perm edit {asks}")]);
+        predicts(&env, "its turn cancelled");
+        let requests: Vec<String> = (1..=asks).map(|n| format!("perm-{n}")).collect();
+        let answered = || requests.iter().all(|r| outcome(&env, r).is_some());
+        assert!(wait_for(Duration::from_secs(10), answered), "{name}: unanswered");
+        let calls = env.calls();
+        let at = |what: &dyn Fn(&Value) -> bool| calls.iter().position(what);
+        let cancels: Vec<_> = env.calls_of("session/cancel");
+        assert_eq!(cancels.len(), 1, "{name}: {cancels:?}");
+        let cancel =
+            at(&|c| c["method"] == "session/cancel" && c["params"]["sessionId"] == "sess-1");
+        for request in &requests {
+            assert_eq!(
+                outcome(&env, request).unwrap(),
+                json!({ "outcome": "cancelled" }),
+                "{name}"
+            );
+            let answer = at(&|c| c["id"] == request.as_str() && c.get("method").is_none());
+            assert!(cancel.is_some() && cancel < answer, "{name}: {calls:?}");
+        }
+        let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+        assert!(wait_for(Duration::from_secs(5), ended), "{name}: the turn didn't end");
+        let log = env.ok(&["event", "log", "sess-1"]);
+        for n in 1..=asks {
+            assert!(
+                log.contains(&format!("permission p{n} cancelled, by timeout")),
+                "{name}: {log}"
+            );
+        }
+        env.stop();
+    }
 }
 
 /// A request is answered only as the request of its own session.
@@ -420,10 +549,12 @@ fn adr_0027_a_timeout_never_allows() {
 fn adr_0027_a_request_is_answered_only_in_its_session() {
     let env = Env::new("s-othersession");
     env.start(&[]);
-    env.ok(&["fork", "sess-1"]);
-    env.ok(&["send", "sess-1", "perm edit"]);
-    assert!(wait_for(Duration::from_secs(5), || env.ok(&["pending"]).contains("p1")));
-    let err = env.fails(&["approve", "sess-2", "p1"]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(5), || env
+        .ok(&["permission", "requests"])
+        .contains("p1")));
+    let err = env.fails(&["permission", "allow", "sess-2", "p1"]);
     assert!(err.contains("no pending request p1 in session sess-2"), "{err}");
     assert!(outcome(&env, "perm-1").is_none());
     env.stop();
@@ -449,13 +580,17 @@ command = "true"
 env = { GITHUB_TOKEN = "resume-secret" }
 "#,
         );
-        env.start(&["--resume", "old-1", "--wait", "--prompt", "reply hi"]);
+        env.resume("old-1", &["--wait", "--prompt", "reply hi"]);
         let sent = &env.calls_of(method)[0]["params"]["mcpServers"][0]["env"][0];
         assert_eq!(sent["value"], "resume-secret", "{name}");
-        for args in [&["status", "old-1", "--json"][..], &["ps", "--json"], &["list", "--json"]] {
+        for args in [
+            &["session", "status", "old-1", "--json"][..],
+            &["process", "list", "--json"],
+            &["session", "list", "--json"],
+        ] {
             assert!(!env.ok(args).contains("resume-secret"), "{name}: {args:?}");
         }
-        let acp = env.ok(&["log", "old-1", "--events", "all", "--json"]);
+        let acp = env.ok(&["event", "log", "old-1", "--events", "all", "--json"]);
         assert!(!acp.contains("resume-secret"), "{name}: {acp}");
         env.stop();
         assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));

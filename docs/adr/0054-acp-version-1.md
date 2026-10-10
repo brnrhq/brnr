@@ -3,6 +3,10 @@
 Accepted 2026-10-08. Implemented (src/schema.rs, src/host/requests.rs,
 src/ctl/settings.rs); resolves #66.
 
+Amended by 63: `brnr start` is `brnr session new` (and
+`session resume`), and `brnr sessions` is `brnr session list` with an agent
+named.
+
 ## Context
 
 ACP's initialization has the client ask for the latest version it speaks

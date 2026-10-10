@@ -1,6 +1,6 @@
-//! Events as text, the one way brnr shows a session: `brnr watch`, `brnr
-//! log` and a session in the foreground all use it. Also a tool call in
-//! full (input, paths, diffs), for `brnr show`.
+//! Events as text, the one way brnr shows a session: `brnr event watch`,
+//! `brnr event log` and a session in the foreground all use it. Also a tool
+//! call in full (input, paths, diffs), for `brnr permission show`.
 //!
 //! What the agent sends reaches a terminal only through [`clean`], so its
 //! text can't move the cursor, rewrite the line or talk to the terminal
@@ -60,7 +60,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         "session_changed" => match e["what"].as_str() {
             Some("title") => format!("title: {}", s(&e["value"])),
             Some("mode") => format!("mode: {}", s(&e["value"])),
-            // What changed: an option as `brnr config` sets it (`model=opus`),
+            // What changed: an option as `config set` reports it (`model=opus`),
             // a command added (`+review`), `-<name>` for one gone.
             Some(what @ ("config" | "commands")) => {
                 let changes =
@@ -85,11 +85,21 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
                 options.join(" ")
             )
         }
+        // Allowed, rejected or cancelled (ADR 63), with the option and its
+        // kind; an editor's answer of a kind brnr doesn't know, answered.
         "permission_resolved" => {
-            let outcome = &e["outcome"];
-            let chosen =
-                outcome["optionId"].as_str().or(outcome["outcome"].as_str()).unwrap_or("?");
-            format!("permission {} -> {chosen} (by {})", s(&e["request"]), s(&e["by"]))
+            let (request, by) = (s(&e["request"]), s(&e["by"]));
+            match (e["answer"].as_str(), e["outcome"]["optionId"].as_str()) {
+                (Some("cancelled"), _) => format!("permission {request} cancelled, by {by}"),
+                (answer, Some(option)) => format!(
+                    "permission {request} {} with {option} ({}), by {by}",
+                    answer.unwrap_or("answered"),
+                    e["option_kind"].as_str().unwrap_or("?")
+                ),
+                (answer, None) => {
+                    format!("permission {request} {}, by {by}", answer.unwrap_or("answered"))
+                }
+            }
         }
         "turn_ended" => match e["error"].as_object() {
             Some(error) => format!("turn failed: {} ({})", error["message"], s(&e["by"])),
@@ -100,6 +110,8 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
+        // The agent's copy deleted; brnr's transcript stays (ADR 63).
+        "session_deleted" => format!("session deleted ({})", s(&e["by"])),
         // What a load replayed, and whether it is in the transcript as
         // replayed events or was there already (ADR 57).
         "history" => {
@@ -479,6 +491,13 @@ mod tests {
         assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
         let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
         assert_eq!(shown(replayed), "(replayed) user: old");
+    }
+
+    #[test]
+    fn adr_0063_a_deletion_is_shown_with_who_deleted() {
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let deleted = serde_json::json!({ "event": "session_deleted", "by": "editor" });
+        assert_eq!(shown(deleted), "session deleted (editor)");
     }
 
     #[test]

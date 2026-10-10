@@ -1,6 +1,14 @@
 # 58. A start's flags win over its profile, setting by setting
 
 Accepted 2026-10-08. Implemented. Amends 28; resolves #64.
+Amended by 63: `config set` is resolved the same way, its flags the only
+source; the thought level (category `thought_level`) is a setting as the
+model is, sent after it; a v1 mode the agent doesn't list fails before
+anything is set. A start is `session new` or `resume`: `--set` is
+`--option`, `--thought-level` and `--permission-timeout` are flags too, and
+the profile's `config` is `options`, beside `model` and `thought_level`,
+resolved as the flags are (`the profile's model large and its options
+llm=small both set the model`).
 
 ## Context
 

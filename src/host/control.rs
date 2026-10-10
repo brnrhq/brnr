@@ -12,7 +12,8 @@
 //! `session` is a session's exact id; the commands about a session need it.
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
-//!   is in its transcript, which a logger thread writes (`brnr log`, ADR 48)
+//!   is in its transcript, which a logger thread writes (`brnr event log`,
+//!   ADR 48)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
 //!   replace?}` (ADR 18 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
@@ -21,24 +22,41 @@
 //! - `cancel` `{session, keep_held?}`: cancel the running turn; held
 //!   messages are dropped (and listed) unless `keep_held`
 //! - `queue` `{session, drop?, clear?, clear_context?}`: the held messages
-//!   and context, after removing what was asked
+//!   and context, after removing what was asked; `{session, show}`: the held
+//!   message `show` (an id; anything else is refused) in full, its content
+//!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
 //! - `pending`: permission requests waiting for an answer, in full
-//! - `approve` / `deny` `{session, request, option?}`
-//! - `set_mode` `{session, mode}`, `set_config` `{session, option, value}`,
-//!   `set_model` `{session, model}` (the config option whose category is
-//!   `model`): answered once the agent has
+//! - `allow` / `reject` `{session, request, always?, option?}`: with the
+//!   option of kind `allow_once` (`allow_always` with `always`), or
+//!   `reject_once` (`reject_always`), or the option named (ADR 63)
+//! - `set_config` `{session, mode?, model?, thought_level?, options?: {id:
+//!   value}}` (`config set`, ADR 63): resolved as a start's settings are
+//!   (ADR 58), sent one at a time, and answered once the agent has set them
+//!   all (`set`, what was sent) or refused one
 //! - `fork` `{session}`: never in an editor's process
+//! - `new` `{cwd?, mode?, model?, thought_level?, options?, text?, blocks?,
+//!   timeout?}` and `resume` `{session, …}` (`session new --pid`, `session
+//!   resume --pid`, ADR 63): a session opened in this process
+//!   (`session/new`, or `session/resume` or `session/load`), in `cwd` (the
+//!   process's by default), with the process's MCP servers, then its
+//!   settings, over the profile's as a start's are, then the prompt `text`
+//!   and `blocks` if any. Answered `{session, pid, message}` once it is set
+//!   up, before the prompt goes: the commit, as a start's ready report is
+//!   (ADR 7). One that fails after the agent opened it is closed again, and
+//!   the answer says so: a setting, `timeout` seconds passing, the process
+//!   stopping. Never in an editor's process, nor with `stop_when_idle` when
+//!   the agent can't close sessions, as `fork`
 //! - `close` `{session, take_over?}`: cancels a running turn first, and is
 //!   answered once the agent has closed the session; a headless process
 //!   whose last session closes stops. `take_over` is the pid of the process
-//!   `start --resume --take-over` resumes it in
+//!   `session resume --take-over` resumes it in
 //! - `stop`: close the agent's stdin, then SIGTERM, then SIGKILL (the
 //!   agent's process group)
 //!
 //! On an editor's session every command that acts on it (`send`, `cancel`,
-//! `queue --clear-context`, `approve`, `deny`, the settings and `close`) is
+//! `queue clear --context`, `allow`, `reject`, `set_config` and `close`) is
 //! experimental: refused unless the editor's profile enables it (ADR 4, see
 //! experimental.rs). Bridges observe it freely.
 //!
@@ -46,7 +64,8 @@
 //! without a list gets every event except `acp`, which is busy (one per
 //! streamed chunk) and must be asked for by name. A held message that goes
 //! unsent (`cancel`, `queue`, its session closing, the agent exiting) is a
-//! `message_dropped`; a session that closes, `session_closed`.
+//! `message_dropped`; a session that closes, `session_closed`; one the agent
+//! deleted, `session_deleted`.
 //!
 //! Each peer's queue holds up to [`QUEUE_BYTES`]. A peer that lets it fill
 //! up has stopped reading and is dropped rather than buffered for without
@@ -61,24 +80,25 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::{Choice, Held};
-use super::requests::PeerOp;
+use super::acp::{Choice, Held, Replay};
+use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
+use crate::request::{Prompt, Settings};
 use crate::{json, paths, render, sys};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
@@ -98,6 +118,7 @@ pub const EVENTS: &[&str] = &[
     "message_dropped",
     "context_dropped",
     "session_closed",
+    "session_deleted",
     "history",
     "line_too_long",
     "exited",
@@ -366,7 +387,7 @@ impl Host {
 
     /// Sends `event` to every subscribed peer that wants it, and (but for
     /// `acp`, which is the raw transcript already) records it in the
-    /// transcript, where `brnr log` reads it back. Returns it as sent.
+    /// transcript, where `brnr event log` reads it back. Returns it as sent.
     pub(super) fn emit(&mut self, mut event: Value) -> Value {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
@@ -484,11 +505,10 @@ impl Host {
             Some("pending") => {
                 Ok(Some(json!({ "ok": true, "pending": self.pending_permissions() })))
             }
-            Some("approve") => now(self.answer(peer, req, Choice::Allow)),
-            Some("deny") => now(self.answer(peer, req, Choice::Deny)),
-            Some("set_mode" | "set_config" | "set_model" | "fork" | "close") => {
-                self.agent_op(peer, req).map(|()| None)
-            }
+            Some("allow") => now(self.answer(peer, req, Choice::Allow)),
+            Some("reject") => now(self.answer(peer, req, Choice::Reject)),
+            Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
+            Some("new" | "resume") => self.open(peer, req).map(|()| None),
             Some("stop") => {
                 if self.status.is_some() {
                     return Err("the agent has already exited".into());
@@ -543,7 +563,7 @@ impl Host {
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
         let i = self.session_index(req)?;
-        self.check_experimental(Experimental::Approve)?;
+        self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let ours = self
@@ -554,14 +574,17 @@ impl Host {
             return Err(format!("no pending request {handle} in session {session}"));
         }
         let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
-        let outcome = self.resolve_permission(&handle, choice, req["option"].as_str(), &by)?;
+        let always = req["always"].as_bool() == Some(true);
+        let outcome =
+            self.resolve_permission(&handle, choice, always, req["option"].as_str(), &by)?;
         Ok(json!({ "ok": true, "session": session, "request": handle, "outcome": outcome }))
     }
 
     fn pending_permissions(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
-        // Whether `brnr approve` would be taken, and if not, why (ADR 4).
-        let why_not = self.check_experimental(Experimental::Approve).err();
+        // Whether `brnr permission allow` would be taken, and if not, why
+        // (ADR 4).
+        let why_not = self.check_experimental(Experimental::Permission).err();
         self.agent_requests
             .iter()
             .filter(|r| r.handle.is_some())
@@ -589,6 +612,7 @@ impl Host {
         report["pending"] = json!(self.pending_permissions().len());
         report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
+        report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
         report["bridges"] = json!(
             self.peers
@@ -711,7 +735,7 @@ impl Host {
                 let s = &mut self.sessions[i];
                 s.held.insert(s.interrupts, held);
                 s.interrupts += 1;
-                self.cancel(&session);
+                self.cancel(&session, "cancel");
                 "interrupting"
             }
             _ => {
@@ -756,15 +780,39 @@ impl Host {
         };
         let busy = !self.sessions[i].prompts.is_empty();
         if busy {
-            self.cancel(&session);
+            self.cancel(&session, "cancel");
         }
         let status = if busy { "cancelling" } else { "idle" };
         self.sink.note(Some(&session), json!({ "event": "cancel", "status": status }));
         Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
     }
 
+    /// `queue`: one held message in full (`show`), or the held messages and
+    /// context after dropping one (`drop`) or clearing them (`clear`,
+    /// `clear_context`).
     fn queue(&mut self, req: &Value) -> Result<Value, String> {
         let i = self.session_index(req)?;
+        // A show that isn't an id is refused, not taken as absent: read as
+        // absent, `{show: 2, clear: true}` would clear everything (P3).
+        if let Some(show) = req.get("show") {
+            let id = show.as_str().ok_or("show must be a message id")?;
+            if ["drop", "clear", "clear_context"].iter().any(|k| req.get(k).is_some()) {
+                return Err("queue's show takes no drop or clear".into());
+            }
+            let s = &self.sessions[i];
+            let n =
+                s.held.iter().position(|h| h.id == id).ok_or(format!("no held message {id}"))?;
+            let (h, interrupt) = (&s.held[n], n < s.interrupts);
+            return Ok(json!({
+                "ok": true,
+                "session": s.id,
+                "message": h.id,
+                "text": h.text,
+                "interrupt": interrupt,
+                "attachments": h.blocks.len(),
+                "blocks": h.blocks,
+            }));
+        }
         if req["clear_context"].as_bool() == Some(true) {
             self.check_experimental(Experimental::Context)?;
         }
@@ -809,70 +857,17 @@ impl Host {
         let caps = self.caps;
         let i = self.session_index(req)?;
         let session = self.sessions[i].id.clone();
-        let text = |key: &str| req[key].as_str().map(str::to_owned).ok_or(format!("missing {key}"));
-        if cmd.starts_with("set_") {
-            self.check_experimental(Experimental::Settings)?;
-        }
         match cmd {
-            "set_mode" => {
-                let mode = text("mode")?;
-                let state = &self.sessions[i].state;
-                let params = json!({ "sessionId": session, "modeId": mode });
-                let option = state.option("mode").map(|o| o["id"].as_str().unwrap_or_default());
-                if let Some(modes) = &state.modes {
-                    let known = modes["availableModes"]
-                        .as_array()
-                        .is_none_or(|m| m.iter().any(|x| x["id"] == mode.as_str()));
-                    if !known {
-                        return Err(format!("no mode {mode} (see brnr mode)"));
-                    }
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Mode { session, mode },
-                        "session/set_mode",
-                        params,
-                    );
-                } else if let Some(id) = option {
-                    // An agent with modes only as a config option.
-                    let params = state.config_params(&session, id, &mode)?;
-                    self.peer_op(
-                        peer,
-                        req_id,
-                        PeerOp::Config { session },
-                        "session/set_config_option",
-                        params,
-                    );
-                } else {
-                    return Err("the agent offers no modes".into());
-                }
-            }
             "set_config" => {
-                let (option, value) = (text("option")?, text("value")?);
-                let params = self.sessions[i].state.config_params(&session, &option, &value)?;
-                self.peer_op(
-                    peer,
-                    req_id,
-                    PeerOp::Config { session },
-                    "session/set_config_option",
-                    params,
-                );
-            }
-            "set_model" => {
-                // The config option of category `model`; never
-                // `session/set_model` (ADR 28).
-                let model = text("model")?;
+                self.check_experimental(Experimental::Config)?;
+                let settings = settings_of(req)?;
                 let state = &self.sessions[i].state;
-                let option = state.option("model").ok_or("the agent offers no model choice")?;
-                let id = option["id"].as_str().unwrap_or_default();
-                let params = state.config_params(&session, id, &model)?;
-                self.peer_op(
-                    peer,
-                    req_id,
-                    PeerOp::Config { session },
-                    "session/set_config_option",
-                    params,
-                );
+                let steps = resolve_settings(&settings, &Settings::default(), state)?;
+                if steps.is_empty() {
+                    return Err("nothing to set".into());
+                }
+                let of = SetupOf::Config(peer, req_id);
+                self.run_setup(Setup { session, steps, done: Vec::new(), of });
             }
             "fork" => {
                 // A forked session would be a headless one in a process that
@@ -909,6 +904,92 @@ impl Host {
         Ok(())
     }
 
+    /// `new` and `resume` (`session new --pid`, `session resume --pid`,
+    /// ADR 63): a session opened in this process with `session/new`, or
+    /// `session/resume` or `session/load` (ADR 14), its settings set, and its
+    /// prompt sent, committed as one as a start is (see requests.rs). Refused
+    /// where `fork` is but in strict mode: these are stable ACP.
+    fn open(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+        if self.status.is_some() || self.agent_in.is_none() || self.stop_requested {
+            return Err("the agent is no longer accepting input".into());
+        }
+        // A session opened here would be a headless one in a process that
+        // ends with the editor, which ACP can't tell of it (ADR 4).
+        if self.editor_attached() {
+            return Err("the editor owns this process; open sessions there".into());
+        }
+        if !self.start_done {
+            return Err("the process is still starting".into());
+        }
+        let caps = self.caps;
+        // A second session could never close when idle, and the process
+        // would never stop (ADR 12).
+        if self.stop_when_idle.is_some() && !caps.close {
+            return Err("the agent can't close sessions: with stop_when_idle, a second session \
+                        would never close"
+                .into());
+        }
+        let cwd = match &req["cwd"] {
+            Value::Null => self.cwd.clone(),
+            Value::String(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
+            _ => return Err("cwd isn't an absolute path".into()),
+        };
+        let settings = settings_of(req)?;
+        let text = req["text"].as_str().unwrap_or_default().to_owned();
+        let blocks = match &req["blocks"] {
+            Value::Null => Vec::new(),
+            Value::Array(blocks) => blocks.clone(),
+            _ => return Err("blocks must be a list of ACP content blocks".into()),
+        };
+        self.check_blocks(&blocks)?;
+        let prompt =
+            (!text.trim().is_empty() || !blocks.is_empty()).then(|| Prompt { text, blocks });
+        // The command's: past it, the opening is abandoned (ADR 7).
+        let deadline = match &req["timeout"] {
+            Value::Null => None,
+            secs => {
+                let secs = secs.as_u64().ok_or("timeout must be a number of seconds")?;
+                Instant::now().checked_add(Duration::from_secs(secs))
+            }
+        };
+        let req_id = req.get("req_id").cloned();
+        let dir = cwd.to_string_lossy().into_owned();
+        let opening = Box::new(Opening { peer, req_id, cwd, settings, prompt, deadline });
+        let mcp = json!(self.mcp_servers);
+        if req["cmd"] == "new" {
+            let params = json!({ "cwd": dir, "mcpServers": mcp });
+            self.host_request("session/new", params, HostRequest::Opening(Open::New, opening));
+            return Ok(());
+        }
+        let session = req["session"].as_str().ok_or("missing session")?.to_owned();
+        if self.find(&session).is_some() || self.claimed.contains_key(&session) {
+            return Err(format!("{session} is already open in this process"));
+        }
+        if !caps.resume && !caps.load {
+            return Err(
+                "the agent can't resume sessions (no session/resume or session/load)".into()
+            );
+        }
+        // Taken before the agent hears of it: a session another process
+        // holds is refused (ADR 3).
+        self.own(&session)?;
+        let params = json!({ "sessionId": session, "cwd": dir, "mcpServers": mcp });
+        if caps.resume {
+            let open = HostRequest::Opening(Open::Resume(session), opening);
+            self.host_request("session/resume", params, open);
+        } else {
+            // The agent replays the history: recorded unless the transcript
+            // has it already (ADR 57).
+            let record = !paths::session_log(&opening.cwd, &session).exists();
+            let i = self.open_session(&session, Some(&dir));
+            self.sessions[i].opening = true;
+            self.sessions[i].replay = Some(Replay { record, updates: 0 });
+            let open = HostRequest::Opening(Open::Load(session), opening);
+            self.host_request("session/load", params, open);
+        }
+        Ok(())
+    }
+
     /// The session a request names, by its exact id. One that is closing
     /// takes no more requests.
     fn session_index(&self, req: &Value) -> Result<usize, String> {
@@ -917,8 +998,34 @@ impl Host {
         if self.sessions[i].closing.is_some() {
             return Err(format!("{wanted} is closing"));
         }
+        if self.sessions[i].opening {
+            return Err(format!("{wanted} is still opening"));
+        }
         Ok(i)
     }
+}
+
+/// A `set_config`'s settings: `mode`, `model`, `thought_level`, and
+/// `options` by id, each value a string.
+fn settings_of(req: &Value) -> Result<Settings, String> {
+    let text = |key: &str| match &req[key] {
+        Value::Null => Ok(None),
+        Value::String(v) => Ok(Some(v.clone())),
+        _ => Err(format!("{key} isn't a string")),
+    };
+    let mut options = std::collections::BTreeMap::new();
+    match &req["options"] {
+        Value::Null => {}
+        Value::Object(map) => {
+            for (id, value) in map {
+                let value = value.as_str().ok_or(format!("options: {id} isn't a string"))?;
+                options.insert(id.clone(), value.to_owned());
+            }
+        }
+        _ => return Err("options isn't an object".into()),
+    }
+    let (mode, model, thought_level) = (text("mode")?, text("model")?, text("thought_level")?);
+    Ok(Settings { mode, model, thought_level, options })
 }
 
 #[cfg(test)]

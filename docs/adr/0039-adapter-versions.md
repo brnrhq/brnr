@@ -2,6 +2,8 @@
 
 Accepted (former decision 30); reviewed 2026-10-07. Implemented.
 
+Amended by 63: `brnr status` is `brnr session status`.
+
 ## Decision
 
 - Each adapter formula's version is its npm package's

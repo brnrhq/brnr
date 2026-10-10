@@ -4,7 +4,7 @@
 //!
 //! The link goes where the user of the panicking process looks: the CLI's
 //! stderr, as Rust's own message does (see [`install`]); for a host, its
-//! stderr only in the foreground (death.rs), and `brnr start`'s or `brnr
+//! stderr only in the foreground (death.rs), and `brnr session new`'s or `brnr
 //! acp`'s when a start fails with a panic. A detached host's stderr is its
 //! host log, which nobody reads as it happens.
 

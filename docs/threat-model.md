@@ -33,7 +33,7 @@ says what is in scope for a report; the principles cited are
 | Processes running as the same user | everything the user can do | **inside** the boundary (P13): see below |
 | The editor | its session | inside; it runs `brnr acp`, and its bytes pass unchanged (P1) |
 | The agent (the adapter and what it runs) | the user's machine, as far as its own permission prompts go | inside as a process; its *text* is untrusted (P8) |
-| Bridges and `notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
+| Bridges and `event notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
 | A malicious adapter or npm package | as the agent | inside once run: brnr can't contain it |
 
 Processes running as the same user are inside the boundary, and that is a
@@ -55,8 +55,8 @@ the user from their own processes.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
  the user                              (B1)
                           $BRNR_DIR, 0700 ── <pid>.sock, 0600
-                                    │      └─ brnr send / approve / watch, any
-                                    │         process of the user's
+                                    │      └─ brnr prompt send / permission / event
+                                    │         watch, any process of the user's
  editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
           (B3: bytes unchanged,             │   │              (B4: its text is
            but the named changes)           │   │               untrusted, P8)
@@ -74,7 +74,7 @@ the user from their own processes.
   invisible (P1).
 - **B4**, the agent: its text (session ids, titles, commands, messages) and
   its permission requests reach brnr's files, terminal and approvals.
-- **B5**, bridges and `notify` commands: the edge of the machine.
+- **B5**, bridges and `event notify` commands: the edge of the machine.
 - **B6**, secrets: what brnr records and sends of the MCP servers' values.
 
 ## Claims
@@ -92,7 +92,7 @@ written for this document.
 | The control socket is 0600, the directory 0700, the session locks' directory 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
 | Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl.rs) | `headless.rs`: `metadata_names_its_own_socket` |
-| Session locks are held to the runtime directory's terms and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused (ADR 50). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0050_a_new_session_that_cant_be_locked_isnt_started`, `adr_0050_a_resume_that_cant_be_locked_isnt_started`, `adr_0050_a_fork_that_cant_be_owned_is_refused` |
+| Session locks are held to the runtime directory's terms and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused, as is a session opened in a running process (`session new --pid`, `resume --pid`), which the agent then closes again (ADR 50, ADR 63). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_opened`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0050_a_new_session_that_cant_be_locked_isnt_started`, `adr_0050_a_resume_that_cant_be_locked_isnt_started`, `adr_0050_a_fork_that_cant_be_owned_is_refused`, `adr_0063_pid_session_that_cant_be_locked_is_closed` |
 | brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); ADR 44 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
 | `doctor` fails a runtime directory others can use, and `--fix` tightens it but never through a symlink. | `runtime_dir`, `private_problem`, `fixable` (src/ctl/doctor.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed` |
 
@@ -101,8 +101,9 @@ written for this document.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | What brnr creates under `~/.brnr` is 0700 (directories) and 0600 (files), whatever the umask. | `open_private` (src/log.rs) | `headless.rs`: `transcripts_are_private`; `security.rs`: `what_brnr_makes_is_private_whatever_the_umask`; src/log.rs: `adr_0059_new_and_private_paths_are_opened_as_they_are` |
-| Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits, however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `made-private` with the mode it had. There is no override (ADR 59). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private` | `security.rs`: `adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written`; src/log.rs: `adr_0059_what_others_can_reach_is_made_private_before_a_write` |
-| A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, or has another hard link, is refused. Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session-log-failed` in the host log. | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat` (src/sys.rs) | `security.rs`: `adr_0059_a_symlinked_transcript_is_never_followed`; src/log.rs: `adr_0059_a_symlink_is_never_followed`, `adr_0059_only_the_users_own_directories_and_files_are_written_to` |
+| Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits, however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `made-private` with the mode it had (`brnr session delete`, which records `session_deleted` with no host log, says so on stderr, ADR 63). There is no override (ADR 59). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private`; `record_in_transcripts` (src/log.rs), `delete` (src/ctl/delete.rs) | `security.rs`: `adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written`; `cli.rs`: `adr_0063_delete_records_in_each_transcript_it_can`; src/log.rs: `adr_0059_what_others_can_reach_is_made_private_before_a_write` |
+| A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, or has another hard link, is refused. Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session-log-failed` in the host log, or, for `brnr session delete`, said on stderr, and the command fails; a symlinked project folder isn't looked in for a session's transcripts (ADR 63). | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat` (src/sys.rs); `transcripts` (src/log.rs) | `security.rs`: `adr_0059_a_symlinked_transcript_is_never_followed`; src/log.rs: `adr_0059_a_symlink_is_never_followed`, `adr_0059_only_the_users_own_directories_and_files_are_written_to`; `cli.rs`: `adr_0063_delete_records_in_each_transcript_it_can` |
+| `session delete --purge` deletes only the session's own files: in each project folder under the state directory, its events file and raw ACP, named for its id escaped (ADR 53), so an id can't name another session's file or climb out. The state directory, `projects` and each folder are opened without following a symlink, each from the one before, and the names removed from what was opened (`unlinkat`): a symlinked folder isn't looked in, and a symlink named like the transcript is removed, not what it points at. The host logs stay (ADR 63). | `purge` (src/log.rs); `sys::openat`, `sys::unlinkat` (src/sys.rs); `paths::file_name` (src/paths.rs) | `security.rs`: `adr_0063_purge_deletes_only_that_sessions_files`; `cli.rs`: `adr_0063_delete_purge` |
 | `doctor` warns of transcripts others can read, and `--fix` makes them private. | `transcripts` (src/ctl/doctor.rs) | `doctor.rs`: `readable_transcripts_are_made_private` |
 
 ### B3: `brnr acp` passes bytes unchanged but for the named changes
@@ -122,13 +123,13 @@ written for this document.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | A session id becomes a file name only escaped: it can't leave the project folder or the locks' directory, and distinct ids never share a transcript or a lock (P8, ADR 53). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files`, `adr_0053_distinct_ids_get_distinct_names`; `headless.rs`: `adr_0053_distinct_ids_never_share_a_transcript`, `adr_0053_distinct_ids_never_share_a_lock` |
-| The agent's text is shown with control characters and bidi overrides escaped, and `show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
-| The agent's text never reaches a command line: `notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
+| The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
+| The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
-| `permission_timeout` only denies: the reject option, else `cancelled`, never an allow. | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `cli.rs`: `adr_0027_unanswered_permission_times_out_as_deny`; `security.rs`: `adr_0027_a_timeout_never_allows` |
-| A request is answered only in its own session, with an option of the kind asked for (`deny` can't pick an allow option). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0027_an_option_of_the_other_kind_is_refused` |
+| `permission_timeout` (or `--permission-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
+| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 63). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0063_allow_and_reject_pick_by_kind`, `adr_0063_a_missing_or_doubled_kind_fails`, `adr_0063_option_must_be_on_the_verbs_side` |
 
-### B5: bridges and `notify` commands
+### B5: bridges and `event notify` commands
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
@@ -145,7 +146,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0025_a_profiles_mcp_secrets_are_redacted`, `adr_0025_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted`, `adr_0002_acp_passes_bytes_unchanged`, `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0025_secrets_are_redacted_keys_and_structure_stay` |
 | `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0045_the_report_is_what_to_paste` |
-| `status`, `ps` and `list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
+| `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
 
 ### The adapters and the release
 
@@ -198,8 +199,8 @@ What brnr doesn't enforce, or doesn't test, today.
   permissive umask leaves it readable by mode; the 0700 directory is what
   keeps it private. Not tested.
 - **An editor's session that can't be locked runs unlocked.** The proxy
-  passes it through; `status` reports `lock_error`, and the host log records
-  `lock-failed`. A headless resume is refused while the editor's process
+  passes it through; `session status` reports `lock_error`, and the host log
+  records `lock-failed`. A headless resume is refused while the editor's process
   reports serving it, but a second process could acquire its lock if that
   process doesn't answer and the lock failure was transient (ADR 50).
 - **Redaction is by field, not by value.** brnr redacts the MCP servers'
@@ -213,7 +214,7 @@ What brnr doesn't enforce, or doesn't test, today.
   adapter or npm package, or an agent in a permissive mode, acts without
   asking, and nothing in brnr can stop it.
 - **`permission_timeout` is headless only.** An editor's session waits for
-  the editor; with `approve` enabled, any of the user's processes may answer
+  the editor; with `permission` enabled, any of the user's processes may answer
   it (ADR 4).
 - **A refused runtime directory is a denial of service.** With neither
   `BRNR_DIR` nor `XDG_RUNTIME_DIR` set, the directory is `$TMPDIR/brnr-<uid>`;
@@ -235,7 +236,7 @@ What brnr doesn't enforce, or doesn't test, today.
   request's (ADR 61). Not tested.
 - **The agent's ids are passed to the editor as they are.** An agent that
   reuses an id after the host answered a request with it (`cancel`,
-  `approve`) can have the editor's late answer to the first taken as its
+  `permission allow`) can have the editor's late answer to the first taken as its
   answer to the second (ADR 61). Not tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 38); that directory is trusted as

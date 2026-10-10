@@ -14,7 +14,7 @@ a stand-in that prints its arguments on stderr and exits 3:
 
 With --brnr, <dir> has brnr in it too, and brnr is checked with them, in a
 scratch home: brnr doctor finds each next to it and reads its version, and
-brnr sessions lists the Claude adapter's sessions (initialize and
+brnr session list lists the Claude adapter's sessions (initialize and
 session/list through brnr's ACP client).
 
     adapters/check.py [--brnr] [<dir>]      default: target/release
@@ -180,15 +180,17 @@ if with_brnr:
             failed = True
         else:
             print(f"ok   brnr doctor: {name} {pins[package]}")
-    sessions = run_brnr("sessions", "--json", "--", "brnr-claude-adapter")
+    sessions = run_brnr("session", "list", "--json", "--", "brnr-claude-adapter")
     try:
         listed = json.loads(sessions.stdout) if sessions.returncode == 0 else None
     except json.JSONDecodeError:
         listed = None
     if not isinstance(listed, list):
-        print(f"FAIL brnr sessions -- brnr-claude-adapter: {sessions.stdout + sessions.stderr!r}")
+        print(
+            f"FAIL brnr session list -- brnr-claude-adapter: {sessions.stdout + sessions.stderr!r}"
+        )
         failed = True
     else:
-        print(f"ok   brnr sessions -- brnr-claude-adapter: {len(listed)} sessions")
+        print(f"ok   brnr session list -- brnr-claude-adapter: {len(listed)} sessions")
     shutil.rmtree(scratch, ignore_errors=True)
 sys.exit(1 if failed else 0)

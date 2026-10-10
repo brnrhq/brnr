@@ -1,15 +1,19 @@
 //! The control commands: start headless sessions and talk to running ones
-//! over their processes' control sockets. `brnr --help` lists them; the
+//! over their processes' control sockets. Most are `brnr <group> <verb>`,
+//! grouped by what they act on (ADR 63). `brnr --help` lists them; the
 //! modules have the details:
 //!
-//! - talk.rs: `start`, `send`, `wait`, `cancel`, `queue`
-//! - history.rs: `log`
-//! - settings.rs: `mode`, `config`, `model`, `commands`, `sessions`, `fork`,
-//!   `close`
-//! - show.rs: `show`; notify.rs: `notify`; doctor.rs: `doctor`; skill.rs:
-//!   `skill`
-//! - here: `ps`, `stop`, `list`, `status`, `pending`, `approve`, `deny`,
-//!   `watch`
+//! - talk.rs: `session new`, `session resume`, `prompt send`, `prompt cancel`,
+//!   `event wait`, `queue`
+//! - history.rs: `event log`
+//! - settings.rs: `config get`, `config set`, `prompt commands`,
+//!   `session fork`, `session close`
+//! - delete.rs: `session delete`
+//! - sessions.rs: `session list`
+//! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
+//!   `doctor`; skill.rs: `skill`
+//! - here: `process list`, `process stop`, `session status`,
+//!   `permission requests`, `permission allow` and `reject`, `event watch`
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
@@ -18,7 +22,7 @@
 //! whether that process answers or not.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
-//! for `log`, `watch` and `start --foreground`).
+//! for `event log`, `event watch` and `session new --foreground`).
 
 use std::collections::HashMap;
 use std::env;
@@ -36,8 +40,8 @@ use brnr::{lock, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
-/// options), and quietly ending brnr when the reader goes away (`brnr list |
-/// head -1`), as a filter does, rather than panicking.
+/// options), and quietly ending brnr when the reader goes away (`brnr session
+/// list | head -1`), as a filter does, rather than panicking.
 macro_rules! outln {
     ($($arg:tt)*) => { $crate::ctl::out(&format!("{}\n", format_args!($($arg)*))) };
 }
@@ -49,61 +53,79 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", brnr::render::clean(&format!($($arg)*))) };
 }
 
+mod delete;
 mod doctor;
 mod history;
 mod notify;
+mod sessions;
 mod settings;
 mod show;
 mod skill;
 mod talk;
 
+/// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
+/// its commands act on.
+const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "config", "event"];
+
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
-  brnr start [--profile <p>] [--cwd <dir>] [--prompt <text> | -] [--file <path>]...
-             [--image <path>]... [--mode <m>] [--model <m>] [--set <option>=<value>]...
-             [--stop-when-idle <s>] [--auth <method>] [--resume <session> [--take-over]]
-             [--strict] [--wait [--timeout <s>] | --foreground [--quiet]] [--json]
-             [-- <agent> [args...]]
-             a headless session, in the background (or the foreground)
+process
+  brnr process list [--json]
+  brnr process stop <pid>
 
-processes
-  brnr ps [--json]
-  brnr stop <pid>
+session
+  brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
+                   a process for a headless session, in the background (or the foreground);
+                   --pid: a session in that running process, without the process flags
+  brnr session resume [--pid <pid>] <session> [--take-over] [<new flags>] [-- <agent> [args...]]
+                   the same, carrying on a session
+  brnr session status <session> [--json]
+  brnr session fork <session> [--json]
+  brnr session close <session>
+  brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
+  brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
+                    [-- <agent> [args...]]
 
-chat
-  brnr send <session> [--steer | --interrupt | --context [--replace]]
-            [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
-            (<text>... | -)
-  brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
-  brnr cancel <session> [--keep-held] [--json]
-  brnr queue <session> [--drop <message>] [--clear] [--clear-context] [--json]
+<new flags>
+  process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
+           [--permission-timeout <s>] [--foreground [--quiet]]
+  session: [--cwd <dir>] [--mode <m>] [--model <m>] [--thought-level <l>]
+           [--option <o>=<v>]...
+  prompt:  [--prompt <text> | -] [--file <path>]... [--image <path>]...
+           [--wait [--timeout <s>]] [--json]
 
-approvals
-  brnr pending [<session>] [--json]
-  brnr show <session> <request> [--json]
-  brnr approve <session> <request> [--option <id>] [--json]
-  brnr deny <session> <request> [--option <id>] [--json]
+prompt
+  brnr prompt send <session> [--steer | --interrupt | --context [--replace]]
+                   [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
+                   (<text>... | -)
+  brnr prompt cancel <session> [--keep-held] [--json]
+  brnr prompt commands <session> [--json]
 
-sessions
-  brnr list [--inactive | --all] [--json]
-  brnr status <session> [--json]
-  brnr sessions [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
-  brnr fork <session> [--json]
-  brnr close <session>
+queue
+  brnr queue list <session> [--json]
+  brnr queue show <session> <message> [--json]
+  brnr queue drop <session> <message> [--json]
+  brnr queue clear <session> [--messages] [--context] [--json]
 
-events
-  brnr log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
-  brnr watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
-  brnr notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
-              -- <command> [args...]
+permission
+  brnr permission requests [<session>] [--json]
+  brnr permission show <session> <request> [--json]
+  brnr permission allow <session> <request> [--always] [--option <id>] [--json]
+  brnr permission reject <session> <request> [--always] [--option <id>] [--json]
 
-settings
-  brnr mode <session> [<mode>] [--json]
-  brnr model <session> [<model>] [--json]
-  brnr config <session> [<option>=<value>...] [--json]
-  brnr commands <session> [--json]
+config
+  brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
+  brnr config set <session> [--mode <m>] [--model <m>] [--thought-level <l>]
+                  [--option <o>=<v>]... [--json]
+
+event
+  brnr event log <session> [--last <n>] [--follow] [--events <default|all|event>,...] [--json]
+  brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
+  brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
+                    -- <command> [args...]
+  brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -111,63 +133,83 @@ brnr
              the skill for agents that use brnr: print it, or install it
   brnr --version
 
-<session> is a session's id, as brnr list shows it. <request> is a pending approval's handle,
-as brnr pending shows it. <pid> is a brnr process, which runs one agent for one or more
-sessions, as brnr ps shows them.
---json prints the same data as the text: one JSON value, or one event per line for log, watch
-and start --foreground. --strict is stable ACP only: no --steer into a running turn, no fork.";
+brnr <group> --help lists a group's commands. <session> is a session's id, as brnr session list
+shows it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid>
+is a brnr process, which runs one agent for one or more sessions, as brnr process list shows
+them. --json prints the same data as the text: one JSON value, or one event per line for event
+log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
+running turn, no session fork.";
 
 /// How long a start may take until it commits, in seconds, unless
 /// `BRNR_START_TIMEOUT` says otherwise. It goes in the start request: the
-/// process fails the start when it passes, and `start` gives up a little
+/// process fails the start when it passes, and `session new` gives up a little
 /// later, for a process stuck too badly to say so.
 const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
-/// The control commands: everything but `acp` and `host`.
+/// The control commands: everything but `acp` and `host`. A group's
+/// commands are `brnr <group> <verb>`; the others, one word.
 pub fn main(args: Vec<String>) -> ExitCode {
-    let rest = args.get(1..).unwrap_or_default();
+    let cmd = args.first().map_or("", String::as_str);
+    let grouped = GROUPS.contains(&cmd);
+    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
+    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
-    let result = match args.first().map(String::as_str) {
-        Some("start") => talk::start(rest),
-        Some("send") => talk::send(rest),
-        Some("wait") => talk::wait(rest),
-        Some("cancel") => talk::cancel(rest),
-        Some("queue") => talk::queue(rest),
-        Some("log") => history::log(rest),
-        Some("mode") => settings::mode(rest),
-        Some("model") => settings::model(rest),
-        Some("config") => settings::config(rest),
-        Some("commands") => settings::commands(rest),
-        Some("sessions") => settings::sessions(rest),
-        Some("fork") => settings::fork(rest),
-        Some("close") => settings::close(rest),
-        Some("show") => show::show(rest),
-        Some("notify") => notify::notify(rest),
-        Some("ps") => done(ps(rest)),
-        Some("stop") => done(stop(rest)),
-        Some("list") => done(list(rest)),
-        Some("status") => done(status(rest)),
-        Some("pending") => done(pending(rest)),
-        Some("approve") => done(answer(rest, "approve")),
-        Some("deny") => done(answer(rest, "deny")),
-        Some("watch") => done(watch(rest)),
-        Some("doctor") => done(doctor::main(rest)),
-        Some("skill") => done(skill::skill(rest)),
-        Some("-h" | "--help") => {
+    let result = match (cmd, verb) {
+        (group, Some(verb)) if grouped && asks_help(rest) && has_usage(group, verb) => {
+            outln!("{}", usage_of(group, Some(verb)));
+            Ok(ExitCode::SUCCESS)
+        }
+        ("process", Some("list")) => done(ps(rest)),
+        ("process", Some("stop")) => done(stop(rest)),
+        ("session", Some("new")) => talk::new(rest),
+        ("session", Some("resume")) => talk::resume(rest),
+        ("session", Some("list")) => sessions::list(rest),
+        ("session", Some("status")) => done(status(rest)),
+        ("session", Some("fork")) => settings::fork(rest),
+        ("session", Some("close")) => settings::close(rest),
+        ("session", Some("delete")) => delete::delete(rest),
+        ("prompt", Some("send")) => talk::send(rest),
+        ("prompt", Some("cancel")) => talk::cancel(rest),
+        ("prompt", Some("commands")) => settings::commands(rest),
+        ("queue", Some("list")) => talk::queue_list(rest),
+        ("queue", Some("show")) => talk::queue_show(rest),
+        ("queue", Some("drop")) => talk::queue_drop(rest),
+        ("queue", Some("clear")) => talk::queue_clear(rest),
+        ("permission", Some("requests")) => done(pending(rest)),
+        ("permission", Some("show")) => show::show(rest),
+        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
+        ("config", Some("get")) => settings::config_get(rest),
+        ("config", Some("set")) => settings::config_set(rest),
+        ("event", Some("log")) => history::log(rest),
+        ("event", Some("watch")) => done(watch(rest)),
+        ("event", Some("notify")) => notify::notify(rest),
+        ("event", Some("wait")) => talk::wait(rest),
+        (group, Some("-h" | "--help")) if grouped => {
+            outln!("{}", usage_of(group, None));
+            Ok(ExitCode::SUCCESS)
+        }
+        (group, Some(verb)) if grouped => {
+            Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
+        }
+        (_, None) if grouped => Err(USAGE.to_owned()),
+        ("doctor", _) => done(doctor::main(rest)),
+        ("skill", _) => done(skill::skill(rest)),
+        ("-h" | "--help", _) => {
             outln!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
-        Some("-V" | "--version") => {
+        ("-V" | "--version", _) => {
             outln!("brnr {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err(USAGE.to_owned()),
+        ("", _) => Err(USAGE.to_owned()),
+        (cmd, _) => Err(format!("unknown command: {cmd} (brnr --help for every command)")),
     };
     match result {
         Ok(code) => code,
         Err(msg) if msg == USAGE => {
-            eprintln!("{}", usage_of(args.first().map_or("", String::as_str)));
+            eprintln!("{}", usage_of(cmd, verb));
             ExitCode::FAILURE
         }
         Err(msg) => {
@@ -175,6 +217,26 @@ pub fn main(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
+/// `--`, after which they are the agent's or the command's.
+fn asks_help(args: &[String]) -> bool {
+    args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help")
+}
+
+/// Whether [`USAGE`] has `brnr <group> <verb>`.
+fn has_usage(group: &str, verb: &str) -> bool {
+    USAGE.lines().any(|l| l.split_whitespace().take(3).eq(["brnr", group, verb]))
+}
+
+/// The command `args` are, for a bug report: a group's with its verb.
+pub fn command(args: &[String]) -> String {
+    let n = match args.first() {
+        Some(group) if GROUPS.contains(&group.as_str()) => 2,
+        _ => 1,
+    };
+    args.iter().take(n).cloned().collect::<Vec<_>>().join(" ")
 }
 
 /// What [`outln!`] and [`out!`] print with.
@@ -187,24 +249,38 @@ fn out(text: &str) {
     }
 }
 
-/// The usage of one command (its lines in [`USAGE`]), or all of it for a
-/// command there is none of.
-fn usage_of(cmd: &str) -> String {
-    let mut lines = Vec::new();
-    let mut ours = false;
-    for line in USAGE.lines() {
-        let rest = line.trim_start();
-        if rest.starts_with("brnr ") {
-            ours = rest.split_whitespace().nth(1) == Some(cmd);
-        } else if !line.starts_with("    ") {
-            ours = false;
+/// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
+/// group `cmd`'s `verb`, or of every command in the group without one (or
+/// with one it doesn't have). All of it for a command there is none of.
+fn usage_of(cmd: &str, verb: Option<&str>) -> String {
+    let in_group = |verb: Option<&str>| {
+        let mut lines = Vec::new();
+        let mut ours = false;
+        for line in USAGE.lines() {
+            let rest = line.trim_start();
+            if rest.starts_with("brnr ") {
+                let mut words = rest.split_whitespace().skip(1);
+                ours = words.next() == Some(cmd) && (verb.is_none() || words.next() == verb);
+            } else if !line.starts_with("    ") {
+                ours = false;
+            }
+            if ours {
+                lines.push(line);
+            }
         }
-        if ours {
-            lines.push(line);
-        }
+        lines
+    };
+    let mut lines = in_group(verb);
+    if lines.is_empty() && verb.is_some() {
+        lines = in_group(None);
     }
     if lines.is_empty() {
         return USAGE.to_owned();
+    }
+    // `session new` and `resume` share their flags, listed once.
+    if lines.iter().any(|l| l.contains("<new flags>")) {
+        let flags = USAGE.lines().skip_while(|l| *l != "<new flags>");
+        lines.extend(flags.take_while(|l| !l.is_empty()));
     }
     format!("usage:\n{}\n(brnr --help for every command)", lines.join("\n"))
 }
@@ -268,20 +344,23 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
     if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
         return Ok(Found::Inactive(p));
     }
-    Err(format!("no session {arg} (see brnr list --all)"))
+    Err(format!("no session {arg} (see brnr session list)"))
 }
 
 /// The running session `arg` names, for what needs one running.
 fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String), String> {
     match find_session(hosts, arg)? {
         Found::Running(host, id) => Ok((host, id)),
-        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr start --resume {arg}")),
+        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr session resume {arg}")),
     }
 }
 
 /// The process with pid `pid`.
 fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
-    hosts.iter().find(|h| h.id() == pid).ok_or(format!("no brnr process {pid} (see brnr ps)"))
+    hosts
+        .iter()
+        .find(|h| h.id() == pid)
+        .ok_or(format!("no brnr process {pid} (see brnr process list)"))
 }
 
 /// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
@@ -334,9 +413,9 @@ fn ps(args: &[String]) -> Result<(), String> {
         outln!("no brnr processes");
         return Ok(());
     }
-    // Each session has a cwd of its own (brnr list); the process's is only
-    // where the editor happened to start it, so the table leaves it to
-    // --json.
+    // Each session has a cwd of its own (brnr session list); the process's
+    // is only where the editor happened to start it, so the table leaves it
+    // to --json.
     let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
         let sessions: Vec<String> =
@@ -364,98 +443,12 @@ fn stop(args: &[String]) -> Result<(), String> {
 
 // ---- sessions ------------------------------------------------------------
 
-fn list(args: &[String]) -> Result<(), String> {
-    let (mut json_out, mut active, mut inactive) = (false, true, false);
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json_out = true,
-            "--all" => inactive = true,
-            "--inactive" => (active, inactive) = (false, true),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let hosts = discover()?;
-    let mut rows = if active { running_rows(&hosts, &lock::all()) } else { Vec::new() };
-    if inactive {
-        for p in inactive_sessions(&hosts) {
-            rows.push(json!({
-                "session": p["session_id"],
-                "title": null,
-                "state": "inactive",
-                "pid": null,
-                "agent": agent_name(&p["agent"]),
-                "cwd": p["cwd"],
-                "last_active": p["last_active"],
-            }));
-        }
-    }
-    // Most recently active first, like brnr sessions, however many processes.
-    rows.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
-    if json_out {
-        return print_json(&json!(rows));
-    }
-    if rows.is_empty() {
-        outln!("no {}sessions", if active { "running " } else { "" });
-        return Ok(());
-    }
-    let mut table =
-        vec![["SESSION", "TITLE", "STATE", "PID", "AGENT", "LAST ACTIVE", "CWD"].map(String::from)];
-    for r in &rows {
-        table.push([
-            text(&r["session"]),
-            r["title"].as_str().unwrap_or("-").to_owned(),
-            text(&r["state"]),
-            r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
-            text(&r["agent"]),
-            r["last_active"].as_str().map_or("?".to_owned(), when),
-            text(&r["cwd"]),
-        ]);
-    }
-    print_table(table);
-    Ok(())
-}
-
-/// The running sessions, a row each, as `list` shows them: those each
-/// process that answers says it serves, and those one that doesn't answer
-/// holds the locks of (ADR 3), `unreachable`. `sessions` takes its STATE and
-/// PID from these too (ADR 15).
-fn running_rows(hosts: &[Host], locks: &[lock::Entry]) -> Vec<Value> {
-    let mut rows = Vec::new();
-    for host in hosts {
-        for s in host.sessions() {
-            rows.push(json!({
-                "session": s["session_id"],
-                "title": s["title"],
-                "state": s["state"],
-                "pid": host.id().parse::<u64>().ok(),
-                "agent": agent_name(&host.info()["agent"]),
-                "cwd": s["cwd"],
-                "last_active": s["last_active"],
-            }));
-        }
-        // One that doesn't answer: what it holds the locks of, and no more.
-        if host.status.is_none() {
-            for session in host.held(locks) {
-                rows.push(json!({
-                    "session": session,
-                    "title": null,
-                    "state": "unreachable",
-                    "pid": host.id().parse::<u64>().ok(),
-                    "agent": agent_name(&host.info()["agent"]),
-                    "cwd": null,
-                    "last_active": null,
-                }));
-            }
-        }
-    }
-    rows
-}
-
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
 /// file are read: the first names the cwd, the last says when and in which
-/// process the session was last active. That process's log says which
-/// agent it ran.
+/// process the session was last active, or, if it is a deletion's, a record
+/// of no process's (ADR 63), the last that names a process does. That
+/// process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
     // session id alone can repeat across folders.
@@ -484,7 +477,14 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
         }
-        let host_id = last["host_id"].as_str().unwrap_or_default().to_owned();
+        // The process that last served it: a deletion's record is no
+        // process's (ADR 63).
+        let served = match last["host_id"].is_string() {
+            true => Some(last.clone()),
+            false => last_record_where(&file, |r| r["host_id"].is_string()),
+        };
+        let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
+        let host_id = host_id.unwrap_or_default().to_owned();
         let start = started
             .entry(host_id.clone())
             .or_insert_with(|| first_record(&paths::host_log(&host_id)).unwrap_or_default());
@@ -492,7 +492,8 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         past.push(json!({
             "session_id": session,
             "cwd": first["event"]["cwd"],
-            "last_active": last["ts"],
+            // When a process last served it: a deletion isn't activity.
+            "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
             "profile": info["profile"],
             "agent": info["agent"],
             "log": file.to_string_lossy(),
@@ -515,6 +516,12 @@ fn first_record(path: &Path) -> Option<Value> {
 /// wrote. A line cut short is never read as a record: an object ends only
 /// at its last byte.
 fn last_record(path: &Path) -> Option<Value> {
+    last_record_where(path, |_| true)
+}
+
+/// The last record in a file that brnr can read and `wanted` takes, read
+/// backwards as [`last_record`] reads.
+fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
     use std::io::{Seek, SeekFrom};
     let mut file = fs::File::open(path).ok()?;
     let mut end = file.metadata().ok()?.len();
@@ -529,13 +536,13 @@ fn last_record(path: &Path) -> Option<Value> {
         tail = chunk;
         // Its lines, last first; the first is whole only at the file's start.
         while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = as_record(&tail[i + 1..]) {
+            if let Some(found) = as_record(&tail[i + 1..]).filter(&wanted) {
                 return Some(found);
             }
             tail.truncate(i);
         }
         if start == 0 {
-            return as_record(&tail);
+            return as_record(&tail).filter(&wanted);
         }
         end = start;
     }
@@ -679,11 +686,13 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
     if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
-        out.push_str(&format!("{n} approval(s) waiting: brnr pending {arg}\n"));
+        out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
     }
     let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
     if held + context > 0 {
-        out.push_str(&format!("held: {held} message(s), {context} context (brnr queue {arg})\n"));
+        out.push_str(&format!(
+            "held: {held} message(s), {context} context (brnr queue list {arg})\n"
+        ));
     }
     if let Some(usage) = render::usage(&x["usage"]) {
         out.push_str(&format!("context window: {usage}\n"));
@@ -789,13 +798,18 @@ fn pending(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `permission allow` and `reject` (`cmd`): the request's option of one
+/// kind, or the one `--option` names; the host picks it, and says why it
+/// can't (ADR 63).
 fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut option = None;
+    let mut always = false;
     let mut json_out = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--always" => always = true,
             "--option" => option = Some(it.next().ok_or("--option needs an id")?.clone()),
             "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
@@ -805,7 +819,13 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let req = json!({ "cmd": cmd, "session": session, "request": request_id, "option": option });
+    let req = json!({
+        "cmd": cmd,
+        "session": session,
+        "request": request_id,
+        "always": always,
+        "option": option,
+    });
     let response = call(host, &req)?;
     let outcome = &response["outcome"];
     if json_out {
@@ -821,7 +841,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 // ---- events --------------------------------------------------------------
 
 /// Prints a session's events (`<session>`), or a process's (`--pid`), until
-/// the process exits (or the session closes), as `brnr log` shows them. A
+/// the process exits (or the session closes), as `brnr event log` shows them. A
 /// session's are its own plus the process's (the agent exiting).
 fn watch(args: &[String]) -> Result<(), String> {
     let (mut session, mut pid) = (None, None);
@@ -1021,7 +1041,7 @@ fn refused(err: &io::Error) -> bool {
 /// Whether the process with `pid` now may be the one that made `file`,
 /// though its socket refuses: macOS also refuses a connection to a socket
 /// whose backlog is full, as a stopped process's fills up with every
-/// `brnr list` that waited on it. One that started after `file` was
+/// `brnr session list` that waited on it. One that started after `file` was
 /// written is another process. What can't be told counts as "may be":
 /// nothing is removed on a guess (P4).
 #[cfg(target_vendor = "apple")]
@@ -1135,9 +1155,9 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 mod tests {
     use super::*;
 
-    /// What `list` and `--resume` take from a transcript, whatever its end
-    /// (ADR 55): ending in a newline or not; cut short; a whole line that
-    /// isn't a record, last or before the last; empty; nothing readable.
+    /// What `session list` and `session resume` take from a transcript, whatever
+    /// its end (ADR 55): ending in a newline or not; cut short; a whole line
+    /// that isn't a record, last or before the last; empty; nothing readable.
     #[test]
     fn adr_0055_the_first_and_last_records_are_ones_brnr_can_read() {
         let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));

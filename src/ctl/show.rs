@@ -1,6 +1,6 @@
-//! `brnr show <session> <request> [--json]`: one waiting approval in full,
-//! so it can be judged before it is answered: the tool, its kind and paths,
-//! the command or input, and the diff of an edit.
+//! `brnr permission show <session> <request> [--json]`: one waiting approval in
+//! full, so it can be judged before it is answered: the tool, its kind and
+//! paths, the command or input, and the diff of an edit.
 
 use std::process::ExitCode;
 
@@ -52,9 +52,16 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         .collect();
     outln!("options: {}", options.join(", "));
     if let Some(secs) = p["timeout_seconds"].as_u64() {
-        outln!("denied in {secs}s if nobody answers");
+        // As the timeout answers (ADR 63): the one reject_once option, else
+        // the turn is cancelled.
+        let once = p["options"].as_array().into_iter().flatten();
+        let once = once.filter(|o| o["kind"] == "reject_once").count();
+        let how = if once == 1 { "rejected once" } else { "its turn cancelled" };
+        outln!("{how} in {secs}s if nobody answers");
     }
-    let here = format!("brnr approve {arg} {request}, brnr deny {arg} {request}, or --option <id>");
+    let here = format!(
+        "brnr permission allow {arg} {request} or reject {arg} {request} (--always, --option <id>)"
+    );
     match (editor, p["why_not"].as_str()) {
         (false, _) => outln!("answer: {here}"),
         (true, None) => outln!("answer: in the editor, or {here} (experimental)"),

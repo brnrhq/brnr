@@ -1,6 +1,6 @@
-//! Headless sessions (`brnr start`) and editors' (`brnr acp`) against a fake
-//! ACP agent (fake_agent.py). Each test gets its own runtime, state and config
-//! directories, and kills whatever it leaves running.
+//! Headless sessions (`brnr session new`) and editors' (`brnr acp`) against a
+//! fake ACP agent (fake_agent.py). Each test gets its own runtime, state and
+//! config directories, and kills whatever it leaves running.
 
 mod common;
 
@@ -34,14 +34,14 @@ fn started_record(env: &Env) -> Value {
     record["event"].clone()
 }
 
-/// A `brnr start` that goes away before the start commits stops the
+/// A `brnr session new` that goes away before the start commits stops the
 /// process at once, whatever it is doing (here, waiting 30 s for the
 /// session), and the agent never gets the prompt.
 #[test]
 fn adr_0007_abandoned_start_sends_no_prompt() {
     let env = Env::new("abandon").agent("NEW_DELAY", "30");
     let mut start = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -55,16 +55,16 @@ fn adr_0007_abandoned_start_sends_no_prompt() {
     assert!(fs::read_to_string(log).unwrap().contains("start-abandoned"));
 }
 
-/// A `brnr start` that goes once the process has decided to report ready,
-/// but before the report is written, hasn't been told the session: the
+/// A `brnr session new` that goes once the process has decided to report
+/// ready, but before the report is written, hasn't been told the session: the
 /// write fails, the start is abandoned as before the commit, and the agent
 /// never gets the prompt (ADR 7). (`BRNR_TEST_READY=hold` holds the commit
-/// there until brnr start has gone.)
+/// there until brnr session new has gone.)
 #[test]
 fn adr_0007_start_gone_as_ready_is_written_sends_no_prompt() {
     let env = Env::new("abandon-ready");
     let mut start = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .env("BRNR_TEST_READY", "hold")
         .stderr(Stdio::null())
         .spawn()
@@ -79,13 +79,13 @@ fn adr_0007_start_gone_as_ready_is_written_sends_no_prompt() {
     assert!(host_logs(&env).contains("start-abandoned"), "{}", host_logs(&env));
 }
 
-/// A `brnr start --wait` that goes once it has the ready report leaves the
-/// session running, its prompt sent: the start committed (ADR 7, P14).
+/// A `brnr session new --wait` that goes once it has the ready report leaves
+/// the session running, its prompt sent: the start committed (ADR 7, P14).
 #[test]
 fn adr_0007_start_gone_after_ready_leaves_the_session_running() {
     let env = Env::new("after-ready");
     let mut start = env
-        .brnr(&start_args(&["--wait", "--prompt", "hang on"]))
+        .brnr(&new_args(&["--wait", "--prompt", "hang on"]))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -112,7 +112,7 @@ fn adr_0008_start_hands_over_one_request() {
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.headless]\nmode = \"plan\"\n",
     );
-    env.start(&["--set", "model=large", "--stop-when-idle", "60", "--prompt", "hello"]);
+    env.start(&["--option", "model=large", "--stop-when-idle", "60", "--prompt", "hello"]);
     let started = started_record(&env);
     let request = &started["request"];
     assert_eq!(request["agent"][0], AGENT, "{request}");
@@ -121,8 +121,8 @@ fn adr_0008_start_hands_over_one_request() {
     let headless = &request["role"]["headless"];
     // The flags' settings and the profile's, apart (ADR 58).
     assert_eq!(headless["defaults"]["mode"], "plan", "{request}");
-    assert_eq!(headless["settings"]["config"]["model"], "large");
-    assert!(headless["settings"]["mode"].is_null() && headless["defaults"]["config"] == json!({}));
+    assert_eq!(headless["settings"]["options"]["model"], "large");
+    assert!(headless["settings"]["mode"].is_null() && headless["defaults"]["options"] == json!({}));
     assert_eq!(headless["stop_when_idle"], 60);
     assert_eq!(headless["start_timeout"], 120);
     assert_eq!(headless["prompt"]["text"], "hello");
@@ -139,7 +139,7 @@ fn adr_0008_host_is_not_run_by_hand() {
     let err = env.fails(&["host", "--prompt", "hi", "--", AGENT]);
     assert!(err.contains("not by hand"), "{err}");
     let err = env.fails(&["host"]);
-    assert!(err.contains("brnr start --foreground"), "{err}");
+    assert!(err.contains("brnr session new --foreground"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -181,13 +181,13 @@ fn adr_0008_a_bad_request_is_refused() {
     assert!(env.hosts().is_empty() && env.calls().is_empty());
 }
 
-/// When the session doesn't open in time, `brnr start` says so and the
+/// When the session doesn't open in time, `brnr session new` says so and the
 /// host stops instead of carrying on unseen.
 #[test]
 fn adr_0007_start_timeout_stops_the_host() {
     let env = Env::new("timeout").agent("NEW_DELAY", "4");
     let out = env
-        .brnr(&start_args(&["--prompt", "run the migration"]))
+        .brnr(&new_args(&["--prompt", "run the migration"]))
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
@@ -202,7 +202,7 @@ fn adr_0007_start_timeout_stops_the_host() {
 #[test]
 fn adr_0007_empty_prompt_is_refused() {
     let env = Env::new("empty");
-    let out = env.run(&start_args(&["--prompt", " "]));
+    let out = env.run(&new_args(&["--prompt", " "]));
     assert!(!out.status.success());
     assert!(stderr(&out).contains("empty"), "{}", stderr(&out));
     assert!(env.hosts().is_empty());
@@ -230,8 +230,8 @@ fn adr_0008_prompt_is_not_on_the_command_line() {
 fn adr_0007_large_prompt_from_stdin() {
     let env = Env::new("bigprompt");
     let prompt = "x".repeat(300_000);
-    let out = env.run_with_stdin(&start_args(&["--prompt", "-"]), prompt.as_bytes());
-    assert!(out.status.success(), "start failed: {}", stderr(&out));
+    let out = env.run_with_stdin(&new_args(&["--prompt", "-"]), prompt.as_bytes());
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     assert_eq!(env.prompts()[0].len(), prompt.len());
     let started = started_record(&env);
@@ -244,30 +244,30 @@ fn adr_0007_large_prompt_from_stdin() {
 // ---- stopping ----------------------------------------------------------
 
 /// An agent that stops reading its stdin must not wedge the host: it still
-/// answers, and `brnr stop` still ends it.
+/// answers, and `brnr process stop` still ends it.
 #[test]
 fn stalled_agent_can_still_be_stopped() {
     let env = Env::new("stall").agent("STALL", "1");
     env.start(&[]);
     let host = env.host_pid();
     let big = vec![b'x'; 1 << 20];
-    let out = env.run_with_stdin(&["send", "sess-1", "-"], &big);
+    let out = env.run_with_stdin(&["prompt", "send", "sess-1", "-"], &big);
     assert!(out.status.success(), "send: {}", stderr(&out));
 
-    let out = env.run(&["status", "sess-1"]);
+    let out = env.run(&["session", "status", "sess-1"]);
     assert!(out.status.success(), "status: {}", stderr(&out));
-    let out = env.run(&["stop", &host.to_string()]);
+    let out = env.run(&["process", "stop", &host.to_string()]);
     assert!(out.status.success(), "stop: {}", stderr(&out));
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
 }
 
-/// `brnr stop` escalates to the agent's whole process group.
+/// `brnr process stop` escalates to the agent's whole process group.
 #[test]
 fn stop_kills_the_agents_children() {
     let env = Env::new("stubborn").agent("STUBBORN", "all");
     env.start(&[]);
     let (host, child) = (env.host_pid(), env.child_pid());
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "agent's child survived");
 }
@@ -278,7 +278,7 @@ fn stop_kills_children_left_behind() {
     let env = Env::new("orphan").agent("STUBBORN", "child");
     env.start(&[]);
     let (host, child) = (env.host_pid(), env.child_pid());
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "host still running");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "agent's child survived");
 }
@@ -290,18 +290,20 @@ fn stop_reaches_an_agent_out_of_its_group() {
     let env = Env::new("leave").agent("LEAVE_GROUP", "1").agent("STUBBORN", "all");
     env.start(&[]);
     let host = env.host_pid();
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
     assert!(wait_for(Duration::from_secs(20), || !alive(host)), "host still running");
 }
 
-/// A start that fails after the session opened (setting its mode) fails in
-/// the foreground too: it says why, and doesn't exit 0.
+/// A start that fails after the session opened (setting its model, which
+/// the agent refuses) fails in the foreground too: it says why, and doesn't
+/// exit 0.
 #[test]
 fn adr_0009_foreground_start_failure_is_reported() {
     let env = Env::new("fg-mode");
-    let out = env.run(&start_args(&["--foreground", "--mode", "bogus"]));
+    let out = env.run(&new_args(&["--foreground", "--model", "huge"]));
     assert!(!out.status.success(), "exited 0: {}", stderr(&out));
-    assert!(stderr(&out).contains("setting mode bogus failed: no mode bogus"), "{}", stderr(&out));
+    let says = "setting model huge failed: bad option model=huge";
+    assert!(stderr(&out).contains(says), "{}", stderr(&out));
 }
 
 /// Closing the last session ends a foreground process as it should: no
@@ -310,16 +312,18 @@ fn adr_0009_foreground_start_failure_is_reported() {
 fn adr_0009_foreground_close_of_the_last_session() {
     let env = Env::new("fg-close");
     let mut fg = env
-        .brnr(&start_args(&["--foreground", "--quiet"]))
+        .brnr(&new_args(&["--foreground", "--quiet"]))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     assert!(
-        wait_for(Duration::from_secs(10), || env.ok(&["list"]).contains("sess-1")),
+        wait_for(Duration::from_secs(10), || env
+            .ok(&["session", "list", "--include", "active"])
+            .contains("sess-1")),
         "no session"
     );
-    env.ok(&["close", "sess-1"]);
+    env.ok(&["session", "close", "sess-1"]);
     assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop with its last session");
     let mut err = String::new();
     fg.stderr.take().unwrap().read_to_string(&mut err).unwrap();
@@ -346,15 +350,15 @@ fn runtime_files(env: &Env) -> Vec<String> {
     files
 }
 
-/// `brnr start --foreground … | head -1`: the display stops, with a note in
-/// the host log, and the session carries on. Stopped, it records `exited`
+/// `brnr session new --foreground … | head -1`: the display stops, with a note
+/// in the host log, and the session carries on. Stopped, it records `exited`
 /// and leaves nothing behind in the runtime dir.
 #[test]
 fn adr_0009_foreground_outlives_its_stdout() {
     let env = Env::new("fg-head");
     let (reader, writer) = std::io::pipe().unwrap();
     let mut fg = env
-        .brnr(&start_args(&["--foreground", "--prompt", "reply hi"]))
+        .brnr(&new_args(&["--foreground", "--prompt", "reply hi"]))
         .stdout(writer)
         .stderr(Stdio::piped())
         .spawn()
@@ -363,17 +367,17 @@ fn adr_0009_foreground_outlives_its_stdout() {
     BufReader::new(reader).read_line(&mut first).unwrap();
     assert!(first.contains("user: reply hi"), "{first}");
     // Something more to show, on a stdout nobody reads any more.
-    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply again"]), "again\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply again"]), "again\n");
     let stopped = || host_logs(&env).contains(r#""event":"display-stopped""#);
     assert!(wait_for(Duration::from_secs(5), stopped), "no note of the display stopping");
-    assert!(env.ok(&["status", "sess-1"]).contains("idle"));
+    assert!(env.ok(&["session", "status", "sess-1"]).contains("idle"));
     env.stop();
     assert!(wait_exit(&mut fg, Duration::from_secs(15)), "didn't stop");
     let mut err = String::new();
     fg.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(fg.wait().unwrap().success(), "{err}");
     assert!(err.contains("brnr: agent exited"), "{err}");
-    let exited = env.ok(&["log", "sess-1", "--json", "--events", "exited"]);
+    let exited = env.ok(&["event", "log", "sess-1", "--json", "--events", "exited"]);
     assert!(exited.contains(r#""event":"exited""#), "{exited}");
     assert!(runtime_files(&env).is_empty(), "{:?}", runtime_files(&env));
 }
@@ -386,7 +390,7 @@ fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
     let env = Env::new("fg-slow");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "many 80000"];
     let mut fg =
-        env.brnr(&start_args(&args)).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        env.brnr(&new_args(&args)).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     // The session runs to its end while nothing is read.
     let ended = || host_logs(&env).contains(r#""event":"exited""#) && env.hosts().is_empty();
     assert!(wait_for(Duration::from_secs(30), ended), "the session was held up");
@@ -397,7 +401,7 @@ fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
     let skipped: Vec<u64> = out.lines().filter_map(not_shown).collect();
     assert!(!skipped.is_empty(), "no line about skipped events");
     let shown = out.lines().filter(|l| not_shown(l).is_none()).count() as u64;
-    let logged = env.ok(&["log", "sess-1"]).lines().count() as u64;
+    let logged = env.ok(&["event", "log", "sess-1"]).lines().count() as u64;
     assert!(logged > 80000, "{logged}");
     assert_eq!(shown + skipped.iter().sum::<u64>(), logged);
 }
@@ -408,7 +412,7 @@ fn adr_0009_slow_foreground_reader_is_told_what_it_missed() {
 fn adr_0010_foreground_passes_the_agents_stderr() {
     let env = Env::new("fg-stderr").agent("STDERR", "[session/create] phase=ready \x1b[1m");
     let args = ["--foreground", "--stop-when-idle", "0", "--prompt", "reply hi"];
-    let out = env.run(&start_args(&args));
+    let out = env.run(&new_args(&args));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("[session/create] phase=ready \x1b[1m\n"), "{}", stderr(&out));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("phase=ready"));
@@ -417,15 +421,15 @@ fn adr_0010_foreground_passes_the_agents_stderr() {
 }
 
 /// A start that fails ends its error with the agent's last lines on stderr:
-/// brnr start's, and the foreground's after the agent's stderr itself.
+/// brnr session new's, and the foreground's after the agent's stderr itself.
 #[test]
 fn adr_0010_failed_start_shows_the_agents_stderr() {
     let env = Env::new("errtail").agent("STDERR", "Error: claude CLI not found").agent("EXIT", "1");
-    let err = env.fails(&start_args(&["--prompt", "hi"]));
+    let err = env.fails(&new_args(&["--prompt", "hi"]));
     let want = "the agent exited before the session started. \
                 The agent's last lines on stderr:\n  Error: claude CLI not found\n";
     assert!(err.ends_with(want), "{err}");
-    let out = env.run(&start_args(&["--foreground", "--prompt", "hi"]));
+    let out = env.run(&new_args(&["--foreground", "--prompt", "hi"]));
     assert!(!out.status.success());
     assert_eq!(stderr(&out).matches("Error: claude CLI not found").count(), 2, "{}", stderr(&out));
     assert!(stderr(&out).contains(want), "{}", stderr(&out));
@@ -439,7 +443,7 @@ fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
     let agent = env.dir.join("agent.py");
     let text = "#!/usr/bin/env python3\nimport os, sys\nos.write(2, b'login required: ')\nsys.stdin.read()\n";
     script(&agent, text);
-    let out = (env.brnr(&["start", "--prompt", "hi", "--", agent.to_str().unwrap()]))
+    let out = (env.brnr(&["session", "new", "--prompt", "hi", "--", agent.to_str().unwrap()]))
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
@@ -452,15 +456,17 @@ fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
 /// Answering a permission request while the agent is being stopped can't
 /// reach it, so it fails rather than claiming success.
 #[test]
-fn adr_0027_approve_during_stop_fails() {
+fn adr_0027_allow_during_stop_fails() {
     let env = Env::new("stopperm").agent("PERMISSION", "1").agent("STUBBORN", "all");
     env.start(&["--prompt", "edit it"]);
-    let waiting =
-        || String::from_utf8_lossy(&env.run(&["pending", "sess-1"]).stdout).contains("p1");
+    let waiting = || {
+        String::from_utf8_lossy(&env.run(&["permission", "requests", "sess-1"]).stdout)
+            .contains("p1")
+    };
     assert!(wait_for(Duration::from_secs(5), waiting), "no permission request");
-    assert!(env.run(&["stop", &env.pid()]).status.success());
-    let out = env.run(&["approve", "sess-1", "p1"]);
-    assert!(!out.status.success(), "approve succeeded during stop");
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
+    let out = env.run(&["permission", "allow", "sess-1", "p1"]);
+    assert!(!out.status.success(), "allow succeeded during stop");
     assert!(stderr(&out).contains("no longer"), "{}", stderr(&out));
 }
 
@@ -471,14 +477,14 @@ fn adr_0020_held_messages_are_reported_on_exit() {
     let env = Env::new("held");
     env.start(&["--prompt", "hang on"]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "message_dropped,exited"])
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "message_dropped,exited"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    let out = env.run(&["send", "sess-1", "later"]);
+    let out = env.run(&["prompt", "send", "sess-1", "later"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (message m2)");
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let lines: Vec<Value> = BufReader::new(watch.stdout.take().unwrap())
@@ -507,11 +513,11 @@ fn adr_0020_held_messages_are_reported_on_exit() {
 fn adr_0011_a_panic_is_recorded() {
     for on in ["loop", "thread"] {
         let env = Env::new(&format!("panic-{on}"));
-        let args = start_args(&["--prompt", "hang on"]);
+        let args = new_args(&["--prompt", "hang on"]);
         let out = env.brnr(&args).env("BRNR_TEST_PANIC", "1").output().unwrap();
         assert!(out.status.success(), "{}", stderr(&out));
         // Held behind the hanging turn, so dropped when the process dies.
-        assert!(env.ok(&["send", "sess-1", "later"]).contains("held"));
+        assert!(env.ok(&["prompt", "send", "sess-1", "later"]).contains("held"));
         let host = env.hosts().remove(0);
         let pid = |key: &str| host[key].as_i64().unwrap() as i32;
         let (host_pid, agent_pid) = (pid("host_pid"), pid("agent_pid"));
@@ -532,11 +538,11 @@ fn adr_0011_a_panic_is_recorded() {
         let reason = exited["reason"].as_str().unwrap_or_default();
         assert!(reason.starts_with("brnr panicked at src/host/"), "{on}: {exited}");
         assert!(reason.ends_with(": a test asked for it"), "{on}: {exited}");
-        let logged = env.ok(&["log", "sess-1", "--json", "--events", "exited"]);
+        let logged = env.ok(&["event", "log", "sess-1", "--json", "--events", "exited"]);
         assert!(logged.contains(reason), "{on}: {logged}");
-        let dropped = env.ok(&["log", "sess-1", "--json", "--events", "message_dropped"]);
+        let dropped = env.ok(&["event", "log", "sess-1", "--json", "--events", "message_dropped"]);
         assert!(dropped.contains(r#""by":"exit""#), "{on}: {dropped}");
-        let shown = env.ok(&["log", "sess-1", "--events", "exited"]);
+        let shown = env.ok(&["event", "log", "sess-1", "--events", "exited"]);
         assert!(shown.contains(&format!("agent exited: null; {reason}")), "{on}: {shown}");
         let log = host_logs(&env);
         assert!(log.contains(r#""event":{"event":"panic""#), "{on}: {log}");
@@ -561,7 +567,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
         env.write_config(&format!(
             "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
         ));
-        let args = if editor { vec!["acp", "--", AGENT] } else { start_args(&["--prompt", "hi"]) };
+        let args = if editor { vec!["acp", "--", AGENT] } else { new_args(&["--prompt", "hi"]) };
         let out =
             env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
         let err = stderr(&out);
@@ -575,7 +581,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
         let line = err.lines().find(|l| l.starts_with(said)).unwrap_or_default();
         assert!(line.ends_with(": a test asked for it"), "{editor}: {err}");
         // Then the link to report it (ADR 45), once.
-        let command = if editor { "acp" } else { "start" };
+        let command = if editor { "acp" } else { "session%20new" };
         let link = format!("&what=%60brnr%20{command}%60%20panicked");
         assert_eq!(err.matches(&link).count(), 1, "{editor}: {err}");
         assert!(err.trim_end().lines().last().unwrap().starts_with(ISSUE_LINK), "{err}");
@@ -604,7 +610,7 @@ fn adr_0011_a_panic_while_starting_is_recorded() {
 #[test]
 fn adr_0045_a_panic_prints_a_link_to_report_it() {
     let env = Env::new("panic-link");
-    let out = env.brnr(&["list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
+    let out = env.brnr(&["session", "list"]).env("BRNR_TEST_PANIC", "cli").output().unwrap();
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(101), "{err}");
     let shown = err.find("a test asked for it").expect("Rust's message");
@@ -614,17 +620,23 @@ fn adr_0045_a_panic_prints_a_link_to_report_it() {
     assert!(url.starts_with(&format!("{ISSUE_LINK}Panic%20at%20src%2Fbug.rs%3A")), "{url}");
     let version = format!("&version=brnr%20{}&setup=", env!("CARGO_PKG_VERSION"));
     assert!(url.contains(&version), "{url}");
-    assert!(url.contains("&what=%60brnr%20list%60%20panicked%3A"), "{url}");
+    assert!(url.contains("&what=%60brnr%20session%20list%60%20panicked%3A"), "{url}");
     assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
     assert!(!url.contains(' '), "{url}");
+    // A group's command is named with its verb, not its arguments.
+    let args = ["prompt", "send", "sess-1", "x"];
+    let out = env.brnr(&args).env("BRNR_TEST_PANIC", "cli").output().unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(101), "{err}");
+    assert!(err.contains("&what=%60brnr%20prompt%20send%60%20panicked%3A"), "{err}");
 
-    let args = start_args(&["--foreground", "--prompt", "hi"]);
+    let args = new_args(&["--foreground", "--prompt", "hi"]);
     let out =
         env.brnr(&args).env("BRNR_TEST_PANIC", "start").stdin(Stdio::null()).output().unwrap();
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(101), "{err}");
     assert_eq!(err.matches(ISSUE_LINK).count(), 1, "{err}");
-    assert!(err.contains("&what=%60brnr%20start%20--foreground%60%20panicked"), "{err}");
+    assert!(err.contains("&what=%60brnr%20session%20new%20--foreground%60%20panicked"), "{err}");
 }
 
 // ---- sending -----------------------------------------------------------
@@ -637,7 +649,7 @@ fn adr_0018_interrupts_keep_their_order() {
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     for text in ["first", "second"] {
-        let out = env.run(&["send", "sess-1", "--interrupt", text]);
+        let out = env.run(&["prompt", "send", "sess-1", "--interrupt", text]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3), "{:?}", env.prompts());
@@ -646,7 +658,7 @@ fn adr_0018_interrupts_keep_their_order() {
 
 /// The messages of the turns that ended, in order, as `turn_ended` has them.
 fn turns(env: &Env) -> Vec<Vec<String>> {
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "turn_ended"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "turn_ended"]);
     let messages = |l: &str| serde_json::from_str::<Value>(l).unwrap()["messages"].take();
     log.lines().map(|l| serde_json::from_value(messages(l)).unwrap()).collect()
 }
@@ -658,14 +670,14 @@ fn adr_0018_send_while_a_turn_runs_is_held() {
     let env = Env::new("held-order");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    assert_eq!(env.ok(&["send", "sess-1", "reply first"]), "held (message m2)\n");
-    assert_eq!(env.ok(&["send", "sess-1", "reply second"]), "held (message m3)\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply first"]), "held (message m2)\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply second"]), "held (message m3)\n");
     sleep(Duration::from_millis(300));
     assert_eq!(env.prompts(), ["hang on"], "a second prompt while one ran");
-    env.ok(&["cancel", "sess-1", "--keep-held"]);
-    let out = env.run(&["wait", "sess-1", "--timeout", "10"]);
+    env.ok(&["prompt", "cancel", "sess-1", "--keep-held"]);
+    let out = env.run(&["event", "wait", "sess-1", "--timeout", "10"]);
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
-    assert_eq!(out.status.code(), Some(0), "{said}{}", env.ok(&["log", "sess-1"]));
+    assert_eq!(out.status.code(), Some(0), "{said}{}", env.ok(&["event", "log", "sess-1"]));
     assert_eq!(env.prompts(), ["hang on", "reply first", "reply second"]);
     assert_eq!(turns(&env), [["m1"], ["m2"], ["m3"]]);
 }
@@ -678,7 +690,7 @@ fn adr_0017_steer_goes_into_the_running_turn() {
     let env = Env::new("steer");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&["send", "sess-1", "--steer", "--wait", "reply steered"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "reply steered"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "steered\n");
     assert!(stderr(&out).contains("steered (message m2)"), "{}", stderr(&out));
@@ -687,7 +699,7 @@ fn adr_0017_steer_goes_into_the_running_turn() {
     assert_eq!(steer["prompt"][0]["text"], "reply steered");
     assert_eq!(steer["_meta"]["steering"]["idleBehavior"], "promptRequired");
     assert_eq!(turns(&env), [["m1", "m2"]]);
-    let user = env.ok(&["log", "sess-1", "--events", "user_message"]);
+    let user = env.ok(&["event", "log", "sess-1", "--events", "user_message"]);
     assert!(user.ends_with("user: reply steered\n"), "{user}");
 }
 
@@ -698,20 +710,23 @@ fn adr_0017_steer_goes_into_the_running_turn() {
 fn adr_0018_steer_without_a_turn_is_a_prompt() {
     let env = Env::new("steer-idle");
     env.start(&[]);
-    assert_eq!(env.ok(&["send", "sess-1", "--steer", "reply now"]), "delivered (message m1)\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--steer", "reply now"]),
+        "delivered (message m1)\n"
+    );
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     assert!(env.calls_of("_session/steering").is_empty());
 
     // The agent reads nothing until this turn has ended.
-    env.ok(&["send", "sess-1", "slow 2"]);
+    env.ok(&["prompt", "send", "sess-1", "slow 2"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
-    assert_eq!(env.ok(&["send", "sess-1", "reply held"]), "held (message m3)\n");
-    let out = env.run(&["send", "sess-1", "--steer", "--wait", "reply late"]);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply held"]), "held (message m3)\n");
+    let out = env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "reply late"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("steered (message m4)"), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "late\n");
     assert_eq!(env.calls_of("_session/steering").len(), 1);
-    assert_eq!(env.run(&["wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
+    assert_eq!(env.run(&["event", "wait", "sess-1", "--timeout", "10"]).status.code(), Some(0));
     assert_eq!(env.prompts(), ["reply now", "slow 2", "reply late", "reply held"]);
     assert_eq!(turns(&env)[2..], [["m4"], ["m3"]]);
 }
@@ -719,7 +734,7 @@ fn adr_0018_steer_without_a_turn_is_a_prompt() {
 /// The session's `turn_ended` and `message_dropped` events, in order, as
 /// `(event, messages or message, by)`.
 fn endings(env: &Env) -> Vec<(String, Value, Value)> {
-    let log = env.ok(&["log", "sess-1", "--json"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json"]);
     let events = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
     events
         .filter(|e| e["event"] == "turn_ended" || e["event"] == "message_dropped")
@@ -738,13 +753,22 @@ fn adr_0056_steer_answered_after_its_turn_is_in_that_turn() {
     let env = Env::new("steer-late").agent("STEER_ANSWER", "late");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
-    assert!(out.status.success(), "{}{}", stderr(&out), env.ok(&["log", "sess-1"]));
+    let out = env.run(&[
+        "prompt",
+        "send",
+        "sess-1",
+        "--steer",
+        "--wait",
+        "--timeout",
+        "10",
+        "reply steered",
+    ]);
+    assert!(out.status.success(), "{}{}", stderr(&out), env.ok(&["event", "log", "sess-1"]));
     // What the agent said came before it said it took the message, so isn't
     // shown as its reply; the transcript has it.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     assert_eq!(turns(&env), [["m1", "m2"]]);
-    let said = env.ok(&["log", "sess-1", "--events", "user_message,agent_message"]);
+    let said = env.ok(&["event", "log", "sess-1", "--events", "user_message,agent_message"]);
     assert!(said.contains("agent: steered\n") && said.ends_with("user: reply steered\n"), "{said}");
 }
 
@@ -755,7 +779,16 @@ fn adr_0056_steer_refused_after_its_turn_is_dropped() {
     let env = Env::new("steer-error").agent("STEER_ANSWER", "error");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&["send", "sess-1", "--steer", "--wait", "--timeout", "10", "reply steered"]);
+    let out = env.run(&[
+        "prompt",
+        "send",
+        "sess-1",
+        "--steer",
+        "--wait",
+        "--timeout",
+        "10",
+        "reply steered",
+    ]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("m2 was dropped (steer)"), "{}", stderr(&out));
     let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("steer"));
@@ -771,12 +804,13 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     let env = Env::new("steer-never").agent("STEER_ANSWER", "never");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let args = ["send", "sess-1", "--steer", "--wait", "--timeout", "20", "reply steered"];
+    let args =
+        ["prompt", "send", "sess-1", "--steer", "--wait", "--timeout", "20", "reply steered"];
     let waiter = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
     sleep(Duration::from_millis(300));
     assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
-    env.ok(&["close", "sess-1"]);
+    env.ok(&["session", "close", "sess-1"]);
     let out = waiter.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("m2 was dropped (close)"), "{}", stderr(&out));
@@ -792,13 +826,16 @@ fn adr_0018_steer_needs_the_agents_steering() {
     let env = Env::new("steer-none").agent("NO_STEERING", "1");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let err = env.fails(&["send", "sess-1", "--steer", "reply steered"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "reply steered"]);
     let want = "the agent can't steer a running turn: it doesn't advertise _session/steering";
     assert!(err.contains(want), "{err}");
     assert!(env.calls_of("_session/steering").is_empty());
-    env.ok(&["cancel", "sess-1"]);
-    env.run(&["wait", "sess-1", "--timeout", "10"]);
-    assert_eq!(env.ok(&["send", "sess-1", "--steer", "reply now"]), "delivered (message m2)\n");
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    env.run(&["event", "wait", "sess-1", "--timeout", "10"]);
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--steer", "reply now"]),
+        "delivered (message m2)\n"
+    );
 }
 
 // ---- strict mode -------------------------------------------------------
@@ -812,23 +849,23 @@ fn adr_0041_strict_mode_refuses_steering_and_fork() {
     env.start(&["--strict", "--prompt", "hang on"]);
     assert_eq!(started_record(&env)["request"]["strict"], true);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let err = env.fails(&["send", "sess-1", "--steer", "reply steered"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "reply steered"]);
     let want = "--steer uses _session/steering, an ACP extension, which strict mode doesn't";
     assert!(err.contains(want), "{err}");
-    let err = env.fails(&["fork", "sess-1"]);
-    let want = "fork uses session/fork, unstable in ACP v1, which strict mode doesn't";
+    let err = env.fails(&["session", "fork", "sess-1"]);
+    let want = "session fork uses session/fork, unstable in ACP v1, which strict mode doesn't";
     assert!(err.contains(want), "{err}");
     assert!(env.calls_of("_session/steering").is_empty());
     assert!(env.calls_of("session/fork").is_empty());
-    assert_eq!(env.ok(&["send", "sess-1", "reply held"]), "held (message m2)\n");
-    env.ok(&["cancel", "sess-1", "--keep-held"]);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply held"]), "held (message m2)\n");
+    env.ok(&["prompt", "cancel", "sess-1", "--keep-held"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
-    env.ok(&["close", "sess-1"]);
+    env.ok(&["session", "close", "sess-1"]);
 
     let env = Env::new("strict-profile");
     env.write_config("[profiles.default]\nstrict = true\n");
     env.start(&[]);
-    assert!(env.fails(&["fork", "sess-1"]).contains("which strict mode doesn't"));
+    assert!(env.fails(&["session", "fork", "sess-1"]).contains("which strict mode doesn't"));
 }
 
 /// The editor's `fs` and `terminal` capabilities don't reach the agent, as
@@ -869,7 +906,7 @@ fn adr_0006_slow_watcher_is_disconnected() {
     let env = Env::new("slowwatch").agent("FLOOD", "40000");
     env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--events", "all"])
+        .brnr(&["event", "watch", "sess-1", "--events", "all"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -879,7 +916,7 @@ fn adr_0006_slow_watcher_is_disconnected() {
     // Stopped until the turn has ended, so every event came while it was:
     // continued sooner, it would be reading again when the turn's 20 MB
     // message came, which a peer that keeps up takes (ADR 60).
-    let out = env.run(&["send", "sess-1", "--wait", "go"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "go"]);
     assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
@@ -889,7 +926,7 @@ fn adr_0006_slow_watcher_is_disconnected() {
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     assert!(err.contains("closed the connection"), "{err}");
     // It may still be working through the burst; it must get there.
-    let answers = || env.run(&["status", "sess-1"]).status.success();
+    let answers = || env.run(&["session", "status", "sess-1"]).status.success();
     assert!(wait_for(Duration::from_secs(30), answers), "host stopped answering");
 }
 
@@ -901,7 +938,7 @@ fn adr_0006_reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
     env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--events", "all"])
+        .brnr(&["event", "watch", "sess-1", "--events", "all"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -915,10 +952,10 @@ fn adr_0006_reading_watcher_stays_connected() {
         }
     });
     sleep(Duration::from_millis(300));
-    assert!(env.run(&["send", "sess-1", "go"]).status.success());
+    assert!(env.run(&["prompt", "send", "sess-1", "go"]).status.success());
     let burst = || read.load(Relaxed) > 20000 || watch.try_wait().unwrap().is_some();
     assert!(wait_for(Duration::from_secs(60), burst), "watch read {} lines", read.load(Relaxed));
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
 
     assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
     let mut err = String::new();
@@ -935,7 +972,7 @@ fn adr_0006_huge_message_reaches_watchers() {
     let env = Env::new("huge");
     env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message"])
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -943,12 +980,12 @@ fn adr_0006_huge_message_reaches_watchers() {
     let first = std::thread::spawn(move || BufReader::new(stdout).lines().next());
     sleep(Duration::from_millis(300));
     let size = 20_000_000;
-    assert!(env.run(&["send", "sess-1", &format!("big {size}")]).status.success());
+    assert!(env.run(&["prompt", "send", "sess-1", &format!("big {size}")]).status.success());
     let line = first.join().unwrap().expect("no message").unwrap();
     let event: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["text"].as_str().unwrap().len(), size);
 
-    let out = env.run(&["status", "sess-1", "--json"]);
+    let out = env.run(&["session", "status", "sess-1", "--json"]);
     assert!(out.status.success(), "status: {}", stderr(&out));
     let status: Value = serde_json::from_slice(&out.stdout).unwrap();
     let preview = status["last_message"].as_str().unwrap();
@@ -958,8 +995,8 @@ fn adr_0006_huge_message_reaches_watchers() {
 }
 
 /// A reply bigger than a peer's whole queue reaches every kind of peer that
-/// keeps up, and none is cut off for it (ADR 60): `start --wait`, `send
-/// --wait`, a watcher and a bridge, the last two asking for `acp` too, so
+/// keeps up, and none is cut off for it (ADR 60): `session new --wait`,
+/// `prompt send --wait`, a watcher and a bridge, the last two asking for `acp` too, so
 /// that the reply comes to them twice at once, as its ACP message and as
 /// its event.
 #[test]
@@ -972,12 +1009,12 @@ fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
         got.display()
     ));
     let size = 20_000_000;
-    let out = env.run(&start_args(&["--wait", "--prompt", &format!("big {size}")]));
-    assert!(out.status.success(), "start --wait: {}", stderr(&out));
-    assert_eq!(out.stdout.len(), size + 1, "start --wait: {}", stderr(&out));
+    let out = env.run(&new_args(&["--wait", "--prompt", &format!("big {size}")]));
+    assert!(out.status.success(), "session new --wait: {}", stderr(&out));
+    assert_eq!(out.stdout.len(), size + 1, "session new --wait: {}", stderr(&out));
 
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "all"])
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "all"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -995,10 +1032,10 @@ fn adr_0060_a_reply_bigger_than_the_queue_reaches_every_peer() {
         sizes
     });
     sleep(Duration::from_millis(300));
-    let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
     assert!(out.status.success(), "send --wait: {}", stderr(&out));
     assert_eq!(out.stdout.len(), size + 1, "send --wait: {}", stderr(&out));
-    let out = env.run(&["send", "sess-1", "--wait", "--json", &format!("big {size}")]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--json", &format!("big {size}")]);
     assert!(out.status.success(), "send --wait --json: {}", stderr(&out));
     let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(turn["reply"].as_str().unwrap().len(), size);
@@ -1027,7 +1064,7 @@ fn adr_0049_a_long_message_doesnt_put_a_watcher_behind() {
     let env = Env::new("longmsg");
     env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1037,12 +1074,12 @@ fn adr_0049_a_long_message_doesnt_put_a_watcher_behind() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [8_000_000, 12_000_000] {
-        let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+        let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
         assert!(out.status.success(), "{}", stderr(&out));
     }
     // The watcher's line after the long message, which it is past the limit
     // with, and a status to make sure.
-    assert!(env.run(&["status", "sess-1"]).status.success());
+    assert!(env.run(&["session", "status", "sess-1"]).status.success());
     kill(watch.id() as i32, libc::SIGCONT);
     env.stop();
     assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
@@ -1072,7 +1109,8 @@ fn adr_0038_adapters_next_to_a_symlinked_brnr() {
     let want = format!("ok    brnr-claude-adapter: {}", bin.join("brnr-claude-adapter").display());
     assert!(doctor.contains(&want), "{doctor}");
 
-    let args = ["start", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
+    let args =
+        ["session", "new", "--wait", "--prompt", "reply linked", "--", "brnr-claude-adapter"];
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "linked\n");
@@ -1096,7 +1134,7 @@ fn adr_0038_bridges_next_to_a_symlinked_brnr() {
     let python = String::from_utf8(python.stdout).unwrap();
     let path = format!("{}:/usr/bin:/bin", Path::new(python.trim()).parent().unwrap().display());
 
-    let args = start_args(&["--wait", "--prompt", "reply linked"]);
+    let args = new_args(&["--wait", "--prompt", "reply linked"]);
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     let request = started_record(&env)["request"].clone();
@@ -1114,7 +1152,7 @@ fn adr_0006_big_message_to_a_lagging_watcher() {
     let env = Env::new("lagbig");
     env.start(&[]);
     let mut watch = env
-        .brnr(&["watch", "sess-1", "--json", "--events", "agent_message"])
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -1122,7 +1160,7 @@ fn adr_0006_big_message_to_a_lagging_watcher() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [6_000_000, 12_000_000] {
-        let out = env.run(&["send", "sess-1", "--wait", &format!("big {size}")]);
+        let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     kill(watch.id() as i32, libc::SIGCONT);
@@ -1145,7 +1183,7 @@ fn adr_0006_every_watcher_sees_the_exit() {
     env.start(&[]);
     let watchers: Vec<_> = (0..8)
         .map(|_| {
-            env.brnr(&["watch", "sess-1", "--json", "--events", "exited"])
+            env.brnr(&["event", "watch", "sess-1", "--json", "--events", "exited"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -1153,7 +1191,7 @@ fn adr_0006_every_watcher_sees_the_exit() {
         })
         .collect();
     sleep(Duration::from_millis(500));
-    assert!(env.run(&["stop", &env.pid()]).status.success());
+    assert!(env.run(&["process", "stop", &env.pid()]).status.success());
     for watch in watchers {
         let out = watch.wait_with_output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
@@ -1168,7 +1206,7 @@ fn unresponsive_host_is_reported() {
     env.start(&[]);
     let host = env.host_pid();
     kill(host, libc::SIGSTOP);
-    let out = env.run(&["send", "sess-1", "hello"]);
+    let out = env.run(&["prompt", "send", "sess-1", "hello"]);
     kill(host, libc::SIGCONT);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
@@ -1196,7 +1234,7 @@ fn adr_0035_bad_request_line_is_answered() {
     );
 }
 
-/// `brnr list | head -1`: a reader that goes away ends brnr quietly, as it
+/// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]
 fn closed_stdout_ends_quietly() {
@@ -1204,7 +1242,8 @@ fn closed_stdout_ends_quietly() {
     env.start(&[]);
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
-    let out = env.brnr(&["list"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
+    let out =
+        env.brnr(&["session", "list"]).stdout(writer).stderr(Stdio::piped()).output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
 }
@@ -1217,11 +1256,11 @@ fn closed_stdout_ends_quietly() {
 #[test]
 fn shared_runtime_dir_is_refused() {
     let env = Env::new("shared");
-    assert!(env.ok(&["list"]).contains("no running sessions"), "a missing dir is no error");
+    assert_eq!(env.ok(&["session", "list"]), "no sessions\n", "a missing dir is no error");
     let run = env.dir.join("run");
     fs::create_dir(&run).unwrap();
     fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
-    let err = env.fails(&["list"]);
+    let err = env.fails(&["session", "list"]);
     assert!(err.contains("not a private directory owned by this user"), "{err}");
 }
 
@@ -1233,7 +1272,7 @@ fn metadata_names_its_own_socket() {
     let mut meta = env.hosts()[0].clone();
     meta["id"] = "4242".into();
     fs::write(env.dir.join("run/4242.json"), meta.to_string()).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
 }
 
@@ -1248,7 +1287,7 @@ fn transcripts_are_private() {
     let mut checked = 0;
     let mut check = |path: &Path| {
         let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        env.ok(&["log", "sess-1"]); // Once the transcript is written.
+        env.ok(&["event", "log", "sess-1"]); // Once the transcript is written.
         let want = if path.is_dir() { 0o700 } else { 0o600 };
         assert_eq!(mode, want, "{} is {mode:o}", path.display());
         checked += 1;
@@ -1289,8 +1328,8 @@ fn project(env: &Env) -> (PathBuf, Vec<String>) {
     (dir, names)
 }
 
-/// A session's transcript is two files: its events, which `log`, `list` and
-/// `--resume` read, and its raw ACP beside them (ADR 22).
+/// A session's transcript is two files: its events, which `event log`,
+/// `session list` and `session resume` read, and its raw ACP beside them (ADR 22).
 #[test]
 fn adr_0022_transcripts_are_two_files() {
     let env = Env::new("twofiles");
@@ -1317,15 +1356,17 @@ fn adr_0022_transcripts_are_two_files() {
     // What belongs to no session is in the host log.
     let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
     assert!(records(&host).iter().any(|r| r["msg"]["method"] == "initialize"));
-    // One session, for list and --resume.
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    // One session, for session list and session resume.
+    let list: Value =
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!(list[0]["session"], "sess-1");
     let cwd = fs::canonicalize(&env.dir).unwrap();
     assert_eq!(list[0]["cwd"], cwd.to_string_lossy().as_ref());
-    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.ok(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(project(&env).1, names, "resumed into other files");
-    let acp = env.ok(&["log", "sess-1", "--events", "acp", "--json"]);
+    let acp = env.ok(&["event", "log", "sess-1", "--events", "acp", "--json"]);
     assert_eq!(acp.matches(r#""method":"session/prompt""#).count(), 2, "{acp}");
 }
 
@@ -1334,10 +1375,10 @@ fn adr_0022_transcripts_are_two_files() {
 const COLLIDING: &[&str] =
     &["a/b", "a_b", "x.acp", "x_acp", "Sess-1", "sess-1", "\u{e9}", "e\u{301}"];
 
-/// `brnr start` of the fake agent, its session `id`.
+/// `brnr session new` of the fake agent, its session `id`.
 fn start_as(env: &Env, id: &str) {
     let out =
-        env.brnr(&start_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
+        env.brnr(&new_args(&["--wait", "--prompt", "reply hi"])).env("SESSION_ID", id).output();
     let out = out.unwrap();
     assert!(out.status.success(), "start {id:?}: {}", stderr(&out));
 }
@@ -1360,7 +1401,9 @@ fn adr_0053_distinct_ids_never_share_a_transcript() {
             records(&dir.join(name)).iter().map(|r| r["session_id"].clone()).collect();
         assert!(ids.iter().all(|id| *id == ids[0]), "{name}: {ids:?}");
     }
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap();
+    let list: Value =
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap();
     let mut listed: Vec<&str> =
         list.as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
     listed.sort();
@@ -1368,7 +1411,7 @@ fn adr_0053_distinct_ids_never_share_a_transcript() {
     want.sort();
     assert_eq!(listed, want);
     for id in COLLIDING {
-        let log = env.ok(&["log", id, "--json"]);
+        let log = env.ok(&["event", "log", id, "--json"]);
         assert_eq!(log.matches(r#""event":"turn_ended""#).count(), 1, "{id:?}: {log}");
     }
 }
@@ -1391,14 +1434,14 @@ fn adr_0053_distinct_ids_never_share_a_lock() {
     let mut want = COLLIDING.to_vec();
     want.sort();
     assert_eq!(locked.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), want);
-    let list: Value = serde_json::from_str(&env.ok(&["list", "--json"])).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), COLLIDING.len(), "{list}");
     for (id, pid) in &locked {
         let row =
             rows.iter().find(|r| r["session"] == id.as_str()).unwrap_or_else(|| panic!("{id:?}"));
         assert_eq!((&row["state"], &row["pid"]), (&Value::from("idle"), pid), "{id:?}: {list}");
-        env.ok(&["send", id, "reply again"]);
+        env.ok(&["prompt", "send", id, "reply again"]);
     }
 }
 
@@ -1410,7 +1453,7 @@ fn adr_0022_log_events_leaves_out_the_raw_acp() {
     env.write_config("[profiles.default]\nlog = \"events\"\n");
     env.start(&["--wait", "--prompt", "reply hi"]);
     for running in [true, false] {
-        let out = env.run(&["log", "sess-1", "--events", "acp,agent_message"]);
+        let out = env.run(&["event", "log", "sess-1", "--events", "acp,agent_message"]);
         assert!(out.status.success(), "{}", stderr(&out));
         let err = stderr(&out);
         assert!(err.contains(r#"no raw ACP for sess-1: log = "events" leaves it out"#), "{err}");
@@ -1430,9 +1473,9 @@ fn adr_0022_log_events_leaves_out_the_raw_acp() {
 }
 
 /// A transcript that ends partway through a record, as a process that died
-/// mid-write leaves it, is still its session's (ADR 55): `list` takes the
-/// last record it can read, `log` shows everything before the cut and says
-/// where it is, and a resume puts its first record on a line of its own.
+/// mid-write leaves it, is still its session's (ADR 55): `session list` takes
+/// the last record it can read, `log` shows everything before the cut and
+/// says where it is, and a resume puts its first record on a line of its own.
 /// Nothing rewrites what was there.
 #[test]
 fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
@@ -1442,8 +1485,10 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let (dir, _) = project(&env);
     let file = dir.join("sess-1.jsonl");
-    let listed =
-        || -> Value { serde_json::from_str(&env.ok(&["list", "--inactive", "--json"])).unwrap() };
+    let listed = || -> Value {
+        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
+            .unwrap()
+    };
     // Ending in a newline, as written: the last record is `exited`.
     let whole = fs::read(&file).unwrap();
     assert!(whole.ends_with(b"\n"));
@@ -1463,7 +1508,8 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["last_active"]), (&"sess-1".into(), &exited["ts"]));
     for json in [false, true] {
-        let args: &[&str] = if json { &["log", "sess-1", "--json"] } else { &["log", "sess-1"] };
+        let args: &[&str] =
+            if json { &["event", "log", "sess-1", "--json"] } else { &["event", "log", "sess-1"] };
         let out = env.run(args);
         assert!(out.status.success(), "{}", stderr(&out));
         assert!(String::from_utf8_lossy(&out.stdout).contains("hi"), "json: {json}");
@@ -1476,7 +1522,7 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     fs::write(&file, [&whole[..], b"not a record\n"].concat()).unwrap();
     assert_eq!(listed()[0]["last_active"], exited["ts"]);
     let n = whole.iter().filter(|&&b| b == b'\n').count() + 1;
-    let err = stderr(&env.run(&["log", "sess-1"]));
+    let err = stderr(&env.run(&["event", "log", "sess-1"]));
     assert!(
         err.contains(&format!("sess-1.jsonl:{n} isn't a record brnr can read, not shown")),
         "{err}"
@@ -1485,13 +1531,13 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     // Resumed: what was there stays, and the next record is on a line of
     // its own.
     fs::write(&file, &cut).unwrap();
-    env.ok(&["start", "--resume", "sess-1", "--wait", "--prompt", "reply again"]);
+    env.ok(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let after = fs::read(&file).unwrap();
     assert!(after.starts_with(&cut), "the transcript was rewritten");
     assert_eq!(after[cut.len()], b'\n');
-    let out = env.run(&["log", "sess-1"]);
+    let out = env.run(&["event", "log", "sess-1"]);
     let log = String::from_utf8_lossy(&out.stdout);
     assert!(log.contains("agent: hi") && log.contains("agent: again"), "{log}");
     assert!(stderr(&out).contains(&format!("sess-1.jsonl:{n} isn't a record")), "{}", stderr(&out));
@@ -1500,20 +1546,20 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
     // An empty file says nothing of a session: it isn't one.
     fs::write(dir.join("empty-1.jsonl"), "").unwrap();
     assert_eq!(listed().as_array().unwrap().len(), 1);
-    assert!(env.fails(&["log", "empty-1"]).contains("no session empty-1"));
+    assert!(env.fails(&["event", "log", "empty-1"]).contains("no session empty-1"));
 }
 
 /// A process that exits is listed, and holds its sessions, until its
 /// transcript has `exited`, so that what reads it once the process has gone
-/// (`log`, `list --all`, `--resume`) reads it whole (ADR 48). A stalled
-/// disk holds it up for 2 s at most.
+/// (`event log`, `session list`, `session resume`) reads it whole (ADR 48). A
+/// stalled disk holds it up for 2 s at most.
 #[test]
 fn adr_0048_an_exit_is_written_before_the_process_goes() {
     let env = Env::new("exitlog");
     let stall = env.dir.join("stall");
     let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
     env.start(&["--wait", "--prompt", "reply hi"]);
-    env.ok(&["log", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
     fs::write(&stall, "").unwrap();
     env.stop();
     sleep(Duration::from_millis(500));
@@ -1543,8 +1589,8 @@ fn adr_0006_a_stalled_disk_skips_records_and_says_so() {
     // Some 400 MB for the logger: 4000 messages of 50 kB, each an event and
     // raw ACP. The turn runs to its end while nothing is written. (`wait`,
     // as `send --wait` would take every message.)
-    env.ok(&["send", "sess-1", "many 4000 50000"]);
-    let out = env.run(&["wait", "sess-1", "--timeout", "60"]);
+    env.ok(&["prompt", "send", "sess-1", "many 4000 50000"]);
+    let out = env.run(&["event", "wait", "sess-1", "--timeout", "60"]);
     assert!(out.status.success(), "the session waited for the logger: {}", stderr(&out));
     // The logger's 64 MiB, and the agent's 16 MiB on its way, with room.
     assert_holds_less(host, 160 << 20);
@@ -1552,7 +1598,7 @@ fn adr_0006_a_stalled_disk_skips_records_and_says_so() {
     fs::remove_file(&stall).unwrap();
     let noted = || fs::read_to_string(&events).is_ok_and(|t| t.contains("records-skipped"));
     assert!(wait_for(Duration::from_secs(30), noted), "no records-skipped note");
-    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply after"]), "after\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
 
@@ -1583,9 +1629,9 @@ fn adr_0006_a_stalled_disk_skips_records_and_says_so() {
     let host_note = host.iter().find(|r| r["event"]["event"] == "records-skipped").unwrap();
     assert!(host_note["event"]["count"].as_u64().unwrap() >= count, "{host_note}");
     // log tells its reader of the gap, whatever --events chose.
-    let log = env.ok(&["log", "sess-1", "--events", "user_message"]);
+    let log = env.ok(&["event", "log", "sess-1", "--events", "user_message"]);
     assert!(log.contains(&format!("{count} records not written ({acp} of them raw ACP)")), "{log}");
-    let json = env.ok(&["log", "sess-1", "--json", "--events", "user_message"]);
+    let json = env.ok(&["event", "log", "sess-1", "--json", "--events", "user_message"]);
     assert!(json.contains(r#""event":"records-skipped""#), "{json}");
 }
 
@@ -1636,10 +1682,10 @@ headers = { Authorization = "Bearer header-secret" }
 "#,
     );
     env.start(&["--wait", "--prompt", "reply hi"]);
-    let args = ["watch", "sess-1", "--events", "acp", "--json"];
+    let args = ["event", "watch", "sess-1", "--events", "acp", "--json"];
     let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
     sleep(Duration::from_millis(300));
-    env.ok(&["fork", "sess-1"]);
+    env.ok(&["session", "fork", "sess-1"]);
     let redacted = |servers: &Value| {
         let env = serde_json::json!([{ "name": "GITHUB_TOKEN", "value": "<redacted>" }]);
         assert_eq!(servers[0]["env"], env);
@@ -1655,7 +1701,7 @@ headers = { Authorization = "Bearer header-secret" }
         assert_eq!(servers[1]["headers"][0]["value"], "Bearer header-secret", "{method}");
     }
     redacted(&started_record(&env)["request"]["role"]["headless"]["mcp_servers"]);
-    let acp = env.ok(&["log", "sess-1", "--events", "acp", "--json"]);
+    let acp = env.ok(&["event", "log", "sess-1", "--events", "acp", "--json"]);
     let new = acp.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
     let new = new.into_iter().find(|e| e["msg"]["method"] == "session/new").expect(&acp);
     redacted(&new["msg"]["params"]["mcpServers"]);
@@ -1693,7 +1739,7 @@ fn adr_0025_an_editors_mcp_secrets_are_redacted() {
     };
     writeln!(to_agent, "{INITIALIZE}").unwrap();
     answer(1);
-    let args = ["watch", "--pid", &env.pid(), "--events", "acp", "--json"];
+    let args = ["event", "watch", "--pid", &env.pid(), "--events", "acp", "--json"];
     let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
     sleep(Duration::from_millis(300));
     let header = serde_json::json!({ "name": "Authorization", "value": "Bearer editor-secret" });
@@ -1733,7 +1779,7 @@ fn runtime_dir_symlink_is_refused() {
     fs::create_dir(&target).unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(&target, env.dir.join("run")).unwrap();
-    let out = env.run(&start_args(&[]));
+    let out = env.run(&new_args(&[]));
     assert!(!out.status.success(), "started in a symlinked runtime dir");
     assert!(fs::read_dir(&target).unwrap().next().is_none(), "wrote into the symlink target");
 }
@@ -1773,11 +1819,11 @@ fn adr_0002_acp_is_what_an_editor_runs() {
     );
     writeln!(to_agent, "{new}").unwrap();
     assert_eq!(answer(2)["result"]["sessionId"], "sess-1");
-    assert!(env.ok(&["ps"]).contains("editor"));
-    assert!(env.ok(&["list"]).contains("sess-1"));
+    assert!(env.ok(&["process", "list"]).contains("editor"));
+    assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     // A message sent from outside is shown to the editor as a completed
     // tool call; its response (to brnr's own prompt id) is kept from it.
-    env.ok(&["send", "sess-1", "reply hi"]);
+    env.ok(&["prompt", "send", "sess-1", "reply hi"]);
     let echo = loop {
         let mut line = String::new();
         assert!(from_agent.read_line(&mut line).unwrap() > 0, "no echo");
@@ -1796,7 +1842,7 @@ fn adr_0002_acp_is_what_an_editor_runs() {
     drop(to_agent); // The editor goes away, and the agent with it.
     assert!(wait_exit(&mut editor, Duration::from_secs(15)), "acp didn't exit");
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
-    assert!(env.ok(&["log", "sess-1"]).contains("title: Fake session"));
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("title: Fake session"));
     let err = env.fails(&["acp", "--on-disconnect", "headless", "--", AGENT]);
     assert!(err.contains("unknown option: --on-disconnect"), "{err}");
 }
@@ -1813,7 +1859,7 @@ fn adr_0008_acp_reports_a_config_error() {
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
-    assert!(err.contains("profiles.default: permission_timeout is for brnr start only; it goes under [profiles.default.headless]"), "{err}");
+    assert!(err.contains("profiles.default: permission_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -1824,7 +1870,7 @@ fn adr_0008_acp_hands_over_one_request() {
     let env = Env::new("ed-request");
     env.write_config(
         "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
-         [profiles.default.editor]\nexperimental = [\"send\", \"approve\"]\nfeatures = [\"shared_sessions\"]\n",
+         [profiles.default.editor]\nexperimental = [\"send\", \"permission\"]\nfeatures = [\"shared_sessions\"]\n",
     );
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let request = started_record(&env)["request"].clone();
@@ -1832,7 +1878,7 @@ fn adr_0008_acp_hands_over_one_request() {
     assert_eq!(request["log"], "events");
     let part = &request["role"]["editor"];
     assert_eq!(part["proxy_pid"], editor.id(), "{request}");
-    assert_eq!(part["experimental"], serde_json::json!(["send", "approve"]));
+    assert_eq!(part["experimental"], serde_json::json!(["send", "permission"]));
     assert_eq!(part["features"], serde_json::json!(["shared_sessions"]));
     assert!(part["sigmask"].is_array());
     assert!(request["role"].get("headless").is_none(), "{request}");
@@ -1905,12 +1951,60 @@ fn adr_0020_editor_close_is_an_event() {
         line.clear();
         assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to the close");
     }
-    assert!(!env.ok(&["list"]).contains("sess-1"), "the session is still listed");
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "session_closed"]);
+    let open = env.ok(&["session", "list", "--include", "active"]);
+    assert!(!open.contains("sess-1"), "the session is still listed");
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "session_closed"]);
     let closed: Value =
         serde_json::from_str(log.lines().next().expect("no session_closed")).unwrap();
     assert_eq!((&closed["session"], &closed["by"]), (&"sess-1".into(), &"editor".into()));
-    assert!(env.ok(&["ps"]).contains("editor"));
+    assert!(env.ok(&["process", "list"]).contains("editor"));
+}
+
+/// The editor's `session/delete` of `session`, with `id`.
+fn editor_delete(id: u64, session: &str) -> String {
+    let params = json!({ "sessionId": session });
+    json!({ "jsonrpc": "2.0", "id": id, "method": "session/delete", "params": params }).to_string()
+}
+
+/// The editor's `session/delete` goes to the agent as it is. Once the agent
+/// has deleted the session, its process records a `session_deleted` by the
+/// editor: in the transcript of one no process has open, which stays, and
+/// in that of one open there, which then closes (ADR 63). One the agent
+/// didn't delete records nothing.
+#[test]
+fn adr_0063_an_editors_delete_is_recorded() {
+    let env = Env::new("ed-delete");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_delete(2, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"], json!({}));
+    assert_eq!(env.calls_of("session/delete")[0]["params"], json!({ "sessionId": "sess-1" }));
+    let deleted = || env.ok(&["event", "log", "sess-1", "--json", "--events", "session_deleted"]);
+    assert!(wait_for(Duration::from_secs(5), || !deleted().is_empty()), "not recorded");
+    let event: Value = serde_json::from_str(deleted().lines().next().unwrap()).unwrap();
+    assert_eq!((&event["session"], &event["by"]), (&"sess-1".into(), &"editor".into()));
+    assert_eq!(event["host_id"], editor_process(&env)["host_id"]);
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("agent: first"));
+    assert!(env.ok(&["session", "list"]).contains("sess-1"), "the transcript went");
+    writeln!(to_agent, "{}", editor_delete(3, "gone-1")).unwrap();
+    assert!(response(&mut from_agent, 3)["error"].is_object());
+    assert_eq!(host_logs(&env).matches(r#""event":"session_deleted""#).count(), 1);
+    let _ = editor.kill();
+
+    let env = Env::new("ed-delete-open");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_delete(3, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"], json!({}));
+    let names = "session_deleted,session_closed";
+    let ends = || env.ok(&["event", "log", "sess-1", "--json", "--events", names]);
+    assert!(wait_for(Duration::from_secs(5), || ends().lines().count() == 2), "{}", ends());
+    let ends: Vec<Value> = ends().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!((&ends[0]["event"], &ends[0]["by"]), (&"session_deleted".into(), &"editor".into()));
+    assert_eq!((&ends[1]["event"], &ends[1]["by"]), (&"session_closed".into(), &"editor".into()));
+    assert!(!env.ok(&["session", "list", "--include", "active"]).contains("sess-1"), "still open");
+    let _ = editor.kill();
 }
 
 /// When the editor goes, what the agent started goes too: its process
@@ -1950,10 +2044,10 @@ fn adr_0006_editor_that_stops_reading_holds_the_agent_back() {
     sleep(Duration::from_secs(32));
     assert!(alive(host), "a stalled editor ended its agent");
     assert_holds_less(host, 64 << 20);
-    assert!(env.ok(&["ps"]).contains("editor"));
+    assert!(env.ok(&["process", "list"]).contains("editor"));
     // The agent went on: its answer comes after everything it wrote.
     line_with(&mut from_agent, "end_turn");
-    assert!(alive(host) && env.ok(&["ps"]).contains("editor"));
+    assert!(alive(host) && env.ok(&["process", "list"]).contains("editor"));
 }
 
 /// The agent's stdin likewise: an agent that stops reading holds back what
@@ -1987,7 +2081,7 @@ fn flood(mut to_agent: ChildStdin) -> std::thread::JoinHandle<bool> {
 
 /// The `line_too_long` events in sess-1's transcript (ADR 51).
 fn too_long(env: &Env) -> Vec<Value> {
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "line_too_long"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "line_too_long"]);
     log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
@@ -1999,7 +2093,7 @@ fn adr_0051_headless_an_agent_line_past_the_limit_is_dropped_and_said() {
     let env = Env::new("toolong");
     env.start(&[]);
     for prompt in ["big 40000000", "long 40"] {
-        let out = env.run(&["send", "sess-1", "--wait", prompt]);
+        let out = env.run(&["prompt", "send", "sess-1", "--wait", prompt]);
         assert!(out.status.success(), "send {prompt}: {}", stderr(&out));
         assert!(out.stdout.is_empty(), "send {prompt} printed {} bytes", out.stdout.len());
     }
@@ -2007,7 +2101,7 @@ fn adr_0051_headless_an_agent_line_past_the_limit_is_dropped_and_said() {
     assert_eq!(events.len(), 2, "{events:?}");
     let dropped = |e: &Value| e["from"] == "agent" && e["relayed"] == false;
     assert!(events.iter().all(dropped), "{events:?}");
-    assert_eq!(env.ok(&["send", "sess-1", "--wait", "reply after"]), "after\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
     env.stop();
 }
 
@@ -2067,7 +2161,7 @@ fn adr_0051_the_agents_stderr_without_a_newline_is_bounded() {
     env.write_config("[profiles.default]\nlog = false\n");
     env.start(&[]);
     let host = env.host_pid();
-    let out = env.run(&["send", "sess-1", "--wait", "long 96 stderr"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "long 96 stderr"]);
     assert!(out.status.success(), "send: {}", stderr(&out));
     assert_holds_less(host, 64 << 20);
     env.stop();
@@ -2168,7 +2262,7 @@ fn editor_load(env: &Env, id: u64, session: &str) -> String {
         .to_string()
 }
 
-/// The editor's process, as `brnr ps` has it.
+/// The editor's process, as `brnr process list` has it.
 fn editor_process(env: &Env) -> Value {
     env.hosts().into_iter().find(|h| h["proxy_pid"].is_number()).expect("no editor's process")
 }
@@ -2186,12 +2280,13 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let error = response(&mut from_agent, 2)["error"].clone();
     let message = error["message"].as_str().unwrap_or_default();
     assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
-    assert!(message.contains("`brnr close sess-1`"), "{error}");
+    assert!(message.contains("`brnr session close sess-1`"), "{error}");
     assert!(env.calls_of("session/load").is_empty());
-    env.ok(&["close", "sess-1"]);
+    env.ok(&["session", "close", "sess-1"]);
     writeln!(to_agent, "{}", editor_load(&env, 3, "sess-1")).unwrap();
     assert!(response(&mut from_agent, 3)["result"].is_object());
-    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     assert_eq!(status["held_by"], editor_process(&env)["host_pid"]);
     let _ = editor.kill();
 }
@@ -2214,15 +2309,16 @@ fn adr_0050_an_editors_session_that_cant_be_locked_is_passed_through() {
     let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "reply from the editor")).unwrap();
     assert!(response(&mut from_agent, 3)["result"].is_object());
-    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     let why = status["lock_error"].as_str().unwrap_or_default().to_owned();
     assert!(why.starts_with(&format!("{}: ", lock.display())), "{status}");
     assert_eq!(status["held_by"], Value::Null);
-    let text = env.ok(&["status", "sess-1"]);
+    let text = env.ok(&["session", "status", "sess-1"]);
     assert!(text.contains(&format!("not locked: {why}; nothing stops")), "{text}");
-    assert!(env.ok(&["log", "sess-1"]).contains("from the editor"));
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("from the editor"));
     let pid = editor_process(&env)["host_pid"].to_string();
-    let err = env.fails(&start_args(&["--resume", "sess-1"]));
+    let err = env.fails(&resume_args("sess-1", &[]));
     assert!(err.contains(&format!("sess-1 is running in process {pid}")), "{err}");
     // A load reaches the agent, as it would with the lock taken.
     unlockable("old-1");
@@ -2248,16 +2344,17 @@ fn adr_0042_shared_sessions_let_an_editor_load_a_held_session() {
     writeln!(to_agent, "{}", editor_prompt(3, "reply from the editor")).unwrap();
     response(&mut from_agent, 3);
     let shared = editor_process(&env);
-    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     assert_eq!(
         (status["pid"].to_string(), status["held_by"].to_string()),
         (headless.clone(), headless)
     );
     assert_eq!(status["shared_by"], serde_json::json!([shared["host_pid"]]));
-    let text = env.ok(&["status", "sess-1"]);
+    let text = env.ok(&["session", "status", "sess-1"]);
     assert!(text.contains(&format!("shared by process {}", shared["host_pid"])), "{text}");
     // Its turn isn't in the session's transcript, but in its host log.
-    assert!(!env.ok(&["log", "sess-1"]).contains("from the editor"));
+    assert!(!env.ok(&["event", "log", "sess-1"]).contains("from the editor"));
     let host_log = fs::read_to_string(shared["host_log"].as_str().unwrap()).unwrap();
     assert!(host_log.contains("from the editor") && host_log.contains("session-shared"));
     let _ = editor.kill();
@@ -2271,7 +2368,7 @@ fn adr_0004_take_over_from_an_editor_is_refused() {
     let env = Env::new("ed-takeover");
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let pid = env.pid();
-    let err = env.fails(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let err = env.fails(&resume_args("sess-1", &["--take-over"]));
     let refused = format!(
         "sess-1 is running in process {pid}, an editor's: `close` on an editor's session is \
          experimental"
@@ -2318,7 +2415,8 @@ fn adr_0026_a_lone_surrogate_is_read() {
     writeln!(to_agent, "{}", editor_prompt(3, "odd surrogate")).unwrap();
     let request = line_with(&mut from_agent, "session/request_permission");
     assert!(request.contains(r#""title": "Edit \ud83d""#), "{request}");
-    let pending: Value = serde_json::from_str(&env.ok(&["pending", "sess-1", "--json"])).unwrap();
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
     assert_eq!(pending[0]["title"], "Edit \u{fffd}", "{pending}");
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
@@ -2334,7 +2432,8 @@ fn adr_0026_deep_nesting_is_read() {
     let request = line_with(&mut from_agent, "session/request_permission");
     assert!(request.contains(&"[".repeat(20000)), "the request was cut");
     let state = || {
-        let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+        let status: Value =
+            serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
         status["state"].clone()
     };
     assert_eq!(state(), "waiting");
@@ -2352,7 +2451,7 @@ fn adr_0026_an_answer_the_host_cant_place_reaches_the_agent() {
     writeln!(to_agent, "{}", editor_prompt(3, "odd garbled")).unwrap();
     let request = line_with(&mut from_agent, "session/request_permission");
     assert!(serde_json::from_str::<Value>(&request).is_err(), "{request}");
-    assert_eq!(env.ok(&["pending", "sess-1", "--json"]).trim(), "[]");
+    assert_eq!(env.ok(&["permission", "requests", "sess-1", "--json"]).trim(), "[]");
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
 }
@@ -2367,7 +2466,7 @@ fn adr_0026_a_late_answer_to_a_cancelled_request_is_dropped() {
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
-    env.ok(&["cancel", "sess-1"]);
+    env.ok(&["prompt", "cancel", "sess-1"]);
     line_with(&mut from_agent, "end_turn");
     writeln!(to_agent, "{ALLOW}").unwrap();
     let note = update(&mut from_agent, "tool_call");
@@ -2417,7 +2516,8 @@ fn update(from_agent: &mut BufReader<ChildStdout>, kind: &str) -> Value {
 /// Waits for sess-1 to have no turn running.
 fn wait_idle(env: &Env) {
     let idle = || {
-        let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+        let status: Value =
+            serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
         status["state"] == "idle"
     };
     assert!(wait_for(Duration::from_secs(5), idle), "sess-1 is still busy");
@@ -2433,16 +2533,16 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     let actions: [(&[&str], &str); 10] = [
-        (&["send", "sess-1", "hi"], "send"),
-        (&["send", "sess-1", "--context", "hi"], "context"),
-        (&["queue", "sess-1", "--clear-context"], "context"),
-        (&["cancel", "sess-1"], "cancel"),
-        (&["approve", "sess-1", "p1"], "approve"),
-        (&["deny", "sess-1", "p1"], "approve"),
-        (&["mode", "sess-1", "plan"], "settings"),
-        (&["model", "sess-1", "large"], "settings"),
-        (&["config", "sess-1", "model=large"], "settings"),
-        (&["close", "sess-1"], "close"),
+        (&["prompt", "send", "sess-1", "hi"], "send"),
+        (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
+        (&["queue", "clear", "sess-1", "--context"], "context"),
+        (&["prompt", "cancel", "sess-1"], "cancel"),
+        (&["permission", "allow", "sess-1", "p1"], "permission"),
+        (&["permission", "reject", "sess-1", "p1"], "permission"),
+        (&["config", "set", "sess-1", "--mode", "plan"], "config"),
+        (&["config", "set", "sess-1", "--model", "large"], "config"),
+        (&["config", "set", "sess-1", "--option", "model=large"], "config"),
+        (&["session", "close", "sess-1"], "close"),
     ];
     for (args, action) in actions {
         let err = env.fails(args);
@@ -2452,25 +2552,25 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
         );
         assert!(err.contains(&says), "{args:?}: {err}");
     }
-    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
+    assert!(env.fails(&["session", "fork", "sess-1"]).contains("the editor owns this process"));
     let observing: [&[&str]; 9] = [
-        &["status", "sess-1"],
-        &["pending", "sess-1"],
-        &["show", "sess-1", "p1"],
-        &["queue", "sess-1"],
-        &["mode", "sess-1"],
-        &["model", "sess-1"],
-        &["config", "sess-1"],
-        &["commands", "sess-1"],
-        &["log", "sess-1"],
+        &["session", "status", "sess-1"],
+        &["permission", "requests", "sess-1"],
+        &["permission", "show", "sess-1", "p1"],
+        &["queue", "list", "sess-1"],
+        &["config", "get", "sess-1", "--mode"],
+        &["config", "get", "sess-1", "--model"],
+        &["config", "get", "sess-1"],
+        &["prompt", "commands", "sess-1"],
+        &["event", "log", "sess-1"],
     ];
     for args in observing {
         env.ok(args);
     }
     // show says where it can be answered, and why not here.
-    let show = env.ok(&["show", "sess-1", "p1"]);
+    let show = env.ok(&["permission", "show", "sess-1", "p1"]);
     assert!(show.contains("p1, session sess-1, waiting in the editor"), "{show}");
-    let why = "answer it in the editor (`approve` on an editor's session is experimental";
+    let why = "answer it in the editor (`permission` on an editor's session is experimental";
     assert!(show.contains(why), "{show}");
     for method in ["session/cancel", "session/set_mode", "session/set_config_option"] {
         assert!(env.calls_of(method).is_empty(), "the agent got {method}");
@@ -2480,6 +2580,32 @@ fn adr_0004_experimental_actions_are_refused_without_opt_in() {
     let answers: Vec<Value> = env.calls().into_iter().filter(|c| c["id"] == "perm-1").collect();
     assert_eq!(answers.len(), 1, "{answers:?}");
     assert_eq!(env.prompts(), ["perm edit"]);
+    // The editor's answer is told by its option's kind (ADR 63).
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "permission_resolved"]);
+    let resolved: Value = serde_json::from_str(log.lines().next().unwrap_or_default()).unwrap();
+    assert_eq!(
+        (&resolved["answer"], &resolved["option_kind"], &resolved["by"]),
+        (&"allowed".into(), &"allow_once".into(), &"editor".into()),
+        "{resolved}"
+    );
+}
+
+/// An editor's process opens no session for `--pid`, new or resumed, as
+/// it forks none: the session would be a headless one in a process that
+/// ends with the editor (ADR 4, ADR 63).
+#[test]
+fn adr_0063_pid_refused_in_an_editors_process() {
+    let env = Env::new("ex-pid");
+    let (_editor, _to_agent, _from_agent) = open_editor(&env);
+    let pid = env.pid();
+    for args in
+        [&["session", "new", "--pid", &pid][..], &["session", "resume", "--pid", &pid, "old-1"]]
+    {
+        let err = env.fails(args);
+        assert!(err.contains("the editor owns this process; open sessions there"), "{err}");
+    }
+    assert_eq!(env.calls_of("session/new").len(), 1);
+    assert!(env.calls_of("session/resume").is_empty());
 }
 
 /// In strict mode an editor's session has no experimental actions, whatever
@@ -2489,19 +2615,20 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
     let env = Env::new("ex-strict");
     env.write_config(
         "[profiles.default]\nstrict = true\n\n[profiles.default.editor]\nexperimental = \
-         [\"send\", \"context\", \"cancel\", \"approve\", \"settings\", \"close\"]\n",
+         [\"send\", \"context\", \"cancel\", \"permission\", \"config\", \"close\"]
+",
     );
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     let actions: [(&[&str], &str); 7] = [
-        (&["send", "sess-1", "hi"], "send"),
-        (&["send", "sess-1", "--context", "hi"], "context"),
-        (&["cancel", "sess-1"], "cancel"),
-        (&["approve", "sess-1", "p1"], "approve"),
-        (&["deny", "sess-1", "p1"], "approve"),
-        (&["mode", "sess-1", "plan"], "settings"),
-        (&["close", "sess-1"], "close"),
+        (&["prompt", "send", "sess-1", "hi"], "send"),
+        (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
+        (&["prompt", "cancel", "sess-1"], "cancel"),
+        (&["permission", "allow", "sess-1", "p1"], "permission"),
+        (&["permission", "reject", "sess-1", "p1"], "permission"),
+        (&["config", "set", "sess-1", "--mode", "plan"], "config"),
+        (&["session", "close", "sess-1"], "close"),
     ];
     for (args, action) in actions {
         let err = env.fails(args);
@@ -2509,7 +2636,7 @@ fn adr_0041_strict_mode_has_no_experimental_actions() {
             format!("{action} on an editor's session is an experimental action, and strict mode");
         assert!(err.contains(&says), "{args:?}: {err}");
     }
-    assert!(env.fails(&["fork", "sess-1"]).contains("the editor owns this process"));
+    assert!(env.fails(&["session", "fork", "sess-1"]).contains("the editor owns this process"));
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
 }
@@ -2523,7 +2650,7 @@ fn adr_0005_send_to_an_editors_session_waits_for_no_turn() {
     let env = Env::new("ex-send");
     env.write_config("[profiles.work.editor]\nexperimental = [\"send\"]\n");
     let (_editor, mut to_agent, mut from_agent) = open_editor_with(&env, &["--profile", "work"]);
-    assert!(env.ok(&["send", "sess-1", "reply hi"]).starts_with("delivered"));
+    assert!(env.ok(&["prompt", "send", "sess-1", "reply hi"]).starts_with("delivered"));
     let echo = update(&mut from_agent, "tool_call");
     assert_eq!(
         (&echo["title"], &echo["status"]),
@@ -2533,23 +2660,23 @@ fn adr_0005_send_to_an_editors_session_waits_for_no_turn() {
     // The editor's turn.
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
-    let err = env.fails(&["send", "sess-1", "more"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "more"]);
     assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
     for flag in ["--steer", "--interrupt"] {
-        let err = env.fails(&["send", "sess-1", flag, "more"]);
+        let err = env.fails(&["prompt", "send", "sess-1", flag, "more"]);
         let says = format!("the editor controls this session's turns; {flag} is its call");
         assert!(err.contains(&says), "{err}");
     }
-    let err = env.fails(&["cancel", "sess-1"]);
+    let err = env.fails(&["prompt", "cancel", "sess-1"]);
     assert!(err.contains("`cancel` on an editor's session is experimental"), "{err}");
     assert!(err.contains("under `[profiles.work.editor]`"), "{err}");
     let cancel = r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"sess-1"}}"#;
     writeln!(to_agent, "{cancel}").unwrap();
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
     // brnr's own turn.
-    env.ok(&["send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 3));
-    let err = env.fails(&["send", "sess-1", "more"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "more"]);
     assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
     writeln!(to_agent, "{cancel}").unwrap();
     wait_idle(&env);
@@ -2563,11 +2690,11 @@ fn adr_0005_send_to_an_editors_session_waits_for_no_turn() {
 fn adr_0005_context_joins_the_editors_next_prompt() {
     let env = Env::new("ex-context");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["context"]);
-    let err = env.fails(&["send", "sess-1", "hi"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "hi"]);
     assert!(err.contains("`send` on an editor's session is experimental"), "{err}");
-    env.ok(&["send", "sess-1", "--context", "dropped"]);
-    env.ok(&["queue", "sess-1", "--clear-context"]);
-    env.ok(&["send", "sess-1", "--context", "kept"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "dropped"]);
+    env.ok(&["queue", "clear", "sess-1", "--context"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "kept"]);
     writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
     let echo = update(&mut from_agent, "tool_call");
     assert_eq!(echo["title"], "Context via brnr");
@@ -2585,7 +2712,7 @@ fn adr_0004_cancel_withdraws_the_editors_requests() {
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["cancel"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
-    assert!(env.ok(&["cancel", "sess-1"]).starts_with("cancelling"));
+    assert!(env.ok(&["prompt", "cancel", "sess-1"]).starts_with("cancelling"));
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"], serde_json::json!({ "requestId": "perm-1" }));
     response(&mut from_agent, 3);
@@ -2604,49 +2731,50 @@ fn adr_0004_cancel_withdraws_the_editors_requests() {
     assert_eq!(answers[0]["result"]["outcome"]["outcome"], "cancelled");
 }
 
-/// `approve` and `deny` answer the agent in the editor's place: the request
-/// is withdrawn from the editor, its tool call updated, and the editor told
-/// who answered. The editor's own answer after that is dropped, and it is
+/// `permission allow` and `reject` answer the agent in the editor's place:
+/// the request is withdrawn from the editor, its tool call updated, and the
+/// editor told who answered. The editor's own answer after that is dropped, and it is
 /// told who answered first.
 #[test]
 fn adr_0004_approve_answers_in_the_editors_place() {
     let env = Env::new("ex-approve");
-    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["approve"]);
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["permission"]);
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
-    let show = env.ok(&["show", "sess-1", "p1"]);
-    let here = "answer: in the editor, or brnr approve sess-1 p1, brnr deny sess-1 p1";
+    let show = env.ok(&["permission", "show", "sess-1", "p1"]);
+    let here = "answer: in the editor, or brnr permission allow sess-1 p1 or reject sess-1 p1";
     assert!(show.contains(here), "{show}");
-    let json: Value = serde_json::from_str(&env.ok(&["show", "sess-1", "p1", "--json"])).unwrap();
+    let json: Value =
+        serde_json::from_str(&env.ok(&["permission", "show", "sess-1", "p1", "--json"])).unwrap();
     assert_eq!(
         (&json["answerable"], &json["why_not"]),
         (&Value::Bool(true), &Value::Null),
         "{json}"
     );
-    assert_eq!(env.ok(&["approve", "sess-1", "p1"]), "p1 allow\n");
+    assert_eq!(env.ok(&["permission", "allow", "sess-1", "p1"]), "p1 allow\n");
     let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
     assert_eq!(withdrawn["params"]["requestId"], "perm-1");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"in_progress".into()));
     let told = update(&mut from_agent, "tool_call");
-    assert_eq!(told["title"], "Approved via brnr", "{told}");
+    assert_eq!(told["title"], "Allowed via brnr", "{told}");
     let text = told["content"][0]["content"]["text"].as_str().unwrap_or_default();
-    let says = "\"Edit src/lib.rs\" was approved through brnr's control socket";
+    let says = "\"Edit src/lib.rs\" was allowed through brnr's control socket";
     assert!(text.contains(says), "{text}");
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
     writeln!(to_agent, "{ALLOW}").unwrap();
     let note = update(&mut from_agent, "tool_call");
-    assert_eq!(note["title"], "Already approved via brnr", "{note}");
+    assert_eq!(note["title"], "Already allowed via brnr", "{note}");
     let text = note["content"][0]["content"]["text"].as_str().unwrap_or_default();
-    let says = "\"Edit src/lib.rs\" was already approved through brnr's control socket";
+    let says = "\"Edit src/lib.rs\" was already allowed through brnr's control socket";
     assert!(text.contains(says), "{text}");
-    // A denied tool call has failed.
+    // A rejected tool call has failed.
     writeln!(to_agent, "{}", editor_prompt(4, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
-    assert_eq!(env.ok(&["deny", "sess-1", "p2"]), "p2 reject\n");
+    assert_eq!(env.ok(&["permission", "reject", "sess-1", "p2"]), "p2 reject\n");
     let tool = update(&mut from_agent, "tool_call_update");
     assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"failed".into()));
-    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Denied via brnr");
+    assert_eq!(update(&mut from_agent, "tool_call")["title"], "Rejected via brnr");
     response(&mut from_agent, 4);
     let answers: Vec<Value> = (env.calls().into_iter())
         .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
@@ -2660,25 +2788,25 @@ fn adr_0004_approve_answers_in_the_editors_place() {
 #[test]
 fn adr_0004_settings_are_told_to_the_editor() {
     let env = Env::new("ex-settings").agent("QUIET_MODE", "1");
-    let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
-    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    let (_editor, _to_agent, mut from_agent) = experimental_editor(&env, &["config"]);
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
     assert_eq!(update(&mut from_agent, "current_mode_update")["currentModeId"], "plan");
-    env.ok(&["model", "sess-1", "large"]);
+    env.ok(&["config", "set", "sess-1", "--model", "large"]);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][0]["currentValue"], "large", "{config}");
-    env.ok(&["config", "sess-1", "model=small"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][0]["currentValue"], "small", "{config}");
 }
 
 /// An editor that negotiates boolean config options gets them from the
-/// agent, and `config` sets one as ACP has it: `type: "boolean"` and a JSON
+/// agent, and `config set` sets one as ACP has it: `type: "boolean"` and a JSON
 /// boolean. A value that isn't `true` or `false` fails before it reaches the
 /// agent; a select option is still set by its value id.
 #[test]
 fn adr_0028_a_boolean_option_is_set_as_a_boolean() {
     let env = Env::new("ex-boolean");
-    env.write_config("[profiles.default.editor]\nexperimental = [\"settings\"]\n");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"config\"]\n");
     let args = ["acp", "--", AGENT];
     let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
@@ -2693,21 +2821,21 @@ fn adr_0028_a_boolean_option_is_set_as_a_boolean() {
     writeln!(to_agent, "{new}").unwrap();
     let options = response(&mut from_agent, 2)["result"]["configOptions"].clone();
     assert_eq!(options[1]["type"], "boolean", "{options}");
-    assert!(env.ok(&["config", "sess-1"]).contains("fast    false"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("fast    -         false"));
 
-    assert_eq!(env.ok(&["config", "sess-1", "fast=true"]), "fast=true\n");
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--option", "fast=true"]), "fast=true\n");
     let set = env.calls_of("session/set_config_option")[0]["params"].clone();
     let typed = serde_json::json!({ "sessionId": "sess-1", "configId": "fast", "type": "boolean", "value": true });
     assert_eq!(set, typed);
     let config = update(&mut from_agent, "config_option_update");
     assert_eq!(config["configOptions"][1]["currentValue"], true, "{config}");
-    assert!(env.ok(&["config", "sess-1"]).contains("fast    true"));
+    assert!(env.ok(&["config", "get", "sess-1"]).contains("fast    -         true"));
 
-    let err = env.fails(&["config", "sess-1", "fast=yes"]);
+    let err = env.fails(&["config", "set", "sess-1", "--option", "fast=yes"]);
     assert!(err.contains("fast is a boolean option: true or false, not yes"), "{err}");
     assert_eq!(env.calls_of("session/set_config_option").len(), 1, "yes reached the agent");
 
-    env.ok(&["config", "sess-1", "model=large"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
     let set = env.calls_of("session/set_config_option")[1]["params"].clone();
     let id = serde_json::json!({ "sessionId": "sess-1", "configId": "model", "value": "large" });
     assert_eq!(set, id);
@@ -2724,11 +2852,11 @@ fn adr_0004_close_tells_the_editor() {
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["close"]);
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    env.ok(&["close", "sess-1"]);
+    env.ok(&["session", "close", "sess-1"]);
     assert_eq!(update(&mut from_agent, "tool_call")["title"], "Session closed via brnr");
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
     assert_eq!(env.calls_of("session/close").len(), 1);
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "session_closed"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "session_closed"]);
     let closed: Value =
         serde_json::from_str(log.lines().next().expect("no session_closed")).unwrap();
     assert_eq!(closed["by"], "close");
@@ -2753,11 +2881,12 @@ fn adr_0004_take_over_from_an_editor() {
     let editors = env.pid();
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&start_args(&["--resume", "sess-1", "--take-over"]));
+    let out = env.run(&resume_args("sess-1", &["--take-over"]));
     assert!(out.status.success(), "{}", stderr(&out));
     let said = format!("closed sess-1 in process {editors}");
     assert!(stderr(&out).contains(&said), "{}", stderr(&out));
-    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     let pid = status["pid"].to_string();
     assert_ne!(pid, editors);
     let note = update(&mut from_agent, "tool_call");
@@ -2793,7 +2922,7 @@ fn adr_0004_the_editors_own_steer_is_recorded() {
     assert_ne!(got[0]["id"], 4, "the agent got the editor's id");
     got[0]["id"] = json!(4);
     assert_eq!(got, [steer]);
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "user_message"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "user_message"]);
     let said: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(said.len(), 2, "{said:?}");
     assert_eq!((&said[1]["by"], &said[1]["text"]), (&"editor".into(), &"reply steered".into()));
@@ -2847,7 +2976,8 @@ fn answer_to(from_agent: &mut BufReader<ChildStdout>, id: &str) -> Value {
 }
 
 fn state(env: &Env) -> Value {
-    let status: Value = serde_json::from_str(&env.ok(&["status", "sess-1", "--json"])).unwrap();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     status["state"].clone()
 }
 
@@ -2865,25 +2995,25 @@ fn assert_distinct_ids(env: &Env) -> Vec<Value> {
 
 /// The `turn_ended` events of sess-1.
 fn turns_ended(env: &Env) -> Vec<Value> {
-    let log = env.ok(&["log", "sess-1", "--json", "--events", "turn_ended"]);
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "turn_ended"]);
     log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
 /// An editor's prompt whose id is one the host gives its own requests
-/// (`brnr-1`) runs on while `mode`, `model` and `config` are answered: the
+/// (`brnr-1`) runs on while `config set`s are answered: the
 /// session is busy until the agent answers the prompt itself, and the editor
 /// gets that answer, with its id.
 #[test]
 fn adr_0061_an_editors_prompt_ends_only_with_its_own_answer() {
     let env = Env::new("id-prompt");
-    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["settings"]);
+    let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["config"]);
     writeln!(to_agent, "{}", prompt_with_id(r#""brnr-1""#, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     assert_eq!(state(&env), "busy");
-    assert_eq!(env.ok(&["mode", "sess-1", "plan"]), "mode plan\n");
+    assert_eq!(env.ok(&["config", "set", "sess-1", "--mode", "plan"]), "mode=plan\n");
     assert_eq!(state(&env), "busy", "the mode's answer ended the editor's turn");
-    env.ok(&["model", "sess-1", "large"]);
-    env.ok(&["config", "sess-1", "model=small"]);
+    env.ok(&["config", "set", "sess-1", "--model", "large"]);
+    env.ok(&["config", "set", "sess-1", "--option", "model=small"]);
     assert_eq!(state(&env), "busy");
     assert!(turns_ended(&env).is_empty());
     writeln!(to_agent, "{CANCEL}").unwrap();
@@ -2907,7 +3037,7 @@ fn adr_0061_an_editors_prompt_ends_only_with_its_own_answer() {
 fn adr_0061_an_editors_request_with_a_host_requests_id_is_the_editors() {
     let env = Env::new("id-host").agent("QUIET_MODE", "1");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["send"]);
-    env.ok(&["send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let host = env.calls_of("session/prompt")[0]["id"].to_string();
     let params = json!({ "sessionId": "sess-1", "modeId": "plan" });
@@ -2967,7 +3097,7 @@ fn adr_0061_the_editors_cancel_request_is_for_its_own_request() {
     let cancel_request = |id: &str| {
         format!(r#"{{"jsonrpc":"2.0","method":"$/cancel_request","params":{{"requestId":{id}}}}}"#)
     };
-    env.ok(&["send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let host = env.calls_of("session/prompt")[0]["id"].to_string();
     writeln!(to_agent, "{}", cancel_request(&host)).unwrap();

@@ -1,5 +1,6 @@
 //! Strict mode (ADR 41 in docs/adr): stable ACP to the letter, chosen per
-//! process (`strict = true` in a profile, `--strict` on `acp` and `start`).
+//! process (`strict = true` in a profile, `--strict` on `acp`, `session new`
+//! and `session resume`).
 //!
 //! By default brnr also speaks the conventions current agents and editors
 //! implement alike, ahead of the spec. Strict mode doesn't: what needs one
@@ -23,10 +24,10 @@ use crate::schema;
 /// convention is added to brnr by adding it here, and to ADR 41's list.
 #[derive(Clone, Copy)]
 pub(super) enum Beyond {
-    /// `send --steer`: `_session/steering`, an extension, advertised as
+    /// `prompt send --steer`: `_session/steering`, an extension, advertised as
     /// `_meta.steering.supported` in `initialize` (ADR 18).
     Steering,
-    /// `brnr fork`: `session/fork`, unstable in ACP v1 (ADR 16).
+    /// `brnr session fork`: `session/fork`, unstable in ACP v1 (ADR 16).
     Fork,
     /// An action on an editor's session through the side channel (ADR 4).
     Experimental(Experimental),
@@ -40,7 +41,7 @@ impl Host {
         }
         let (what, method) = match what {
             Beyond::Steering => ("--steer", "_session/steering"),
-            Beyond::Fork => ("fork", "session/fork"),
+            Beyond::Fork => ("session fork", "session/fork"),
             Beyond::Experimental(action) => {
                 return Err(format!(
                     "{} on an editor's session is an experimental action, and strict mode has none",

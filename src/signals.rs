@@ -1,5 +1,5 @@
 //! Catching signals sent to the proxy so the host can pass them to the agent
-//! (and those that end `brnr notify`, so it stops its command first), and
+//! (and those that end `brnr event notify`, so it stops its command first), and
 //! carrying the caller's signal mask through to the agent; letting a host in
 //! the foreground write to its terminal.
 
@@ -26,7 +26,7 @@ pub fn install() -> PipeReader {
 }
 
 /// Installs handlers for `sigs`, as [`install`] does for the forwarded
-/// ones (`brnr notify` stops what it runs first, on those that end it).
+/// ones (`brnr event notify` stops what it runs first, on those that end it).
 /// One process catches one set.
 pub fn catch(sigs: &[c_int]) -> PipeReader {
     let (rx, tx) = io::pipe().expect("pipe");
@@ -93,8 +93,8 @@ pub fn set_mask(sigs: &[c_int]) {
 static TTOU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Lets this process write to its terminal from a background process group:
-/// under `stty tostop` its first write would otherwise stop it. `brnr start
-/// --foreground` runs the host in a group of its own, writing to the
+/// under `stty tostop` its first write would otherwise stop it. `brnr session
+/// new --foreground` runs the host in a group of its own, writing to the
 /// terminal.
 pub fn write_from_background() {
     // SAFETY: signal(2) with SIG_IGN installs no handler and takes no

@@ -7,8 +7,8 @@
 //! and the next line says how many (`… 120 events not shown`; with `--json`,
 //! `{"not_shown": 120}`). Until then an event is queued however big, as for
 //! a peer. brnr's own messages are never skipped. stdout closing (`brnr
-//! start --foreground … | head -1`) ends the display, with a note in the
-//! host log; the session carries on. The agent's stderr doesn't come this
+//! session new --foreground … | head -1`) ends the display, with a note in
+//! the host log; the session carries on. The agent's stderr doesn't come this
 //! way: its reader writes it to stderr as it comes (ADR 10).
 
 use std::collections::VecDeque;

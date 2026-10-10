@@ -99,7 +99,7 @@ pub fn session_lock(session: &str) -> PathBuf {
 /// (P8): the name has no `/`, no `.` (so it is never `.` or `..`, nor named
 /// like another session's raw ACP file), and distinct ids get distinct names,
 /// also where the file system ignores case or Unicode normalization.
-fn file_name(session: &str) -> String {
+pub fn file_name(session: &str) -> String {
     if session.is_empty() {
         return "%".into();
     }

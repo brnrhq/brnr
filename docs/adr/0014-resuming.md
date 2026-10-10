@@ -2,6 +2,8 @@
 
 Amended by 57: a load of a session brnr has no transcript of records the
 replayed history, marked `replayed`, and a `history` event says either way.
+Amended by 63: `brnr start --resume <session>` is
+`brnr session resume <session>`, with `--take-over` on it only.
 
 Accepted (former decisions 10 and 36); reviewed 2026-10-07. Implemented;
 `--take-over` from an editor's process is ADR 4's experimental `close`, as

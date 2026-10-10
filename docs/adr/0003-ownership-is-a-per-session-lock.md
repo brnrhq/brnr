@@ -7,6 +7,10 @@ and `status` and `doctor` say it isn't locked.
 Amended by 53: the id in the lock's file name is escaped, one name per id,
 so distinct sessions never share a lock.
 
+Amended by 63: `session resume --pid <pid>` takes the lock in a running
+process, and `--take-over` closes the session where it runs first, as
+without `--pid`; a session process `<pid>` serves already is refused.
+
 Accepted 2026-10-07. Implemented. `--take-over` from an editor's process is
 the experimental `close` (ADR 4): `start` launches the process that is to
 resume the session first, so the owner can tell the editor which one has it.

@@ -96,3 +96,13 @@ pub fn mkdirat(dir: BorrowedFd, name: &CStr, mode: mode_t) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Removes the name `name` from the directory `dir`, as unlinkat(2) does
+/// with `flags`. A symlink's name is removed, never what it points at.
+pub fn unlinkat(dir: BorrowedFd, name: &CStr, flags: c_int) -> io::Result<()> {
+    // SAFETY: as for `openat`: an open descriptor, a NUL-terminated string.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}

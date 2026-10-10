@@ -1,6 +1,12 @@
 # 12. Stopping when idle
 
 Accepted (former decisions 14 and 41); reviewed 2026-10-07. Implemented.
+Amended by 63: `start --stop-when-idle` is `session new` and
+`session resume`'s `--stop-when-idle`; `session new --pid` and
+`session resume --pid`, a second session in the process, are refused as
+`fork` is. A session they are still opening counts: the process doesn't
+stop as its last other session closes or goes idle meanwhile, which is then
+closed instead.
 
 ## Context
 

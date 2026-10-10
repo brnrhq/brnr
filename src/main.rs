@@ -2,8 +2,8 @@
 //! editor. One binary:
 //!
 //! - `brnr acp`: what the editor runs as its ACP agent (see proxy.rs);
-//! - `brnr host`: owns the agent; started by `acp` and `start` with one
-//!   request on its stdin, never by hand (see host/ and request.rs);
+//! - `brnr host`: owns the agent; started by `acp`, `session new` and
+//!   `session resume` with one request on its stdin, never by hand (see host/ and request.rs);
 //! - everything else controls running hosts (see ctl.rs).
 //!
 //! A panic but the host's prints a link to report it (see bug.rs).
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
         first => {
             let rest: Vec<String> =
                 first.into_iter().chain(args).map(|a| a.to_string_lossy().into_owned()).collect();
-            brnr::bug::install(rest.first().map_or("", String::as_str));
+            brnr::bug::install(&ctl::command(&rest));
             ctl::main(rest)
         }
     }

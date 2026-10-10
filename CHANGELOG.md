@@ -20,6 +20,133 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-09
+
+### Added
+
+- `session new` and `resume` take `--thought-level <l>`, the option of
+  category `thought_level`, and `--permission-timeout <s>`, which wins over
+  the profile's `permission_timeout` as the other flags win over theirs
+  (ADR 58, ADR 63).
+- `brnr queue show <s> <m>` shows one held message in full: its text,
+  whether it interrupts, and its attachments; the socket's `queue` takes
+  `show` (ADR 63).
+- `brnr session delete <s>` has the agent delete its copy of a session
+  (`session/delete`), the agent brnr recorded for it or the one named, and
+  is refused for a session open in a process and for an agent that can't
+  delete sessions. brnr's transcript stays, with a new `session_deleted`
+  event in it, as it does for an editor's `session/delete` through
+  `brnr acp`. `--purge` also deletes brnr's transcript of the session (its
+  events and raw ACP files, not the host logs) whatever the agent answered,
+  and exits non-zero unless the agent deleted the session or doesn't have it
+  (`resource_not_found`; the Claude adapter answers another error, so
+  `--purge` of a session it already deleted exits non-zero). A file that
+  can't be deleted, or have `session_deleted` recorded in it, is said and
+  exits non-zero, the others done all the same, and a transcript made
+  private first is said on stderr (ADR 63).
+- `session new --pid <pid>` and `session resume --pid <pid> <session>` open
+  a session in a running process, with its agent, profile and MCP servers,
+  and the socket and bridges have the same as `new` and `resume`. The
+  session, its settings and its prompt commit as one, as a start's do: a
+  setting that fails, or the start timeout passing (the process's, as for a
+  start), closes the session again and says so (or names the session left
+  open, for an agent that can't close sessions); the process stopping fails
+  it; and a command gone first leaves no session. A session being opened
+  keeps the process from stopping as its other sessions close or go idle.
+  The process flags and `-- <agent>` are an error with `--pid`; an editor's
+  process refuses, as does one with `stop_when_idle` whose agent can't close
+  sessions; `--take-over` works as without `--pid`, and first checks that
+  the process would resume the session (ADR 63).
+
+### Changed
+
+- **Breaking:** commands are grouped by what they act on,
+  `brnr <group> <verb>`, and the old names fail as unknown commands, with no
+  aliases: `ps` and `stop` are `process list` and `process stop`; `status`,
+  `fork` and `close` are `session status`, `session fork` and
+  `session close`; `send`, `cancel` and `commands` are `prompt send`,
+  `prompt cancel` and `prompt commands`; `queue <s>` is `queue list <s>`
+  (and `queue clear <s>`, below), and `queue --drop <m>` is
+  `queue drop <s> <m>`; `pending` and `show` are `permission requests` and
+  `permission show`; `log`, `watch`, `notify` and `wait` are `event log`,
+  `event watch`, `event notify` and `event wait`. Flags are unchanged. A
+  profile's bridge that runs `brnr notify` runs `brnr event notify` instead.
+  `brnr --help` has a section per group, `brnr <group> --help` lists a
+  group's commands, and `brnr <group> <verb> --help` (or `-h`, before any
+  `--`) prints that command's usage (ADR 63).
+- **Breaking:** `brnr mode`, `brnr model` and `brnr config` are
+  `brnr config get <s>` and `brnr config set <s>`. `get` lists every option
+  with its category, value and choices, each choice with its name and
+  description, the current one marked, and the agent's v1 modes as a row
+  with no option; `--mode`, `--model`, `--thought-level` and
+  `--option <o>` narrow it. `set` takes `--mode <m>`, `--model <m>`,
+  `--thought-level <l>` (the option of that category) and
+  `--option <o>=<v>` (by id) together, resolved as a start's settings are:
+  `brnr mode $s plan` is `brnr config set $s --mode plan`, and
+  `brnr config $s effort=high` is `brnr config set $s --option effort=high`.
+  A mode, model or thought level the agent has no option for fails ("the
+  agent offers no thought level"), as do two values for one setting, and a
+  v1 mode the agent doesn't list fails before anything is sent, a start's
+  too; an `--option` id the agent hasn't advertised is sent, and a refusal
+  says what was already set. `get` lists only advertised options (ADR 63).
+- **Breaking:** an agent with a config option of category `mode` has its
+  mode set through that option, and `session status` reports its value,
+  even where the agent has v1 modes too; `session/set_mode` is sent only
+  with v1 modes and no mode option. `session status --json` has `modes` as
+  the agent gave them (`currentModeId`, `availableModes`) (ADR 63).
+- **Breaking:** the socket's `set_mode`, `set_model` and `set_config` are
+  one `set_config`, with `mode`, `model`, `thought_level` and `options` (an
+  object of option ids to values), answered once every setting is set with
+  what was sent (`set`); a failure names what was set before it (ADR 63).
+- **Breaking:** the editor's experimental action `settings` is `config`:
+  `experimental = ["config"]` under `[profiles.<name>.editor]`; `settings`
+  fails to load (ADR 4, ADR 63).
+- **Breaking:** `brnr start` is `brnr session new`, and
+  `brnr start --resume <s>` is `brnr session resume <s>`, with every flag
+  `start` took but `--set`, which is `--option <o>=<v>`; `start` fails as an
+  unknown command, with no alias. `--take-over` goes with `session resume`
+  only. A start is atomic as before, and `resume` brings a recorded
+  session's cwd, agent and profile as `--resume` did (ADR 7, 14, 63).
+- **Breaking:** a profile's headless `config` is `options`, beside the new
+  `model` and `thought_level`: `config = { model = "opus" }` becomes
+  `model = "opus"` (or `options = { model = "opus" }`). A profile with
+  `config` fails to load, and `brnr doctor` says so (ADR 33, ADR 63).
+- **Breaking:** `approve` and `deny` are `brnr permission allow` and
+  `brnr permission reject <session> <request> [--always] [--option <id>]`,
+  and answer with the request's option of one kind: `allow_once`,
+  `allow_always` (`--always`), `reject_once` or `reject_always`. No other
+  kind stands in, so a request without that kind, or with two, fails,
+  listing the options: where `approve` took `allow_always` and `deny`
+  answered `cancelled`, name the option with `--option`, or cancel the turn
+  with `prompt cancel`. `--option` of an ACP kind must be on the verb's side,
+  and the always kind with `--always`. The socket's `approve` and
+  `deny {option}` are `allow` and `reject {always, option}`, and the editor's
+  experimental action `approve` is `permission` (ADR 63).
+- **Breaking:** `permission_timeout` answers with the `reject_once` option;
+  a request without one has its turn cancelled (`session/cancel`), which
+  answers every request pending in the session `cancelled`. It never
+  answers `reject_always`, which it took where there was no `reject_once`
+  (ADR 63).
+- **Breaking:** `permission_resolved` has `answer` (`allowed`, `rejected` or
+  `cancelled`) and `option_kind`, the chosen option's kind, and reads
+  `permission p1 allowed with allow (allow_once), by …` as text. The
+  editor is told "Allowed via brnr" or "Rejected via brnr" (ADR 63).
+- **Breaking:** `queue --clear` and `--clear-context` are
+  `queue clear <s> --messages` and `--context`, and `queue clear <s>` with
+  neither drops both; `queue list` takes neither flag (ADR 63).
+- **Breaking:** `brnr session list` replaces `list` and `sessions`, which
+  fail as unknown commands. On its own it is brnr's index, open and ended
+  sessions in every cwd, with nothing started (what `list --all` was;
+  `--include active` for what `list` was, `--include inactive` for
+  `list --inactive`). With `--profile` or `-- <agent>` it is what `sessions`
+  was, joined: the cwd's sessions (here, or `--cwd`) and the agent's, every
+  page of `session/list`, on the session id; an agent that can't list fails
+  it. A cwd is the same however it is spelled (a trailing slash, a symlink),
+  and an `unreachable` session is the cwd's if the agent lists it there or
+  brnr has its transcript there. A SOURCE column after AGENT (`source` in `--json`) says who knows each,
+  `brnr`, `agent` or `both`; a session only the agent knows is `inactive`
+  where it was `-`, and every row has its AGENT (ADR 63).
+
 ## [0.7.0] - 2026-10-09
 
 ### Added
@@ -416,7 +543,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/brnrhq/brnr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/brnrhq/brnr/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/brnrhq/brnr/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/brnrhq/brnr/compare/v0.4.0...v0.5.0

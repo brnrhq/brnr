@@ -8,7 +8,7 @@
 # Without API credentials the agents can't run, so this checks what needs
 # none: adapters/check.py --brnr (each adapter's version; the Claude
 # adapter's initialize, and the Codex adapter's without the Codex CLI, as its
-# docstring says; brnr doctor finding them; brnr sessions through the Claude
+# docstring says; brnr doctor finding them; brnr session list through the Claude
 # adapter). A
 # failure opens an issue, or comments on the open one (found by its title),
 # with the versions and a link to the run; a pass after one closes it.

@@ -1,13 +1,13 @@
 //! What the agent has told the host about each session, from its
-//! `session/update`s and from the results of the requests that open or
-//! change a session: title, mode, config options, plan, usage, running tool
-//! calls. `brnr status` shows it, and the host turns changes into events.
+//! `session/update`s and from the results of the requests that open or change a
+//! session: title, mode, config options, plan, usage, running tool calls.
+//! `brnr session status` shows it, and the host turns changes into events.
 //!
 //! A `session_changed` says what changed (ADR 22 in docs/adr): the title or
 //! the mode, or of the config options and the commands, a JSON merge patch
 //! (RFC 7396) over them by id and name: `{"model": "opus"}` for an option's
 //! value, `{"review": {…}}` for a command added, `null` for what is gone.
-//! `brnr status` has them in full.
+//! `brnr session status` has them in full.
 //!
 //! Updates are read as the schema's `SessionUpdate`s (see schema.rs); one
 //! it doesn't take, an adapter's own kind or a newer one, changes nothing
@@ -43,7 +43,7 @@ pub(super) struct SessionState {
     pub(super) last_message: Option<String>,
 }
 
-/// A tool call as the tool events and `brnr status` have it.
+/// A tool call as the tool events and `brnr session status` have it.
 #[derive(Clone, Serialize)]
 pub(super) struct Tool {
     tool_call_id: String,
@@ -78,12 +78,13 @@ impl SessionState {
         changed
     }
 
-    /// The mode, or with no modes the config option of category `mode`, as
-    /// `brnr mode` has it (ADR 28).
+    /// The mode, as `config set --mode` sets it (ADR 63): the config option
+    /// of category `mode`, or with none the v1 modes' current one.
     pub(super) fn current_mode(&self) -> Option<&str> {
-        match &self.modes {
-            Some(modes) => modes["currentModeId"].as_str(),
-            None => self.option("mode")?["currentValue"].as_str(),
+        match (self.option("mode"), &self.modes) {
+            (Some(option), _) => option["currentValue"].as_str(),
+            (None, Some(modes)) => modes["currentModeId"].as_str(),
+            (None, None) => None,
         }
     }
 
@@ -133,7 +134,7 @@ impl SessionState {
         json!({
             "title": self.title,
             "mode": self.current_mode(),
-            "modes": self.modes.as_ref().map(|m| m["availableModes"].clone()),
+            "modes": self.modes,
             "model": self.current_model(),
             "config": self.config,
             "commands": self.commands,

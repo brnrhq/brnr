@@ -6,6 +6,11 @@ Resolves review item 6 with ADR 4.
 Amended by 58: a start's flags win over its profile's settings, setting by
 setting, the mode and model options included; one source's values that
 disagree fail the start.
+Amended by 63: `mode`, `model` and `config` are `config get` and `config
+set`, with `--mode`, `--model` and `--thought-level` by category and
+`--option` by id, resolved as ADR 58 resolves a start's; a mode option is
+the mode even where there are v1 modes, and `session/set_mode` is sent only
+without one; the experimental action is `config`.
 
 ## Context
 

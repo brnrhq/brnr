@@ -25,7 +25,7 @@ editor's session is [experimental](#experimental-actions).)
 ```text
 editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
                                              │
-                                  control socket ── brnr send / watch / …
+                                  control socket ── brnr prompt send / event watch / …
                                              │
                                           bridges (Slack, push, …)
 ```
@@ -33,9 +33,11 @@ editor ──stdio── brnr acp ──socketpairs── brnr process ──pip
 - **brnr acp** is what the editor runs as its agent. It only relays bytes.
 - **The brnr process** owns the agent for its whole life, out of the editor's
   process group and process tree. When the editor goes, the agent goes, as if
-  the editor had run it. `brnr ps` lists these processes.
-- **The other commands** (`brnr send`, `brnr watch`, …) talk to a session
-  through its process, over a Unix socket that only you can open.
+  the editor had run it. `brnr process list` lists these processes.
+- **The other commands** (`brnr prompt send`, `brnr event watch`, …) talk to
+  a session through its process, over a Unix socket that only you can open.
+  Most are a group, what they act on, and a verb: `brnr <group> --help` lists
+  a group's ([ADR 63](docs/adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 
 macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).
@@ -119,7 +121,7 @@ brnr acp --profile work          # agent and settings from a profile
 
 A bare agent name is looked up next to `brnr` first, so the editor's `PATH`
 doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
-`brnr notify`.
+`brnr event notify`.
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
@@ -129,11 +131,12 @@ editor's own id, so that the editor's requests and brnr's are never confused
 (ADR 61); and, each below, the editor's `fs` and `terminal` capabilities are
 dropped, a session another brnr process serves can't be loaded, and the
 experimental actions a profile enables act on the editor's session. When the editor goes away, so does the agent;
-`brnr start --resume <session>` carries on with one of its sessions headless
+`brnr session resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
 
-Watching an editor's session (`watch`, `log`, `status`, `pending`, `show`,
-`notify`, bridges) always works. Acting on it doesn't, by default: ACP has one
+Watching an editor's session (`event watch`, `event log`, `session status`,
+`permission requests`, `permission show`, `event notify`, bridges) always
+works. Acting on it doesn't, by default: ACP has one
 client per session, the editor, and every action from outside leaves the
 editor's view behind the agent's in some way.
 
@@ -144,21 +147,21 @@ enables it by name (without `--profile`, the profile is `default`):
 
 ```toml
 [profiles.work.editor]
-experimental = ["send", "approve"]
+experimental = ["send", "permission"]
 ```
 
 | Action | Commands | What brnr does for the editor |
 |---|---|---|
-| `send` | `send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
-| `context` | `send --context`, `queue --clear-context` | Added to the editor's next prompt, shown as "Context via brnr". |
-| `cancel` | `cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
-| `approve` | `approve`, `deny` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Approved via brnr", "Denied via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
-| `settings` | `mode`, `model`, `config` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
-| `close` | `close`, `start --resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
+| `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
+| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr". |
+| `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
+| `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
+| `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
+| `close` | `session close`, `session resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
 
-`fork` is never available in an editor's process, and in strict mode none of
-these is, whatever the profile enables. `brnr stop` isn't an action on a
-session: it stops an editor's process as it does any other.
+`session fork` is never available in an editor's process, and in strict mode
+none of these is, whatever the profile enables. `brnr process stop` isn't an
+action on a session: it stops an editor's process as it does any other.
 
 ### What the editor doesn't see
 
@@ -172,13 +175,13 @@ session: it stops an editor's process as it does any other.
   the agent's process group, as whenever the editor goes.
 - Loading or resuming a session another brnr process serves is refused, with a
   JSON-RPC error naming the process and how to release it
-  (`brnr close <session>`, or closing it in the other editor that has it
-  open): the editor can't pass `--take-over`. `shared_sessions` lets it through
-  ([feature flags](#strict-mode-and-feature-flags)).
+  (`brnr session close <session>`, or closing it in the other editor that has
+  it open): the editor can't pass `--take-over`. `shared_sessions` lets it
+  through ([feature flags](#strict-mode-and-feature-flags)).
 - A message sent from outside reaches the agent as an ordinary user message,
   but the editor is shown a completed tool call, the one update editors render
-  anywhere in a turn; brnr's notes to it take the same form. A turn `send`
-  starts is one the editor didn't start.
+  anywhere in a turn; brnr's notes to it take the same form. A turn
+  `prompt send` starts is one the editor didn't start.
 - The editor's acknowledgement of a `$/cancel_request` (an error) is dropped
   without telling it.
 - The agent's stdout and stderr reach the editor as they would directly: stdout
@@ -198,92 +201,128 @@ session: it stops an editor's process as it does any other.
 ## Talk to it from outside
 
 ```sh
-brnr list                          # running sessions; --all: ended ones too (--inactive: only those)
-brnr status $s                     # what it's doing: turn, tools, plan, usage, last message
-brnr send $s "also update the changelog"                # held while a turn runs
-brnr send $s --steer "and the tests too"                # into the running turn
-brnr send $s --interrupt "stop, wrong branch"
-brnr send $s --context "the API key is in .env.local"   # added to the next prompt; --replace: instead of the last
-brnr send $s --wait "what did you change?"              # prints the reply
-brnr send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
-brnr cancel $s                     # stop the running turn (held messages are dropped and listed)
-brnr queue $s                      # held messages and context; --drop m3, --clear
-brnr watch $s                      # live: messages, tools, plan, approvals (--events all: everything)
-brnr log $s                        # the story so far; --last 2, --follow, and watch's flags
+brnr session list                  # brnr's sessions: open ones and ended ones (--include active: open only)
+brnr session status $s             # what it's doing: turn, tools, plan, usage, last message
+brnr prompt send $s "also update the changelog"                # held while a turn runs
+brnr prompt send $s --steer "and the tests too"                # into the running turn
+brnr prompt send $s --interrupt "stop, wrong branch"
+brnr prompt send $s --context "the API key is in .env.local"   # added to the next prompt; --replace: instead of the last
+brnr prompt send $s --wait "what did you change?"              # prints the reply
+brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
+brnr prompt cancel $s              # stop the running turn (held messages are dropped and listed)
+brnr queue list $s                 # held messages and context; brnr queue show $s m3: one in full
+brnr queue clear $s                # drop them (--messages, --context: only those); brnr queue drop $s m3: one
+brnr event watch $s                # live: messages, tools, plan, approvals (--events all: everything)
+brnr event log $s                  # the story so far; --last 2, --follow, and event watch's flags
 ```
 
-A `<session>` is the session's id, as the agent gave it: `brnr list` shows
-them, with the agent's title for each, and `start --json` prints the new one,
-with its process's `pid` and the prompt's id as `message`
-(`s=$(brnr start --json … | jq -r .session)`). `log` works on a session that
-has ended too; commands that need it running say so when it isn't. On an
+A `<session>` is the session's id, as the agent gave it: `brnr session list`
+shows them, with the agent's title for each, and `session new --json` prints
+the new one, with its process's `pid` and the prompt's id as `message`
+(`s=$(brnr session new --json … | jq -r .session)`). `event log` works on a session
+that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
 
 brnr never sends a second prompt while a turn runs: ACP doesn't say what one
-means, and agents differ. `send` holds the message and sends it as a turn of
-its own when the running one ends, in order. `--steer` puts it into the
-running turn instead (`_session/steering`, refused if the agent doesn't offer
-it), and `--interrupt` cancels the turn and sends the message ahead of what is
-held. On an idle session each is sent at once. `send` says which: `delivered`,
-`held`, `steered` or `interrupting`. Every message gets an id (`m<n>`), which
-`send --wait` uses to find the turn that answers it. A turn that ends before
-the agent has answered the steers into it has its `turn_ended` wait for those
-answers, so it lists every message the agent took into it.
+means, and agents differ. `prompt send` holds the message and sends it as a
+turn of its own when the running one ends, in order. `--steer` puts it into
+the running turn instead (`_session/steering`, refused if the agent doesn't
+offer it), and `--interrupt` cancels the turn and sends the message ahead of
+what is held. On an idle session each is sent at once. `prompt send` says
+which: `delivered`, `held`, `steered` or `interrupting`. Every message gets an
+id (`m<n>`), which `prompt send --wait` uses to find the turn that answers it.
+A turn that ends before the agent has answered the steers into it has its
+`turn_ended` wait for those answers, so it lists every message the agent took
+into it.
 
 A message that never goes out is a `message_dropped` event, saying why:
-`cancel` (unless `--keep-held`), `queue --drop` or `--clear`, its session
-closing, the agent exiting, or a steer the agent didn't take. Context that
-never joins a prompt is a `context_dropped` event the same way:
-`queue --clear-context`, its session closing, or the agent exiting (`cancel`
-keeps it for the next prompt).
+`prompt cancel` (unless `--keep-held`), `queue drop` or `queue clear`,
+its session closing, the agent exiting, or a steer the agent didn't take.
+Context that never joins a prompt is a `context_dropped` event the same way:
+`queue clear`, its session closing, or the agent exiting
+(`prompt cancel` keeps it for the next prompt).
 
 Every command that prints data takes `--json`, with the same data as its
-text: one JSON value, or one event per line for `log`, `watch` and
-`start --foreground`.
+text: one JSON value, or one event per line for `event log`, `event watch`
+and `session new --foreground`.
 
 ### Waiting, for scripts
 
 ```sh
-brnr wait $s                       # until no turn is running and nothing is held
-brnr wait $s --for permission      # until an approval is waiting
-brnr wait $s --for turn            # the next turn's end; --for exit: its process's
-brnr start --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md
+brnr event wait $s                 # until no turn is running and nothing is held
+brnr event wait $s --for permission   # until an approval is waiting
+brnr event wait $s --for turn      # the next turn's end; --for exit: its process's
+brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md
 ```
 
-`wait`, `send --wait` and `start --wait` exit 0 when the turn ended normally
-(`end_turn`); 1 when it failed or stopped for another reason, when its message
-was dropped (`brnr: m3 was dropped (cancel)`), when the agent exited first, or
-when the session closed before the turn or approval waited for; and 124 on
-`--timeout <s>`. `wait` on a session that is idle already, or that closes
-while it waits, exits as its last turn ended. While `send --wait` and
-`start --wait` wait, approvals are announced on stderr; `start --wait` says
-`started …` there too, so stdout is the reply and nothing else. With `--json`,
-the turn is one object at its end: `session`, `message`, `reply`,
-`stop_reason`, `error`, `dropped` (and `pid`, for `start`).
+`event wait`, `prompt send --wait` and `session new --wait` exit 0 when the turn
+ended normally (`end_turn`); 1 when it failed or stopped for another reason,
+when its message was dropped (`brnr: m3 was dropped (cancel)`), when the agent
+exited first, or when the session closed before the turn or approval waited
+for; and 124 on `--timeout <s>`. `event wait` on a session that is idle
+already, or that closes while it waits, exits as its last turn ended. While
+`prompt send --wait` and `session new --wait` wait, approvals are announced
+on stderr; `session new --wait` says `started …` there too, so stdout is the
+reply and nothing else. With `--json`, the turn is one object at its end:
+`session`, `message`, `reply`, `stop_reason`, `error`, `dropped` (and `pid`,
+for `session new` and `resume`).
 
 ### Approvals
 
 ```sh
-brnr pending                       # approvals waiting, in every session
-brnr show $s p1                    # one in full: the command, paths, the diff
-brnr approve $s p1                 # or: brnr deny $s p1, --option <id>
+brnr permission requests           # approvals waiting, in every session
+brnr permission show $s p1         # one in full: the command, paths, the diff
+brnr permission allow $s p1        # with its allow_once option; --always: allow_always
+brnr permission reject $s p1       # with its reject_once option; --always: reject_always
 ```
 
+`allow` and `reject` answer with the request's option of that kind, whatever
+the order the agent gives them in. No other kind stands in for it: a request
+without one, or with two, isn't answered, and the command fails, listing the
+options. `--option <id>` names the option instead (for two of one kind, or a
+kind ACP doesn't have): one of an ACP kind must be on the verb's side, and the
+always kind with `--always`; one of a kind brnr doesn't know goes with either
+verb. `reject` never answers `cancelled`, which ACP keeps for a cancelled
+turn: `prompt cancel` is what does that.
+
+A headless request waits until it is answered, or for `permission_timeout`
+(in the profile's headless part), if set: then it is answered with its
+`reject_once` option, or, without exactly one, its turn is cancelled
+(`session/cancel`), which answers it and every request pending in the session
+`cancelled`. A timeout never allows, nor answers `reject_always`: nobody chose
+that.
+
 Whatever brnr shows of the agent's text has its control characters escaped
-(`\u001b`), so a command can't be dressed up as another; `show` says when a
-command has any. `--json` has the text as the agent sent it. On an editor's
-session `show` says the request is waiting in the editor, and that it can be
-answered here too, experimentally, where `approve` is enabled, or else why it
-can't (`answerable` and `why_not` in `--json`).
+(`\u001b`), so a command can't be dressed up as another; `permission show`
+says when a command has any. `--json` has the text as the agent sent it. On an
+editor's session `permission show` says the request is waiting in the editor,
+and that it can be answered here too, experimentally, where `permission` is
+enabled, or else why it can't (`answerable` and `why_not` in `--json`).
 
 ### Settings
 
 ```sh
-brnr mode $s [plan]                # list or set the session's mode
-brnr model $s [<model>]            # list or set the model (the config option of category model)
-brnr config $s [effort=high]       # any of the agent's config options
-brnr commands $s                   # the agent's slash commands (send them as text)
+brnr config get $s [--model]       # the options, their values and choices, and the modes
+brnr config set $s --mode plan     # the option of category mode (or the agent's modes)
+brnr config set $s --model opus    # the option of category model
+brnr config set $s --option effort=high   # any of the agent's config options, by id
+brnr prompt commands $s            # the agent's slash commands (send them as text)
 ```
+
+`--mode`, `--model` and `--thought-level` find the option of that category
+(`mode`, `model`, `thought_level`), whatever its id, and `--option <o>=<v>` an
+option by id; they go together, and `config get` takes the same, without
+values, to list only those options; it lists only options the agent
+advertised, so one it doesn't have fails. A mode, model or thought level the
+agent has no option for fails ("the agent offers no thought level") before
+anything is sent, as two values for one setting do
+(`--model large --option llm=small`, when `llm` is the model); each is sent
+once, the mode first. An `--option` id the agent hasn't advertised is sent
+too, for the agent to take or refuse; when it refuses, the error says what
+was already set. A mode is the agent's own `session/set_mode` only for an
+agent with modes and no mode option. `config get` lists each option's choices
+under it, the current one marked `*`, with their names and descriptions, and
+has the agent's modes as a row with no option (`-`, `null` in `--json`).
 
 A boolean option (one an editor's session has when the editor advertises
 boolean config options) takes `true` or `false`, and is sent as a boolean;
@@ -292,55 +331,119 @@ anything else for it fails before it reaches the agent.
 ### Sessions and processes
 
 ```sh
-brnr fork $s                       # a copy of the session, in the same process
-brnr close $s                      # cancel a running turn, then close the session
-brnr sessions -- brnr-claude-adapter   # the agent's own list for this folder (--cwd), and what brnr knows of each
-brnr start --resume <id> -- brnr-claude-adapter    # any of them, even one brnr never saw
-brnr start --resume $s --take-over # one another process serves: closed there, resumed here
-brnr ps                            # brnr's processes: pid, owner, agent, sessions
-brnr stop 4466                     # stdin closed, then SIGTERM, then SIGKILL, 5 s apart
+brnr session fork $s               # a copy of the session, in the same process
+brnr session new --pid 4466 --prompt "review the diff"   # a session of its own, in a running process
+brnr session resume --pid 4466 <id>                      # or one carried on there
+brnr session close $s              # cancel a running turn, then close the session
+brnr session delete $s             # the agent deletes its copy; brnr's transcript stays
+brnr session delete $s --purge     # and brnr's transcript of it goes too
+brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
+brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
+brnr session resume $s --take-over # one another process serves: closed there, resumed here
+brnr process list                  # brnr's processes: pid, owner, agent, sessions
+brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5 s apart
 ```
 
 A process holds a lock for each session it serves
 (`$BRNR_DIR/sessions/<id>.lock`), so which process has a session is known
 without asking it. A process that doesn't answer (within 5 seconds) still has
-its sessions: `list` and `ps` show them `unreachable`, commands on them say the
-process isn't answering, and `start --resume` refuses them, naming the
-process, as it does any session that is running. A process that is gone, even
-one whose pid another process has now (nobody listens on its socket), isn't
-shown or counted as running, and its metadata and socket are removed.
-`--take-over` asks the owner to close the session (an editor's process does
-only if its profile enables `close`) and resumes it in a new headless
-process; sessions beside it keep running.
+its sessions: `session list` and `process list` show them `unreachable`,
+commands on them say the process isn't answering, and `session resume`
+refuses them, naming the process, as it does any session that is running. A
+process that is gone, even one whose pid another process has now (nobody
+listens on its socket), isn't shown or counted as running, and its metadata
+and socket are removed. `--take-over` asks the owner to close the session
+(an editor's process does only if its profile enables `close`) and resumes it
+in a new headless process; sessions beside it keep running.
 
 A session whose lock can't be taken (`sessions/` isn't private, or a directory
-is where its lock file goes) isn't served headless: `start` fails with the
-cause and the process stops before the agent gets any prompt, and a `fork`
-into it is refused. An editor's process serves it all the same, as the editor
-would be served without brnr; `status` says it isn't locked, and `doctor`
-what is in the way.
+is where its lock file goes) isn't served headless: `session new` fails with the
+cause and the process stops before the agent gets any prompt, and a
+`session fork` into it is refused. An editor's process serves it all the same,
+as the editor would be served without brnr; `session status` says it isn't
+locked, and `doctor` what is in the way.
 
-`close` ends one session; a headless process with none left stops. `fork` is
-refused in an editor's process, in strict mode, when the agent can't fork, and
-with `stop_when_idle` when the agent can't close sessions.
+`session close` ends one session; a headless process with none left stops.
+`session fork` is refused in an editor's process, in strict mode, when the
+agent can't fork, and with `stop_when_idle` when the agent can't close
+sessions.
 
-`brnr sessions` starts the agent just to ask it (`session/list`), so it
-includes sessions started outside brnr and needs nothing running; its STATE
-and PID columns say, as `brnr list` would, which are running and in which
-process (`unreachable` for one whose process holds it but doesn't answer),
-which brnr has a transcript of (`inactive`), and which only the agent knows
-(`-`). `--resume` takes an id brnr knows, or any id the
-agent knows, which it resumes in `--cwd` (or here) with the agent after
-`--` (or the profile's). `brnr stop` signals the agent's whole process group,
-so whatever the agent started in that group goes with it. The same cleanup
-runs when the agent exits or crashes on its own. A SIGKILL of the brnr host
-itself bypasses cleanup: agents and bridges that ignore their closed pipes,
-or their descendants, can survive it; `doctor` reports the unrecorded death.
+`session new --pid <pid>` opens a session in a running process, with its
+agent, profile and MCP servers, in `--cwd` (or here), and
+`session resume --pid <pid> <id>` resumes one there (in its recorded cwd),
+taking its lock as any resume does, with `--take-over` as without `--pid`.
+What starts a process (`--profile`, `--auth`, `--strict`, `--stop-when-idle`,
+`--permission-timeout`, `--foreground`, `--quiet`, `-- <agent>`) is an error
+with it. The session, its settings (over the profile's) and its prompt commit
+as one, as a start does, and the prompt goes only then. A setting that fails
+after the agent opened the session closes it again, and the error says so (an
+agent that can't close sessions keeps it, and the error names it); so does
+the start timeout passing first, which the process keeps too. A process
+stopping meanwhile fails it, and the session ends with the process. A command
+gone first (Ctrl-C) leaves no session. A session being opened counts as one:
+the process doesn't stop as its others close or go idle meanwhile. It is
+refused where `session fork` is, but for strict mode:
+`session/new` and `session/resume` are stable ACP. With `--take-over`, what
+the process would refuse (it is still starting or stopping, or its agent
+can't resume sessions) is refused before the session is closed where it
+runs.
+
+`brnr session list` on its own is brnr's index, with nothing started: every
+session open in brnr's processes and every one it has a transcript of, in
+every folder (`--cwd` for one). With an agent named (`-- <agent>` or
+`--profile`), it shows only this folder's (or `--cwd`'s), starts the agent
+just to ask it (`session/list`, every page) and joins the two on the session
+id, so it includes sessions started outside brnr; an agent that can't list
+fails it. A folder is the same however it is spelled (a trailing slash, a
+symlink), and an `unreachable` session is a folder's if the agent lists it
+there or brnr has its transcript there. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
+text and `--json` alike, most recently active first: STATE is `idle`, `busy`
+or `waiting` for one open in a process, `unreachable` for one whose process
+holds it but doesn't answer, `inactive` for one no process has open; SOURCE
+says who knows it, `brnr`, `agent` or `both`; TITLE and LAST ACTIVE are the
+agent's where it gives them. `--include active` keeps the sessions open in a
+process, `--include inactive` the others; both by default.
+
+`session resume` takes an id brnr knows, or any id the agent knows, which it
+resumes in `--cwd` (or here) with the agent after `--` (or the profile's).
+
+`session delete` is `session/delete`, asked of the agent brnr recorded for
+the session (or `--profile` or `-- <agent>`, for a session brnr has no
+transcript of), started for that as `session list` starts one. A session
+open in a process is refused (close it first), as is an agent that can't
+delete sessions (`sessionCapabilities.delete`). Only the agent's copy goes:
+brnr's transcript stays, still listed by `session list`, with a
+`session_deleted` in it, a record of no process's (its `host_id` null).
+`--purge` deletes the transcript too, the session's events file and raw ACP
+in each project folder under `BRNR_HOME`, and nothing else: the host logs
+are shared and stay, and does so whatever the agent answered. With
+`--purge`, the command exits 0 only if the agent deleted the session or
+doesn't have it (ACP's `resource_not_found`, said on stderr); any other
+error, or no answer, is said and exits non-zero: the agent may still have
+the session. Only `resource_not_found` counts as not having it:
+`brnr-codex-adapter` (codex-acp) answers a session it doesn't have as
+deleted, so `--purge` succeeds, but `brnr-claude-adapter` (claude-agent-acp)
+answers with another error (`-32603`, internal error), so `--purge` of a
+session it has already deleted exits non-zero, brnr's transcript deleted all
+the same. A file that can't be deleted, or have `session_deleted` recorded
+in it, is said (`not deleted: …`, `session_deleted isn't recorded: …`) and
+exits non-zero, the others done all the same; a transcript made private
+first is said too on stderr (`made-private: <path> (its mode was …)`): there
+is no host log for it. An editor's `session/delete` through `brnr acp` goes
+to the agent as it is; once the agent has deleted the session, the editor's
+process records `session_deleted` too, and closes the session if it had it
+open.
+
+`brnr process stop` signals the agent's whole process group, so whatever the
+agent started in that group goes with it. The same cleanup runs when the agent
+exits or crashes on its own. A SIGKILL of the brnr host itself bypasses
+cleanup: agents and bridges that ignore their closed pipes, or their
+descendants, can survive it; `doctor` reports the unrecorded death.
 
 ### Events
 
-`watch`, `log`, `notify`, the foreground and bridges all show the same events,
-live or read back from the transcript:
+`event watch`, `event log`, `event notify`, the foreground and bridges all
+show the same events, live or read back from the transcript:
 
 | Event | |
 |---|---|
@@ -350,11 +453,12 @@ live or read back from the transcript:
 | `tool_progress` | a tool call's status changing in between (`in_progress`) |
 | `plan`, `usage` | the plan; the context window and cost, as the agent reports them |
 | `session_changed` | the title, mode, config options or commands: what changed |
-| `permission_request`, `permission_resolved` | an approval waiting; its answer, and who gave it |
+| `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
 | `turn_ended` | its `stop_reason` or `error`, and the `messages` it carried |
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
-| `session_closed` | `by` `close` (`brnr close`, `--take-over`), `idle` or `editor` |
+| `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
+| `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
@@ -364,29 +468,30 @@ Each names its session; `exited` and `line_too_long` are the process's, and
 are in every session's transcript. For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
-`--events` chooses, for `watch`, `log` and `notify` alike: names, `all`, and
-`default` (`--events default,agent_thought` adds thoughts). Without it, `watch`,
-`log` and the foreground leave out the quiet ones, `acp`, `agent_thought`,
-`usage` and `tool_progress`, in text and JSON alike. Bridges get every event
-but `acp` unless they choose. Watching a session ends when it closes.
+`--events` chooses, for `event watch`, `event log` and `event notify` alike:
+names, `all`, and `default` (`--events default,agent_thought` adds thoughts).
+Without it, `event watch`, `event log` and the foreground leave out the quiet
+ones, `acp`, `agent_thought`, `usage` and `tool_progress`, in text and JSON
+alike. Bridges get every event but `acp` unless they choose. Watching a
+session ends when it closes.
 
 ### Notifications
 
-`brnr notify` runs a command for each event of a session, or of every session
-in a process (`--pid`): by default `permission_request`, `turn_ended` and
-`exited`; `--events` as for `watch`, where `default` means these three. The
-event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`,
-`BRNR_MESSAGE`, `BRNR_SESSION_ID`, `BRNR_REQUEST`, `BRNR_PID`) and, as JSON, on
-its stdin; nothing is put on its command line, so what the agent writes can't
-become arguments. The text, title and message are escaped as `watch` shows
-them and cut at 32 KiB; the event on stdin is whole. Commands run one at a
-time, in order, each in a process group of its own. `notify` exits when the
-process does (or the session closes). Cut off first, as one that falls behind
-is, it stops the command it is running, says on stderr that no more
-notifications come, and exits non-zero.
+`brnr event notify` runs a command for each event of a session, or of every
+session in a process (`--pid`): by default `permission_request`, `turn_ended`
+and `exited`; `--events` as for `event watch`, where `default` means these
+three. The event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`,
+`BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION_ID`, `BRNR_REQUEST`, `BRNR_PID`)
+and, as JSON, on its stdin; nothing is put on its command line, so what the
+agent writes can't become arguments. The text, title and message are escaped
+as `event watch` shows them and cut at 32 KiB; the event on stdin is whole.
+Commands run one at a time, in order, each in a process group of its own.
+`event notify` exits when the process does (or the session closes). Cut off
+first, as one that falls behind is, it stops the command it is running, says
+on stderr that no more notifications come, and exits non-zero.
 
 ```sh
-brnr notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
 ```
 
 In a profile it is a bridge, for every process the profile starts, and reads
@@ -394,45 +499,53 @@ the events the process writes on its stdin:
 
 ```toml
 [[profiles.work.bridges]]
-command = ["brnr", "notify", "--stdin", "--",
+command = ["brnr", "event", "notify", "--stdin", "--",
            "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
 ```
 
 If the bridge's `events` limit what it gets, they must include
-`agent_message`, `session_changed` and `exited`, which `notify` needs for its
-environment and to know when to stop. What it says on stderr, that it was cut
-off included, is in the host log (`bridge-stderr`).
+`agent_message`, `session_changed` and `exited`, which `event notify` needs
+for its environment and to know when to stop. What it says on stderr, that it
+was cut off included, is in the host log (`bridge-stderr`).
 
 ## Headless sessions
 
 ```sh
-brnr start --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
-brnr start --mode plan --model opus --prompt - < task.md       # set up before the first prompt
-brnr start --set effort=high --prompt - < task.md              # any of the agent's config options, likewise
-brnr start --resume $s                                         # carry on a session that ended
-brnr start --auth api-key --prompt - -- brnr-codex-adapter < task.md   # log in first (OPENAI_API_KEY)
-brnr start --foreground --prompt - -- brnr-codex-adapter < task.md     # in the foreground; Ctrl-C stops it
+brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
+brnr session new --mode plan --model opus --prompt - < task.md      # set up before the first prompt
+brnr session new --option effort=high --prompt - < task.md          # any of the agent's config options, likewise
+brnr session resume $s                                              # carry on a session that ended
+brnr session new --auth api-key --prompt - -- brnr-codex-adapter < task.md   # log in first (OPENAI_API_KEY)
+brnr session new --foreground --prompt - -- brnr-codex-adapter < task.md     # in the foreground; Ctrl-C stops it
 ```
 
-A start is atomic. `start` reads the prompt and attachments first, hands the
-process everything in one request, and the start commits once the session is
-open with its mode and config options set; only then does the agent get the
+`session new` opens a new session, and `session resume` an existing one;
+each starts a process for it, and they take the same flags. A start is
+atomic. It reads the prompt and attachments first, hands the process
+everything in one request, and the start commits once the session is open
+with its mode and config options set; only then does the agent get the
 prompt. Until then, a step failing, the timeout (120 seconds,
-`BRNR_START_TIMEOUT`) or `start` being interrupted stops the process, and the
-prompt is never sent. A start that fails ends its error with the agent's last
+`BRNR_START_TIMEOUT`) or the command being interrupted stops the process, and
+the prompt is never sent. A start that fails ends its error with the agent's last
 lines on stderr (`claude CLI not found`).
 
-`--mode`, `--model` and `--set` win over the profile's `mode` and `config`,
-setting by setting. The model is the agent's config option of category
-`model`, whatever its id, so `--model large` replaces a profile's
-`config = { model = "small" }`; the mode likewise. Two different values for
-one setting from the flags (`--model large --set model=small`), or from the
-profile, fail the start before anything is set.
+`--mode`, `--model`, `--thought-level` and `--option` win over the profile's
+`mode`, `model`, `thought_level` and `options`, setting by setting. The model
+is the agent's config option of category `model`, whatever its id, so
+`--model large` replaces a profile's `options = { model = "small" }`; the mode
+and the thought level (category `thought_level`) likewise. Two different
+values for one setting from the flags (`--model large --option model=small`),
+or from the profile, fail the start before anything is set, as does a
+setting the agent has no option for.
 
 `--stop-when-idle <s>` closes a session once it has been idle that many
 seconds (no turn running, nothing held, no approval waiting), counting from
 the start; `0` is as soon as it is. Its last session isn't closed: the
-process stops instead.
+process stops instead. `--permission-timeout <s>` answers an approval nobody
+answered in that many seconds as `permission_timeout` does: with its
+`reject_once` option, or, without exactly one, by cancelling its turn, which
+answers every request pending in the session `cancelled`. Each wins over the
+profile's `stop_when_idle` and `permission_timeout`.
 
 `--foreground` keeps the session in the terminal, for a supervisor such as
 systemd or a container. It shows the session's events on stdout (`--json`: as
@@ -442,7 +555,7 @@ the session (twice kills the agent). A display that can't keep up skips
 events, saying how many (`… 120 events not shown`); stdout closing
 (`| head -1`) ends the display, not the session.
 
-`--resume` uses the agent's `session/resume` (or `session/load`), in the
+`session resume` uses the agent's `session/resume` (or `session/load`), in the
 session's cwd, with the agent and profile it last had, and appends to the
 same transcript. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
@@ -453,10 +566,9 @@ brnr: turns taken in the agent's own client, or with `log = false`, aren't
 in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
-`brnr approve`/`deny` or a bridge (`permission_timeout` denies what nobody
-answers), elicitation is declined, and anything else is answered with
+`brnr permission allow`/`reject` or a bridge, elicitation is declined, and anything else is answered with
 "method not found". How much the agent asks is the agent's own setting: its
-mode (`--mode`, `brnr mode`). brnr doesn't log in for you. If the agent needs
+mode (`--mode`, `brnr config set --mode`). brnr doesn't log in for you. If the agent needs
 a login, the start fails with the agent's methods: log in with the agent's own
 CLI first, or name a method that needs no terminal with `--auth <id>` (`auth`
 in the profile), such as codex-acp's `api-key`.
@@ -484,13 +596,14 @@ test, as the README's do.
 
 By default brnr speaks stable ACP plus the conventions agents and editors
 already implement alike, ahead of the spec: `_session/steering` (for
-`send --steer`), `session/fork`, unstable in ACP v1 (for `brnr fork`), and
-dropping the editor's `fs` and `terminal` capabilities, as ACP v2 does. Strict
-mode (`strict = true` in a profile, `--strict` on `acp` and `start`) is stable
-ACP to the letter: no steering, no fork, the editor's capabilities passed
-through, and no experimental actions. What it refuses says why.
+`prompt send --steer`), `session/fork`, unstable in ACP v1 (for
+`brnr session fork`), and dropping the editor's `fs` and `terminal`
+capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
+`--strict` on `acp`, `session new` and `session resume`) is stable ACP to
+the letter: no steering, no fork, the editor's capabilities passed through,
+and no experimental actions. What it refuses says why.
 
-Either way, brnr speaks ACP version 1. A `brnr start` (or `brnr sessions`)
+Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr session list` with an agent)
 whose agent answers `initialize` with another version, or one brnr can't
 read, fails with that, before anything else is sent, and the agent is
 stopped ([ADR 54](docs/adr/0054-acp-version-1.md)). An editor's process
@@ -502,7 +615,7 @@ change it: it has defaults that protect you, and feature flags in a profile's
 editor part to change them. The one so far is `shared_sessions`: the editor
 may load a session another brnr process serves. The agent then serves it to
 both and the conversation splits; the process holding the session's lock still
-writes its transcript, and `status` says the session is shared.
+writes its transcript, and `session status` says the session is shared.
 
 ## Profiles
 
@@ -518,11 +631,14 @@ strict = false                      # stable ACP only
 command = ["~/bin/slack-bridge", "--channel", "#agents"]
 events = ["permission_request", "turn_ended"]   # omit for every event but acp
 
-[profiles.work.headless]            # brnr start
+[profiles.work.headless]            # brnr session new and resume
 cwd = "~/work/project"
-mode = "plan"                       # the agent's mode and config options,
-config = { model = "opus" }         #   set before the first prompt
-permission_timeout = 600            # deny what nobody answered in 10 minutes
+mode = "plan"                       # the agent's mode, model, thought level
+model = "opus"                      #   and config options by id, set before
+thought_level = "high"              #   the first prompt; the flags win
+options = { effort = "high" }
+permission_timeout = 600            # reject once (else cancel the turn) what
+                                    #   nobody answered in 10 minutes
 stop_when_idle = 600                # close a session idle 10 minutes
 # auth = "api-key"                  # a login method to run first (codex-acp's)
 
@@ -533,7 +649,7 @@ args = ["stdio"]
 env = { GITHUB_TOKEN = "…" }
 
 [profiles.work.editor]              # brnr acp
-experimental = ["send", "approve"]  # actions on the editor's session
+experimental = ["send", "permission"] # actions on the editor's session
 features = ["shared_sessions"]      # process management
 ```
 
@@ -550,8 +666,7 @@ as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
-`pending`, `approve`, `deny`, `set_mode`, `set_config`, `set_model`, `fork`,
-`close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`pending`, `allow`, `reject`, `set_config`, `fork`, `new`, `resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
@@ -602,22 +717,21 @@ by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
 file has the same folder and name as Claude Code's own transcript. In
 `<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
 digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
-sessions never share a file. The events
-are the ones bridges get, `exited` included, and are what `brnr log`,
-`list --all` and `--resume` read; `log` reads the raw file too when `acp`
-events are chosen. A thread of the process's own writes them, so the session
-never waits for the disk; `log` of a running session first waits until its
-process has written what it recorded until then (up to 5 s, then it says so
-and shows what is there), so a turn `start --wait` just reported is in it,
-and a process that exits is listed until its transcript has its `exited` (2 s
-at most). A process killed (SIGKILL) loses what it hadn't written yet, and
-may leave its last record cut short: the session is still listed, logged and
-resumed as of its last whole record, `log` says on stderr which lines it
+sessions never share a file. The events are the ones bridges get, `exited`
+included, and are what `brnr event log`, `session list` and `session resume`
+read; `event log` reads the raw file too when `acp` events are chosen. A
+thread of the process's own writes them, so the session never waits for the
+disk; `event log` of a running session first waits until its process has
+written what it recorded until then (up to 5 s, then it says so and shows what
+is there), so a turn `session new --wait` just reported is in it, and a
+process that exits is listed until its transcript has its `exited` (2 s at
+most). A process killed (SIGKILL) loses what it hadn't written yet, and may
+leave its last record cut short: the session is still listed, logged and
+resumed as of its last whole record, `event log` says on stderr which lines it
 couldn't read, and the next process starts on a new line; brnr never rewrites
-a transcript. Every record
-carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid` for joining.
-`log = "events"` leaves out the raw file, most of the space; `log = false`
-writes nothing.
+a transcript. Every record carries `host_id`, `host_pid`, `proxy_pid` and
+`agent_pid` for joining. `log = "events"` leaves out the raw file, most of the
+space; `log = false` writes nothing.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host
@@ -625,7 +739,8 @@ log and in each session's events file that lost some. Records a full disk
 didn't take are noted likewise, with the `error`, in the file that lost them
 (a raw file's in its events file) once it takes records again. How a process
 ended (`exited`, or a panic) is never skipped, so `brnr doctor` can tell an
-exit from a death. `brnr log` always shows a gap, whatever `--events` chose.
+exit from a death. `brnr event log` always shows a gap, whatever `--events`
+chose.
 
 The values of MCP servers' `env` and `headers` are recorded as
 `"<redacted>"`, in the raw ACP, the host log and `acp` events alike; the agent
@@ -637,7 +752,8 @@ it and the file must be yours, with no group or other access, before a record
 goes in, whether brnr made them or found them there. It creates them 0700 and
 0600; one restored, copied or chmod'ed so that others can reach it is made
 private when a process opens it, and the host log has a `made-private`
-record (`path`, and the `mode` it had). Symlinks are never followed, the
+record (`path`, and the `mode` it had; `session delete`, which has no host
+log, says so on stderr). Symlinks are never followed, the
 state directory included (set `BRNR_HOME` to where one points instead), and
 what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),
@@ -712,7 +828,7 @@ you paste it. With `--json` it is one object (`brnr`, `os`, `adapters`,
 When brnr panics, it prints a link to a new issue with the version, the OS
 and the panic's message filled in; nothing is sent unless you open it and
 submit the form. The link is printed on the command's stderr; for a process
-that runs detached, by `brnr start` or `brnr acp` when its start fails with
+that runs detached, by `brnr session new` or `brnr acp` when its start fails with
 the panic, and in the foreground by the process itself.
 
 ## Environment

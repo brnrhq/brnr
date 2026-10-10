@@ -1,12 +1,12 @@
-//! `brnr notify (<session> | --pid <pid> | --stdin) [--events <a,b,...>] --
-//! <command> [args...]`: runs a command once per event of a session, or of
+//! `brnr event notify (<session> | --pid <pid> | --stdin) [--events <a,b,...>]
+//! -- <command> [args...]`: runs a command once per event of a session, or of
 //! every session in a process, for notifications.
 //!
 //! The event is in the command's environment and, as JSON, on its stdin;
 //! nothing is substituted into the command line, so what an agent writes
 //! can't become arguments:
 //!
-//! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr watch` would
+//! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr event watch` would
 //!   show it; `BRNR_TITLE`: the session's title, else its id;
 //! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's handle),
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
@@ -27,17 +27,17 @@
 //! SIGKILL [`STOP_WAIT`] later), says on stderr that it was cut off and
 //! that no more notifications come, and exits non-zero.
 //!
-//! With `--stdin` it reads the events from its stdin, one per line, instead
-//! of connecting: a started bridge's transport (ADR 35 and 36 in docs/adr).
-//! As a bridge in a profile it is `command = ["brnr", "notify", "--stdin",
-//! "--", …]`, and `BRNR_PID` is the one the process gives it. The bridge's
-//! `events`, if the profile limits them, must include `agent_message`,
-//! `session_changed` and `exited` for the environment and the end. Its stdin
-//! ending before `exited` is being cut off; the process cuts off a bridge
-//! that falls behind with SIGTERM, and a started bridge's stderr is in the
-//! host log (`bridge-stderr`). On the socket, being cut off is the
-//! connection closing before `exited`, which notify also looks for while a
-//! command runs.
+//! With `--stdin` it reads the events from its stdin, one per line, instead of
+//! connecting: a started bridge's transport (ADR 35 and 36 in docs/adr). As a
+//! bridge in a profile it is
+//! `command = ["brnr", "event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
+//! is the one the process gives it. The bridge's `events`, if the profile
+//! limits them, must include `agent_message`, `session_changed` and `exited`
+//! for the environment and the end. Its stdin ending before `exited` is being
+//! cut off; the process cuts off a bridge that falls behind with SIGTERM, and a
+//! started bridge's stderr is in the host log (`bridge-stderr`). On the socket,
+//! being cut off is the connection closing before `exited`, which notify also
+//! looks for while a command runs.
 
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -441,7 +441,7 @@ impl Running {
         let mut child = match child {
             Ok(child) => child,
             Err(err) => {
-                eprintln!("brnr notify: {}: {err}", command[0]);
+                eprintln!("brnr event notify: {}: {err}", command[0]);
                 return None;
             }
         };
@@ -472,7 +472,7 @@ impl Running {
         if let Ok(status) = self.child.wait()
             && !status.success()
         {
-            eprintln!("brnr notify: {} exited with {status}", self.program);
+            eprintln!("brnr event notify: {} exited with {status}", self.program);
         }
     }
 
