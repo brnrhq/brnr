@@ -33,8 +33,9 @@ brnr's own conventions:
   `permission show`; `log`, `watch`, `notify` and `wait` are `event log`,
   `event watch`, `event notify` and `event wait`. Flags are unchanged. A
   profile's bridge that runs `brnr notify` runs `brnr event notify` instead.
-  `brnr --help` has a section per group, and `brnr <group> --help` lists a
-  group's commands (ADR 63).
+  `brnr --help` has a section per group, `brnr <group> --help` lists a
+  group's commands, and `brnr <group> <verb> --help` (or `-h`, before any
+  `--`) prints that command's usage (ADR 63).
 - **Breaking:** `brnr mode`, `brnr model` and `brnr config` are
   `brnr config get <s>` and `brnr config set <s>`. `get` lists every option
   with its category, value and choices, each choice with its name and

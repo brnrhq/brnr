@@ -20,7 +20,8 @@ Most commands are `brnr <group> <verb>`, grouped by what they act on:
 `process`, `session`, `prompt`, `queue`, `permission`, `config` and `event`
 ([ADR 63](adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 `brnr <group> --help` prints one group's syntax, as does a group without a
-verb (exiting 1). A command brnr doesn't have, such as the names these
+verb (exiting 1). `brnr <group> <verb> --help` (or `-h`, anywhere before a
+`--`) prints that command's. A command brnr doesn't have, such as the names these
 replaced (`brnr send`), fails as unknown.
 
 `--` separates brnr options from the agent or notification command and its

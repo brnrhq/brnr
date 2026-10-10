@@ -142,6 +142,10 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
     let result = match (cmd, verb) {
+        (group, Some(verb)) if grouped && asks_help(rest) && has_usage(group, verb) => {
+            outln!("{}", usage_of(group, Some(verb)));
+            Ok(ExitCode::SUCCESS)
+        }
         ("process", Some("list")) => done(ps(rest)),
         ("process", Some("stop")) => done(stop(rest)),
         ("session", Some("status")) => done(status(rest)),
@@ -197,6 +201,17 @@ pub fn main(args: Vec<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
+/// `--`, after which they are the agent's or the command's.
+fn asks_help(args: &[String]) -> bool {
+    args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help")
+}
+
+/// Whether [`USAGE`] has `brnr <group> <verb>`.
+fn has_usage(group: &str, verb: &str) -> bool {
+    USAGE.lines().any(|l| l.split_whitespace().take(3).eq(["brnr", group, verb]))
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
