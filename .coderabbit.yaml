@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit reviews pull requests against main. AGENTS.md and CLAUDE.md are
+# read as the review guidelines by default. Reference:
+# https://docs.coderabbit.ai/reference/configuration
+language: en-US
+reviews:
+  profile: chill
+  # The summary goes in CodeRabbit's walkthrough comment, not the PR description.
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    drafts: false
+  # Generated or vendored: lockfiles, cargo vet's audits, fuzz corpora.
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!adapters/bun.lock"
+    - "!supply-chain/**"
+    - "!fuzz/seeds/**"
+  # CI already runs these (AGENTS.md, Checks); a second copy only repeats it.
+  tools:
+    clippy:
+      enabled: false
+    ruff:
+      enabled: false
+    shellcheck:
+      enabled: false
+    actionlint:
+      enabled: false
+    zizmor:
+      enabled: false
+chat:
+  auto_reply: true
+  art: false
