@@ -2,6 +2,8 @@
 
 Accepted 2026-10-08. Implemented.
 Amends 40 and 47: checks before publication and after the tap update.
+Amended 2026-10-11: the smoke test runs the formula's own test too, which
+0.8.0 broke without the release failing.
 
 ## Context
 
@@ -25,9 +27,10 @@ Issue #37 asks for those checks. A failed check must fail the workflow
   It must leave `Cargo.lock` unchanged. The release attaches it as
   `brnr-X.cdx.json`, with build provenance alongside the source archive.
 - After the release and tap update, a separate, fresh macOS runner runs
-  `brew install brnrhq/tap/brnr`, checks `brnr --version` against the tag,
-  and runs `brnr doctor`. It uses the public formula and source download,
-  with no checkout or local build to fall back to.
+  `brew install brnrhq/tap/brnr` and `brew test brnrhq/tap/brnr`, checks
+  `brnr --version` against the tag, and runs `brnr doctor`. It uses the
+  public formula and source download, with no checkout or local build to
+  fall back to.
 
 ## Consequences
 
@@ -37,9 +40,9 @@ Issue #37 asks for those checks. A failed check must fail the workflow
   source, not prebuilt binaries.
 - The SBOM describes brnr's Rust crate. It does not inventory the adapters'
   npm dependencies or claim that an inventoried dependency is safe.
-- The smoke test fails the release workflow if installation, version
-  checking or doctor fails. Publication and the tap push have already
-  happened and cannot be rolled back by this check. Missing optional
+- The smoke test fails the release workflow if installation, the
+  formula's test, version checking or doctor fails. Publication and the
+  tap push have already happened and cannot be rolled back by this check. Missing optional
   adapters are informational to doctor and need no credentials.
 
 ## Considered

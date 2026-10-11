@@ -145,9 +145,13 @@ jobs:
     timeout-minutes: 30
     steps:
       # A fresh runner, after the tap push, using the public install path.
-      - name: Install the released formula and run doctor
+      # brew test runs the formula's own test, which the tap's CI runs too, so
+      # a release that breaks it (0.8.0 did: its test ran brnr list) fails
+      # here, not only on the tap's main.
+      - name: Install the released formula, test it and run doctor
         run: |
           brew install brnrhq/tap/brnr
+          brew test brnrhq/tap/brnr
           expected="brnr ${GITHUB_REF_NAME#v}"
           actual=$(brnr --version)
           if [ "$actual" != "$expected" ]; then
