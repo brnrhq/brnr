@@ -131,7 +131,8 @@ pub(super) struct Replay {
     pub(super) unanswered: u32,
     /// One of them succeeded.
     pub(super) loaded: bool,
-    /// The session was opened for them: if none succeeds, it closes again.
+    /// The session was opened for them: if none succeeds, and no resume has
+    /// opened it meanwhile, it closes again.
     pub(super) opened: bool,
 }
 
@@ -865,6 +866,10 @@ impl Host {
                 } else if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
                     self.sessions[i].state.result(result);
+                    // Open now, whatever a load still to be answered gets.
+                    if let Some(replay) = &mut self.sessions[i].replay {
+                        replay.opened = false;
+                    }
                 } else {
                     self.claimed.remove(&session); // Its lock goes (see `attach`).
                 }

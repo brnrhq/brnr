@@ -66,7 +66,8 @@ conversation, and nothing said it was missing (P3).
   recorded`. A recorded replay can so hold the history once per load, each
   copy marked; nothing is left out (P3). A load that fails counts as
   answered; if none of them succeeds, there is no `history` event, as for a
-  single load that fails.
+  single load that fails, and a session they opened closes again, unless a
+  `session/resume` of it succeeded meanwhile.
 
 ## Consequences
 
@@ -105,6 +106,7 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_an_editors_load_records_the_history_only_without_a_transcript`.
   - `adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again`.
   - `adr_0057_overlapping_loads_in_an_editor_have_one_history`.
+  - `adr_0057_a_failed_load_leaves_a_resumed_session_open`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

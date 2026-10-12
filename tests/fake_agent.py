@@ -32,6 +32,8 @@ with environment variables:
                     exists, reading nothing meanwhile
   LOAD_ENDS_TURN=1  session/load while a turn hangs ends it, cancelled,
                     before it replays
+  LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
+  LOAD_FAIL=1       session/load, once it has replayed, answers with an error
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
@@ -199,7 +201,8 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE) or session/load (LOAD_LATER) is
+# sent from a thread of its own.
 sending = threading.Lock()
 
 
@@ -262,6 +265,19 @@ def new_opened(mid, session):
         },
     )
     update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
+
+
+def load_answer(mid):
+    if env("LOAD_FAIL"):
+        error(mid, -32603, "Can't load the session")
+    else:
+        result(mid, settings({}))
+
+
+def load_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.01)
+    load_answer(mid)
 
 
 def new_later(gate, mid, session):
@@ -639,7 +655,12 @@ for line in sys.stdin.buffer:
             method == "session/load" and env("LOAD_GATE") and not os.path.exists(env("LOAD_GATE"))
         ):
             time.sleep(0.01)
-        result(mid, settings({}))
+        if method == "session/resume":
+            result(mid, settings({}))
+        elif env("LOAD_LATER"):
+            threading.Thread(target=load_later, args=(env("LOAD_LATER"), mid), daemon=True).start()
+        else:
+            load_answer(mid)
     elif method == "session/fork":
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
