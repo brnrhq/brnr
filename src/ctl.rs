@@ -725,7 +725,7 @@ fn when(ts: &str) -> String {
 
 // ---- approvals -----------------------------------------------------------
 
-/// The approvals waiting, in every process or in one session's.
+/// The approvals waiting, in every process that answers or in one session's.
 fn pending(args: &[String]) -> Result<(), String> {
     let mut json_out = false;
     let mut arg = None;
@@ -739,7 +739,9 @@ fn pending(args: &[String]) -> Result<(), String> {
     }
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
-        None => (hosts.iter().collect(), None),
+        // Those that answered `discover`: one that didn't is passed over, as
+        // process list and session list do (ADR 3), not waited for again.
+        None => (hosts.iter().filter(|h| h.status.is_some()).collect(), None),
         Some(arg) => {
             let (host, id) = running_session(&hosts, arg)?;
             (vec![host], Some(id))

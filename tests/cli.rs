@@ -2045,6 +2045,36 @@ fn adr_0027_show_explains_a_permission_request() {
     assert_eq!(json["outcome"]["optionId"], "allow");
 }
 
+/// With no session named, `requests` asks only the processes that answer,
+/// as process list and session list do (ADR 3): one that doesn't hides
+/// nothing waiting in the others.
+#[test]
+fn adr_0027_requests_passes_over_a_silent_process() {
+    let env = Env::new("c-reqsilent");
+    env.start(&[]);
+    let silent = env.host_pid();
+    let out = env.brnr(&new_args(&[])).env("FIRST_SESSION", "1").output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    env.ok(&["prompt", "send", "sess-2", "perm edit"]);
+    env.ok(&["event", "wait", "sess-2", "--for", "permission", "--timeout", "10"]);
+    kill(silent, libc::SIGSTOP);
+    let spawn = |args: &[&str]| {
+        env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let (table, json) =
+        (spawn(&["permission", "requests"]), spawn(&["permission", "requests", "--json"]));
+    let [table, json] = [table, json].map(|c| c.wait_with_output().unwrap());
+    kill(silent, libc::SIGCONT);
+    assert_eq!((code(&table), code(&json)), (0, 0), "{}{}", stderr(&table), stderr(&json));
+    let row = stdout(&table);
+    let row = row.lines().find(|l| l.starts_with("sess-2")).unwrap_or_else(|| panic!("{row}"));
+    assert!(row.contains("p1"), "{row}");
+    let json: Value = serde_json::from_slice(&json.stdout).unwrap();
+    let ids: Vec<(&Value, &Value)> =
+        json.as_array().unwrap().iter().map(|r| (&r["session"], &r["request"])).collect();
+    assert_eq!(ids, [(&"sess-2".into(), &"p1".into())], "{json}");
+}
+
 /// A command dressed up as another (a carriage return and an erase-line
 /// escape) is shown as it is, and said to be odd.
 #[test]

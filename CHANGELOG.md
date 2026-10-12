@@ -20,6 +20,14 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- `permission requests` with no session lists the approvals in the
+  processes that answer, and exits 0, when one doesn't: it passes over a
+  process whose status went unanswered, as `process list` and
+  `session list` do, instead of waiting for it again and failing with
+  `process <pid>: not answering` (ADR 27, ADR 3).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added
