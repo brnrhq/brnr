@@ -60,7 +60,8 @@ What is bounded, and what isn't (the issue's audit):
   up to 32 MiB of a line still coming, each); the agent's stderr (the same
   cap, plus a piece of 64 KiB); a started bridge's stderr (a line or a piece
   of 64 KiB at a time, as the agent's, into the host log, a character a
-  piece's end would cut starting the next piece; fixed in #160);
+  piece's end would cut starting the next piece, and a note's decoded text
+  at most 64 KiB too, the rest in the next notes; fixed in #160);
   the link (16 MiB, and a frame is at most a
   line the host read or a piece); each peer's queue (16 MiB, plus the line that takes it past the cap and one more, ADR 6 and 49); the
   logger's queue (64 MiB, ADR 6); the foreground's display (ADR 9). The proxy
@@ -124,3 +125,4 @@ Run `cargo test --release adr_0051_`. Named claims and their assertions:
   - `adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut`.
 - [src/host/control.rs](../../src/host/control.rs)
   - `adr_0051_a_bridges_stderr_ends_with_what_a_piece_left`.
+  - `adr_0051_a_bridges_stderr_note_is_at_most_a_piece_once_decoded`.

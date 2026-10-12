@@ -295,7 +295,8 @@ fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
 /// so bytes that aren't UTF-8 don't end the reading (and the bridge's next
 /// write with SIGPIPE), and a line longer than `PIECE` in pieces of that,
 /// as the agent's is (ADR 51). A character a piece's end would cut starts
-/// the next piece instead.
+/// the next piece instead, and a note's text, decoded, is at most a piece
+/// too.
 fn read_stderr(input: impl Read, label: String, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
@@ -313,9 +314,23 @@ fn read_stderr(input: impl Read, label: String, tx: &SyncSender<Ev>) {
                 Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
                 None => &line,
             };
-            let text = String::from_utf8_lossy(text).into_owned();
-            if tx.send(Ev::BridgeStderr { label: label.clone(), line: text }).is_err() {
-                return;
+            // Each byte that isn't UTF-8 becomes U+FFFD, 3 bytes: a note is
+            // still at most a piece, the rest of the text in the next ones.
+            let text = String::from_utf8_lossy(text);
+            let mut rest = &text[..];
+            loop {
+                let mut end = rest.len().min(PIECE);
+                while !rest.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let (note, after) = rest.split_at(end);
+                if tx.send(Ev::BridgeStderr { label: label.clone(), line: note.into() }).is_err() {
+                    return;
+                }
+                rest = after;
+                if rest.is_empty() {
+                    break;
+                }
             }
         }
         if !more {
@@ -1127,5 +1142,14 @@ mod tests {
         assert_eq!(said.len(), 2);
         assert_eq!((said[0].len(), said[1].as_str()), (PIECE - 1, "\u{fffd}"));
         assert_eq!(stderr_notes(b"a\n\nb\r\nc"), ["a", "", "b", "c"]);
+    }
+
+    #[test]
+    fn adr_0051_a_bridges_stderr_note_is_at_most_a_piece_once_decoded() {
+        // Each byte becomes U+FFFD, 3 bytes of text: notes cut at characters.
+        let said = stderr_notes(&vec![0xff; PIECE]);
+        let lens: Vec<usize> = said.iter().map(String::len).collect();
+        assert_eq!(lens, [PIECE - 1, PIECE - 1, PIECE - 1, 3]);
+        assert!(said.iter().all(|n| n.chars().all(|c| c == '\u{fffd}')));
     }
 }
