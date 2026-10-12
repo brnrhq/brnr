@@ -12,11 +12,11 @@
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
 //!
-//! The text, title and message have control characters escaped, as `watch`
-//! shows them, and are cut at 32 KiB; the event on stdin has them whole.
+//! The text, title and message have control characters escaped, as `event
+//! watch` shows them, and are cut at 32 KiB; the event on stdin has them whole.
 //!
-//! `--events` is read as for `watch`, but its default (and `default`) is
-//! `permission_request`, `turn_ended`, `exited`. It exits when the process
+//! `--events` is read as for `event watch`, but its default (and `default`)
+//! is `permission_request`, `turn_ended`, `exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
@@ -395,7 +395,7 @@ impl Source {
     }
 }
 
-/// The agent's text for the environment: as `watch` would show it (see
+/// The agent's text for the environment: as `event watch` would show it (see
 /// `render::clean`), and cut at [`ENV_TEXT_MAX`] bytes, with `…`. The
 /// event on stdin has all of it.
 fn env_text(text: &str) -> String {
