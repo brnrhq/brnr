@@ -19,8 +19,8 @@ Amended by 51: a line still coming is held by its reader, up to 32 MiB,
 beside the cap; a longer one goes on unread as it comes (or, headless, is
 dropped), said by a `line_too_long` event.
 
-Amended by 60: nor, up to 64 MiB of them, do lines longer than 16 MiB
-that come while a peer is past it.
+Amended by 60: lines longer than 16 MiB that come while a peer is past it
+don't count toward it either, up to 64 MiB of them.
 
 ## Context
 

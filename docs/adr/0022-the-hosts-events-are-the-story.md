@@ -13,11 +13,13 @@ file's in its events file). `log` shows such a gap whatever `--events`
 chose.
 
 Amended by 48: `log` of a running session first waits until its process has
-written what it recorded until then. Amended by 55: what reads a transcript
-passes over a line it can't read, cut short or not, and `log` says so.
+written what it recorded until then.
 
 Amended by 53: the session id in the file names is escaped, one name per
 id, so distinct sessions never share a transcript.
+
+Amended by 55: what reads a transcript passes over a line it can't read,
+cut short or not, and `log` says so.
 
 Amended by 57: a load of a session brnr has no transcript of records the
 replay.
