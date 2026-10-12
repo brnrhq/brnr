@@ -20,6 +20,13 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- A started bridge's stderr is read as bytes and decoded lossily, so a line
+  that isn't UTF-8 no longer stops the reading and kills the bridge with
+  SIGPIPE on its next write; a line longer than 64 KiB goes to the host log
+  in pieces of that, as the agent's stderr does (ADR 35, ADR 51).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

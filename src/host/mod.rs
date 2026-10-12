@@ -108,10 +108,10 @@ const STDERR_LINE: usize = 2000;
 
 /// The most of the agent's stderr read at once, and of a line of it the host
 /// log takes as one record: a longer line is recorded in pieces of this
-/// (ADR 51). Nobody reads stderr as lines but people, and the host log; what
-/// is read goes on to the editor or the terminal at once, newline or not
-/// (ADR 62).
-const PIECE: usize = 64 << 10;
+/// (ADR 51), as a started bridge's is (see control.rs). Nobody reads stderr
+/// as lines but people, and the host log; what is read goes on to the editor
+/// or the terminal at once, newline or not (ADR 62).
+pub(super) const PIECE: usize = 64 << 10;
 
 /// `brnr process stop`: stdin is closed once what is queued for it is written,
 /// then the agent's process group gets SIGTERM, then SIGKILL.

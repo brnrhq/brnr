@@ -95,7 +95,7 @@ use serde_json::{Value, json};
 use super::acp::{Choice, Held, Replay};
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
-use super::{Ev, Host};
+use super::{Ev, Host, PIECE};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
@@ -291,6 +291,24 @@ fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     }
 }
 
+/// A started bridge's stderr, a line at a time, until EOF: decoded lossily,
+/// so bytes that aren't UTF-8 don't end the reading (and the bridge's next
+/// write with SIGPIPE), and a line longer than `PIECE` in pieces of that,
+/// as the agent's is (ADR 51).
+fn read_stderr(input: impl Read, label: String, tx: &SyncSender<Ev>) {
+    let mut reader = BufReader::new(input);
+    let mut line = Vec::new();
+    while matches!((&mut reader).take(PIECE as u64).read_until(b'\n', &mut line), Ok(n) if n > 0) {
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        let text = String::from_utf8_lossy(text).into_owned();
+        if tx.send(Ev::BridgeStderr { label: label.clone(), line: text }).is_err() {
+            return;
+        }
+        line.clear();
+    }
+}
+
 impl Host {
     /// Starts a bridge from the profile, subscribed to its events.
     pub(super) fn start_bridge(
@@ -337,13 +355,7 @@ impl Host {
         thread::spawn(move || read_requests(stdout, peer, &t));
         let stderr = child.stderr.take().unwrap();
         let (t, l) = (tx.clone(), label.clone());
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if t.send(Ev::BridgeStderr { label: l.clone(), line }).is_err() {
-                    return;
-                }
-            }
-        });
+        thread::spawn(move || read_stderr(stderr, l, &t));
         let (t, l) = (tx.clone(), label.clone());
         drop(child); // Reaped by the host (see `Ev::BridgeExited`).
         thread::spawn(move || {

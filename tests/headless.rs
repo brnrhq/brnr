@@ -1234,6 +1234,69 @@ fn adr_0035_bad_request_line_is_answered() {
     );
 }
 
+/// What a started bridge wrote on stderr, as the host log has it
+/// (`bridge-stderr`), and its `bridge-exited` record once it has one.
+fn bridge_stderr(env: &Env) -> (Vec<String>, Option<Value>) {
+    let records: Vec<Value> =
+        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = (records.iter().filter(|r| r["event"]["event"] == "bridge-stderr"))
+        .map(|r| r["event"]["text"].as_str().unwrap().to_owned())
+        .collect();
+    let exited = records.into_iter().find(|r| r["event"]["event"] == "bridge-exited");
+    (said, exited.map(|mut r| r["event"].take()))
+}
+
+/// A started bridge that writes a line on stderr that isn't UTF-8 carries
+/// on: the line is in the host log, decoded lossily, and so is what it writes
+/// after it. It gets its events, and exits 0 when its stdin closes. (Read
+/// as text, the bad line ended the reading: the bridge's next write was
+/// killed by SIGPIPE.)
+#[test]
+fn adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on() {
+    let env = Env::new("brerr-bytes");
+    let events = env.dir.join("bridge-events");
+    // The pause lets the host read the bad line before the next one comes.
+    let script = format!(
+        "printf 'bad \\377\\376 bytes\\n' >&2; sleep 0.5; echo after >&2; exec cat > '{}'",
+        events.display()
+    );
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.len() == 2;
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env));
+    assert_eq!(bridge_stderr(&env).0, ["bad \u{fffd}\u{fffd} bytes", "after"]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    let ended =
+        || fs::read_to_string(&events).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(5), || bridge_stderr(&env).1.is_some()), "not exited");
+    let exited = bridge_stderr(&env).1.unwrap();
+    assert_eq!(exited["status"], 0, "killed by a signal: {exited}");
+}
+
+/// A started bridge's stderr line longer than 64 KiB goes to the host log in
+/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
+/// no more of it than a piece.
+#[test]
+fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
+    let env = Env::new("brerr-long");
+    let script = "head -c 131073 /dev/zero | tr '\\0' x >&2; echo >&2; echo after >&2; \
+                  exec cat > /dev/null";
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env).0.len());
+    let pieces: Vec<usize> = bridge_stderr(&env).0.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
+    assert!(bridge_stderr(&env).0[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
+    env.stop();
+}
+
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]
