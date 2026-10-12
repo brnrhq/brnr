@@ -75,7 +75,7 @@ use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp};
 use super::state::SessionState;
 use super::{Host, id_key, text_block};
-use crate::config::Feature;
+use crate::config::{Feature, Log};
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
 use crate::schema::{
@@ -585,10 +585,12 @@ impl Host {
     /// replays before it answers: recorded only if brnr has no transcript of
     /// the session, in any folder, as a headless start's is (ADR 57). One not
     /// open here opens now, so that the replay is the session's; one open
-    /// here has its transcript already. A load while the session's replay
-    /// runs joins that replay, as which load an update is for can't be told
-    /// (P4): what either replays is taken as the replay is, recorded or not,
-    /// and one `history` event covers them all.
+    /// here has its transcript already, from this process, whether or not
+    /// the logger has written it yet, unless the process logs nothing; one
+    /// another process holds has that one's. A load while the session's
+    /// replay runs joins that replay, as which load an update is for can't
+    /// be told (P4): what either replays is taken as the replay is, recorded
+    /// or not, and one `history` event covers them all.
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
         let open = self.find(session);
         if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
@@ -596,7 +598,10 @@ impl Host {
             replay.unanswered += 1;
             return;
         }
-        let record = log::transcripts(session).is_empty();
+        let record = match open.map(|i| &self.sessions[i].hold) {
+            Some(Hold::Owner(_) | Hold::Unlocked(_)) => self.logging == Log::Off,
+            Some(Hold::Shared(_)) | None => log::transcripts(session).is_empty(),
+        };
         let i = self.open_session(session, cwd);
         self.begin_replay(i, record);
         if let Some(replay) = &mut self.sessions[i].replay {

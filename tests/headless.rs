@@ -2439,16 +2439,21 @@ fn command_names(env: &Env, session: &str) -> Vec<String> {
 /// The editor loading a session again, open in its process already, has its
 /// replay taken as a replay: the editor gets it as the agent sent it, and the
 /// transcript, which has the history from the first load, gets nothing of it
-/// again but a `history` event. A tool call the history left unfinished isn't
-/// counted as running (ADR 57).
+/// again but a `history` event, whether or not the logger has written it
+/// yet (a stalled disk holds it here). A tool call the history left
+/// unfinished isn't counted as running (ADR 57).
 #[test]
 fn adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again() {
-    let env = Env::new("ed-reload").agent("FULL_HISTORY", "1");
+    let env = Env::new("ed-reload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("FULL_HISTORY", "1").agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
     let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
     for id in [2, 3] {
         let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, id, "old-1");
         assert_eq!(replay, REPLAY, "the editor's replay of load {id}");
     }
+    fs::remove_file(&stall).unwrap();
     let messages = logged(&env, "old-1", "user_message,agent_message");
     let texts: Vec<(&Value, &Value)> =
         messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();

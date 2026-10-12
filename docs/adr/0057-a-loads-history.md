@@ -53,8 +53,9 @@ conversation, and nothing said it was missing (P3).
 - An editor's `session/load` through `brnr acp` follows the same rule: its
   replay is recorded only when brnr has no transcript of the session, in
   any folder, and a `history` event says either way. A session open in the
-  editor's process has its transcript, so loading it again there records
-  nothing of the replay again. The editor gets the replay as the agent sent
+  editor's process has its transcript, the process's, whether or not the
+  disk has it yet (unless it logs nothing, `log = false`), so loading it
+  again there records nothing of the replay again. The editor gets the replay as the agent sent
   it (ADR 2): only what brnr records and emits follows the rule.
 - The editor's loads of a session that overlap (one sent before the agent
   has answered the one before) all reach the agent, and share one replay,
