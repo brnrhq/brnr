@@ -41,7 +41,8 @@
 //!   into events as live ones would be, the user's messages too, each marked
 //!   `replayed`. Either way a `history` event says which, and how many
 //!   updates the agent replayed, and the editor gets the replay as the agent
-//!   sent it.
+//!   sent it. Loads of an editor's that overlap share one replay, until the
+//!   last is answered, and one `history` event, with how many `loads`.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3); with
@@ -123,6 +124,15 @@ pub(super) struct Replay {
     /// How many tool calls were running before it: those after, the
     /// history's, aren't running now.
     pub(super) tools: usize,
+    /// The loads it covers: the editor's load of a session while its replay
+    /// runs joins it, as the agent's replays can't be told apart (P4).
+    pub(super) loads: u32,
+    /// Of those, the ones the agent hasn't answered: it ends with the last.
+    pub(super) unanswered: u32,
+    /// One of them succeeded.
+    pub(super) loaded: bool,
+    /// The session was opened for them: if none succeeds, it closes again.
+    pub(super) opened: bool,
 }
 
 pub(super) struct Session {
@@ -238,12 +248,11 @@ pub(super) enum Pending {
         request: Option<Vec<u8>>,
         dir: Dir,
     },
-    /// The editor's `session/load` or `session/resume`; `opened` if the
-    /// session was opened for it, a load's (see `editor_load`).
+    /// The editor's `session/load` (`load`) or `session/resume`.
     Attach {
         session: String,
         cwd: Option<String>,
-        opened: bool,
+        load: bool,
     },
     Close {
         session: String,
@@ -524,8 +533,11 @@ impl Host {
                 self.pending.insert(key.to_owned(), pending);
             }
             ("session/load" | "session/resume", Some(session)) => {
-                let opened = method == "session/load" && self.editor_load(session, cwd.as_deref());
-                let attach = Pending::Attach { session: session.clone(), cwd, opened };
+                let load = method == "session/load";
+                if load {
+                    self.editor_load(session, cwd.as_deref());
+                }
+                let attach = Pending::Attach { session: session.clone(), cwd, load };
                 self.pending.insert(key.to_owned(), attach);
             }
             ("session/close", Some(session)) => {
@@ -572,13 +584,52 @@ impl Host {
     /// replays before it answers: recorded only if brnr has no transcript of
     /// the session, in any folder, as a headless start's is (ADR 57). One not
     /// open here opens now, so that the replay is the session's; one open
-    /// here has its transcript already. Returns whether it opened.
-    fn editor_load(&mut self, session: &str, cwd: Option<&str>) -> bool {
-        let opened = self.find(session).is_none();
+    /// here has its transcript already. A load while the session's replay
+    /// runs joins that replay, as which load an update is for can't be told
+    /// (P4): what either replays is taken as the replay is, recorded or not,
+    /// and one `history` event covers them all.
+    fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
+        let open = self.find(session);
+        if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
+            replay.loads += 1;
+            replay.unanswered += 1;
+            return;
+        }
         let record = log::transcripts(session).is_empty();
         let i = self.open_session(session, cwd);
         self.begin_replay(i, record);
-        opened
+        if let Some(replay) = &mut self.sessions[i].replay {
+            replay.opened = open.is_none();
+        }
+    }
+
+    /// The agent's answer to one of the editor's loads of `session`, a
+    /// failure too. The replay ends with the last of the loads it covers:
+    /// with its `history` event if any of them succeeded; if none did, a
+    /// session opened for them closes again (ADR 57).
+    fn load_answered(&mut self, session: &str, cwd: Option<&str>, result: Option<&Value>) {
+        let i = match (self.find(session), result) {
+            (Some(i), _) => i,
+            (None, Some(_)) => self.open_session(session, cwd),
+            (None, None) => return,
+        };
+        if let Some(result) = result {
+            self.sessions[i].state.result(result);
+        }
+        let Some(replay) = &mut self.sessions[i].replay else { return };
+        replay.unanswered = replay.unanswered.saturating_sub(1);
+        replay.loaded |= result.is_some();
+        if replay.unanswered > 0 {
+            return;
+        }
+        if replay.loaded {
+            self.end_replay(i);
+        } else if replay.opened {
+            // Its lock goes with it, and its files are closed.
+            self.sink.close_session(&self.sessions.remove(i).id);
+        } else {
+            self.sessions[i].replay = None; // Loaded again, and failed.
+        }
     }
 
     /// Answers the editor's request `id` with an error in the agent's place:
@@ -805,18 +856,13 @@ impl Host {
                 }
                 session
             }
-            Pending::Attach { session, cwd, opened } => {
-                if let Some(result) = result {
+            Pending::Attach { session, cwd, load } => {
+                if load {
+                    self.load_answered(&session, cwd.as_deref(), result);
+                } else if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
-                    self.end_replay(i);
                     self.sessions[i].state.result(result);
-                } else if opened && let Some(i) = self.find(&session) {
-                    // Its lock goes with it, and its files are closed.
-                    self.sink.close_session(&self.sessions.remove(i).id);
                 } else {
-                    if let Some(i) = self.find(&session) {
-                        self.sessions[i].replay = None; // Loaded again, and failed.
-                    }
                     self.claimed.remove(&session); // Its lock goes (see `attach`).
                 }
                 Some(session)

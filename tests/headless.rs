@@ -2518,6 +2518,54 @@ fn adr_0057_an_editors_load_records_the_history_only_without_a_transcript() {
     let _ = editor.kill();
 }
 
+/// The editor loading a session again before the agent has answered its
+/// first load: both loads reach the agent, and one replay covers them, as
+/// which load an update is for can't be told. Every update either replays
+/// is recorded, marked `replayed`, so the transcript has the history once
+/// per load, and one `history` event says how many updates the two
+/// replayed, and that they were two. No tool call of the history is left
+/// running (ADR 57).
+#[test]
+fn adr_0057_overlapping_loads_in_an_editor_have_one_history() {
+    let env = Env::new("ed-overlap");
+    let gate = env.dir.join("load-gate");
+    let env = env.agent("FULL_HISTORY", "1").agent("LOAD_GATE", gate.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    // The first load's replay is in, and its answer waits for the gate.
+    update(&mut from_agent, "available_commands_update");
+    writeln!(to_agent, "{}", editor_load(&env, 3, "old-1")).unwrap();
+    let both_sent = || {
+        let acp = env.ok(&["event", "log", "old-1", "--events", "acp", "--json"]);
+        acp.matches(r#""method":"session/load""#).count() == 2
+    };
+    assert!(wait_for(Duration::from_secs(5), both_sent), "the second load wasn't sent");
+    fs::write(&gate, "").unwrap();
+    for id in [2, 3] {
+        assert!(response(&mut from_agent, id)["result"].is_object(), "load {id}");
+    }
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    // Everything replayed is recorded marked: none of it as live.
+    let replayed = logged(&env, "old-1", "user_message,agent_message,tool_call,session_changed");
+    let unmarked: Vec<&Value> = replayed.iter().filter(|e| e["replayed"] != true).collect();
+    assert!(unmarked.is_empty(), "{unmarked:?}");
+    let texts: Vec<&Value> = replayed.iter().filter_map(|e| e.get("text")).collect();
+    let twice = ["old question", "replayed history", "old question", "replayed history"];
+    assert_eq!(texts, twice, "{replayed:?}");
+    let tools = logged(&env, "old-1", "tool_call");
+    assert_eq!(tools.len(), 2, "{tools:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    let said = (&history[0]["updates"], &history[0]["recorded"], &history[0]["loads"]);
+    assert_eq!(said, (&10.into(), &true.into(), &2.into()), "{}", history[0]);
+    let text = env.ok(&["event", "log", "old-1"]);
+    let said = "history: 10 updates replayed by the agent in 2 loads, recorded";
+    assert!(text.contains(said), "{text}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.
