@@ -334,23 +334,32 @@ impl Host {
             // The agent replays the history: recorded unless the transcript
             // has it already (ADR 57).
             let i = self.open_session(&session, None);
-            self.sessions[i].replay = Some(Replay { record: !self.transcript, updates: 0 });
+            self.begin_replay(i, !self.transcript);
             self.host_request("session/load", params, HostRequest::Open(Open::Load(session)));
         } else {
             self.fail_start("the agent can't resume sessions (no session/resume or session/load)");
         }
     }
 
+    /// A load of session `i` is to replay its history, `record`ed if brnr
+    /// has no transcript of it (ADR 57).
+    pub(super) fn begin_replay(&mut self, i: usize, record: bool) {
+        // A message still coming isn't the history's.
+        self.flush_agent_message(i);
+        let tools = self.sessions[i].state.tools.len();
+        self.sessions[i].replay = Some(Replay { record, updates: 0, tools });
+    }
+
     /// The end of a load's replay, when the agent answers it: the history
     /// event says how many updates it replayed, and whether they were
     /// recorded (ADR 57).
-    fn end_replay(&mut self, i: usize) {
+    pub(super) fn end_replay(&mut self, i: usize) {
         // The last replayed message, while it is still marked as replayed.
         self.flush_agent_message(i);
         let Some(replay) = self.sessions[i].replay.take() else { return };
         if replay.record {
             // A tool call history left unfinished isn't running now.
-            self.sessions[i].state.tools.clear();
+            self.sessions[i].state.tools.truncate(replay.tools);
         }
         let session = self.sessions[i].id.clone();
         self.emit(json!({

@@ -20,6 +20,16 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- An editor's `session/load` through `brnr acp` records the agent's replay
+  only when brnr has no transcript of the session, marked `replayed`, with a
+  `history` event either way, as a headless load does. Loading a session
+  already open in the editor's process no longer records its history again
+  or leaves its unfinished tool calls running in `session status`, and a
+  load keeps the title and commands the replay gives. The editor still gets
+  the replay as the agent sent it (ADR 57).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

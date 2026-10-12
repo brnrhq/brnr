@@ -92,7 +92,7 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::{Choice, Held, Replay};
+use super::acp::{Choice, Held};
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::{Ev, Host};
@@ -983,7 +983,7 @@ impl Host {
             let record = !paths::session_log(&opening.cwd, &session).exists();
             let i = self.open_session(&session, Some(&dir));
             self.sessions[i].opening = true;
-            self.sessions[i].replay = Some(Replay { record, updates: 0 });
+            self.begin_replay(i, record);
             let open = HostRequest::Opening(Open::Load(session), opening);
             self.host_request("session/load", params, open);
         }

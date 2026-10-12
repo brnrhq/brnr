@@ -26,6 +26,8 @@ with environment variables:
   NO_RESUME=1       offer session/load but not session/resume
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
+  FULL_HISTORY=1    session/load also replays a tool call it never finished,
+                    and the session's commands
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
@@ -604,6 +606,14 @@ for line in sys.stdin.buffer:
             )
             say(sid, "replayed history")
             update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
+            if env("FULL_HISTORY"):
+                tool = {"toolCallId": "t0", "title": "Old tool", "kind": "read"}
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "in_progress"})
+                commands = [{"name": "replayed", "description": "A command from history"}]
+                update(
+                    sid,
+                    {"sessionUpdate": "available_commands_update", "availableCommands": commands},
+                )
         result(mid, settings({}))
     elif method == "session/fork":
         sessions += 1

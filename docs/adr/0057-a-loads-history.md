@@ -2,6 +2,12 @@
 
 Accepted 2026-10-08 (proposed). Implemented. Amends 14 (what a load does
 with the replay) and 22 (brnr never recording a replay). Resolves #60.
+An editor's `session/load` through `brnr acp` follows the same rule (#118):
+its replay is recorded only when brnr has no transcript of the session, in
+any folder, and a `history` event says either way; a session open in the
+editor's process has its transcript, so loading it again there records
+nothing of the replay again. Either way the editor gets the replay as the
+agent sent it (ADR 2), and what it says the session is now is kept.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -79,6 +85,9 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_first_load_records_the_replayed_history`.
   - `adr_0057_a_load_without_the_transcript_records_the_history`.
   - `adr_0057_a_load_of_an_empty_history_says_so`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0057_an_editors_load_records_the_history_only_without_a_transcript`.
+  - `adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

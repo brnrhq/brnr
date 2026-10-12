@@ -31,14 +31,17 @@
 //!   rejects them once, or cancels their turn; how much the agent asks is
 //!   the agent's mode (`--mode`, see ADR 27 in docs/adr).
 //!   Elicitation is declined, and anything else gets "method not found".
-//! - While a headless `session/load` replays a resumed session's history
-//!   (ADR 57): if brnr has a transcript of the session, the replayed updates
-//!   are neither recorded nor turned into events, as the transcript has them
-//!   already, but what they say the session is now (its title, mode, config
-//!   options and commands) is kept. If it has none, they are recorded and
-//!   made into events as live ones would be, the user's messages too, each
-//!   marked `replayed`. Either way a `history` event says which, and how many
-//!   updates the agent replayed.
+//! - While a `session/load`, headless or the editor's, replays a session's
+//!   history (ADR 57): if brnr has a transcript of the session, the replayed
+//!   updates are neither recorded nor turned into events, as the transcript
+//!   has them already, but what they say the session is now (its title,
+//!   mode, config options and commands) is kept. A session open in the
+//!   process has its transcript, so an editor loading it again records
+//!   nothing of the replay again. If it has none, they are recorded and made
+//!   into events as live ones would be, the user's messages too, each marked
+//!   `replayed`. Either way a `history` event says which, and how many
+//!   updates the agent replayed, and the editor gets the replay as the agent
+//!   sent it.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3); with
@@ -111,12 +114,15 @@ impl Held {
     }
 }
 
-/// A headless `session/load`'s replay of history, while it lasts (ADR 57).
+/// A `session/load`'s replay of history, while it lasts (ADR 57).
 pub(super) struct Replay {
     /// Recorded and made into events: brnr has no transcript of the session.
     pub(super) record: bool,
     /// The updates the agent has replayed.
     pub(super) updates: u64,
+    /// How many tool calls were running before it: those after, the
+    /// history's, aren't running now.
+    pub(super) tools: usize,
 }
 
 pub(super) struct Session {
@@ -232,9 +238,12 @@ pub(super) enum Pending {
         request: Option<Vec<u8>>,
         dir: Dir,
     },
+    /// The editor's `session/load` or `session/resume`; `opened` if the
+    /// session was opened for it, a load's (see `editor_load`).
     Attach {
         session: String,
         cwd: Option<String>,
+        opened: bool,
     },
     Close {
         session: String,
@@ -515,8 +524,9 @@ impl Host {
                 self.pending.insert(key.to_owned(), pending);
             }
             ("session/load" | "session/resume", Some(session)) => {
-                self.pending
-                    .insert(key.to_owned(), Pending::Attach { session: session.clone(), cwd });
+                let opened = method == "session/load" && self.editor_load(session, cwd.as_deref());
+                let attach = Pending::Attach { session: session.clone(), cwd, opened };
+                self.pending.insert(key.to_owned(), attach);
             }
             ("session/close", Some(session)) => {
                 // Dropped now: held until the agent answers, they would go out as
@@ -556,6 +566,19 @@ impl Host {
         }
         self.claimed.insert(session.to_owned(), hold);
         Ok(())
+    }
+
+    /// The editor's `session/load` of `session`, whose history the agent
+    /// replays before it answers: recorded only if brnr has no transcript of
+    /// the session, in any folder, as a headless start's is (ADR 57). One not
+    /// open here opens now, so that the replay is the session's; one open
+    /// here has its transcript already. Returns whether it opened.
+    fn editor_load(&mut self, session: &str, cwd: Option<&str>) -> bool {
+        let opened = self.find(session).is_none();
+        let record = log::transcripts(session).is_empty();
+        let i = self.open_session(session, cwd);
+        self.begin_replay(i, record);
+        opened
     }
 
     /// Answers the editor's request `id` with an error in the agent's place:
@@ -674,12 +697,12 @@ impl Host {
                 {
                     replay.updates += u64::from(update);
                     if !replay.record {
-                        // History the transcript has already; no editor to
-                        // show it.
+                        // History the transcript has already. An editor
+                        // still gets it, as the agent sent it (ADR 2).
                         if update {
                             self.replayed_state(i, &msg["params"]["update"]);
                         }
-                        return;
+                        return self.send_link(frame::DATA, line);
                     }
                 }
                 if update && let Some(session) = &session {
@@ -778,11 +801,18 @@ impl Host {
                 }
                 session
             }
-            Pending::Attach { session, cwd } => {
+            Pending::Attach { session, cwd, opened } => {
                 if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
+                    self.end_replay(i);
                     self.sessions[i].state.result(result);
+                } else if opened && let Some(i) = self.find(&session) {
+                    // Its lock goes with it, and its files are closed.
+                    self.sink.close_session(&self.sessions.remove(i).id);
                 } else {
+                    if let Some(i) = self.find(&session) {
+                        self.sessions[i].replay = None; // Loaded again, and failed.
+                    }
                     self.claimed.remove(&session); // Its lock goes (see `attach`).
                 }
                 Some(session)

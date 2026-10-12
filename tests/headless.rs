@@ -2379,6 +2379,145 @@ fn adr_0004_take_over_from_an_editor_is_refused() {
     let _ = editor.kill();
 }
 
+// ---- a load's history ----------------------------------------------------
+
+/// What FULL_HISTORY has the agent replay on `session/load`, by kind.
+const REPLAY: [&str; 5] = [
+    "user_message_chunk",
+    "agent_message_chunk",
+    "session_info_update",
+    "tool_call",
+    "available_commands_update",
+];
+
+/// The editor's `session/load` of `session`, with id `id`: the kinds of
+/// the updates the editor got before its answer, which must be a result.
+fn load_in_editor(
+    env: &Env,
+    to_agent: &mut ChildStdin,
+    from_agent: &mut BufReader<ChildStdout>,
+    id: u64,
+    session: &str,
+) -> Vec<String> {
+    writeln!(to_agent, "{}", editor_load(env, id, session)).unwrap();
+    let mut kinds = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        if msg["id"] == id {
+            assert!(msg["result"].is_object(), "{msg}");
+            return kinds;
+        }
+        if msg["method"] == "session/update" && msg["params"]["sessionId"] == session {
+            kinds.push(msg["params"]["update"]["sessionUpdate"].as_str().unwrap().to_owned());
+        }
+    }
+}
+
+/// `session`'s events named `names` in its transcript, as JSON.
+fn logged(env: &Env, session: &str, names: &str) -> Vec<Value> {
+    let log = env.ok(&["event", "log", session, "--json", "--events", names]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// `session status <session> --json`.
+fn status_of(env: &Env, session: &str) -> Value {
+    serde_json::from_str(&env.ok(&["session", "status", session, "--json"])).unwrap()
+}
+
+/// The commands the agent has announced for `session`, by name, as
+/// `prompt commands` has them.
+fn command_names(env: &Env, session: &str) -> Vec<String> {
+    let listed: Value =
+        serde_json::from_str(&env.ok(&["prompt", "commands", session, "--json"])).unwrap();
+    let commands = listed["commands"].as_array().cloned().unwrap_or_default();
+    commands.iter().map(|c| c["command"].as_str().unwrap_or_default().to_owned()).collect()
+}
+
+/// The editor loading a session again, open in its process already, has its
+/// replay taken as a replay: the editor gets it as the agent sent it, and the
+/// transcript, which has the history from the first load, gets nothing of it
+/// again but a `history` event. A tool call the history left unfinished isn't
+/// counted as running (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again() {
+    let env = Env::new("ed-reload").agent("FULL_HISTORY", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    for id in [2, 3] {
+        let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, id, "old-1");
+        assert_eq!(replay, REPLAY, "the editor's replay of load {id}");
+    }
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let tools = logged(&env, "old-1", "tool_call");
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    let history = logged(&env, "old-1", "history");
+    let said: Vec<(&Value, &Value)> =
+        history.iter().map(|h| (&h["updates"], &h["recorded"])).collect();
+    assert_eq!(said, [(&5.into(), &true.into()), (&5.into(), &false.into())], "{history:?}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "old-1"), ["replayed"]);
+    let _ = editor.kill();
+}
+
+/// The editor's load of a session its process doesn't have open records
+/// the agent's replay only if brnr has no transcript of the session, marked
+/// `replayed`; either way the editor gets the replay as the agent sent it, a
+/// `history` event says which, and what the replay says the session is now
+/// (its title, its commands) is kept (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_records_the_history_only_without_a_transcript() {
+    let env = Env::new("ed-load").agent("FULL_HISTORY", "1");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+
+    // sess-1 has a transcript: the replay stays out of it.
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 2, "sess-1");
+    assert_eq!(replay, REPLAY);
+    let all = env.ok(&["event", "log", "sess-1", "--events", "all"]);
+    for replayed in ["old question", "replayed history", "Loaded session", "Old tool"] {
+        assert!(!all.contains(replayed), "{replayed:?} recorded:\n{all}");
+    }
+    let history = logged(&env, "sess-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&5.into(), &false.into()));
+    let said = "history: 5 updates replayed by the agent, not recorded: brnr's transcript has";
+    assert!(env.ok(&["event", "log", "sess-1"]).contains(said));
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "sess-1"), ["replayed"]);
+
+    // old-1 has none: the replay is recorded, marked.
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert_eq!(replay, REPLAY);
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&5.into(), &true.into()));
+    assert!(history[0].get("replayed").is_none(), "{}", history[0]);
+    let acp = env.ok(&["event", "log", "old-1", "--events", "acp", "--json"]);
+    assert!(acp.contains("old question"), "{acp}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "old-1"), ["replayed"]);
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.
