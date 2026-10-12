@@ -59,6 +59,8 @@ with environment variables:
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
                     (a line that isn't JSON is then skipped)
+  SIGCHLD_LOG=<file>  where it writes how it found SIGCHLD as it starts:
+                    ignored or default
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
@@ -486,6 +488,10 @@ def ask(mid, sid, kind):
     )
 
 
+if env("SIGCHLD_LOG"):
+    with open(env("SIGCHLD_LOG"), "w") as f:
+        ignored = signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+        f.write("ignored" if ignored else "default")
 if env("STDERR"):
     sys.stderr.write(env("STDERR") + "\n")
     sys.stderr.flush()
