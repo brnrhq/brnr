@@ -359,17 +359,23 @@ impl Host {
         self.sessions[i].replay = Some(replay);
     }
 
+    /// Session `i`'s replay, ended, whether its loads succeeded or not: a
+    /// tool call the history left unfinished isn't running now (ADR 34).
+    pub(super) fn drop_replay(&mut self, i: usize) -> Option<Replay> {
+        let replay = self.sessions[i].replay.take()?;
+        if replay.record {
+            self.sessions[i].state.tools.retain(|t| replay.tools.contains(&t.tool_call_id));
+        }
+        Some(replay)
+    }
+
     /// The end of a load's replay, when the agent answers it: the history
     /// event says how many updates it replayed, and whether they were
     /// recorded (ADR 57).
     pub(super) fn end_replay(&mut self, i: usize) {
         // The last replayed message, while it is still marked as replayed.
         self.flush_agent_message(i);
-        let Some(replay) = self.sessions[i].replay.take() else { return };
-        if replay.record {
-            // A tool call history left unfinished isn't running now.
-            self.sessions[i].state.tools.retain(|t| replay.tools.contains(&t.tool_call_id));
-        }
+        let Some(replay) = self.drop_replay(i) else { return };
         let session = self.sessions[i].id.clone();
         self.emit(json!({
             "event": "history",

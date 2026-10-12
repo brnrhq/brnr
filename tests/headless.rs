@@ -2615,6 +2615,26 @@ fn adr_0057_a_failed_load_leaves_a_resumed_session_open() {
     let _ = editor.kill();
 }
 
+/// Nor does a load that fails leave its history's tool call running, in a
+/// session a resume keeps open: `status` has none (ADR 34, ADR 57).
+#[test]
+fn adr_0034_a_failed_loads_history_leaves_no_tool_call_running() {
+    let env = Env::new("ed-load-fail-tool");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    let env = env.agent("FULL_HISTORY", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let resume = editor_load(&env, 3, "old-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.

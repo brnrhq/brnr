@@ -629,7 +629,7 @@ impl Host {
             // Its lock goes with it, and its files are closed.
             self.sink.close_session(&self.sessions.remove(i).id);
         } else {
-            self.sessions[i].replay = None; // Loaded again, and failed.
+            self.drop_replay(i); // Loaded again, or resumed, and failed.
         }
     }
 
