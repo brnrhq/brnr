@@ -53,6 +53,7 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
                     return Err("-- needs an agent".into());
                 }
             }
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => return Err(USAGE.to_owned()),
         }
     }

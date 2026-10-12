@@ -21,7 +21,10 @@ Most commands are `brnr <group> <verb>`, grouped by what they act on:
 ([ADR 63](adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 `brnr <group> --help` prints one group's syntax, as does a group without a
 verb (exiting 1). `brnr <group> <verb> --help` (or `-h`, anywhere before a
-`--`) prints that command's. A command brnr doesn't have, such as the names these
+`--` and, for `prompt send`, before the prompt) prints that command's. An
+option a command doesn't take fails as unknown, never read as its
+`<session>` or `<pid>`; a word with one dash, such as `-x`, is an argument
+(but for `brnr skill`). A command brnr doesn't have, such as the names these
 replaced (`brnr send`), fails as unknown.
 
 `--` separates brnr options from the agent or notification command and its
@@ -150,8 +153,12 @@ with the agent's capabilities.
 
 ### Prompts, attachments and lifecycle flags
 
+- `prompt send`'s options go before its prompt: from the prompt's first
+  word on, every word is the prompt's, as after `--` (`prompt send $s
+  explain ls -h` sends `explain ls -h`).
 - `session new --prompt -` and `prompt send <session> -` read prompt text from
-  stdin.
+  stdin. `prompt send`'s `-` goes alone: a word after it fails the command,
+  rather than being sent; quote a prompt that starts `- `.
   `--file` and `--image` may repeat; they become ACP content blocks. See
   [files and images](adr/0032-files-and-images.md) for encoding and capability
   requirements. A failed read prevents submission.
@@ -185,7 +192,7 @@ with the agent's capabilities.
   request startup settings, winning over the profile's, setting by setting.
   `--stop-when-idle` and `--permission-timeout` are numbers of seconds,
   winning over the profile's `stop_when_idle` and `permission_timeout`;
-  `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session.
+  `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session, and goes with `--wait`: without it, it fails the command.
 - `--wait` requires a prompt or attachment. `session new --wait`,
   `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with

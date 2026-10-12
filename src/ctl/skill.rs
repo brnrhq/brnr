@@ -33,6 +33,7 @@ pub(super) fn skill(args: &[String]) -> Result<(), String> {
     match args {
         [] => out!("{SKILL}"),
         [cmd, rest @ ..] if cmd == "install" => return install(rest),
+        [flag] if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
         [name] if !name.starts_with('-') => match REFERENCES.iter().find(|(n, _)| n == name) {
             Some((_, text)) => out!("{text}"),
             None => {
@@ -51,6 +52,7 @@ fn install(args: &[String]) -> Result<(), String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--dir" => dirs.push(paths::expand(it.next().ok_or("--dir needs a directory")?)),
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => return Err(USAGE.to_owned()),
         }
     }

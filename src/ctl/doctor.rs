@@ -104,6 +104,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
             "--fix" => fix = true,
             "--json" => json_out = true,
             "--report" => report = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => return Err(USAGE.to_owned()),
         }
     }

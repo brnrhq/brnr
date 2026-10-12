@@ -20,6 +20,33 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `prompt send`'s options go before its prompt: from the
+  prompt's first word on, every word is the prompt's, as after `--`, so an
+  option after the text (`brnr prompt send $s "fix it" --wait`) is sent as
+  text; put it before the text. `-` (stdin) goes alone: a word after it
+  fails the command; quote a prompt that starts `- ` (ADR 63).
+- **Breaking:** `prompt send --timeout` without `--wait` fails, as
+  `session new`'s does, where it was ignored; drop it or add `--wait`
+  (ADR 21).
+- **Breaking:** `event log` has no `-f`: use `--follow`. A word with one
+  dash is an argument there and in `session new` and `resume`, as for the
+  other commands, not an unknown option (ADR 63).
+
+### Fixed
+
+- `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
+  `--help` print the usage only before the prompt, where they printed it,
+  sending nothing, from anywhere in it (ADR 63).
+- `session status --json` without a session prints its usage, and an option
+  `session status`, `session close` or `process stop` doesn't take is said
+  as unknown, where each was taken for the session or pid (`no session
+  --json`) (ADR 63).
+- `session list`, `process list`, `doctor` and `skill` say which option
+  they don't know, as the other commands do, where they printed their usage
+  (ADR 63).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

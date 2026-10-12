@@ -223,6 +223,10 @@ the new one, with its process's `pid` and the prompt's id as `message`
 that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
 
+`prompt send`'s options go before the message: from its first word on,
+every word is the message's, as after `--`, so `brnr prompt send $s explain
+ls -h` sends `explain ls -h`. `-` reads the message from stdin, alone.
+
 brnr never sends a second prompt while a turn runs: ACP doesn't say what one
 means, and agents differ. `prompt send` holds the message and sends it as a
 turn of its own when the running one ends, in order. `--steer` puts it into

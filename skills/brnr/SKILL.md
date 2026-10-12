@@ -61,7 +61,8 @@ brnr session close $s                                 # done with it: the sessio
 ```
 
 Use `brnr-codex-adapter` for Codex. A start with `--cwd <dir>` works there;
-without it, in the current directory.
+without it, in the current directory. `prompt send`'s options go before the
+message: every word from its first on is the message's, `--wait` too.
 
 ## More, when you need it
 

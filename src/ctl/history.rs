@@ -43,10 +43,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
                 let n = it.next().ok_or("--last needs a number")?;
                 last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
             }
-            "--follow" | "-f" => follow = true,
+            "--follow" => follow = true,
             "--events" => events = events_arg(it.next(), &default_events())?,
             "--json" => json_out = true,
-            flag if flag.starts_with('-') => return Err(format!("unknown option: {flag}")),
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ if target.is_none() => target = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }

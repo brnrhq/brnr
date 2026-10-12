@@ -260,7 +260,19 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
     usage; a command used wrongly shows its own; a verb's `--help` or `-h`,
-    before any `--`, prints its usage, and after `--` is the command's.
+    before any `--`, prints its usage, and after `--` is the command's, as
+    after a prompt's first word it is the prompt's.
+  - `adr_0063_a_prompts_words_are_never_options`: after `prompt send`'s
+    first word, `-h`, `--help`, `--wait` and `--json` are the prompt's text,
+    sent as given; before it they are options; `-` (stdin) goes alone.
+  - `adr_0063_a_flag_is_never_a_session_or_pid`: `session status --json`
+    without a session is a usage error; an option `session status`,
+    `session close` or `process stop` doesn't take is unknown, and nothing
+    is done.
+  - `adr_0063_a_single_dash_word_is_an_argument`: `event log`, as the
+    other commands, takes `-x` as an argument, and has no `-f`.
+  - `adr_0063_an_unknown_option_is_said`: by `session list`, `process
+    list`, `doctor` and `skill` too, rather than printing their usage.
   - `adr_0063_config_get_lists_options_choices_and_modes`: every option with
     its category, value and choices, each choice with its name and
     description, and the v1 modes as a row with no option, the same in text

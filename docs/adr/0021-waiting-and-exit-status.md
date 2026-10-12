@@ -43,6 +43,8 @@ Run `cargo test --release adr_0021_`. Named claims and their assertions:
   - `adr_0021_send_wait_prints_the_reply`.
   - `adr_0021_start_wait_prints_the_reply_and_the_turns_result`.
   - `adr_0021_send_wait_times_out`.
+  - `adr_0021_timeout_goes_with_wait`: `--timeout` without `--wait` fails
+    `prompt send`, as it does `session new`, and nothing is sent.
   - `adr_0021_send_wait_reports_a_permission_request`.
   - `adr_0021_wait_behind_exits_as_the_last_turn_ended`.
   - `adr_0021_wait_returns_when_the_session_goes_idle`.

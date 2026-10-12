@@ -156,7 +156,9 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
     let result = match (cmd, verb) {
-        (group, Some(verb)) if grouped && asks_help(rest) && has_usage(group, verb) => {
+        (group, Some(verb))
+            if grouped && asks_help(group, verb, rest) && has_usage(group, verb) =>
+        {
             outln!("{}", usage_of(group, Some(verb)));
             Ok(ExitCode::SUCCESS)
         }
@@ -220,9 +222,13 @@ pub fn main(args: Vec<String>) -> ExitCode {
 }
 
 /// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
-/// `--`, after which they are the agent's or the command's.
-fn asks_help(args: &[String]) -> bool {
-    args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help")
+/// `--`, after which they are the agent's or the command's, and before a
+/// prompt's first word, after which they are the prompt's.
+fn asks_help(group: &str, verb: &str, args: &[String]) -> bool {
+    match (group, verb) {
+        ("prompt", "send") => talk::prompt_start(args).1,
+        _ => args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help"),
+    }
 }
 
 /// Whether [`USAGE`] has `brnr <group> <verb>`.
@@ -380,11 +386,14 @@ fn session_or_pid<'a>(
 // ---- processes -----------------------------------------------------------
 
 fn ps(args: &[String]) -> Result<(), String> {
-    let json_out = match args {
-        [] => false,
-        [flag] if flag == "--json" => true,
-        _ => return Err(USAGE.to_owned()),
-    };
+    let mut json_out = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
     let hosts = discover()?;
     let locks = lock::all();
     let rows: Vec<Value> = hosts
@@ -432,10 +441,26 @@ fn ps(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The one `<session>` or `<pid>` a command takes, and whether `--json` was
+/// given, for one that takes it (`json`): an option it doesn't take is never
+/// read as its argument.
+fn one_arg(args: &[String], json: bool) -> Result<(String, bool), String> {
+    let (mut arg, mut json_out) = (None, false);
+    for a in args {
+        match a.as_str() {
+            "--json" if json => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ if arg.is_none() => arg = Some(a.clone()),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    Ok((arg.ok_or(USAGE)?, json_out))
+}
+
 fn stop(args: &[String]) -> Result<(), String> {
-    let [pid] = args else { return Err(USAGE.to_owned()) };
+    let (pid, _) = one_arg(args, false)?;
     let hosts = discover()?;
-    let host = process(&hosts, pid)?;
+    let host = process(&hosts, &pid)?;
     let response = call(host, &json!({ "cmd": "stop" }))?;
     outln!("{}", response["status"].as_str().unwrap_or("?"));
     Ok(())
@@ -561,13 +586,9 @@ fn agent_name(argv: &Value) -> String {
 }
 
 fn status(args: &[String]) -> Result<(), String> {
-    let (arg, json_out) = match args {
-        [arg] => (arg, false),
-        [arg, flag] | [flag, arg] if flag == "--json" => (arg, true),
-        _ => return Err(USAGE.to_owned()),
-    };
+    let (arg, json_out) = one_arg(args, true)?;
     let hosts = discover()?;
-    let (host, id) = running_session(&hosts, arg)?;
+    let (host, id) = running_session(&hosts, &arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3): what
@@ -617,7 +638,7 @@ fn status(args: &[String]) -> Result<(), String> {
     if json_out {
         return print_json(&report);
     }
-    out!("{}", describe_status(&report, arg));
+    out!("{}", describe_status(&report, &arg));
     Ok(())
 }
 

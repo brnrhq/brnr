@@ -107,6 +107,19 @@ fn adr_0021_send_wait_times_out() {
     assert_eq!(code(&out), 124, "{}", stderr(&out));
 }
 
+/// `--timeout` bounds a wait: without `--wait` it is refused, and nothing is
+/// sent, by `prompt send` as by `session new`, rather than ignored.
+#[test]
+fn adr_0021_timeout_goes_with_wait() {
+    let env = Env::new("c-timeoutwait");
+    let err = env.fails(&new_args(&["--timeout", "5", "--prompt", "reply hi"]));
+    assert!(err.contains("--timeout goes with --wait"), "{err}");
+    env.start(&[]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--timeout", "5", "reply hi"]);
+    assert!(err.contains("--timeout goes with --wait"), "{err}");
+    assert!(env.prompts().is_empty(), "{:?}", env.prompts());
+}
+
 #[test]
 fn adr_0021_send_wait_reports_a_permission_request() {
     let env = Env::new("c-sendperm");
@@ -271,10 +284,11 @@ fn adr_0020_send_wait_on_a_dropped_message() {
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let send = |json: bool| {
-        let mut args = vec!["prompt", "send", "sess-1", "--wait", "later"];
+        let mut args = vec!["prompt", "send", "sess-1", "--wait"];
         if json {
             args.push("--json");
         }
+        args.push("later");
         env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     };
     let (text, json) = (send(false), send(true));
@@ -2940,6 +2954,106 @@ fn adr_0063_help_lists_the_groups_and_their_commands() {
     assert!(err.contains("no session nosuch"), "{err}");
     let err = env.fails(&["prompt", "send", "nosuch", "--", "--help"]);
     assert!(err.contains("no session nosuch"), "{err}");
+    // After a prompt's first word, it is the prompt's.
+    let err = env.fails(&["prompt", "send", "nosuch", "explain", "ls", "-h"]);
+    assert!(err.contains("no session nosuch"), "{err}");
+}
+
+/// A prompt's words are all the prompt's: after its first word, `-h`,
+/// `--help`, `--wait` and `--json` are text, sent as given; before it they
+/// are options. `-`, stdin, goes alone, so an option after it is never sent
+/// as text.
+#[test]
+fn adr_0063_a_prompts_words_are_never_options() {
+    let env = Env::new("c-words");
+    env.start(&[]);
+    let out = env.ok(&["prompt", "send", "sess-1", "explain", "ls", "-h"]);
+    assert!(out.starts_with("delivered (message m1)"), "{out}");
+    let out = env.ok(&["prompt", "send", "sess-1", "what", "does", "--help", "say", "--json"]);
+    assert!(!out.starts_with('{'), "{out}");
+    let out = env.ok(&["prompt", "send", "sess-1", "--json", "-x", "--wait", "--timeout", "1"]);
+    assert!(out.starts_with('{'), "{out}");
+    idle(&env);
+    let want = ["explain ls -h", "what does --help say --json", "-x --wait --timeout 1"];
+    assert_eq!(env.prompts(), want);
+    // Before the prompt, an option, its value included.
+    let usage = env.ok(&["prompt", "send", "sess-1", "--wait", "-h", "hi"]);
+    assert!(usage.starts_with("usage:\n  brnr prompt send <session> ["), "{usage}");
+    let err = env.fails(&["prompt", "send", "sess-1", "--file", "-h", "hi"]);
+    assert!(err.starts_with("brnr: -h: "), "the file -h: {err}");
+    let err = env.fails(&["prompt", "send", "sess-1", "--bogus", "hi"]);
+    assert!(err.contains("unknown option: --bogus"), "{err}");
+    for args in [&["sess-1", "-", "--wait"][..], &["sess-1", "--", "-", "more"]] {
+        let out = env.run_with_stdin(&[&["prompt", "send"][..], args].concat(), b"reply hi");
+        assert_eq!(code(&out), 1, "{args:?}");
+        assert!(stderr(&out).contains("- reads the prompt from stdin"), "{}", stderr(&out));
+    }
+    let out = env.run_with_stdin(&["prompt", "send", "sess-1", "--wait", "-"], b"reply from stdin");
+    assert_eq!(stdout(&out), "from stdin\n", "{}", stderr(&out));
+    assert_eq!(env.prompts().len(), 4);
+}
+
+/// A flag is never taken for the `<session>` or `<pid>` a command needs: one
+/// it takes is an option, and one it doesn't is unknown.
+#[test]
+fn adr_0063_a_flag_is_never_a_session_or_pid() {
+    let env = Env::new("c-flagarg");
+    env.start(&[]);
+    let err = env.fails(&["session", "status", "--json"]);
+    assert!(err.starts_with("usage:\n  brnr session status <session> [--json]"), "{err}");
+    for (args, flag) in [
+        (&["session", "status", "sess-1", "--bogus"][..], "--bogus"),
+        (&["session", "status", "--bogus"], "--bogus"),
+        (&["session", "close", "--json"], "--json"),
+        (&["session", "close", "sess-1", "--json"], "--json"),
+        (&["process", "stop", "--json"], "--json"),
+        (&["process", "stop", &env.pid(), "--json"], "--json"),
+    ] {
+        let err = env.fails(args);
+        assert_eq!(err, format!("brnr: unknown option: {flag}\n"), "{args:?}");
+    }
+    let err = env.fails(&["process", "stop"]);
+    assert!(err.starts_with("usage:\n  brnr process stop <pid>"), "{err}");
+    assert!(env.ok(&["session", "status", "--json", "sess-1"]).starts_with('{'));
+    assert_eq!(env.prompts().len(), 0);
+    assert_eq!(env.hosts().len(), 1, "stopped");
+}
+
+/// A single-dash word is an argument, as it is for every command, `event log`
+/// included: it has no `-f` for `--follow`.
+#[test]
+fn adr_0063_a_single_dash_word_is_an_argument() {
+    let env = Env::new("c-dash");
+    env.start(&["--prompt", "reply hi"]);
+    idle(&env);
+    let err = env.fails(&["session", "status", "-x"]);
+    assert!(err.contains("no session -x"), "{err}");
+    // Closed, so that a `-f` taken for --follow would end, not hang.
+    env.ok(&["session", "close", "sess-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "still running");
+    let err = env.fails(&["event", "log", "sess-1", "-f"]);
+    assert!(err.starts_with("usage:\n  brnr event log <session>"), "{err}");
+    let err = env.fails(&["event", "log", "-x"]);
+    assert!(err.contains("no session -x"), "{err}");
+}
+
+/// Every command says which option it doesn't know, `session list`,
+/// `process list`, `doctor` and `skill` too, rather than printing its usage.
+#[test]
+fn adr_0063_an_unknown_option_is_said() {
+    let env = Env::new("c-listopt");
+    for args in [
+        &["session", "list", "--bogus"][..],
+        &["process", "list", "--bogus"],
+        &["doctor", "--bogus"],
+        &["skill", "--bogus"],
+        &["skill", "install", "--bogus"],
+        &["session", "new", "--bogus"],
+    ] {
+        assert_eq!(env.fails(args), "brnr: unknown option: --bogus\n", "{args:?}");
+    }
+    let err = env.fails(&["session", "list", "sess-1"]);
+    assert!(err.starts_with("usage:\n  brnr session list "), "{err}");
 }
 
 /// `config get` lists every config option, its category, value and
@@ -3993,7 +4107,8 @@ fn adr_0046_skill_prints_the_skill_and_its_references() {
     }
     let err = env.fails(&["skill", "nope"]);
     assert!(err.contains("no reference nope (references: orchestrate, approvals"), "{err}");
-    assert!(env.fails(&["skill", "--json"]).contains("brnr skill [<reference>"));
+    assert_eq!(env.fails(&["skill", "--json"]), "brnr: unknown option: --json\n");
+    assert!(env.fails(&["skill", "-x"]).contains("brnr skill [<reference>"));
 }
 
 #[test]
