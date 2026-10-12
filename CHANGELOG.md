@@ -20,6 +20,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- brnr works started with SIGCHLD ignored, as some supervisors leave it.
+  On Linux, `brnr acp` and `brnr session new` failed to start their process
+  (`No child processes`), and a process never saw its agent exit, so one in
+  the foreground never exited. brnr sets SIGCHLD to its default for itself;
+  what it starts, the agent among it, still finds it ignored, as it would
+  started directly (ADR 2, ADR 8, ADR 9).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

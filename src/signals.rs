@@ -1,13 +1,16 @@
 //! Catching signals sent to the proxy so the host can pass them to the agent
 //! (and those that end `brnr event notify`, so it stops its command first), and
 //! carrying the caller's signal mask through to the agent; letting a host in
-//! the foreground write to its terminal.
+//! the foreground write to its terminal; waiting for children whatever
+//! SIGCHLD the caller left us.
 
 use std::io::{self, PipeReader};
 use std::mem::zeroed;
 use std::os::fd::IntoRawFd;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering::Relaxed};
 
 use libc::{c_int, sigset_t};
 
@@ -103,8 +106,33 @@ pub fn write_from_background() {
     TTOU.store(old, Relaxed);
 }
 
-/// Gives a child SIGTTOU back as this process found it (see
-/// [`write_from_background`]). Safe between fork and exec.
+/// Whether this process found SIGCHLD ignored (see [`wait_for_children`]).
+static CHLD_IGNORED: AtomicBool = AtomicBool::new(false);
+
+/// Sets SIGCHLD to its default action if this process found it ignored, as
+/// some supervisors leave it: ignored, Linux reaps our children as they exit,
+/// and waiting for one fails (ECHILD). What we start gets it back ignored
+/// (see [`restore_for_child`]), as it would started by our caller. Called
+/// first thing, while there is one thread.
+pub fn wait_for_children() {
+    // SAFETY: sigaction(2) is given pointers to valid sigactions or null; all
+    // zeros is a valid sigaction, and SIG_DFL installs no handler.
+    unsafe {
+        let mut old: libc::sigaction = zeroed();
+        libc::sigaction(libc::SIGCHLD, null(), &mut old);
+        if old.sa_sigaction == libc::SIG_IGN {
+            let mut dfl: libc::sigaction = zeroed();
+            dfl.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut dfl.sa_mask);
+            libc::sigaction(libc::SIGCHLD, &dfl, null_mut());
+            CHLD_IGNORED.store(true, Relaxed);
+        }
+    }
+}
+
+/// Gives a child SIGTTOU and SIGCHLD back as this process found them (see
+/// [`write_from_background`] and [`wait_for_children`]). Safe between fork
+/// and exec.
 pub fn restore_for_child() {
     let old = TTOU.load(Relaxed);
     if old != usize::MAX {
@@ -112,6 +140,28 @@ pub fn restore_for_child() {
         // put back; signal(2) is async-signal-safe.
         unsafe { libc::signal(libc::SIGTTOU, old) };
     }
+    if CHLD_IGNORED.load(Relaxed) {
+        // SAFETY: signal(2) with SIG_IGN installs no handler and takes no
+        // pointers; it is async-signal-safe.
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    }
+}
+
+/// Has `cmd` start with the dispositions this process found (see
+/// [`restore_for_child`]), where they differ from ours.
+pub fn as_found(cmd: &mut Command) -> &mut Command {
+    if CHLD_IGNORED.load(Relaxed) || TTOU.load(Relaxed) != usize::MAX {
+        // SAFETY: the closure runs in the child between fork and exec, where
+        // only async-signal-safe calls may be made: restore_for_child makes
+        // atomic loads and signal(2) calls, and allocates nothing.
+        unsafe {
+            cmd.pre_exec(|| {
+                restore_for_child();
+                Ok(())
+            })
+        };
+    }
+    cmd
 }
 
 /// Kills the whole process with `sig`'s default action.
