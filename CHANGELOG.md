@@ -60,6 +60,67 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** every name ADR 63 changed, and what it is now; the entries
+  below say what else changed with it (ADR 63):
+
+  | | 0.7.0 | 0.8.0 |
+  | --- | --- | --- |
+  | Command | `brnr start` | `brnr session new` |
+  | Command | `brnr start --resume <s>` | `brnr session resume <s>` |
+  | Command | `brnr ps` | `brnr process list` |
+  | Command | `brnr stop <pid>` | `brnr process stop <pid>` |
+  | Command | `brnr list` | `brnr session list --include active` |
+  | Command | `brnr list --inactive` | `brnr session list --include inactive` |
+  | Command | `brnr list --all` | `brnr session list` |
+  | Command | `brnr sessions [--cwd <dir>]` (the default profile's agent) | `brnr session list --profile default [--cwd <dir>]` |
+  | Command | `brnr sessions --profile <p>`, `brnr sessions -- <agent>` | `brnr session list --profile <p>`, `brnr session list -- <agent>` |
+  | Command | `brnr status <s>` | `brnr session status <s>` |
+  | Command | `brnr fork <s>` | `brnr session fork <s>` |
+  | Command | `brnr close <s>` | `brnr session close <s>` |
+  | Command | `brnr send <s>` | `brnr prompt send <s>` |
+  | Command | `brnr cancel <s>` | `brnr prompt cancel <s>` |
+  | Command | `brnr commands <s>` | `brnr prompt commands <s>` |
+  | Command | `brnr queue <s>` | `brnr queue list <s>` |
+  | Command | `brnr queue <s> --drop <m>` | `brnr queue drop <s> <m>` |
+  | Command | `brnr queue <s> --clear` | `brnr queue clear <s> --messages` |
+  | Command | `brnr queue <s> --clear-context` | `brnr queue clear <s> --context` |
+  | Command | `brnr queue <s> --clear --clear-context` | `brnr queue clear <s>` |
+  | Command | `brnr pending [<s>]` | `brnr permission requests [<s>]` |
+  | Command | `brnr show <s> <r>` | `brnr permission show <s> <r>` |
+  | Command | `brnr approve <s> <r>` | `brnr permission allow <s> <r>` (`allow_once`), with `--always` (`allow_always`) |
+  | Command | `brnr deny <s> <r>` | `brnr permission reject <s> <r>` (`reject_once`), with `--always` (`reject_always`) |
+  | Command | `brnr mode <s>` | `brnr config get <s> --mode` |
+  | Command | `brnr mode <s> <m>` | `brnr config set <s> --mode <m>` |
+  | Command | `brnr model <s>` | `brnr config get <s> --model` |
+  | Command | `brnr model <s> <m>` | `brnr config set <s> --model <m>` |
+  | Command | `brnr config <s>` | `brnr config get <s>` |
+  | Command | `brnr config <s> <o>=<v>` | `brnr config set <s> --option <o>=<v>`, once for each |
+  | Command | `brnr log <s>` | `brnr event log <s>` |
+  | Command | `brnr watch` | `brnr event watch` |
+  | Command | `brnr notify` | `brnr event notify` |
+  | Command | `brnr wait <s>` | `brnr event wait <s>` |
+  | Flag | `start --set <o>=<v>` | `session new --option <o>=<v>` (and `session resume`) |
+  | Flag | `start --resume <s> --take-over` | `session resume <s> --take-over` |
+  | Flag | `start`'s `--profile`, `--cwd`, `--prompt`, `--file`, `--image`, `--mode`, `--model`, `--stop-when-idle`, `--auth`, `--strict`, `--wait`, `--timeout`, `--foreground`, `--quiet`, `--json` | the same, on `session new` and `session resume` |
+  | Flag | `approve --option <id>`, `deny --option <id>` | `permission allow --option <id>`, `permission reject --option <id>`, an option of an ACP kind on the verb's side |
+  | Flag | `approve` of a request with only `allow_always` | `permission allow --always` |
+  | Flag | `deny` of a request with no reject option (it answered `cancelled`) | `prompt cancel <s>`, or `permission reject --option <id>` |
+  | Profile key | `[profiles.<p>.headless]` `config = { <o> = "<v>" }` | `options = { <o> = "<v>" }`, or `model = "<m>"` and `thought_level = "<l>"` by category |
+  | Profile key | `[profiles.<p>.editor]` `experimental = ["approve"]` | `experimental = ["permission"]` |
+  | Profile key | `[profiles.<p>.editor]` `experimental = ["settings"]` | `experimental = ["config"]` |
+  | Socket command | `approve {session, request, option?}` | `allow {session, request, always?, option?}` |
+  | Socket command | `deny {session, request, option?}` | `reject {session, request, always?, option?}` |
+  | Socket command | `set_mode {session, mode}` | `set_config {session, mode}` |
+  | Socket command | `set_model {session, model}` | `set_config {session, model}` |
+  | Socket command | `set_config {session, option, value}` | `set_config {session, options: {<option>: <value>}}` |
+  | Bridge | `command = ["brnr", "notify", "--stdin", "--", …]` | `command = ["brnr", "event", "notify", "--stdin", "--", …]` |
+  | Event | `permission_resolved {session, request, outcome, by}` | `permission_resolved {session, request, answer, option_kind, outcome, by}`, `answer` being `allowed`, `rejected` or `cancelled` |
+  | Event text | `permission p1 -> allow (by …)` | `permission p1 allowed with allow (allow_once), by …` |
+  | Event text | `permission p1 -> cancelled (by cancel)` | `permission p1 cancelled, by cancel` |
+  | Editor note | "Approved via brnr", "Denied via brnr" | "Allowed via brnr", "Rejected via brnr" |
+  | Editor note | "Already approved via brnr", "Already denied via brnr" | "Already allowed via brnr", "Already rejected via brnr" |
+  | Editor note | `brnr start --resume --take-over closed it here; … (brnr watch <s>).` | `brnr session resume --take-over closed it here; … (brnr event watch <s>).` |
+
 - **Breaking:** commands are grouped by what they act on,
   `brnr <group> <verb>`, and the old names fail as unknown commands, with no
   aliases: `ps` and `stop` are `process list` and `process stop`; `status`,
