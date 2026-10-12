@@ -1277,24 +1277,67 @@ fn adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on() {
     assert_eq!(exited["status"], 0, "killed by a signal: {exited}");
 }
 
-/// A started bridge's stderr line longer than 64 KiB goes to the host log in
-/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
-/// no more of it than a piece.
-#[test]
-fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
-    let env = Env::new("brerr-long");
-    let script = "head -c 131073 /dev/zero | tr '\\0' x >&2; echo >&2; echo after >&2; \
-                  exec cat > /dev/null";
+/// What a started bridge that runs `script` wrote on stderr, as the host log
+/// has it, once it has written `after` too.
+fn bridge_says(name: &str, script: &str) -> Vec<String> {
+    let env = Env::new(name);
+    let script = format!("{script}; echo after >&2; exec cat > /dev/null");
     env.write_config(&format!(
         "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
     ));
     env.start(&[]);
     let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
     assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env).0.len());
-    let pieces: Vec<usize> = bridge_stderr(&env).0.iter().map(|l| l.len()).collect();
-    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
-    assert!(bridge_stderr(&env).0[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
     env.stop();
+    bridge_stderr(&env).0
+}
+
+/// `n` bytes of `x` on stderr, from a shell.
+fn xs(n: usize) -> String {
+    format!("head -c {n} /dev/zero | tr '\\0' x >&2")
+}
+
+/// A started bridge's stderr line longer than 64 KiB goes to the host log in
+/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
+/// no more of it than a piece.
+#[test]
+fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
+    let said = bridge_says("brerr-long", &format!("{}; echo >&2", xs(131073)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
+    assert!(said[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
+}
+
+/// A bridge's stderr line that fills a piece exactly is one note: the newline
+/// that comes after it ends it, and isn't an empty line of its own.
+#[test]
+fn adr_0051_a_bridges_stderr_line_that_fills_a_piece_is_one_note() {
+    let said = bridge_says("brerr-full", &format!("{}; echo >&2", xs(64 << 10)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 5]);
+}
+
+/// A carriage return that ends a piece, not its line, is a byte of the
+/// line, and stays.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_carriage_return_inside_a_line() {
+    let script = format!("{}; printf '\\ryz\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-cr", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 2, 5]);
+    assert!(said[0].ends_with("x\r"), "{:?}", &said[0][said[0].len() - 2..]);
+    assert_eq!(said[1], "yz");
+}
+
+/// A character that a piece's end would cut goes whole into the next piece,
+/// which takes no more bytes for it: it isn't two replacement characters.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
+    let script = format!("{}; printf '\\303\\251\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-utf8", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [(64 << 10) - 1, 2, 5]);
+    assert_eq!(said[1], "\u{e9}");
 }
 
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it

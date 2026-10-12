@@ -294,19 +294,46 @@ fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
 /// A started bridge's stderr, a line at a time, until EOF: decoded lossily,
 /// so bytes that aren't UTF-8 don't end the reading (and the bridge's next
 /// write with SIGPIPE), and a line longer than `PIECE` in pieces of that,
-/// as the agent's is (ADR 51).
+/// as the agent's is (ADR 51). A character a piece's end would cut starts
+/// the next piece instead.
 fn read_stderr(input: impl Read, label: String, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
-    while matches!((&mut reader).take(PIECE as u64).read_until(b'\n', &mut line), Ok(n) if n > 0) {
-        let text = line.strip_suffix(b"\n").unwrap_or(&line);
-        let text = text.strip_suffix(b"\r").unwrap_or(text);
-        let text = String::from_utf8_lossy(text).into_owned();
-        if tx.send(Ev::BridgeStderr { label: label.clone(), line: text }).is_err() {
+    // Whether the last piece filled up before its line ended.
+    let mut cut = false;
+    loop {
+        let room = (PIECE - line.len()) as u64;
+        let more = matches!((&mut reader).take(room).read_until(b'\n', &mut line), Ok(n) if n > 0);
+        // The newline of a line that filled the last piece only ends it.
+        let skip = cut && line == b"\n";
+        cut = line.len() == PIECE && !line.ends_with(b"\n");
+        let next = if cut { line.split_off(line.len() - unfinished(&line)) } else { Vec::new() };
+        if !skip && !line.is_empty() {
+            let text = match line.strip_suffix(b"\n") {
+                Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
+                None => &line,
+            };
+            let text = String::from_utf8_lossy(text).into_owned();
+            if tx.send(Ev::BridgeStderr { label: label.clone(), line: text }).is_err() {
+                return;
+            }
+        }
+        if !more {
             return;
         }
-        line.clear();
+        line = next;
     }
+}
+
+/// How many bytes at the end of `bytes` start a UTF-8 character they don't
+/// finish: at most 3.
+fn unfinished(bytes: &[u8]) -> usize {
+    let tail = &bytes[bytes.len().saturating_sub(3)..];
+    let starts = |i: &usize| {
+        std::str::from_utf8(&tail[*i..])
+            .is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none())
+    };
+    (0..tail.len()).find(starts).map_or(0, |i| tail.len() - i)
 }
 
 impl Host {
@@ -1069,5 +1096,36 @@ mod tests {
         let big = QUEUE_BYTES + 1;
         assert_eq!(taken(&queue, &[big; 10]), ASIDE_BYTES / big + 1, "set aside, and one more");
         assert!(queued.load(Relaxed) <= QUEUE_BYTES + ASIDE_BYTES + big);
+    }
+
+    /// What `read_stderr` makes of `bytes`, as the notes' texts.
+    fn stderr_notes(bytes: &[u8]) -> Vec<String> {
+        let (tx, rx) = mpsc::sync_channel(16);
+        read_stderr(bytes, "b#0".into(), &tx);
+        drop(tx);
+        rx.into_iter()
+            .map(|ev| match ev {
+                Ev::BridgeStderr { line, .. } => line,
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adr_0051_a_bridges_stderr_ends_with_what_a_piece_left() {
+        assert_eq!(unfinished("\u{e9}".as_bytes()), 0);
+        assert_eq!(
+            (unfinished(b"x\xc3"), unfinished(b"\xe2\x82"), unfinished(b"\xf0\x9f\x98")),
+            (1, 2, 3)
+        );
+        assert_eq!(unfinished(b"\x82\x82\x82"), 0, "no character starts there");
+        // The stream ends in the middle of a character a piece cut: what is
+        // left of it is a note too.
+        let mut bytes = vec![b'x'; PIECE - 1];
+        bytes.extend_from_slice(b"\xe2\x82");
+        let said = stderr_notes(&bytes);
+        assert_eq!(said.len(), 2);
+        assert_eq!((said[0].len(), said[1].as_str()), (PIECE - 1, "\u{fffd}"));
+        assert_eq!(stderr_notes(b"a\n\nb\r\nc"), ["a", "", "b", "c"]);
     }
 }
