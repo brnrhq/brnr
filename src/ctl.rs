@@ -363,8 +363,8 @@ fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
         .ok_or(format!("no brnr process {pid} (see brnr process list)"))
 }
 
-/// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
-/// the session if one was named.
+/// `<session>` or `--pid <pid>`, for `event watch` and `event notify`: the
+/// process, and the session if one was named.
 fn session_or_pid<'a>(
     hosts: &'a [Host],
     session: Option<&str>,
@@ -909,9 +909,9 @@ fn watch(args: &[String]) -> Result<(), String> {
     Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
-/// The value of `--events` (for `watch`, `log` and `notify`): event names,
-/// `default` for the command's own `default` (what it does without
-/// `--events`), `all` for every event.
+/// The value of `--events` (for `event watch`, `event log` and `event
+/// notify`): event names, `default` for the command's own `default` (what it
+/// does without `--events`), `all` for every event.
 fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
     let list = list.ok_or("--events needs a list")?;
     let mut events = Vec::new();
@@ -934,8 +934,8 @@ fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, 
     Ok(events)
 }
 
-/// What `watch` and `log` show without `--events`: every event but the
-/// quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
+/// What `event watch` and `event log` show without `--events`: every event
+/// but the quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
 fn default_events() -> Vec<String> {
     EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
 }

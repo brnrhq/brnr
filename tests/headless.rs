@@ -241,6 +241,94 @@ fn adr_0007_large_prompt_from_stdin() {
     );
 }
 
+/// An Env whose agent writes how it found SIGCHLD (see `sigchld_found`).
+fn sigchld_env(name: &str) -> Env {
+    let env = Env::new(name);
+    let log = env.dir.join("sigchld");
+    env.agent("SIGCHLD_LOG", log.to_str().unwrap())
+}
+
+/// How the agent found SIGCHLD: `ignored` or `default`.
+fn sigchld_found(env: &Env) -> String {
+    let log = env.dir.join("sigchld");
+    assert!(wait_for(Duration::from_secs(10), || log.exists()), "the agent didn't start");
+    assert!(wait_for(Duration::from_secs(5), || fs::metadata(&log).unwrap().len() > 0));
+    fs::read_to_string(log).unwrap()
+}
+
+/// `brnr session new` started with SIGCHLD ignored, as some supervisors leave
+/// it, starts its process, which waits for its agent all the same: the
+/// session stops when asked. The agent finds SIGCHLD as brnr did.
+#[test]
+fn adr_0008_a_start_with_sigchld_ignored() {
+    let env = sigchld_env("chld-new");
+    let out =
+        with_sigchld_ignored(&mut env.brnr(&new_args(&["--prompt", "reply hi"]))).output().unwrap();
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    assert_eq!(sigchld_found(&env), "ignored");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "didn't stop");
+}
+
+/// `brnr session new --foreground` with SIGCHLD ignored sees its process
+/// through: the process sees its agent exit, and exits as it did.
+#[test]
+fn adr_0009_foreground_with_sigchld_ignored() {
+    let env = sigchld_env("chld-fg");
+    let args =
+        new_args(&["--foreground", "--quiet", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    // stderr to a file: a process left running would hold a pipe open.
+    let err = env.dir.join("stderr");
+    let mut fg = with_sigchld_ignored(&mut env.brnr(&args))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let exited = wait_exit(&mut fg, Duration::from_secs(20));
+    if !exited {
+        let _ = fg.kill();
+    }
+    let status = fg.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit: {err}");
+    assert!(status.success(), "{status}: {err}");
+    assert!(env.hosts().is_empty(), "its process is still running: {err}");
+    assert_eq!(sigchld_found(&env), "ignored");
+}
+
+/// `brnr acp` run by an editor that ignores SIGCHLD starts its process, and
+/// the agent finds SIGCHLD ignored, as it would run by the editor directly
+/// (P1). When the editor's stdin ends, the agent's exit is seen and passed
+/// on.
+#[test]
+fn adr_0002_acp_with_sigchld_ignored() {
+    let env = sigchld_env("chld-acp");
+    let err = env.dir.join("stderr");
+    let mut editor = with_sigchld_ignored(&mut env.brnr(&["acp", "--", AGENT]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    let answered = from_agent.read_line(&mut line).unwrap() > 0;
+    assert!(answered, "no answer to initialize: {}", fs::read_to_string(&err).unwrap());
+    assert_eq!(sigchld_found(&env), "ignored");
+    drop(to_agent);
+    let exited = wait_exit(&mut editor, Duration::from_secs(10));
+    if !exited {
+        let _ = editor.kill();
+    }
+    let status = editor.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit with the agent: {err}");
+    assert!(status.success(), "{status}: {err}");
+}
+
 // ---- stopping ----------------------------------------------------------
 
 /// An agent that stops reading its stdin must not wedge the host: it still

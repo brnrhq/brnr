@@ -50,5 +50,6 @@ Run `cargo test --release adr_0009_`. Named claims and their assertions:
   - `adr_0009_foreground_close_of_the_last_session`.
   - `adr_0009_foreground_outlives_its_stdout`.
   - `adr_0009_slow_foreground_reader_is_told_what_it_missed`.
+  - `adr_0009_foreground_with_sigchld_ignored`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0009_foreground_start_shows_the_session`.

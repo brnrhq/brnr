@@ -127,8 +127,8 @@ pub const EVENTS: &[&str] = &[
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
 /// ACP messages, the agent's thoughts, usage and tool calls' progress.
-/// `watch` and `log` without `--events`, and a session in the foreground,
-/// in text and JSON alike.
+/// `event watch` and `event log` without `--events`, and a session in the
+/// foreground, in text and JSON alike.
 pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.

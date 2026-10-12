@@ -235,9 +235,10 @@ What brnr doesn't enforce, or doesn't test, today.
   still waiting, which it was never told, the answer is taken for that
   request's (ADR 61). Not tested.
 - **The agent's ids are passed to the editor as they are.** An agent that
-  reuses an id after the host answered a request with it (`cancel`,
-  `permission allow`) can have the editor's late answer to the first taken as its
-  answer to the second (ADR 61). Not tested; no agent known reuses ids.
+  reuses an id after the host answered a request with it (on
+  `brnr prompt cancel`, or `brnr permission allow`) can have the editor's
+  late answer to the first taken as its answer to the second (ADR 61). Not
+  tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 38); that directory is trusted as
   `PATH` is.

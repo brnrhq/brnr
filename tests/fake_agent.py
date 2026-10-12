@@ -27,6 +27,7 @@ with environment variables:
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
+  CLOSE_GATE=<file> wait for this file before answering session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   NO_DELETE=1       don't offer session/delete
@@ -60,6 +61,8 @@ with environment variables:
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
                     (a line that isn't JSON is then skipped)
+  SIGCHLD_LOG=<file>  where it writes how it found SIGCHLD as it starts:
+                    ignored or default
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
@@ -494,6 +497,10 @@ def ask(mid, sid, kind):
     )
 
 
+if env("SIGCHLD_LOG"):
+    with open(env("SIGCHLD_LOG"), "w") as f:
+        ignored = signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+        f.write("ignored" if ignored else "default")
 if env("STDERR"):
     sys.stderr.write(env("STDERR") + "\n")
     sys.stderr.flush()
@@ -618,6 +625,8 @@ for line in sys.stdin.buffer:
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
     elif method == "session/close":
+        while env("CLOSE_GATE") and not os.path.exists(env("CLOSE_GATE")):
+            time.sleep(0.01)
         result(mid, {})
     elif method == "session/delete" and not env("NO_DELETE"):
         if sid.startswith("gone"):
