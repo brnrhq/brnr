@@ -234,11 +234,18 @@ fn adr_0021_wait_for_permission() {
 fn adr_0021_wait_for_exit() {
     let env = Env::new("c-waitexit");
     env.start(&[]);
-    let mut wait = env.brnr(&["event", "wait", "sess-1", "--for", "exit"]).spawn().unwrap();
+    let mut wait = env
+        .brnr(&["event", "wait", "sess-1", "--for", "exit"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     sleep(Duration::from_millis(300));
     env.stop();
     assert!(wait_exit(&mut wait, Duration::from_secs(15)));
-    assert!(wait.wait().unwrap().success());
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success());
+    // The exit status in words, as `event log` has it (ADR 34).
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "agent exited with code 0\n");
 }
 
 // ---- cancel and the queue ------------------------------------------------

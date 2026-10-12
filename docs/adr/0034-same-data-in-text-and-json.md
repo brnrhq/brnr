@@ -42,3 +42,7 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
 
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0034_status_summarizes_the_session`.
+- [src/ctl.rs](../../src/ctl.rs)
+  - `adr_0034_status_says_the_sessions_state`.
+- [src/render.rs](../../src/render.rs)
+  - `adr_0034_text_shows_values_not_json`.

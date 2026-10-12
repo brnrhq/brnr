@@ -20,6 +20,18 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- Text says in words what `--json` has as a value (ADR 34): a failed turn
+  is `turn failed: boom (control)`, without JSON quotes; an exit is
+  `agent exited with code 1`, `agent killed by SIGTERM` or `agent exited
+  (status unknown)` (ADR 11), in `event watch`, `event log`, `event notify`'s
+  `BRNR_TEXT` and `event wait --for exit`; `event watch --pid` shows each
+  session's whole id, to paste into the next command (ADR 13); and
+  `session status` says `working` for a busy session whose turn time it
+  doesn't have, and `waiting for an approval` for one that is waiting,
+  where it said `idle`.
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

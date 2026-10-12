@@ -102,7 +102,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             }
         }
         "turn_ended" => match e["error"].as_object() {
-            Some(error) => format!("turn failed: {} ({})", error["message"], s(&e["by"])),
+            Some(error) => format!("turn failed: {} ({})", s(&error["message"]), s(&e["by"])),
             None => format!("turn ended: {} ({})", s(&e["stop_reason"]), s(&e["by"])),
         },
         "message_dropped" => {
@@ -146,8 +146,8 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         // With a reason when brnr itself died (a panic, ADR 11).
         "exited" => match e["reason"].as_str() {
-            Some(reason) => format!("agent exited: {}; {reason}", e["status"]),
-            None => format!("agent exited: {}", e["status"]),
+            Some(reason) => format!("{}; {reason}", exited(&e["status"])),
+            None => exited(&e["status"]),
         },
         // An ACP message (`--events acp`): the direction and the message.
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
@@ -159,14 +159,55 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         prefix.push_str("  ");
     }
     if o.session {
-        let session: String = e["session"].as_str().unwrap_or("-").chars().take(8).collect();
-        prefix.push_str(&format!("{session:<8}  "));
+        // The whole id, to paste into the next command (ADR 13).
+        prefix.push_str(&format!("{:<8}  ", e["session"].as_str().unwrap_or("-")));
     }
     let indent = " ".repeat(prefix.len());
     // History a load replayed (ADR 57).
     let what = if e["replayed"] == true { format!("(replayed) {what}") } else { what };
     let what = clean(what.trim_end());
     Some(format!("{prefix}{}", what.replace('\n', &format!("\n{indent}"))))
+}
+
+/// How the agent ended, as an `exited` event's `status` has it (ADR 11):
+/// `agent exited with code 1`, `agent killed by SIGTERM`, or `agent exited
+/// (status unknown)` for a status brnr didn't get.
+pub fn exited(status: &Value) -> String {
+    if let Some(code) = status["code"].as_i64() {
+        format!("agent exited with code {code}")
+    } else if let Some(sig) = status["signal"].as_i64() {
+        format!("agent killed by {}", signal(sig))
+    } else {
+        "agent exited (status unknown)".to_owned()
+    }
+}
+
+/// A signal's name, `SIGTERM`, or `signal 99` for one without a name here.
+pub fn signal(sig: i64) -> String {
+    const NAMES: &[(i32, &str)] = &[
+        (libc::SIGHUP, "SIGHUP"),
+        (libc::SIGINT, "SIGINT"),
+        (libc::SIGQUIT, "SIGQUIT"),
+        (libc::SIGILL, "SIGILL"),
+        (libc::SIGTRAP, "SIGTRAP"),
+        (libc::SIGABRT, "SIGABRT"),
+        (libc::SIGBUS, "SIGBUS"),
+        (libc::SIGFPE, "SIGFPE"),
+        (libc::SIGKILL, "SIGKILL"),
+        (libc::SIGUSR1, "SIGUSR1"),
+        (libc::SIGSEGV, "SIGSEGV"),
+        (libc::SIGUSR2, "SIGUSR2"),
+        (libc::SIGPIPE, "SIGPIPE"),
+        (libc::SIGALRM, "SIGALRM"),
+        (libc::SIGTERM, "SIGTERM"),
+        (libc::SIGXCPU, "SIGXCPU"),
+        (libc::SIGXFSZ, "SIGXFSZ"),
+        (libc::SIGSYS, "SIGSYS"),
+    ];
+    match NAMES.iter().find(|(n, _)| i64::from(*n) == sig) {
+        Some((_, name)) => (*name).to_owned(),
+        None => format!("signal {sig}"),
+    }
 }
 
 /// `text` safe to show in a terminal: control characters other than
@@ -491,6 +532,31 @@ mod tests {
         assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
         let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
         assert_eq!(shown(replayed), "(replayed) user: old");
+    }
+
+    /// What JSON has as a value, text says in words: an error's message, not
+    /// its JSON string; an exit status as a code, a signal or unknown (ADR 11);
+    /// the session's whole id, to paste into the next command (ADR 13).
+    #[test]
+    fn adr_0034_text_shows_values_not_json() {
+        use serde_json::json;
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let failed =
+            json!({ "event": "turn_ended", "error": { "message": "boom" }, "by": "control" });
+        assert_eq!(shown(failed), "turn failed: boom (control)");
+        let exited = |status: Value| shown(json!({ "event": "exited", "status": status }));
+        assert_eq!(exited(json!({ "code": 0 })), "agent exited with code 0");
+        assert_eq!(exited(json!({ "code": 1 })), "agent exited with code 1");
+        assert_eq!(exited(json!({ "signal": libc::SIGTERM })), "agent killed by SIGTERM");
+        assert_eq!(exited(json!({ "signal": libc::SIGKILL })), "agent killed by SIGKILL");
+        assert_eq!(exited(json!({ "signal": 99 })), "agent killed by signal 99");
+        assert_eq!(exited(Value::Null), "agent exited (status unknown)");
+        let panicked = json!({ "event": "exited", "status": null, "reason": "brnr panicked" });
+        assert_eq!(shown(panicked), "agent exited (status unknown); brnr panicked");
+        let id = "0199a6f2-7b4c-7d21-9e3f-5a8b1c2d3e4f";
+        let e = json!({ "event": "session_closed", "session": id, "by": "idle" });
+        let line = event(&e, &Options { session: true, time: false }).unwrap();
+        assert_eq!(line, format!("{id}  session closed (idle)"));
     }
 
     #[test]

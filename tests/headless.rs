@@ -543,7 +543,10 @@ fn adr_0011_a_panic_is_recorded() {
         let dropped = env.ok(&["event", "log", "sess-1", "--json", "--events", "message_dropped"]);
         assert!(dropped.contains(r#""by":"exit""#), "{on}: {dropped}");
         let shown = env.ok(&["event", "log", "sess-1", "--events", "exited"]);
-        assert!(shown.contains(&format!("agent exited: null; {reason}")), "{on}: {shown}");
+        assert!(
+            shown.contains(&format!("agent exited (status unknown); {reason}")),
+            "{on}: {shown}"
+        );
         let log = host_logs(&env);
         assert!(log.contains(r#""event":{"event":"panic""#), "{on}: {log}");
         let said = log.contains(r#""event":"host-stderr""#) && log.contains("panicked at");

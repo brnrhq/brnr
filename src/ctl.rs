@@ -670,9 +670,17 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if !settings.is_empty() {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
-    match (x["state"].as_str(), x["turn_seconds"].as_u64()) {
-        (Some("idle"), _) | (_, None) => out.push_str("idle\n"),
-        (_, Some(secs)) => out.push_str(&format!("working for {}\n", duration(secs))),
+    // The state as JSON has it: `busy` is working, `waiting` is a turn
+    // waiting for an approval; how long when the turn's start is known.
+    let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    match (x["state"].as_str(), working) {
+        (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
+        (Some("busy"), None) => out.push_str("working\n"),
+        (Some("waiting"), Some(working)) => {
+            out.push_str(&format!("waiting for an approval, {working}\n"))
+        }
+        (Some("waiting"), None) => out.push_str("waiting for an approval\n"),
+        (state, _) => out.push_str(&format!("{}\n", state.unwrap_or("?"))),
     }
     for tool in x["tools"].as_array().into_iter().flatten() {
         out.push_str(&format!(
@@ -1154,6 +1162,22 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `session status` says the state its JSON has: idle, busy (working, and
+    /// for how long when it knows) or waiting for an approval (ADR 34).
+    #[test]
+    fn adr_0034_status_says_the_sessions_state() {
+        let state = |state: &str, secs: Value| {
+            let x = json!({ "session": "s", "state": state, "turn_seconds": secs });
+            let text = describe_status(&x, "s");
+            text.lines().nth(3).unwrap_or_default().to_owned()
+        };
+        assert_eq!(state("idle", Value::Null), "idle");
+        assert_eq!(state("busy", json!(192)), "working for 3m12s");
+        assert_eq!(state("busy", Value::Null), "working");
+        assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
+        assert_eq!(state("waiting", Value::Null), "waiting for an approval");
+    }
 
     /// What `session list` and `session resume` take from a transcript, whatever
     /// its end (ADR 55): ending in a newline or not; cut short; a whole line
