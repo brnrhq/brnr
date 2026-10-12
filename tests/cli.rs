@@ -4143,8 +4143,15 @@ fn adr_0046_skill_prints_the_skill_and_its_references() {
     }
     let err = env.fails(&["skill", "nope"]);
     assert!(err.contains("no reference nope (references: orchestrate, approvals"), "{err}");
-    assert_eq!(env.fails(&["skill", "--json"]), "brnr: unknown option: --json\n");
+    for args in [
+        &["skill", "--json"][..],
+        &["skill", "orchestrate", "--json"],
+        &["skill", "--json", "setup"],
+    ] {
+        assert_eq!(env.fails(args), "brnr: unknown option: --json\n", "{args:?}");
+    }
     assert!(env.fails(&["skill", "-x"]).contains("brnr skill [<reference>"));
+    assert!(env.fails(&["skill", "orchestrate", "setup"]).contains("brnr skill [<reference>"));
 }
 
 #[test]
