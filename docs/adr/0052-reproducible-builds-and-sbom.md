@@ -4,6 +4,7 @@ Accepted 2026-10-08. Implemented.
 Amends 40 and 47: checks before publication and after the tap update.
 Amended 2026-10-11: the smoke test runs the formula's own test too, which
 0.8.0 broke without the release failing.
+Amended 2026-10-12 (#157): crates.io publication waits for the smoke test.
 
 ## Context
 
@@ -41,9 +42,12 @@ Issue #37 asks for those checks. A failed check must fail the workflow
 - The SBOM describes brnr's Rust crate. It does not inventory the adapters'
   npm dependencies or claim that an inventoried dependency is safe.
 - The smoke test fails the release workflow if installation, the
-  formula's test, version checking or doctor fails. Publication and the
-  tap push have already happened and cannot be rolled back by this check. Missing optional
-  adapters are informational to doctor and need no credentials.
+  formula's test, version checking or doctor fails. The GitHub release and
+  the tap push have already happened and cannot be rolled back by this
+  check. Publishing to crates.io, where a version can't be replaced, waits
+  for it (ADR 47): a failed smoke test leaves the version off crates.io.
+  Missing optional adapters are informational to doctor and need no
+  credentials.
 
 ## Considered
 

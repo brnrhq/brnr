@@ -8,10 +8,10 @@
 # its npm package's (from adapters/package.json), so `brew upgrade` rebuilds
 # an adapter when that changes, not on every brnr release. The tap is pushed
 # to with a deploy key whose private half is the HOMEBREW_TAP_DEPLOY_KEY
-# secret. Then the crates job publishes the crate to crates.io (ADR 47) with
-# trusted publishing: crates.io trusts this workflow in the crates-io
-# environment, and the job trades GitHub's OIDC token for a short-lived
-# crates.io token. No token is stored.
+# secret. Once the Homebrew smoke test passes, the crates job publishes the
+# crate to crates.io (ADR 47) with trusted publishing: crates.io trusts this
+# workflow in the crates-io environment, and the job trades GitHub's OIDC
+# token for a short-lived crates.io token. No token is stored.
 name: release
 
 on:
@@ -160,8 +160,10 @@ jobs:
           fi
           brnr doctor
 
+  # Last, and only once everything else has passed: a crates.io version can
+  # be yanked but never replaced, where the tap's formula can be fixed.
   crates:
-    needs: release
+    needs: [reproducible, release, homebrew-smoke]
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:

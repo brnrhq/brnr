@@ -36,7 +36,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, paths, render};
+use brnr::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -363,8 +363,8 @@ fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
         .ok_or(format!("no brnr process {pid} (see brnr process list)"))
 }
 
-/// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
-/// the session if one was named.
+/// `<session>` or `--pid <pid>`, for `event watch` and `event notify`: the
+/// process, and the session if one was named.
 fn session_or_pid<'a>(
     hosts: &'a [Host],
     session: Option<&str>,
@@ -723,17 +723,19 @@ fn duration(secs: u64) -> String {
     }
 }
 
-/// `2026-10-01T19:34:25.959660Z` as `2026-10-01 19:34:25Z`.
+/// `2026-10-01T21:34:25.959660+02:00` as `2026-10-01 19:34:25Z`: an RFC
+/// 3339 time in UTC, to the second; anything else as it is.
 fn when(ts: &str) -> String {
-    match (ts.get(..10), ts.get(11..19)) {
-        (Some(day), Some(time)) => format!("{day} {time}Z"),
-        _ => ts.to_owned(),
+    match log::utc(ts) {
+        Some(utc) => format!("{} {}Z", &utc[..10], &utc[11..19]),
+        None => ts.to_owned(),
     }
 }
 
 // ---- approvals -----------------------------------------------------------
 
-/// The approvals waiting, in every process or in one session's.
+/// The approvals waiting, in every process that answers (saying which
+/// don't) or in one session's.
 fn pending(args: &[String]) -> Result<(), String> {
     let mut json_out = false;
     let mut arg = None;
@@ -747,7 +749,18 @@ fn pending(args: &[String]) -> Result<(), String> {
     }
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
-        None => (hosts.iter().collect(), None),
+        // Those that answered `discover`: one that didn't is passed over, as
+        // process list and session list do (ADR 3), not waited for again,
+        // and said to be (P3).
+        None => {
+            for host in hosts.iter().filter(|h| h.status.is_none()) {
+                eprintln!(
+                    "brnr: process {} is not answering; its approvals aren't listed",
+                    host.id()
+                );
+            }
+            (hosts.iter().filter(|h| h.status.is_some()).collect(), None)
+        }
         Some(arg) => {
             let (host, id) = running_session(&hosts, arg)?;
             (vec![host], Some(id))
@@ -917,9 +930,9 @@ fn watch(args: &[String]) -> Result<(), String> {
     Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
-/// The value of `--events` (for `watch`, `log` and `notify`): event names,
-/// `default` for the command's own `default` (what it does without
-/// `--events`), `all` for every event.
+/// The value of `--events` (for `event watch`, `event log` and `event
+/// notify`): event names, `default` for the command's own `default` (what it
+/// does without `--events`), `all` for every event.
 fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
     let list = list.ok_or("--events needs a list")?;
     let mut events = Vec::new();
@@ -942,8 +955,8 @@ fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, 
     Ok(events)
 }
 
-/// What `watch` and `log` show without `--events`: every event but the
-/// quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
+/// What `event watch` and `event log` show without `--events`: every event
+/// but the quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
 fn default_events() -> Vec<String> {
     EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
 }
