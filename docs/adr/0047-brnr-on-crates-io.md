@@ -6,6 +6,7 @@ Amends 40: `release.sh tag` also checks crates.io.
 Amended by 52: reproducibility and SBOM checks precede publication; a fresh runner tests the updated tap.
 Amended 2026-10-12 (#157): the `crates` job waits for the Homebrew smoke
 test, which 0.8.0 failed.
+Amended 2026-10-12 (#158): the package carries NOTICE.
 
 ## Context
 
@@ -29,8 +30,9 @@ leaves Linux users without Homebrew to build from a clone.
   --dry-run`. A version that won't package stops before the GitHub release,
   and a version already published can't be replaced.
 - The package `include`s only what the build needs: `src/`, `skills/` (which
-  `brnr skill` embeds), the README and the license. The tests, docs, site
-  and workflows stay in the repository.
+  `brnr skill` embeds), the README, and the license and NOTICE, which
+  Apache-2.0 asks a redistribution to carry. The tests, docs, site and
+  workflows stay in the repository.
 - `cargo install brnr --locked` is documented next to Homebrew. It installs
   brnr only. The adapters still come from Homebrew or npm (ADR 37), because
   a crate can't build them.

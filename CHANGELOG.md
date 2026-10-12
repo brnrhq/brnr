@@ -20,6 +20,11 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- The crate on crates.io carries NOTICE, as Apache-2.0 asks a
+  redistribution to (ADR 47).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added
