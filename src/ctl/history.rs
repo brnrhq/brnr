@@ -8,7 +8,8 @@
 //! A session running or not, by its id. It starts at the beginning of
 //! the session, or with `--last <n>` at the n-th last message sent to the
 //! agent; `--follow` keeps printing until the session closes or its
-//! process exits. `--events` and `--json` mean what they do for `watch`.
+//! process exits. `--events` and `--json` mean what they do for `event
+//! watch`.
 //! It reads the session's events file; with `acp` events chosen, the raw
 //! ACP file beside it too, each message an `acp` event, merged in time
 //! order (ADR 22 in docs/adr). A running session's, once its process has
@@ -171,7 +172,7 @@ struct Transcript {
 
 impl Transcript {
     /// What was written since the last read, in time order: each record as
-    /// the event `watch` would have shown. `all` for everything read, of a
+    /// `event watch` would have shown it. `all` for everything read, of a
     /// transcript that won't grow.
     ///
     /// One writer writes both files, each in time order, and the events file
@@ -261,7 +262,7 @@ impl Tail {
     }
 }
 
-/// A transcript record as the event `watch` would have shown, a host event
+/// A transcript record as `event watch` would have shown it, a host event
 /// (see host/control.rs, `emit`) or an ACP message as an `acp` event, with
 /// when it was written.
 fn record(line: &[u8]) -> Option<(String, Value)> {

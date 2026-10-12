@@ -6,6 +6,15 @@ a tool call the agent left unfinished, in a turn that was cancelled or
 failed, isn't running once the turn has ended, so `status` no longer lists
 it. ACP has no status for such a call, so brnr gives it none.
 
+Amended by 63: the usage starts with `acp`, then has a section per group
+(`process`, `session`, `prompt`, `queue`, `permission`, `config`, `event`),
+then brnr (`doctor`, `skill`, `--version`), and `brnr <group> --help`
+prints a group's. `list`, `status` and `ps` are `session list`,
+`session status` and `process list`; one event per line is for
+`event log`, `event watch` and `session new --foreground`; and `stop`,
+`close` and `notify`, without `--json`, are `process stop`,
+`session close` and `event notify`.
+
 ## Decision
 
 - A command's text and its `--json` carry the same data (P5). `list` is an

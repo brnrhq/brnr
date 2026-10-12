@@ -1,7 +1,8 @@
 # 56. A turn ends once its steers are answered
 
 Accepted 2026-10-08. Implemented. Amends 17 (which messages a turn carried)
-and 18 (what `send --steer` does when the agent's answer comes late).
+and 18 (what `send --steer` does when the agent's answer comes late, and
+`send --interrupt` meanwhile).
 Resolves #63.
 
 ## Context
@@ -26,6 +27,10 @@ its timeout (124) on a session that was idle (P3).
   `promptRequired` answer holds it as ADR 18 says, ahead of what is held;
   an error, or any other answer, is a `message_dropped`, `by` `steer`
   (ADR 20). Then the held `turn_ended` goes, and the next held message.
+- While a turn's `turn_ended` waits, no other turn starts: `send` and
+  `send --interrupt` are held, the interrupt ahead of what is held as
+  ADR 18 has it but with no turn to cancel (status `held`), and `send
+  --steer` is steered, into that turn.
 - `cancel`, closing the session and the agent exiting drop unanswered
   steers as before (`message_dropped`, `by` `cancel`, `close` or `exit`),
   and then the held `turn_ended` goes: every accepted message ends in one
@@ -68,3 +73,7 @@ Run `cargo test --release adr_0056_`. Named claims and their assertions:
   - `adr_0056_steer_never_answered_is_dropped_by_close`: the `turn_ended`
     waits for the unanswered steer; closing the session drops it, `by`
     `close`, then the `turn_ended` goes; `--wait` exits 1.
+  - `adr_0056_interrupt_waits_for_the_steers_into_the_turn_before`: an
+    `--interrupt` sent while a turn's `turn_ended` waits for a steer is
+    `held`, sends no `session/cancel`, and goes once the steer is answered;
+    each turn ends once, with its own messages, and every `--wait` exits 0.

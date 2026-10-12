@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::Host;
+use crate::json;
 use crate::schema::{
     self, SessionConfigOptionValue, SessionUpdate, SetSessionConfigOptionRequest, ToolCallStatus,
     ToolKind,
@@ -56,6 +57,18 @@ pub(super) struct Tool {
 }
 
 impl SessionState {
+    /// How deeply what it keeps of what the agent said nests (see
+    /// `Host::holds`). Every field is named, so that one added is thought
+    /// about here.
+    pub(super) fn holds(&self) -> usize {
+        let SessionState { title: _, modes, config, commands, plan, usage, tools, last_message: _ } =
+            self;
+        let locations = tools.iter().map(|t| &t.locations);
+        json::nesting(
+            modes.iter().chain(config).chain(commands).chain(plan).chain(usage).chain(locations),
+        )
+    }
+
     /// Takes what a result that opens or changes a session says about it
     /// (`session/new`, `load`, `resume`, `fork`, `set_config_option`, …).
     /// Returns what it changed of the config options (see the module docs).

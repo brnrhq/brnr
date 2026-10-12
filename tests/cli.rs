@@ -2284,6 +2284,62 @@ fn adr_0012_stop_when_idle() {
     assert!(env.fails(&new_args(&["--stop-when-idle"])).contains("not a number of seconds"));
 }
 
+/// The CPU time process `pid` has used: from /proc on Linux, where `ps`
+/// counts whole seconds, and `ps` (`[[dd-]hh:]mm:ss.cc`) on macOS.
+fn cpu_time(pid: i32) -> Duration {
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // utime and stime, the 14th and 15th fields, after the command's `)`.
+        let fields: Vec<u64> = stat
+            .rsplit(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .filter_map(|f| f.parse().ok())
+            .collect();
+        // SAFETY: sysconf reads a constant of the system's.
+        let tick = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+        return Duration::from_secs_f64((fields[10] + fields[11]) as f64 / tick);
+    }
+    let ps =
+        std::process::Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output();
+    let text = stdout(&ps.unwrap());
+    let (days, clock) = text.trim().split_once('-').unwrap_or(("0", text.trim()));
+    let secs = clock.split(':').fold(0.0, |acc, part| acc * 60.0 + part.parse::<f64>().unwrap());
+    Duration::from_secs_f64(days.parse::<f64>().unwrap() * 86400.0 + secs)
+}
+
+/// A session whose idle time has run out while the agent is slow to answer
+/// its `session/close` doesn't count as idle: the host waits for the answer
+/// instead of waking at once, again and again (ADR 12, ADR 16).
+#[test]
+fn adr_0012_a_closing_session_doesnt_wake_the_host() {
+    let env = Env::new("c-closewait");
+    let gate = env.dir.join("answer-close");
+    let env = env.agent("CLOSE_GATE", gate.to_str().unwrap());
+    // Busy until closed: cancelling its turn leaves it idle, its time run out
+    // at once, with `session/close` unanswered.
+    env.start(&["--stop-when-idle", "0", "--prompt", "hang"]);
+    let host = env.host_pid();
+    let close = env
+        .brnr(&["session", "close", "sess-1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let closing = || !env.calls_of("session/close").is_empty();
+    assert!(wait_for(Duration::from_secs(10), closing), "session/close never went");
+    sleep(Duration::from_millis(200));
+    let (before, from) = (cpu_time(host), Instant::now());
+    sleep(Duration::from_secs(2));
+    let used = cpu_time(host) - before;
+    // Spinning, it takes about as long as it waited; waiting, next to none.
+    assert!(used < from.elapsed() / 8, "the host used {used:?} in {:?}", from.elapsed());
+    fs::write(&gate, "").unwrap();
+    let out = close.wait_with_output().unwrap();
+    assert_eq!((code(&out), stdout(&out)), (0, "closed sess-1\n".into()), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "kept running with no session");
+}
+
 #[test]
 fn adr_0009_foreground_start_shows_the_session() {
     let env = Env::new("c-fg");
