@@ -63,6 +63,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::mem::take;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
@@ -70,7 +71,7 @@ use serde_json::{Map, Value, json};
 use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp};
 use super::state::SessionState;
-use super::{Host, id_key, text_block};
+use super::{Host, LOG_FLUSH, control, id_key, text_block};
 use crate::config::Feature;
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
@@ -185,6 +186,52 @@ pub(super) enum Hold {
     /// (`shared_sessions`, ADR 42): that one keeps the transcript, and this
     /// one records the session in its host log only.
     Shared(u32),
+}
+
+/// A session closed here, whose lock goes, and whose close is answered,
+/// once the logger has written its records, `session_closed` last, or at
+/// `until`, whichever comes first: a process that resumes it next appends
+/// after them (ADR 48). The event loop never waits for it (P1).
+pub(super) struct LettingGo {
+    session: String,
+    until: Instant,
+    /// Taken by whichever comes first: the logger's thread, the event
+    /// loop's timer, or this process opening the session again.
+    held: Arc<Mutex<Option<Release>>>,
+}
+
+/// What goes as a closed session is let go of: its lock, then the answers
+/// to the close, each a line for its peer.
+struct Release {
+    lock: Option<Lock>,
+    answers: Vec<(control::Queue, String)>,
+}
+
+impl LettingGo {
+    fn take(&self) -> Option<Release> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    fn done(&self) -> bool {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).is_none()
+    }
+}
+
+impl Release {
+    /// Lets go of the lock, then answers, so whoever hears it finds the
+    /// session free.
+    fn go(mut self) {
+        drop(self.lock.take());
+        self.answer();
+    }
+
+    /// Answers, keeping the lock: the session is open here again.
+    fn answer(self) -> Option<Lock> {
+        for (queue, line) in self.answers {
+            queue.post(line);
+        }
+        self.lock
+    }
 }
 
 pub(super) enum Close {
@@ -791,7 +838,7 @@ impl Host {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
-                    self.close_session(i, "editor");
+                    self.close_session(i, "editor", None);
                 }
                 Some(session)
             }
@@ -1162,14 +1209,81 @@ impl Host {
     }
 
     /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
-    /// what it still holds is dropped, then `session_closed` (ADR 20).
-    pub(super) fn close_session(&mut self, i: usize, by: &str) {
+    /// what it still holds is dropped, then `session_closed` (ADR 20). Its
+    /// lock goes, and the peer in `answer` is answered with its reply, once
+    /// that is written, LOG_FLUSH at most (see `LettingGo`).
+    pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
         self.flush_agent_message(i);
         self.drop_all(i, "close");
-        let session = self.sessions.remove(i).id;
+        let Session { id: session, hold, .. } = self.sessions.remove(i);
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
         // After its last record, so nothing of it is lost (ADR 22).
         self.sink.close_session(&session);
+        let lock = match hold {
+            Hold::Owner(lock) => lock,
+            Hold::Shared(_) | Hold::Unlocked(_) => None,
+        };
+        let answers =
+            answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
+        let release = Release { lock, answers: answers.into_iter().collect() };
+        let held = Arc::new(Mutex::new(Some(release)));
+        let written = held.clone();
+        self.sink.when_written(move || {
+            if let Some(release) = written.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                release.go();
+            }
+        });
+        let until = Instant::now() + LOG_FLUSH;
+        self.letting_go.push(LettingGo { session, until, held });
+    }
+
+    /// Closed sessions whose time to be written is up are let go of as they
+    /// are; past that, records of theirs can come after a resume's (ADR 48).
+    pub(super) fn fire_letting_go(&mut self, now: Instant) {
+        self.letting_go.retain(|l| {
+            if now < l.until {
+                return !l.done();
+            }
+            if let Some(release) = l.take() {
+                release.go();
+            }
+            false
+        });
+    }
+
+    /// When the next closed session is let go of, for the event loop.
+    pub(super) fn next_letting_go(&self) -> Option<Instant> {
+        self.letting_go.iter().map(|l| l.until).min()
+    }
+
+    /// Exiting, once the logger has had its time: every closed session is
+    /// let go of, and its close answered.
+    pub(super) fn let_go_of_closed(&mut self) {
+        for release in take(&mut self.letting_go).iter().filter_map(LettingGo::take) {
+            release.go();
+        }
+    }
+
+    /// `session`'s lock, if it closed here and isn't let go of yet: opened
+    /// here again, it is this process's still, and its records come after
+    /// the close's from the same logger. Its close is answered now.
+    fn reclaim(&mut self, session: &str) -> Option<Lock> {
+        let mut lock = None;
+        self.letting_go.retain(|l| {
+            if l.session != session {
+                return true;
+            }
+            if let Some(release) = l.take() {
+                lock = lock.take().or(release.answer());
+            }
+            false
+        });
+        lock
+    }
+
+    /// Whether `session` closed here and its lock is still this process's.
+    fn letting_go_of(&self, session: &str) -> bool {
+        self.letting_go.iter().any(|l| l.session == session && !l.done())
     }
 
     /// The agent has deleted `session`, as the editor asked: a
@@ -1182,8 +1296,11 @@ impl Host {
         let event = json!({ "event": "session_deleted", "session": session, "by": "editor" });
         let event = self.emit(event);
         match self.find(session) {
-            Some(i) => self.close_session(i, "editor"),
-            None if lock::holder(session).is_none() => self.sink.append(session, event),
+            Some(i) => self.close_session(i, "editor", None),
+            // Closed here, and not let go of yet: still this process's to write.
+            None if self.letting_go_of(session) || lock::holder(session).is_none() => {
+                self.sink.append(session, event);
+            }
             None => {}
         }
     }
@@ -1614,6 +1731,9 @@ impl Host {
     /// locked is `Unlocked`, and the host log says why. Whoever opened it
     /// decides what becomes of either (ADR 3, ADR 50).
     fn take_lock(&mut self, session: &str) -> Hold {
+        if let Some(lock) = self.reclaim(session) {
+            return Hold::Owner(Some(lock));
+        }
         match lock::take(session) {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
@@ -1630,7 +1750,8 @@ impl Host {
     /// the agent is asked for it: one another process holds, or one that
     /// can't be locked, can't be served here (ADR 3, ADR 50).
     pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
-        let lock = lock::take(session).map_err(|err| match err {
+        let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
+        let lock = lock.map_err(|err| match err {
             lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
             lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
         })?;

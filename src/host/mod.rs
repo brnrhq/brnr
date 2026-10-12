@@ -66,7 +66,7 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Hold, Pending, Session};
+use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Session};
 use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
@@ -89,7 +89,8 @@ const DRAIN: Duration = Duration::from_millis(500);
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
 /// How long the host, exiting, waits for its logger to have written what
-/// it recorded before it lets go of its sessions (`wait_logged`).
+/// it recorded before it lets go of its sessions (`wait_logged`); and how
+/// long a session closed holds its lock for its records (`LettingGo`).
 const LOG_FLUSH: Duration = Duration::from_secs(2);
 
 /// How long the host, exiting, then gives started bridges to exit on their
@@ -373,6 +374,8 @@ struct Host {
     /// Sessions this process has taken (or failed to take) the lock of
     /// before the agent opened them: a resume or a load not yet answered.
     claimed: HashMap<String, Hold>,
+    /// Sessions closed here, until their records are written (ADR 48).
+    letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
     /// host's whoever asked (ADR 61): who asked, and the session it is about.
     client_requests: HashMap<String, ClientRequest>,
@@ -611,6 +614,7 @@ impl Host {
             sessions: Vec::new(),
             pending: HashMap::new(),
             claimed: HashMap::new(),
+            letting_go: Vec::new(),
             client_requests: HashMap::new(),
             agent_requests: Vec::new(),
             answered: HashMap::new(),
@@ -850,11 +854,14 @@ impl Host {
             self.fire_stop_timer(now);
             self.fire_permission_timers(now);
             self.fire_idle_timers(now);
+            self.fire_letting_go(now);
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
+            let closed_at = self.next_letting_go();
             let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
                 .into_iter()
+                .chain([closed_at])
                 .flatten()
                 .min();
             let ev = match wake {
@@ -925,6 +932,7 @@ impl Host {
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         self.wait_logged();
         // Let go of the sessions as brnr stops listing the process (ADR 3).
+        self.let_go_of_closed();
         self.claimed.clear();
         for s in &mut self.sessions {
             if let Hold::Owner(lock) = &mut s.hold {
@@ -1000,6 +1008,7 @@ impl Host {
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         self.wait_logged();
+        self.let_go_of_closed();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();

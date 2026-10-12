@@ -690,16 +690,32 @@ impl Host {
                 }
                 json!({ "ok": false, "error": said })
             }
-            None => self.peer_result(op, msg.get("result").unwrap_or(&Value::Null)),
+            None => {
+                let result = msg.get("result").unwrap_or(&Value::Null);
+                let Some(reply) = self.peer_result(peer, req_id.clone(), op, result) else {
+                    return; // Answered once the session is let go of.
+                };
+                reply
+            }
         };
         self.reply(peer, req_id, reply);
     }
 
-    fn peer_result(&mut self, op: PeerOp, result: &Value) -> Value {
-        match op {
+    /// The answer to `peer`, or `None` for a close, answered as its session
+    /// is let go of (see `close_session`).
+    fn peer_result(
+        &mut self,
+        peer: u64,
+        req_id: Option<Value>,
+        op: PeerOp,
+        result: &Value,
+    ) -> Option<Value> {
+        Some(match op {
             PeerOp::Fork { cwd } => {
                 let Some(session) = new_session(result) else {
-                    return json!({ "ok": false, "error": "session/fork returned no sessionId" });
+                    return Some(
+                        json!({ "ok": false, "error": "session/fork returned no sessionId" }),
+                    );
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
@@ -707,24 +723,32 @@ impl Host {
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sink.close_session(&self.sessions.remove(i).id);
                     let error = format!("the agent forked into {session}, which {why}");
-                    return json!({ "ok": false, "error": error });
+                    return Some(json!({ "ok": false, "error": error }));
                 }
                 self.sessions[i].state.result(result);
                 json!({ "ok": true, "session": session })
             }
             PeerOp::Close { session, by, failed } => {
-                if let Some(i) = self.find(&session) {
-                    self.close_session(i, by);
-                }
-                self.stop_if_empty();
-                match failed {
+                let mut reply = match &failed {
                     Some(failed) => {
                         json!({ "ok": false, "error": format!("{failed}; {session} was closed") })
                     }
                     None => json!({ "ok": true, "session": session }),
+                };
+                let Some(i) = self.find(&session) else {
+                    self.stop_if_empty();
+                    return Some(reply);
+                };
+                if let Some(req_id) = req_id {
+                    reply["req_id"] = req_id;
                 }
+                // Once its records are written: whoever resumes it next
+                // appends after them (ADR 48).
+                self.close_session(i, by, Some((peer, reply)));
+                self.stop_if_empty();
+                return None;
             }
-        }
+        })
     }
 }
 

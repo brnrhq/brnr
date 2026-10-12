@@ -160,6 +160,12 @@ pub(super) struct Queue {
 }
 
 impl Queue {
+    /// `line`, from a thread other than the event loop's: a peer that is
+    /// full is cut off by the event loop's next line to it.
+    pub(super) fn post(&self, line: String) {
+        let _ = self.push(line);
+    }
+
     /// The queue, and the writer's end of it.
     pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
@@ -521,21 +527,22 @@ impl Host {
         }
     }
 
+    /// `peer`'s lines, to answer it from another thread.
+    pub(super) fn peer_queue(&self, peer: u64) -> Option<Queue> {
+        Some(self.peers.get(&peer)?.tx.clone())
+    }
+
     /// `logged`: answered from the logger's thread once it has written what
     /// the process recorded before it was asked, so that what a peer has
     /// seen happen is in the transcript (ADR 48). The event loop doesn't
     /// wait for it (P1); a peer gone meanwhile isn't answered.
     fn when_logged(&mut self, peer: u64, req_id: Option<Value>) {
-        let Some(p) = self.peers.get(&peer) else { return };
-        let queue = p.tx.clone();
+        let Some(queue) = self.peer_queue(peer) else { return };
         let mut response = json!({ "ok": true });
         if let Some(req_id) = req_id {
             response["req_id"] = req_id;
         }
-        // A peer that is full is cut off by the event loop's next line to it.
-        self.sink.when_written(move || {
-            let _ = queue.push(response.to_string());
-        });
+        self.sink.when_written(move || queue.post(response.to_string()));
     }
 
     fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {

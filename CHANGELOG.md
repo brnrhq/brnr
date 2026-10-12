@@ -20,6 +20,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- A session closed in a process (`session close`, `session resume
+  --take-over`, a process's last session) is let go of, and the close
+  answered, once the process has written its records of it, for 2 s at
+  most, as an exit is: a resume elsewhere appends after its
+  `session_closed`, and a load there finds its transcript and doesn't record
+  the history again (ADR 48).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

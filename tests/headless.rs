@@ -15,7 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use serde_json::{Value, json};
@@ -1565,6 +1565,165 @@ fn adr_0048_an_exit_is_written_before_the_process_goes() {
     sleep(Duration::from_millis(500));
     assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    fs::remove_file(&stall).unwrap();
+}
+
+/// What process `pid` wrote to `events` of each kind, by index in the file.
+fn written_by(events: &[Value], pid: i32, kind: &str) -> Vec<usize> {
+    let mine = |r: &&Value| r["host_pid"] == pid && r["event"]["event"] == kind;
+    events.iter().enumerate().filter(|(_, r)| mine(r)).map(|(i, _)| i).collect()
+}
+
+/// `args`, with the process it starts, if any, writing at once whatever the
+/// logger of the one before is doing.
+fn unstalled(env: &Env, args: &[&str]) -> Command {
+    let mut cmd = env.brnr(args);
+    cmd.env_remove("BRNR_TEST_LOG_STALL").stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
+/// `cmd`, which closes sess-1 in process `first` while `stall` stands:
+/// once the agent has closed it, `first` holds it still and `cmd` waits;
+/// then the disk goes again, and `cmd` succeeds.
+fn waits_for_the_disk(env: &Env, mut cmd: Command, stall: &Path, first: i32, what: &str) {
+    let mut waiting = cmd.spawn().unwrap();
+    let closed = || !env.calls_of("session/close").is_empty();
+    assert!(wait_for(Duration::from_secs(10), closed), "the agent wasn't asked to close it");
+    sleep(Duration::from_millis(300));
+    let early = waiting.try_wait().unwrap().is_some();
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap_or_default();
+    let holder = serde_json::from_str::<Value>(&lock).map(|l| l["pid"].clone()).ok();
+    fs::remove_file(stall).unwrap();
+    let out = waiting.wait_with_output().unwrap();
+    assert!(!early, "{what} before the session's records were written: {}", stderr(&out));
+    assert_eq!(holder, Some(first.into()), "let go of before its records were written");
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// A session closed in one process (by `session close`, or `session resume
+/// --take-over`) while that process's logger is behind, and resumed in a
+/// new process: the close is answered once the first process has written
+/// its records of it, and only then can the new one take it, so they come
+/// first in the transcript, `session_closed` last of them (ADR 48).
+/// `alone`: it is the first process's last session, so that process stops.
+fn closed_then_resumed(name: &str, take_over: bool, alone: bool) {
+    let env = Env::new(name);
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let first = env.host_pid();
+    if !alone {
+        env.ok(&["session", "fork", "sess-1"]);
+    }
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let resume = resume_args("sess-1", if take_over { &["--take-over"] } else { &[] });
+    if take_over {
+        let take_over = unstalled(&env, &resume);
+        waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    } else {
+        let close = unstalled(&env, &["session", "close", "sess-1"]);
+        waits_for_the_disk(&env, close, &stall, first, "the close was answered");
+        let out = unstalled(&env, &resume).output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    if alone {
+        let gone = || env.hosts().iter().all(|h| h["host_pid"] != first);
+        assert!(wait_for(Duration::from_secs(15), gone), "the first process didn't stop");
+    } else {
+        env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    }
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let pids = events.iter().map(|r| r["host_pid"].as_i64().unwrap() as i32);
+    let second = pids.clone().find(|&p| p != first).expect("no record of the second process");
+    let closed = written_by(&events, first, "session_closed");
+    let opened = written_by(&events, second, "session-opened");
+    assert_eq!((closed.len(), opened.len()), (1, 1), "{events:#?}");
+    // Nothing of the first process's after the second's opening.
+    let last = pids.rev().position(|p| p == first).map(|i| events.len() - 1 - i);
+    assert_eq!(last, Some(closed[0]), "session_closed isn't the first process's last: {events:#?}");
+    assert!(closed[0] < opened[0], "the resume wrote before the close: {events:#?}");
+}
+
+#[test]
+fn adr_0048_a_close_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("closelog", false, false);
+}
+
+#[test]
+fn adr_0048_a_take_over_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("takelog", true, false);
+}
+
+/// The same for a process's last session, closed: the process stops, and
+/// its close is answered once its records are written, as its exit's are.
+#[test]
+fn adr_0048_a_last_session_closed_is_written_before_it_is_resumed() {
+    closed_then_resumed("lastlog", false, true);
+}
+
+/// A session taken over into a running process whose agent loads it, from
+/// a process whose logger hasn't yet written the session's first record:
+/// the transcript exists by the time it is loaded, so the history the agent
+/// replays isn't recorded again (ADR 48, ADR 57).
+#[test]
+fn adr_0048_a_take_over_finds_the_transcript_it_continues() {
+    let env = Env::new("takereplay");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let first = env.host_pid();
+    env.ok(&["session", "fork", "sess-1"]);
+    let mut new = unstalled(&env, &new_args(&[]));
+    let out = new.env("FIRST_SESSION", "10").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let pids: Vec<i32> =
+        env.hosts().iter().map(|h| h["host_pid"].as_i64().unwrap() as i32).collect();
+    let second = pids.into_iter().find(|&p| p != first).unwrap().to_string();
+    let take_over = env.brnr(&["session", "resume", "--pid", &second, "sess-1", "--take-over"]);
+    waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let history: Vec<_> = events.iter().filter(|r| r["event"]["event"] == "history").collect();
+    assert_eq!(history.len(), 1, "{events:#?}");
+    assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
+    let replayed = events.iter().filter(|r| r["event"]["replayed"] == true).count();
+    assert_eq!(replayed, 0, "{events:#?}");
+}
+
+/// A close waits for a stalled disk 2 s at most, as an exit does, and the
+/// process goes on meanwhile: past that the session is let go of, and its
+/// close answered, though its records aren't written yet (ADR 48).
+#[test]
+fn adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most() {
+    let env = Env::new("closestall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let started = Instant::now();
+    let close = unstalled(&env, &["session", "close", "sess-1"]).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    let asked = Instant::now();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-2", "--json"])).unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(1), "the process waited for the disk");
+    assert_eq!(status["session"], "sess-2", "{status}");
+    let out = close.wait_with_output().unwrap();
+    let took = started.elapsed();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(took >= Duration::from_millis(1900), "answered before 2 s: {took:?}");
+    assert!(took < Duration::from_secs(10), "answered after {took:?}");
+    // Let go of: another process takes it, the disk still stalled.
+    let out = unstalled(&env, &resume_args("sess-1", &[])).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
     fs::remove_file(&stall).unwrap();
 }
 
