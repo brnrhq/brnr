@@ -45,7 +45,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use brnr::host::check_bridge;
-use brnr::{bug, config, lock, log, paths, spawn, sys};
+use brnr::{bug, config, lock, log, paths, signals, spawn, sys};
 
 use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, text, when};
 
@@ -515,13 +515,9 @@ fn adapters(r: &mut Report) {
 fn built_version(path: &Path) -> Option<String> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let mut child = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut cmd = Command::new(path);
+    cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = signals::as_found(&mut cmd).spawn().ok()?;
     let until = Instant::now() + Duration::from_secs(5);
     while child.try_wait().ok()?.is_none() {
         if Instant::now() > until {

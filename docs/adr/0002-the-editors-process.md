@@ -89,3 +89,4 @@ Run `cargo test --release adr_0002_`. Named claims and their assertions:
   - `adr_0002_a_signal_doesnt_wait_behind_a_stalled_agents_stdin`.
   - `adr_0002_an_editors_process_needs_its_signal_link`.
   - `adr_0002_non_blocking_stdin_is_waited_on`.
+  - `adr_0002_acp_with_sigchld_ignored`.

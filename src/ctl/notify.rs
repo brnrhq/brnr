@@ -431,13 +431,13 @@ impl Running {
         tx: &Sender<Msg>,
     ) -> Option<Running> {
         let stdout = Stdio::from(std::io::stderr().as_fd().try_clone_to_owned().expect("stderr"));
-        let child = Command::new(&command[0])
-            .args(&command[1..])
+        let mut cmd = Command::new(&command[0]);
+        cmd.args(&command[1..])
             .envs(vars.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(stdout)
-            .process_group(0)
-            .spawn();
+            .process_group(0);
+        let child = signals::as_found(&mut cmd).spawn();
         let mut child = match child {
             Ok(child) => child,
             Err(err) => {
