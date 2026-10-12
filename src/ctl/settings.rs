@@ -158,7 +158,7 @@ pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
         other => other.to_string(),
     };
     // An option's row, then a row for each of its choices, the current one
-    // marked, as `brnr mode` and `brnr model` listed them.
+    // marked.
     let text = |v: &Value| v.as_str().unwrap_or("").to_owned();
     let mut table = vec![["OPTION", "CATEGORY", "VALUE", "NAME", "DESCRIPTION"].map(String::from)];
     for r in &rows {

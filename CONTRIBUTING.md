@@ -160,8 +160,8 @@ aliases or shims.
 ## Pull requests
 
 - Against `main`, which changes only through pull requests.
-- Commits say what is now true, in a sentence (`notify, cut off, stops its
-  command and says so`), with the why in the body. The ADR a commit
+- Commits say what is now true, in a sentence (`event notify, cut off, stops
+  its command and says so`), with the why in the body. The ADR a commit
   implements goes in brackets: `(ADR 36)`.
 - The README, the skill (`skills/brnr/`) and the ADRs change with the code
   they describe. Their examples, and the site's, run as tests

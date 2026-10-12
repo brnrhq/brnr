@@ -12,11 +12,11 @@
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
 //!
-//! The text, title and message have control characters escaped, as `watch`
-//! shows them, and are cut at 32 KiB; the event on stdin has them whole.
+//! The text, title and message have control characters escaped, as `event
+//! watch` shows them, and are cut at 32 KiB; the event on stdin has them whole.
 //!
-//! `--events` is read as for `watch`, but its default (and `default`) is
-//! `permission_request`, `turn_ended`, `exited`. It exits when the process
+//! `--events` is read as for `event watch`, but its default (and `default`)
+//! is `permission_request`, `turn_ended`, `exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
@@ -175,7 +175,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     }
                     Ok(Msg::Signal(sig)) => {
                         let stopped = running.take().map(|r| r.stop(&rx));
-                        return Err(cut_off(signal_name(sig), stopped.as_deref()));
+                        return Err(cut_off(&render::signal(sig.into()), stopped.as_deref()));
                     }
                     // What the process sent before it hung up says whether
                     // that was the end or notify being cut off.
@@ -216,16 +216,6 @@ fn ends(e: &Value, only: Option<&str>) -> bool {
 fn cut_off(why: &str, stopped: Option<&str>) -> String {
     let stopped = stopped.map(|s| format!("; stopped {s}")).unwrap_or_default();
     format!("cut off ({why}){stopped}; no more notifications")
-}
-
-fn signal_name(sig: c_int) -> &'static str {
-    match sig {
-        libc::SIGHUP => "SIGHUP",
-        libc::SIGINT => "SIGINT",
-        libc::SIGQUIT => "SIGQUIT",
-        libc::SIGTERM => "SIGTERM",
-        _ => "a signal",
-    }
 }
 
 /// What reaches notify's loop.
@@ -283,7 +273,7 @@ fn next(rx: &Receiver<Msg>) -> Result<Value, String> {
         match rx.recv() {
             Ok(Msg::Event(e)) => return Ok(e),
             Ok(Msg::End(why)) => return Err(why),
-            Ok(Msg::Signal(sig)) => return Err(signal_name(sig).to_owned()),
+            Ok(Msg::Signal(sig)) => return Err(render::signal(sig.into())),
             Ok(_) => {}
             Err(_) => return Err("no more events".to_owned()),
         }
@@ -395,7 +385,7 @@ impl Source {
     }
 }
 
-/// The agent's text for the environment: as `watch` would show it (see
+/// The agent's text for the environment: as `event watch` would show it (see
 /// `render::clean`), and cut at [`ENV_TEXT_MAX`] bytes, with `…`. The
 /// event on stdin has all of it.
 fn env_text(text: &str) -> String {
@@ -431,13 +421,13 @@ impl Running {
         tx: &Sender<Msg>,
     ) -> Option<Running> {
         let stdout = Stdio::from(std::io::stderr().as_fd().try_clone_to_owned().expect("stderr"));
-        let child = Command::new(&command[0])
-            .args(&command[1..])
+        let mut cmd = Command::new(&command[0]);
+        cmd.args(&command[1..])
             .envs(vars.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(stdout)
-            .process_group(0)
-            .spawn();
+            .process_group(0);
+        let child = signals::as_found(&mut cmd).spawn();
         let mut child = match child {
             Ok(child) => child,
             Err(err) => {

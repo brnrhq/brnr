@@ -1,8 +1,8 @@
 # 63. Commands are grouped by what they act on, with ACP's verbs
 
-Proposed 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 7, 9,
-11, 12, 13, 14, 16, 18, 19, 20, 21, 27, 28, 33, 35, 36, 38, 39, 41, 45, 46,
-50, 54, 57 and 58.
+Accepted 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 5, 7, 9,
+11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 27, 28, 33, 34, 35, 36, 38, 39, 41,
+43, 45, 46, 50, 54, 57, 58 and 59.
 
 ## Context
 
@@ -129,6 +129,13 @@ command's. `--profile` and `-- <agent>` combine as they do today.
     CWD. A session only the agent knows is `inactive` with SOURCE `agent`,
     replacing ADR 15's `-`. TITLE and LAST ACTIVE are the agent's where it
     gives them, as in ADR 15.
+  - LAST ACTIVE is in UTC, in `--json` and text alike: an agent's
+    `updatedAt` is read with its offset and written as brnr writes its own
+    times (`2026-10-11T08:00:00+02:00` is `2026-10-11T06:00:00.000000Z`),
+    and the rows are ordered by the time each names, most recent first, not
+    by how it is written (#152). One that isn't an RFC 3339 time is passed
+    on as the agent gave it and said on stderr (P4), after the rows with a
+    time and before those with none.
 - **`session delete`** is `session/delete`, refused for a session open in a
   process ("close it first") and for an agent without
   `sessionCapabilities.delete` (P7). The agent is the one brnr recorded for
@@ -325,6 +332,11 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     knows is `inactive` with source `agent`, the agent's title and time win
     where it gives them, over brnr's title too, and another cwd's are left
     out; an agent that can't list fails.
+  - `adr_0063_list_reads_the_agents_times_in_utc`: an agent's times with
+    offsets (`+02:00`, `-05:30`) and fractions of any width are in UTC in
+    `--json` and text, and ordered by the time they name against a session
+    brnr recorded; one that isn't an RFC 3339 time is as given, said, and
+    after those with a time, before those with none.
   - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
     with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
     named or not, and the open one the agent lists is `both` and `active`,
@@ -406,3 +418,10 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     points at, nor an id that climbs names, is deleted.
 - [src/render.rs](../../src/render.rs)
   - `adr_0063_a_deletion_is_shown_with_who_deleted`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0063_a_time_is_read_with_its_offset_and_written_in_utc`: offsets,
+    `Z`, fractions of any width (cut to the microsecond), across days,
+    years and leap days, before 1970, and brnr's own as they are.
+  - `adr_0063_what_isnt_an_rfc3339_time_isnt_read`: a missing or malformed
+    part, a value out of range, a leap second, or a UTC year outside 0000
+    to 9999.

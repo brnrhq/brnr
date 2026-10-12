@@ -1,12 +1,12 @@
 # 15. `list` and `sessions`, and one row shape
 
-Superseded by 63: `session list` joins brnr's sessions and the agent's, with
-a SOURCE column; ADR 15's tests are ADR 63's now.
-
 Accepted (former decisions 36, 43 and 46); reviewed 2026-10-07. Implemented:
 `sessions` takes a running session's STATE and PID from the rows `list`
 makes, so one whose process holds its lock but doesn't answer is
 `unreachable` there too, with the holder's pid, not `-`.
+
+Superseded by 63: `session list` joins brnr's sessions and the agent's, with
+a SOURCE column; ADR 15's tests are ADR 63's now.
 
 ## Context
 
@@ -46,10 +46,4 @@ agent's, for one folder.
 
 ## Tests
 
-Test exemption: superseded by 63, whose `session list` tests check what replaced these claims (`adr_0063_list_joins_the_agents_sessions_on_id`, `adr_0063_list_stops_an_agent_that_wont_go`); the tests named below were renamed into them.
-
-Run `cargo test --release adr_0015_`. Named claims and their assertions:
-
-- [tests/cli.rs](../../tests/cli.rs)
-  - `adr_0015_sessions_lists_the_agents_sessions`.
-  - `adr_0015_sessions_stops_an_agent_that_wont_go`.
+Test exemption: superseded by 63, whose `session list` tests check what replaced these claims (`adr_0063_list_joins_the_agents_sessions_on_id`, `adr_0063_list_stops_an_agent_that_wont_go`); ADR 15's own tests were renamed into them.

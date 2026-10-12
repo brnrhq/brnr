@@ -2,14 +2,15 @@
 //! `prompt send`, `event wait`, `prompt cancel`, and `queue list`, `show`,
 //! `drop` and `clear`.
 //!
-//! `session new --wait` and `send --wait` print the agent's reply and exit
-//! with the turn's result; `wait` waits for a session to be idle (or for the
-//! next turn, an approval, or its process's exit). Exit status: 0 when the
-//! turn ended normally (`end_turn`), 1 if it failed or stopped for another
-//! reason or its message was dropped (or, waiting for a turn or an approval,
-//! the session closed first), 124 on `--timeout` (see ADR 21 in docs/adr).
+//! `session new --wait` and `prompt send --wait` print the agent's reply and
+//! exit with the turn's result; `event wait` waits for a session to be idle
+//! (or for the next turn, an approval, or its process's exit). Exit status:
+//! 0 when the turn ended normally (`end_turn`), 1 if it failed or stopped
+//! for another reason or its message was dropped (or, waiting for a turn or
+//! an approval, the session closed first), 124 on `--timeout` (see ADR 21 in
+//! docs/adr).
 //!
-//! `send` (ADR 18 in docs/adr):
+//! `prompt send` (ADR 18 in docs/adr):
 //! - default: a prompt and a turn of its own, sent now if no turn is
 //!   running, else held and sent when the running one ends, in the order
 //!   sent. brnr never sends a prompt while one runs.
@@ -35,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::request::{self, Request, Role};
-use brnr::{config, lock, paths, signals, spawn, sys};
+use brnr::{config, lock, paths, render, signals, spawn, sys};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
@@ -1036,14 +1037,15 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 return Ok(ExitCode::from(TIMED_OUT));
             }
             Err(_) if what == "exit" => {
-                done(&json!({ "event": "exited", "status": null }), "exited".into())?;
+                let gone = json!({ "event": "exited", "status": null });
+                done(&gone, render::exited(&gone["status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             Err(e) => return Err(e),
         };
         match (e["event"].as_str().unwrap_or_default(), what.as_str()) {
             ("exited", "exit") => {
-                done(&e, format!("exited: {}", e["status"]))?;
+                done(&e, render::exited(&e["status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("exited", _) => return Err("the agent exited".into()),

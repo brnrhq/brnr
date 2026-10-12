@@ -36,7 +36,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, paths, render};
+use brnr::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -369,8 +369,8 @@ fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
         .ok_or(format!("no brnr process {pid} (see brnr process list)"))
 }
 
-/// `<session>` or `--pid <pid>`, for `watch` and `notify`: the process, and
-/// the session if one was named.
+/// `<session>` or `--pid <pid>`, for `event watch` and `event notify`: the
+/// process, and the session if one was named.
 fn session_or_pid<'a>(
     hosts: &'a [Host],
     session: Option<&str>,
@@ -695,9 +695,17 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if !settings.is_empty() {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
-    match (x["state"].as_str(), x["turn_seconds"].as_u64()) {
-        (Some("idle"), _) | (_, None) => out.push_str("idle\n"),
-        (_, Some(secs)) => out.push_str(&format!("working for {}\n", duration(secs))),
+    // The state as JSON has it: `busy` is working, `waiting` is a turn
+    // waiting for an approval; how long when the turn's start is known.
+    let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    match (x["state"].as_str(), working) {
+        (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
+        (Some("busy"), None) => out.push_str("working\n"),
+        (Some("waiting"), Some(working)) => {
+            out.push_str(&format!("waiting for an approval, {working}\n"))
+        }
+        (Some("waiting"), None) => out.push_str("waiting for an approval\n"),
+        (state, _) => out.push_str(&format!("{}\n", state.unwrap_or("?"))),
     }
     for tool in x["tools"].as_array().into_iter().flatten() {
         out.push_str(&format!(
@@ -740,17 +748,19 @@ fn duration(secs: u64) -> String {
     }
 }
 
-/// `2026-10-01T19:34:25.959660Z` as `2026-10-01 19:34:25Z`.
+/// `2026-10-01T21:34:25.959660+02:00` as `2026-10-01 19:34:25Z`: an RFC
+/// 3339 time in UTC, to the second; anything else as it is.
 fn when(ts: &str) -> String {
-    match (ts.get(..10), ts.get(11..19)) {
-        (Some(day), Some(time)) => format!("{day} {time}Z"),
-        _ => ts.to_owned(),
+    match log::utc(ts) {
+        Some(utc) => format!("{} {}Z", &utc[..10], &utc[11..19]),
+        None => ts.to_owned(),
     }
 }
 
 // ---- approvals -----------------------------------------------------------
 
-/// The approvals waiting, in every process or in one session's.
+/// The approvals waiting, in every process that answers (saying which
+/// don't) or in one session's.
 fn pending(args: &[String]) -> Result<(), String> {
     let mut json_out = false;
     let mut arg = None;
@@ -764,7 +774,18 @@ fn pending(args: &[String]) -> Result<(), String> {
     }
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
-        None => (hosts.iter().collect(), None),
+        // Those that answered `discover`: one that didn't is passed over, as
+        // process list and session list do (ADR 3), not waited for again,
+        // and said to be (P3).
+        None => {
+            for host in hosts.iter().filter(|h| h.status.is_none()) {
+                eprintln!(
+                    "brnr: process {} is not answering; its approvals aren't listed",
+                    host.id()
+                );
+            }
+            (hosts.iter().filter(|h| h.status.is_some()).collect(), None)
+        }
         Some(arg) => {
             let (host, id) = running_session(&hosts, arg)?;
             (vec![host], Some(id))
@@ -934,9 +955,9 @@ fn watch(args: &[String]) -> Result<(), String> {
     Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
-/// The value of `--events` (for `watch`, `log` and `notify`): event names,
-/// `default` for the command's own `default` (what it does without
-/// `--events`), `all` for every event.
+/// The value of `--events` (for `event watch`, `event log` and `event
+/// notify`): event names, `default` for the command's own `default` (what it
+/// does without `--events`), `all` for every event.
 fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
     let list = list.ok_or("--events needs a list")?;
     let mut events = Vec::new();
@@ -959,8 +980,8 @@ fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, 
     Ok(events)
 }
 
-/// What `watch` and `log` show without `--events`: every event but the
-/// quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
+/// What `event watch` and `event log` show without `--events`: every event
+/// but the quiet ones (`QUIET`: ACP messages, thoughts, usage, tool progress).
 fn default_events() -> Vec<String> {
     EVENTS.iter().filter(|e| !QUIET.contains(e)).map(|e| e.to_string()).collect()
 }
@@ -1179,6 +1200,22 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `session status` says the state its JSON has: idle, busy (working, and
+    /// for how long when it knows) or waiting for an approval (ADR 34).
+    #[test]
+    fn adr_0034_status_says_the_sessions_state() {
+        let state = |state: &str, secs: Value| {
+            let x = json!({ "session": "s", "state": state, "turn_seconds": secs });
+            let text = describe_status(&x, "s");
+            text.lines().nth(3).unwrap_or_default().to_owned()
+        };
+        assert_eq!(state("idle", Value::Null), "idle");
+        assert_eq!(state("busy", json!(192)), "working for 3m12s");
+        assert_eq!(state("busy", Value::Null), "working");
+        assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
+        assert_eq!(state("waiting", Value::Null), "waiting for an approval");
+    }
 
     /// What `session list` and `session resume` take from a transcript, whatever
     /// its end (ADR 55): ending in a newline or not; cut short; a whole line

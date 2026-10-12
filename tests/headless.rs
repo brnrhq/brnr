@@ -15,7 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use serde_json::{Value, json};
@@ -239,6 +239,94 @@ fn adr_0007_large_prompt_from_stdin() {
         started["request"]["role"]["headless"]["prompt"]["text"].as_str().unwrap().len(),
         300_000
     );
+}
+
+/// An Env whose agent writes how it found SIGCHLD (see `sigchld_found`).
+fn sigchld_env(name: &str) -> Env {
+    let env = Env::new(name);
+    let log = env.dir.join("sigchld");
+    env.agent("SIGCHLD_LOG", log.to_str().unwrap())
+}
+
+/// How the agent found SIGCHLD: `ignored` or `default`.
+fn sigchld_found(env: &Env) -> String {
+    let log = env.dir.join("sigchld");
+    assert!(wait_for(Duration::from_secs(10), || log.exists()), "the agent didn't start");
+    assert!(wait_for(Duration::from_secs(5), || fs::metadata(&log).unwrap().len() > 0));
+    fs::read_to_string(log).unwrap()
+}
+
+/// `brnr session new` started with SIGCHLD ignored, as some supervisors leave
+/// it, starts its process, which waits for its agent all the same: the
+/// session stops when asked. The agent finds SIGCHLD as brnr did.
+#[test]
+fn adr_0008_a_start_with_sigchld_ignored() {
+    let env = sigchld_env("chld-new");
+    let out =
+        with_sigchld_ignored(&mut env.brnr(&new_args(&["--prompt", "reply hi"]))).output().unwrap();
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    assert_eq!(sigchld_found(&env), "ignored");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "didn't stop");
+}
+
+/// `brnr session new --foreground` with SIGCHLD ignored sees its process
+/// through: the process sees its agent exit, and exits as it did.
+#[test]
+fn adr_0009_foreground_with_sigchld_ignored() {
+    let env = sigchld_env("chld-fg");
+    let args =
+        new_args(&["--foreground", "--quiet", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    // stderr to a file: a process left running would hold a pipe open.
+    let err = env.dir.join("stderr");
+    let mut fg = with_sigchld_ignored(&mut env.brnr(&args))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let exited = wait_exit(&mut fg, Duration::from_secs(20));
+    if !exited {
+        let _ = fg.kill();
+    }
+    let status = fg.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit: {err}");
+    assert!(status.success(), "{status}: {err}");
+    assert!(env.hosts().is_empty(), "its process is still running: {err}");
+    assert_eq!(sigchld_found(&env), "ignored");
+}
+
+/// `brnr acp` run by an editor that ignores SIGCHLD starts its process, and
+/// the agent finds SIGCHLD ignored, as it would run by the editor directly
+/// (P1). When the editor's stdin ends, the agent's exit is seen and passed
+/// on.
+#[test]
+fn adr_0002_acp_with_sigchld_ignored() {
+    let env = sigchld_env("chld-acp");
+    let err = env.dir.join("stderr");
+    let mut editor = with_sigchld_ignored(&mut env.brnr(&["acp", "--", AGENT]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    let answered = from_agent.read_line(&mut line).unwrap() > 0;
+    assert!(answered, "no answer to initialize: {}", fs::read_to_string(&err).unwrap());
+    assert_eq!(sigchld_found(&env), "ignored");
+    drop(to_agent);
+    let exited = wait_exit(&mut editor, Duration::from_secs(10));
+    if !exited {
+        let _ = editor.kill();
+    }
+    let status = editor.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit with the agent: {err}");
+    assert!(status.success(), "{status}: {err}");
 }
 
 // ---- stopping ----------------------------------------------------------
@@ -543,7 +631,10 @@ fn adr_0011_a_panic_is_recorded() {
         let dropped = env.ok(&["event", "log", "sess-1", "--json", "--events", "message_dropped"]);
         assert!(dropped.contains(r#""by":"exit""#), "{on}: {dropped}");
         let shown = env.ok(&["event", "log", "sess-1", "--events", "exited"]);
-        assert!(shown.contains(&format!("agent exited: null; {reason}")), "{on}: {shown}");
+        assert!(
+            shown.contains(&format!("agent exited (status unknown); {reason}")),
+            "{on}: {shown}"
+        );
         let log = host_logs(&env);
         assert!(log.contains(r#""event":{"event":"panic""#), "{on}: {log}");
         let said = log.contains(r#""event":"host-stderr""#) && log.contains("panicked at");
@@ -817,6 +908,45 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("close"));
     let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
     assert_eq!(endings(&env), [dropped, ended]);
+}
+
+/// `--interrupt` after a turn's own answer, while a steer into it is
+/// unanswered, is held, with no turn to cancel: it waits for that answer, as
+/// what is held does, then goes ahead of what is held. Each turn ends once,
+/// with its own messages, and each message's `--wait` ends with its turn.
+#[test]
+fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
+    let env = Env::new("steer-interrupt");
+    let gate = env.dir.join("answer-steer");
+    let env = env.agent("STEER_ANSWER", "gate").agent("STEER_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let wait = |args: &[&str]| {
+        let mut all = vec!["prompt", "send", "sess-1", "--wait", "--timeout", "15"];
+        all.extend(args);
+        env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let first = wait(&["hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let steered = wait(&["--steer", "reply steered"]);
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    let interrupt = wait(&["--interrupt", "reply third"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
+    fs::write(&gate, "").unwrap();
+    for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
+        let out = waiter.wait_with_output().unwrap();
+        let log = env.ok(&["event", "log", "sess-1"]);
+        assert_eq!(out.status.code(), Some(0), "{id}: {}{log}", stderr(&out));
+        if id == "m3" {
+            // Held: no turn runs for it to cancel.
+            assert!(stderr(&out).contains("held (message m3)"), "{}", stderr(&out));
+        }
+    }
+    assert!(env.calls_of("session/cancel").is_empty());
+    assert_eq!(env.prompts(), ["hang on", "reply third"]);
+    assert_eq!(turns(&env), [vec!["m1", "m2"], vec!["m3"]]);
 }
 
 /// `--steer` into a running turn needs an agent that advertises steering
@@ -1234,6 +1364,112 @@ fn adr_0035_bad_request_line_is_answered() {
     );
 }
 
+/// What a started bridge wrote on stderr, as the host log has it
+/// (`bridge-stderr`), and its `bridge-exited` record once it has one.
+fn bridge_stderr(env: &Env) -> (Vec<String>, Option<Value>) {
+    let records: Vec<Value> =
+        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = (records.iter().filter(|r| r["event"]["event"] == "bridge-stderr"))
+        .map(|r| r["event"]["text"].as_str().unwrap().to_owned())
+        .collect();
+    let exited = records.into_iter().find(|r| r["event"]["event"] == "bridge-exited");
+    (said, exited.map(|mut r| r["event"].take()))
+}
+
+/// A started bridge that writes a line on stderr that isn't UTF-8 carries
+/// on: the line is in the host log, decoded lossily, and so is what it writes
+/// after it. It gets its events, and exits 0 when its stdin closes. (Read
+/// as text, the bad line ended the reading: the bridge's next write was
+/// killed by SIGPIPE.)
+#[test]
+fn adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on() {
+    let env = Env::new("brerr-bytes");
+    let events = env.dir.join("bridge-events");
+    // The pause lets the host read the bad line before the next one comes.
+    let script = format!(
+        "printf 'bad \\377\\376 bytes\\n' >&2; sleep 0.5; echo after >&2; exec cat > '{}'",
+        events.display()
+    );
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.len() == 2;
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env));
+    assert_eq!(bridge_stderr(&env).0, ["bad \u{fffd}\u{fffd} bytes", "after"]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    let ended =
+        || fs::read_to_string(&events).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(5), || bridge_stderr(&env).1.is_some()), "not exited");
+    let exited = bridge_stderr(&env).1.unwrap();
+    assert_eq!(exited["status"], 0, "killed by a signal: {exited}");
+}
+
+/// What a started bridge that runs `script` wrote on stderr, as the host log
+/// has it, once it has written `after` too.
+fn bridge_says(name: &str, script: &str) -> Vec<String> {
+    let env = Env::new(name);
+    let script = format!("{script}; echo after >&2; exec cat > /dev/null");
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env).0.len());
+    env.stop();
+    bridge_stderr(&env).0
+}
+
+/// `n` bytes of `x` on stderr, from a shell.
+fn xs(n: usize) -> String {
+    format!("head -c {n} /dev/zero | tr '\\0' x >&2")
+}
+
+/// A started bridge's stderr line longer than 64 KiB goes to the host log in
+/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
+/// no more of it than a piece.
+#[test]
+fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
+    let said = bridge_says("brerr-long", &format!("{}; echo >&2", xs(131073)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
+    assert!(said[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
+}
+
+/// A bridge's stderr line that fills a piece exactly is one note: the newline
+/// that comes after it ends it, and isn't an empty line of its own.
+#[test]
+fn adr_0051_a_bridges_stderr_line_that_fills_a_piece_is_one_note() {
+    let said = bridge_says("brerr-full", &format!("{}; echo >&2", xs(64 << 10)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 5]);
+}
+
+/// A carriage return that ends a piece, not its line, is a byte of the
+/// line, and stays.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_carriage_return_inside_a_line() {
+    let script = format!("{}; printf '\\ryz\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-cr", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 2, 5]);
+    assert!(said[0].ends_with("x\r"), "{:?}", &said[0][said[0].len() - 2..]);
+    assert_eq!(said[1], "yz");
+}
+
+/// A character that a piece's end would cut goes whole into the next piece,
+/// which takes no more bytes for it: it isn't two replacement characters.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
+    let script = format!("{}; printf '\\303\\251\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-utf8", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [(64 << 10) - 1, 2, 5]);
+    assert_eq!(said[1], "\u{e9}");
+}
+
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]
@@ -1565,6 +1801,165 @@ fn adr_0048_an_exit_is_written_before_the_process_goes() {
     sleep(Duration::from_millis(500));
     assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    fs::remove_file(&stall).unwrap();
+}
+
+/// What process `pid` wrote to `events` of each kind, by index in the file.
+fn written_by(events: &[Value], pid: i32, kind: &str) -> Vec<usize> {
+    let mine = |r: &&Value| r["host_pid"] == pid && r["event"]["event"] == kind;
+    events.iter().enumerate().filter(|(_, r)| mine(r)).map(|(i, _)| i).collect()
+}
+
+/// `args`, with the process it starts, if any, writing at once whatever the
+/// logger of the one before is doing.
+fn unstalled(env: &Env, args: &[&str]) -> Command {
+    let mut cmd = env.brnr(args);
+    cmd.env_remove("BRNR_TEST_LOG_STALL").stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
+/// `cmd`, which closes sess-1 in process `first` while `stall` stands:
+/// once the agent has closed it, `first` holds it still and `cmd` waits;
+/// then the disk goes again, and `cmd` succeeds.
+fn waits_for_the_disk(env: &Env, mut cmd: Command, stall: &Path, first: i32, what: &str) {
+    let mut waiting = cmd.spawn().unwrap();
+    let closed = || !env.calls_of("session/close").is_empty();
+    assert!(wait_for(Duration::from_secs(10), closed), "the agent wasn't asked to close it");
+    sleep(Duration::from_millis(300));
+    let early = waiting.try_wait().unwrap().is_some();
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap_or_default();
+    let holder = serde_json::from_str::<Value>(&lock).map(|l| l["pid"].clone()).ok();
+    fs::remove_file(stall).unwrap();
+    let out = waiting.wait_with_output().unwrap();
+    assert!(!early, "{what} before the session's records were written: {}", stderr(&out));
+    assert_eq!(holder, Some(first.into()), "let go of before its records were written");
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// A session closed in one process (by `session close`, or `session resume
+/// --take-over`) while that process's logger is behind, and resumed in a
+/// new process: the close is answered once the first process has written
+/// its records of it, and only then can the new one take it, so they come
+/// first in the transcript, `session_closed` last of them (ADR 48).
+/// `alone`: it is the first process's last session, so that process stops.
+fn closed_then_resumed(name: &str, take_over: bool, alone: bool) {
+    let env = Env::new(name);
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let first = env.host_pid();
+    if !alone {
+        env.ok(&["session", "fork", "sess-1"]);
+    }
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let resume = resume_args("sess-1", if take_over { &["--take-over"] } else { &[] });
+    if take_over {
+        let take_over = unstalled(&env, &resume);
+        waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    } else {
+        let close = unstalled(&env, &["session", "close", "sess-1"]);
+        waits_for_the_disk(&env, close, &stall, first, "the close was answered");
+        let out = unstalled(&env, &resume).output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    if alone {
+        let gone = || env.hosts().iter().all(|h| h["host_pid"] != first);
+        assert!(wait_for(Duration::from_secs(15), gone), "the first process didn't stop");
+    } else {
+        env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    }
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let pids = events.iter().map(|r| r["host_pid"].as_i64().unwrap() as i32);
+    let second = pids.clone().find(|&p| p != first).expect("no record of the second process");
+    let closed = written_by(&events, first, "session_closed");
+    let opened = written_by(&events, second, "session-opened");
+    assert_eq!((closed.len(), opened.len()), (1, 1), "{events:#?}");
+    // Nothing of the first process's after the second's opening.
+    let last = pids.rev().position(|p| p == first).map(|i| events.len() - 1 - i);
+    assert_eq!(last, Some(closed[0]), "session_closed isn't the first process's last: {events:#?}");
+    assert!(closed[0] < opened[0], "the resume wrote before the close: {events:#?}");
+}
+
+#[test]
+fn adr_0048_a_close_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("closelog", false, false);
+}
+
+#[test]
+fn adr_0048_a_take_over_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("takelog", true, false);
+}
+
+/// The same for a process's last session, closed: the process stops, and
+/// its close is answered once its records are written, as its exit's are.
+#[test]
+fn adr_0048_a_last_session_closed_is_written_before_it_is_resumed() {
+    closed_then_resumed("lastlog", false, true);
+}
+
+/// A session taken over into a running process whose agent loads it, from
+/// a process whose logger hasn't yet written the session's first record:
+/// the transcript exists by the time it is loaded, so the history the agent
+/// replays isn't recorded again (ADR 48, ADR 57).
+#[test]
+fn adr_0048_a_take_over_finds_the_transcript_it_continues() {
+    let env = Env::new("takereplay");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let first = env.host_pid();
+    env.ok(&["session", "fork", "sess-1"]);
+    let mut new = unstalled(&env, &new_args(&[]));
+    let out = new.env("FIRST_SESSION", "10").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let pids: Vec<i32> =
+        env.hosts().iter().map(|h| h["host_pid"].as_i64().unwrap() as i32).collect();
+    let second = pids.into_iter().find(|&p| p != first).unwrap().to_string();
+    let take_over = env.brnr(&["session", "resume", "--pid", &second, "sess-1", "--take-over"]);
+    waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let history: Vec<_> = events.iter().filter(|r| r["event"]["event"] == "history").collect();
+    assert_eq!(history.len(), 1, "{events:#?}");
+    assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
+    let replayed = events.iter().filter(|r| r["event"]["replayed"] == true).count();
+    assert_eq!(replayed, 0, "{events:#?}");
+}
+
+/// A close waits for a stalled disk 2 s at most, as an exit does, and the
+/// process goes on meanwhile: past that the session is let go of, and its
+/// close answered, though its records aren't written yet (ADR 48).
+#[test]
+fn adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most() {
+    let env = Env::new("closestall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let started = Instant::now();
+    let close = unstalled(&env, &["session", "close", "sess-1"]).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    let asked = Instant::now();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-2", "--json"])).unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(1), "the process waited for the disk");
+    assert_eq!(status["session"], "sess-2", "{status}");
+    let out = close.wait_with_output().unwrap();
+    let took = started.elapsed();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(took >= Duration::from_millis(1900), "answered before 2 s: {took:?}");
+    assert!(took < Duration::from_secs(10), "answered after {took:?}");
+    // Let go of: another process takes it, the disk still stalled.
+    let out = unstalled(&env, &resume_args("sess-1", &[])).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
     fs::remove_file(&stall).unwrap();
 }
 
@@ -2376,6 +2771,318 @@ fn adr_0004_take_over_from_an_editor_is_refused() {
     assert!(err.contains(&refused), "{err}");
     assert!(env.calls_of("session/close").is_empty());
     assert_eq!(env.hosts().len(), 1, "a second process started");
+    let _ = editor.kill();
+}
+
+// ---- a load's history ----------------------------------------------------
+
+/// What FULL_HISTORY has the agent replay on `session/load`, by kind.
+const REPLAY: [&str; 5] = [
+    "user_message_chunk",
+    "agent_message_chunk",
+    "session_info_update",
+    "tool_call",
+    "available_commands_update",
+];
+
+/// The editor's `session/load` of `session`, with id `id`: the kinds of
+/// the updates the editor got before its answer, which must be a result.
+fn load_in_editor(
+    env: &Env,
+    to_agent: &mut ChildStdin,
+    from_agent: &mut BufReader<ChildStdout>,
+    id: u64,
+    session: &str,
+) -> Vec<String> {
+    writeln!(to_agent, "{}", editor_load(env, id, session)).unwrap();
+    let mut kinds = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(from_agent.read_line(&mut line).unwrap() > 0, "no answer to {id}");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        if msg["id"] == id {
+            assert!(msg["result"].is_object(), "{msg}");
+            return kinds;
+        }
+        if msg["method"] == "session/update" && msg["params"]["sessionId"] == session {
+            kinds.push(msg["params"]["update"]["sessionUpdate"].as_str().unwrap().to_owned());
+        }
+    }
+}
+
+/// `session`'s events named `names` in its transcript, as JSON.
+fn logged(env: &Env, session: &str, names: &str) -> Vec<Value> {
+    let log = env.ok(&["event", "log", session, "--json", "--events", names]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// `session status <session> --json`.
+fn status_of(env: &Env, session: &str) -> Value {
+    serde_json::from_str(&env.ok(&["session", "status", session, "--json"])).unwrap()
+}
+
+/// The commands the agent has announced for `session`, by name, as
+/// `prompt commands` has them.
+fn command_names(env: &Env, session: &str) -> Vec<String> {
+    let listed: Value =
+        serde_json::from_str(&env.ok(&["prompt", "commands", session, "--json"])).unwrap();
+    let commands = listed["commands"].as_array().cloned().unwrap_or_default();
+    commands.iter().map(|c| c["command"].as_str().unwrap_or_default().to_owned()).collect()
+}
+
+/// The editor loading a session again, open in its process already, has its
+/// replay taken as a replay: the editor gets it as the agent sent it, and the
+/// transcript, which has the history from the first load, gets nothing of it
+/// again but a `history` event, whether or not the logger has written it
+/// yet (a stalled disk holds it here). A tool call the history left
+/// unfinished isn't counted as running (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again() {
+    let env = Env::new("ed-reload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("FULL_HISTORY", "1").agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    for id in [2, 3] {
+        let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, id, "old-1");
+        assert_eq!(replay, REPLAY, "the editor's replay of load {id}");
+    }
+    fs::remove_file(&stall).unwrap();
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let tools = logged(&env, "old-1", "tool_call");
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    let history = logged(&env, "old-1", "history");
+    let said: Vec<(&Value, &Value)> =
+        history.iter().map(|h| (&h["updates"], &h["recorded"])).collect();
+    assert_eq!(said, [(&5.into(), &true.into()), (&5.into(), &false.into())], "{history:?}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "old-1"), ["replayed"]);
+    let _ = editor.kill();
+}
+
+/// The editor's load of a session its process doesn't have open records
+/// the agent's replay only if brnr has no transcript of the session, marked
+/// `replayed`; either way the editor gets the replay as the agent sent it, a
+/// `history` event says which, and what the replay says the session is now
+/// (its title, its commands) is kept (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_records_the_history_only_without_a_transcript() {
+    let env = Env::new("ed-load").agent("FULL_HISTORY", "1");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+
+    // sess-1 has a transcript: the replay stays out of it.
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 2, "sess-1");
+    assert_eq!(replay, REPLAY);
+    let all = env.ok(&["event", "log", "sess-1", "--events", "all"]);
+    for replayed in ["old question", "replayed history", "Loaded session", "Old tool"] {
+        assert!(!all.contains(replayed), "{replayed:?} recorded:\n{all}");
+    }
+    let history = logged(&env, "sess-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&5.into(), &false.into()));
+    let said = "history: 5 updates replayed by the agent, not recorded: brnr's transcript has";
+    assert!(env.ok(&["event", "log", "sess-1"]).contains(said));
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "sess-1"), ["replayed"]);
+
+    // old-1 has none: the replay is recorded, marked.
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert_eq!(replay, REPLAY);
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&5.into(), &true.into()));
+    assert!(history[0].get("replayed").is_none(), "{}", history[0]);
+    let acp = env.ok(&["event", "log", "old-1", "--events", "acp", "--json"]);
+    assert!(acp.contains("old question"), "{acp}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    assert_eq!(status["title"], "Loaded session", "{status}");
+    assert_eq!(command_names(&env, "old-1"), ["replayed"]);
+    let _ = editor.kill();
+}
+
+/// The editor loading a session again before the agent has answered its
+/// first load: both loads reach the agent, and one replay covers them, as
+/// which load an update is for can't be told. Every update either replays
+/// is recorded, marked `replayed`, so the transcript has the history once
+/// per load, and one `history` event says how many updates the two
+/// replayed, and that they were two. No tool call of the history is left
+/// running (ADR 57).
+#[test]
+fn adr_0057_overlapping_loads_in_an_editor_have_one_history() {
+    let env = Env::new("ed-overlap");
+    let gate = env.dir.join("load-gate");
+    let env = env.agent("FULL_HISTORY", "1").agent("LOAD_GATE", gate.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    // The first load's replay is in, and its answer waits for the gate.
+    update(&mut from_agent, "available_commands_update");
+    writeln!(to_agent, "{}", editor_load(&env, 3, "old-1")).unwrap();
+    let both_sent = || {
+        let acp = env.ok(&["event", "log", "old-1", "--events", "acp", "--json"]);
+        acp.matches(r#""method":"session/load""#).count() == 2
+    };
+    assert!(wait_for(Duration::from_secs(5), both_sent), "the second load wasn't sent");
+    fs::write(&gate, "").unwrap();
+    for id in [2, 3] {
+        assert!(response(&mut from_agent, id)["result"].is_object(), "load {id}");
+    }
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    // Everything replayed is recorded marked: none of it as live.
+    let replayed = logged(&env, "old-1", "user_message,agent_message,tool_call,session_changed");
+    let unmarked: Vec<&Value> = replayed.iter().filter(|e| e["replayed"] != true).collect();
+    assert!(unmarked.is_empty(), "{unmarked:?}");
+    let texts: Vec<&Value> = replayed.iter().filter_map(|e| e.get("text")).collect();
+    let twice = ["old question", "replayed history", "old question", "replayed history"];
+    assert_eq!(texts, twice, "{replayed:?}");
+    // The second replay's t0 is the first's, still running: that call
+    // again, not a second start (ADR 23).
+    let tools = logged(&env, "old-1", "tool_call");
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    let said = (&history[0]["updates"], &history[0]["recorded"], &history[0]["loads"]);
+    assert_eq!(said, (&10.into(), &true.into(), &2.into()), "{}", history[0]);
+    let text = env.ok(&["event", "log", "old-1"]);
+    let said = "history: 10 updates replayed by the agent in 2 loads, recorded";
+    assert!(text.contains(said), "{text}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
+/// A turn that ends while a load replays, its tool call still running, ends
+/// that call, and the history's isn't running either once the load is
+/// answered: `status` has none (ADR 34, ADR 57). (No transcript, so the
+/// replay is recorded, its tool call too.)
+#[test]
+fn adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running() {
+    let env = Env::new("ed-replay-turn").agent("FULL_HISTORY", "1").agent("LOAD_ENDS_TURN", "1");
+    env.write_config("[profiles.default]\nlog = false\n");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
+    let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status_of(&env, "sess-1"));
+    writeln!(to_agent, "{}", editor_load(&env, 4, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let status = status_of(&env, "sess-1");
+    assert_eq!((&status["state"], &status["tools"]), (&"idle".into(), &json!([])), "{status}");
+    let _ = editor.kill();
+}
+
+/// A replay that finishes a tool call running before it, then starts one
+/// with its id, leaves that one, the history's, not running (ADR 34).
+#[test]
+fn adr_0034_a_replays_call_with_a_finished_calls_id_is_not_running() {
+    let env = Env::new("ed-replay-reuse").agent("REUSED_TOOL", "1");
+    env.write_config("[profiles.default]\nlog = false\n");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
+    let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status_of(&env, "sess-1"));
+    writeln!(to_agent, "{}", editor_load(&env, 4, "sess-1")).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    let _ = editor.kill();
+}
+
+/// The editor resuming a session whose load the agent hasn't answered yet:
+/// the resume opens it, so the load failing after doesn't close it again
+/// (ADR 57).
+#[test]
+fn adr_0057_a_failed_load_leaves_a_resumed_session_open() {
+    let env = Env::new("ed-load-resume");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let resume = editor_load(&env, 3, "old-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    let prompt = json!([{ "type": "text", "text": "reply still here" }]);
+    let params = json!({ "sessionId": "old-1", "prompt": prompt });
+    writeln!(to_agent, "{}", request_with_id("4", "session/prompt", params)).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let log = env.ok(&["event", "log", "old-1"]);
+    assert!(!log.contains("session closed"), "{log}");
+    assert!(log.contains("agent: still here"), "{log}");
+    let _ = editor.kill();
+}
+
+/// Nor does a load that fails leave its history's tool call running, in a
+/// session a resume keeps open: `status` has none (ADR 34, ADR 57).
+#[test]
+fn adr_0034_a_failed_loads_history_leaves_no_tool_call_running() {
+    let env = Env::new("ed-load-fail-tool");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    let env = env.agent("FULL_HISTORY", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let resume = editor_load(&env, 3, "old-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
+/// The editor closing a session whose load the agent hasn't answered yet:
+/// the agent answers the close, then the load, which succeeds. Its last
+/// answer wins, so the session is open again, and a `session_reopened` after
+/// the `session_closed` says so (ADR 57).
+#[test]
+fn adr_0057_a_load_answered_after_its_close_reopens_the_session() {
+    let env = Env::new("ed-load-close");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    let ends = logged(&env, "old-1", "session_closed,session_reopened");
+    let ends: Vec<(&Value, &Value)> = ends.iter().map(|e| (&e["event"], &e["by"])).collect();
+    let said = [
+        (&"session_closed".into(), &"editor".into()),
+        (&"session_reopened".into(), &"editor".into()),
+    ];
+    assert_eq!(ends, said);
+    let log = env.ok(&["event", "log", "old-1"]);
+    assert!(
+        log.contains("session reopened (editor): its load was answered after its close"),
+        "{log}"
+    );
     let _ = editor.kill();
 }
 

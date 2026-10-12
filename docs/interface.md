@@ -133,10 +133,10 @@ with the agent's capabilities.
 | `brnr queue show` | Shows one held message in full. | Its ID, whether it interrupts, its text, and each attachment (a file's URI, an image's type and size); JSON has `session`, `message`, `text`, `interrupt`, `attachments` and `blocks`, the attachments as ACP content blocks. A message not held fails. |
 | `brnr queue drop` | Drops one held message by ID. | As `queue list`, with the message in `dropped`. |
 | `brnr queue clear` | Drops the held messages (`--messages`), the held context (`--context`), or with neither flag both. | As `queue list`, with the messages in `dropped`; each dropped message or context is an event. |
-| `brnr permission requests` | Lists pending approvals across hosts, optionally filtered by session. | Table or JSON array of approval objects. |
+| `brnr permission requests` | Lists pending approvals across the hosts that answer, optionally filtered by session; a host that doesn't answer is passed over, as `process list` and `session list` pass over it (they show it `unreachable`), with `brnr: process <pid> is not answering; its approvals aren't listed` on stderr, in text and `--json` alike; the exit status stays 0. | Table or JSON array of approval objects. |
 | `brnr permission show` | Displays one pending approval in full. | Tool/command/diff details; JSON approval object includes `request`, `session`, `owner`, `answerable`, `why_not`, `title`, `kind`, `tool_call`, `options`, `timeout_seconds`. |
 | `brnr permission allow`, `brnr permission reject` | Answers an approval with its option of kind `allow_once` (`allow_always` with `--always`) or `reject_once` (`reject_always`); `--option` names the agent's option ID instead, of the verb's side if its kind is ACP's (and the always kind with `--always`). | Acknowledgment with `session`, `request`, `outcome` (ACP's). A missing or doubled kind, or an option of the other side, fails, listing the options; nothing is answered. |
-| `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that), with a session open in a process that the agent lists there whatever its recorded cwd; an agent that can't list fails. A cwd is the same however it is spelled (a trailing slash, a symlink); an `unreachable` session is the cwd's if the agent lists it there or brnr has its transcript there. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
+| `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that), with a session open in a process that the agent lists there whatever its recorded cwd; an agent that can't list fails. A cwd is the same however it is spelled (a trailing slash, a symlink); an `unreachable` session is the cwd's if the agent lists it there or brnr has its transcript there. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. `last_active` is an RFC 3339 time in UTC to the microsecond (`2026-10-11T06:00:00.000000Z`; the text shows it to the second), an agent's `updatedAt` converted from its offset, and rows are ordered by the time it names; one that isn't an RFC 3339 time is as the agent gave it, said on stderr, after the rows with a time. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; JSON object with the closed `session`. Errors on stderr. |
@@ -218,7 +218,9 @@ Activity fields are `state` (`idle`, `busy`, `waiting`), `turn_seconds`,
 `last_message`, `last_active`, `stop_when_idle`, `stopping`, and
 `uptime_seconds`. `pending`, `held`, and `context` are counts; use
 `permission requests` and `queue list` for their contents. `last_message` is a preview, not the full
-transcript. Tool, plan and usage data come from the agent.
+transcript. Tool, plan and usage data come from the agent. `tools` has the
+running turn's tool calls the agent hasn't finished, one per id; once a turn
+ends, cancelled or failed too, none of its calls is listed.
 
 ### Exit codes
 
@@ -229,7 +231,7 @@ transcript. Tool, plan and usage data come from the agent.
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
-| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which `brnr-claude-adapter` doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
+| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
@@ -338,6 +340,12 @@ lists every event and its meaning, including message/turn correlation,
 approvals, config patches and process exits. `exited` and `line_too_long`
 are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
+`session_reopened` follows a `session_closed` when the agent answered an
+editor's load of the session with success after its close: the session is
+open again. `history` carries `updates`, `recorded` and `loads`: an editor's loads of a
+session that overlap share one replay and one `history` event, so `loads`
+can be more than 1, and a recorded history is then in the transcript once
+per load.
 
 Socket clients must subscribe to get live events. Profile-started bridges
 are subscribed from startup. Bridge defaults include all events except

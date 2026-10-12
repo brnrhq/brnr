@@ -1,7 +1,20 @@
 # 34. Same data in text and JSON; `--json` wherever a command prints data
 
 Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
-2026-10-07. Implemented.
+2026-10-07. Implemented. Its running tools are the running turn's (#164):
+a tool call the agent left unfinished, in a turn that was cancelled or
+failed, isn't running once the turn has ended, so `status` no longer lists
+it. ACP has no status for such a call, so brnr gives it none.
+
+Amended by 63: the usage starts with `acp`, then has a section per group
+(`process`, `session`, `prompt`, `queue`, `permission`, `config`, `event`),
+then brnr (`doctor`, `skill`, `--version`), and `brnr <group> --help`
+prints a group's. `list`, `status` and `ps` are `session list`,
+`session status` and `process list`; one event per line is for
+`event log`, `event watch` and `session new --foreground`; and `stop`,
+`close` and `notify`, without `--json`, are `process stop`,
+`session close` and `event notify`.
+
 Amended 2026-10-12 (#170): `stop` and `close` (`process stop` and `session
 close`, ADR 63) take `--json` too, as each prints what it did; `notify`
 still doesn't.
@@ -50,3 +63,13 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
   - `adr_0034_stop_and_close_take_json`: `session close --json` prints
     `{session}` and `process stop --json` `{pid, status}`, what their text
     says.
+  - `adr_0034_a_cancelled_turns_tool_calls_are_not_running`.
+  - `adr_0034_a_failed_turns_tool_calls_are_not_running`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running`.
+  - `adr_0034_a_failed_loads_history_leaves_no_tool_call_running`.
+  - `adr_0034_a_replays_call_with_a_finished_calls_id_is_not_running`.
+- [src/ctl.rs](../../src/ctl.rs)
+  - `adr_0034_status_says_the_sessions_state`.
+- [src/render.rs](../../src/render.rs)
+  - `adr_0034_text_shows_values_not_json`.

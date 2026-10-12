@@ -1,6 +1,9 @@
 # 59. Transcripts are written only where only you can read them
 
-Proposed 2026-10-09. Implemented. Amends 1 (P13) and 22.
+Accepted 2026-10-09. Implemented. Amends 1 (P13) and 22.
+
+Amended by 63: `session delete` has no host log, so a transcript it makes
+private first is said on stderr (`made-private`, with the mode it had).
 
 ## Context
 

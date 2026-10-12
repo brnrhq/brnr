@@ -1022,8 +1022,17 @@ pub fn compact_utc(ts: SystemTime) -> String {
 
 /// UTC timestamp with microseconds, e.g. `2026-09-30T14:50:01.123456Z`.
 pub fn rfc3339(ts: SystemTime) -> String {
-    let d = ts.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = d.as_secs() as i64;
+    let (secs, micros) = match ts.duration_since(UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, d.subsec_micros()),
+        // Before 1970 (an agent's time can be): the second before, and the
+        // fraction after it.
+        Err(e) => {
+            let d = e.duration();
+            let up = d.subsec_nanos() > 0;
+            let nanos = if up { 1_000_000_000 - d.subsec_nanos() } else { 0 };
+            (-(d.as_secs() as i64) - i64::from(up), nanos / 1000)
+        }
+    };
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
 
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
@@ -1042,8 +1051,90 @@ pub fn rfc3339(ts: SystemTime) -> String {
         rem / 3600,
         rem / 60 % 60,
         rem % 60,
-        d.subsec_micros()
+        micros
     )
+}
+
+/// The time an RFC 3339 date-time names (`2026-10-11T08:00:00+02:00`: `Z`
+/// or an offset, a fraction of any width, cut to the nanosecond), if `ts`
+/// is one. None for anything else, a leap second (`:60`, which a
+/// [`SystemTime`] can't hold), and a time whose UTC is outside the years
+/// 0000 to 9999, which [`rfc3339`] can't write.
+pub fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
+    let b = ts.as_bytes();
+    let num = |from: usize, len: usize| digits(b.get(from..from + len)?);
+    let at = |i: usize, c: &[u8]| b.get(i).is_some_and(|x| c.contains(x));
+    if !(at(4, b"-") && at(7, b"-") && at(10, b"Tt") && at(13, b":") && at(16, b":")) {
+        return None;
+    }
+    let (year, month, day) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hour, minute, second) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    let mut rest = &b[19..];
+    let mut nanos = 0;
+    if let Some(frac) = rest.strip_prefix(b".") {
+        let width = frac.iter().take_while(|c| c.is_ascii_digit()).count();
+        if width == 0 {
+            return None;
+        }
+        let first = frac[..width.min(9)].iter().fold(0, |n, d| n * 10 + u32::from(d - b'0'));
+        nanos = first * 10u32.pow(9 - width.min(9) as u32);
+        rest = &frac[width..];
+    }
+    let offset = match rest {
+        b"Z" | b"z" => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] => {
+            let (h, m) = (digits(&[*h1, *h2])?, digits(&[*m1, *m2])?);
+            if h > 23 || m > 59 {
+                return None;
+            }
+            if *sign == b'+' { h * 3600 + m * 60 } else { -(h * 3600 + m * 60) }
+        }
+        _ => return None,
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1..=12).contains(&month)
+        || !(1..=days_in[month as usize - 1]).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    let secs =
+        days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset;
+    if !(days_from_civil(0, 1, 1) * 86400..days_from_civil(10000, 1, 1) * 86400).contains(&secs) {
+        return None;
+    }
+    let whole = match u64::try_from(secs) {
+        Ok(after) => UNIX_EPOCH.checked_add(Duration::from_secs(after))?,
+        Err(_) => UNIX_EPOCH.checked_sub(Duration::from_secs(secs.unsigned_abs()))?,
+    };
+    whole.checked_add(Duration::from_nanos(u64::from(nanos)))
+}
+
+/// `ts` in UTC as [`rfc3339`] writes it, if it is an RFC 3339 time
+/// ([`parse_rfc3339`]): brnr's own as they are, an agent's in brnr's form,
+/// so that each is shown, and orders as a string, as the time it is.
+pub fn utc(ts: &str) -> Option<String> {
+    parse_rfc3339(ts).map(rfc3339)
+}
+
+/// `d` as a decimal number, if it is one or more ASCII digits.
+fn digits(d: &[u8]) -> Option<i64> {
+    let all = !d.is_empty() && d.iter().all(u8::is_ascii_digit);
+    all.then(|| d.iter().fold(0, |n, d| n * 10 + i64::from(d - b'0')))
+}
+
+/// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm), the
+/// inverse of the one in [`rfc3339`].
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -1400,5 +1491,106 @@ mod tests {
         // Nothing to redact: the line as it came.
         assert_eq!(recorded(msg("session/new", json!([]))), None);
         assert_eq!(recorded(msg("session/prompt", json!([stdio]))), None);
+    }
+
+    /// An RFC 3339 time is read as the time it names, whatever its offset
+    /// and however many digits its fraction has, and written in UTC as brnr
+    /// writes its own: to the microsecond, the rest cut, as `rfc3339` cuts.
+    #[test]
+    fn adr_0063_a_time_is_read_with_its_offset_and_written_in_utc() {
+        let cases = [
+            ("2026-10-11T08:00:00+02:00", "2026-10-11T06:00:00.000000Z"),
+            ("2026-10-11T08:00:00-05:30", "2026-10-11T13:30:00.000000Z"),
+            ("2026-10-11T08:00:00Z", "2026-10-11T08:00:00.000000Z"),
+            ("2026-10-11t08:00:00z", "2026-10-11T08:00:00.000000Z"),
+            ("2026-10-11T08:00:00+00:00", "2026-10-11T08:00:00.000000Z"),
+            ("2026-10-11T08:00:00-00:00", "2026-10-11T08:00:00.000000Z"),
+            ("2026-10-11T08:00:00+23:59", "2026-10-10T08:01:00.000000Z"),
+            // Across a day, a month and a year, and onto a leap day.
+            ("2026-10-11T23:30:00-05:30", "2026-10-12T05:00:00.000000Z"),
+            ("2026-01-01T01:00:00+02:00", "2025-12-31T23:00:00.000000Z"),
+            ("2024-03-01T00:30:00+01:00", "2024-02-29T23:30:00.000000Z"),
+            ("2000-02-29T12:00:00Z", "2000-02-29T12:00:00.000000Z"),
+            // Fractions of any width.
+            ("2026-10-11T08:00:00.1Z", "2026-10-11T08:00:00.100000Z"),
+            ("2026-10-11T08:00:00.12+02:00", "2026-10-11T06:00:00.120000Z"),
+            ("2026-10-11T08:00:00.123Z", "2026-10-11T08:00:00.123000Z"),
+            ("2026-10-11T08:00:00.123456Z", "2026-10-11T08:00:00.123456Z"),
+            ("2026-10-11T08:00:00.1234569Z", "2026-10-11T08:00:00.123456Z"),
+            ("2026-10-11T08:00:00.123456789-05:30", "2026-10-11T13:30:00.123456Z"),
+            ("2026-10-11T08:00:00.000000000001Z", "2026-10-11T08:00:00.000000Z"),
+            ("2026-10-11T08:00:00.999999999999Z", "2026-10-11T08:00:00.999999Z"),
+            // Before 1970, and the first and last times rfc3339 can write.
+            ("1969-12-31T23:59:59.5Z", "1969-12-31T23:59:59.500000Z"),
+            ("1970-01-01T00:30:00+01:00", "1969-12-31T23:30:00.000000Z"),
+            ("0000-01-01T00:00:00Z", "0000-01-01T00:00:00.000000Z"),
+            ("9999-12-31T23:59:59.999999Z", "9999-12-31T23:59:59.999999Z"),
+        ];
+        for (given, expected) in cases {
+            assert_eq!(utc(given).as_deref(), Some(expected), "{given}");
+        }
+        // brnr's own are as it wrote them.
+        let now = rfc3339(SystemTime::now());
+        assert_eq!(utc(&now), Some(now.clone()));
+        let t = UNIX_EPOCH + Duration::new(1_791_000_000, 123_456_789);
+        assert_eq!(parse_rfc3339(&rfc3339(t)), Some(t - Duration::from_nanos(789)));
+        // Ordered by the time they name: the issue's two (#152).
+        let agents = parse_rfc3339("2026-10-11T08:00:00+02:00").unwrap();
+        assert!(agents < parse_rfc3339("2026-10-11T07:00:00.1Z").unwrap());
+    }
+
+    /// Anything else isn't read: not a date and time, a missing or malformed
+    /// part, a value out of its range, a leap second (which a `SystemTime`
+    /// can't hold), or a time outside the years rfc3339 writes, once in UTC.
+    #[test]
+    fn adr_0063_what_isnt_an_rfc3339_time_isnt_read() {
+        let cases = [
+            "",
+            "yesterday",
+            "1791000000",
+            "2026-10-11",
+            "08:00:00Z",
+            "2026-10-11T08:00:00",
+            "2026-10-11 08:00:00Z",
+            "2026-10-11T08:00Z",
+            "2026-10-11T8:00:00Z",
+            "26-10-11T08:00:00Z",
+            "+2026-10-11T08:00:00Z",
+            "-026-10-11T08:00:00Z",
+            "2026-1a-11T08:00:00Z",
+            "2026/10/11T08:00:00Z",
+            "2026-10-11T08:00:00.Z",
+            "2026-10-11T08:00:00,5Z",
+            "2026-10-11T08:00:00.5",
+            "2026-10-11T08:00:00+0200",
+            "2026-10-11T08:00:00+02",
+            "2026-10-11T08:00:00+2:00",
+            "2026-10-11T08:00:00 +02:00",
+            "2026-10-11T08:00:00Z ",
+            " 2026-10-11T08:00:00Z",
+            "2026-10-11T08:00:00ZZ",
+            "2026-10-11T08:00:00UTC",
+            "2026-10-11T08:00:00+02:00:00",
+            "2026-00-11T08:00:00Z",
+            "2026-13-11T08:00:00Z",
+            "2026-10-00T08:00:00Z",
+            "2026-10-32T08:00:00Z",
+            "2026-09-31T08:00:00Z",
+            "2026-02-29T08:00:00Z",
+            "1900-02-29T08:00:00Z",
+            "2026-10-11T24:00:00Z",
+            "2026-10-11T08:60:00Z",
+            "2026-12-31T23:59:60Z",
+            "2026-10-11T08:00:00+24:00",
+            "2026-10-11T08:00:00+02:60",
+            "２０２６-10-11T08:00:00Z",
+            "2026-10-11T08:00:00.１Z",
+            "0000-01-01T00:00:00+00:01",
+            "9999-12-31T23:59:59-00:01",
+        ];
+        for given in cases {
+            assert_eq!(parse_rfc3339(given), None, "{given}");
+            assert_eq!(utc(given), None, "{given}");
+        }
     }
 }
