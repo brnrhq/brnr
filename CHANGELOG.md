@@ -20,6 +20,12 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- After an ACP line nested deeper than 128, the host takes a stack that deep
+  only while it keeps something of the line, not for every event after it
+  (ADR 26).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

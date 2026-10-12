@@ -402,8 +402,8 @@ struct Host {
     stderr_line: Vec<u8>,
     /// The last piece of the agent's stderr the log has didn't end its line.
     stderr_mid_line: bool,
-    /// How deeply what the host holds may nest, and how deeply the stack it
-    /// is running on takes (see `deep`).
+    /// How deeply what the host holds may nest (see `holds`), and how
+    /// deeply the stack it is running on takes (see `deep`).
     deepest: usize,
     stack: usize,
     /// Headless start: the prompt, sent once the start has committed.
@@ -881,16 +881,35 @@ impl Host {
     /// there is no such stack to be had.
     fn deep<R: Send>(&mut self, depth: usize, f: impl FnOnce(&mut Host) -> R + Send) -> Option<R> {
         let need = depth.max(self.deepest);
-        if need <= self.stack {
-            return Some(f(self));
+        let result = if need <= self.stack {
+            Some(f(self))
+        } else {
+            let outer = self.stack;
+            let result = json::on_stack(need, || {
+                self.stack = need;
+                f(self)
+            });
+            self.stack = outer;
+            result
+        };
+        // What was deep may be gone: then what comes next takes a stack for
+        // what is left, not for the deepest line there ever was.
+        if self.deepest > json::SHALLOW {
+            self.deepest = self.holds();
         }
-        let outer = self.stack;
-        let result = json::on_stack(need, || {
-            self.stack = need;
-            f(self)
-        });
-        self.stack = outer;
         result
+    }
+
+    /// How deeply what the host keeps of the lines it read nests: what the
+    /// agent said and asked, and what it said of itself. What bridges send
+    /// is read by serde_json, never deeper than `json::SHALLOW`, as is the
+    /// request the process started with.
+    fn holds(&self) -> usize {
+        let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
+        let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
+        let requests = self.agent_requests.iter().map(AgentRequest::holds);
+        let sessions = self.sessions.iter().map(Session::holds);
+        methods.chain(requests).chain(sessions).fold(json::nesting([&self.info]), usize::max)
     }
 
     /// An ACP line as json.rs reads it, on a stack that takes `depth` (see

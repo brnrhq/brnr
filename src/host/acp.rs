@@ -199,6 +199,41 @@ pub(super) enum Close {
 }
 
 impl Session {
+    /// How deeply what it keeps of what the host read nests (see
+    /// `Host::holds`). Every field is named, so that one added is thought
+    /// about here.
+    pub(super) fn holds(&self) -> usize {
+        let Session {
+            held,
+            steering,
+            ended,
+            last_turn,
+            state,
+            closing,
+            id: _,
+            cwd: _,
+            prompts: _,
+            interrupts: _,
+            context: _,
+            agent_text: _,
+            agent_text_kind: _,
+            agent_message_id: _,
+            turn_started: _,
+            replay: _,
+            idle_since: _,
+            idle_done: _,
+            last_active: _,
+            hold: _,
+            opening: _,
+        } = self;
+        let blocks = held.iter().chain(steering).flat_map(|h| &h.blocks);
+        let req_id = match closing {
+            Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
+            Some(Close::Sent) | None => None,
+        };
+        json::nesting(blocks.chain(ended).chain(last_turn).chain(req_id)).max(state.holds())
+    }
+
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
     }
@@ -282,6 +317,15 @@ pub(super) struct AgentRequest {
     pub(super) handle: Option<String>,
     /// When `permission_timeout` answers it.
     pub(super) deadline: Option<Instant>,
+}
+
+impl AgentRequest {
+    /// How deeply what it keeps of the request nests (see `Host::holds`).
+    pub(super) fn holds(&self) -> usize {
+        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
+            self;
+        json::nesting([id, params])
+    }
 }
 
 /// How a permission request is answered from outside (ADR 63): `allow` or
