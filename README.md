@@ -79,9 +79,9 @@ cargo install brnr --locked
 Or from source, below.
 
 The formulae build from the source tarball on each
-[release](https://github.com/brnrhq/brnr/releases), `brnr-X.tar.gz`, which
-the release workflow makes from the tag and attests. To check one you
-downloaded was made that way:
+[release](https://github.com/brnrhq/brnr/releases), `brnr-X.tar.gz` for
+version X, which the release workflow makes from the tag and attests. To
+check one you downloaded was made that way, with its version for X:
 
 ```sh
 gh attestation verify brnr-X.tar.gz -R brnrhq/brnr
