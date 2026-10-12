@@ -104,3 +104,5 @@ Run `cargo test --release adr_0003_`. Named claims and their assertions:
   - `adr_0003_take_over_moves_a_session`.
   - `adr_0003_a_silent_process_keeps_its_session`.
   - `adr_0003_a_dead_process_lets_go`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session`.

@@ -114,3 +114,6 @@ Run `cargo test --release adr_0011_`. Named claims and their assertions:
   - `adr_0011_a_panic_while_starting_is_recorded`.
 - [src/log.rs](../../src/log.rs)
   - `adr_0011_how_the_process_ended_is_never_skipped`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0011_seeded_agent_crash_records_death_and_releases_session`.
+  - `adr_0011_killed_proxy_mid_fault_stops_host_and_agent`.

@@ -68,3 +68,5 @@ Run `cargo test --release adr_0035_`. Named claims and their assertions:
   - `adr_0035_bad_request_line_is_answered`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0035_a_bridge_that_closes_its_stdout_gets_events`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact`.
