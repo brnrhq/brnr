@@ -1,6 +1,6 @@
 # 46. A skill for agents that use brnr
 
-Proposed 2026-10-08. Implemented: `skills/brnr/`, printed and installed by
+Accepted 2026-10-08. Implemented: `skills/brnr/`, printed and installed by
 `brnr skill`, its examples run as tests. Not yet: evals with a real agent
 (Consequences). Resolves #26.
 

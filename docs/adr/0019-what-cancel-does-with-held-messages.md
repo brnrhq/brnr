@@ -1,8 +1,8 @@
 # 19. What `cancel` does with held messages
 
-Amended by 63: `cancel` is `prompt cancel`, `--keep-held` unchanged.
-
 Accepted (former decision 6); reviewed 2026-10-07. Implemented.
+
+Amended by 63: `cancel` is `prompt cancel`, `--keep-held` unchanged.
 
 ## Decision
 

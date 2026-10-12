@@ -79,12 +79,12 @@ cargo install brnr --locked
 Or from source, below.
 
 The formulae build from the source tarball on each
-[release](https://github.com/brnrhq/brnr/releases), `brnr-X.tar.gz`, which
-the release workflow makes from the tag and attests. To check one you
-downloaded was made that way:
+[release](https://github.com/brnrhq/brnr/releases), `brnr-X.tar.gz` for
+version X, which the release workflow makes from the tag and attests. To
+check one you downloaded was made that way, with its version for X:
 
 ```sh
-gh attestation verify brnr-0.7.0.tar.gz -R brnrhq/brnr
+gh attestation verify brnr-X.tar.gz -R brnrhq/brnr
 ```
 
 Each release also carries `brnr-X.cdx.json`, an attested CycloneDX SBOM of
@@ -93,8 +93,9 @@ CI checks that two clean release builds, in different directories and at
 different times, have the same SHA-256 on each of Linux and macOS. This
 checks reproducibility within one toolchain and runner, not across Rust or
 OS versions. After publishing and updating the tap, a fresh macOS runner
-installs the formula, checks its version against the tag, and runs
-`brnr doctor` ([ADR 52](docs/adr/0052-reproducible-builds-and-sbom.md)).
+installs the formula, runs its `brew test`, checks its version against the
+tag, and runs `brnr doctor`
+([ADR 52](docs/adr/0052-reproducible-builds-and-sbom.md)).
 
 More at
 [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
@@ -420,7 +421,9 @@ are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
 error, or no answer, is said and exits non-zero: the agent may still have
-the session. Only `resource_not_found` counts as not having it:
+the session. Only `resource_not_found` counts as not having it, and the
+adapters, at the versions brnr pins
+([adapters/package.json](adapters/package.json)), differ:
 `brnr-codex-adapter` (codex-acp) answers a session it doesn't have as
 deleted, so `--purge` succeeds, but `brnr-claude-adapter` (claude-agent-acp)
 answers with another error (`-32603`, internal error), so `--purge` of a
@@ -730,8 +733,10 @@ leave its last record cut short: the session is still listed, logged and
 resumed as of its last whole record, `event log` says on stderr which lines it
 couldn't read, and the next process starts on a new line; brnr never rewrites
 a transcript. Every record carries `host_id`, `host_pid`, `proxy_pid` and
-`agent_pid` for joining. `log = "events"` leaves out the raw file, most of the
-space; `log = false` writes nothing.
+`agent_pid` for joining: `proxy_pid` is null for a headless process, and the
+`session_deleted` that `session delete` records is no process's, its
+`host_id`, `host_pid` and `proxy_pid` null. `log = "events"` leaves out the
+raw file, most of the space; `log = false` writes nothing.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host

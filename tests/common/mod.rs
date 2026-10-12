@@ -280,6 +280,20 @@ pub fn with_umask(cmd: &mut Command, mask: libc::mode_t) -> &mut Command {
     }
 }
 
+/// Has `cmd` run with SIGCHLD ignored, as some supervisors leave it (and
+/// what it starts, which inherits it across exec).
+pub fn with_sigchld_ignored(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec, where only
+    // async-signal-safe calls may be made: signal(2) is one, and SIG_IGN
+    // installs no handler.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+            Ok(())
+        })
+    }
+}
+
 pub fn alive(pid: i32) -> bool {
     kill(pid, 0)
 }

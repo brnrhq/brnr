@@ -1,7 +1,8 @@
 # 47. brnr on crates.io, published by the release workflow
 
-Proposed 2026-10-08. Implemented, once the first version is published by
-hand (trusted publishing can only be set up for a crate that exists).
+Accepted 2026-10-08. Implemented: 0.6.0 was published by hand (trusted
+publishing can only be set up for a crate that exists), and the release
+workflow has published every version since.
 Amends 40: `release.sh tag` also checks crates.io.
 Amended by 52: reproducibility and SBOM checks precede publication; a fresh runner tests the updated tap.
 Amended 2026-10-12 (#157): the `crates` job waits for the Homebrew smoke

@@ -134,3 +134,5 @@ Run `cargo test --release adr_0007_`. Named claims and their assertions:
   - `adr_0007_start_timeout_stops_the_host`.
   - `adr_0007_empty_prompt_is_refused`.
   - `adr_0007_large_prompt_from_stdin`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0007_seeded_setup_failure_never_commits_a_prompt`.
