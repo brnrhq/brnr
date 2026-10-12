@@ -730,6 +730,10 @@ impl Host {
                 }
                 if s.prompts.is_empty() {
                     s.turn_started = None;
+                    // Its tool calls end with it, however it ended: one the
+                    // agent left unfinished, cancelled or failed, isn't
+                    // running now (ADR 34).
+                    s.state.tools.clear();
                 }
             }
             let injected = prompt.as_ref().is_some_and(|p| p.injected);

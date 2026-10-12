@@ -773,6 +773,67 @@ fn adr_0034_status_summarizes_the_session() {
     assert_eq!(json["usage"]["used"], 12345);
 }
 
+/// `sess-1`'s `session status --json`.
+fn status(env: &Env) -> Value {
+    serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap()
+}
+
+/// Waits until `sess-1`'s first turn has ended.
+fn turn_ended(env: &Env) {
+    let ended = || events(env, "sess-1").iter().any(|e| e["event"] == "turn_ended");
+    assert!(wait_for(Duration::from_secs(10), ended), "no turn_ended");
+}
+
+/// A tool call `status` has as running while its turn runs isn't running once
+/// the turn is cancelled: the agent never finished it, and its turn is over.
+#[test]
+fn adr_0034_a_cancelled_turns_tool_calls_are_not_running() {
+    let env = Env::new("c-cancel-tool");
+    env.start(&["--prompt", "hang tool"]);
+    let running = || status(&env)["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status(&env));
+    assert_eq!(status(&env)["tools"][0]["status"], "in_progress");
+    let text = env.ok(&["session", "status", "sess-1"]);
+    assert!(text.contains("tool: Run the build (execute, in_progress)"), "{text}");
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    turn_ended(&env);
+    let after = status(&env);
+    assert_eq!((&after["state"], &after["tools"]), (&"idle".into(), &json!([])), "{after}");
+    let text = env.ok(&["session", "status", "sess-1"]);
+    assert!(!text.contains("tool:"), "{text}");
+}
+
+/// Nor once the turn fails.
+#[test]
+fn adr_0034_a_failed_turns_tool_calls_are_not_running() {
+    let env = Env::new("c-fail-tool");
+    env.start(&["--prompt", "fail tool"]);
+    turn_ended(&env);
+    let tools: Vec<Value> =
+        events(&env, "sess-1").into_iter().filter(|e| e["event"] == "tool_call").collect();
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    let after = status(&env);
+    assert_eq!((&after["state"], &after["tools"]), (&"idle".into(), &json!([])), "{after}");
+}
+
+/// A `tool_call` again with the id of one running is that call, updated: one
+/// entry in `status`, one start, and its change of status as `tool_progress`.
+#[test]
+fn adr_0023_a_tool_call_again_updates_the_one_running() {
+    let env = Env::new("c-tool-twice");
+    env.start(&["--prompt", "hang tool twice"]);
+    let renamed = || status(&env)["tools"][0]["title"] == "Run the build";
+    assert!(wait_for(Duration::from_secs(10), renamed), "{}", status(&env));
+    let tools = status(&env)["tools"].clone();
+    assert_eq!(tools.as_array().unwrap().len(), 1, "{tools}");
+    assert_eq!(tools[0]["status"], "in_progress", "{tools}");
+    let log = env.ok(&["event", "log", "sess-1", "--events", "tool_call,tool_progress"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(lines, ["tool: Start the build (execute)", "tool: Run the build in_progress"]);
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    turn_ended(&env);
+}
+
 // ---- settings ------------------------------------------------------------
 
 /// The v1 modes are listed by `config get --mode` and set by `config set

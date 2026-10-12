@@ -211,7 +211,9 @@ Activity fields are `state` (`idle`, `busy`, `waiting`), `turn_seconds`,
 `last_message`, `last_active`, `stop_when_idle`, `stopping`, and
 `uptime_seconds`. `pending`, `held`, and `context` are counts; use
 `permission requests` and `queue list` for their contents. `last_message` is a preview, not the full
-transcript. Tool, plan and usage data come from the agent.
+transcript. Tool, plan and usage data come from the agent. `tools` has the
+running turn's tool calls the agent hasn't finished, one per id; once a turn
+ends, cancelled or failed too, none of its calls is listed.
 
 ### Exit codes
 

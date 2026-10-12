@@ -1,7 +1,10 @@
 # 34. Same data in text and JSON; `--json` wherever a command prints data
 
 Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
-2026-10-07. Implemented.
+2026-10-07. Implemented. Its running tools are the running turn's (#164):
+a tool call the agent left unfinished, in a turn that was cancelled or
+failed, isn't running once the turn has ended, so `status` no longer lists
+it. ACP has no status for such a call, so brnr gives it none.
 
 ## Decision
 
@@ -42,3 +45,5 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
 
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0034_status_summarizes_the_session`.
+  - `adr_0034_a_cancelled_turns_tool_calls_are_not_running`.
+  - `adr_0034_a_failed_turns_tool_calls_are_not_running`.

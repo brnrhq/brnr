@@ -86,6 +86,8 @@ none does and the request's _meta.steering.idleBehavior asks for it.
 and by the prompt's text:
 
   hang ...          runs until cancelled (or steered)
+  hang tool [twice] runs a tool call (t2) until cancelled; twice: its
+                    tool_call comes again, same id, with a new title and status
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
@@ -107,7 +109,7 @@ and by the prompt's text:
                     surrogate (the title ends in half an emoji), deep (the
                     input nests n deep, 10000 by default) or garbled (the
                     line isn't JSON)
-  fail              the turn fails
+  fail [tool]       the turn fails; with tool, a tool call (t2) running
   verbatim          writes VERBATIM, then a line that isn't JSON, then answers
 """
 
@@ -306,6 +308,8 @@ def run(mid, sid, text):
     words = text.split()
     first = words[0] if words else ""
     if first == "hang":
+        if words[1:2] == ["tool"]:
+            running_tool(sid, words[2:3] == ["twice"])
         hanging = mid
     elif first == "slow":
         time.sleep(float(words[1]))
@@ -404,6 +408,8 @@ def run(mid, sid, text):
         update(sid, {**chunk, "content": {"type": "text", "text": "message"}})
         end_turn(mid)
     elif first == "fail":
+        if words[1:2] == ["tool"]:
+            running_tool(sid)
         error(mid, -32603, "boom")
     elif first == "verbatim":
         sys.stdout.write(VERBATIM % sid + "\n" + "not json, from the agent\n")
@@ -439,6 +445,14 @@ def run(mid, sid, text):
             ask(mid, sid, kind)
     else:
         end_turn(mid)
+
+
+def running_tool(sid, twice=False):
+    """Starts tool call t2, which never finishes; twice: its tool_call again."""
+    tool = {"sessionUpdate": "tool_call", "toolCallId": "t2", "kind": "execute"}
+    if twice:
+        update(sid, {**tool, "title": "Start the build", "status": "pending"})
+    update(sid, {**tool, "title": "Run the build", "status": "in_progress"})
 
 
 def ask(mid, sid, kind):

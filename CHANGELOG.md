@@ -29,6 +29,10 @@ brnr's own conventions:
   or leaves its unfinished tool calls running in `session status`, and a
   load keeps the title and commands the replay gives. The editor still gets
   the replay as the agent sent it (ADR 57).
+- `session status` no longer lists as running the tool calls a cancelled or
+  failed turn left unfinished: a turn's tool calls end with it (ADR 34). A
+  `tool_call` again with the id of a running call updates that call, with no
+  second entry and no second start (ADR 23).
 
 ## [0.8.0] - 2026-10-09
 

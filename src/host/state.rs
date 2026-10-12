@@ -38,7 +38,8 @@ pub(super) struct SessionState {
     pub(super) commands: Vec<Value>,
     pub(super) plan: Option<Value>,
     pub(super) usage: Option<Value>,
-    /// Tool calls that haven't finished.
+    /// Tool calls running: started, not finished, in a turn that hasn't
+    /// ended. A `tool_call` again for one of them updates it.
     pub(super) tools: Vec<Tool>,
     pub(super) last_message: Option<String>,
 }
@@ -194,6 +195,13 @@ impl Host {
                     status: call.status,
                     locations: raw.get("locations").cloned().unwrap_or(json!([])),
                 };
+                // Again for one running: that call, as it is now, not a second.
+                if let Some(pos) =
+                    state.tools.iter().position(|t| t.tool_call_id == tool.tool_call_id)
+                {
+                    let was = std::mem::replace(&mut state.tools[pos], tool).status;
+                    return tool_status(&session, &mut state.tools, pos, was);
+                }
                 if !finished(tool.status) {
                     state.tools.push(tool.clone());
                 }
@@ -217,18 +225,11 @@ impl Host {
                 if let Some(locations) = raw.get("locations").filter(|v| !v.is_null()) {
                     tool.locations = locations.clone();
                 }
-                let Some(status) = fields.status.filter(|s| *s != tool.status) else {
-                    return None; // Progress, not a change of status.
-                };
-                tool.status = status;
-                // `tool_call` again at the end, `tool_progress` on the way.
-                let finished = finished(status);
-                let name = if finished { "tool_call" } else { "tool_progress" };
-                let event = tool_event(&session, tool, name);
-                if finished {
-                    state.tools.remove(pos);
+                let was = tool.status;
+                if let Some(status) = fields.status {
+                    tool.status = status;
                 }
-                event
+                return tool_status(&session, &mut state.tools, pos, was);
             }
             SessionUpdate::Plan(_) => {
                 state.plan = Some(raw["entries"].clone());
@@ -263,6 +264,26 @@ impl Host {
         };
         Some(event)
     }
+}
+
+/// The event for running tool call `pos` of `tools`, updated from status
+/// `was`: `tool_call` again at its end, when it is no longer running,
+/// `tool_progress` for a change of status on the way, and none for progress
+/// that doesn't change it.
+fn tool_status(
+    session: &str,
+    tools: &mut Vec<Tool>,
+    pos: usize,
+    was: ToolCallStatus,
+) -> Option<Value> {
+    let status = tools[pos].status;
+    if status == was {
+        return None;
+    }
+    if finished(status) {
+        return Some(tool_event(session, &tools.remove(pos), "tool_call"));
+    }
+    Some(tool_event(session, &tools[pos], "tool_progress"))
 }
 
 /// Whether a tool call with `status` is no longer running.

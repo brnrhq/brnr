@@ -4,7 +4,9 @@ Accepted (former decisions 2, 18, 19 and 34); reviewed 2026-10-07.
 Implemented. `usage` has the context window and the cost, not tokens in and
 out, so its line is `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
 Whatever `--events` chose, `log` also shows a gap in the transcript
-(`records-skipped`, ADR 22), which isn't an event.
+(`records-skipped`, ADR 22), which isn't an event. A `tool_call` again with
+the id of a call that is running is that call, not a second one (#164): it
+updates it, as a `tool_call_update` would, with no second start.
 
 ## Context
 
@@ -61,6 +63,7 @@ Run `cargo test --release adr_0023_`. Named claims and their assertions:
   - `adr_0023_log_shows_only_the_events_asked_for`.
   - `adr_0023_thoughts_are_shown_when_asked`.
   - `adr_0023_watch_is_readable_by_default`.
+  - `adr_0023_a_tool_call_again_updates_the_one_running`.
 - [src/render.rs](../../src/render.rs)
   - `adr_0023_every_event_has_a_line`.
   - `adr_0023_lines_of_the_quiet_and_new_events`.
