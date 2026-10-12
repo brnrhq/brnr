@@ -246,6 +246,41 @@ pub(super) enum Close {
 }
 
 impl Session {
+    /// How deeply what it keeps of what the host read nests (see
+    /// `Host::holds`). Every field is named, so that one added is thought
+    /// about here.
+    pub(super) fn holds(&self) -> usize {
+        let Session {
+            held,
+            steering,
+            ended,
+            last_turn,
+            state,
+            closing,
+            id: _,
+            cwd: _,
+            prompts: _,
+            interrupts: _,
+            context: _,
+            agent_text: _,
+            agent_text_kind: _,
+            agent_message_id: _,
+            turn_started: _,
+            replay: _,
+            idle_since: _,
+            idle_done: _,
+            last_active: _,
+            hold: _,
+            opening: _,
+        } = self;
+        let blocks = held.iter().chain(steering).flat_map(|h| &h.blocks);
+        let req_id = match closing {
+            Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
+            Some(Close::Sent) | None => None,
+        };
+        json::nesting(blocks.chain(ended).chain(last_turn).chain(req_id)).max(state.holds())
+    }
+
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
     }
@@ -329,6 +364,15 @@ pub(super) struct AgentRequest {
     pub(super) handle: Option<String>,
     /// When `permission_timeout` answers it.
     pub(super) deadline: Option<Instant>,
+}
+
+impl AgentRequest {
+    /// How deeply what it keeps of the request nests (see `Host::holds`).
+    pub(super) fn holds(&self) -> usize {
+        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
+            self;
+        json::nesting([id, params])
+    }
 }
 
 /// How a permission request is answered from outside (ADR 63): `allow` or
@@ -1338,9 +1382,8 @@ impl Host {
             }
         }
         let Some(i) = (0..self.sessions.len()).find(|&i| {
-            let s = &self.sessions[i];
-            let until = s.idle_since.and_then(|t| t.checked_add(limit)); // None: never.
-            !s.idle_done && s.closing.is_none() && until.is_some_and(|t| now >= t)
+            let until = self.sessions[i].idle_since.and_then(|t| t.checked_add(limit)); // None: never.
+            self.idle_counts(i) && until.is_some_and(|t| now >= t)
         }) else {
             return;
         };
@@ -1356,6 +1399,15 @@ impl Host {
         }
     }
 
+    /// Whether session `i`'s idle time can still run out, for
+    /// `fire_idle_timers` and `next_idle_deadline` alike: it is idle, its
+    /// time hasn't run out already, and it is neither being opened nor
+    /// closing (a close waits for the agent's answer, whatever its time).
+    fn idle_counts(&self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        !s.idle_done && !s.opening && s.closing.is_none() && self.is_idle(i)
+    }
+
     /// The next idle session's time running out, for the event loop.
     pub(super) fn next_idle_deadline(&self) -> Option<Instant> {
         let limit = self.stop_when_idle?;
@@ -1365,9 +1417,7 @@ impl Host {
         // A session that just went idle has no `idle_since` until the loop
         // comes round; this wakes it then.
         (0..self.sessions.len())
-            .filter(|&i| {
-                !self.sessions[i].idle_done && !self.sessions[i].opening && self.is_idle(i)
-            })
+            .filter(|&i| self.idle_counts(i))
             .filter_map(|i| match self.sessions[i].idle_since {
                 None => Some(Instant::now()),
                 Some(t) => t.checked_add(limit), // None: never.

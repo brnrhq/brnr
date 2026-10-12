@@ -241,6 +241,94 @@ fn adr_0007_large_prompt_from_stdin() {
     );
 }
 
+/// An Env whose agent writes how it found SIGCHLD (see `sigchld_found`).
+fn sigchld_env(name: &str) -> Env {
+    let env = Env::new(name);
+    let log = env.dir.join("sigchld");
+    env.agent("SIGCHLD_LOG", log.to_str().unwrap())
+}
+
+/// How the agent found SIGCHLD: `ignored` or `default`.
+fn sigchld_found(env: &Env) -> String {
+    let log = env.dir.join("sigchld");
+    assert!(wait_for(Duration::from_secs(10), || log.exists()), "the agent didn't start");
+    assert!(wait_for(Duration::from_secs(5), || fs::metadata(&log).unwrap().len() > 0));
+    fs::read_to_string(log).unwrap()
+}
+
+/// `brnr session new` started with SIGCHLD ignored, as some supervisors leave
+/// it, starts its process, which waits for its agent all the same: the
+/// session stops when asked. The agent finds SIGCHLD as brnr did.
+#[test]
+fn adr_0008_a_start_with_sigchld_ignored() {
+    let env = sigchld_env("chld-new");
+    let out =
+        with_sigchld_ignored(&mut env.brnr(&new_args(&["--prompt", "reply hi"]))).output().unwrap();
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    assert_eq!(sigchld_found(&env), "ignored");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "didn't stop");
+}
+
+/// `brnr session new --foreground` with SIGCHLD ignored sees its process
+/// through: the process sees its agent exit, and exits as it did.
+#[test]
+fn adr_0009_foreground_with_sigchld_ignored() {
+    let env = sigchld_env("chld-fg");
+    let args =
+        new_args(&["--foreground", "--quiet", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    // stderr to a file: a process left running would hold a pipe open.
+    let err = env.dir.join("stderr");
+    let mut fg = with_sigchld_ignored(&mut env.brnr(&args))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let exited = wait_exit(&mut fg, Duration::from_secs(20));
+    if !exited {
+        let _ = fg.kill();
+    }
+    let status = fg.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit: {err}");
+    assert!(status.success(), "{status}: {err}");
+    assert!(env.hosts().is_empty(), "its process is still running: {err}");
+    assert_eq!(sigchld_found(&env), "ignored");
+}
+
+/// `brnr acp` run by an editor that ignores SIGCHLD starts its process, and
+/// the agent finds SIGCHLD ignored, as it would run by the editor directly
+/// (P1). When the editor's stdin ends, the agent's exit is seen and passed
+/// on.
+#[test]
+fn adr_0002_acp_with_sigchld_ignored() {
+    let env = sigchld_env("chld-acp");
+    let err = env.dir.join("stderr");
+    let mut editor = with_sigchld_ignored(&mut env.brnr(&["acp", "--", AGENT]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    let answered = from_agent.read_line(&mut line).unwrap() > 0;
+    assert!(answered, "no answer to initialize: {}", fs::read_to_string(&err).unwrap());
+    assert_eq!(sigchld_found(&env), "ignored");
+    drop(to_agent);
+    let exited = wait_exit(&mut editor, Duration::from_secs(10));
+    if !exited {
+        let _ = editor.kill();
+    }
+    let status = editor.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit with the agent: {err}");
+    assert!(status.success(), "{status}: {err}");
+}
+
 // ---- stopping ----------------------------------------------------------
 
 /// An agent that stops reading its stdin must not wedge the host: it still
@@ -819,6 +907,45 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     assert_eq!(endings(&env), [dropped, ended]);
 }
 
+/// `--interrupt` after a turn's own answer, while a steer into it is
+/// unanswered, is held, with no turn to cancel: it waits for that answer, as
+/// what is held does, then goes ahead of what is held. Each turn ends once,
+/// with its own messages, and each message's `--wait` ends with its turn.
+#[test]
+fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
+    let env = Env::new("steer-interrupt");
+    let gate = env.dir.join("answer-steer");
+    let env = env.agent("STEER_ANSWER", "gate").agent("STEER_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let wait = |args: &[&str]| {
+        let mut all = vec!["prompt", "send", "sess-1", "--wait", "--timeout", "15"];
+        all.extend(args);
+        env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let first = wait(&["hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let steered = wait(&["--steer", "reply steered"]);
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    let interrupt = wait(&["--interrupt", "reply third"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
+    fs::write(&gate, "").unwrap();
+    for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
+        let out = waiter.wait_with_output().unwrap();
+        let log = env.ok(&["event", "log", "sess-1"]);
+        assert_eq!(out.status.code(), Some(0), "{id}: {}{log}", stderr(&out));
+        if id == "m3" {
+            // Held: no turn runs for it to cancel.
+            assert!(stderr(&out).contains("held (message m3)"), "{}", stderr(&out));
+        }
+    }
+    assert!(env.calls_of("session/cancel").is_empty());
+    assert_eq!(env.prompts(), ["hang on", "reply third"]);
+    assert_eq!(turns(&env), [vec!["m1", "m2"], vec!["m3"]]);
+}
+
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]
@@ -1232,6 +1359,112 @@ fn adr_0035_bad_request_line_is_answered() {
         (Some(1), Some(true)),
         "{status}"
     );
+}
+
+/// What a started bridge wrote on stderr, as the host log has it
+/// (`bridge-stderr`), and its `bridge-exited` record once it has one.
+fn bridge_stderr(env: &Env) -> (Vec<String>, Option<Value>) {
+    let records: Vec<Value> =
+        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = (records.iter().filter(|r| r["event"]["event"] == "bridge-stderr"))
+        .map(|r| r["event"]["text"].as_str().unwrap().to_owned())
+        .collect();
+    let exited = records.into_iter().find(|r| r["event"]["event"] == "bridge-exited");
+    (said, exited.map(|mut r| r["event"].take()))
+}
+
+/// A started bridge that writes a line on stderr that isn't UTF-8 carries
+/// on: the line is in the host log, decoded lossily, and so is what it writes
+/// after it. It gets its events, and exits 0 when its stdin closes. (Read
+/// as text, the bad line ended the reading: the bridge's next write was
+/// killed by SIGPIPE.)
+#[test]
+fn adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on() {
+    let env = Env::new("brerr-bytes");
+    let events = env.dir.join("bridge-events");
+    // The pause lets the host read the bad line before the next one comes.
+    let script = format!(
+        "printf 'bad \\377\\376 bytes\\n' >&2; sleep 0.5; echo after >&2; exec cat > '{}'",
+        events.display()
+    );
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.len() == 2;
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env));
+    assert_eq!(bridge_stderr(&env).0, ["bad \u{fffd}\u{fffd} bytes", "after"]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    let ended =
+        || fs::read_to_string(&events).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(5), || bridge_stderr(&env).1.is_some()), "not exited");
+    let exited = bridge_stderr(&env).1.unwrap();
+    assert_eq!(exited["status"], 0, "killed by a signal: {exited}");
+}
+
+/// What a started bridge that runs `script` wrote on stderr, as the host log
+/// has it, once it has written `after` too.
+fn bridge_says(name: &str, script: &str) -> Vec<String> {
+    let env = Env::new(name);
+    let script = format!("{script}; echo after >&2; exec cat > /dev/null");
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env).0.len());
+    env.stop();
+    bridge_stderr(&env).0
+}
+
+/// `n` bytes of `x` on stderr, from a shell.
+fn xs(n: usize) -> String {
+    format!("head -c {n} /dev/zero | tr '\\0' x >&2")
+}
+
+/// A started bridge's stderr line longer than 64 KiB goes to the host log in
+/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
+/// no more of it than a piece.
+#[test]
+fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
+    let said = bridge_says("brerr-long", &format!("{}; echo >&2", xs(131073)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
+    assert!(said[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
+}
+
+/// A bridge's stderr line that fills a piece exactly is one note: the newline
+/// that comes after it ends it, and isn't an empty line of its own.
+#[test]
+fn adr_0051_a_bridges_stderr_line_that_fills_a_piece_is_one_note() {
+    let said = bridge_says("brerr-full", &format!("{}; echo >&2", xs(64 << 10)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 5]);
+}
+
+/// A carriage return that ends a piece, not its line, is a byte of the
+/// line, and stays.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_carriage_return_inside_a_line() {
+    let script = format!("{}; printf '\\ryz\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-cr", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 2, 5]);
+    assert!(said[0].ends_with("x\r"), "{:?}", &said[0][said[0].len() - 2..]);
+    assert_eq!(said[1], "yz");
+}
+
+/// A character that a piece's end would cut goes whole into the next piece,
+/// which takes no more bytes for it: it isn't two replacement characters.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
+    let script = format!("{}; printf '\\303\\251\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-utf8", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [(64 << 10) - 1, 2, 5]);
+    assert_eq!(said[1], "\u{e9}");
 }
 
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it

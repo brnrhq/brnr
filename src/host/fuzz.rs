@@ -147,7 +147,7 @@ impl Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame;
+    use crate::{frame, json};
 
     #[test]
     fn the_harness_relays_both_ways() {
@@ -207,6 +207,23 @@ mod tests {
         assert!(error.ends_with("stderr:\n  first\n  login required: "), "{error}");
         h.agent_stderr(b"ok\n");
         assert!(h.host.with_stderr("timed out").ends_with("\n  login required: ok"));
+    }
+
+    #[test]
+    fn adr_0026_the_stack_is_as_deep_as_what_the_host_holds() {
+        let mut h = Harness::editor(false, false);
+        let deep = format!("{}{}", "[".repeat(20000), "]".repeat(20000));
+        // Passed on, and nothing kept of it: the next event takes no stack
+        // of its own.
+        h.agent_line(format!(r#"{{"jsonrpc":"2.0","method":"_x","params":{deep}}}"#).as_bytes());
+        assert!(h.host.deepest <= json::SHALLOW, "{}", h.host.deepest);
+        // A request is kept until the editor answers it.
+        let ask = format!(r#"{{"jsonrpc":"2.0","id":"r1","method":"_ask","params":{deep}}}"#);
+        h.agent_line(ask.as_bytes());
+        assert!(h.host.deepest >= 20000, "{}", h.host.deepest);
+        h.editor_bytes(b"{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{}}\n");
+        assert!(h.host.deepest <= json::SHALLOW, "{}", h.host.deepest);
+        assert_eq!(h.sent().agent, vec![b"{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{}}\n"]);
     }
 
     #[test]
