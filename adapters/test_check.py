@@ -29,11 +29,22 @@ exited = {
 answers = {
     "result": {"jsonrpc": "2.0", "id": 1, "result": result},
     "exited": {"jsonrpc": "2.0", "id": 1, "error": exited},
+    # codex-acp 2.2's, with data its error 1001 has had since.
+    "exited with data": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": dict(exited, data={"exitCode": 3, "signal": None, "restartable": True}),
+    },
     "other error": {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal"}},
     "exited otherwise": {
         "jsonrpc": "2.0",
         "id": 1,
         "error": dict(exited, message="Codex process has exited with code 127"),
+    },
+    "exited otherwise with data": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": dict(exited, message="Codex process has exited with code 127", data={}),
     },
     "protocol 2": {"jsonrpc": "2.0", "id": 1, "result": dict(result, protocolVersion=2)},
     "capabilities a list": {
@@ -87,6 +98,11 @@ class Check(unittest.TestCase):
         self.assertIn("ok   brnr-claude-adapter initialize: a result, protocol version 1", output)
         self.assertIn("ok   brnr-codex-adapter initialize, transport only: needs the Codex", output)
 
+    def test_passes_when_codex_reports_its_exit_with_data(self):
+        status, output = check(codex="exited with data")
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   brnr-codex-adapter initialize, transport only: needs the Codex", output)
+
     def test_passes_when_codex_initializes(self):
         status, output = check(codex="result")
         self.assertEqual(status, 0, output)
@@ -100,7 +116,7 @@ class Check(unittest.TestCase):
                 self.assertIn("FAIL brnr-claude-adapter initialize: error {'code':", output)
 
     def test_fails_on_an_unexpected_codex_error(self):
-        for answer in ("other error", "exited otherwise"):
+        for answer in ("other error", "exited otherwise", "exited otherwise with data"):
             with self.subTest(answer):
                 status, output = check(codex=answer)
                 self.assertEqual(status, 1, output)

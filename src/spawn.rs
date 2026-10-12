@@ -9,6 +9,8 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command};
 
+use crate::signals;
+
 /// `brnr host`: the running binary, as the host. Its argv is only that: the
 /// rest, the agent's command among it, goes in the start request (see
 /// request.rs), which has the agent and the bridges' commands found already
@@ -66,7 +68,8 @@ fn started_as() -> Option<PathBuf> {
 /// `(fd, target)`, is moved to `target` in the new process: the only
 /// descriptors it gets from us besides what `cmd` sets up for stdio. Returns
 /// the new process's stdin if `cmd` asked for a pipe (the host's, for its
-/// start request), and its pid.
+/// start request), and its pid. It finds the signal dispositions we found
+/// (see [`signals::restore_for_child`]).
 pub fn detached(
     cmd: &mut Command,
     fds: &[(RawFd, RawFd)],
@@ -79,8 +82,9 @@ pub fn detached(
     unsafe {
         // SAFETY: the closure runs in the child between fork and exec, so it
         // makes only async-signal-safe calls (fcntl, dup2, setsid, fork,
-        // write, _exit) and allocates nothing: fds was copied before, and
-        // move_fds works on it in place. The intermediate child leaves by
+        // write, _exit, signal) and allocates nothing: fds was copied before,
+        // and move_fds works on it in place; restore_for_child makes atomic
+        // loads and signal(2) calls. The intermediate child leaves by
         // _exit, running none of the parent's code.
         cmd.pre_exec(move || {
             move_fds(&mut fds, Some(&mut pid_fd))?;
@@ -89,7 +93,10 @@ pub fn detached(
             }
             match libc::fork() {
                 -1 => Err(io::Error::last_os_error()),
-                0 => Ok(()),
+                0 => {
+                    signals::restore_for_child();
+                    Ok(())
+                }
                 pid => {
                     let bytes = pid.to_ne_bytes();
                     libc::write(pid_fd, bytes.as_ptr().cast(), bytes.len());
@@ -115,12 +122,19 @@ pub fn detached(
 /// Starts `cmd` as our child in a process group of its own, with each of
 /// `fds` moved as for [`detached`]: `brnr session new --foreground`, which
 /// waits for it and passes it the signals it gets, so a terminal's Ctrl-C
-/// reaches it once.
+/// reaches it once. It finds the signal dispositions we found, as for
+/// [`detached`].
 pub fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
     let mut fds = fds.to_vec();
     // SAFETY: as in detached: move_fds makes only async-signal-safe calls
-    // (fcntl, dup2) and allocates nothing.
-    unsafe { cmd.pre_exec(move || move_fds(&mut fds, None)) };
+    // (fcntl, dup2) and allocates nothing, and restore_for_child atomic loads
+    // and signal(2) calls.
+    unsafe {
+        cmd.pre_exec(move || {
+            signals::restore_for_child();
+            move_fds(&mut fds, None)
+        })
+    };
     cmd.process_group(0);
     let program = PathBuf::from(cmd.get_program());
     cmd.spawn().map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", program.display())))

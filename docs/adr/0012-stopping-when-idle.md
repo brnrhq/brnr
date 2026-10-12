@@ -50,3 +50,4 @@ Run `cargo test --release adr_0012_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0012_fork_is_refused_when_it_could_never_close`.
   - `adr_0012_stop_when_idle`.
+  - `adr_0012_a_closing_session_doesnt_wake_the_host`.

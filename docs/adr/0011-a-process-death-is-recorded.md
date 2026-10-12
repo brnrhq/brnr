@@ -1,8 +1,5 @@
 # 11. A process's own death is recorded
 
-Amended by 45: a panic also prints a link to report it, in the foreground
-from the hook, and from `brnr start` or `brnr acp` when it fails a start.
-
 Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
 abort (a stack overflow), which runs no hook. A start that fails as it opens
@@ -22,6 +19,9 @@ only if the process with that pid started after the file was written.
 `ps`, `status`, `start --resume` and every other command that looks
 processes up drop them, removing their metadata and socket.
 From the review's "to investigate".
+
+Amended by 45: a panic also prints a link to report it, in the foreground
+from the hook, and from `brnr start` or `brnr acp` when it fails a start.
 
 Amended by 63: `brnr start` is `brnr session new` (and `start --resume`
 `session resume`), and `list`, `ps` and `status` are `session list`,
@@ -114,3 +114,6 @@ Run `cargo test --release adr_0011_`. Named claims and their assertions:
   - `adr_0011_a_panic_while_starting_is_recorded`.
 - [src/log.rs](../../src/log.rs)
   - `adr_0011_how_the_process_ended_is_never_skipped`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0011_seeded_agent_crash_records_death_and_releases_session`.
+  - `adr_0011_killed_proxy_mid_fault_stops_host_and_agent`.

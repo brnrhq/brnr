@@ -15,7 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use serde_json::{Value, json};
@@ -239,6 +239,94 @@ fn adr_0007_large_prompt_from_stdin() {
         started["request"]["role"]["headless"]["prompt"]["text"].as_str().unwrap().len(),
         300_000
     );
+}
+
+/// An Env whose agent writes how it found SIGCHLD (see `sigchld_found`).
+fn sigchld_env(name: &str) -> Env {
+    let env = Env::new(name);
+    let log = env.dir.join("sigchld");
+    env.agent("SIGCHLD_LOG", log.to_str().unwrap())
+}
+
+/// How the agent found SIGCHLD: `ignored` or `default`.
+fn sigchld_found(env: &Env) -> String {
+    let log = env.dir.join("sigchld");
+    assert!(wait_for(Duration::from_secs(10), || log.exists()), "the agent didn't start");
+    assert!(wait_for(Duration::from_secs(5), || fs::metadata(&log).unwrap().len() > 0));
+    fs::read_to_string(log).unwrap()
+}
+
+/// `brnr session new` started with SIGCHLD ignored, as some supervisors leave
+/// it, starts its process, which waits for its agent all the same: the
+/// session stops when asked. The agent finds SIGCHLD as brnr did.
+#[test]
+fn adr_0008_a_start_with_sigchld_ignored() {
+    let env = sigchld_env("chld-new");
+    let out =
+        with_sigchld_ignored(&mut env.brnr(&new_args(&["--prompt", "reply hi"]))).output().unwrap();
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    assert_eq!(sigchld_found(&env), "ignored");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "didn't stop");
+}
+
+/// `brnr session new --foreground` with SIGCHLD ignored sees its process
+/// through: the process sees its agent exit, and exits as it did.
+#[test]
+fn adr_0009_foreground_with_sigchld_ignored() {
+    let env = sigchld_env("chld-fg");
+    let args =
+        new_args(&["--foreground", "--quiet", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    // stderr to a file: a process left running would hold a pipe open.
+    let err = env.dir.join("stderr");
+    let mut fg = with_sigchld_ignored(&mut env.brnr(&args))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let exited = wait_exit(&mut fg, Duration::from_secs(20));
+    if !exited {
+        let _ = fg.kill();
+    }
+    let status = fg.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit: {err}");
+    assert!(status.success(), "{status}: {err}");
+    assert!(env.hosts().is_empty(), "its process is still running: {err}");
+    assert_eq!(sigchld_found(&env), "ignored");
+}
+
+/// `brnr acp` run by an editor that ignores SIGCHLD starts its process, and
+/// the agent finds SIGCHLD ignored, as it would run by the editor directly
+/// (P1). When the editor's stdin ends, the agent's exit is seen and passed
+/// on.
+#[test]
+fn adr_0002_acp_with_sigchld_ignored() {
+    let env = sigchld_env("chld-acp");
+    let err = env.dir.join("stderr");
+    let mut editor = with_sigchld_ignored(&mut env.brnr(&["acp", "--", AGENT]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    let answered = from_agent.read_line(&mut line).unwrap() > 0;
+    assert!(answered, "no answer to initialize: {}", fs::read_to_string(&err).unwrap());
+    assert_eq!(sigchld_found(&env), "ignored");
+    drop(to_agent);
+    let exited = wait_exit(&mut editor, Duration::from_secs(10));
+    if !exited {
+        let _ = editor.kill();
+    }
+    let status = editor.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit with the agent: {err}");
+    assert!(status.success(), "{status}: {err}");
 }
 
 // ---- stopping ----------------------------------------------------------
@@ -819,6 +907,45 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     assert_eq!(endings(&env), [dropped, ended]);
 }
 
+/// `--interrupt` after a turn's own answer, while a steer into it is
+/// unanswered, is held, with no turn to cancel: it waits for that answer, as
+/// what is held does, then goes ahead of what is held. Each turn ends once,
+/// with its own messages, and each message's `--wait` ends with its turn.
+#[test]
+fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
+    let env = Env::new("steer-interrupt");
+    let gate = env.dir.join("answer-steer");
+    let env = env.agent("STEER_ANSWER", "gate").agent("STEER_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let wait = |args: &[&str]| {
+        let mut all = vec!["prompt", "send", "sess-1", "--wait", "--timeout", "15"];
+        all.extend(args);
+        env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let first = wait(&["hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let steered = wait(&["--steer", "reply steered"]);
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    let interrupt = wait(&["--interrupt", "reply third"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
+    fs::write(&gate, "").unwrap();
+    for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
+        let out = waiter.wait_with_output().unwrap();
+        let log = env.ok(&["event", "log", "sess-1"]);
+        assert_eq!(out.status.code(), Some(0), "{id}: {}{log}", stderr(&out));
+        if id == "m3" {
+            // Held: no turn runs for it to cancel.
+            assert!(stderr(&out).contains("held (message m3)"), "{}", stderr(&out));
+        }
+    }
+    assert!(env.calls_of("session/cancel").is_empty());
+    assert_eq!(env.prompts(), ["hang on", "reply third"]);
+    assert_eq!(turns(&env), [vec!["m1", "m2"], vec!["m3"]]);
+}
+
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]
@@ -1234,6 +1361,112 @@ fn adr_0035_bad_request_line_is_answered() {
     );
 }
 
+/// What a started bridge wrote on stderr, as the host log has it
+/// (`bridge-stderr`), and its `bridge-exited` record once it has one.
+fn bridge_stderr(env: &Env) -> (Vec<String>, Option<Value>) {
+    let records: Vec<Value> =
+        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = (records.iter().filter(|r| r["event"]["event"] == "bridge-stderr"))
+        .map(|r| r["event"]["text"].as_str().unwrap().to_owned())
+        .collect();
+    let exited = records.into_iter().find(|r| r["event"]["event"] == "bridge-exited");
+    (said, exited.map(|mut r| r["event"].take()))
+}
+
+/// A started bridge that writes a line on stderr that isn't UTF-8 carries
+/// on: the line is in the host log, decoded lossily, and so is what it writes
+/// after it. It gets its events, and exits 0 when its stdin closes. (Read
+/// as text, the bad line ended the reading: the bridge's next write was
+/// killed by SIGPIPE.)
+#[test]
+fn adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on() {
+    let env = Env::new("brerr-bytes");
+    let events = env.dir.join("bridge-events");
+    // The pause lets the host read the bad line before the next one comes.
+    let script = format!(
+        "printf 'bad \\377\\376 bytes\\n' >&2; sleep 0.5; echo after >&2; exec cat > '{}'",
+        events.display()
+    );
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.len() == 2;
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env));
+    assert_eq!(bridge_stderr(&env).0, ["bad \u{fffd}\u{fffd} bytes", "after"]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    let ended =
+        || fs::read_to_string(&events).unwrap_or_default().contains(r#""event":"turn_ended""#);
+    assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(5), || bridge_stderr(&env).1.is_some()), "not exited");
+    let exited = bridge_stderr(&env).1.unwrap();
+    assert_eq!(exited["status"], 0, "killed by a signal: {exited}");
+}
+
+/// What a started bridge that runs `script` wrote on stderr, as the host log
+/// has it, once it has written `after` too.
+fn bridge_says(name: &str, script: &str) -> Vec<String> {
+    let env = Env::new(name);
+    let script = format!("{script}; echo after >&2; exec cat > /dev/null");
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
+    assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env).0.len());
+    env.stop();
+    bridge_stderr(&env).0
+}
+
+/// `n` bytes of `x` on stderr, from a shell.
+fn xs(n: usize) -> String {
+    format!("head -c {n} /dev/zero | tr '\\0' x >&2")
+}
+
+/// A started bridge's stderr line longer than 64 KiB goes to the host log in
+/// pieces of that, every byte, as the agent's does (ADR 51): the host holds
+/// no more of it than a piece.
+#[test]
+fn adr_0051_a_bridges_long_stderr_line_goes_to_the_host_log_in_pieces() {
+    let said = bridge_says("brerr-long", &format!("{}; echo >&2", xs(131073)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 64 << 10, 1, 5]);
+    assert!(said[..3].iter().all(|l| l.bytes().all(|b| b == b'x')));
+}
+
+/// A bridge's stderr line that fills a piece exactly is one note: the newline
+/// that comes after it ends it, and isn't an empty line of its own.
+#[test]
+fn adr_0051_a_bridges_stderr_line_that_fills_a_piece_is_one_note() {
+    let said = bridge_says("brerr-full", &format!("{}; echo >&2", xs(64 << 10)));
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 5]);
+}
+
+/// A carriage return that ends a piece, not its line, is a byte of the
+/// line, and stays.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_carriage_return_inside_a_line() {
+    let script = format!("{}; printf '\\ryz\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-cr", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [64 << 10, 2, 5]);
+    assert!(said[0].ends_with("x\r"), "{:?}", &said[0][said[0].len() - 2..]);
+    assert_eq!(said[1], "yz");
+}
+
+/// A character that a piece's end would cut goes whole into the next piece,
+/// which takes no more bytes for it: it isn't two replacement characters.
+#[test]
+fn adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
+    let script = format!("{}; printf '\\303\\251\\n' >&2", xs((64 << 10) - 1));
+    let said = bridge_says("brerr-utf8", &script);
+    let pieces: Vec<usize> = said.iter().map(|l| l.len()).collect();
+    assert_eq!(pieces, [(64 << 10) - 1, 2, 5]);
+    assert_eq!(said[1], "\u{e9}");
+}
+
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]
@@ -1565,6 +1798,165 @@ fn adr_0048_an_exit_is_written_before_the_process_goes() {
     sleep(Duration::from_millis(500));
     assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    fs::remove_file(&stall).unwrap();
+}
+
+/// What process `pid` wrote to `events` of each kind, by index in the file.
+fn written_by(events: &[Value], pid: i32, kind: &str) -> Vec<usize> {
+    let mine = |r: &&Value| r["host_pid"] == pid && r["event"]["event"] == kind;
+    events.iter().enumerate().filter(|(_, r)| mine(r)).map(|(i, _)| i).collect()
+}
+
+/// `args`, with the process it starts, if any, writing at once whatever the
+/// logger of the one before is doing.
+fn unstalled(env: &Env, args: &[&str]) -> Command {
+    let mut cmd = env.brnr(args);
+    cmd.env_remove("BRNR_TEST_LOG_STALL").stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
+/// `cmd`, which closes sess-1 in process `first` while `stall` stands:
+/// once the agent has closed it, `first` holds it still and `cmd` waits;
+/// then the disk goes again, and `cmd` succeeds.
+fn waits_for_the_disk(env: &Env, mut cmd: Command, stall: &Path, first: i32, what: &str) {
+    let mut waiting = cmd.spawn().unwrap();
+    let closed = || !env.calls_of("session/close").is_empty();
+    assert!(wait_for(Duration::from_secs(10), closed), "the agent wasn't asked to close it");
+    sleep(Duration::from_millis(300));
+    let early = waiting.try_wait().unwrap().is_some();
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap_or_default();
+    let holder = serde_json::from_str::<Value>(&lock).map(|l| l["pid"].clone()).ok();
+    fs::remove_file(stall).unwrap();
+    let out = waiting.wait_with_output().unwrap();
+    assert!(!early, "{what} before the session's records were written: {}", stderr(&out));
+    assert_eq!(holder, Some(first.into()), "let go of before its records were written");
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+/// A session closed in one process (by `session close`, or `session resume
+/// --take-over`) while that process's logger is behind, and resumed in a
+/// new process: the close is answered once the first process has written
+/// its records of it, and only then can the new one take it, so they come
+/// first in the transcript, `session_closed` last of them (ADR 48).
+/// `alone`: it is the first process's last session, so that process stops.
+fn closed_then_resumed(name: &str, take_over: bool, alone: bool) {
+    let env = Env::new(name);
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let first = env.host_pid();
+    if !alone {
+        env.ok(&["session", "fork", "sess-1"]);
+    }
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let resume = resume_args("sess-1", if take_over { &["--take-over"] } else { &[] });
+    if take_over {
+        let take_over = unstalled(&env, &resume);
+        waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    } else {
+        let close = unstalled(&env, &["session", "close", "sess-1"]);
+        waits_for_the_disk(&env, close, &stall, first, "the close was answered");
+        let out = unstalled(&env, &resume).output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    if alone {
+        let gone = || env.hosts().iter().all(|h| h["host_pid"] != first);
+        assert!(wait_for(Duration::from_secs(15), gone), "the first process didn't stop");
+    } else {
+        env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    }
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let pids = events.iter().map(|r| r["host_pid"].as_i64().unwrap() as i32);
+    let second = pids.clone().find(|&p| p != first).expect("no record of the second process");
+    let closed = written_by(&events, first, "session_closed");
+    let opened = written_by(&events, second, "session-opened");
+    assert_eq!((closed.len(), opened.len()), (1, 1), "{events:#?}");
+    // Nothing of the first process's after the second's opening.
+    let last = pids.rev().position(|p| p == first).map(|i| events.len() - 1 - i);
+    assert_eq!(last, Some(closed[0]), "session_closed isn't the first process's last: {events:#?}");
+    assert!(closed[0] < opened[0], "the resume wrote before the close: {events:#?}");
+}
+
+#[test]
+fn adr_0048_a_close_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("closelog", false, false);
+}
+
+#[test]
+fn adr_0048_a_take_over_is_written_before_the_session_is_resumed() {
+    closed_then_resumed("takelog", true, false);
+}
+
+/// The same for a process's last session, closed: the process stops, and
+/// its close is answered once its records are written, as its exit's are.
+#[test]
+fn adr_0048_a_last_session_closed_is_written_before_it_is_resumed() {
+    closed_then_resumed("lastlog", false, true);
+}
+
+/// A session taken over into a running process whose agent loads it, from
+/// a process whose logger hasn't yet written the session's first record:
+/// the transcript exists by the time it is loaded, so the history the agent
+/// replays isn't recorded again (ADR 48, ADR 57).
+#[test]
+fn adr_0048_a_take_over_finds_the_transcript_it_continues() {
+    let env = Env::new("takereplay");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let first = env.host_pid();
+    env.ok(&["session", "fork", "sess-1"]);
+    let mut new = unstalled(&env, &new_args(&[]));
+    let out = new.env("FIRST_SESSION", "10").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let pids: Vec<i32> =
+        env.hosts().iter().map(|h| h["host_pid"].as_i64().unwrap() as i32).collect();
+    let second = pids.into_iter().find(|&p| p != first).unwrap().to_string();
+    let take_over = env.brnr(&["session", "resume", "--pid", &second, "sess-1", "--take-over"]);
+    waits_for_the_disk(&env, take_over, &stall, first, "the take-over went ahead");
+    env.ok(&["event", "log", "sess-2"]); // The first process's logger, caught up.
+    env.ok(&["event", "log", "sess-1"]); // The second's.
+
+    let events = records(&project(&env).0.join("sess-1.jsonl"));
+    let history: Vec<_> = events.iter().filter(|r| r["event"]["event"] == "history").collect();
+    assert_eq!(history.len(), 1, "{events:#?}");
+    assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
+    let replayed = events.iter().filter(|r| r["event"]["replayed"] == true).count();
+    assert_eq!(replayed, 0, "{events:#?}");
+}
+
+/// A close waits for a stalled disk 2 s at most, as an exit does, and the
+/// process goes on meanwhile: past that the session is let go of, and its
+/// close answered, though its records aren't written yet (ADR 48).
+#[test]
+fn adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most() {
+    let env = Env::new("closestall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let started = Instant::now();
+    let close = unstalled(&env, &["session", "close", "sess-1"]).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    let asked = Instant::now();
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-2", "--json"])).unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(1), "the process waited for the disk");
+    assert_eq!(status["session"], "sess-2", "{status}");
+    let out = close.wait_with_output().unwrap();
+    let took = started.elapsed();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(took >= Duration::from_millis(1900), "answered before 2 s: {took:?}");
+    assert!(took < Duration::from_secs(10), "answered after {took:?}");
+    // Let go of: another process takes it, the disk still stalled.
+    let out = unstalled(&env, &resume_args("sess-1", &[])).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
     fs::remove_file(&stall).unwrap();
 }
 

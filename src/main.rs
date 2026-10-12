@@ -14,6 +14,9 @@ use std::env;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Each of them starts processes and waits for them, which an inherited
+    // SIGCHLD ignored would keep it from (see signals.rs).
+    brnr::signals::wait_for_children();
     let mut args = env::args_os().skip(1);
     match args.next() {
         Some(cmd) if cmd == "acp" => {

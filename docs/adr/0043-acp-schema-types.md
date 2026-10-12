@@ -14,6 +14,9 @@ rewrites, and what events and the status carry as it was said (a prompt's
 content, a permission request's tool call and options, locations, plan
 entries, config options, commands, modes, stop reasons).
 
+Amended by 63: `brnr sessions`' `session/list` is `brnr session list`'s,
+with an agent named.
+
 ## Context
 
 brnr forwards the original bytes and interprets a copy of each message
