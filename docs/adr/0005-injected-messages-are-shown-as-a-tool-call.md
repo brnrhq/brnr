@@ -6,6 +6,10 @@ via brnr", "Denied via brnr"), the editor's late answer to one, a session
 closed or taken over, a close that failed. Applies where ADR 4's actions are
 enabled.
 
+Amended by 63: an approval answered elsewhere is "Allowed via brnr" or
+"Rejected via brnr", and the editor's late answer to one "Already allowed
+via brnr" or "Already rejected via brnr".
+
 ## Context
 
 The editor was shown an injected message (`brnr send`, attached context) as a

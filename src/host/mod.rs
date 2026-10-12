@@ -66,7 +66,7 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Hold, Pending, Session};
+use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Session};
 use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
@@ -89,7 +89,8 @@ const DRAIN: Duration = Duration::from_millis(500);
 const PEER_FLUSH: Duration = Duration::from_secs(2);
 
 /// How long the host, exiting, waits for its logger to have written what
-/// it recorded before it lets go of its sessions (`wait_logged`).
+/// it recorded before it lets go of its sessions (`wait_logged`); and how
+/// long a session closed holds its lock for its records (`LettingGo`).
 const LOG_FLUSH: Duration = Duration::from_secs(2);
 
 /// How long the host, exiting, then gives started bridges to exit on their
@@ -108,10 +109,10 @@ const STDERR_LINE: usize = 2000;
 
 /// The most of the agent's stderr read at once, and of a line of it the host
 /// log takes as one record: a longer line is recorded in pieces of this
-/// (ADR 51). Nobody reads stderr as lines but people, and the host log; what
-/// is read goes on to the editor or the terminal at once, newline or not
-/// (ADR 62).
-const PIECE: usize = 64 << 10;
+/// (ADR 51), as a started bridge's is (see control.rs). Nobody reads stderr
+/// as lines but people, and the host log; what is read goes on to the editor
+/// or the terminal at once, newline or not (ADR 62).
+pub(super) const PIECE: usize = 64 << 10;
 
 /// `brnr process stop`: stdin is closed once what is queued for it is written,
 /// then the agent's process group gets SIGTERM, then SIGKILL.
@@ -373,6 +374,8 @@ struct Host {
     /// Sessions this process has taken (or failed to take) the lock of
     /// before the agent opened them: a resume or a load not yet answered.
     claimed: HashMap<String, Hold>,
+    /// Sessions closed here, until their records are written (ADR 48).
+    letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
     /// host's whoever asked (ADR 61): who asked, and the session it is about.
     client_requests: HashMap<String, ClientRequest>,
@@ -402,8 +405,8 @@ struct Host {
     stderr_line: Vec<u8>,
     /// The last piece of the agent's stderr the log has didn't end its line.
     stderr_mid_line: bool,
-    /// How deeply what the host holds may nest, and how deeply the stack it
-    /// is running on takes (see `deep`).
+    /// How deeply what the host holds may nest (see `holds`), and how
+    /// deeply the stack it is running on takes (see `deep`).
     deepest: usize,
     stack: usize,
     /// Headless start: the prompt, sent once the start has committed.
@@ -611,6 +614,7 @@ impl Host {
             sessions: Vec::new(),
             pending: HashMap::new(),
             claimed: HashMap::new(),
+            letting_go: Vec::new(),
             client_requests: HashMap::new(),
             agent_requests: Vec::new(),
             answered: HashMap::new(),
@@ -850,11 +854,14 @@ impl Host {
             self.fire_stop_timer(now);
             self.fire_permission_timers(now);
             self.fire_idle_timers(now);
+            self.fire_letting_go(now);
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
+            let closed_at = self.next_letting_go();
             let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
                 .into_iter()
+                .chain([closed_at])
                 .flatten()
                 .min();
             let ev = match wake {
@@ -881,16 +888,35 @@ impl Host {
     /// there is no such stack to be had.
     fn deep<R: Send>(&mut self, depth: usize, f: impl FnOnce(&mut Host) -> R + Send) -> Option<R> {
         let need = depth.max(self.deepest);
-        if need <= self.stack {
-            return Some(f(self));
+        let result = if need <= self.stack {
+            Some(f(self))
+        } else {
+            let outer = self.stack;
+            let result = json::on_stack(need, || {
+                self.stack = need;
+                f(self)
+            });
+            self.stack = outer;
+            result
+        };
+        // What was deep may be gone: then what comes next takes a stack for
+        // what is left, not for the deepest line there ever was.
+        if self.deepest > json::SHALLOW {
+            self.deepest = self.holds();
         }
-        let outer = self.stack;
-        let result = json::on_stack(need, || {
-            self.stack = need;
-            f(self)
-        });
-        self.stack = outer;
         result
+    }
+
+    /// How deeply what the host keeps of the lines it read nests: what the
+    /// agent said and asked, and what it said of itself. What bridges send
+    /// is read by serde_json, never deeper than `json::SHALLOW`, as is the
+    /// request the process started with.
+    fn holds(&self) -> usize {
+        let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
+        let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
+        let requests = self.agent_requests.iter().map(AgentRequest::holds);
+        let sessions = self.sessions.iter().map(Session::holds);
+        methods.chain(requests).chain(sessions).fold(json::nesting([&self.info]), usize::max)
     }
 
     /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
@@ -925,6 +951,7 @@ impl Host {
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         self.wait_logged();
         // Let go of the sessions as brnr stops listing the process (ADR 3).
+        self.let_go_of_closed();
         self.claimed.clear();
         for s in &mut self.sessions {
             if let Hold::Owner(lock) = &mut s.hold {
@@ -1000,6 +1027,7 @@ impl Host {
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         self.wait_logged();
+        self.let_go_of_closed();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();

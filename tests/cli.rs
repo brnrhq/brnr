@@ -773,6 +773,67 @@ fn adr_0034_status_summarizes_the_session() {
     assert_eq!(json["usage"]["used"], 12345);
 }
 
+/// `sess-1`'s `session status --json`.
+fn status(env: &Env) -> Value {
+    serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap()
+}
+
+/// Waits until `sess-1`'s first turn has ended.
+fn turn_ended(env: &Env) {
+    let ended = || events(env, "sess-1").iter().any(|e| e["event"] == "turn_ended");
+    assert!(wait_for(Duration::from_secs(10), ended), "no turn_ended");
+}
+
+/// A tool call `status` has as running while its turn runs isn't running once
+/// the turn is cancelled: the agent never finished it, and its turn is over.
+#[test]
+fn adr_0034_a_cancelled_turns_tool_calls_are_not_running() {
+    let env = Env::new("c-cancel-tool");
+    env.start(&["--prompt", "hang tool"]);
+    let running = || status(&env)["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status(&env));
+    assert_eq!(status(&env)["tools"][0]["status"], "in_progress");
+    let text = env.ok(&["session", "status", "sess-1"]);
+    assert!(text.contains("tool: Run the build (execute, in_progress)"), "{text}");
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    turn_ended(&env);
+    let after = status(&env);
+    assert_eq!((&after["state"], &after["tools"]), (&"idle".into(), &json!([])), "{after}");
+    let text = env.ok(&["session", "status", "sess-1"]);
+    assert!(!text.contains("tool:"), "{text}");
+}
+
+/// Nor once the turn fails.
+#[test]
+fn adr_0034_a_failed_turns_tool_calls_are_not_running() {
+    let env = Env::new("c-fail-tool");
+    env.start(&["--prompt", "fail tool"]);
+    turn_ended(&env);
+    let tools: Vec<Value> =
+        events(&env, "sess-1").into_iter().filter(|e| e["event"] == "tool_call").collect();
+    assert_eq!(tools.len(), 1, "{tools:?}");
+    let after = status(&env);
+    assert_eq!((&after["state"], &after["tools"]), (&"idle".into(), &json!([])), "{after}");
+}
+
+/// A `tool_call` again with the id of one running is that call, updated: one
+/// entry in `status`, one start, and its change of status as `tool_progress`.
+#[test]
+fn adr_0023_a_tool_call_again_updates_the_one_running() {
+    let env = Env::new("c-tool-twice");
+    env.start(&["--prompt", "hang tool twice"]);
+    let renamed = || status(&env)["tools"][0]["title"] == "Run the build";
+    assert!(wait_for(Duration::from_secs(10), renamed), "{}", status(&env));
+    let tools = status(&env)["tools"].clone();
+    assert_eq!(tools.as_array().unwrap().len(), 1, "{tools}");
+    assert_eq!(tools[0]["status"], "in_progress", "{tools}");
+    let log = env.ok(&["event", "log", "sess-1", "--events", "tool_call,tool_progress"]);
+    let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(lines, ["tool: Start the build (execute)", "tool: Run the build in_progress"]);
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    turn_ended(&env);
+}
+
 // ---- settings ------------------------------------------------------------
 
 /// The v1 modes are listed by `config get --mode` and set by `config set
@@ -2287,6 +2348,62 @@ fn adr_0012_stop_when_idle() {
     env.start(&["--stop-when-idle", "1"]);
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
     assert!(env.fails(&new_args(&["--stop-when-idle"])).contains("not a number of seconds"));
+}
+
+/// The CPU time process `pid` has used: from /proc on Linux, where `ps`
+/// counts whole seconds, and `ps` (`[[dd-]hh:]mm:ss.cc`) on macOS.
+fn cpu_time(pid: i32) -> Duration {
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // utime and stime, the 14th and 15th fields, after the command's `)`.
+        let fields: Vec<u64> = stat
+            .rsplit(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .filter_map(|f| f.parse().ok())
+            .collect();
+        // SAFETY: sysconf reads a constant of the system's.
+        let tick = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+        return Duration::from_secs_f64((fields[10] + fields[11]) as f64 / tick);
+    }
+    let ps =
+        std::process::Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output();
+    let text = stdout(&ps.unwrap());
+    let (days, clock) = text.trim().split_once('-').unwrap_or(("0", text.trim()));
+    let secs = clock.split(':').fold(0.0, |acc, part| acc * 60.0 + part.parse::<f64>().unwrap());
+    Duration::from_secs_f64(days.parse::<f64>().unwrap() * 86400.0 + secs)
+}
+
+/// A session whose idle time has run out while the agent is slow to answer
+/// its `session/close` doesn't count as idle: the host waits for the answer
+/// instead of waking at once, again and again (ADR 12, ADR 16).
+#[test]
+fn adr_0012_a_closing_session_doesnt_wake_the_host() {
+    let env = Env::new("c-closewait");
+    let gate = env.dir.join("answer-close");
+    let env = env.agent("CLOSE_GATE", gate.to_str().unwrap());
+    // Busy until closed: cancelling its turn leaves it idle, its time run out
+    // at once, with `session/close` unanswered.
+    env.start(&["--stop-when-idle", "0", "--prompt", "hang"]);
+    let host = env.host_pid();
+    let close = env
+        .brnr(&["session", "close", "sess-1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let closing = || !env.calls_of("session/close").is_empty();
+    assert!(wait_for(Duration::from_secs(10), closing), "session/close never went");
+    sleep(Duration::from_millis(200));
+    let (before, from) = (cpu_time(host), Instant::now());
+    sleep(Duration::from_secs(2));
+    let used = cpu_time(host) - before;
+    // Spinning, it takes about as long as it waited; waiting, next to none.
+    assert!(used < from.elapsed() / 8, "the host used {used:?} in {:?}", from.elapsed());
+    fs::write(&gate, "").unwrap();
+    let out = close.wait_with_output().unwrap();
+    assert_eq!((code(&out), stdout(&out)), (0, "closed sess-1\n".into()), "{}", stderr(&out));
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "kept running with no session");
 }
 
 #[test]

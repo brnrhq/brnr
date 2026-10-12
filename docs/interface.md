@@ -211,7 +211,9 @@ Activity fields are `state` (`idle`, `busy`, `waiting`), `turn_seconds`,
 `last_message`, `last_active`, `stop_when_idle`, `stopping`, and
 `uptime_seconds`. `pending`, `held`, and `context` are counts; use
 `permission requests` and `queue list` for their contents. `last_message` is a preview, not the full
-transcript. Tool, plan and usage data come from the agent.
+transcript. Tool, plan and usage data come from the agent. `tools` has the
+running turn's tool calls the agent hasn't finished, one per id; once a turn
+ends, cancelled or failed too, none of its calls is listed.
 
 ### Exit codes
 
@@ -222,7 +224,7 @@ transcript. Tool, plan and usage data come from the agent.
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
-| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which `brnr-claude-adapter` doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
+| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
@@ -331,6 +333,12 @@ lists every event and its meaning, including message/turn correlation,
 approvals, config patches and process exits. `exited` and `line_too_long`
 are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
+`session_reopened` follows a `session_closed` when the agent answered an
+editor's load of the session with success after its close: the session is
+open again. `history` carries `updates`, `recorded` and `loads`: an editor's loads of a
+session that overlap share one replay and one `history` event, so `loads`
+can be more than 1, and a recorded history is then in the transcript once
+per load.
 
 Socket clients must subscribe to get live events. Profile-started bridges
 are subscribed from startup. Bridge defaults include all events except

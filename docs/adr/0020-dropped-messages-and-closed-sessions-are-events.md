@@ -1,14 +1,14 @@
 # 20. Dropped messages and closed sessions are events
 
+Accepted 2026-10-07. Implemented.
+Resolves review item 5.
+
 Amended by 63: the commands are grouped: `cancel` is `prompt cancel`,
 `queue --drop` is `queue drop`, `queue --clear` and `--clear-context` are
 `queue clear --messages` and `--context`, `brnr close` is `session close`,
 `send --wait` and `start --wait` are `prompt send --wait` and
 `session new --wait`, and `watch`, `notify`, `wait` and `log` are
 `event watch`, `event notify`, `event wait` and `event log`.
-
-Accepted 2026-10-07. Implemented.
-Resolves review item 5.
 
 ## Context
 

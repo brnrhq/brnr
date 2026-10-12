@@ -26,7 +26,18 @@ with environment variables:
   NO_RESUME=1       offer session/load but not session/resume
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
+  FULL_HISTORY=1    session/load also replays a tool call it never finished,
+                    and the session's commands
+  LOAD_GATE=<file>  answer session/load, once it has replayed, when this file
+                    exists, reading nothing meanwhile
+  LOAD_ENDS_TURN=1  session/load while a turn hangs ends it, cancelled,
+                    before it replays
+  REUSED_TOOL=1     session/load's history also finishes tool call t2, then
+                    starts another with its id
+  LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
+  LOAD_FAIL=1       session/load, once it has replayed, answers with an error
   NO_CLOSE=1        don't offer session/close
+  CLOSE_GATE=<file> wait for this file before answering session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   LIST_TIMES=<json> session/list's first page also has these sessions, an
@@ -44,7 +55,9 @@ with environment variables:
   STEER_ANSWER=<a>  a steer into a running turn is answered after that turn
                     ends: late (it takes up the steered text, then answers
                     injected), error (it ends the turn, then answers with an
-                    error) or never (it ends the turn, and never answers)
+                    error), never (it ends the turn, and never answers) or
+                    gate (it ends the turn, then answers injected once the
+                    file $STEER_GATE exists, reading on meanwhile)
   MODEL_ID=<id>     the model config option's id (model by default)
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
@@ -60,6 +73,8 @@ with environment variables:
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
                     (a line that isn't JSON is then skipped)
+  SIGCHLD_LOG=<file>  where it writes how it found SIGCHLD as it starts:
+                    ignored or default
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
@@ -86,6 +101,8 @@ none does and the request's _meta.steering.idleBehavior asks for it.
 and by the prompt's text:
 
   hang ...          runs until cancelled (or steered)
+  hang tool [twice] runs a tool call (t2) until cancelled; twice: its
+                    tool_call comes again, same id, with a new title and status
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
   big <n>           answers with one message of n bytes
@@ -107,7 +124,7 @@ and by the prompt's text:
                     surrogate (the title ends in half an emoji), deep (the
                     input nests n deep, 10000 by default) or garbled (the
                     line isn't JSON)
-  fail              the turn fails
+  fail [tool]       the turn fails; with tool, a tool call (t2) running
   verbatim          writes VERBATIM, then a line that isn't JSON, then answers
 """
 
@@ -193,7 +210,8 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE), session/load (LOAD_LATER) or a
+# steer (STEER_GATE) is sent from a thread of its own.
 sending = threading.Lock()
 
 
@@ -258,10 +276,29 @@ def new_opened(mid, session):
     update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
 
 
+def load_answer(mid):
+    if env("LOAD_FAIL"):
+        error(mid, -32603, "Can't load the session")
+    else:
+        result(mid, settings({}))
+
+
+def load_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.01)
+    load_answer(mid)
+
+
 def new_later(gate, mid, session):
     while not os.path.exists(gate):
         time.sleep(0.05)
     new_opened(mid, session)
+
+
+def steer_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.05)
+    result(mid, {"outcome": "injected"})
 
 
 def text_of(prompt):
@@ -306,6 +343,8 @@ def run(mid, sid, text):
     words = text.split()
     first = words[0] if words else ""
     if first == "hang":
+        if words[1:2] == ["tool"]:
+            running_tool(sid, words[2:3] == ["twice"])
         hanging = mid
     elif first == "slow":
         time.sleep(float(words[1]))
@@ -404,6 +443,8 @@ def run(mid, sid, text):
         update(sid, {**chunk, "content": {"type": "text", "text": "message"}})
         end_turn(mid)
     elif first == "fail":
+        if words[1:2] == ["tool"]:
+            running_tool(sid)
         error(mid, -32603, "boom")
     elif first == "verbatim":
         sys.stdout.write(VERBATIM % sid + "\n" + "not json, from the agent\n")
@@ -439,6 +480,14 @@ def run(mid, sid, text):
             ask(mid, sid, kind)
     else:
         end_turn(mid)
+
+
+def running_tool(sid, twice=False):
+    """Starts tool call t2, which never finishes; twice: its tool_call again."""
+    tool = {"sessionUpdate": "tool_call", "toolCallId": "t2", "kind": "execute"}
+    if twice:
+        update(sid, {**tool, "title": "Start the build", "status": "pending"})
+    update(sid, {**tool, "title": "Run the build", "status": "in_progress"})
 
 
 def ask(mid, sid, kind):
@@ -487,6 +536,10 @@ def ask(mid, sid, kind):
     )
 
 
+if env("SIGCHLD_LOG"):
+    with open(env("SIGCHLD_LOG"), "w") as f:
+        ignored = signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+        f.write("ignored" if ignored else "default")
 if env("STDERR"):
     sys.stderr.write(env("STDERR") + "\n")
     sys.stderr.flush()
@@ -596,6 +649,9 @@ for line in sys.stdin.buffer:
         if env("STALL"):
             time.sleep(100000)
     elif method in ("session/resume", "session/load"):
+        if method == "session/load" and env("LOAD_ENDS_TURN") and hanging is not None:
+            end_turn(hanging, "cancelled")
+            hanging = None
         if method == "session/load" and not env("NO_HISTORY"):
             update(
                 sid,
@@ -606,11 +662,34 @@ for line in sys.stdin.buffer:
             )
             say(sid, "replayed history")
             update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
-        result(mid, settings({}))
+            if env("REUSED_TOOL"):
+                tool = {"toolCallId": "t2", "title": "Run the build", "kind": "execute"}
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "completed"})
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "in_progress"})
+            if env("FULL_HISTORY"):
+                tool = {"toolCallId": "t0", "title": "Old tool", "kind": "read"}
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "in_progress"})
+                commands = [{"name": "replayed", "description": "A command from history"}]
+                update(
+                    sid,
+                    {"sessionUpdate": "available_commands_update", "availableCommands": commands},
+                )
+        while (
+            method == "session/load" and env("LOAD_GATE") and not os.path.exists(env("LOAD_GATE"))
+        ):
+            time.sleep(0.01)
+        if method == "session/resume":
+            result(mid, settings({}))
+        elif env("LOAD_LATER"):
+            threading.Thread(target=load_later, args=(env("LOAD_LATER"), mid), daemon=True).start()
+        else:
+            load_answer(mid)
     elif method == "session/fork":
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
     elif method == "session/close":
+        while env("CLOSE_GATE") and not os.path.exists(env("CLOSE_GATE")):
+            time.sleep(0.01)
         result(mid, {})
     elif method == "session/delete" and not env("NO_DELETE"):
         if sid.startswith("gone"):
@@ -691,7 +770,7 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             if hanging is not None:
                 turn, hanging = hanging, None
-                if late in ("error", "never"):
+                if late in ("error", "never", "gate"):
                     end_turn(turn)
                 else:
                     run(turn, sid, text_of(params["prompt"]))
@@ -699,6 +778,9 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             elif late == "error":
                 error(mid, -32603, "steering failed")
+            elif late == "gate":
+                gate = env("STEER_GATE")
+                threading.Thread(target=steer_later, args=(gate, mid), daemon=True).start()
         elif idle == "promptRequired":
             result(mid, {"outcome": "promptRequired", "reason": "noRunningTurn"})
         else:

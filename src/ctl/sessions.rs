@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, lock, log, paths, spawn, sys};
+use brnr::{config, json, lock, log, paths, signals, spawn, sys};
 
 use super::{
     Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,
@@ -328,12 +328,13 @@ impl Asked {
         if let Some(bundled) = spawn::bundled(&program) {
             program = bundled.into_os_string();
         }
-        let mut child = Command::new(&program)
-            .args(&agent[1..])
+        let mut cmd = Command::new(&program);
+        cmd.args(&agent[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .process_group(0)
+            .process_group(0);
+        let mut child = signals::as_found(&mut cmd)
             .spawn()
             .map_err(|e| format!("{}: {e}", program.to_string_lossy()))?;
         let stdin = child.stdin.take();
