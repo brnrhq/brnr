@@ -2566,6 +2566,33 @@ fn adr_0057_overlapping_loads_in_an_editor_have_one_history() {
     let _ = editor.kill();
 }
 
+/// The editor resuming a session whose load the agent hasn't answered yet:
+/// the resume opens it, so the load failing after doesn't close it again
+/// (ADR 57).
+#[test]
+fn adr_0057_a_failed_load_leaves_a_resumed_session_open() {
+    let env = Env::new("ed-load-resume");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let resume = editor_load(&env, 3, "old-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    let prompt = json!([{ "type": "text", "text": "reply still here" }]);
+    let params = json!({ "sessionId": "old-1", "prompt": prompt });
+    writeln!(to_agent, "{}", request_with_id("4", "session/prompt", params)).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let log = env.ok(&["event", "log", "old-1"]);
+    assert!(!log.contains("session closed"), "{log}");
+    assert!(log.contains("agent: still here"), "{log}");
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.
