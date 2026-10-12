@@ -25,6 +25,9 @@ brnr's own conventions:
 - The `history` event has `loads`, how many loads its replay covers: more
   than 1 when an editor loads a session again before the agent has answered
   its last load (ADR 57).
+- A `session_reopened` event, `by` `editor`, says that the agent answered an
+  editor's load of a session with success after answering its close: the
+  session is open in the editor's process again (ADR 57).
 
 ### Fixed
 

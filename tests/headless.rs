@@ -2439,16 +2439,21 @@ fn command_names(env: &Env, session: &str) -> Vec<String> {
 /// The editor loading a session again, open in its process already, has its
 /// replay taken as a replay: the editor gets it as the agent sent it, and the
 /// transcript, which has the history from the first load, gets nothing of it
-/// again but a `history` event. A tool call the history left unfinished isn't
-/// counted as running (ADR 57).
+/// again but a `history` event, whether or not the logger has written it
+/// yet (a stalled disk holds it here). A tool call the history left
+/// unfinished isn't counted as running (ADR 57).
 #[test]
 fn adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again() {
-    let env = Env::new("ed-reload").agent("FULL_HISTORY", "1");
+    let env = Env::new("ed-reload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("FULL_HISTORY", "1").agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
     let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
     for id in [2, 3] {
         let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, id, "old-1");
         assert_eq!(replay, REPLAY, "the editor's replay of load {id}");
     }
+    fs::remove_file(&stall).unwrap();
     let messages = logged(&env, "old-1", "user_message,agent_message");
     let texts: Vec<(&Value, &Value)> =
         messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
@@ -2632,6 +2637,39 @@ fn adr_0034_a_failed_loads_history_leaves_no_tool_call_running() {
     assert!(response(&mut from_agent, 2)["error"].is_object());
     let status = status_of(&env, "old-1");
     assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
+/// The editor closing a session whose load the agent hasn't answered yet:
+/// the agent answers the close, then the load, which succeeds. Its last
+/// answer wins, so the session is open again, and a `session_reopened` after
+/// the `session_closed` says so (ADR 57).
+#[test]
+fn adr_0057_a_load_answered_after_its_close_reopens_the_session() {
+    let env = Env::new("ed-load-close");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    let ends = logged(&env, "old-1", "session_closed,session_reopened");
+    let ends: Vec<(&Value, &Value)> = ends.iter().map(|e| (&e["event"], &e["by"])).collect();
+    let said = [
+        (&"session_closed".into(), &"editor".into()),
+        (&"session_reopened".into(), &"editor".into()),
+    ];
+    assert_eq!(ends, said);
+    let log = env.ok(&["event", "log", "old-1"]);
+    assert!(
+        log.contains("session reopened (editor): its load was answered after its close"),
+        "{log}"
+    );
     let _ = editor.kill();
 }
 

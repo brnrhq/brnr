@@ -333,7 +333,9 @@ lists every event and its meaning, including message/turn correlation,
 approvals, config patches and process exits. `exited` and `line_too_long`
 are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
-`history` carries `updates`, `recorded` and `loads`: an editor's loads of a
+`session_reopened` follows a `session_closed` when the agent answered an
+editor's load of the session with success after its close: the session is
+open again. `history` carries `updates`, `recorded` and `loads`: an editor's loads of a
 session that overlap share one replay and one `history` event, so `loads`
 can be more than 1, and a recorded history is then in the transcript once
 per load.

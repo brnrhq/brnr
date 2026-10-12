@@ -458,6 +458,7 @@ show the same events, live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
+| `session_reopened` | an editor's load the agent answered with success after it answered the session's close: the session is open again, `by` `editor` |
 | `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
