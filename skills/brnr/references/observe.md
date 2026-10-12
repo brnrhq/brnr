@@ -87,6 +87,10 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.
 - `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `session_reopened`: `by` `editor`: the agent answered an editor's load
+  of the session with success after it answered the session's close, so the
+  session is open again. A watcher has ended at the `session_closed`; watch
+  it again to follow it.
 - `session_deleted`: the agent deleted its copy of the session, `by`
   `delete` (`brnr session delete`) or the `editor`. brnr's transcript stays,
   and `event log` still reads it.

@@ -611,7 +611,15 @@ impl Host {
     fn load_answered(&mut self, session: &str, cwd: Option<&str>, result: Option<&Value>) {
         let i = match (self.find(session), result) {
             (Some(i), _) => i,
-            (None, Some(_)) => self.open_session(session, cwd),
+            // Closed meanwhile, as the editor asked, and the agent answered
+            // the close before the load: its last answer wins, and says so.
+            (None, Some(_)) => {
+                let i = self.open_session(session, cwd);
+                self.emit(
+                    json!({ "event": "session_reopened", "session": session, "by": "editor" }),
+                );
+                i
+            }
             (None, None) => return,
         };
         if let Some(result) = result {

@@ -2593,6 +2593,39 @@ fn adr_0057_a_failed_load_leaves_a_resumed_session_open() {
     let _ = editor.kill();
 }
 
+/// The editor closing a session whose load the agent hasn't answered yet:
+/// the agent answers the close, then the load, which succeeds. Its last
+/// answer wins, so the session is open again, and a `session_reopened` after
+/// the `session_closed` says so (ADR 57).
+#[test]
+fn adr_0057_a_load_answered_after_its_close_reopens_the_session() {
+    let env = Env::new("ed-load-close");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    let ends = logged(&env, "old-1", "session_closed,session_reopened");
+    let ends: Vec<(&Value, &Value)> = ends.iter().map(|e| (&e["event"], &e["by"])).collect();
+    let said = [
+        (&"session_closed".into(), &"editor".into()),
+        (&"session_reopened".into(), &"editor".into()),
+    ];
+    assert_eq!(ends, said);
+    let log = env.ok(&["event", "log", "old-1"]);
+    assert!(
+        log.contains("session reopened (editor): its load was answered after its close"),
+        "{log}"
+    );
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.
