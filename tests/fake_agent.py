@@ -27,6 +27,7 @@ with environment variables:
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
+  CLOSE_GATE=<file> wait for this file before answering session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   NO_DELETE=1       don't offer session/delete
@@ -609,6 +610,8 @@ for line in sys.stdin.buffer:
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
     elif method == "session/close":
+        while env("CLOSE_GATE") and not os.path.exists(env("CLOSE_GATE")):
+            time.sleep(0.01)
         result(mid, {})
     elif method == "session/delete" and not env("NO_DELETE"):
         if sid.startswith("gone"):

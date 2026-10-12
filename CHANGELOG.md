@@ -20,6 +20,12 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- A headless process with `stop_when_idle` waits without using a whole CPU
+  while the agent is slow to answer a session's `session/close`, once the
+  session's idle time has run out (ADR 12, 16).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added
