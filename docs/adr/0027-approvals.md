@@ -75,3 +75,4 @@ Run `cargo test --release adr_0027_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0027_show_explains_a_permission_request`.
   - `adr_0027_show_escapes_a_spoofed_command`.
+  - `adr_0027_requests_passes_over_a_silent_process`.
