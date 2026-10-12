@@ -13,12 +13,31 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Stacked pull requests too, whatever their base.
+    base_branches: [".*"]
   # Generated or vendored: lockfiles, cargo vet's audits, fuzz corpora.
   path_filters:
     - "!**/Cargo.lock"
     - "!adapters/bun.lock"
     - "!supply-chain/**"
     - "!fuzz/seeds/**"
+  path_instructions:
+    - path: "**/*.md"
+      instructions: >
+        The prose is compact on purpose and often elliptical ("prints a
+        group's", "as Apache-2.0 asks a redistribution to"). Don't flag
+        ellipsis or reword correct sentences. Flag what is wrong: a claim the
+        code contradicts, a broken example, a stale command or name.
+  # Doc comments here say what where it needs saying, not on every function.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+  # Generated tests wouldn't drive the binary against tests/fake_agent.py.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
   # CI already runs these (AGENTS.md, Checks); a second copy only repeats it.
   tools:
     clippy:
