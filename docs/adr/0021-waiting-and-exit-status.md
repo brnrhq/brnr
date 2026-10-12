@@ -1,10 +1,10 @@
 # 21. Waiting, and exit status
 
+Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented.
+
 Amended by 63: `wait` is `event wait`, `send --wait` is
 `prompt send --wait`, and `start --wait` is `session new --wait` (and
 `session resume --wait`).
-
-Accepted (former decisions 5, 21 and 44); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

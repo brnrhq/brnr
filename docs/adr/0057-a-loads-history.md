@@ -1,6 +1,6 @@
 # 57. A load's history is recorded once, and a `history` event says so
 
-Accepted 2026-10-08 (proposed). Implemented. Amends 14 (what a load does
+Accepted 2026-10-09. Implemented. Amends 14 (what a load does
 with the replay) and 22 (brnr never recording a replay). Resolves #60.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;

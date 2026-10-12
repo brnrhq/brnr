@@ -1,6 +1,6 @@
 # 48. `log` of a running session waits for its transcript
 
-Proposed 2026-10-08. Implemented. Amends ADR 22 (what `log` shows of a
+Accepted 2026-10-08. Implemented. Amends ADR 22 (what `log` shows of a
 running session) and ADR 35 (a request, `logged`).
 
 ## Context
