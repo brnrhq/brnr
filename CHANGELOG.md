@@ -20,6 +20,12 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- The `history` event has `loads`, how many loads its replay covers: more
+  than 1 when an editor loads a session again before the agent has answered
+  its last load (ADR 57).
+
 ### Fixed
 
 - An editor's `session/load` through `brnr acp` records the agent's replay
@@ -27,8 +33,10 @@ brnr's own conventions:
   `history` event either way, as a headless load does. Loading a session
   already open in the editor's process no longer records its history again
   or leaves its unfinished tool calls running in `session status`, and a
-  load keeps the title and commands the replay gives. The editor still gets
-  the replay as the agent sent it (ADR 57).
+  load keeps the title and commands the replay gives. Loads that overlap
+  share one replay, recorded marked until the last is answered, and one
+  `history` event, rather than the later ones' replay being recorded as
+  live. The editor still gets the replay as the agent sent it (ADR 57).
 
 ## [0.8.0] - 2026-10-09
 

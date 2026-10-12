@@ -28,6 +28,8 @@ with environment variables:
   NO_HISTORY=1      session/load replays nothing
   FULL_HISTORY=1    session/load also replays a tool call it never finished,
                     and the session's commands
+  LOAD_GATE=<file>  answer session/load, once it has replayed, when this file
+                    exists, reading nothing meanwhile
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
@@ -614,6 +616,10 @@ for line in sys.stdin.buffer:
                     sid,
                     {"sessionUpdate": "available_commands_update", "availableCommands": commands},
                 )
+        while (
+            method == "session/load" and env("LOAD_GATE") and not os.path.exists(env("LOAD_GATE"))
+        ):
+            time.sleep(0.01)
         result(mid, settings({}))
     elif method == "session/fork":
         sessions += 1

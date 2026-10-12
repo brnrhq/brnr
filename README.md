@@ -459,7 +459,7 @@ show the same events, live or read back from the transcript:
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
 | `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
-| `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
+| `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
@@ -562,7 +562,10 @@ events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, or whose transcript is gone), so repeated loads don't
 record it twice. A `history` event says how many updates were replayed and
 whether they were recorded. An editor's `session/load` through `brnr acp` is
-recorded the same way, and the editor gets the replay as the agent sent it. brnr's transcript has only what happened through
+recorded the same way, and the editor gets the replay as the agent sent it.
+Its loads of a session that overlap share one replay and one `history`
+event, with how many `loads`; a recorded replay then has the history once per
+load, each copy marked. brnr's transcript has only what happened through
 brnr: turns taken in the agent's own client, or with `log = false`, aren't
 in it, and a later load doesn't add them.
 

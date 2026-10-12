@@ -347,7 +347,16 @@ impl Host {
         // A message still coming isn't the history's.
         self.flush_agent_message(i);
         let tools = self.sessions[i].state.tools.len();
-        self.sessions[i].replay = Some(Replay { record, updates: 0, tools });
+        let replay = Replay {
+            record,
+            updates: 0,
+            tools,
+            loads: 1,
+            unanswered: 1,
+            loaded: false,
+            opened: false,
+        };
+        self.sessions[i].replay = Some(replay);
     }
 
     /// The end of a load's replay, when the agent answers it: the history
@@ -367,6 +376,7 @@ impl Host {
             "session": session,
             "updates": replay.updates,
             "recorded": replay.record,
+            "loads": replay.loads,
         }));
     }
 
