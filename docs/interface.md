@@ -43,7 +43,7 @@ usage:
 
 process
   brnr process list [--json]
-  brnr process stop <pid>
+  brnr process stop <pid> [--json]
 
 session
   brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
@@ -53,7 +53,7 @@ session
                    the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
-  brnr session close <session>
+  brnr session close <session> [--json]
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
@@ -125,7 +125,7 @@ with the agent's capabilities.
 | `brnr acp` | Editor ACP on stdin; launches the selected agent. | Agent ACP on stdout; diagnostics and agent stderr on stderr. See [editor transport](#editor-transport). |
 | `brnr session new`, `brnr session resume` | Starts a process for a headless session, new or resumed; sets cwd, authentication and settings before an optional prompt. With `--pid <pid>`, opens the session in that running process instead: the session and prompt flags only. | Startup summary; JSON object with `session`, numeric `pid`, and `message` (null without a prompt). |
 | `brnr process list` | Lists discovered running hosts. | Table or JSON array of `pid`, `owner`, `agent`, `sessions`, `uptime_seconds`, `cwd`. An unresponsive host has owner `unreachable`. |
-| `brnr process stop` | Stops the specified host and its agent; affects all its sessions. | Stopping acknowledgment; errors on stderr. |
+| `brnr process stop` | Stops the specified host and its agent; affects all its sessions. | Stopping acknowledgment; JSON object with numeric `pid` and `status` (`stopping`). Errors on stderr. |
 | `brnr prompt send` | Sends text/attachments to one session. Positional words form the prompt; `-` reads it from stdin. | Acknowledgment with `session`, `status`, and `message`; context-only submissions have no message ID. Status is `delivered`, `held`, `steered` or `interrupting`. With `--wait`, a completed-turn result instead. |
 | `brnr event wait` | Waits for `idle` (default), `turn`, `permission`, or process `exit`. | Condition summary or JSON for the condition/last turn. See [exit codes](#exit-codes). |
 | `brnr prompt cancel` | Cancels the turn; drops held messages unless `--keep-held`. | Acknowledgment with session, status and dropped `{message, text}` objects. Context is retained. |
@@ -139,7 +139,7 @@ with the agent's capabilities.
 | `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that), with a session open in a process that the agent lists there whatever its recorded cwd; an agent that can't list fails. A cwd is the same however it is spelled (a trailing slash, a symlink); an `unreachable` session is the cwd's if the agent lists it there or brnr has its transcript there. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
-| `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; errors on stderr. |
+| `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; JSON object with the closed `session`. Errors on stderr. |
 | `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `made-private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |

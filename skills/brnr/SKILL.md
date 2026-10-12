@@ -57,7 +57,7 @@ brnr session status $s --json                         # state, mode, model, tool
 brnr session list --include active --json            # open sessions: session, title, state, pid
 brnr permission requests --json                       # approvals waiting, in every session
 brnr permission show $s p1 --json                     # one in full: tool, paths, command, diff
-brnr session close $s                                 # done with it: the session closes
+brnr session close $s --json                          # done with it: {session}, closed
 ```
 
 Use `brnr-codex-adapter` for Codex. A start with `--cwd <dir>` works there;

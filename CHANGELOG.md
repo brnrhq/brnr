@@ -20,6 +20,12 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- `process stop` and `session close` take `--json`: `{"pid": <n>,
+  "status": "stopping"}` and `{"session": "<id>"}`, what their text says
+  (ADR 34).
+
 ### Changed
 
 - **Breaking:** `prompt send`'s options go before its prompt: from the

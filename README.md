@@ -248,7 +248,9 @@ Context that never joins a prompt is a `context_dropped` event the same way:
 
 Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `event log`, `event watch`
-and `session new --foreground`.
+and `session new --foreground`. `session close --json` is `{session}`, and
+`process stop --json` `{pid, status}`; `event notify`, whose output is its
+command's, has none.
 
 ### Waiting, for scripts
 

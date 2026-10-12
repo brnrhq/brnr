@@ -763,6 +763,36 @@ fn adr_0023_watch_is_readable_by_default() {
     let _ = watch.wait();
 }
 
+/// `session close` and `process stop` take `--json`, printing what their
+/// text says: the session closed, as `session fork` names its session, and
+/// the process stopping, with its pid, as `process list` has it.
+#[test]
+fn adr_0034_stop_and_close_take_json() {
+    let env = Env::new("c-stopjson");
+    env.start(&[]);
+    let id = env.ok(&["session", "fork", "sess-1", "--json"]);
+    let forked: Value = serde_json::from_str(&id).unwrap();
+    assert_eq!(env.ok(&["session", "close", "sess-1"]), "closed sess-1\n");
+    let closed: Value = serde_json::from_str(&env.ok(&[
+        "session",
+        "close",
+        "--json",
+        forked["session"].as_str().unwrap(),
+    ]))
+    .unwrap();
+    assert_eq!(closed, json!({ "session": forked["session"] }));
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "still running");
+
+    env.start(&[]);
+    let pid = env.pid();
+    let stopped: Value =
+        serde_json::from_str(&env.ok(&["process", "stop", &pid, "--json"])).unwrap();
+    assert_eq!(stopped, json!({ "pid": pid.parse::<u64>().unwrap(), "status": "stopping" }));
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "still running");
+    env.start(&[]);
+    assert_eq!(env.ok(&["process", "stop", &env.pid()]), "stopping\n");
+}
+
 #[test]
 fn adr_0034_status_summarizes_the_session() {
     let env = Env::new("c-status");
@@ -3004,16 +3034,22 @@ fn adr_0063_a_flag_is_never_a_session_or_pid() {
     for (args, flag) in [
         (&["session", "status", "sess-1", "--bogus"][..], "--bogus"),
         (&["session", "status", "--bogus"], "--bogus"),
-        (&["session", "close", "--json"], "--json"),
-        (&["session", "close", "sess-1", "--json"], "--json"),
-        (&["process", "stop", "--json"], "--json"),
-        (&["process", "stop", &env.pid(), "--json"], "--json"),
+        (&["session", "close", "--bogus"], "--bogus"),
+        (&["session", "close", "sess-1", "--bogus"], "--bogus"),
+        (&["process", "stop", "--bogus"], "--bogus"),
+        (&["process", "stop", &env.pid(), "--bogus"], "--bogus"),
     ] {
         let err = env.fails(args);
         assert_eq!(err, format!("brnr: unknown option: {flag}\n"), "{args:?}");
     }
-    let err = env.fails(&["process", "stop"]);
-    assert!(err.starts_with("usage:\n  brnr process stop <pid>"), "{err}");
+    for (args, usage) in [
+        (&["process", "stop"][..], "brnr process stop <pid> [--json]"),
+        (&["process", "stop", "--json"], "brnr process stop <pid> [--json]"),
+        (&["session", "close", "--json"], "brnr session close <session> [--json]"),
+    ] {
+        let err = env.fails(args);
+        assert!(err.starts_with(&format!("usage:\n  {usage}")), "{args:?}: {err}");
+    }
     assert!(env.ok(&["session", "status", "--json", "sess-1"]).starts_with('{'));
     assert_eq!(env.prompts().len(), 0);
     assert_eq!(env.hosts().len(), 1, "stopped");

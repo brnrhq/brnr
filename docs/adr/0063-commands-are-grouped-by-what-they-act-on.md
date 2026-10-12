@@ -79,7 +79,8 @@ brnr doctor [--fix | --report] | skill [<reference> | install [--dir <dir>]...] 
   prompt:  --prompt <text> | -   --file <path>   --image <path>   --wait [--timeout <s>]
 ```
 
-`--json` stays wherever a command prints data (ADR 34). `--` always ends
+`--json` stays wherever a command prints data (ADR 34), which since its
+amendment for #170 includes `process stop` and `session close`. `--` always ends
 brnr's options: what follows is the agent's argument vector, or notify's
 command's. `--profile` and `-- <agent>` combine as they do today.
 

@@ -2,6 +2,9 @@
 
 Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
 2026-10-07. Implemented.
+Amended 2026-10-12 (#170): `stop` and `close` (`process stop` and `session
+close`, ADR 63) take `--json` too, as each prints what it did; `notify`
+still doesn't.
 
 ## Decision
 
@@ -16,8 +19,10 @@ Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
   prints from it.
 - Every command that prints data takes `--json`: one JSON value, or one event
   per line for `log`, `watch` and `start --foreground`. Errors stay on stderr,
-  with the same exit status. Commands whose answer is their exit status
-  (`stop`, `close`, `notify`) don't take it.
+  with the same exit status. `stop` and `close` take it too, though their
+  answer is mostly their exit status: they print what they did, the process
+  stopping (`{pid, status}`) and the session closed (`{session}`, as `fork`
+  names its session). `notify` doesn't: its stdout is its command's.
 - The usage starts with the commands that start a process (`acp`, `start`),
   then groups the rest by what they are about: processes (`ps`, `stop`),
   chat (`send`, `wait`, `cancel`, `queue`), approvals (`pending`, `show`,
@@ -42,3 +47,6 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
 
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0034_status_summarizes_the_session`.
+  - `adr_0034_stop_and_close_take_json`: `session close --json` prints
+    `{session}` and `process stop --json` `{pid, status}`, what their text
+    says.

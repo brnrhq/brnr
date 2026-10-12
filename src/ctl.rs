@@ -73,7 +73,7 @@ const USAGE: &str = "usage:
 
 process
   brnr process list [--json]
-  brnr process stop <pid>
+  brnr process stop <pid> [--json]
 
 session
   brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
@@ -83,7 +83,7 @@ session
                    the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
-  brnr session close <session>
+  brnr session close <session> [--json]
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
@@ -442,13 +442,12 @@ fn ps(args: &[String]) -> Result<(), String> {
 }
 
 /// The one `<session>` or `<pid>` a command takes, and whether `--json` was
-/// given, for one that takes it (`json`): an option it doesn't take is never
-/// read as its argument.
-fn one_arg(args: &[String], json: bool) -> Result<(String, bool), String> {
+/// given: an option it doesn't take is never read as its argument.
+fn one_arg(args: &[String]) -> Result<(String, bool), String> {
     let (mut arg, mut json_out) = (None, false);
     for a in args {
         match a.as_str() {
-            "--json" if json => json_out = true,
+            "--json" => json_out = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ if arg.is_none() => arg = Some(a.clone()),
             _ => return Err(USAGE.to_owned()),
@@ -458,11 +457,16 @@ fn one_arg(args: &[String], json: bool) -> Result<(String, bool), String> {
 }
 
 fn stop(args: &[String]) -> Result<(), String> {
-    let (pid, _) = one_arg(args, false)?;
+    let (pid, json_out) = one_arg(args)?;
     let hosts = discover()?;
     let host = process(&hosts, &pid)?;
     let response = call(host, &json!({ "cmd": "stop" }))?;
-    outln!("{}", response["status"].as_str().unwrap_or("?"));
+    if json_out {
+        // Its pid as `process list` has it, as `prompt cancel` names its session.
+        let pid = host.id().parse::<u64>().ok();
+        return print_json(&json!({ "pid": pid, "status": response["status"] }));
+    }
+    outln!("{}", text(&response["status"]));
     Ok(())
 }
 
@@ -586,7 +590,7 @@ fn agent_name(argv: &Value) -> String {
 }
 
 fn status(args: &[String]) -> Result<(), String> {
-    let (arg, json_out) = one_arg(args, true)?;
+    let (arg, json_out) = one_arg(args)?;
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, &arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;

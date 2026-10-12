@@ -185,6 +185,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     ("brnr event log $s --last 1 --json", Idle, Says(r#""event":"turn_ended""#)),
     ("brnr session status $s --json", Idle, Says(r#""state": "idle""#)),
+    ("brnr session close $s --json", Idle, Says(r#""session": "sess-1""#)),
     ("brnr session list --include active --json", Idle, Says(r#""session": "sess-1""#)),
     ("brnr permission requests --json", Approval, Says(r#""request": "p1""#)),
     ("brnr permission show $s p1 --json", Approval, Says(r#""oldText""#)),

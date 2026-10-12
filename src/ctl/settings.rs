@@ -8,7 +8,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    Host, USAGE, discover, one_arg, print_json, print_table, request_timeout, running_session, text,
+    Host, USAGE, discover, one_arg, print_json, print_table, request_timeout, response_json,
+    running_session, text,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -314,10 +315,14 @@ pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
 }
 
 pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, _) = one_arg(args, false)?;
+    let (arg, json_out) = one_arg(args)?;
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, &arg)?;
-    agent_call(host, &json!({ "cmd": "close", "session": id }))?;
+    let response = agent_call(host, &json!({ "cmd": "close", "session": id }))?;
+    if json_out {
+        print_json(&response_json(response))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
 }

@@ -68,10 +68,10 @@ brnr event log $s --last 1 --json
 **Close.** When its work is done, or the user says to stop:
 
 ```sh
-brnr session close $s
+brnr session close $s --json
 ```
 
-A running turn is cancelled first. The process stops with its last session.
+It prints `{session}` once closed. A running turn is cancelled first. The process stops with its last session.
 Deleting a session (`brnr session delete $s`: the agent's copy; with
 `--purge`, brnr's transcript too) can't be undone: only when the user asks.
 
