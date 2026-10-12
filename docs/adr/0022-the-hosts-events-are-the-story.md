@@ -13,6 +13,10 @@ replay.
 Amended by 59: a transcript is written only where only the user can read
 it: what others can reach is made private first, and a symlink is refused.
 
+Amended by 63: `session delete` writes `session_deleted` into the
+session's events file itself, a record of no process's (`host_id` null),
+and with `--purge` deletes both files.
+
 Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
 Of the config options and the commands, `session_changed` has a JSON merge
 patch (RFC 7396) by id and name: an option's new value (`{"model":

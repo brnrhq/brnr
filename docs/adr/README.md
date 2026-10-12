@@ -41,7 +41,7 @@ of to-resolve; the map at the end says where each went.
 | [12](0012-stopping-when-idle.md) | Stopping when idle | yes |
 | [13](0013-sessions-are-ids-processes-are-pids.md) | Sessions are the agent's ids, processes are pids | yes |
 | [14](0014-resuming.md) | Resuming | yes |
-| [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape | yes |
+| [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape (superseded by 63) | yes |
 | [16](0016-fork-and-close.md) | Fork and close | yes |
 | [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
 | [18](0018-what-send-does.md) | What `send` does | yes |
@@ -70,12 +70,12 @@ of to-resolve; the map at the end says where each went.
 | [41](0041-strict-mode.md) | Strict mode | yes |
 | [42](0042-feature-flags.md) | Feature flags for process management | yes |
 | [43](0043-acp-schema-types.md) | ACP types from the official schema crate | yes |
-| [44](0044-brnr-never-phones-home.md) | brnr never phones home (P15; proposed) | — |
+| [44](0044-brnr-never-phones-home.md) | brnr never phones home (P15) | — |
 | [45](0045-bug-reports.md) | Bug reports: `doctor --report`, and a link on a panic | yes |
-| [46](0046-a-skill-for-agents-that-use-brnr.md) | A skill for agents that use brnr (proposed) | yes |
-| [47](0047-brnr-on-crates-io.md) | brnr on crates.io, published by the release workflow (proposed) | yes |
-| [48](0048-log-waits-for-the-transcript.md) | `log` of a running session waits for its transcript (proposed) | yes |
-| [49](0049-the-line-that-takes-a-peer-past-the-limit.md) | The line that takes a peer past the limit doesn't count toward it (proposed) | yes |
+| [46](0046-a-skill-for-agents-that-use-brnr.md) | A skill for agents that use brnr | yes |
+| [47](0047-brnr-on-crates-io.md) | brnr on crates.io, published by the release workflow | yes |
+| [48](0048-log-waits-for-the-transcript.md) | `log` of a running session waits for its transcript | yes |
+| [49](0049-the-line-that-takes-a-peer-past-the-limit.md) | The line that takes a peer past the limit doesn't count toward it | yes |
 | [50](0050-a-session-that-cant-be-locked.md) | A session that can't be locked isn't served headless | yes |
 | [51](0051-lines-too-long-to-read.md) | Lines too long to read | yes |
 | [52](0052-reproducible-builds-and-sbom.md) | Release builds are checked for reproducibility and carry an SBOM | yes |
@@ -83,13 +83,13 @@ of to-resolve; the map at the end says where each went.
 | [54](0054-acp-version-1.md) | brnr speaks ACP version 1, and a start in another fails | yes |
 | [55](0055-a-transcript-cut-short.md) | A transcript cut short | yes |
 | [56](0056-a-turn-ends-once-its-steers-are-answered.md) | A turn ends once its steers are answered | yes |
-| [57](0057-a-loads-history.md) | A load's history is recorded once, and a `history` event says so (proposed) | yes |
+| [57](0057-a-loads-history.md) | A load's history is recorded once, and a `history` event says so | yes |
 | [58](0058-a-starts-flags-win-over-its-profile.md) | A start's flags win over its profile, setting by setting | yes |
-| [59](0059-transcripts-are-written-only-where-only-you-can-read.md) | Transcripts are written only where only you can read them (proposed) | yes |
-| [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up (proposed) | yes |
-| [61](0061-request-ids-are-the-hosts.md) | Every request to the agent has an id of the host's (proposed) | yes |
-| [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written (proposed) | yes |
-| [63](0063-commands-are-grouped-by-what-they-act-on.md) | Commands are grouped by what they act on, with ACP's verbs (proposed) | yes |
+| [59](0059-transcripts-are-written-only-where-only-you-can-read.md) | Transcripts are written only where only you can read them | yes |
+| [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up | yes |
+| [61](0061-request-ids-are-the-hosts.md) | Every request to the agent has an id of the host's | yes |
+| [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written | yes |
+| [63](0063-commands-are-grouped-by-what-they-act-on.md) | Commands are grouped by what they act on, with ACP's verbs | yes |
 
 ## Where the former entries went
 
@@ -119,7 +119,7 @@ ADR, its claim tests, and decisions without Rust tests. An implemented record
 without a registered test or an explicit `Test exemption:` explanation fails
 CI, as does an ignored claim test or a test naming a nonexistent ADR. Exemptions state the external
 check or the remaining gap; they are not counted as test coverage. ADR 1's
-principles and ADR 44's proposal are reported too, without pretending that a
+principles and ADR 44's are reported too, without pretending that a
 passing finite suite proves universal design principles.
 
 When changing a claim, update its test and its record's Tests section. Add a
