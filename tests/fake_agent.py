@@ -29,6 +29,8 @@ with environment variables:
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
+  LIST_TIMES=<json> session/list's first page also has these sessions, an
+                    object of session id to updatedAt
   NO_DELETE=1       don't offer session/delete
   NO_IMAGE=1        don't take images in prompts
   AUTH=1            session/new fails: authentication required, unless
@@ -630,7 +632,9 @@ for line in sys.stdin.buffer:
         if params.get("cursor") == "2":
             result(mid, {"sessions": [known]})
         else:
-            result(mid, {"sessions": [old], "nextCursor": "2"})
+            timed = json.loads(env("LIST_TIMES") or "{}").items()
+            more = [{"sessionId": i, "cwd": params.get("cwd"), "updatedAt": t} for i, t in timed]
+            result(mid, {"sessions": [old, *more], "nextCursor": "2"})
     elif method == "session/set_mode":
         while env("MODE_GATE") and not os.path.exists(env("MODE_GATE")):
             time.sleep(0.01)

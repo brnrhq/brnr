@@ -401,7 +401,11 @@ text and `--json` alike, most recently active first: STATE is `idle`, `busy`
 or `waiting` for one open in a process, `unreachable` for one whose process
 holds it but doesn't answer, `inactive` for one no process has open; SOURCE
 says who knows it, `brnr`, `agent` or `both`; TITLE and LAST ACTIVE are the
-agent's where it gives them. `--include active` keeps the sessions open in a
+agent's where it gives them. LAST ACTIVE is in UTC, an agent's converted
+from its offset to brnr's own form (`2026-10-11T06:00:00.000000Z` in
+`--json`, `2026-10-11 06:00:00Z` in text), and the order is by the time it
+names; one that isn't an RFC 3339 time is shown as the agent gave it, said
+on stderr, after the sessions with a time and before those with none. `--include active` keeps the sessions open in a
 process, `--include inactive` the others; both by default.
 
 `session resume` takes an id brnr knows, or any id the agent knows, which it

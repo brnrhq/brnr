@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Stdio;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::*;
 use serde_json::{Value, json};
@@ -1184,7 +1184,7 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     );
     assert_eq!(
         (&old["title"], &old["last_active"]),
-        (&"An old session".into(), &"2026-10-01T10:00:00Z".into())
+        (&"An old session".into(), &"2026-10-01T10:00:00.000000Z".into())
     );
     let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
     assert_eq!((&old["agent"], &old["cwd"]), (&"fake_agent.py".into(), &here.into()));
@@ -1213,7 +1213,7 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert_eq!((&old["state"], &old["source"]), (&"inactive".into(), &"both".into()));
     assert_eq!(
         (&old["title"], &old["last_active"]),
-        (&"An old session".into(), &"2026-10-01T10:00:00Z".into())
+        (&"An old session".into(), &"2026-10-01T10:00:00.000000Z".into())
     );
     assert_eq!((&one["state"], &one["source"]), (&"idle".into(), &"both".into()));
     assert!(one["pid"].is_u64(), "{one}");
@@ -1231,7 +1231,7 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
         let one = row(titled.as_array().unwrap(), "sess-1");
         assert_eq!((&one["source"], &one["title"]), (&"both".into(), &"The agent's title".into()));
     }
-    assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00Z", "{one}");
+    assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00.000000Z", "{one}");
     assert_eq!((&mine["state"], &mine["source"]), (&"inactive".into(), &"brnr".into()));
     assert_eq!(rows.last().unwrap()["session"], "old-1", "{rows:?}");
     let hosts = env.hosts().len();
@@ -1254,6 +1254,72 @@ fn adr_0063_list_joins_the_agents_sessions_on_id() {
     assert_eq!(code(&out), 1);
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
     assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions\n");
+}
+
+/// The agent's times are read with their offsets: LAST ACTIVE is in UTC, as
+/// brnr writes its own, in `--json` and text alike, and rows are ordered by
+/// the time each names, not by how it is written. One that isn't an RFC 3339
+/// time is shown as given, said, and listed after those that are, before
+/// those with none.
+#[test]
+fn adr_0063_list_reads_the_agents_times_in_utc() {
+    let env = Env::new("c-list-utc");
+    let before = SystemTime::now();
+    closed_session(&env, "mine-1", &[]);
+    let after = SystemTime::now();
+    let mine = row(&session_list(&env, &[]), "mine-1")["last_active"].clone();
+    let whole = |t: SystemTime| {
+        UNIX_EPOCH + Duration::from_secs(t.duration_since(UNIX_EPOCH).unwrap().as_secs())
+    };
+    let (hour, ahead, behind) =
+        (Duration::from_secs(3600), Duration::from_secs(7200), Duration::from_secs(19_800));
+    // An hour before brnr's time, written two hours ahead of UTC, so that
+    // its digits are later than brnr's; an hour after, written five and a
+    // half behind, so that they are earlier.
+    let (early, late) = (whole(before) - hour, whole(after) + hour);
+    let utc = |t: SystemTime, frac: &str| format!("{}.{frac}Z", &brnr::log::rfc3339(t)[..19]);
+    let times = json!({
+        "early-1": format!("{}.5+02:00", &brnr::log::rfc3339(early + ahead)[..19]),
+        "late-1": format!("{}.123456789-05:30", &brnr::log::rfc3339(late - behind)[..19]),
+        "odd-1": "2026-10-11T08:00:00+0200",
+    });
+    let list = |args: &[&str]| {
+        let out = env.brnr(args).env("LIST_TIMES", times.to_string()).output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let err = stderr(&out);
+        assert_eq!(err.lines().count(), 1, "{err}");
+        assert!(err.contains("odd-1") && err.contains("\"2026-10-11T08:00:00+0200\""), "{err}");
+        stdout(&out)
+    };
+
+    let rows: Value = serde_json::from_str(&list(&["session", "list", "--json", "--", AGENT]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let rows = rows.as_array().unwrap();
+    let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
+    assert_eq!(ids, ["late-1", "mine-1", "early-1", "old-1", "odd-1", "sess-1"], "{rows:?}");
+    let at = |id: &str| row(rows, id)["last_active"].clone();
+    assert_eq!(at("late-1"), utc(late, "123456"));
+    assert_eq!(at("mine-1"), mine, "brnr's own time is as brnr wrote it");
+    assert_eq!(at("early-1"), utc(early, "500000"));
+    assert_eq!(at("old-1"), "2026-10-01T10:00:00.000000Z");
+    assert_eq!(at("odd-1"), "2026-10-11T08:00:00+0200", "as the agent gave it");
+    assert_eq!(at("sess-1"), Value::Null);
+
+    // The text: the same rows in the same order, each time in UTC to the
+    // second, the one that isn't a time as given.
+    let table = list(&["session", "list", "--", AGENT]);
+    let lines: Vec<&str> = table.lines().skip(1).collect();
+    let ids: Vec<&str> = lines.iter().map(|l| l.split_whitespace().next().unwrap()).collect();
+    assert_eq!(ids, ["late-1", "mine-1", "early-1", "old-1", "odd-1", "sess-1"], "{table}");
+    for r in rows {
+        let line = lines.iter().find(|l| l.starts_with(r["session"].as_str().unwrap())).unwrap();
+        let shown = match r["last_active"].as_str() {
+            Some(t) if t.ends_with('Z') => format!("{} {}Z", &t[..10], &t[11..19]),
+            Some(t) => t.to_owned(),
+            None => "-".to_owned(),
+        };
+        assert!(line.contains(&format!("  {shown}  ")), "{shown} in {table}");
+    }
 }
 
 /// A session is the cwd's however brnr recorded it: `--cwd <dir>/`, or a

@@ -20,6 +20,16 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- `session list` shows LAST ACTIVE in UTC, in `--json` and text alike, and
+  orders rows by the time each names: an agent's `updatedAt` with an offset
+  (`2026-10-11T08:00:00+02:00`) was shown hours off and sorted by its
+  digits. It is now written as brnr writes its own times
+  (`2026-10-11T06:00:00.000000Z`); one that isn't an RFC 3339 time is shown
+  as the agent gave it, said on stderr, after the sessions with a time
+  (ADR 63).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

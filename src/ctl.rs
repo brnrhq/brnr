@@ -36,7 +36,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, paths, render};
+use brnr::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -715,11 +715,12 @@ fn duration(secs: u64) -> String {
     }
 }
 
-/// `2026-10-01T19:34:25.959660Z` as `2026-10-01 19:34:25Z`.
+/// `2026-10-01T21:34:25.959660+02:00` as `2026-10-01 19:34:25Z`: an RFC
+/// 3339 time in UTC, to the second; anything else as it is.
 fn when(ts: &str) -> String {
-    match (ts.get(..10), ts.get(11..19)) {
-        (Some(day), Some(time)) => format!("{day} {time}Z"),
-        _ => ts.to_owned(),
+    match log::utc(ts) {
+        Some(utc) => format!("{} {}Z", &utc[..10], &utc[11..19]),
+        None => ts.to_owned(),
     }
 }
 
