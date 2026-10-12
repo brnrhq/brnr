@@ -2593,6 +2593,24 @@ fn adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running() {
     let _ = editor.kill();
 }
 
+/// A replay that finishes a tool call running before it, then starts one
+/// with its id, leaves that one, the history's, not running (ADR 34).
+#[test]
+fn adr_0034_a_replays_call_with_a_finished_calls_id_is_not_running() {
+    let env = Env::new("ed-replay-reuse").agent("REUSED_TOOL", "1");
+    env.write_config("[profiles.default]\nlog = false\n");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
+    let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status_of(&env, "sess-1"));
+    writeln!(to_agent, "{}", editor_load(&env, 4, "sess-1")).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["tools"], json!([]), "{status}");
+    writeln!(to_agent, "{CANCEL}").unwrap();
+    let _ = editor.kill();
+}
+
 /// The editor resuming a session whose load the agent hasn't answered yet:
 /// the resume opens it, so the load failing after doesn't close it again
 /// (ADR 57).

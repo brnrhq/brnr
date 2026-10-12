@@ -50,3 +50,4 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running`.
   - `adr_0034_a_failed_loads_history_leaves_no_tool_call_running`.
+  - `adr_0034_a_replays_call_with_a_finished_calls_id_is_not_running`.

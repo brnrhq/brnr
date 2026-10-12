@@ -32,6 +32,8 @@ with environment variables:
                     exists, reading nothing meanwhile
   LOAD_ENDS_TURN=1  session/load while a turn hangs ends it, cancelled,
                     before it replays
+  REUSED_TOOL=1     session/load's history also finishes tool call t2, then
+                    starts another with its id
   LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
   LOAD_FAIL=1       session/load, once it has replayed, answers with an error
   NO_CLOSE=1        don't offer session/close
@@ -643,6 +645,10 @@ for line in sys.stdin.buffer:
             )
             say(sid, "replayed history")
             update(sid, {"sessionUpdate": "session_info_update", "title": "Loaded session"})
+            if env("REUSED_TOOL"):
+                tool = {"toolCallId": "t2", "title": "Run the build", "kind": "execute"}
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "completed"})
+                update(sid, {"sessionUpdate": "tool_call", **tool, "status": "in_progress"})
             if env("FULL_HISTORY"):
                 tool = {"toolCallId": "t0", "title": "Old tool", "kind": "read"}
                 update(sid, {"sessionUpdate": "tool_call", **tool, "status": "in_progress"})

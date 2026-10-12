@@ -185,6 +185,19 @@ impl Host {
     /// Takes in one update; returns the event it makes, if any.
     fn state_change(&mut self, i: usize, update: &SessionUpdate, raw: &Value) -> Option<Value> {
         let session = self.sessions[i].id.clone();
+        // A call that was running before a replay, ended in it, is done: one
+        // with its id after is the history's (see `drop_replay`).
+        let ended = match update {
+            SessionUpdate::ToolCall(call) if finished(call.status) => Some(&call.tool_call_id),
+            SessionUpdate::ToolCallUpdate(update) if update.fields.status.is_some_and(finished) => {
+                Some(&update.tool_call_id)
+            }
+            _ => None,
+        };
+        if let (Some(id), Some(replay)) = (ended, &mut self.sessions[i].replay) {
+            let id = id.to_string();
+            replay.tools.retain(|before| *before != id);
+        }
         let state = &mut self.sessions[i].state;
         let event = match update {
             SessionUpdate::ToolCall(call) => {
