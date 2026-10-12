@@ -25,6 +25,17 @@ brnr's own conventions:
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
 
+### Fixed
+
+- The crate on crates.io carries NOTICE, as Apache-2.0 asks a
+  redistribution to (ADR 47).
+- brnr works started with SIGCHLD ignored, as some supervisors leave it.
+  On Linux, `brnr acp` and `brnr session new` failed to start their process
+  (`No child processes`), and a process never saw its agent exit, so one in
+  the foreground never exited. brnr sets SIGCHLD to its default for itself;
+  what it starts, the agent among it, still finds it ignored, as it would
+  started directly (ADR 2, ADR 8, ADR 9).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

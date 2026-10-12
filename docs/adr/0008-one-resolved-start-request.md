@@ -58,3 +58,4 @@ Run `cargo test --release adr_0008_`. Named claims and their assertions:
   - `adr_0008_prompt_is_not_on_the_command_line`.
   - `adr_0008_acp_reports_a_config_error`.
   - `adr_0008_acp_hands_over_one_request`.
+  - `adr_0008_a_start_with_sigchld_ignored`.
