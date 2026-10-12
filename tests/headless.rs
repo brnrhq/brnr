@@ -2552,8 +2552,10 @@ fn adr_0057_overlapping_loads_in_an_editor_have_one_history() {
     let texts: Vec<&Value> = replayed.iter().filter_map(|e| e.get("text")).collect();
     let twice = ["old question", "replayed history", "old question", "replayed history"];
     assert_eq!(texts, twice, "{replayed:?}");
+    // The second replay's t0 is the first's, still running: that call
+    // again, not a second start (ADR 23).
     let tools = logged(&env, "old-1", "tool_call");
-    assert_eq!(tools.len(), 2, "{tools:?}");
+    assert_eq!(tools.len(), 1, "{tools:?}");
     let history = logged(&env, "old-1", "history");
     assert_eq!(history.len(), 1, "{history:?}");
     let said = (&history[0]["updates"], &history[0]["recorded"], &history[0]["loads"]);
@@ -2563,6 +2565,26 @@ fn adr_0057_overlapping_loads_in_an_editor_have_one_history() {
     assert!(text.contains(said), "{text}");
     let status = status_of(&env, "old-1");
     assert_eq!(status["tools"], json!([]), "{status}");
+    let _ = editor.kill();
+}
+
+/// A turn that ends while a load replays, its tool call still running, ends
+/// that call, and the history's isn't running either once the load is
+/// answered: `status` has none (ADR 34, ADR 57). (No transcript, so the
+/// replay is recorded, its tool call too.)
+#[test]
+fn adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running() {
+    let env = Env::new("ed-replay-turn").agent("FULL_HISTORY", "1").agent("LOAD_ENDS_TURN", "1");
+    env.write_config("[profiles.default]\nlog = false\n");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
+    let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
+    assert!(wait_for(Duration::from_secs(10), running), "{}", status_of(&env, "sess-1"));
+    writeln!(to_agent, "{}", editor_load(&env, 4, "sess-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let status = status_of(&env, "sess-1");
+    assert_eq!((&status["state"], &status["tools"]), (&"idle".into(), &json!([])), "{status}");
     let _ = editor.kill();
 }
 

@@ -346,7 +346,7 @@ impl Host {
     pub(super) fn begin_replay(&mut self, i: usize, record: bool) {
         // A message still coming isn't the history's.
         self.flush_agent_message(i);
-        let tools = self.sessions[i].state.tools.len();
+        let tools = self.sessions[i].state.tools.iter().map(|t| t.tool_call_id.clone()).collect();
         let replay = Replay {
             record,
             updates: 0,
@@ -368,7 +368,7 @@ impl Host {
         let Some(replay) = self.sessions[i].replay.take() else { return };
         if replay.record {
             // A tool call history left unfinished isn't running now.
-            self.sessions[i].state.tools.truncate(replay.tools);
+            self.sessions[i].state.tools.retain(|t| replay.tools.contains(&t.tool_call_id));
         }
         let session = self.sessions[i].id.clone();
         self.emit(json!({

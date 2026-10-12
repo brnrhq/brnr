@@ -47,3 +47,5 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
   - `adr_0034_status_summarizes_the_session`.
   - `adr_0034_a_cancelled_turns_tool_calls_are_not_running`.
   - `adr_0034_a_failed_turns_tool_calls_are_not_running`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running`.

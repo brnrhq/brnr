@@ -47,7 +47,7 @@ pub(super) struct SessionState {
 /// A tool call as the tool events and `brnr session status` have it.
 #[derive(Clone, Serialize)]
 pub(super) struct Tool {
-    tool_call_id: String,
+    pub(super) tool_call_id: String,
     title: String,
     kind: ToolKind,
     status: ToolCallStatus,

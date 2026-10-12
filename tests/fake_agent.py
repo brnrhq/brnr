@@ -30,6 +30,8 @@ with environment variables:
                     and the session's commands
   LOAD_GATE=<file>  answer session/load, once it has replayed, when this file
                     exists, reading nothing meanwhile
+  LOAD_ENDS_TURN=1  session/load while a turn hangs ends it, cancelled,
+                    before it replays
   NO_CLOSE=1        don't offer session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
@@ -612,6 +614,9 @@ for line in sys.stdin.buffer:
         if env("STALL"):
             time.sleep(100000)
     elif method in ("session/resume", "session/load"):
+        if method == "session/load" and env("LOAD_ENDS_TURN") and hanging is not None:
+            end_turn(hanging, "cancelled")
+            hanging = None
         if method == "session/load" and not env("NO_HISTORY"):
             update(
                 sid,

@@ -121,9 +121,9 @@ pub(super) struct Replay {
     pub(super) record: bool,
     /// The updates the agent has replayed.
     pub(super) updates: u64,
-    /// How many tool calls were running before it: those after, the
-    /// history's, aren't running now.
-    pub(super) tools: usize,
+    /// The ids of the tool calls running before it, while their turn runs:
+    /// the others, the history's, aren't running now.
+    pub(super) tools: Vec<String>,
     /// The loads it covers: the editor's load of a session while its replay
     /// runs joins it, as the agent's replays can't be told apart (P4).
     pub(super) loads: u32,
@@ -783,8 +783,11 @@ impl Host {
                     s.turn_started = None;
                     // Its tool calls end with it, however it ended: one the
                     // agent left unfinished, cancelled or failed, isn't
-                    // running now (ADR 34).
+                    // running now (ADR 34). Nor are those a replay found.
                     s.state.tools.clear();
+                    if let Some(replay) = &mut s.replay {
+                        replay.tools.clear();
+                    }
                 }
             }
             let injected = prompt.as_ref().is_some_and(|p| p.injected);
