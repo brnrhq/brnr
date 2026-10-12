@@ -27,6 +27,7 @@ with environment variables:
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   NO_CLOSE=1        don't offer session/close
+  CLOSE_GATE=<file> wait for this file before answering session/close
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   NO_DELETE=1       don't offer session/delete
@@ -42,7 +43,9 @@ with environment variables:
   STEER_ANSWER=<a>  a steer into a running turn is answered after that turn
                     ends: late (it takes up the steered text, then answers
                     injected), error (it ends the turn, then answers with an
-                    error) or never (it ends the turn, and never answers)
+                    error), never (it ends the turn, and never answers) or
+                    gate (it ends the turn, then answers injected once the
+                    file $STEER_GATE exists, reading on meanwhile)
   MODEL_ID=<id>     the model config option's id (model by default)
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
@@ -58,6 +61,8 @@ with environment variables:
                     only the requester
   RAW_LOG=<file>    every line it receives is appended to file, byte for byte
                     (a line that isn't JSON is then skipped)
+  SIGCHLD_LOG=<file>  where it writes how it found SIGCHLD as it starts:
+                    ignored or default
   SESSION_ID=<id>   the first session it opens has this id
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
@@ -191,7 +196,8 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE) or a steer (STEER_GATE) is sent
+# from a thread of its own.
 sending = threading.Lock()
 
 
@@ -260,6 +266,12 @@ def new_later(gate, mid, session):
     while not os.path.exists(gate):
         time.sleep(0.05)
     new_opened(mid, session)
+
+
+def steer_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.05)
+    result(mid, {"outcome": "injected"})
 
 
 def text_of(prompt):
@@ -485,6 +497,10 @@ def ask(mid, sid, kind):
     )
 
 
+if env("SIGCHLD_LOG"):
+    with open(env("SIGCHLD_LOG"), "w") as f:
+        ignored = signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+        f.write("ignored" if ignored else "default")
 if env("STDERR"):
     sys.stderr.write(env("STDERR") + "\n")
     sys.stderr.flush()
@@ -609,6 +625,8 @@ for line in sys.stdin.buffer:
         sessions += 1
         result(mid, opened(f"sess-{sessions}"))
     elif method == "session/close":
+        while env("CLOSE_GATE") and not os.path.exists(env("CLOSE_GATE")):
+            time.sleep(0.01)
         result(mid, {})
     elif method == "session/delete" and not env("NO_DELETE"):
         if sid.startswith("gone"):
@@ -687,7 +705,7 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             if hanging is not None:
                 turn, hanging = hanging, None
-                if late in ("error", "never"):
+                if late in ("error", "never", "gate"):
                     end_turn(turn)
                 else:
                     run(turn, sid, text_of(params["prompt"]))
@@ -695,6 +713,9 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             elif late == "error":
                 error(mid, -32603, "steering failed")
+            elif late == "gate":
+                gate = env("STEER_GATE")
+                threading.Thread(target=steer_later, args=(gate, mid), daemon=True).start()
         elif idle == "promptRequired":
             result(mid, {"outcome": "promptRequired", "reason": "noRunningTurn"})
         else:

@@ -241,6 +241,94 @@ fn adr_0007_large_prompt_from_stdin() {
     );
 }
 
+/// An Env whose agent writes how it found SIGCHLD (see `sigchld_found`).
+fn sigchld_env(name: &str) -> Env {
+    let env = Env::new(name);
+    let log = env.dir.join("sigchld");
+    env.agent("SIGCHLD_LOG", log.to_str().unwrap())
+}
+
+/// How the agent found SIGCHLD: `ignored` or `default`.
+fn sigchld_found(env: &Env) -> String {
+    let log = env.dir.join("sigchld");
+    assert!(wait_for(Duration::from_secs(10), || log.exists()), "the agent didn't start");
+    assert!(wait_for(Duration::from_secs(5), || fs::metadata(&log).unwrap().len() > 0));
+    fs::read_to_string(log).unwrap()
+}
+
+/// `brnr session new` started with SIGCHLD ignored, as some supervisors leave
+/// it, starts its process, which waits for its agent all the same: the
+/// session stops when asked. The agent finds SIGCHLD as brnr did.
+#[test]
+fn adr_0008_a_start_with_sigchld_ignored() {
+    let env = sigchld_env("chld-new");
+    let out =
+        with_sigchld_ignored(&mut env.brnr(&new_args(&["--prompt", "reply hi"]))).output().unwrap();
+    assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    assert_eq!(sigchld_found(&env), "ignored");
+    env.stop();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "didn't stop");
+}
+
+/// `brnr session new --foreground` with SIGCHLD ignored sees its process
+/// through: the process sees its agent exit, and exits as it did.
+#[test]
+fn adr_0009_foreground_with_sigchld_ignored() {
+    let env = sigchld_env("chld-fg");
+    let args =
+        new_args(&["--foreground", "--quiet", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    // stderr to a file: a process left running would hold a pipe open.
+    let err = env.dir.join("stderr");
+    let mut fg = with_sigchld_ignored(&mut env.brnr(&args))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let exited = wait_exit(&mut fg, Duration::from_secs(20));
+    if !exited {
+        let _ = fg.kill();
+    }
+    let status = fg.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit: {err}");
+    assert!(status.success(), "{status}: {err}");
+    assert!(env.hosts().is_empty(), "its process is still running: {err}");
+    assert_eq!(sigchld_found(&env), "ignored");
+}
+
+/// `brnr acp` run by an editor that ignores SIGCHLD starts its process, and
+/// the agent finds SIGCHLD ignored, as it would run by the editor directly
+/// (P1). When the editor's stdin ends, the agent's exit is seen and passed
+/// on.
+#[test]
+fn adr_0002_acp_with_sigchld_ignored() {
+    let env = sigchld_env("chld-acp");
+    let err = env.dir.join("stderr");
+    let mut editor = with_sigchld_ignored(&mut env.brnr(&["acp", "--", AGENT]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{INITIALIZE}").unwrap();
+    let mut line = String::new();
+    let answered = from_agent.read_line(&mut line).unwrap() > 0;
+    assert!(answered, "no answer to initialize: {}", fs::read_to_string(&err).unwrap());
+    assert_eq!(sigchld_found(&env), "ignored");
+    drop(to_agent);
+    let exited = wait_exit(&mut editor, Duration::from_secs(10));
+    if !exited {
+        let _ = editor.kill();
+    }
+    let status = editor.wait().unwrap();
+    let err = fs::read_to_string(err).unwrap();
+    assert!(exited, "didn't exit with the agent: {err}");
+    assert!(status.success(), "{status}: {err}");
+}
+
 // ---- stopping ----------------------------------------------------------
 
 /// An agent that stops reading its stdin must not wedge the host: it still
@@ -817,6 +905,45 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     let dropped = ("message_dropped".to_owned(), Value::from("m2"), Value::from("close"));
     let ended = ("turn_ended".to_owned(), serde_json::json!(["m1"]), Value::from("control"));
     assert_eq!(endings(&env), [dropped, ended]);
+}
+
+/// `--interrupt` after a turn's own answer, while a steer into it is
+/// unanswered, is held, with no turn to cancel: it waits for that answer, as
+/// what is held does, then goes ahead of what is held. Each turn ends once,
+/// with its own messages, and each message's `--wait` ends with its turn.
+#[test]
+fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
+    let env = Env::new("steer-interrupt");
+    let gate = env.dir.join("answer-steer");
+    let env = env.agent("STEER_ANSWER", "gate").agent("STEER_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let wait = |args: &[&str]| {
+        let mut all = vec!["prompt", "send", "sess-1", "--wait", "--timeout", "15"];
+        all.extend(args);
+        env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let first = wait(&["hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let steered = wait(&["--steer", "reply steered"]);
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    let interrupt = wait(&["--interrupt", "reply third"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
+    fs::write(&gate, "").unwrap();
+    for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
+        let out = waiter.wait_with_output().unwrap();
+        let log = env.ok(&["event", "log", "sess-1"]);
+        assert_eq!(out.status.code(), Some(0), "{id}: {}{log}", stderr(&out));
+        if id == "m3" {
+            // Held: no turn runs for it to cancel.
+            assert!(stderr(&out).contains("held (message m3)"), "{}", stderr(&out));
+        }
+    }
+    assert!(env.calls_of("session/cancel").is_empty());
+    assert_eq!(env.prompts(), ["hang on", "reply third"]);
+    assert_eq!(turns(&env), [vec!["m1", "m2"], vec!["m3"]]);
 }
 
 /// `--steer` into a running turn needs an agent that advertises steering

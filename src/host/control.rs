@@ -127,8 +127,8 @@ pub const EVENTS: &[&str] = &[
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
 /// ACP messages, the agent's thoughts, usage and tool calls' progress.
-/// `watch` and `log` without `--events`, and a session in the foreground,
-/// in text and JSON alike.
+/// `event watch` and `event log` without `--events`, and a session in the
+/// foreground, in text and JSON alike.
 pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.
@@ -785,12 +785,19 @@ impl Host {
                 self.steer(i, held);
                 "steered"
             }
-            "interrupt" if busy => {
+            // With no turn running but steers unanswered, the last turn's
+            // `turn_ended` waits for them, and so does what is held (ADR 56):
+            // held, ahead of the rest, with no turn to cancel.
+            "interrupt" if busy || waiting => {
                 let s = &mut self.sessions[i];
                 s.held.insert(s.interrupts, held);
                 s.interrupts += 1;
-                self.cancel(&session, "cancel");
-                "interrupting"
+                if !busy {
+                    "held"
+                } else {
+                    self.cancel(&session, "cancel");
+                    "interrupting"
+                }
             }
             _ => {
                 self.send_prompt(i, held);

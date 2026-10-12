@@ -4,6 +4,10 @@ Accepted 2026-10-08. Implemented. Amends 6 (what a reader holds beside the
 cap), 10 (the agent's stderr goes on in pieces) and 26 (a line too long to
 read). Resolves #58.
 
+Amended by 60: each peer's queue is 16 MiB, plus the line that takes it
+past the cap, up to 64 MiB of lines longer than 16 MiB that come while it
+is past it, and one more.
+
 Amended by 62: the agent's stderr goes on as each read brings it, up to
 64 KiB, a line or not; a piece of 64 KiB is what the host log records of a
 longer line.

@@ -3,6 +3,15 @@
 Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
 2026-10-07. Implemented.
 
+Amended by 63: the usage starts with `acp`, then has a section per group
+(`process`, `session`, `prompt`, `queue`, `permission`, `config`, `event`),
+then brnr (`doctor`, `skill`, `--version`), and `brnr <group> --help`
+prints a group's. `list`, `status` and `ps` are `session list`,
+`session status` and `process list`; one event per line is for
+`event log`, `event watch` and `session new --foreground`; and `stop`,
+`close` and `notify`, without `--json`, are `process stop`,
+`session close` and `event notify`.
+
 ## Decision
 
 - A command's text and its `--json` carry the same data (P5). `list` is an

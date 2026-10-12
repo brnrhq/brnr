@@ -20,12 +20,34 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
+  and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
+
 ### Fixed
 
 - A started bridge's stderr is read as bytes and decoded lossily, so a line
   that isn't UTF-8 no longer stops the reading and kills the bridge with
   SIGPIPE on its next write; a line longer than 64 KiB goes to the host log
   in pieces of that, as the agent's stderr does (ADR 35, ADR 51).
+- `prompt send --interrupt` while no turn runs but the last turn's
+  `turn_ended` waits for a steer's answer is held, ahead of what is held,
+  and goes once that turn has ended: before, it started a turn at once, and
+  if that turn ended first the earlier turn's `turn_ended` was lost, its
+  message's `--wait` timed out, and the late steer was put in the wrong turn
+  (ADR 56).
+- A headless process with `stop_when_idle` waits without using a whole CPU
+  while the agent is slow to answer a session's `session/close`, once the
+  session's idle time has run out (ADR 12, 16).
+- The crate on crates.io carries NOTICE, as Apache-2.0 asks a
+  redistribution to (ADR 47).
+- brnr works started with SIGCHLD ignored, as some supervisors leave it.
+  On Linux, `brnr acp` and `brnr session new` failed to start their process
+  (`No child processes`), and a process never saw its agent exit, so one in
+  the foreground never exited. brnr sets SIGCHLD to its default for itself;
+  what it starts, the agent among it, still finds it ignored, as it would
+  started directly (ADR 2, ADR 8, ADR 9).
 
 ## [0.8.0] - 2026-10-09
 
