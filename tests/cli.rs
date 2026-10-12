@@ -2047,7 +2047,7 @@ fn adr_0027_show_explains_a_permission_request() {
 
 /// With no session named, `requests` asks only the processes that answer,
 /// as process list and session list do (ADR 3): one that doesn't hides
-/// nothing waiting in the others.
+/// nothing waiting in the others, and is said, on stderr, not to be listed.
 #[test]
 fn adr_0027_requests_passes_over_a_silent_process() {
     let env = Env::new("c-reqsilent");
@@ -2066,6 +2066,8 @@ fn adr_0027_requests_passes_over_a_silent_process() {
     let [table, json] = [table, json].map(|c| c.wait_with_output().unwrap());
     kill(silent, libc::SIGCONT);
     assert_eq!((code(&table), code(&json)), (0, 0), "{}{}", stderr(&table), stderr(&json));
+    let note = format!("brnr: process {silent} is not answering; its approvals aren't listed\n");
+    assert_eq!((stderr(&table), stderr(&json)), (note.clone(), note));
     let row = stdout(&table);
     let row = row.lines().find(|l| l.starts_with("sess-2")).unwrap_or_else(|| panic!("{row}"));
     assert!(row.contains("p1"), "{row}");

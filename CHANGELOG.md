@@ -25,8 +25,9 @@ brnr's own conventions:
 - `permission requests` with no session lists the approvals in the
   processes that answer, and exits 0, when one doesn't: it passes over a
   process whose status went unanswered, as `process list` and
-  `session list` do, instead of waiting for it again and failing with
-  `process <pid>: not answering` (ADR 27, ADR 3).
+  `session list` do, saying `process <pid> is not answering; its approvals
+  aren't listed` on stderr, instead of waiting for it again and failing
+  with `process <pid>: not answering` (ADR 27, ADR 3).
 
 ## [0.8.0] - 2026-10-09
 
