@@ -20,6 +20,11 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
+  and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added
