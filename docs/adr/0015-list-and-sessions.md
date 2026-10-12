@@ -1,12 +1,12 @@
 # 15. `list` and `sessions`, and one row shape
 
-Superseded by 63: `session list` joins brnr's sessions and the agent's, with
-a SOURCE column; ADR 15's tests are ADR 63's now.
-
 Accepted (former decisions 36, 43 and 46); reviewed 2026-10-07. Implemented:
 `sessions` takes a running session's STATE and PID from the rows `list`
 makes, so one whose process holds its lock but doesn't answer is
 `unreachable` there too, with the holder's pid, not `-`.
+
+Superseded by 63: `session list` joins brnr's sessions and the agent's, with
+a SOURCE column; ADR 15's tests are ADR 63's now.
 
 ## Context
 

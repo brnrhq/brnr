@@ -22,6 +22,8 @@ of to-resolve; the map at the end says where each went.
 - A decision is changed by a new record. The old one gets a line under its
   title, `Superseded by N` or `Amended by N: …`, and is otherwise left as it
   was. When a record's implementation lands, its status line says so.
+- Under the title, the status line comes first, then the `Amended by` and
+  `Superseded by` lines, in the order of the records' numbers.
 
 ## Records
 

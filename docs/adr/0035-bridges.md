@@ -1,5 +1,9 @@
 # 35. Bridges
 
+Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
+Implemented.
+Resolves review item 4 with ADR 36.
+
 Amended by 48: a request, `logged`, answered once the process has written
 what it recorded until then.
 
@@ -9,10 +13,6 @@ Amended by 63: `approve` and `deny` are `allow` and `reject`
 and `options`; `queue` takes `show`; and requests `new` and `resume` open a
 session in the running process (`session new --pid`, `session resume
 --pid`).
-
-Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
-Implemented.
-Resolves review item 4 with ADR 36.
 
 ## Context
 

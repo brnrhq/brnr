@@ -1,5 +1,17 @@
 # 22. The host's events are the story, and transcripts are two files
 
+Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
+Of the config options and the commands, `session_changed` has a JSON merge
+patch (RFC 7396) by id and name: an option's new value (`{"model":
+"opus"}`), a command added (`{"review": {…}}`), `null` for what is gone. An
+answer to `set_config_option` that changes a value makes one too, as an
+agent needn't send an update for it. Records the logger skips behind a slow
+disk (ADR 6) leave a gap that a `records-skipped` record counts, in the
+session's events file and the host log; so do records a write fails to put
+in a file, in the file that lost them once it takes records again (the raw
+file's in its events file). `log` shows such a gap whatever `--events`
+chose.
+
 Amended by 48: `log` of a running session first waits until its process has
 written what it recorded until then. Amended by 55: what reads a transcript
 passes over a line it can't read, cut short or not, and `log` says so.
@@ -16,18 +28,6 @@ it: what others can reach is made private first, and a symlink is refused.
 Amended by 63: `session delete` writes `session_deleted` into the
 session's events file itself, a record of no process's (`host_id` null),
 and with `--purge` deletes both files.
-
-Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
-Of the config options and the commands, `session_changed` has a JSON merge
-patch (RFC 7396) by id and name: an option's new value (`{"model":
-"opus"}`), a command added (`{"review": {…}}`), `null` for what is gone. An
-answer to `set_config_option` that changes a value makes one too, as an
-agent needn't send an update for it. Records the logger skips behind a slow
-disk (ADR 6) leave a gap that a `records-skipped` record counts, in the
-session's events file and the host log; so do records a write fails to put
-in a file, in the file that lost them once it takes records again (the raw
-file's in its events file). `log` shows such a gap whatever `--events`
-chose.
 
 ## Context
 
