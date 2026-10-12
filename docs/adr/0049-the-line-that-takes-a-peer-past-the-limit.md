@@ -1,6 +1,6 @@
 # 49. The line that takes a peer past the limit doesn't count toward it
 
-Proposed 2026-10-08. Implemented. Amends ADR 6 (when a peer is behind).
+Accepted 2026-10-08. Implemented. Amends ADR 6 (when a peer is behind).
 
 Amended by 60: nor, up to 64 MiB of them, do lines longer than the limit
 that come while a peer is past it.

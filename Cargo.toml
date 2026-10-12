@@ -7,11 +7,13 @@ rust-version = "1.88"
 description = "A burner phone for your coding agents: run ACP agents behind a host you can talk to from outside the editor."
 license = "Apache-2.0"
 repository = "https://github.com/brnrhq/brnr"
+homepage = "https://brnrhq.github.io/brnr/"
 readme = "README.md"
 keywords = ["acp", "agent", "claude", "codex", "editor"]
 categories = ["command-line-utilities", "development-tools"]
-# What `cargo publish` uploads (ADR 47): the source and what it embeds.
-include = ["/src/", "/skills/", "/README.md", "/LICENSE"]
+# What `cargo publish` uploads (ADR 47): the source and what it embeds, and
+# the license and NOTICE, which Apache-2.0 asks a redistribution to carry.
+include = ["/src/", "/skills/", "/README.md", "/LICENSE", "/NOTICE"]
 
 [dependencies]
 # ACP's types (ADR 43 in docs/adr), without schemars and without the

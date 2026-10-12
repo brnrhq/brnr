@@ -1,6 +1,6 @@
 # 61. Every request to the agent has an id of the host's
 
-Proposed 2026-10-09. Implemented. Amends ADR 2 (the editor's requests reach
+Accepted 2026-10-09. Implemented. Amends ADR 2 (the editor's requests reach
 the agent with another id) and ADR 26 (an answer the host can't read).
 Resolves GHSA-84pw-hh9c-w2m8.
 

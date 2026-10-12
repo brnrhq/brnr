@@ -1,7 +1,7 @@
 # 60. A message bigger than a peer's queue reaches every peer that keeps up
 
-Proposed 2026-10-08. Implemented. Amends ADR 6 and 49 (when a peer is
-behind). Resolves #82.
+Accepted 2026-10-09. Implemented. Amends ADR 6 and 49 (when a peer is
+behind) and 51 (each peer's queue, in what is bounded). Resolves #82.
 
 ## Context
 

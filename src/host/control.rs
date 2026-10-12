@@ -95,7 +95,7 @@ use serde_json::{Value, json};
 use super::acp::{Choice, Held, Replay};
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
-use super::{Ev, Host};
+use super::{Ev, Host, PIECE};
 use crate::config::{Bridge, Experimental, Log};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
@@ -127,8 +127,8 @@ pub const EVENTS: &[&str] = &[
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
 /// ACP messages, the agent's thoughts, usage and tool calls' progress.
-/// `watch` and `log` without `--events`, and a session in the foreground,
-/// in text and JSON alike.
+/// `event watch` and `event log` without `--events`, and a session in the
+/// foreground, in text and JSON alike.
 pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.
@@ -291,6 +291,66 @@ fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     }
 }
 
+/// A started bridge's stderr, a line at a time, until EOF: decoded lossily,
+/// so bytes that aren't UTF-8 don't end the reading (and the bridge's next
+/// write with SIGPIPE), and a line longer than `PIECE` in pieces of that,
+/// as the agent's is (ADR 51). A character a piece's end would cut starts
+/// the next piece instead, and a note's text, decoded, is at most a piece
+/// too.
+fn read_stderr(input: impl Read, label: String, tx: &SyncSender<Ev>) {
+    let mut reader = BufReader::new(input);
+    let mut line = Vec::new();
+    // Whether the last piece filled up before its line ended.
+    let mut cut = false;
+    loop {
+        let room = (PIECE - line.len()) as u64;
+        let more = matches!((&mut reader).take(room).read_until(b'\n', &mut line), Ok(n) if n > 0);
+        // The newline of a line that filled the last piece only ends it.
+        let skip = cut && line == b"\n";
+        cut = line.len() == PIECE && !line.ends_with(b"\n");
+        let next = if cut { line.split_off(line.len() - unfinished(&line)) } else { Vec::new() };
+        if !skip && !line.is_empty() {
+            let text = match line.strip_suffix(b"\n") {
+                Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
+                None => &line,
+            };
+            // Each byte that isn't UTF-8 becomes U+FFFD, 3 bytes: a note is
+            // still at most a piece, the rest of the text in the next ones.
+            let text = String::from_utf8_lossy(text);
+            let mut rest = &text[..];
+            loop {
+                let mut end = rest.len().min(PIECE);
+                while !rest.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let (note, after) = rest.split_at(end);
+                if tx.send(Ev::BridgeStderr { label: label.clone(), line: note.into() }).is_err() {
+                    return;
+                }
+                rest = after;
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+        if !more {
+            return;
+        }
+        line = next;
+    }
+}
+
+/// How many bytes at the end of `bytes` start a UTF-8 character they don't
+/// finish: at most 3.
+fn unfinished(bytes: &[u8]) -> usize {
+    let tail = &bytes[bytes.len().saturating_sub(3)..];
+    let starts = |i: &usize| {
+        std::str::from_utf8(&tail[*i..])
+            .is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none())
+    };
+    (0..tail.len()).find(starts).map_or(0, |i| tail.len() - i)
+}
+
 impl Host {
     /// Starts a bridge from the profile, subscribed to its events.
     pub(super) fn start_bridge(
@@ -337,13 +397,7 @@ impl Host {
         thread::spawn(move || read_requests(stdout, peer, &t));
         let stderr = child.stderr.take().unwrap();
         let (t, l) = (tx.clone(), label.clone());
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if t.send(Ev::BridgeStderr { label: l.clone(), line }).is_err() {
-                    return;
-                }
-            }
-        });
+        thread::spawn(move || read_stderr(stderr, l, &t));
         let (t, l) = (tx.clone(), label.clone());
         drop(child); // Reaped by the host (see `Ev::BridgeExited`).
         thread::spawn(move || {
@@ -731,12 +785,19 @@ impl Host {
                 self.steer(i, held);
                 "steered"
             }
-            "interrupt" if busy => {
+            // With no turn running but steers unanswered, the last turn's
+            // `turn_ended` waits for them, and so does what is held (ADR 56):
+            // held, ahead of the rest, with no turn to cancel.
+            "interrupt" if busy || waiting => {
                 let s = &mut self.sessions[i];
                 s.held.insert(s.interrupts, held);
                 s.interrupts += 1;
-                self.cancel(&session, "cancel");
-                "interrupting"
+                if !busy {
+                    "held"
+                } else {
+                    self.cancel(&session, "cancel");
+                    "interrupting"
+                }
             }
             _ => {
                 self.send_prompt(i, held);
@@ -1057,5 +1118,45 @@ mod tests {
         let big = QUEUE_BYTES + 1;
         assert_eq!(taken(&queue, &[big; 10]), ASIDE_BYTES / big + 1, "set aside, and one more");
         assert!(queued.load(Relaxed) <= QUEUE_BYTES + ASIDE_BYTES + big);
+    }
+
+    /// What `read_stderr` makes of `bytes`, as the notes' texts.
+    fn stderr_notes(bytes: &[u8]) -> Vec<String> {
+        let (tx, rx) = mpsc::sync_channel(16);
+        read_stderr(bytes, "b#0".into(), &tx);
+        drop(tx);
+        rx.into_iter()
+            .map(|ev| match ev {
+                Ev::BridgeStderr { line, .. } => line,
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adr_0051_a_bridges_stderr_ends_with_what_a_piece_left() {
+        assert_eq!(unfinished("\u{e9}".as_bytes()), 0);
+        assert_eq!(
+            (unfinished(b"x\xc3"), unfinished(b"\xe2\x82"), unfinished(b"\xf0\x9f\x98")),
+            (1, 2, 3)
+        );
+        assert_eq!(unfinished(b"\x82\x82\x82"), 0, "no character starts there");
+        // The stream ends in the middle of a character a piece cut: what is
+        // left of it is a note too.
+        let mut bytes = vec![b'x'; PIECE - 1];
+        bytes.extend_from_slice(b"\xe2\x82");
+        let said = stderr_notes(&bytes);
+        assert_eq!(said.len(), 2);
+        assert_eq!((said[0].len(), said[1].as_str()), (PIECE - 1, "\u{fffd}"));
+        assert_eq!(stderr_notes(b"a\n\nb\r\nc"), ["a", "", "b", "c"]);
+    }
+
+    #[test]
+    fn adr_0051_a_bridges_stderr_note_is_at_most_a_piece_once_decoded() {
+        // Each byte becomes U+FFFD, 3 bytes of text: notes cut at characters.
+        let said = stderr_notes(&vec![0xff; PIECE]);
+        let lens: Vec<usize> = said.iter().map(String::len).collect();
+        assert_eq!(lens, [PIECE - 1, PIECE - 1, PIECE - 1, 3]);
+        assert!(said.iter().all(|n| n.chars().all(|c| c == '\u{fffd}')));
     }
 }

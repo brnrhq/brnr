@@ -1,18 +1,5 @@
 # 22. The host's events are the story, and transcripts are two files
 
-Amended by 48: `log` of a running session first waits until its process has
-written what it recorded until then. Amended by 55: what reads a transcript
-passes over a line it can't read, cut short or not, and `log` says so.
-
-Amended by 53: the session id in the file names is escaped, one name per
-id, so distinct sessions never share a transcript.
-
-Amended by 57: a load of a session brnr has no transcript of records the
-replay.
-
-Amended by 59: a transcript is written only where only the user can read
-it: what others can reach is made private first, and a symlink is refused.
-
 Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
 Of the config options and the commands, `session_changed` has a JSON merge
 patch (RFC 7396) by id and name: an option's new value (`{"model":
@@ -24,6 +11,25 @@ session's events file and the host log; so do records a write fails to put
 in a file, in the file that lost them once it takes records again (the raw
 file's in its events file). `log` shows such a gap whatever `--events`
 chose.
+
+Amended by 48: `log` of a running session first waits until its process has
+written what it recorded until then.
+
+Amended by 53: the session id in the file names is escaped, one name per
+id, so distinct sessions never share a transcript.
+
+Amended by 55: what reads a transcript passes over a line it can't read,
+cut short or not, and `log` says so.
+
+Amended by 57: a load of a session brnr has no transcript of records the
+replay.
+
+Amended by 59: a transcript is written only where only the user can read
+it: what others can reach is made private first, and a symlink is refused.
+
+Amended by 63: `session delete` writes `session_deleted` into the
+session's events file itself, a record of no process's (`host_id` null),
+and with `--purge` deletes both files.
 
 ## Context
 
