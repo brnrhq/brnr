@@ -819,6 +819,45 @@ fn adr_0056_steer_never_answered_is_dropped_by_close() {
     assert_eq!(endings(&env), [dropped, ended]);
 }
 
+/// `--interrupt` after a turn's own answer, while a steer into it is
+/// unanswered, is held, with no turn to cancel: it waits for that answer, as
+/// what is held does, then goes ahead of what is held. Each turn ends once,
+/// with its own messages, and each message's `--wait` ends with its turn.
+#[test]
+fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
+    let env = Env::new("steer-interrupt");
+    let gate = env.dir.join("answer-steer");
+    let env = env.agent("STEER_ANSWER", "gate").agent("STEER_GATE", gate.to_str().unwrap());
+    env.start(&[]);
+    let wait = |args: &[&str]| {
+        let mut all = vec!["prompt", "send", "sess-1", "--wait", "--timeout", "15"];
+        all.extend(args);
+        env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let first = wait(&["hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let steered = wait(&["--steer", "reply steered"]);
+    assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
+    sleep(Duration::from_millis(300));
+    assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
+    let interrupt = wait(&["--interrupt", "reply third"]);
+    sleep(Duration::from_millis(500));
+    assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
+    fs::write(&gate, "").unwrap();
+    for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
+        let out = waiter.wait_with_output().unwrap();
+        let log = env.ok(&["event", "log", "sess-1"]);
+        assert_eq!(out.status.code(), Some(0), "{id}: {}{log}", stderr(&out));
+        if id == "m3" {
+            // Held: no turn runs for it to cancel.
+            assert!(stderr(&out).contains("held (message m3)"), "{}", stderr(&out));
+        }
+    }
+    assert!(env.calls_of("session/cancel").is_empty());
+    assert_eq!(env.prompts(), ["hang on", "reply third"]);
+    assert_eq!(turns(&env), [vec!["m1", "m2"], vec!["m3"]]);
+}
+
 /// `--steer` into a running turn needs an agent that advertises steering
 /// (P7). With no turn running it is a prompt, steering or not.
 #[test]

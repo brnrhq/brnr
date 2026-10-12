@@ -42,7 +42,9 @@ with environment variables:
   STEER_ANSWER=<a>  a steer into a running turn is answered after that turn
                     ends: late (it takes up the steered text, then answers
                     injected), error (it ends the turn, then answers with an
-                    error) or never (it ends the turn, and never answers)
+                    error), never (it ends the turn, and never answers) or
+                    gate (it ends the turn, then answers injected once the
+                    file $STEER_GATE exists, reading on meanwhile)
   MODEL_ID=<id>     the model config option's id (model by default)
   MODEL_CATEGORY=<c>  its category (model by default; empty for none)
   MODE_OPTION=<id>  no modes, but a config option of category mode, id <id>
@@ -191,7 +193,8 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE) or a steer (STEER_GATE) is sent
+# from a thread of its own.
 sending = threading.Lock()
 
 
@@ -260,6 +263,12 @@ def new_later(gate, mid, session):
     while not os.path.exists(gate):
         time.sleep(0.05)
     new_opened(mid, session)
+
+
+def steer_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.05)
+    result(mid, {"outcome": "injected"})
 
 
 def text_of(prompt):
@@ -687,7 +696,7 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             if hanging is not None:
                 turn, hanging = hanging, None
-                if late in ("error", "never"):
+                if late in ("error", "never", "gate"):
                     end_turn(turn)
                 else:
                     run(turn, sid, text_of(params["prompt"]))
@@ -695,6 +704,9 @@ for line in sys.stdin.buffer:
                 result(mid, {"outcome": "injected"})
             elif late == "error":
                 error(mid, -32603, "steering failed")
+            elif late == "gate":
+                gate = env("STEER_GATE")
+                threading.Thread(target=steer_later, args=(gate, mid), daemon=True).start()
         elif idle == "promptRequired":
             result(mid, {"outcome": "promptRequired", "reason": "noRunningTurn"})
         else:

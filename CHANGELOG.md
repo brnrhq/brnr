@@ -20,6 +20,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Fixed
+
+- `prompt send --interrupt` while no turn runs but the last turn's
+  `turn_ended` waits for a steer's answer is held, ahead of what is held,
+  and goes once that turn has ended: before, it started a turn at once, and
+  if that turn ended first the earlier turn's `turn_ended` was lost, its
+  message's `--wait` timed out, and the late steer was put in the wrong turn
+  (ADR 56).
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

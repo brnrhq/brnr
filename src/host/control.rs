@@ -731,12 +731,19 @@ impl Host {
                 self.steer(i, held);
                 "steered"
             }
-            "interrupt" if busy => {
+            // With no turn running but steers unanswered, the last turn's
+            // `turn_ended` waits for them, and so does what is held (ADR 56):
+            // held, ahead of the rest, with no turn to cancel.
+            "interrupt" if busy || waiting => {
                 let s = &mut self.sessions[i];
                 s.held.insert(s.interrupts, held);
                 s.interrupts += 1;
-                self.cancel(&session, "cancel");
-                "interrupting"
+                if !busy {
+                    "held"
+                } else {
+                    self.cancel(&session, "cancel");
+                    "interrupting"
+                }
             }
             _ => {
                 self.send_prompt(i, held);
