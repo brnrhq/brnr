@@ -1,5 +1,9 @@
 # 35. Bridges
 
+Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
+Implemented.
+Resolves review item 4 with ADR 36.
+
 Amended by 48: a request, `logged`, answered once the process has written
 what it recorded until then.
 
@@ -9,10 +13,6 @@ Amended by 63: `approve` and `deny` are `allow` and `reject`
 and `options`; `queue` takes `show`; and requests `new` and `resume` open a
 session in the running process (`session new --pid`, `session resume
 --pid`).
-
-Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
-Implemented.
-Resolves review item 4 with ADR 36.
 
 ## Context
 
@@ -32,6 +32,11 @@ closed, though it was still running and reading: a bridge that ran
   them, each naming its session; `exited` is the process's.
 - A request line that isn't valid UTF-8 is answered with an error, and the
   bridge stays (fixed in #15).
+- A started bridge's stderr goes to the host log (`bridge-stderr`), a line
+  at a time, decoded lossily: one that isn't valid UTF-8 doesn't stop the
+  reading, which left the bridge's next write to die of SIGPIPE (fixed in
+  #160). A line longer than 64 KiB goes in pieces of that, as the agent's
+  stderr does (ADR 51).
 - Two transports: a connection to the process's control socket
   (`$BRNR_DIR/<pid>.sock`, which only the user can open, P13), or a child
   the process starts from the profile's `bridges`, whose stdout carries its
@@ -66,5 +71,8 @@ Run `cargo test --release adr_0035_`. Named claims and their assertions:
   - `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0035_bad_request_line_is_answered`.
+  - `adr_0035_a_bridge_whose_stderr_isnt_utf8_carries_on`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0035_a_bridge_that_closes_its_stdout_gets_events`.
+- [tests/chaos.rs](../../tests/chaos.rs)
+  - `adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact`.

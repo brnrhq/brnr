@@ -1,11 +1,5 @@
 # 6. How far behind a reader may fall
 
-Amended by 49: the line that takes a peer past 16 MiB doesn't count toward
-it.
-
-Amended by 60: nor, up to 64 MiB of them, do lines longer than 16 MiB
-that come while a peer is past it.
-
 Accepted 2026-10-07, from former decision 25. Implemented. The logger's
 queue is bounded too, and gives way as an observer does: past 64 MiB not yet
 written (a slow or stalled disk), records are skipped and counted, but never
@@ -18,9 +12,15 @@ same way, with the `error`, once the file takes records again. `brnr log`
 always shows these notes, whatever `--events` chose. Resolves review item 1,
 and with ADR 9 review item 3.
 
+Amended by 49: the line that takes a peer past 16 MiB doesn't count toward
+it.
+
 Amended by 51: a line still coming is held by its reader, up to 32 MiB,
 beside the cap; a longer one goes on unread as it comes (or, headless, is
 dropped), said by a `line_too_long` event.
+
+Amended by 60: lines longer than 16 MiB that come while a peer is past it
+don't count toward it either, up to 64 MiB of them.
 
 ## Context
 

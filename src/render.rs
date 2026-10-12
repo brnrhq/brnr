@@ -110,6 +110,10 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
+        // A load the agent answered after the session's close (ADR 57).
+        "session_reopened" => {
+            format!("session reopened ({}): its load was answered after its close", s(&e["by"]))
+        }
         // The agent's copy deleted; brnr's transcript stays (ADR 63).
         "session_deleted" => format!("session deleted ({})", s(&e["by"])),
         // What a load replayed, and whether it is in the transcript as
@@ -121,7 +125,12 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
             } else {
                 "not recorded: brnr's transcript has the session"
             };
-            format!("history: {updates} updates replayed by the agent, {how}")
+            // Overlapping loads of an editor's have one between them.
+            let loads = match e["loads"].as_u64() {
+                Some(n) if n > 1 => format!(" in {n} loads"),
+                _ => String::new(),
+            };
+            format!("history: {updates} updates replayed by the agent{loads}, {how}")
         }
         // A line too long to read: passed on unread, or dropped (ADR 51).
         "line_too_long" => {
@@ -487,8 +496,15 @@ mod tests {
         assert_eq!(shown(dropped), "dropped m3 (queue): later");
         let closed = json!({ "event": "session_closed", "by": "idle" });
         assert_eq!(shown(closed), "session closed (idle)");
+        let reopened = json!({ "event": "session_reopened", "by": "editor" });
+        let said = "session reopened (editor): its load was answered after its close";
+        assert_eq!(shown(reopened), said);
         let history = json!({ "event": "history", "updates": 3, "recorded": true });
         assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
+        let loads = json!({ "event": "history", "updates": 6, "recorded": false, "loads": 2 });
+        let said = "history: 6 updates replayed by the agent in 2 loads, not recorded: brnr's \
+                    transcript has the session";
+        assert_eq!(shown(loads), said);
         let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
         assert_eq!(shown(replayed), "(replayed) user: old");
     }
