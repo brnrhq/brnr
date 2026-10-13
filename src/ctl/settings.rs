@@ -8,8 +8,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    Host, USAGE, discover, one_arg, print_json, print_table, request_timeout, response_json,
-    running_session, text,
+    Host, USAGE, closing, discover, one_arg, print_json, print_table, request_timeout,
+    response_json, running_session, text,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -343,6 +343,9 @@ pub(super) fn held<'a>(
         return Err(format!("{running}, which is not answering"));
     };
     let Some(s) = host.sessions().iter().find(|s| s["session_id"] == session) else {
+        if host.closing(session) {
+            return Err(closing(session, pid));
+        }
         return Err(format!("{session} is opening in process {pid}"));
     };
     let past = json!({

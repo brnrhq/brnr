@@ -100,7 +100,9 @@ brnr's own conventions:
   answered, once the process has written its records of it, for 2 s at
   most, as an exit is: a resume elsewhere appends after its
   `session_closed`, and a load there finds its transcript and doesn't record
-  the history again (ADR 48).
+  the history again. Meanwhile `event log` of it waits for those records,
+  and `session resume` and `session delete` say it is closing there, free
+  in 2 s at most (ADR 48).
 - After an ACP line nested deeper than 128, the host takes a stack that deep
   only while it keeps something of the line, not for every event after it
   (ADR 26).
