@@ -929,7 +929,8 @@ fn adr_0056_interrupt_waits_for_the_steers_into_the_turn_before() {
     sleep(Duration::from_millis(300));
     assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
     let interrupt = wait(&["--interrupt", "reply third"]);
-    sleep(Duration::from_millis(500));
+    let held = || env.ok(&["queue", "list", "sess-1"]).contains("m3");
+    assert!(wait_for(Duration::from_secs(5), held), "{}", env.ok(&["queue", "list", "sess-1"]));
     assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
     fs::write(&gate, "").unwrap();
     for (waiter, id) in [(first, "m1"), (steered, "m2"), (interrupt, "m3")] {
