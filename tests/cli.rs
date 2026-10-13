@@ -1343,6 +1343,10 @@ fn adr_0063_list_reads_the_agents_times_in_utc() {
         "early-1": format!("{}.5+02:00", &brnr::log::rfc3339(early + ahead)[..19]),
         "late-1": format!("{}.123456789-05:30", &brnr::log::rfc3339(late - behind)[..19]),
         "odd-1": "2026-10-11T08:00:00+0200",
+        // After old-1's 10:00:00Z, and apart by less than the microseconds
+        // brnr writes: ordered by the times they are, not as written.
+        "sub-1": "2026-10-01T10:00:00.0000001Z",
+        "sub-2": "2026-10-01T10:00:00.0000002Z",
     });
     let list = |args: &[&str]| {
         let out = env.brnr(args).env("LIST_TIMES", times.to_string()).output().unwrap();
@@ -1357,12 +1361,17 @@ fn adr_0063_list_reads_the_agents_times_in_utc() {
         .unwrap_or_else(|e| panic!("{e}"));
     let rows = rows.as_array().unwrap();
     let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
-    assert_eq!(ids, ["late-1", "mine-1", "early-1", "old-1", "odd-1", "sess-1"], "{rows:?}");
+    assert_eq!(
+        ids,
+        ["late-1", "mine-1", "early-1", "sub-2", "sub-1", "old-1", "odd-1", "sess-1"],
+        "{rows:?}"
+    );
     let at = |id: &str| row(rows, id)["last_active"].clone();
     assert_eq!(at("late-1"), utc(late, "123456"));
     assert_eq!(at("mine-1"), mine, "brnr's own time is as brnr wrote it");
     assert_eq!(at("early-1"), utc(early, "500000"));
     assert_eq!(at("old-1"), "2026-10-01T10:00:00.000000Z");
+    assert_eq!((at("sub-1"), at("sub-2")), (at("old-1"), at("old-1")));
     assert_eq!(at("odd-1"), "2026-10-11T08:00:00+0200", "as the agent gave it");
     assert_eq!(at("sess-1"), Value::Null);
 
@@ -1371,7 +1380,11 @@ fn adr_0063_list_reads_the_agents_times_in_utc() {
     let table = list(&["session", "list", "--", AGENT]);
     let lines: Vec<&str> = table.lines().skip(1).collect();
     let ids: Vec<&str> = lines.iter().map(|l| l.split_whitespace().next().unwrap()).collect();
-    assert_eq!(ids, ["late-1", "mine-1", "early-1", "old-1", "odd-1", "sess-1"], "{table}");
+    assert_eq!(
+        ids,
+        ["late-1", "mine-1", "early-1", "sub-2", "sub-1", "old-1", "odd-1", "sess-1"],
+        "{table}"
+    );
     for r in rows {
         let line = lines.iter().find(|l| l.starts_with(r["session"].as_str().unwrap())).unwrap();
         let shown = match r["last_active"].as_str() {
