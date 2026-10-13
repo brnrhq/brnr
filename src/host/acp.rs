@@ -1382,7 +1382,9 @@ impl Host {
         let held = Arc::new(Mutex::new(Some(release)));
         let written = held.clone();
         self.sink.when_written(move || {
-            if let Some(release) = written.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            // Taken out first, so the lock isn't held while it goes.
+            let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(release) = release {
                 release.go();
             }
         });
