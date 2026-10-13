@@ -31,14 +31,18 @@
 //!   rejects them once, or cancels their turn; how much the agent asks is
 //!   the agent's mode (`--mode`, see ADR 27 in docs/adr).
 //!   Elicitation is declined, and anything else gets "method not found".
-//! - While a headless `session/load` replays a resumed session's history
-//!   (ADR 57): if brnr has a transcript of the session, the replayed updates
-//!   are neither recorded nor turned into events, as the transcript has them
-//!   already, but what they say the session is now (its title, mode, config
-//!   options and commands) is kept. If it has none, they are recorded and
-//!   made into events as live ones would be, the user's messages too, each
-//!   marked `replayed`. Either way a `history` event says which, and how many
-//!   updates the agent replayed.
+//! - While a `session/load`, headless or the editor's, replays a session's
+//!   history (ADR 57): if brnr has a transcript of the session, the replayed
+//!   updates are neither recorded nor turned into events, as the transcript
+//!   has them already, but what they say the session is now (its title,
+//!   mode, config options and commands) is kept. A session open in the
+//!   process has its transcript, so an editor loading it again records
+//!   nothing of the replay again. If it has none, they are recorded and made
+//!   into events as live ones would be, the user's messages too, each marked
+//!   `replayed`. Either way a `history` event says which, and how many
+//!   updates the agent replayed, and the editor gets the replay as the agent
+//!   sent it. Loads of an editor's that overlap share one replay, until the
+//!   last is answered, and one `history` event, with how many `loads`.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3); with
@@ -63,6 +67,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::mem::take;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
@@ -70,8 +75,8 @@ use serde_json::{Map, Value, json};
 use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp};
 use super::state::SessionState;
-use super::{Host, id_key, text_block};
-use crate::config::Feature;
+use super::{Host, LOG_FLUSH, control, id_key, text_block};
+use crate::config::{Feature, Log};
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
 use crate::schema::{
@@ -111,12 +116,25 @@ impl Held {
     }
 }
 
-/// A headless `session/load`'s replay of history, while it lasts (ADR 57).
+/// A `session/load`'s replay of history, while it lasts (ADR 57).
 pub(super) struct Replay {
     /// Recorded and made into events: brnr has no transcript of the session.
     pub(super) record: bool,
     /// The updates the agent has replayed.
     pub(super) updates: u64,
+    /// The ids of the tool calls running before it, while their turn runs:
+    /// the others, the history's, aren't running now.
+    pub(super) tools: Vec<String>,
+    /// The loads it covers: the editor's load of a session while its replay
+    /// runs joins it, as the agent's replays can't be told apart (P4).
+    pub(super) loads: u32,
+    /// Of those, the ones the agent hasn't answered: it ends with the last.
+    pub(super) unanswered: u32,
+    /// One of them succeeded.
+    pub(super) loaded: bool,
+    /// The session was opened for them: if none succeeds, and no resume has
+    /// opened it meanwhile, it closes again.
+    pub(super) opened: bool,
 }
 
 pub(super) struct Session {
@@ -187,6 +205,60 @@ pub(super) enum Hold {
     Shared(u32),
 }
 
+/// A session closed here, whose lock goes, and whose close is answered,
+/// once the logger has written its records, `session_closed` last, or at
+/// `until`, whichever comes first: a process that resumes it next appends
+/// after them (ADR 48). The event loop never waits for it (P1).
+pub(super) struct LettingGo {
+    session: String,
+    until: Instant,
+    /// Taken by whichever comes first: the logger's thread or the event
+    /// loop's timer. This process opening the session again takes back only
+    /// its lock: the close is still answered once it is written.
+    held: Arc<Mutex<Option<Release>>>,
+}
+
+/// What goes as a closed session is let go of: its lock, then the answers
+/// to the close, each a line for its peer.
+struct Release {
+    lock: Option<Lock>,
+    answers: Vec<(control::Queue, String)>,
+}
+
+impl LettingGo {
+    fn take(&self) -> Option<Release> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    fn done(&self) -> bool {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).is_none()
+    }
+
+    /// The session's lock, if it is still this process's.
+    fn reclaim(&self) -> Option<Lock> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.lock.take()
+    }
+
+    fn locked(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|r| r.lock.is_some())
+    }
+}
+
+impl Release {
+    /// Lets go of the lock, if the session isn't open here again, then
+    /// answers, so whoever hears it finds the session free.
+    fn go(self) {
+        drop(self.lock);
+        for (queue, line) in self.answers {
+            queue.post(line);
+        }
+    }
+}
+
 pub(super) enum Close {
     /// `session/close` goes once the turn it cancelled has ended, and
     /// `peer` hears when the agent has closed it.
@@ -199,6 +271,41 @@ pub(super) enum Close {
 }
 
 impl Session {
+    /// How deeply what it keeps of what the host read nests (see
+    /// `Host::holds`). Every field is named, so that one added is thought
+    /// about here.
+    pub(super) fn holds(&self) -> usize {
+        let Session {
+            held,
+            steering,
+            ended,
+            last_turn,
+            state,
+            closing,
+            id: _,
+            cwd: _,
+            prompts: _,
+            interrupts: _,
+            context: _,
+            agent_text: _,
+            agent_text_kind: _,
+            agent_message_id: _,
+            turn_started: _,
+            replay: _,
+            idle_since: _,
+            idle_done: _,
+            last_active: _,
+            hold: _,
+            opening: _,
+        } = self;
+        let blocks = held.iter().chain(steering).flat_map(|h| &h.blocks);
+        let req_id = match closing {
+            Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
+            Some(Close::Sent) | None => None,
+        };
+        json::nesting(blocks.chain(ended).chain(last_turn).chain(req_id)).max(state.holds())
+    }
+
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
     }
@@ -232,9 +339,11 @@ pub(super) enum Pending {
         request: Option<Vec<u8>>,
         dir: Dir,
     },
+    /// The editor's `session/load` (`load`) or `session/resume`.
     Attach {
         session: String,
         cwd: Option<String>,
+        load: bool,
     },
     Close {
         session: String,
@@ -282,6 +391,15 @@ pub(super) struct AgentRequest {
     pub(super) handle: Option<String>,
     /// When `permission_timeout` answers it.
     pub(super) deadline: Option<Instant>,
+}
+
+impl AgentRequest {
+    /// How deeply what it keeps of the request nests (see `Host::holds`).
+    pub(super) fn holds(&self) -> usize {
+        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
+            self;
+        json::nesting([id, params])
+    }
 }
 
 /// How a permission request is answered from outside (ADR 63): `allow` or
@@ -515,8 +633,12 @@ impl Host {
                 self.pending.insert(key.to_owned(), pending);
             }
             ("session/load" | "session/resume", Some(session)) => {
-                self.pending
-                    .insert(key.to_owned(), Pending::Attach { session: session.clone(), cwd });
+                let load = method == "session/load";
+                if load {
+                    self.editor_load(session, cwd.as_deref());
+                }
+                let attach = Pending::Attach { session: session.clone(), cwd, load };
+                self.pending.insert(key.to_owned(), attach);
             }
             ("session/close", Some(session)) => {
                 // Dropped now: held until the agent answers, they would go out as
@@ -556,6 +678,71 @@ impl Host {
         }
         self.claimed.insert(session.to_owned(), hold);
         Ok(())
+    }
+
+    /// The editor's `session/load` of `session`, whose history the agent
+    /// replays before it answers: recorded only if brnr has no transcript of
+    /// the session, in any folder, as a headless start's is (ADR 57). One not
+    /// open here opens now, so that the replay is the session's; one open
+    /// here has its transcript already, from this process, whether or not
+    /// the logger has written it yet, unless the process logs nothing; one
+    /// another process holds has that one's. A load while the session's
+    /// replay runs joins that replay, as which load an update is for can't
+    /// be told (P4): what either replays is taken as the replay is, recorded
+    /// or not, and one `history` event covers them all.
+    fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
+        let open = self.find(session);
+        if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
+            replay.loads += 1;
+            replay.unanswered += 1;
+            return;
+        }
+        let record = match open.map(|i| &self.sessions[i].hold) {
+            Some(Hold::Owner(_) | Hold::Unlocked(_)) => self.logging == Log::Off,
+            Some(Hold::Shared(_)) | None => log::transcripts(session).is_empty(),
+        };
+        let i = self.open_session(session, cwd);
+        self.begin_replay(i, record);
+        if let Some(replay) = &mut self.sessions[i].replay {
+            replay.opened = open.is_none();
+        }
+    }
+
+    /// The agent's answer to one of the editor's loads of `session`, a
+    /// failure too. The replay ends with the last of the loads it covers:
+    /// with its `history` event if any of them succeeded; if none did, a
+    /// session opened for them closes again (ADR 57).
+    fn load_answered(&mut self, session: &str, cwd: Option<&str>, result: Option<&Value>) {
+        let i = match (self.find(session), result) {
+            (Some(i), _) => i,
+            // Closed meanwhile, as the editor asked, and the agent answered
+            // the close before the load: its last answer wins, and says so.
+            (None, Some(_)) => {
+                let i = self.open_session(session, cwd);
+                self.emit(
+                    json!({ "event": "session_reopened", "session": session, "by": "editor" }),
+                );
+                i
+            }
+            (None, None) => return,
+        };
+        if let Some(result) = result {
+            self.sessions[i].state.result(result);
+        }
+        let Some(replay) = &mut self.sessions[i].replay else { return };
+        replay.unanswered = replay.unanswered.saturating_sub(1);
+        replay.loaded |= result.is_some();
+        if replay.unanswered > 0 {
+            return;
+        }
+        if replay.loaded {
+            self.end_replay(i);
+        } else if replay.opened {
+            // Its lock goes with it, and its files are closed.
+            self.sink.close_session(&self.sessions.remove(i).id);
+        } else {
+            self.drop_replay(i); // Loaded again, or resumed, and failed.
+        }
     }
 
     /// Answers the editor's request `id` with an error in the agent's place:
@@ -674,12 +861,12 @@ impl Host {
                 {
                     replay.updates += u64::from(update);
                     if !replay.record {
-                        // History the transcript has already; no editor to
-                        // show it.
+                        // History the transcript has already. An editor
+                        // still gets it, as the agent sent it (ADR 2).
                         if update {
                             self.replayed_state(i, &msg["params"]["update"]);
                         }
-                        return;
+                        return self.send_link(frame::DATA, line);
                     }
                 }
                 if update && let Some(session) = &session {
@@ -707,6 +894,13 @@ impl Host {
                 }
                 if s.prompts.is_empty() {
                     s.turn_started = None;
+                    // Its tool calls end with it, however it ended: one the
+                    // agent left unfinished, cancelled or failed, isn't
+                    // running now (ADR 34). Nor are those a replay found.
+                    s.state.tools.clear();
+                    if let Some(replay) = &mut s.replay {
+                        replay.tools.clear();
+                    }
                 }
             }
             let injected = prompt.as_ref().is_some_and(|p| p.injected);
@@ -778,10 +972,16 @@ impl Host {
                 }
                 session
             }
-            Pending::Attach { session, cwd } => {
-                if let Some(result) = result {
+            Pending::Attach { session, cwd, load } => {
+                if load {
+                    self.load_answered(&session, cwd.as_deref(), result);
+                } else if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
                     self.sessions[i].state.result(result);
+                    // Open now, whatever a load still to be answered gets.
+                    if let Some(replay) = &mut self.sessions[i].replay {
+                        replay.opened = false;
+                    }
                 } else {
                     self.claimed.remove(&session); // Its lock goes (see `attach`).
                 }
@@ -791,7 +991,7 @@ impl Host {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
-                    self.close_session(i, "editor");
+                    self.close_session(i, "editor", None);
                 }
                 Some(session)
             }
@@ -1162,14 +1362,81 @@ impl Host {
     }
 
     /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
-    /// what it still holds is dropped, then `session_closed` (ADR 20).
-    pub(super) fn close_session(&mut self, i: usize, by: &str) {
+    /// what it still holds is dropped, then `session_closed` (ADR 20). Its
+    /// lock goes, and the peer in `answer` is answered with its reply, once
+    /// that is written, LOG_FLUSH at most (see `LettingGo`).
+    pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
         self.flush_agent_message(i);
         self.drop_all(i, "close");
-        let session = self.sessions.remove(i).id;
+        let Session { id: session, hold, .. } = self.sessions.remove(i);
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
         // After its last record, so nothing of it is lost (ADR 22).
         self.sink.close_session(&session);
+        let lock = match hold {
+            Hold::Owner(lock) => lock,
+            Hold::Shared(_) | Hold::Unlocked(_) => None,
+        };
+        let answers =
+            answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
+        let release = Release { lock, answers: answers.into_iter().collect() };
+        let held = Arc::new(Mutex::new(Some(release)));
+        let written = held.clone();
+        self.sink.when_written(move || {
+            // Taken out first, so the lock isn't held while it goes.
+            let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(release) = release {
+                release.go();
+            }
+        });
+        let until = Instant::now() + LOG_FLUSH;
+        self.letting_go.push(LettingGo { session, until, held });
+    }
+
+    /// Closed sessions whose time to be written is up are let go of as they
+    /// are; past that, records of theirs can come after a resume's (ADR 48).
+    pub(super) fn fire_letting_go(&mut self, now: Instant) {
+        self.letting_go.retain(|l| {
+            if now < l.until {
+                return !l.done();
+            }
+            if let Some(release) = l.take() {
+                release.go();
+            }
+            false
+        });
+    }
+
+    /// When the next closed session is let go of, for the event loop.
+    pub(super) fn next_letting_go(&self) -> Option<Instant> {
+        self.letting_go.iter().map(|l| l.until).min()
+    }
+
+    /// Exiting, once the logger has had its time: every closed session is
+    /// let go of, and its close answered.
+    pub(super) fn let_go_of_closed(&mut self) {
+        for release in take(&mut self.letting_go).iter().filter_map(LettingGo::take) {
+            release.go();
+        }
+    }
+
+    /// `session`'s lock, if it closed here and isn't let go of yet: opened
+    /// here again, it is this process's still, and its records come after
+    /// the close's from the same logger. The close is answered as before,
+    /// once its records are written (ADR 48).
+    fn reclaim(&mut self, session: &str) -> Option<Lock> {
+        self.letting_go.iter().filter(|l| l.session == session).find_map(LettingGo::reclaim)
+    }
+
+    /// Whether `session` closed here and its lock is still this process's.
+    fn letting_go_of(&self, session: &str) -> bool {
+        self.letting_go.iter().any(|l| l.session == session && l.locked())
+    }
+
+    /// The sessions closed here whose locks are still this process's, until
+    /// their records are written: `status` says so, so that brnr can tell
+    /// one closing from one opening (ADR 48).
+    pub(super) fn closing(&self) -> Vec<&str> {
+        self.letting_go.iter().filter(|l| l.locked()).map(|l| l.session.as_str()).collect()
     }
 
     /// The agent has deleted `session`, as the editor asked: a
@@ -1182,8 +1449,11 @@ impl Host {
         let event = json!({ "event": "session_deleted", "session": session, "by": "editor" });
         let event = self.emit(event);
         match self.find(session) {
-            Some(i) => self.close_session(i, "editor"),
-            None if lock::holder(session).is_none() => self.sink.append(session, event),
+            Some(i) => self.close_session(i, "editor", None),
+            // Closed here, and not let go of yet: still this process's to write.
+            None if self.letting_go_of(session) || lock::holder(session).is_none() => {
+                self.sink.append(session, event);
+            }
             None => {}
         }
     }
@@ -1221,9 +1491,8 @@ impl Host {
             }
         }
         let Some(i) = (0..self.sessions.len()).find(|&i| {
-            let s = &self.sessions[i];
-            let until = s.idle_since.and_then(|t| t.checked_add(limit)); // None: never.
-            !s.idle_done && s.closing.is_none() && until.is_some_and(|t| now >= t)
+            let until = self.sessions[i].idle_since.and_then(|t| t.checked_add(limit)); // None: never.
+            self.idle_counts(i) && until.is_some_and(|t| now >= t)
         }) else {
             return;
         };
@@ -1239,6 +1508,15 @@ impl Host {
         }
     }
 
+    /// Whether session `i`'s idle time can still run out, for
+    /// `fire_idle_timers` and `next_idle_deadline` alike: it is idle, its
+    /// time hasn't run out already, and it is neither being opened nor
+    /// closing (a close waits for the agent's answer, whatever its time).
+    fn idle_counts(&self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        !s.idle_done && !s.opening && s.closing.is_none() && self.is_idle(i)
+    }
+
     /// The next idle session's time running out, for the event loop.
     pub(super) fn next_idle_deadline(&self) -> Option<Instant> {
         let limit = self.stop_when_idle?;
@@ -1248,9 +1526,7 @@ impl Host {
         // A session that just went idle has no `idle_since` until the loop
         // comes round; this wakes it then.
         (0..self.sessions.len())
-            .filter(|&i| {
-                !self.sessions[i].idle_done && !self.sessions[i].opening && self.is_idle(i)
-            })
+            .filter(|&i| self.idle_counts(i))
             .filter_map(|i| match self.sessions[i].idle_since {
                 None => Some(Instant::now()),
                 Some(t) => t.checked_add(limit), // None: never.
@@ -1614,6 +1890,9 @@ impl Host {
     /// locked is `Unlocked`, and the host log says why. Whoever opened it
     /// decides what becomes of either (ADR 3, ADR 50).
     fn take_lock(&mut self, session: &str) -> Hold {
+        if let Some(lock) = self.reclaim(session) {
+            return Hold::Owner(Some(lock));
+        }
         match lock::take(session) {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
@@ -1630,7 +1909,8 @@ impl Host {
     /// the agent is asked for it: one another process holds, or one that
     /// can't be locked, can't be served here (ADR 3, ADR 50).
     pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
-        let lock = lock::take(session).map_err(|err| match err {
+        let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
+        let lock = lock.map_err(|err| match err {
             lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
             lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
         })?;

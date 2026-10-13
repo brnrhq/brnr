@@ -36,11 +36,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::request::{self, Request, Role};
-use brnr::{config, lock, paths, signals, spawn, sys};
+use brnr::{config, lock, paths, render, signals, spawn, sys};
 
 use super::{
-    Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
-    print_json, process, read_stdin, response_json, running_session, settings, text,
+    Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, closing, closing_in, connect, discover,
+    find_session, print_json, process, read_stdin, response_json, running_session, settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -427,9 +427,7 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
                 a.agent_given = true;
                 break;
             }
-            other if other.starts_with('-') && other != "-" => {
-                return Err(format!("unknown option: {other}"));
-            }
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ if resume && a.resume.is_none() => a.resume = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }
@@ -514,6 +512,10 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let mut owner = None;
     let mut transcript = false;
     if let Some(wanted) = a.resume.clone() {
+        // Closing in its process: free once its records are written (ADR 48).
+        if let Some(host) = closing_in(&hosts, &wanted) {
+            return Err(closing(&wanted, host.id()));
+        }
         // A session another process holds is refused, naming the process,
         // unless --take-over. The process started here takes the lock itself,
         // and is refused the same way if it has been taken meanwhile.
@@ -714,6 +716,9 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let mut owner = None;
     if let Some(wanted) = &a.resume {
         req = json!({ "cmd": "resume", "session": wanted });
+        if let Some(host) = closing_in(&hosts, wanted) {
+            return Err(closing(wanted, host.id()));
+        }
         let here = format!("{wanted} is already open in process {pid}");
         let found = match lock::holder(wanted) {
             Some(holder) if holder.to_string() == pid => return Err(here),
@@ -848,6 +853,30 @@ fn exit_status(mut child: Child) -> ExitCode {
 
 // ---- send ----------------------------------------------------------------
 
+/// `prompt send`'s options that take a value.
+const SEND_VALUES: [&str; 3] = ["--timeout", "--file", "--image"];
+
+/// Where `prompt send`'s prompt starts in `args`, at its first word after
+/// the session or at `--`, and whether its options before it, `-h` and
+/// `--help` among them, ask for its usage. From the prompt on, every word is
+/// the prompt's; an option's value is the option's.
+pub(super) fn prompt_start(args: &[String]) -> (usize, bool) {
+    let (mut session, mut help) = (false, false);
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match arg.as_str() {
+            "--" => break,
+            "-h" | "--help" => help = true,
+            flag if SEND_VALUES.contains(&flag) => i += 1,
+            flag if flag.starts_with("--") => {}
+            _ if !session => session = true,
+            _ => break,
+        }
+        i += 1;
+    }
+    (i.min(args.len()), help)
+}
+
 pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
     let mut arg = None;
     let mut mode = None;
@@ -855,8 +884,9 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
     let mut timeout = None;
     let mut files = Vec::new();
     let mut images = Vec::new();
-    let mut words = Vec::new();
-    let mut it = args.iter();
+    let (options, prompt) = args.split_at(prompt_start(args).0);
+    let words = prompt.strip_prefix(&["--".to_owned()][..]).unwrap_or(prompt);
+    let mut it = options.iter();
     while let Some(a) = it.next() {
         let set_mode = |mode: &mut Option<&str>, m| match mode.replace(m) {
             Some(prev) if prev != m => Err(format!("--{prev} and --{m} don't go together")),
@@ -873,20 +903,30 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
             "--timeout" => timeout = Some(seconds("--timeout", &value("--timeout")?)?),
             "--file" => files.push(value("--file")?),
             "--image" => images.push(value("--image")?),
-            "--" => words.extend(it.by_ref().cloned()),
             flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => words.push(a.clone()),
+            _ => arg = Some(a.clone()),
         }
     }
     let arg = arg.ok_or(USAGE)?;
+    if timeout.is_some() && !wait {
+        return Err("--timeout goes with --wait".into());
+    }
     if replace && mode != Some("context") {
         return Err("--replace only applies to --context".into());
     }
     if wait && mode == Some("context") {
         return Err("--wait needs a turn; --context doesn't start one".into());
     }
-    let text_in = if words == ["-"] { read_stdin()? } else { words.join(" ") };
+    let text_in = match words {
+        [one] if one == "-" => read_stdin()?,
+        // What follows would be sent as text, an option there too.
+        [first, ..] if first == "-" => {
+            return Err(
+                "- reads the prompt from stdin, and goes alone: options go before it".into()
+            );
+        }
+        _ => words.join(" "),
+    };
     let blocks = attachments(&files, &images)?;
     if text_in.trim().is_empty() && blocks.is_empty() {
         return Err("nothing to send".into());
@@ -1004,14 +1044,15 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 return Ok(ExitCode::from(TIMED_OUT));
             }
             Err(_) if what == "exit" => {
-                done(&json!({ "event": "exited", "status": null }), "exited".into())?;
+                let gone = json!({ "event": "exited", "status": null });
+                done(&gone, render::exited(&gone["status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             Err(e) => return Err(e),
         };
         match (e["event"].as_str().unwrap_or_default(), what.as_str()) {
             ("exited", "exit") => {
-                done(&e, format!("exited: {}", e["status"]))?;
+                done(&e, render::exited(&e["status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("exited", _) => return Err("the agent exited".into()),

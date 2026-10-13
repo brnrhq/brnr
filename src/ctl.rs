@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Display;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -36,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, paths, render};
+use brnr::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -73,7 +74,7 @@ const USAGE: &str = "usage:
 
 process
   brnr process list [--json]
-  brnr process stop <pid>
+  brnr process stop <pid> [--json]
 
 session
   brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
@@ -83,7 +84,7 @@ session
                    the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
-  brnr session close <session>
+  brnr session close <session> [--json]
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
@@ -156,7 +157,9 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
     let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
     let result = match (cmd, verb) {
-        (group, Some(verb)) if grouped && asks_help(rest) && has_usage(group, verb) => {
+        (group, Some(verb))
+            if grouped && asks_help(group, verb, rest) && has_usage(group, verb) =>
+        {
             outln!("{}", usage_of(group, Some(verb)));
             Ok(ExitCode::SUCCESS)
         }
@@ -220,9 +223,13 @@ pub fn main(args: Vec<String>) -> ExitCode {
 }
 
 /// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
-/// `--`, after which they are the agent's or the command's.
-fn asks_help(args: &[String]) -> bool {
-    args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help")
+/// `--`, after which they are the agent's or the command's, and before a
+/// prompt's first word, after which they are the prompt's.
+fn asks_help(group: &str, verb: &str, args: &[String]) -> bool {
+    match (group, verb) {
+        ("prompt", "send") => talk::prompt_start(args).1,
+        _ => args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help"),
+    }
 }
 
 /// Whether [`USAGE`] has `brnr <group> <verb>`.
@@ -306,6 +313,13 @@ impl Host {
         self.status.as_ref().and_then(|s| s["sessions"].as_array()).map_or(&[], Vec::as_slice)
     }
 
+    /// Whether it has closed `session` and holds its lock still, until its
+    /// records are written (ADR 48).
+    fn closing(&self, session: &str) -> bool {
+        let closing = self.status.as_ref().and_then(|s| s["closing"].as_array());
+        closing.is_some_and(|c| c.iter().any(|s| s == session))
+    }
+
     /// The sessions whose locks it holds, as `locks` has them: what it
     /// serves, asked of nobody.
     fn held(&self, locks: &[lock::Entry]) -> Vec<String> {
@@ -325,6 +339,21 @@ enum Found<'a> {
     Inactive(Value),
 }
 
+/// What is said of `session`, closed in process `pid`, whose lock it holds
+/// until its records are written (ADR 48).
+fn closing(session: &str, pid: impl Display) -> String {
+    format!(
+        "{session} is closing in process {pid}; it's free once its records are written (2 s at most)"
+    )
+}
+
+/// The process holding `session`'s lock as it closes it, if one is: see
+/// `closing`.
+fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
+    let pid = lock::holder(session)?.to_string();
+    hosts.iter().find(|h| h.id() == pid && h.closing(session))
+}
+
 /// The session with id `arg`, running or not: in the process holding its
 /// lock, or one that serves it shared, without the lock (ADR 3).
 fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
@@ -335,6 +364,7 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
             Some(host) if host.status.is_none() => {
                 Err(format!("{arg} is running in process {pid}, which is not answering"))
             }
+            Some(host) if host.closing(arg) => Err(closing(arg, pid)),
             _ => Err(format!("{arg} is opening in process {pid}")),
         };
     }
@@ -380,11 +410,14 @@ fn session_or_pid<'a>(
 // ---- processes -----------------------------------------------------------
 
 fn ps(args: &[String]) -> Result<(), String> {
-    let json_out = match args {
-        [] => false,
-        [flag] if flag == "--json" => true,
-        _ => return Err(USAGE.to_owned()),
-    };
+    let mut json_out = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
     let hosts = discover()?;
     let locks = lock::all();
     let rows: Vec<Value> = hosts
@@ -432,12 +465,32 @@ fn ps(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The one `<session>` or `<pid>` a command takes, and whether `--json` was
+/// given: an option it doesn't take is never read as its argument.
+fn one_arg(args: &[String]) -> Result<(String, bool), String> {
+    let (mut arg, mut json_out) = (None, false);
+    for a in args {
+        match a.as_str() {
+            "--json" => json_out = true,
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
+            _ if arg.is_none() => arg = Some(a.clone()),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    Ok((arg.ok_or(USAGE)?, json_out))
+}
+
 fn stop(args: &[String]) -> Result<(), String> {
-    let [pid] = args else { return Err(USAGE.to_owned()) };
+    let (pid, json_out) = one_arg(args)?;
     let hosts = discover()?;
-    let host = process(&hosts, pid)?;
+    let host = process(&hosts, &pid)?;
     let response = call(host, &json!({ "cmd": "stop" }))?;
-    outln!("{}", response["status"].as_str().unwrap_or("?"));
+    if json_out {
+        // Its pid as `process list` has it, as `prompt cancel` names its session.
+        let pid = host.id().parse::<u64>().ok();
+        return print_json(&json!({ "pid": pid, "status": response["status"] }));
+    }
+    outln!("{}", text(&response["status"]));
     Ok(())
 }
 
@@ -561,13 +614,9 @@ fn agent_name(argv: &Value) -> String {
 }
 
 fn status(args: &[String]) -> Result<(), String> {
-    let (arg, json_out) = match args {
-        [arg] => (arg, false),
-        [arg, flag] | [flag, arg] if flag == "--json" => (arg, true),
-        _ => return Err(USAGE.to_owned()),
-    };
+    let (arg, json_out) = one_arg(args)?;
     let hosts = discover()?;
-    let (host, id) = running_session(&hosts, arg)?;
+    let (host, id) = running_session(&hosts, &arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3): what
@@ -617,7 +666,7 @@ fn status(args: &[String]) -> Result<(), String> {
     if json_out {
         return print_json(&report);
     }
-    out!("{}", describe_status(&report, arg));
+    out!("{}", describe_status(&report, &arg));
     Ok(())
 }
 
@@ -670,9 +719,17 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if !settings.is_empty() {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
-    match (x["state"].as_str(), x["turn_seconds"].as_u64()) {
-        (Some("idle"), _) | (_, None) => out.push_str("idle\n"),
-        (_, Some(secs)) => out.push_str(&format!("working for {}\n", duration(secs))),
+    // The state as JSON has it: `busy` is working, `waiting` is a turn
+    // waiting for an approval; how long when the turn's start is known.
+    let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    match (x["state"].as_str(), working) {
+        (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
+        (Some("busy"), None) => out.push_str("working\n"),
+        (Some("waiting"), Some(working)) => {
+            out.push_str(&format!("waiting for an approval, {working}\n"))
+        }
+        (Some("waiting"), None) => out.push_str("waiting for an approval\n"),
+        (state, _) => out.push_str(&format!("{}\n", state.unwrap_or("?"))),
     }
     for tool in x["tools"].as_array().into_iter().flatten() {
         out.push_str(&format!(
@@ -715,17 +772,19 @@ fn duration(secs: u64) -> String {
     }
 }
 
-/// `2026-10-01T19:34:25.959660Z` as `2026-10-01 19:34:25Z`.
+/// `2026-10-01T21:34:25.959660+02:00` as `2026-10-01 19:34:25Z`: an RFC
+/// 3339 time in UTC, to the second; anything else as it is.
 fn when(ts: &str) -> String {
-    match (ts.get(..10), ts.get(11..19)) {
-        (Some(day), Some(time)) => format!("{day} {time}Z"),
-        _ => ts.to_owned(),
+    match log::utc(ts) {
+        Some(utc) => format!("{} {}Z", &utc[..10], &utc[11..19]),
+        None => ts.to_owned(),
     }
 }
 
 // ---- approvals -----------------------------------------------------------
 
-/// The approvals waiting, in every process or in one session's.
+/// The approvals waiting, in every process that answers (saying which
+/// don't) or in one session's.
 fn pending(args: &[String]) -> Result<(), String> {
     let mut json_out = false;
     let mut arg = None;
@@ -739,7 +798,18 @@ fn pending(args: &[String]) -> Result<(), String> {
     }
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
-        None => (hosts.iter().collect(), None),
+        // Those that answered `discover`: one that didn't is passed over, as
+        // process list and session list do (ADR 3), not waited for again,
+        // and said to be (P3).
+        None => {
+            for host in hosts.iter().filter(|h| h.status.is_none()) {
+                eprintln!(
+                    "brnr: process {} is not answering; its approvals aren't listed",
+                    host.id()
+                );
+            }
+            (hosts.iter().filter(|h| h.status.is_some()).collect(), None)
+        }
         Some(arg) => {
             let (host, id) = running_session(&hosts, arg)?;
             (vec![host], Some(id))
@@ -1154,6 +1224,22 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `session status` says the state its JSON has: idle, busy (working, and
+    /// for how long when it knows) or waiting for an approval (ADR 34).
+    #[test]
+    fn adr_0034_status_says_the_sessions_state() {
+        let state = |state: &str, secs: Value| {
+            let x = json!({ "session": "s", "state": state, "turn_seconds": secs });
+            let text = describe_status(&x, "s");
+            text.lines().nth(3).unwrap_or_default().to_owned()
+        };
+        assert_eq!(state("idle", Value::Null), "idle");
+        assert_eq!(state("busy", json!(192)), "working for 3m12s");
+        assert_eq!(state("busy", Value::Null), "working");
+        assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
+        assert_eq!(state("waiting", Value::Null), "waiting for an approval");
+    }
 
     /// What `session list` and `session resume` take from a transcript, whatever
     /// its end (ADR 55): ending in a newline or not; cut short; a whole line
