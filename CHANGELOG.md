@@ -20,8 +20,107 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- `process stop` and `session close` take `--json`: `{"pid": <n>,
+  "status": "stopping"}` and `{"session": "<id>"}`, what their text says
+  (ADR 34).
+- The `history` event has `loads`, how many loads its replay covers: more
+  than 1 when an editor loads a session again before the agent has answered
+  its last load (ADR 57).
+- A `session_reopened` event, `by` `editor`, says that the agent answered an
+  editor's load of a session with success after answering its close: the
+  session is open in the editor's process again (ADR 57).
+
+### Changed
+
+- **Breaking:** `prompt send`'s options go before its prompt: from the
+  prompt's first word on, every word is the prompt's, as after `--`, so an
+  option after the text (`brnr prompt send $s "fix it" --wait`) is sent as
+  text; put it before the text. `-` (stdin) goes alone: a word after it
+  fails the command; quote a prompt that starts `- ` (ADR 63).
+- **Breaking:** `prompt send --timeout` without `--wait` fails, as
+  `session new`'s does, where it was ignored; drop it or add `--wait`
+  (ADR 21).
+- **Breaking:** `event log` has no `-f`: use `--follow`. A word with one
+  dash is an argument there and in `session new` and `resume`, as for the
+  other commands, not an unknown option (ADR 63).
+- The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
+  and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
+
 ### Fixed
 
+- `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
+  `--help` print the usage only before the prompt, where they printed it,
+  sending nothing, from anywhere in it (ADR 63).
+- `session status --json` without a session prints its usage, and an option
+  `session status`, `session close` or `process stop` doesn't take is said
+  as unknown, where each was taken for the session or pid (`no session
+  --json`) (ADR 63).
+- `session list`, `process list`, `doctor` and `skill` say which option
+  they don't know, as the other commands do, where they printed their usage
+  (ADR 63).
+- Text says in words what `--json` has as a value (ADR 34): a failed turn
+  is `turn failed: boom (control)`, without JSON quotes; an exit is
+  `agent exited with code 1`, `agent killed by SIGTERM` or `agent exited
+  (status unknown)` (ADR 11), in `event watch`, `event log`, `event notify`'s
+  `BRNR_TEXT` and `event wait --for exit`; `event watch --pid` shows each
+  session's whole id, to paste into the next command (ADR 13); and
+  `session status` says `working` for a busy session whose turn time it
+  doesn't have, and `waiting for an approval` for one that is waiting,
+  where it said `idle`.
+- `permission requests` with no session lists the approvals in the
+  processes that answer, and exits 0, when one doesn't: it passes over a
+  process whose status went unanswered, as `process list` and
+  `session list` do, saying `process <pid> is not answering; its approvals
+  aren't listed` on stderr, instead of waiting for it again and failing
+  with `process <pid>: not answering` (ADR 27, ADR 3).
+- `session list` shows LAST ACTIVE in UTC, in `--json` and text alike, and
+  orders rows by the time each names: an agent's `updatedAt` with an offset
+  (`2026-10-11T08:00:00+02:00`) was shown hours off and sorted by its
+  digits. It is now written as brnr writes its own times
+  (`2026-10-11T06:00:00.000000Z`); one that isn't an RFC 3339 time is shown
+  as the agent gave it, said on stderr, after the sessions with a time
+  (ADR 63).
+- An editor's `session/load` through `brnr acp` records the agent's replay
+  only when brnr has no transcript of the session, marked `replayed`, with a
+  `history` event either way, as a headless load does. Loading a session
+  already open in the editor's process no longer records its history again
+  or leaves its unfinished tool calls running in `session status`, and a
+  load keeps the title and commands the replay gives. Loads that overlap
+  share one replay, recorded marked until the last is answered, and one
+  `history` event, rather than the later ones' replay being recorded as
+  live. The editor still gets the replay as the agent sent it (ADR 57).
+- `session status` no longer lists as running the tool calls a cancelled or
+  failed turn left unfinished: a turn's tool calls end with it (ADR 34). A
+  `tool_call` again with the id of a running call updates that call, with no
+  second entry and no second start (ADR 23).
+- A session closed in a process (`session close`, `session resume
+  --take-over`, a process's last session) is let go of, and the close
+  answered, once the process has written its records of it, for 2 s at
+  most, as an exit is: a resume elsewhere appends after its
+  `session_closed`, and a load there finds its transcript and doesn't record
+  the history again. Meanwhile `event log` of it waits for those records,
+  and `session resume` and `session delete` say it is closing there, free
+  in 2 s at most (ADR 48).
+- After an ACP line nested deeper than 128, the host takes a stack that deep
+  only while it keeps something of the line, not for every event after it
+  (ADR 26).
+- A started bridge's stderr is read as bytes and decoded lossily, so a line
+  that isn't UTF-8 no longer stops the reading and kills the bridge with
+  SIGPIPE on its next write; a line longer than 64 KiB goes to the host log
+  in pieces of that, as the agent's stderr does (ADR 35, ADR 51).
+- `prompt send --interrupt` while no turn runs but the last turn's
+  `turn_ended` waits for a steer's answer is held, ahead of what is held,
+  and goes once that turn has ended: before, it started a turn at once, and
+  if that turn ended first the earlier turn's `turn_ended` was lost, its
+  message's `--wait` timed out, and the late steer was put in the wrong turn
+  (ADR 56).
+- A headless process with `stop_when_idle` waits without using a whole CPU
+  while the agent is slow to answer a session's `session/close`, once the
+  session's idle time has run out (ADR 12, 16).
+- The crate on crates.io carries NOTICE, as Apache-2.0 asks a
+  redistribution to (ADR 47).
 - brnr works started with SIGCHLD ignored, as some supervisors leave it.
   On Linux, `brnr acp` and `brnr session new` failed to start their process
   (`No child processes`), and a process never saw its agent exit, so one in
@@ -68,67 +167,6 @@ brnr's own conventions:
   the process would resume the session (ADR 63).
 
 ### Changed
-
-- **Breaking:** every name ADR 63 changed, and what it is now; the entries
-  below say what else changed with it (ADR 63):
-
-  | | 0.7.0 | 0.8.0 |
-  | --- | --- | --- |
-  | Command | `brnr start` | `brnr session new` |
-  | Command | `brnr start --resume <s>` | `brnr session resume <s>` |
-  | Command | `brnr ps` | `brnr process list` |
-  | Command | `brnr stop <pid>` | `brnr process stop <pid>` |
-  | Command | `brnr list` | `brnr session list --include active` |
-  | Command | `brnr list --inactive` | `brnr session list --include inactive` |
-  | Command | `brnr list --all` | `brnr session list` |
-  | Command | `brnr sessions [--cwd <dir>]` (the default profile's agent) | `brnr session list --profile default [--cwd <dir>]` |
-  | Command | `brnr sessions --profile <p>`, `brnr sessions -- <agent>` | `brnr session list --profile <p>`, `brnr session list -- <agent>` |
-  | Command | `brnr status <s>` | `brnr session status <s>` |
-  | Command | `brnr fork <s>` | `brnr session fork <s>` |
-  | Command | `brnr close <s>` | `brnr session close <s>` |
-  | Command | `brnr send <s>` | `brnr prompt send <s>` |
-  | Command | `brnr cancel <s>` | `brnr prompt cancel <s>` |
-  | Command | `brnr commands <s>` | `brnr prompt commands <s>` |
-  | Command | `brnr queue <s>` | `brnr queue list <s>` |
-  | Command | `brnr queue <s> --drop <m>` | `brnr queue drop <s> <m>` |
-  | Command | `brnr queue <s> --clear` | `brnr queue clear <s> --messages` |
-  | Command | `brnr queue <s> --clear-context` | `brnr queue clear <s> --context` |
-  | Command | `brnr queue <s> --clear --clear-context` | `brnr queue clear <s>` |
-  | Command | `brnr pending [<s>]` | `brnr permission requests [<s>]` |
-  | Command | `brnr show <s> <r>` | `brnr permission show <s> <r>` |
-  | Command | `brnr approve <s> <r>` | `brnr permission allow <s> <r>` (`allow_once`), with `--always` (`allow_always`) |
-  | Command | `brnr deny <s> <r>` | `brnr permission reject <s> <r>` (`reject_once`), with `--always` (`reject_always`) |
-  | Command | `brnr mode <s>` | `brnr config get <s> --mode` |
-  | Command | `brnr mode <s> <m>` | `brnr config set <s> --mode <m>` |
-  | Command | `brnr model <s>` | `brnr config get <s> --model` |
-  | Command | `brnr model <s> <m>` | `brnr config set <s> --model <m>` |
-  | Command | `brnr config <s>` | `brnr config get <s>` |
-  | Command | `brnr config <s> <o>=<v>` | `brnr config set <s> --option <o>=<v>`, once for each |
-  | Command | `brnr log <s>` | `brnr event log <s>` |
-  | Command | `brnr watch` | `brnr event watch` |
-  | Command | `brnr notify` | `brnr event notify` |
-  | Command | `brnr wait <s>` | `brnr event wait <s>` |
-  | Flag | `start --set <o>=<v>` | `session new --option <o>=<v>` (and `session resume`) |
-  | Flag | `start --resume <s> --take-over` | `session resume <s> --take-over` |
-  | Flag | `start`'s `--profile`, `--cwd`, `--prompt`, `--file`, `--image`, `--mode`, `--model`, `--stop-when-idle`, `--auth`, `--strict`, `--wait`, `--timeout`, `--foreground`, `--quiet`, `--json` | the same, on `session new` and `session resume` |
-  | Flag | `approve --option <id>`, `deny --option <id>` | `permission allow --option <id>`, `permission reject --option <id>`, an option of an ACP kind on the verb's side |
-  | Flag | `approve` of a request with only `allow_always` | `permission allow --always` |
-  | Flag | `deny` of a request with no reject option (it answered `cancelled`) | `prompt cancel <s>`, or `permission reject --option <id>` |
-  | Profile key | `[profiles.<p>.headless]` `config = { <o> = "<v>" }` | `options = { <o> = "<v>" }`, or `model = "<m>"` and `thought_level = "<l>"` by category |
-  | Profile key | `[profiles.<p>.editor]` `experimental = ["approve"]` | `experimental = ["permission"]` |
-  | Profile key | `[profiles.<p>.editor]` `experimental = ["settings"]` | `experimental = ["config"]` |
-  | Socket command | `approve {session, request, option?}` | `allow {session, request, always?, option?}` |
-  | Socket command | `deny {session, request, option?}` | `reject {session, request, always?, option?}` |
-  | Socket command | `set_mode {session, mode}` | `set_config {session, mode}` |
-  | Socket command | `set_model {session, model}` | `set_config {session, model}` |
-  | Socket command | `set_config {session, option, value}` | `set_config {session, options: {<option>: <value>}}` |
-  | Bridge | `command = ["brnr", "notify", "--stdin", "--", …]` | `command = ["brnr", "event", "notify", "--stdin", "--", …]` |
-  | Event | `permission_resolved {session, request, outcome, by}` | `permission_resolved {session, request, answer, option_kind, outcome, by}`, `answer` being `allowed`, `rejected` or `cancelled` |
-  | Event text | `permission p1 -> allow (by …)` | `permission p1 allowed with allow (allow_once), by …` |
-  | Event text | `permission p1 -> cancelled (by cancel)` | `permission p1 cancelled, by cancel` |
-  | Editor note | "Approved via brnr", "Denied via brnr" | "Allowed via brnr", "Rejected via brnr" |
-  | Editor note | "Already approved via brnr", "Already denied via brnr" | "Already allowed via brnr", "Already rejected via brnr" |
-  | Editor note | `brnr start --resume --take-over closed it here; … (brnr watch <s>).` | `brnr session resume --take-over closed it here; … (brnr event watch <s>).` |
 
 - **Breaking:** commands are grouped by what they act on,
   `brnr <group> <verb>`, and the old names fail as unknown commands, with no

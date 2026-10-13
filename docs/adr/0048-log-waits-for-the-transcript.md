@@ -2,6 +2,10 @@
 
 Accepted 2026-10-08. Implemented. Amends ADR 22 (what `log` shows of a
 running session) and ADR 35 (a request, `logged`).
+Amended 2026-10-12 (#161): a session closed in a process is let go of,
+and its close answered, once its records are written, as on exit, for 2 s
+at most; meanwhile the process's `status` lists it as `closing`, `log`
+waits for its records, and a resume is told it is closing there.
 
 ## Context
 
@@ -46,6 +50,22 @@ process was gone, in a Linux container under load.
   last, for 2 s at most: once it is gone, `log`, `list --all` and
   `--resume` read its sessions' transcripts whole, and a resume doesn't
   start appending to one before its `exited`.
+- A process that closes a session (`session close`, `session resume
+  --take-over`, its idle time running out, the editor) holds its lock, and
+  answers the close, until its logger has written what it recorded of the
+  session, `session_closed` last, for 2 s at most, as on exit: a resume in
+  another process appends after it, and a load there finds its transcript
+  (ADR 57). The event loop doesn't wait for it (P1). Past 2 s (a stalled
+  disk) the session is let go of all the same, and its last records can
+  come after the next process's, as they can after an exit. Opened in the
+  same process again meanwhile, it keeps its lock there, and the close is
+  still answered once its records are written.
+- Until then the process's `status` lists the session in `closing`, so
+  that brnr can tell it from one the process is opening: `log` of it sends
+  `logged` to that process and reads the transcript once it is answered,
+  `session_closed` in it, as for a running session; `session resume` and
+  `session delete` of it fail, saying it is closing in that process and
+  free once its records are written, 2 s at most.
 - What a process killed with SIGKILL hadn't written is lost, as before.
 
 ## Consequences
@@ -71,5 +91,12 @@ Run `cargo test --release adr_0048_`. Named claims and their assertions:
 
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0048_an_exit_is_written_before_the_process_goes`.
+  - `adr_0048_a_close_is_written_before_the_session_is_resumed`.
+  - `adr_0048_a_take_over_is_written_before_the_session_is_resumed`.
+  - `adr_0048_a_last_session_closed_is_written_before_it_is_resumed`.
+  - `adr_0048_a_take_over_finds_the_transcript_it_continues`.
+  - `adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most`.
+  - `adr_0048_a_close_resumed_in_its_process_is_answered_once_written`.
+  - `adr_0048_a_closing_session_is_read_once_written_and_said_to_be_closing`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0048_log_shows_what_the_process_has_recorded`.

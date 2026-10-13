@@ -67,7 +67,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
 {"event": "session_closed", "session": "0f6c…", "by": "idle"}
 {"event": "session_deleted", "session": "0f6c…", "by": "delete"}
-{"event": "history", "session": "0f6c…", "updates": 42, "recorded": true}
+{"event": "history", "session": "0f6c…", "updates": 42, "recorded": true, "loads": 1}
 {"event": "exited", "status": {"code": 0}}
 ```
 
@@ -87,6 +87,10 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.
 - `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `session_reopened`: `by` `editor`: the agent answered an editor's load
+  of the session with success after it answered the session's close, so the
+  session is open again. A watcher has ended at the `session_closed`; watch
+  it again to follow it.
 - `session_deleted`: the agent deleted its copy of the session, `by`
   `delete` (`brnr session delete`) or the `editor`. brnr's transcript stays,
   and `event log` still reads it.
@@ -94,7 +98,9 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   `recorded: true` when brnr had no transcript of it: the history is in the
   log as events with `replayed: true` (`(replayed) user: …` in text);
   `false` when brnr's transcript had it already, which has only what
-  happened through brnr.
+  happened through brnr. `loads` is how many loads it covers: more than 1
+  when an editor loaded the session again before the agent answered, and
+  then a recorded history is in the log once per load, each copy marked.
 - `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
   brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
   said, such as the answer to a turn, is lost. It is the process's.

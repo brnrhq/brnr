@@ -224,6 +224,10 @@ the new one, with its process's `pid` and the prompt's id as `message`
 that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
 
+`prompt send`'s options go before the message: from its first word on,
+every word is the message's, as after `--`, so `brnr prompt send $s explain
+ls -h` sends `explain ls -h`. `-` reads the message from stdin, alone.
+
 brnr never sends a second prompt while a turn runs: ACP doesn't say what one
 means, and agents differ. `prompt send` holds the message and sends it as a
 turn of its own when the running one ends, in order. `--steer` puts it into
@@ -245,7 +249,9 @@ Context that never joins a prompt is a `context_dropped` event the same way:
 
 Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `event log`, `event watch`
-and `session new --foreground`.
+and `session new --foreground`. `session close --json` is `{session}`, and
+`process stop --json` `{pid, status}`; `event notify`, whose output is its
+command's, has none.
 
 ### Waiting, for scripts
 
@@ -402,7 +408,11 @@ text and `--json` alike, most recently active first: STATE is `idle`, `busy`
 or `waiting` for one open in a process, `unreachable` for one whose process
 holds it but doesn't answer, `inactive` for one no process has open; SOURCE
 says who knows it, `brnr`, `agent` or `both`; TITLE and LAST ACTIVE are the
-agent's where it gives them. `--include active` keeps the sessions open in a
+agent's where it gives them. LAST ACTIVE is in UTC, an agent's converted
+from its offset to brnr's own form (`2026-10-11T06:00:00.000000Z` in
+`--json`, `2026-10-11 06:00:00Z` in text), and the order is by the time it
+names; one that isn't an RFC 3339 time is shown as the agent gave it, said
+on stderr, after the sessions with a time and before those with none. `--include active` keeps the sessions open in a
 process, `--include inactive` the others; both by default.
 
 `session resume` takes an id brnr knows, or any id the agent knows, which it
@@ -461,8 +471,9 @@ show the same events, live or read back from the transcript:
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
+| `session_reopened` | an editor's load the agent answered with success after it answered the session's close: the session is open again, `by` `editor` |
 | `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
-| `history` | a load's replay: how many `updates`, and whether they were `recorded` (as events with `replayed`) |
+| `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
@@ -564,7 +575,11 @@ same transcript. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, or whose transcript is gone), so repeated loads don't
 record it twice. A `history` event says how many updates were replayed and
-whether they were recorded. brnr's transcript has only what happened through
+whether they were recorded. An editor's `session/load` through `brnr acp` is
+recorded the same way, and the editor gets the replay as the agent sent it.
+Its loads of a session that overlap share one replay and one `history`
+event, with how many `loads`; a recorded replay then has the history once per
+load, each copy marked. brnr's transcript has only what happened through
 brnr: turns taken in the agent's own client, or with `log = false`, aren't
 in it, and a later load doesn't add them.
 

@@ -8,9 +8,11 @@ a stand-in that prints its arguments on stderr and exits 3:
   authMethods, if given, an object and a list.
 - brnr-codex-adapter can't initialize without the Codex CLI, so this checks
   what it can, and says so (transport only): that it ran the stand-in as
-  `codex app-server` and answered with the error it gives when Codex exits,
-  exactly: code 1001, "Codex process has exited with code 3:\\nstand-in agent:
-  app-server". Any other error fails; a result is checked as Claude's is.
+  `codex app-server` and answered with the error it gives when Codex exits:
+  code 1001 and, exactly, "Codex process has exited with code 3:\\nstand-in
+  agent: app-server". Its other keys aren't checked (codex-acp 2.2 added
+  `data`, with the exit status). Any other error fails; a result is checked
+  as Claude's is.
 
 With --brnr, <dir> has brnr in it too, and brnr is checked with them, in a
 scratch home: brnr doctor finds each next to it and reads its version, and
@@ -41,8 +43,9 @@ args = [a for a in args if a != "--brnr"]
 out = os.path.abspath(args[0] if args else os.path.join(here, "..", "target", "release"))
 timeout = float(os.environ.get("BRNR_CHECK_TIMEOUT", "30"))
 pins = json.load(open(os.path.join(here, "package.json")))["dependencies"]
-# Each adapter's package, and the error its initialize must give instead of
-# a result when its agent is the stand-in, with what it needs to initialize.
+# Each adapter's package, and the code and message of the error its initialize
+# must give instead of a result when its agent is the stand-in, with what it
+# needs to initialize.
 adapters = {
     "brnr-claude-adapter": ("@agentclientprotocol/claude-agent-acp", None),
     "brnr-codex-adapter": (
@@ -116,9 +119,15 @@ def initialize(path, expected):
     if not isinstance(answer, dict) or answer.get("id") != 1:
         return f"not an answer to request 1: {shown(line)}", None
     if "error" in answer:
-        if expected and answer["error"] == expected[0]:
+        error = answer["error"]
+        # The code and message expected; other keys, such as data, may be there.
+        if (
+            expected
+            and isinstance(error, dict)
+            and all(error.get(k) == v for k, v in expected[0].items())
+        ):
             return None, f"initialize, transport only: {expected[1]}"
-        return f"error {shown(answer['error'])}", None
+        return f"error {shown(error)}", None
     result = answer.get("result")
     if not isinstance(result, dict) or result.get("protocolVersion") != 1:
         return f"not a result with protocolVersion 1: {shown(line)}", None
