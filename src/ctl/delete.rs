@@ -30,7 +30,7 @@ use brnr::schema::ErrorCode;
 use brnr::{lock, log};
 
 use super::sessions::{Asked, named_agent};
-use super::{Found, USAGE, discover, find_session, print_json};
+use super::{Found, USAGE, closing, closing_in, discover, find_session, print_json};
 
 pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut purge, mut profile, mut json_out) = (None, false, None, false);
@@ -54,11 +54,15 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     let open = |pid: &str| {
         format!("{id} is open in process {pid}: close it first (brnr session close {id})")
     };
+    let hosts = discover()?;
     if let Some(pid) = lock::holder(&id) {
-        return Err(open(&pid.to_string()));
+        // Closing there: free once its records are written (ADR 48).
+        return Err(match closing_in(&hosts, &id) {
+            Some(_) => closing(&id, pid),
+            None => open(&pid.to_string()),
+        });
     }
     // What brnr recorded of it, as a resume has it, if anything.
-    let hosts = discover()?;
     let past = match find_session(&hosts, &id) {
         Ok(Found::Running(host, _)) => return Err(open(host.id())),
         Ok(Found::Inactive(past)) => Some(past),

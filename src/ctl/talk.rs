@@ -39,8 +39,8 @@ use brnr::request::{self, Request, Role};
 use brnr::{config, lock, paths, signals, spawn, sys};
 
 use super::{
-    Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, connect, discover, find_session,
-    print_json, process, read_stdin, response_json, running_session, settings, text,
+    Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, closing, closing_in, connect, discover,
+    find_session, print_json, process, read_stdin, response_json, running_session, settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -514,6 +514,10 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let mut owner = None;
     let mut transcript = false;
     if let Some(wanted) = a.resume.clone() {
+        // Closing in its process: free once its records are written (ADR 48).
+        if let Some(host) = closing_in(&hosts, &wanted) {
+            return Err(closing(&wanted, host.id()));
+        }
         // A session another process holds is refused, naming the process,
         // unless --take-over. The process started here takes the lock itself,
         // and is refused the same way if it has been taken meanwhile.
@@ -714,6 +718,9 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let mut owner = None;
     if let Some(wanted) = &a.resume {
         req = json!({ "cmd": "resume", "session": wanted });
+        if let Some(host) = closing_in(&hosts, wanted) {
+            return Err(closing(wanted, host.id()));
+        }
         let here = format!("{wanted} is already open in process {pid}");
         let found = match lock::holder(wanted) {
             Some(holder) if holder.to_string() == pid => return Err(here),

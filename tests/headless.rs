@@ -1998,6 +1998,55 @@ fn adr_0048_a_close_resumed_in_its_process_is_answered_once_written() {
     fs::remove_file(&stall).unwrap();
 }
 
+/// A session closing in a process, whose records aren't written yet: what
+/// would open or delete it says it is closing there, not opening, and for
+/// how long;
+/// `event log` waits for its records and reads them, `session_closed` last,
+/// rather than failing (ADR 48). The process's status lists it as closing.
+#[test]
+fn adr_0048_a_closing_session_is_read_once_written_and_said_to_be_closing() {
+    let env = Env::new("closing");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut from_host = BufReader::new(conn.try_clone().unwrap()).lines();
+    let mut closing = || {
+        writeln!(conn, r#"{{"cmd":"status"}}"#).unwrap();
+        let status: Value = serde_json::from_str(&from_host.next().unwrap().unwrap()).unwrap();
+        status["closing"] == json!(["sess-1"])
+    };
+    assert!(!closing(), "closing before it was closed");
+    fs::write(&stall, "").unwrap();
+    let close = unstalled(&env, &["session", "close", "sess-1"]).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(5), &mut closing), "sess-1 isn't listed as closing");
+    let said = format!(
+        "sess-1 is closing in process {pid}; it's free once its records are written (2 s at most)"
+    );
+    let take_over = resume_args("sess-1", &["--take-over"]);
+    let here = ["session", "resume", "--pid", &pid, "sess-1"];
+    let delete = ["session", "delete", "sess-1"];
+    for args in [&resume_args("sess-1", &[])[..], &take_over, &here, &delete] {
+        let err = env.fails(args);
+        assert!(err.contains(&said), "{args:?}: {err}");
+    }
+    let mut log = unstalled(&env, &["event", "log", "sess-1"]).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    let early = log.try_wait().unwrap().is_some();
+    fs::remove_file(&stall).unwrap();
+    let out = log.wait_with_output().unwrap();
+    assert!(!early, "read before its records were written: {}", stderr(&out));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(shown.trim_end().ends_with("session closed (close)"), "{shown}");
+    let out = close.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says
