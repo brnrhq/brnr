@@ -2,6 +2,7 @@
 //! as one list joined on the session id, and the agent started just to be
 //! asked.
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, lock, paths, signals, spawn, sys};
+use brnr::{config, json, lock, log, paths, signals, spawn, sys};
 
 use super::{
     Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,
@@ -53,6 +54,7 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
                     return Err("-- needs an agent".into());
                 }
             }
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => return Err(USAGE.to_owned()),
         }
     }
@@ -128,8 +130,28 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
     rows.retain(|r| {
         include.contains(&if r["state"] == "inactive" { "inactive" } else { "active" })
     });
-    // Most recently active first, however many processes and agents.
-    rows.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
+    // Most recently active first, however many processes and agents, by the
+    // time each names, to the nanosecond (before it is written to the
+    // microsecond, below); then those with a time brnr can't read, then
+    // those with none, each in the order they came.
+    rows.sort_by_cached_key(|r| {
+        let at = r["last_active"].as_str();
+        (Reverse(at.and_then(log::parse_rfc3339)), at.is_none())
+    });
+    // In UTC, as brnr writes its own, so that each is shown as the time it
+    // is. One that isn't an RFC 3339 time is passed on as it came, and said
+    // (P4).
+    for r in &mut rows {
+        let Some(at) = r["last_active"].as_str().map(str::to_owned) else { continue };
+        match log::utc(&at) {
+            Some(utc) => r["last_active"] = json!(utc),
+            None => errln!(
+                "brnr: session {}: last active {at:?} isn't an RFC 3339 time, so it is shown as \
+                 given, after the sessions with one",
+                r["session"].as_str().unwrap_or_default()
+            ),
+        }
+    }
     if json_out {
         print_json(&json!(rows))?;
         return Ok(ExitCode::SUCCESS);

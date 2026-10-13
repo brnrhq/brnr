@@ -27,9 +27,11 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
 
 - The host reads every RFC 8259 text. In the copy it interprets, a lone
   surrogate becomes U+FFFD, and there is no depth limit (serde_json's
-  `unbounded_depth`, with the stack grown as needed). The line itself is
-  forwarded byte for byte, as always. This stays brnr's own work with the
-  official schema types too (ADR 43): they parse with serde_json.
+  `unbounded_depth`, with the stack grown as needed: for a line that deep,
+  and for what comes after it while the host keeps something of it). The
+  line itself is forwarded byte for byte, as always. This stays brnr's own
+  work with the official schema types too (ADR 43): they parse with
+  serde_json.
 - For a line that isn't JSON at all: the host keeps the ids of agent
   requests it answered itself (permission requests cancelled, or answered
   from outside, ADR 4) and drops only the editor's late answers to those,
@@ -55,6 +57,8 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
 
 Run `cargo test --release adr_0026_`. Named claims and their assertions:
 
+- [src/host/fuzz.rs](../../src/host/fuzz.rs)
+  - `adr_0026_the_stack_is_as_deep_as_what_the_host_holds`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0026_a_lone_surrogate_is_read`.
   - `adr_0026_deep_nesting_is_read`.

@@ -175,7 +175,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     }
                     Ok(Msg::Signal(sig)) => {
                         let stopped = running.take().map(|r| r.stop(&rx));
-                        return Err(cut_off(signal_name(sig), stopped.as_deref()));
+                        return Err(cut_off(&render::signal(sig.into()), stopped.as_deref()));
                     }
                     // What the process sent before it hung up says whether
                     // that was the end or notify being cut off.
@@ -216,16 +216,6 @@ fn ends(e: &Value, only: Option<&str>) -> bool {
 fn cut_off(why: &str, stopped: Option<&str>) -> String {
     let stopped = stopped.map(|s| format!("; stopped {s}")).unwrap_or_default();
     format!("cut off ({why}){stopped}; no more notifications")
-}
-
-fn signal_name(sig: c_int) -> &'static str {
-    match sig {
-        libc::SIGHUP => "SIGHUP",
-        libc::SIGINT => "SIGINT",
-        libc::SIGQUIT => "SIGQUIT",
-        libc::SIGTERM => "SIGTERM",
-        _ => "a signal",
-    }
 }
 
 /// What reaches notify's loop.
@@ -283,7 +273,7 @@ fn next(rx: &Receiver<Msg>) -> Result<Value, String> {
         match rx.recv() {
             Ok(Msg::Event(e)) => return Ok(e),
             Ok(Msg::End(why)) => return Err(why),
-            Ok(Msg::Signal(sig)) => return Err(signal_name(sig).to_owned()),
+            Ok(Msg::Signal(sig)) => return Err(render::signal(sig.into())),
             Ok(_) => {}
             Err(_) => return Err("no more events".to_owned()),
         }

@@ -2,6 +2,11 @@
 
 Accepted 2026-10-09. Implemented. Amends 14 (what a load does
 with the replay) and 22 (brnr never recording a replay). Resolves #60.
+Amended 2026-10-12 (#118): an editor's `session/load` through `brnr acp`
+follows the same rule, where it passed through as before; its loads that
+overlap share one replay and one `history` event, which says how many
+`loads` it covers; and a load the agent answers with success after the
+session's close is answered opens it again, with a `session_reopened`.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -42,9 +47,37 @@ conversation, and nothing said it was missing (P3).
 - Either way, once the agent answers the load, a `history` event says how
   many `updates` the agent replayed and whether they were `recorded`:
   `history: 3 updates replayed by the agent, recorded`, or `…, not
-  recorded: brnr's transcript has the session`.
-- `session/resume` replays nothing, and makes no `history` event. An
-  editor's own `session/load` passes through as before.
+  recorded: brnr's transcript has the session`. Its `loads` is 1, but for
+  an editor's loads that overlap (below).
+- `session/resume` replays nothing, and makes no `history` event.
+- An editor's `session/load` through `brnr acp` follows the same rule: its
+  replay is recorded only when brnr has no transcript of the session, in
+  any folder, and a `history` event says either way. A session open in the
+  editor's process has its transcript, the process's, whether or not the
+  disk has it yet (unless it logs nothing, `log = false`), so loading it
+  again there records nothing of the replay again. The editor gets the replay as the agent sent
+  it (ADR 2): only what brnr records and emits follows the rule.
+- The editor's loads of a session that overlap (one sent before the agent
+  has answered the one before) all reach the agent, and share one replay,
+  as which load an update is for can't be told (P4). Until the last of them
+  is answered, every update either replays is taken as the replay is:
+  recorded, marked `replayed`, or not, as the first load found the
+  transcript. Then one `history` event says how many `updates` they
+  replayed between them, whether they were `recorded`, and how many `loads`
+  it covers: `history: 10 updates replayed by the agent in 2 loads,
+  recorded`. A recorded replay can so hold the history once per load, each
+  copy marked; nothing is left out (P3). A load that fails counts as
+  answered; if none of them succeeds, there is no `history` event, as for a
+  single load that fails, and a session they opened closes again, unless a
+  `session/resume` of it succeeded meanwhile.
+- The editor's close of a session (`session/close`) while its load is
+  unanswered closes it once the agent answers the close, with its
+  `session_closed`, as any close does. If the agent then answers the load
+  with success, its last answer wins: the session is open in the editor's
+  process again, and a `session_reopened`, `by` `editor`, says so (`session
+  reopened (editor): its load was answered after its close`). brnr takes
+  the agent's last answer as how the session is, and doesn't guess
+  otherwise (P4).
 
 ## Consequences
 
@@ -79,6 +112,12 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_first_load_records_the_replayed_history`.
   - `adr_0057_a_load_without_the_transcript_records_the_history`.
   - `adr_0057_a_load_of_an_empty_history_says_so`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0057_an_editors_load_records_the_history_only_without_a_transcript`.
+  - `adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again`.
+  - `adr_0057_overlapping_loads_in_an_editor_have_one_history`.
+  - `adr_0057_a_failed_load_leaves_a_resumed_session_open`.
+  - `adr_0057_a_load_answered_after_its_close_reopens_the_session`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

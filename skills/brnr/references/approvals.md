@@ -37,7 +37,10 @@ brnr permission show $s p1 --json
 
 `event wait --for permission` returns when a request is waiting (at once if
 one already is), with it as JSON. `permission requests` lists every waiting
-request, or a session's (`brnr permission requests <session> --json`):
+request in the processes that answer (one that doesn't is named on stderr,
+`process <pid> is not answering; its approvals aren't listed`, and is
+`unreachable` in `brnr process list --json`), or a session's
+(`brnr permission requests <session> --json`):
 
 ```json
 [{"session": "0f6c…", "request": "p1", "owner": "headless", "kind": "edit", "title": "Edit src/lib.rs",

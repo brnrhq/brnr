@@ -7,8 +7,9 @@
 //! and there is no depth limit; the line itself is forwarded as it came.
 //!
 //! A deep value takes a deep stack, to parse and also to clone, show or drop
-//! afterwards. [`depth`] says how deep a line goes, and [`on_stack`] runs
-//! code on a stack that takes values that deep.
+//! afterwards. [`depth`] says how deep a line goes, [`nesting`] how deep
+//! values go, and [`on_stack`] runs code on a stack that takes values that
+//! deep.
 //!
 //! [`members`] finds a top-level member in the line itself, so that a
 //! request's id is changed there and the rest goes on byte for byte (ADR 61).
@@ -18,6 +19,7 @@ use std::panic;
 use std::thread;
 
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 /// Nesting any thread's stack takes: serde_json's own limit.
 pub const SHALLOW: usize = 128;
@@ -57,6 +59,22 @@ pub fn parse<T: DeserializeOwned>(text: &[u8]) -> Option<T> {
 /// How deeply `text` nests: as deep as a parse of it can go.
 pub fn depth(text: &[u8]) -> usize {
     scan(text, |_| {})
+}
+
+/// How deeply the deepest of `values` nests, as [`depth`] counts their
+/// text. It doesn't recurse, so any stack takes it.
+pub fn nesting<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
+    let mut deepest = 0;
+    let mut todo: Vec<_> = values.into_iter().map(|v| (v, 0)).collect();
+    while let Some((value, depth)) = todo.pop() {
+        match value {
+            Value::Array(items) => todo.extend(items.iter().map(|v| (v, depth + 1))),
+            Value::Object(members) => todo.extend(members.values().map(|v| (v, depth + 1))),
+            _ => continue,
+        }
+        deepest = deepest.max(depth + 1);
+    }
+    deepest
 }
 
 /// Runs `f` on a stack that takes values nested `depth` deep: this thread's,
@@ -250,6 +268,8 @@ mod tests {
         assert_eq!(read(r#""\\ud83d""#), Some(json!(r"\ud83d")));
         assert_eq!(read(r#"["\"[", "\ud83d"]"#), Some(json!(["\"[", "\u{fffd}"])));
         assert_eq!(depth(br#"[{"a": "[[[{{"}, "\"]]"]"#), 2);
+        assert_eq!(nesting([&json!([{ "a": "[[[{{" }, "\"]]"]), &json!({})]), 2);
+        assert_eq!(nesting([&json!("[")]), 0);
     }
 
     #[test]
@@ -288,6 +308,7 @@ mod tests {
         assert_eq!(depth(text.as_bytes()), n);
         let back = on_stack(n, || {
             let value: Value = parse(text.as_bytes()).unwrap();
+            assert_eq!(nesting([&value]), n);
             value.to_string()
         });
         assert_eq!(back.as_deref(), Some(text.as_str()));
