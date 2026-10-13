@@ -46,6 +46,7 @@ answers = {
         "id": 1,
         "error": dict(exited, message="Codex process has exited with code 127", data={}),
     },
+    "exited with other code": {"jsonrpc": "2.0", "id": 1, "error": dict(exited, code=1002)},
     "protocol 2": {"jsonrpc": "2.0", "id": 1, "result": dict(result, protocolVersion=2)},
     "capabilities a list": {
         "jsonrpc": "2.0",
@@ -116,7 +117,12 @@ class Check(unittest.TestCase):
                 self.assertIn("FAIL brnr-claude-adapter initialize: error {'code':", output)
 
     def test_fails_on_an_unexpected_codex_error(self):
-        for answer in ("other error", "exited otherwise", "exited otherwise with data"):
+        for answer in (
+            "other error",
+            "exited otherwise",
+            "exited otherwise with data",
+            "exited with other code",
+        ):
             with self.subTest(answer):
                 status, output = check(codex=answer)
                 self.assertEqual(status, 1, output)
