@@ -43,6 +43,12 @@ criteria = "safe-to-deploy"
 version = "0.1.3"
 notes = "Reviewed all packaged executable source and both manifests. The no_std library only publicly re-exports jiff_tzdb, with no build script, other modules, unsafe code, or I/O. Platform selection is controlled by the caller. This review does not audit the re-exported time-zone database dependency, which remains separately exempted."
 
+[[audits.libc]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+delta = "0.2.189 -> 0.2.190"
+notes = "Automated review of the complete crates.io delta, reading line by line the files compiled for x86_64/aarch64 Linux GNU and macOS and the executable code on other targets. build.rs runs no new commands; the FreeBSD, Emscripten and VxWorks version probes now run only on those targets, and cfgs come from an enum checked against the target. linux_time_bits64 is now also set on 64-bit Linux, where the only item it gates (input_event) keeps the same fields. New s2!/s_no_extra_traits2! macros add Default impls and a trailing private unit field (repr(C) size unchanged); a zeroed Default is opt-in for five unions of integers, raw pointers and C structs, all valid as zero. The new cstr helper is only applied to static NUL-terminated byte literals. On glibc, sigaction, siginfo_t, statvfs, the signal numbers, SA_*, SOCK_* and SO_* move into new modules; checked against glibc bits/sigaction.h, signum-arch.h, signum-generic.h, types/siginfo_t.h, statvfs.h, socket_type.h and Linux asm-generic/socket.h: values and 64-bit layouts are unchanged (siginfo_t 128 bytes with explicit __pad0; statvfs gains f_type from spare). siginfo_t accessors are unsafe union reads. NLMSG_* helpers match linux/netlink.h and use wrapping pointer arithmetic. FD_* now panic with a message on out-of-range fds, as indexing did. New Apple declarations (lchmod, lchflags, minherit, posix_spawn_file_actions_add(f)chdir(_np), pack(4) group_req, MCAST_*, VM_INHERIT_*) match XNU sys/stat.h, sys/mman.h, netinet/in.h, mach/vm_inherit.h and spawn.h. The rest is declarations for other targets (new HelenOS port), removal of long-deprecated items, Padding for private fields, docs, and an include list that drops repository files from the package. No new link attributes, inline asm, ambient I/O or dependencies."
+
 [[audits.powerfmt]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
