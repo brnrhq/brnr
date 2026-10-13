@@ -677,6 +677,7 @@ impl Host {
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
+        report["closing"] = json!(self.closing());
         report["bridges"] = json!(
             self.peers
                 .values()
