@@ -56,7 +56,9 @@ process was gone, in a Linux container under load.
   another process appends after it, and a load there finds its transcript
   (ADR 57). The event loop doesn't wait for it (P1). Past 2 s (a stalled
   disk) the session is let go of all the same, and its last records can
-  come after the next process's, as they can after an exit.
+  come after the next process's, as they can after an exit. Opened in the
+  same process again meanwhile, it keeps its lock there, and the close is
+  still answered once its records are written.
 - What a process killed with SIGKILL hadn't written is lost, as before.
 
 ## Consequences
@@ -87,5 +89,6 @@ Run `cargo test --release adr_0048_`. Named claims and their assertions:
   - `adr_0048_a_last_session_closed_is_written_before_it_is_resumed`.
   - `adr_0048_a_take_over_finds_the_transcript_it_continues`.
   - `adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most`.
+  - `adr_0048_a_close_resumed_in_its_process_is_answered_once_written`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0048_log_shows_what_the_process_has_recorded`.
