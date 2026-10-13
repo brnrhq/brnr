@@ -1425,6 +1425,13 @@ impl Host {
         self.letting_go.iter().any(|l| l.session == session && l.locked())
     }
 
+    /// The sessions closed here whose locks are still this process's, until
+    /// their records are written: `status` says so, so that brnr can tell
+    /// one closing from one opening (ADR 48).
+    pub(super) fn closing(&self) -> Vec<&str> {
+        self.letting_go.iter().filter(|l| l.locked()).map(|l| l.session.as_str()).collect()
+    }
+
     /// The agent has deleted `session`, as the editor asked: a
     /// `session_deleted`, and brnr's transcript stays (ADR 63). One open here
     /// is gone from the agent, so it closes, as if the editor had closed it.

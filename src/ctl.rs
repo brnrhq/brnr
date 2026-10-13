@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Display;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -306,6 +307,13 @@ impl Host {
         self.status.as_ref().and_then(|s| s["sessions"].as_array()).map_or(&[], Vec::as_slice)
     }
 
+    /// Whether it has closed `session` and holds its lock still, until its
+    /// records are written (ADR 48).
+    fn closing(&self, session: &str) -> bool {
+        let closing = self.status.as_ref().and_then(|s| s["closing"].as_array());
+        closing.is_some_and(|c| c.iter().any(|s| s == session))
+    }
+
     /// The sessions whose locks it holds, as `locks` has them: what it
     /// serves, asked of nobody.
     fn held(&self, locks: &[lock::Entry]) -> Vec<String> {
@@ -325,6 +333,21 @@ enum Found<'a> {
     Inactive(Value),
 }
 
+/// What is said of `session`, closed in process `pid`, whose lock it holds
+/// until its records are written (ADR 48).
+fn closing(session: &str, pid: impl Display) -> String {
+    format!(
+        "{session} is closing in process {pid}; it's free once its records are written (2 s at most)"
+    )
+}
+
+/// The process holding `session`'s lock as it closes it, if one is: see
+/// `closing`.
+fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
+    let pid = lock::holder(session)?.to_string();
+    hosts.iter().find(|h| h.id() == pid && h.closing(session))
+}
+
 /// The session with id `arg`, running or not: in the process holding its
 /// lock, or one that serves it shared, without the lock (ADR 3).
 fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
@@ -335,6 +358,7 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
             Some(host) if host.status.is_none() => {
                 Err(format!("{arg} is running in process {pid}, which is not answering"))
             }
+            Some(host) if host.closing(arg) => Err(closing(arg, pid)),
             _ => Err(format!("{arg} is opening in process {pid}")),
         };
     }
