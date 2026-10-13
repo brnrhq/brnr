@@ -1960,6 +1960,43 @@ fn adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most() {
     fs::remove_file(&stall).unwrap();
 }
 
+/// A session closed in a process and resumed there again, by a bridge,
+/// before its records are written: the process keeps its lock, and the
+/// close is still answered once `session_closed` is written, here 2 s at
+/// most, not as the session opens again (ADR 48).
+#[test]
+fn adr_0048_a_close_resumed_in_its_process_is_answered_once_written() {
+    let env = Env::new("closeagain");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["event", "log", "sess-1"]);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut from_host = BufReader::new(conn.try_clone().unwrap()).lines();
+    fs::write(&stall, "").unwrap();
+    let started = Instant::now();
+    let close = unstalled(&env, &["session", "close", "sess-1"]).spawn().unwrap();
+    // Refused until the agent has closed it here.
+    let mut resume = || {
+        writeln!(conn, r#"{{"cmd":"resume","session":"sess-1","req_id":"r"}}"#).unwrap();
+        let answer: Value = serde_json::from_str(&from_host.next().unwrap().unwrap()).unwrap();
+        answer["ok"] == true
+    };
+    assert!(wait_for(Duration::from_secs(10), &mut resume), "sess-1 wasn't resumed here");
+    let out = close.wait_with_output().unwrap();
+    let took = started.elapsed();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(took >= Duration::from_millis(1900), "answered before it was written: {took:?}");
+    assert!(took < Duration::from_secs(10), "answered after {took:?}");
+    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let holder = serde_json::from_str::<Value>(&lock).unwrap()["pid"].to_string();
+    assert_eq!(holder, pid, "the process let go of the session it resumed");
+    fs::remove_file(&stall).unwrap();
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says
