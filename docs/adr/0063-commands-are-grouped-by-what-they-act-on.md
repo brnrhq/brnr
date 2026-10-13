@@ -321,9 +321,10 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     out; an agent that can't list fails.
   - `adr_0063_list_reads_the_agents_times_in_utc`: an agent's times with
     offsets (`+02:00`, `-05:30`) and fractions of any width are in UTC in
-    `--json` and text, and ordered by the time they name against a session
-    brnr recorded; one that isn't an RFC 3339 time is as given, said, and
-    after those with a time, before those with none.
+    `--json` and text, and ordered by the time they name, finer than the
+    microseconds brnr writes, against a session brnr recorded; one that
+    isn't an RFC 3339 time is as given, said, and after those with a time,
+    before those with none.
   - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
     with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
     named or not, and the open one the agent lists is `both` and `active`,
