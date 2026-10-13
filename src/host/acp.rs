@@ -212,8 +212,9 @@ pub(super) enum Hold {
 pub(super) struct LettingGo {
     session: String,
     until: Instant,
-    /// Taken by whichever comes first: the logger's thread, the event
-    /// loop's timer, or this process opening the session again.
+    /// Taken by whichever comes first: the logger's thread or the event
+    /// loop's timer. This process opening the session again takes back only
+    /// its lock: the close is still answered once it is written.
     held: Arc<Mutex<Option<Release>>>,
 }
 
@@ -232,22 +233,29 @@ impl LettingGo {
     fn done(&self) -> bool {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).is_none()
     }
+
+    /// The session's lock, if it is still this process's.
+    fn reclaim(&self) -> Option<Lock> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.lock.take()
+    }
+
+    fn locked(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|r| r.lock.is_some())
+    }
 }
 
 impl Release {
-    /// Lets go of the lock, then answers, so whoever hears it finds the
-    /// session free.
-    fn go(mut self) {
-        drop(self.lock.take());
-        self.answer();
-    }
-
-    /// Answers, keeping the lock: the session is open here again.
-    fn answer(self) -> Option<Lock> {
+    /// Lets go of the lock, if the session isn't open here again, then
+    /// answers, so whoever hears it finds the session free.
+    fn go(self) {
+        drop(self.lock);
         for (queue, line) in self.answers {
             queue.post(line);
         }
-        self.lock
     }
 }
 
@@ -1404,24 +1412,15 @@ impl Host {
 
     /// `session`'s lock, if it closed here and isn't let go of yet: opened
     /// here again, it is this process's still, and its records come after
-    /// the close's from the same logger. Its close is answered now.
+    /// the close's from the same logger. The close is answered as before,
+    /// once its records are written (ADR 48).
     fn reclaim(&mut self, session: &str) -> Option<Lock> {
-        let mut lock = None;
-        self.letting_go.retain(|l| {
-            if l.session != session {
-                return true;
-            }
-            if let Some(release) = l.take() {
-                lock = lock.take().or(release.answer());
-            }
-            false
-        });
-        lock
+        self.letting_go.iter().filter(|l| l.session == session).find_map(LettingGo::reclaim)
     }
 
     /// Whether `session` closed here and its lock is still this process's.
     fn letting_go_of(&self, session: &str) -> bool {
-        self.letting_go.iter().any(|l| l.session == session && !l.done())
+        self.letting_go.iter().any(|l| l.session == session && l.locked())
     }
 
     /// The agent has deleted `session`, as the editor asked: a
