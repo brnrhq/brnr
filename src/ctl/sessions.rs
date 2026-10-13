@@ -130,6 +130,14 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
     rows.retain(|r| {
         include.contains(&if r["state"] == "inactive" { "inactive" } else { "active" })
     });
+    // Most recently active first, however many processes and agents, by the
+    // time each names, to the nanosecond (before it is written to the
+    // microsecond, below); then those with a time brnr can't read, then
+    // those with none, each in the order they came.
+    rows.sort_by_cached_key(|r| {
+        let at = r["last_active"].as_str();
+        (Reverse(at.and_then(log::parse_rfc3339)), at.is_none())
+    });
     // In UTC, as brnr writes its own, so that each is shown as the time it
     // is. One that isn't an RFC 3339 time is passed on as it came, and said
     // (P4).
@@ -144,13 +152,6 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
             ),
         }
     }
-    // Most recently active first, however many processes and agents, by the
-    // time each names; then those with a time brnr can't read, then those
-    // with none, each in the order they came.
-    rows.sort_by_cached_key(|r| {
-        let at = r["last_active"].as_str();
-        (Reverse(at.and_then(log::parse_rfc3339)), at.is_none())
-    });
     if json_out {
         print_json(&json!(rows))?;
         return Ok(ExitCode::SUCCESS);

@@ -34,7 +34,7 @@ For headless sessions:
 |---|---|---|
 | `send` | sent as a prompt | held; sent as its own turn when the running one ends, in order |
 | `send --steer` | sent as a prompt, not steered (as `promptRequired` would have it) | injected into the running turn; refused if the agent doesn't advertise steering (P7), or in strict mode |
-| `send --interrupt` | sent as a prompt | `session/cancel`, then sent ahead of what is held |
+| `send --interrupt` | sent as a prompt; held, ahead of what is held, while the last turn's steers are unanswered (ADR 56) | `session/cancel`, then sent ahead of what is held |
 | `send --context` | appended to the next prompt | appended to the next prompt |
 
 - Each held message is its own prompt and turn, in the order sent;
