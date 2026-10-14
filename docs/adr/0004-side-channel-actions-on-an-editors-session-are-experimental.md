@@ -22,6 +22,11 @@ by name. One leaves experimental only by an ADR of its own, with evidence
 from real editors (ADR 67's checks, per editor and adapter version), not
 the synthetic suite alone.
 
+Amended by 68: a seventh action, `elicitation` (`elicitation accept`,
+`decline`, `cancel`): the request is withdrawn from the editor with
+`$/cancel_request` and the editor told ("Accepted via brnr", "Declined via
+brnr"); its late answer is dropped, as `permission`'s is.
+
 ## Context
 
 ACP has one client per session. With an editor attached, the editor is that

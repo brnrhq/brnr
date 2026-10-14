@@ -4,6 +4,11 @@ Accepted 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 5, 7, 9,
 11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 27, 28, 33, 34, 35, 36, 38, 39, 41,
 43, 45, 46, 50, 54, 57, 58 and 59.
 
+Amended by 68: `--permission-timeout` and the profile's
+`permission_timeout` are `--response-timeout` and `response_timeout`, the
+one timeout for the user's responses: it answers an elicitation nobody
+answered `cancel`, and a permission request as below.
+
 ## Context
 
 brnr's commands are one flat level that grew a command at a time, and their

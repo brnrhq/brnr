@@ -4,6 +4,9 @@ Accepted 2026-10-07. Implemented.
 Amended by 63: the headless part is what `session new` and `resume` use;
 its `config` is `options`, beside `model` and `thought_level`, and a
 profile with `config` fails to load.
+Amended by 68: the headless part's `permission_timeout` is
+`response_timeout`, the one timeout for the user's responses, approvals and
+elicitations alike.
 
 ## Context
 
