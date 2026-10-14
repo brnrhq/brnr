@@ -7,6 +7,9 @@ follows the same rule, where it passed through as before; its loads that
 overlap share one replay and one `history` event, which says how many
 `loads` it covers; and a load the agent answers with success after the
 session's close is answered opens it again, with a `session_reopened`.
+Amended 2026-10-14 (#118): a load's replay is counted across its session's
+close, and its `history` follows the `session_reopened`; `recorded_updates`
+says how many of the `updates` the transcript has.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -48,7 +51,12 @@ conversation, and nothing said it was missing (P3).
   many `updates` the agent replayed and whether they were `recorded`:
   `history: 3 updates replayed by the agent, recorded`, or `…, not
   recorded: brnr's transcript has the session`. Its `loads` is 1, but for
-  an editor's loads that overlap (below).
+  an editor's loads that overlap (below). `recorded` says whether the
+  replay was taken into the transcript at all, as brnr had no transcript of
+  the session; `recorded_updates`, always there, how many of the `updates`
+  are in it: all of them when `recorded`, none when not, but for a session
+  closed while its load was unanswered (below), where text says
+  `history: 4 updates replayed by the agent, 3 recorded`.
 - `session/resume` replays nothing, and makes no `history` event.
 - An editor's `session/load` through `brnr acp` follows the same rule: its
   replay is recorded only when brnr has no transcript of the session, in
@@ -77,7 +85,17 @@ conversation, and nothing said it was missing (P3).
   process again, and a `session_reopened`, `by` `editor`, says so (`session
   reopened (editor): its load was answered after its close`). brnr takes
   the agent's last answer as how the session is, and doesn't guess
-  otherwise (P4).
+  otherwise (P4). The load's replay is kept through the close: what the
+  agent replays meanwhile is counted, and goes to the host log, as the
+  session's files are closed; once the load succeeds, the replay goes on in
+  the reopened session, and its `history`, after the `session_reopened`,
+  has all the `updates` and, in `recorded_updates`, those the transcript
+  has. A load that fails after the close leaves the session closed, with
+  no `history`, as any failed load; of loads that overlap, one that
+  succeeded before the close has its `history` once the last is answered,
+  with the session still closed, in the host log. A load of the session
+  sent after the close, while one before it is unanswered, joins that
+  replay, as overlapping loads do.
 
 ## Consequences
 
@@ -118,6 +136,9 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_overlapping_loads_in_an_editor_have_one_history`.
   - `adr_0057_a_failed_load_leaves_a_resumed_session_open`.
   - `adr_0057_a_load_answered_after_its_close_reopens_the_session`.
+  - `adr_0057_a_loads_history_is_counted_across_its_sessions_close`.
+  - `adr_0057_a_load_that_fails_after_its_sessions_close_has_no_history`.
+  - `adr_0057_overlapping_loads_closed_meanwhile_have_one_history`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

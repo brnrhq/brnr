@@ -350,6 +350,7 @@ impl Host {
         let replay = Replay {
             record,
             updates: 0,
+            recorded_updates: 0,
             tools,
             loads: 1,
             unanswered: 1,
@@ -377,13 +378,7 @@ impl Host {
         self.flush_agent_message(i);
         let Some(replay) = self.drop_replay(i) else { return };
         let session = self.sessions[i].id.clone();
-        self.emit(json!({
-            "event": "history",
-            "session": session,
-            "updates": replay.updates,
-            "recorded": replay.record,
-            "loads": replay.loads,
-        }));
+        self.emit(history(&session, &replay));
     }
 
     /// Sends the next of `setup`'s settings, or, when there are none left,
@@ -934,6 +929,18 @@ impl Resolved {
 fn is_auth_error(error: &Value) -> bool {
     schema::read::<Error>(error).is_some_and(|e| {
         e.code == ErrorCode::AuthRequired || e.message.to_lowercase().contains("auth")
+    })
+}
+
+/// The `history` event of `session`'s `replay`, ended (ADR 57).
+pub(super) fn history(session: &str, replay: &Replay) -> Value {
+    json!({
+        "event": "history",
+        "session": session,
+        "updates": replay.updates,
+        "recorded": replay.record,
+        "recorded_updates": replay.recorded_updates,
+        "loads": replay.loads,
     })
 }
 

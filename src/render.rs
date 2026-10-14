@@ -120,10 +120,13 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
         // replayed events or was there already (ADR 57).
         "history" => {
             let updates = e["updates"].as_u64().unwrap_or(0);
-            let how = if e["recorded"] == true {
-                "recorded"
-            } else {
-                "not recorded: brnr's transcript has the session"
+            // Fewer recorded when its session closed while it was loading.
+            let how = match e["recorded_updates"].as_u64() {
+                _ if e["recorded"] != true => {
+                    "not recorded: brnr's transcript has the session".to_owned()
+                }
+                Some(n) if n < updates => format!("{n} recorded"),
+                _ => "recorded".to_owned(),
             };
             // Overlapping loads of an editor's have one between them.
             let loads = match e["loads"].as_u64() {
@@ -542,6 +545,9 @@ mod tests {
         assert_eq!(shown(reopened), said);
         let history = json!({ "event": "history", "updates": 3, "recorded": true });
         assert_eq!(shown(history), "history: 3 updates replayed by the agent, recorded");
+        let closed =
+            json!({ "event": "history", "updates": 4, "recorded": true, "recorded_updates": 3 });
+        assert_eq!(shown(closed), "history: 4 updates replayed by the agent, 3 recorded");
         let loads = json!({ "event": "history", "updates": 6, "recorded": false, "loads": 2 });
         let said = "history: 6 updates replayed by the agent in 2 loads, not recorded: brnr's \
                     transcript has the session";

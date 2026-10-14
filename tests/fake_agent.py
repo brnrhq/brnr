@@ -35,7 +35,10 @@ with environment variables:
   REUSED_TOOL=1     session/load's history also finishes tool call t2, then
                     starts another with its id
   LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
-  LOAD_FAIL=1       session/load, once it has replayed, answers with an error
+  LOAD_FAIL=1       the first session/load, once it has replayed, answers
+                    with an error
+  LATE_HISTORY=1    with LOAD_LATER, a load replays one more agent message,
+                    late history, once the file exists, before its answer
   NO_CLOSE=1        don't offer session/close
   CLOSE_GATE=<file> wait for this file before answering session/close
   NO_LIST=1         don't offer session/list
@@ -276,16 +279,23 @@ def new_opened(mid, session):
     update(session, {"sessionUpdate": "session_info_update", "title": "Fake session"})
 
 
+loads_failed = 0
+
+
 def load_answer(mid):
-    if env("LOAD_FAIL"):
+    global loads_failed
+    if env("LOAD_FAIL") and not loads_failed:
+        loads_failed += 1
         error(mid, -32603, "Can't load the session")
     else:
         result(mid, settings({}))
 
 
-def load_later(gate, mid):
+def load_later(gate, mid, session):
     while not os.path.exists(gate):
         time.sleep(0.01)
+    if env("LATE_HISTORY"):
+        say(session, "late history")
     load_answer(mid)
 
 
@@ -685,7 +695,8 @@ for line in sys.stdin.buffer:
         if method == "session/resume":
             result(mid, settings({}))
         elif env("LOAD_LATER"):
-            threading.Thread(target=load_later, args=(env("LOAD_LATER"), mid), daemon=True).start()
+            later = (env("LOAD_LATER"), mid, sid)
+            threading.Thread(target=load_later, args=later, daemon=True).start()
         else:
             load_answer(mid)
     elif method == "session/fork":

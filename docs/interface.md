@@ -342,10 +342,15 @@ are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
 `session_reopened` follows a `session_closed` when the agent answered an
 editor's load of the session with success after its close: the session is
-open again. `history` carries `updates`, `recorded` and `loads`: an editor's loads of a
-session that overlap share one replay and one `history` event, so `loads`
-can be more than 1, and a recorded history is then in the transcript once
-per load.
+open again, and the load's `history` follows it. `history` carries
+`updates`, `recorded`, `recorded_updates` and `loads`. `recorded` says
+whether the replay was taken into the transcript at all;
+`recorded_updates`, how many of the `updates` are in it: all when
+`recorded`, none when not, fewer when the session closed while its load was
+unanswered, as what came meanwhile had no file to go to. An editor's loads
+of a session that overlap share one replay and one `history` event, so
+`loads` can be more than 1, and a recorded history is then in the
+transcript once per load.
 
 Socket clients must subscribe to get live events. Profile-started bridges
 are subscribed from startup. Bridge defaults include all events except

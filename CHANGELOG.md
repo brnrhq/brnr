@@ -27,10 +27,14 @@ brnr's own conventions:
   (ADR 34).
 - The `history` event has `loads`, how many loads its replay covers: more
   than 1 when an editor loads a session again before the agent has answered
-  its last load (ADR 57).
+  its last load, and `recorded_updates`, how many of its `updates` the
+  transcript has (ADR 57).
 - A `session_reopened` event, `by` `editor`, says that the agent answered an
   editor's load of a session with success after answering its close: the
-  session is open in the editor's process again (ADR 57).
+  session is open in the editor's process again, and the load's `history`
+  follows, counting what it replayed across the close; what came while the
+  session was closed isn't recorded, and `recorded_updates` says so:
+  `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
 
 ### Changed
 
