@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -74,7 +74,11 @@ impl Env {
         let input = input.to_vec();
         let writer = std::thread::spawn(move || stdin.write_all(&input));
         let out = child.wait_with_output().unwrap();
-        writer.join().unwrap().unwrap();
+        // A command that fails before reading its stdin closes it unread.
+        match writer.join().unwrap() {
+            Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
+            result => result.unwrap(),
+        }
         out
     }
 
