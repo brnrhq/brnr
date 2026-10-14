@@ -11,6 +11,15 @@ major version, and what is marked **Not covered** can change in any release
 [compatibility](#compatibility) has the rules.
 For installation and a walkthrough, start with the [README](../README.md).
 
+The command line is the interface. The `brnr` crate's Rust library is not
+a second one: its one public item is `brnr::run(args)`, `brnr <args>` as a
+function, `args` being the words after `brnr`, which returns the exit status
+the command would exit with. Its modules are private; a typed facade, one
+module per command group and one function per verb returning the data
+`--json` prints, will follow #150. The `internals` feature, which the
+crate's own tests and fuzz targets use, is not covered by any compatibility
+promise ([ADR 66](adr/0066-the-library-is-private-and-its-facade-mirrors-the-cli.md)).
+
 ## Command syntax
 
 `<name>` is a required value, `[...]` is optional, `...` means repeatable,
@@ -445,7 +454,7 @@ shims (P9). From 1.0.0, what the sections above mark **Covered** is kept
 compatible within a major version, and anything they don't name is not
 covered ([ADR 64](adr/0064-what-the-compatibility-promise-covers.md)). The
 library on crates.io is covered as part of the command line: its public API
-is a facade that mirrors it (#147); its internals, behind a feature that is off by
+is a facade that mirrors it (#147, ADR 66); its internals, behind a feature that is off by
 default, are not. Stable error codes (#205) are covered once they land.
 
 - A minor release can add a command, flag, JSON field, event, event field,

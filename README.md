@@ -76,6 +76,10 @@ adapters from Homebrew or npm:
 cargo install brnr --locked
 ```
 
+The crate is the binary. Its library isn't an API to build on: its one
+public item is `brnr::run`, the command line as a function
+([ADR 66](docs/adr/0066-the-library-is-private-and-its-facade-mirrors-the-cli.md)).
+
 Or from source, below.
 
 The formulae build from the source tarball on each

@@ -94,6 +94,7 @@ of to-resolve; the map at the end says where each went.
 | [63](0063-commands-are-grouped-by-what-they-act-on.md) | Commands are grouped by what they act on, with ACP's verbs | yes |
 | [64](0064-what-the-compatibility-promise-covers.md) | What the compatibility promise covers from 1.0.0 (P9) | — |
 | [65](0065-session-locks-live-with-the-transcripts.md) | Session locks live with the transcripts; where things live is fixed for 1.x | yes |
+| [66](0066-the-library-is-private-and-its-facade-mirrors-the-cli.md) | The library is private, and its facade mirrors the command line | partly: the typed facade waits for #150 |
 
 ## Where the former entries went
 

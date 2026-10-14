@@ -1449,6 +1449,19 @@ fn adr_0063_list_reads_the_agents_times_in_utc() {
     }
 }
 
+#[test]
+fn adr_0066_run_is_the_command_line() {
+    // brnr::run, in this process, ends as the binary does with the same
+    // words: a command that succeeds, and one brnr doesn't have.
+    let env = Env::new("adr64-run");
+    for args in [&["--version"][..], &["no-such-command"]] {
+        let status = brnr::run(args.iter().map(Into::into));
+        let exited = env.run(args);
+        assert_eq!(status, std::process::ExitCode::from(code(&exited) as u8), "{args:?}");
+    }
+    assert_ne!(brnr::run(["no-such-command".into()]), std::process::ExitCode::SUCCESS);
+}
+
 /// A session is the cwd's however brnr recorded it: `--cwd <dir>/`, or a
 /// symlink to `<dir>`, is `<dir>`'s, with an agent named or not. One open in
 /// a process that the agent lists is joined (`both`), whatever its recorded

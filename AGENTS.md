@@ -41,8 +41,11 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 
 ## Where things are
 
-- `src/main.rs`: dispatch. `acp` → `proxy.rs` (the editor's child, relays
-  bytes), `host` → `host/` (owns the agent), the rest → `ctl.rs` and `ctl/`.
+- `src/lib.rs`: `brnr::run`, the dispatch, which `src/main.rs` calls. `acp`
+  → `proxy.rs` (the editor's child, relays bytes), `host` → `host/` (owns
+  the agent), the rest → `ctl.rs` and `ctl/`. `run` is the library's one
+  public item; the modules are private (ADR 66), and the tests and fuzz
+  targets reach them through `brnr::internals` (the `internals` feature).
 - `src/host/`: `mod.rs` the process and its event loop, `acp.rs` the ACP
   stream, `control.rs` the socket and bridges, `state.rs` what the agent has
   said, plus one file per ADR-sized concern (start, death, flow, display,

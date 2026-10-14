@@ -85,6 +85,14 @@ through `_exit`, can be missing. This is an execution baseline, not proof
 that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
+The library's modules are private, and its one public item is `brnr::run`
+(ADR 66). The integration tests and fuzz targets, crates of their own, reach
+what they need through `brnr::internals`, a hidden module behind the
+`internals` feature: the dev-dependency of the crate on itself in
+`Cargo.toml` turns it on for `cargo test`, and `fuzz/Cargo.toml` for the
+fuzz targets. A test that needs another internal adds its re-export there;
+nothing in `internals` is a promise to anyone.
+
 The parsers that read bytes from outside brnr have fuzz targets in `fuzz/`
 (frames, ACP lines, the host fed ACP from both sides), which CI fuzzes
 with ClusterFuzzLite. To run one, on nightly with `cargo install cargo-fuzz`:

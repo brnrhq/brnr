@@ -74,6 +74,14 @@ brnr's own conventions:
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
 
+### Removed
+
+- **Breaking:** the `brnr` crate's public library API is removed: its
+  modules (`brnr::render`, `brnr::schema`, `brnr::json` and the rest) are
+  private, and its one public item is `brnr::run`, the command line as a
+  function. Run `brnr` with `--json`, or call `brnr::run`, instead; a typed
+  facade that mirrors the command line follows #150 (ADR 66).
+
 ### Fixed
 
 - A detached process's own stderr (`host-stderr` in the host log) is read
