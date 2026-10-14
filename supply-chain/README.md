@@ -10,7 +10,9 @@ or an explicit exemption. `vet` is a required check on `main`; CI uses
 
 After two local review batches for [#29](https://github.com/brnrhq/brnr/issues/29),
 the locked graph has 102 third-party versions: 41 fully audited and 61
-exempted, up from 25 audited and 77 exempted. These counts cover Cargo's
+exempted, up from 25 audited and 77 exempted. libc has since moved to
+0.2.190 with a reviewed delta on its 0.2.189 exemption, so `cargo vet`
+counts it as partially audited: 41, 1 and 60. These counts cover Cargo's
 full dependency graph, including optional and platform-specific crates,
 not just the dependencies compiled on Linux and macOS.
 
@@ -25,7 +27,8 @@ and the smallest reviewable changes from audited versions.
 ## Local evidence
 
 `audits.toml` records 14 source-delta reviews against versions covered by
-the configured upstream importers, plus full source reviews of the small
+the configured upstream importers, one (libc) against an exemption, plus
+full source reviews of the small
 `darling_macro` and `jiff-tzdb-platform` wrappers. The records describe what
 was checked, including unsafe pointer and FFI boundaries where affected. They identify
 automated source reviews explicitly; they do not assert human review or
