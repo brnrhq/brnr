@@ -12,6 +12,12 @@ Amended by 62: the agent's stderr goes on as each read brings it, up to
 64 KiB, a line or not; a piece of 64 KiB is what the host log records of a
 longer line.
 
+Amended 2026-10-14 (#192): the process's own stderr, detached, goes to the
+host log in pieces of 64 KiB at most, as a bridge's does, where a line of
+any length was held whole; a piece of the agent's stderr ends between
+characters, a line of exactly 64 KiB is one record, not one and an empty
+one, and a failed start's tail cuts a line between characters.
+
 ## Context
 
 ADR 6 caps what is on its way through the host at 16 MiB, counted in bytes,
@@ -55,8 +61,10 @@ it says so (P3), and memory stays bounded (P6).
 - The agent's stderr isn't interpreted, so it isn't kept as lines past
   64 KiB: a longer line goes on in pieces of that, every byte and in order,
   to the editor's stderr through the proxy and to the foreground's (ADR 10),
-  unchanged. The host log has a record for each piece, and a failed start's
-  tail keeps a long line's first 2000 bytes, as it keeps those of any line.
+  unchanged. The host log has a record for each piece, a character a
+  piece's end would cut starting the next piece, and a failed start's tail
+  keeps a long line's first 2000 bytes, cut between characters, as it keeps
+  those of any line.
 
 What is bounded, and what isn't (the issue's audit):
 
@@ -65,7 +73,9 @@ What is bounded, and what isn't (the issue's audit):
   cap, plus a piece of 64 KiB); a started bridge's stderr (a line or a piece
   of 64 KiB at a time, as the agent's, into the host log, a character a
   piece's end would cut starting the next piece, and a note's decoded text
-  at most 64 KiB too, the rest in the next notes; fixed in #160);
+  at most 64 KiB too, the rest in the next notes; fixed in #160); the
+  process's own stderr, detached (the same, into the host log as
+  `host-stderr`, ADR 11; fixed in #192);
   the link (16 MiB, and a frame is at most a
   line the host read or a piece); each peer's queue (16 MiB, plus the line that takes it past the cap and one more, ADR 6 and 49); the
   logger's queue (64 MiB, ADR 6); the foreground's display (ADR 9). The proxy
@@ -127,6 +137,10 @@ Run `cargo test --release adr_0051_`. Named claims and their assertions:
   - `adr_0051_a_bridges_stderr_line_that_fills_a_piece_is_one_note`.
   - `adr_0051_a_bridges_stderr_keeps_a_carriage_return_inside_a_line`.
   - `adr_0051_a_bridges_stderr_keeps_a_character_a_piece_would_cut`.
-- [src/host/control.rs](../../src/host/control.rs)
-  - `adr_0051_a_bridges_stderr_ends_with_what_a_piece_left`.
-  - `adr_0051_a_bridges_stderr_note_is_at_most_a_piece_once_decoded`.
+  - `adr_0051_an_agents_stderr_line_that_fills_a_piece_is_one_record`.
+  - `adr_0051_an_agents_stderr_keeps_a_character_a_piece_would_cut`.
+  - `adr_0051_the_processs_own_stderr_goes_to_the_host_log_in_pieces`.
+- [src/host/mod.rs](../../src/host/mod.rs)
+  - `adr_0051_stderr_read_as_lines_ends_with_what_a_piece_left`.
+  - `adr_0051_a_stderr_note_is_at_most_a_piece_once_decoded`.
+  - `adr_0051_a_tails_line_is_cut_between_characters`.

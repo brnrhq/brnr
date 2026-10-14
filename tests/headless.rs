@@ -2742,6 +2742,69 @@ fn adr_0051_the_agents_stderr_without_a_newline_is_bounded() {
     env.stop();
 }
 
+/// What the agent wrote on stderr, as the host log has it (`agent-stderr`):
+/// each piece's text.
+fn agent_stderr(env: &Env) -> Vec<String> {
+    (host_logs(env).lines().map(|l| serde_json::from_str::<Value>(l).unwrap()))
+        .filter(|r| r["dir"] == "agent-stderr")
+        .map(|r| r["raw"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// What `prompt` (`stderr <n> [<t>]`) left of the agent's stderr in the host
+/// log, once the process has exited.
+fn agent_stderr_after(name: &str, prompt: &str) -> Vec<String> {
+    let env = Env::new(name);
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", prompt]);
+    env.stop();
+    let exited = || host_logs(&env).contains(r#""event":"exited""#);
+    assert!(wait_for(Duration::from_secs(5), exited), "not exited");
+    agent_stderr(&env)
+}
+
+/// An agent's stderr line that fills a piece exactly is one record: the
+/// newline after it ends it, and isn't an empty record of its own.
+#[test]
+fn adr_0051_an_agents_stderr_line_that_fills_a_piece_is_one_record() {
+    let said = agent_stderr_after("errfull", "stderr 65536");
+    let pieces: Vec<usize> = said.iter().map(String::len).collect();
+    assert_eq!(pieces, [64 << 10]);
+}
+
+/// A character that a piece of the agent's stderr would cut goes whole into
+/// the next piece: the host log has it, not two replacement characters.
+#[test]
+fn adr_0051_an_agents_stderr_keeps_a_character_a_piece_would_cut() {
+    let said = agent_stderr_after("errutf8", "stderr 65535 \u{e9}");
+    let pieces: Vec<usize> = said.iter().map(String::len).collect();
+    assert_eq!(pieces, [(64 << 10) - 1, 2]);
+    assert_eq!(said[1], "\u{e9}");
+}
+
+/// A line the detached process itself writes on stderr reaches the host
+/// log (`host-stderr`) in pieces of 64 KiB at most, as the agent's and a
+/// bridge's do: the reader holds no more of it than a piece. (A panic's
+/// message is what a test can make it write.)
+#[test]
+fn adr_0051_the_processs_own_stderr_goes_to_the_host_log_in_pieces() {
+    let env = Env::new("errhost");
+    let out = env.brnr(&new_args(&[])).env("BRNR_TEST_PANIC", "1").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let host = env.hosts().remove(0);
+    let host_pid = host["host_pid"].as_i64().unwrap() as i32;
+    let mut conn = UnixStream::connect(host["socket"].as_str().unwrap()).unwrap();
+    let text = "x".repeat(70_000);
+    writeln!(conn, r#"{{"cmd":"panic","on":"thread","text":"{text}"}}"#).unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(host_pid)), "still running");
+    let said: Vec<usize> = (host_logs(&env).lines())
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|r| r["event"]["event"] == "host-stderr")
+        .filter_map(|r| r["event"]["text"].as_str().filter(|t| t.starts_with("xxx")).map(str::len))
+        .collect();
+    assert_eq!(said, [64 << 10, 70_000 - (64 << 10)]);
+}
+
 /// A signal to `brnr acp` reaches the agent at once, as it would the agent
 /// run directly, while the agent's stdin holds back what the editor writes:
 /// it doesn't wait behind it. The agent dies of it, and so `brnr acp` does.

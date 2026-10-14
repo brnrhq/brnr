@@ -1,7 +1,8 @@
 //! A process's own death is recorded (ADR 11 in docs/adr).
 //!
 //! A detached process has no terminal: what it writes on stderr goes to its
-//! host log (`host-stderr`), through a pipe on fd 2 that a thread reads.
+//! host log (`host-stderr`), through a pipe on fd 2 that a thread reads, a
+//! line or a piece of 64 KiB at a time (ADR 51).
 //!
 //! A panic, on any of its threads, ends the process. The hook shows it on
 //! stderr as Rust does, then only takes note of it and wakes the event loop:
@@ -33,7 +34,7 @@
 
 use std::env;
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, BufReader};
+use std::io;
 use std::os::fd::AsRawFd;
 use std::panic;
 use std::sync::OnceLock;
@@ -103,15 +104,17 @@ pub(super) fn panicked() -> Option<&'static str> {
 }
 
 /// For the tests, with `BRNR_TEST_PANIC` in the process's environment: a
-/// request `{"cmd": "panic", "on": "loop" | "thread"}` panics on the event
-/// loop or on a thread of its own. Without it, the request is unknown.
+/// request `{"cmd": "panic", "on": "loop" | "thread", "text"?: "..."}`
+/// panics on the event loop or on a thread of its own, with `text` as the
+/// panic's message. Without it, the request is unknown.
 pub(super) fn test_panic(req: &Value) {
     if !TEST_PANIC.load(Relaxed) || req["cmd"] != "panic" {
         return;
     }
+    let text = req["text"].as_str().unwrap_or("a test asked for it").to_owned();
     match req["on"].as_str() {
-        Some("loop") => panic!("a test asked for it"),
-        Some("thread") => drop(thread::spawn(|| panic!("a test asked for it"))),
+        Some("loop") => panic!("{text}"),
+        Some("thread") => drop(thread::spawn(move || panic!("{text}"))),
         _ => {}
     }
 }
@@ -126,8 +129,9 @@ pub(super) fn test_panic_starting() {
     }
 }
 
-/// Points fd 2 at a pipe whose lines go to the host log, as `host-stderr`.
-/// Returns the thread reading it, for [`release_stderr`].
+/// Points fd 2 at a pipe whose lines go to the host log, as `host-stderr`,
+/// a piece of 64 KiB at most each, as a bridge's do (ADR 51). Returns the
+/// thread reading it, for [`release_stderr`].
 pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
     let (reader, writer) = io::pipe().ok()?;
     // SAFETY: dup2(2) points fd 2 at the pipe, which writer holds open
@@ -138,12 +142,12 @@ pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
     }
     drop(writer);
     Some(thread::spawn(move || {
-        for line in BufReader::new(reader).split(b'\n').map_while(Result::ok) {
-            if !line.trim_ascii().is_empty() {
-                let text = String::from_utf8_lossy(&line);
+        super::read_stderr(reader, |text| {
+            if !text.trim_ascii().is_empty() {
                 sink.note(None, json!({ "event": "host-stderr", "text": text }));
             }
-        }
+            true
+        })
     }))
 }
 

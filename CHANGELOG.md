@@ -54,6 +54,13 @@ brnr's own conventions:
 
 ### Fixed
 
+- A detached process's own stderr (`host-stderr` in the host log) is read
+  in pieces of 64 KiB at most, as the agent's and a bridge's are, where a
+  line of any length was held whole. The agent's stderr pieces end between
+  characters, so a character the 64 KiB boundary cut is no longer two
+  U+FFFD in the host log; a line of exactly 64 KiB is one record, not one
+  and an empty one; and a failed start's tail cuts a long line between
+  characters (ADR 11, ADR 51).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).

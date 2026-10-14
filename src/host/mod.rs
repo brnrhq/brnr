@@ -40,7 +40,7 @@ mod strict;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
 use std::mem::{take, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
@@ -109,10 +109,11 @@ const STDERR_LINE: usize = 2000;
 
 /// The most of the agent's stderr read at once, and of a line of it the host
 /// log takes as one record: a longer line is recorded in pieces of this
-/// (ADR 51), as a started bridge's is (see control.rs). Nobody reads stderr
-/// as lines but people, and the host log; what is read goes on to the editor
-/// or the terminal at once, newline or not (ADR 62).
-pub(super) const PIECE: usize = 64 << 10;
+/// (ADR 51), as a started bridge's and the process's own are (see
+/// `read_stderr`). Nobody reads stderr as lines but people, and the host log;
+/// what is read goes on to the editor or the terminal at once, newline or not
+/// (ADR 62).
+const PIECE: usize = 64 << 10;
 
 /// `brnr process stop`: stdin is closed once what is queued for it is written,
 /// then the agent's process group gets SIGTERM, then SIGKILL.
@@ -1212,15 +1213,27 @@ impl Host {
     }
 
     /// The line of stderr so far, whole or not, into the host log and the
-    /// tail.
+    /// tail. A piece that fills up before its line ends leaves a character
+    /// it would cut to the next piece (ADR 51).
     fn stderr_piece(&mut self) {
-        let piece = take(&mut self.stderr_line);
-        if piece.is_empty() {
+        if self.stderr_line.is_empty() {
+            return;
+        }
+        let cut = self.stderr_line.len() == PIECE && !self.stderr_line.ends_with(b"\n");
+        let next = if cut {
+            self.stderr_line.split_off(PIECE - unfinished(&self.stderr_line))
+        } else {
+            Vec::new()
+        };
+        let piece = std::mem::replace(&mut self.stderr_line, next);
+        // The newline of a line that filled the last piece only ends it.
+        let skip = self.stderr_mid_line && piece == b"\n";
+        // The rest of a long line, whose start is kept already (ADR 51).
+        let rest = std::mem::replace(&mut self.stderr_mid_line, !piece.ends_with(b"\n"));
+        if skip {
             return;
         }
         self.sink.msg(None, Dir::AgentStderr, &piece);
-        // The rest of a long line, whose start is kept already (ADR 51).
-        let rest = std::mem::replace(&mut self.stderr_mid_line, !piece.ends_with(b"\n"));
         if self.start_done || rest {
             return;
         }
@@ -1616,6 +1629,67 @@ fn read_agent_stderr(mut err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backl
     let _ = tx.send(Ev::AgentStderrEof);
 }
 
+/// Stderr that is read as lines for the host log, a started bridge's or the
+/// process's own (control.rs, death.rs), until EOF or until `note` says to
+/// stop: each line decoded lossily, so bytes that aren't UTF-8 don't end the
+/// reading (and a bridge's next write with SIGPIPE), and a line longer than
+/// `PIECE` in pieces of that, as the agent's is (ADR 51). A character a
+/// piece's end would cut starts the next piece instead, and a note's text,
+/// decoded, is at most a piece too.
+fn read_stderr(input: impl Read, mut note: impl FnMut(String) -> bool) {
+    let mut reader = BufReader::new(input);
+    let mut line = Vec::new();
+    // Whether the last piece filled up before its line ended.
+    let mut cut = false;
+    loop {
+        let room = (PIECE - line.len()) as u64;
+        let more = matches!((&mut reader).take(room).read_until(b'\n', &mut line), Ok(n) if n > 0);
+        // The newline of a line that filled the last piece only ends it.
+        let skip = cut && line == b"\n";
+        cut = line.len() == PIECE && !line.ends_with(b"\n");
+        let next = if cut { line.split_off(line.len() - unfinished(&line)) } else { Vec::new() };
+        if !skip && !line.is_empty() {
+            let text = match line.strip_suffix(b"\n") {
+                Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
+                None => &line,
+            };
+            // Each byte that isn't UTF-8 becomes U+FFFD, 3 bytes: a note is
+            // still at most a piece, the rest of the text in the next ones.
+            let text = String::from_utf8_lossy(text);
+            let mut rest = &text[..];
+            loop {
+                let mut end = rest.len().min(PIECE);
+                while !rest.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let (piece, after) = rest.split_at(end);
+                if !note(piece.into()) {
+                    return;
+                }
+                rest = after;
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+        if !more {
+            return;
+        }
+        line = next;
+    }
+}
+
+/// How many bytes at the end of `bytes` start a UTF-8 character they don't
+/// finish: at most 3.
+fn unfinished(bytes: &[u8]) -> usize {
+    let tail = &bytes[bytes.len().saturating_sub(3)..];
+    let starts = |i: &usize| {
+        std::str::from_utf8(&tail[*i..])
+            .is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none())
+    };
+    (0..tail.len()).find(starts).map_or(0, |i| tail.len() - i)
+}
+
 // ---- process plumbing --------------------------------------------------
 
 /// Closes every fd we inherited except stdio and `keep`, so the host holds
@@ -1689,11 +1763,15 @@ pub fn alive(pid: i64) -> bool {
 }
 
 /// A line of stderr as the tail keeps it: without its line ending, and
-/// `STDERR_LINE` bytes of it at most.
+/// `STDERR_LINE` bytes of it at most, cut between characters (ADR 51).
 fn tail_line(bytes: &[u8]) -> String {
     let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
-    String::from_utf8_lossy(&line[..line.len().min(STDERR_LINE)]).into_owned()
+    let mut end = line.len().min(STDERR_LINE);
+    if end < line.len() {
+        end -= unfinished(&line[..end]);
+    }
+    String::from_utf8_lossy(&line[..end]).into_owned()
 }
 
 /// A JSON-RPC id as a map key: `1` and `"1"` stay distinct.
@@ -1703,4 +1781,59 @@ fn id_key(id: &Value) -> String {
 
 fn text_block(text: &str) -> Value {
     json!({ "type": "text", "text": text })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `read_stderr` makes of `bytes`, as the notes' texts.
+    fn stderr_notes(bytes: &[u8]) -> Vec<String> {
+        let mut said = Vec::new();
+        read_stderr(bytes, |note| {
+            said.push(note);
+            true
+        });
+        said
+    }
+
+    #[test]
+    fn adr_0051_stderr_read_as_lines_ends_with_what_a_piece_left() {
+        assert_eq!(unfinished("\u{e9}".as_bytes()), 0);
+        assert_eq!(
+            (unfinished(b"x\xc3"), unfinished(b"\xe2\x82"), unfinished(b"\xf0\x9f\x98")),
+            (1, 2, 3)
+        );
+        assert_eq!(unfinished(b"\x82\x82\x82"), 0, "no character starts there");
+        // The stream ends in the middle of a character a piece cut: what is
+        // left of it is a note too.
+        let mut bytes = vec![b'x'; PIECE - 1];
+        bytes.extend_from_slice(b"\xe2\x82");
+        let said = stderr_notes(&bytes);
+        assert_eq!(said.len(), 2);
+        assert_eq!((said[0].len(), said[1].as_str()), (PIECE - 1, "\u{fffd}"));
+        assert_eq!(stderr_notes(b"a\n\nb\r\nc"), ["a", "", "b", "c"]);
+    }
+
+    #[test]
+    fn adr_0051_a_stderr_note_is_at_most_a_piece_once_decoded() {
+        // Each byte becomes U+FFFD, 3 bytes of text: notes cut at characters.
+        let said = stderr_notes(&vec![0xff; PIECE]);
+        let lens: Vec<usize> = said.iter().map(String::len).collect();
+        assert_eq!(lens, [PIECE - 1, PIECE - 1, PIECE - 1, 3]);
+        assert!(said.iter().all(|n| n.chars().all(|c| c == '\u{fffd}')));
+    }
+
+    /// A tail's line is cut between characters, not in one: the character
+    /// `STDERR_LINE` falls in is left out, not shown as U+FFFD.
+    #[test]
+    fn adr_0051_a_tails_line_is_cut_between_characters() {
+        let mut line = vec![b'x'; STDERR_LINE - 1];
+        line.extend_from_slice("\u{e9}\u{e9}\n".as_bytes());
+        let tail = tail_line(&line);
+        assert_eq!(tail.len(), STDERR_LINE - 1);
+        assert!(tail.bytes().all(|b| b == b'x'));
+        assert_eq!(tail_line(b"x\xc3"), "x\u{fffd}", "a short line is kept as it came");
+        assert_eq!(tail_line(b"ab\r\n"), "ab");
+    }
 }
