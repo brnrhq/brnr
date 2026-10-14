@@ -145,7 +145,8 @@ pub(super) enum PeerOp {
 
 impl Host {
     /// Started with no editor (`brnr session new` or `resume`): the host
-    /// opens the session itself.
+    /// opens the session itself. It offers no `fs` or `terminal`: with no
+    /// editor, nothing would serve them (ADR 67 in docs/adr).
     pub(super) fn begin_headless_start(&mut self) {
         let params = json!({
             "protocolVersion": schema::PROTOCOL_VERSION,

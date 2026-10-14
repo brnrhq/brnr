@@ -997,34 +997,119 @@ fn adr_0041_strict_mode_refuses_steering_and_fork() {
     env.write_config("[profiles.default]\nstrict = true\n");
     env.start(&[]);
     assert!(env.fails(&["session", "fork", "sess-1"]).contains("which strict mode doesn't"));
+    let env = Env::new("ed-strictarg");
+    assert!(env.fails(&["acp", "--strict=yes", "--", AGENT]).contains("--strict takes no value"));
 }
 
-/// The editor's `fs` and `terminal` capabilities don't reach the agent, as
-/// in ACP v2 (ADR 2), but in strict mode, as stable v1 has them.
+// ---- the editor's client capabilities (ADR 67) -------------------------
+
+/// What an editor that offers its file system and terminal sends as
+/// `initialize`.
+const CAPABLE_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+
+/// `brnr acp <args>`, initialized by an editor offering its file system and
+/// terminal, with sess-1 open.
+fn capable_editor(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let args: Vec<&str> = ["acp"].iter().chain(args).chain(&["--", AGENT]).copied().collect();
+    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{CAPABLE_INITIALIZE}").unwrap();
+    response(&mut from_agent, 1);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"]["sessionId"], "sess-1");
+    (editor, to_agent, from_agent)
+}
+
+/// The editor's `fs` and `terminal` capabilities reach the agent as the
+/// editor sent them, in strict mode and without: brnr no longer drops them.
 #[test]
-fn adr_0041_fs_and_terminal_pass_through_only_in_strict_mode() {
-    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+fn adr_0067_the_editors_capabilities_reach_the_agent() {
+    let sent: Value = serde_json::from_str(CAPABLE_INITIALIZE).unwrap();
     for (name, strict) in [("ed-caps", false), ("ed-strict", true)] {
         let env = Env::new(name);
-        let mut args = vec!["acp", "--", AGENT];
-        if strict {
-            args.insert(1, "--strict");
-        }
-        let mut editor =
-            env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-        let mut to_agent = editor.stdin.take().unwrap();
-        let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
-        writeln!(to_agent, "{initialize}").unwrap();
-        line_with(&mut from_agent, "protocolVersion");
+        let args: &[&str] = if strict { &["--strict"] } else { &[] };
+        let (mut editor, _to_agent, _from_agent) = capable_editor(&env, args);
         assert_eq!(started_record(&env)["request"]["strict"], strict);
         let caps = &env.calls_of("initialize")[0]["params"]["clientCapabilities"];
-        assert_eq!(caps.get("fs").is_some(), strict, "{name}: {caps}");
-        assert_eq!(caps.get("terminal").is_some(), strict, "{name}: {caps}");
+        assert_eq!(caps, &sent["params"]["clientCapabilities"], "{name}");
         let _ = editor.kill();
         let _ = editor.wait();
     }
-    let env = Env::new("ed-strictarg");
-    assert!(env.fails(&["acp", "--strict=yes", "--", AGENT]).contains("--strict takes no value"));
+}
+
+/// The agent's `fs/*` and `terminal/*` requests reach the editor as the
+/// agent wrote them, and the editor's answers, results and errors, reach the
+/// agent.
+#[test]
+fn adr_0067_the_agents_file_and_terminal_requests_reach_the_editor() {
+    let env = Env::new("ed-client");
+    let (_editor, mut to_agent, mut from_agent) = capable_editor(&env, &[]);
+    writeln!(to_agent, "{}", editor_prompt(3, "client")).unwrap();
+    // Without the capabilities the agent asks nothing and answers the prompt.
+    let asked = |from_agent: &mut BufReader<ChildStdout>, method: &str| {
+        let msg = message(from_agent, |m| m["method"] == method || m["id"] == 3);
+        assert_eq!(msg["method"], method, "{msg}");
+        msg
+    };
+    let read = asked(&mut from_agent, "fs/read_text_file");
+    assert_eq!(read["id"], "fs-1");
+    assert_eq!(read["params"], json!({ "sessionId": "sess-1", "path": "/work/notes.txt" }));
+    writeln!(to_agent, r#"{{"jsonrpc":"2.0","id":"fs-1","result":{{"content":"unsaved text"}}}}"#)
+        .unwrap();
+    let said = update(&mut from_agent, "agent_message_chunk");
+    assert_eq!(said["content"]["text"], "read: unsaved text");
+    let create = asked(&mut from_agent, "terminal/create");
+    assert_eq!(create["id"], "terminal-2");
+    let params = json!({ "sessionId": "sess-1", "command": "echo", "args": ["hi"] });
+    assert_eq!(create["params"], params);
+    let refused = r#"{"jsonrpc":"2.0","id":"terminal-2","error":{"code":-32603,"message":"no terminal here"}}"#;
+    writeln!(to_agent, "{refused}").unwrap();
+    let said = update(&mut from_agent, "agent_message_chunk");
+    assert_eq!(said["content"]["text"], "\nterminal failed: no terminal here");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let answers: Vec<Value> =
+        env.calls().into_iter().filter(|c| c.get("method").is_none()).collect();
+    assert_eq!(answers[0]["result"]["content"], "unsaved text", "{answers:?}");
+    assert_eq!(answers[1]["error"]["message"], "no terminal here", "{answers:?}");
+}
+
+/// A session served headless offers the agent neither the file system nor a
+/// terminal, as no editor is there to serve them: one started headless, one
+/// forked from it, and one taken over from an editor that offered both. An
+/// agent that asks anyway is told the host doesn't serve them.
+#[test]
+fn adr_0067_headless_sessions_offer_neither() {
+    let neither = "no fs\nno terminal\n";
+    let env = Env::new("hl-client");
+    env.start(&[]);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    let refused = "fs failed: fs/read_text_file is not supported without an editor\n\
+                   terminal failed: terminal/create is not supported without an editor\n";
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client", "anyway"]), refused);
+    assert_eq!(env.ok(&["session", "fork", "sess-1"]), "forked sess-1 into sess-2\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-2", "--wait", "client"]), neither);
+    assert_eq!(env.calls_of("initialize")[0]["params"]["clientCapabilities"], json!({}));
+
+    let env = Env::new("hl-takeover");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"close\"]\n");
+    let (_editor, _to_agent, _from_agent) = capable_editor(&env, &[]);
+    let editors = env.pid();
+    let out = env.run(&resume_args("sess-1", &["--take-over"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_ne!(status["pid"].to_string(), editors);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    let offered: Vec<Value> = (env.calls_of("initialize").iter())
+        .map(|c| c["params"]["clientCapabilities"].clone())
+        .collect();
+    assert_eq!(offered.len(), 2, "{offered:?}");
+    assert_eq!(offered[1], json!({}));
 }
 
 // ---- watching ----------------------------------------------------------

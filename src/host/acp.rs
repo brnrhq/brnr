@@ -9,8 +9,6 @@
 //!   back to it with its id as it wrote it (ADR 61). In a line, only the id
 //!   changes. The editor's `$/cancel_request` names its own requests, and
 //!   goes with their ids on the agent's side.
-//! - The editor's `initialize` loses the `fs` and `terminal` client
-//!   capabilities ([`DROPPED_CAPABILITIES`]), but in strict mode.
 //! - An injected message goes to the agent as a `session/prompt`, never
 //!   while a prompt is running: until then it is held. With `--steer` it
 //!   goes into the running turn instead, as `_session/steering` (ADR 18 in
@@ -30,7 +28,9 @@
 //!   or the CLI, by the option's kind (ADR 63), until `permission_timeout`
 //!   rejects them once, or cancels their turn; how much the agent asks is
 //!   the agent's mode (`--mode`, see ADR 27 in docs/adr).
-//!   Elicitation is declined, and anything else gets "method not found".
+//!   Elicitation is declined, and anything else gets "method not found":
+//!   `fs` and `terminal` too, which a headless process doesn't offer
+//!   (ADR 67 in docs/adr).
 //! - While a `session/load`, headless or the editor's, replays a session's
 //!   history (ADR 57): if brnr has a transcript of the session, the replayed
 //!   updates are neither recorded nor turned into events, as the transcript
@@ -87,11 +87,6 @@ use crate::schema::{
     self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
 };
 use crate::{frame, json, paths};
-
-/// Client capabilities removed from the editor's `initialize`. ACP v2 drops
-/// them and they add nothing an agent needs, so no agent comes to rely on
-/// them (ADR 2 in docs/adr).
-const DROPPED_CAPABILITIES: &[&str] = &["fs", "terminal"];
 
 /// A `session/prompt` the agent hasn't answered yet.
 pub(super) struct Prompt {
@@ -631,9 +626,10 @@ impl Host {
     ) -> Option<Vec<u8>> {
         let cwd = msg.get("params").and_then(|p| p["cwd"].as_str()).map(str::to_owned);
         match (method, session) {
+            // Its client capabilities, `fs` and `terminal` too, reach the
+            // agent as the editor sent them (ADR 67 in docs/adr).
             ("initialize", _) => {
                 self.pending.insert(key.to_owned(), Pending::Initialize);
-                return self.drop_capabilities(msg);
             }
             ("session/new", _) => {
                 let pending = Pending::New { cwd, request: None, dir: Dir::EditorToAgent };
@@ -789,22 +785,6 @@ impl Host {
         let msg =
             json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": error } });
         self.write_editor(None, &msg);
-    }
-
-    fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
-        if self.strict {
-            return None; // As stable ACP v1 has them (ADR 41).
-        }
-        let caps = msg.get_mut("params")?.get_mut("clientCapabilities")?.as_object_mut()?;
-        let dropped: Map<String, Value> = DROPPED_CAPABILITIES
-            .iter()
-            .filter_map(|&k| Some((k.to_owned(), caps.shift_remove(k)?)))
-            .collect();
-        if dropped.is_empty() {
-            return None;
-        }
-        self.sink.note(None, json!({ "event": "capabilities-dropped", "dropped": dropped }));
-        Some(serde_json::to_vec(&msg).unwrap())
     }
 
     /// Tracks the editor's prompt as the start of a turn and appends any

@@ -130,12 +130,15 @@ doesn't need to include it; so is a [bridge](#bridges)'s, such as `brnr` in
 
 `brnr acp` passes bytes, signals (HUP, INT, QUIT, TERM, USR1, USR2), the
 agent's stderr, stdin's EOF, its stdout closing and the exit status through
-unchanged. It changes the stream in four ways: every request reaches the
+unchanged. It changes the stream in three ways: every request reaches the
 agent with an id of brnr's, and its answer comes back to the editor with the
 editor's own id, so that the editor's requests and brnr's are never confused
-(ADR 61); and, each below, the editor's `fs` and `terminal` capabilities are
-dropped, a session another brnr process serves can't be loaded, and the
-experimental actions a profile enables act on the editor's session. When the editor goes away, so does the agent;
+(ADR 61); and, each below, a session another brnr process serves can't be
+loaded, and the experimental actions a profile enables act on the editor's
+session. The editor's `fs` and `terminal` capabilities reach the agent, so
+the agent can read the editor's unsaved buffers and run commands in its
+terminals, as it could directly; a headless session offers it neither
+([ADR 67](docs/adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)). When the editor goes away, so does the agent;
 `brnr session resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
 
@@ -170,10 +173,6 @@ action on a session: it stops an editor's process as it does any other.
 
 ### What the editor doesn't see
 
-- The `fs` and `terminal` client capabilities are dropped from the editor's
-  `initialize`: ACP v2 drops them and they add nothing an agent needs, so no
-  agent comes to rely on them. The agent can't use the editor's buffers or
-  terminal. Strict mode passes them through.
 - The editor's child is `brnr acp`, not the agent, so its pid and process tree
   differ.
 - A SIGKILL sent to `brnr acp` can't be passed on. brnr sees it go and kills
@@ -202,6 +201,8 @@ action on a session: it stops an editor's process as it does any other.
   the agent EPIPE.
 - None of the compensations above has been tried against real editors yet
   (Zed, IntelliJ's AIR plugin): how each shows them is still to be seen.
+  Each action stays experimental through 1.x, and leaves it only by an ADR
+  that brings what was seen in real editors; ADR 67 lists the checks.
 
 ## Talk to it from outside
 
@@ -624,12 +625,11 @@ test, as the README's do.
 
 By default brnr speaks stable ACP plus the conventions agents and editors
 already implement alike, ahead of the spec: `_session/steering` (for
-`prompt send --steer`), `session/fork`, unstable in ACP v1 (for
-`brnr session fork`), and dropping the editor's `fs` and `terminal`
-capabilities, as ACP v2 does. Strict mode (`strict = true` in a profile,
+`prompt send --steer`) and `session/fork`, unstable in ACP v1 (for
+`brnr session fork`). Strict mode (`strict = true` in a profile,
 `--strict` on `acp`, `session new` and `session resume`) is stable ACP to
-the letter: no steering, no fork, the editor's capabilities passed through,
-and no experimental actions. What it refuses says why.
+the letter: no steering, no fork, and no experimental actions. What it
+refuses says why.
 
 Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr session list` with an agent)
 whose agent answers `initialize` with another version, or one brnr can't

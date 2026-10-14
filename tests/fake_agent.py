@@ -131,6 +131,15 @@ and by the prompt's text:
                     line isn't JSON)
   fail [tool]       the turn fails; with tool, a tool call (t2) running
   verbatim          writes VERBATIM, then a line that isn't JSON, then answers
+  client            uses its client's file system, then its terminal, as far
+                    as initialize offered them (clientCapabilities
+                    fs.readTextFile, terminal): asks fs/read_text_file of
+                    /work/notes.txt, then terminal/create of echo, each once
+                    the last is answered; says what each answer was ("read:
+                    <content>", "terminal: <terminalId>", "<what> failed:
+                    <message>", one line each), or "no fs", "no terminal" for
+                    one not offered, and answers the prompt once done
+  client anyway     the same, but asks for both whatever initialize offered
 """
 
 import json
@@ -467,6 +476,8 @@ def run(mid, sid, text):
         sys.stdout.write(VERBATIM % sid + "\n" + "not json, from the agent\n")
         sys.stdout.flush()
         end_turn(mid)
+    elif first == "client":
+        use_client(mid, sid, ["fs", "terminal"], words[1:2] == ["anyway"])
     elif first == "odd":
         how = words[1] if len(words) > 1 else "surrogate"
         request = f"perm-{len(asking) + 1}"
@@ -497,6 +508,47 @@ def run(mid, sid, text):
             ask(mid, sid, kind)
     else:
         end_turn(mid)
+
+
+def use_client(mid, sid, steps, anyway=False):
+    """Asks the client for the next of steps (fs, terminal) its initialize
+    offered (anyway: whatever it offered), saying "no <step>" for each it
+    didn't; once none is left, ends prompt mid's turn."""
+    global client_requests
+    while steps:
+        what, steps = steps[0], steps[1:]
+        if what == "fs" and (anyway or (client_caps.get("fs") or {}).get("readTextFile")):
+            method, params = "fs/read_text_file", {"sessionId": sid, "path": "/work/notes.txt"}
+        elif what == "terminal" and (anyway or client_caps.get("terminal")):
+            method = "terminal/create"
+            params = {"sessionId": sid, "command": "echo", "args": ["hi"]}
+        else:
+            tell(mid, sid, f"no {what}")
+            continue
+        client_requests += 1
+        request = f"{what}-{client_requests}"
+        using[request] = (mid, sid, what, steps, anyway)
+        send({"jsonrpc": "2.0", "id": request, "method": method, "params": params})
+        return
+    end_turn(mid)
+
+
+def tell(mid, sid, text):
+    """Says text in prompt mid's turn, on a line after what it said before."""
+    say(sid, "\n" + text if mid in told else text)
+    told.add(mid)
+
+
+def client_answered(msg):
+    """The client's answer to one of use_client's requests."""
+    turn, sid, what, steps, anyway = using.pop(msg["id"])
+    if "error" in msg:
+        tell(turn, sid, f"{what} failed: {msg['error'].get('message')}")
+    elif what == "fs":
+        tell(turn, sid, f"read: {msg['result']['content']}")
+    else:
+        tell(turn, sid, f"terminal: {msg['result']['terminalId']}")
+    use_client(turn, sid, steps, anyway)
 
 
 def running_tool(sid, twice=False):
@@ -596,6 +648,10 @@ sessions = int(env("FIRST_SESSION") or 0)
 authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
 asking = {}  # permission request id -> (prompt id, session)
+client_caps = {}  # what initialize's clientCapabilities offered
+client_requests = 0  # fs and terminal requests made of the client
+using = {}  # such a request's id -> (prompt id, session, what, steps left, anyway)
+told = set()  # the prompts whose turns use_client has said something in
 
 for line in sys.stdin.buffer:
     if env("RAW_LOG"):
@@ -614,7 +670,8 @@ for line in sys.stdin.buffer:
     if env("FAULT") and env("FAULT_PHASE") == "setup" and method == fault_setup:
         fault(method)
     if method == "initialize":
-        client_session = (params.get("clientCapabilities") or {}).get("session") or {}
+        client_caps = params.get("clientCapabilities") or {}
+        client_session = client_caps.get("session") or {}
         if (client_session.get("configOptions") or {}).get("boolean") is not None:
             fast = False
         session_caps = {"list": {}, "fork": {}, "close": {}}
@@ -816,6 +873,8 @@ for line in sys.stdin.buffer:
         if hanging is not None and params.get("requestId") == hanging:
             error(hanging, -32800, "Request cancelled")
             hanging = None
+    elif method is None and mid in using:
+        client_answered(msg)
     elif method is None and mid in asking:
         turn = asking.pop(mid)
         if turn not in asking.values():

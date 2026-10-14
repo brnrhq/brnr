@@ -276,9 +276,14 @@ buffer, so an editor that stops reading one eventually holds up the other
 ([ADR 62](adr/0062-stdout-ends-and-stderr-comes-as-written.md)). The editor initializes the protocol and owns its
 sessions.
 See [editor setup and deviations](../README.md#use-it-from-an-editor) and
-[ADR 2](adr/0002-the-editors-process.md). Default capability adjustments and
-experimental actions are documented there; strict mode passes the editor's
-capabilities through and disables experimental actions.
+[ADR 2](adr/0002-the-editors-process.md). The editor's `initialize` reaches
+the agent with its client capabilities as sent, `fs` and `terminal`
+included, and the agent's `fs/*` and `terminal/*` requests go to the editor,
+which answers them; a headless process offers neither, and answers them
+with "method not found"
+([ADR 67](adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)).
+Experimental actions on an editor's session, experimental for all of 1.x,
+are documented there too; strict mode disables them.
 
 **Covered** from 1.0.0: ACP version 1
 ([ADR 54](adr/0054-acp-version-1.md)), and what passes between the editor

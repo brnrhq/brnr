@@ -12,6 +12,10 @@ them, existing ones included (P13).
 Amended by 64: from 1.0.0, P9's compatibility within a major version is of
 what ADR 64 lists as covered, and of nothing else.
 
+Amended by 67: the editor's `fs` and `terminal` capabilities aren't
+dropped: that is no longer one of P1's conventions, nor one of the named
+changes to the editor's stream.
+
 The rules the other decisions are measured against. They were drawn out of
 the former decision log when every entry was reviewed (October 2026), and
 sharpened where earlier decisions pulled against them. Decisions cite them as

@@ -19,7 +19,10 @@ says what is in scope for a report; the principles cited are
   action the user didn't take.
 - **Prompts and code in transcripts.** `~/.brnr` keeps every session's events
   and raw ACP (ADR 22): prompts, the agent's replies, tool calls with their
-  input and output, diffs of the user's code.
+  input and output, diffs of the user's code, and, in an editor's session,
+  what the editor answered the agent's file and terminal requests with:
+  files as its buffers have them, unsaved changes included, and commands'
+  output (ADR 67).
 - **Secrets.** The values of a profile's or an editor's MCP servers' `env`
   and `headers` (tokens, `Authorization`), which go to the agent in the
   requests that open a session (ADR 25).
@@ -31,7 +34,7 @@ says what is in scope for a report; the principles cited are
 | Other local users | nothing | outside: kept out of the runtime directory, sockets, transcripts and session locks by file modes (P13) |
 | Root | everything | outside brnr's reach; can do anything as any user |
 | Processes running as the same user | everything the user can do | **inside** the boundary (P13): see below |
-| The editor | its session | inside; it runs `brnr acp`, and its bytes pass unchanged (P1) |
+| The editor | its session, and serving the agent's file and terminal requests (`fs/*`, `terminal/*`) | inside; it runs `brnr acp`, and its bytes pass unchanged (P1); what it reads, writes and runs for the agent is its own to allow (ADR 67) |
 | The agent (the adapter and what it runs) | the user's machine, as far as its own permission prompts go | inside as a process; its *text* is untrusted (P8) |
 | Bridges and `event notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
 | A malicious adapter or npm package | as the agent | inside once run: brnr can't contain it |
@@ -115,7 +118,7 @@ written for this document.
 | Every request to the agent has an id of the host's, the editor's too, so no editor id can be taken for another requester's, and an answer goes only to whoever sent the request: the editor's with its id as it wrote it. The editor's `$/cancel_request` reaches only its own requests (ADR 61). | `wire_id`, `editor_message`, `agent_response`, `editor_cancel` (src/host/acp.rs); `host_request` (src/host/requests.rs) | `headless.rs`: `adr_0061_an_editors_prompt_ends_only_with_its_own_answer`, `adr_0061_an_editors_request_with_a_host_requests_id_is_the_editors`, `adr_0061_ids_come_back_as_the_editor_wrote_them`, `adr_0061_the_editors_cancel_request_is_for_its_own_request`; src/json.rs: `adr_0061_an_id_is_found_where_it_is_and_nowhere_else` |
 | The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0002_acp_passes_stderr_and_the_exit_status` |
 | The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 62). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0062_the_editors_stdout_ends_with_the_agents`, `adr_0062_stderr_comes_as_it_is_written`, `adr_0062_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0062_brnrs_own_lines_end_with_the_agents_stdout` |
-| The named changes: the editor's `fs` and `terminal` capabilities are dropped, but in strict mode (ADR 2, ADR 41). | `drop_capabilities` (src/host/acp.rs) | `headless.rs`: `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode` |
+| The editor's `fs` and `terminal` capabilities reach the agent as the editor sent them, in strict mode and without: they are no longer a named change. The agent's `fs/*` and `terminal/*` requests reach the editor as the agent wrote them, and the editor's answers, results and errors, reach the agent: the editor serves them, as it would directly, and brnr neither approves nor answers them in an editor's session (ADR 67). | `editor_request`, `agent_request`, `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0067_the_editors_capabilities_reach_the_agent`, `adr_0067_the_agents_file_and_terminal_requests_reach_the_editor` |
 | The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0042_shared_sessions_let_an_editor_load_a_held_session` |
 | Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped` |
 
@@ -127,6 +130,7 @@ written for this document.
 | The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
 | The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
+| A headless process offers the agent no `fs` or `terminal` (one started headless, forked in it, or taken over from an editor), and answers a request for them "method not found": brnr reads, writes and runs nothing for the agent (ADR 67). | `begin_headless_start` (src/host/requests.rs); `answer_as_client` (src/host/acp.rs) | `headless.rs`: `adr_0067_headless_sessions_offer_neither` |
 | `permission_timeout` (or `--permission-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
 | A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 63). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0063_allow_and_reject_pick_by_kind`, `adr_0063_a_missing_or_doubled_kind_fails`, `adr_0063_option_must_be_on_the_verbs_side` |
 
@@ -210,6 +214,15 @@ What brnr doesn't enforce, or doesn't test, today.
   agent's command line, or repeated by the agent itself in its messages, tool
   calls, errors or stderr (ADR 10 puts the agent's stderr in the host log),
   and it then reaches bridges with those events.
+- **The editor's file and terminal answers are recorded as they are.** In
+  an editor's session the raw ACP has what the editor read for the agent
+  (unsaved buffers too, a `.env` among them if the agent asks for it) and
+  the output of the commands it ran: redaction is by field (above), and
+  none of these is redacted. This is accepted, not open: brnr doesn't
+  redact file or terminal data, as it records the rest of the session as it
+  passed (ADR 22), and the transcripts are only the user's to read (P13,
+  ADR 59). The editor decides what it serves; brnr doesn't filter or gate
+  those requests (ADR 67).
 - **Approvals are the agent's own asks.** brnr answers the permission
   requests the agent makes; it doesn't sandbox the agent. A malicious
   adapter or npm package, or an agent in a permissive mode, acts without

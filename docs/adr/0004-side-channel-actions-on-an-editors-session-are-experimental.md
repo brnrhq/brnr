@@ -17,6 +17,10 @@ Amended by 63: the table's commands are grouped: `send` is `prompt send`
 `permission` ("Allowed via brnr", "Rejected via brnr"), and `settings` is
 `config` (`config set`). `session new --pid` and `session resume --pid` are
 refused on an editor's process, as `fork` is.
+Amended by 67: every action here stays experimental for all of 1.x, opt-in
+by name. One leaves experimental only by an ADR of its own, with evidence
+from real editors (ADR 67's checks, per editor and adapter version), not
+the synthetic suite alone.
 
 ## Context
 

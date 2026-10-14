@@ -71,6 +71,18 @@ brnr's own conventions:
   directory. How the runtime and state directories are found, and how a
   session id (`file_name`) and a cwd (`project_key`) become file names, are
   fixed for 1.x (ADR 3, ADR 65).
+- **Breaking:** `brnr acp` no longer drops the editor's `fs` and `terminal`
+  client capabilities, in strict mode or without: the agent gets them as the
+  editor offers them, and its `fs/*` and `terminal/*` requests go to the
+  editor, which answers them, so the agent can read unsaved buffers and run
+  commands in the editor's terminals, as it could directly. There is no
+  setting to drop them again: whether to serve them is the editor's. A
+  headless session still offers neither, and the host log has no
+  `capabilities-dropped` record (ADR 67).
+- Every side-channel action on an editor's session (`send`, `context`,
+  `cancel`, `permission`, `config`, `close`) stays experimental, opt-in by
+  name, for all of 1.x; one leaves experimental only by an ADR with evidence
+  from real editors (ADR 67).
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
 
