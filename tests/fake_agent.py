@@ -486,7 +486,11 @@ def running_tool(sid, twice=False):
     """Starts tool call t2, which never finishes; twice: its tool_call again."""
     tool = {"sessionUpdate": "tool_call", "toolCallId": "t2", "kind": "execute"}
     if twice:
-        update(sid, {**tool, "title": "Start the build", "status": "pending"})
+        # The second leaves out the first's locations, which stay.
+        locations = [{"path": "/work/build.sh"}]
+        update(
+            sid, {**tool, "title": "Start the build", "status": "pending", "locations": locations}
+        )
     update(sid, {**tool, "title": "Run the build", "status": "in_progress"})
 
 
