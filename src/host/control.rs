@@ -104,7 +104,7 @@ use crate::{json, paths, render, sys};
 
 /// Every event name. `acp` (every ACP message the host passes on, with its
 /// direction) is only sent to peers that ask for it by name.
-pub const EVENTS: &[&str] = &[
+pub(crate) const EVENTS: &[&str] = &[
     "user_message",
     "agent_message",
     "agent_thought",
@@ -131,7 +131,7 @@ pub const EVENTS: &[&str] = &[
 /// ACP messages, the agent's thoughts, usage and tool calls' progress.
 /// `event watch` and `event log` without `--events`, and a session in the
 /// foreground, in text and JSON alike.
-pub const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
+pub(crate) const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progress"];
 
 /// Bytes queued for one peer before it counts as having stopped reading.
 const QUEUE_BYTES: usize = 16 << 20;
@@ -235,7 +235,7 @@ impl Peer {
     }
 }
 
-pub fn check_bridge(bridge: &Bridge) -> Result<(), String> {
+pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
     if bridge.command.is_empty() {
         return Err("a bridge needs a command".into());
     }

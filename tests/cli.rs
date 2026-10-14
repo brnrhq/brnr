@@ -1390,10 +1390,11 @@ fn adr_0063_list_reads_the_agents_times_in_utc() {
     // its digits are later than brnr's; an hour after, written five and a
     // half behind, so that they are earlier.
     let (early, late) = (whole(before) - hour, whole(after) + hour);
-    let utc = |t: SystemTime, frac: &str| format!("{}.{frac}Z", &brnr::log::rfc3339(t)[..19]);
+    let utc =
+        |t: SystemTime, frac: &str| format!("{}.{frac}Z", &brnr::internals::log::rfc3339(t)[..19]);
     let times = json!({
-        "early-1": format!("{}.5+02:00", &brnr::log::rfc3339(early + ahead)[..19]),
-        "late-1": format!("{}.123456789-05:30", &brnr::log::rfc3339(late - behind)[..19]),
+        "early-1": format!("{}.5+02:00", &brnr::internals::log::rfc3339(early + ahead)[..19]),
+        "late-1": format!("{}.123456789-05:30", &brnr::internals::log::rfc3339(late - behind)[..19]),
         "odd-1": "2026-10-11T08:00:00+0200",
         // After old-1's 10:00:00Z, and apart by less than the microseconds
         // brnr writes: ordered by the times they are, not as written.

@@ -30,8 +30,10 @@ mod death;
 mod display;
 mod experimental;
 mod flow;
-#[doc(hidden)]
-pub mod fuzz;
+// For the tests here and the fuzz targets (through `internals`, lib.rs);
+// not in a build without the feature, such as users'.
+#[cfg(any(test, feature = "internals"))]
+pub(crate) mod fuzz;
 mod requests;
 mod start;
 mod state;
@@ -68,7 +70,7 @@ use crate::sys;
 
 use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Replay, Session};
 use control::{Closer, Peer};
-pub use control::{EVENTS, QUIET, check_bridge};
+pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use requests::Capabilities;
@@ -120,7 +122,7 @@ const PIECE: usize = 64 << 10;
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
-pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
+pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     // It takes no flags and reads no config: everything is in the request.
     // SAFETY: isatty(3) takes a descriptor number and touches no memory.
     if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
@@ -1726,7 +1728,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
 
 /// Blocks until `pid`, a child, has terminated, without reaping it: until
 /// it is reaped, its pid (and process group id) can't be another's.
-pub fn wait_exited(pid: pid_t) -> io::Result<()> {
+pub(crate) fn wait_exited(pid: pid_t) -> io::Result<()> {
     unsafe {
         // SAFETY: info is a siginfo_t (all zeros is a valid one) for waitid(2)
         // to fill.
@@ -1758,7 +1760,7 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
 /// theirs is. One that is someone else's (`kill` says EPERM) isn't brnr's,
 /// whatever pid a file of brnr's recorded. That a pid is alive doesn't say
 /// it is still the process that recorded it: see `gone` in ctl.rs.
-pub fn alive(pid: i64) -> bool {
+pub(crate) fn alive(pid: i64) -> bool {
     pid > 0 && sys::kill(pid as pid_t, 0)
 }
 

@@ -15,7 +15,7 @@ use crate::signals;
 /// rest, the agent's command among it, goes in the start request (see
 /// request.rs), which has the agent and the bridges' commands found already
 /// (see [`bundled`]).
-pub fn host_command() -> io::Result<Command> {
+pub(crate) fn host_command() -> io::Result<Command> {
     let mut cmd = Command::new(env::current_exe()?);
     cmd.arg("host");
     Ok(cmd)
@@ -32,7 +32,7 @@ pub fn host_command() -> io::Result<Command> {
 /// (Homebrew links `bin/brnr` into its prefix's `bin`), Linux reports the
 /// link's target as the running binary, while the adapters are linked next
 /// to the link.
-pub fn bundled(program: &OsStr) -> Option<PathBuf> {
+pub(crate) fn bundled(program: &OsStr) -> Option<PathBuf> {
     if program.as_bytes().contains(&b'/') {
         return None;
     }
@@ -70,7 +70,7 @@ fn started_as() -> Option<PathBuf> {
 /// the new process's stdin if `cmd` asked for a pipe (the host's, for its
 /// start request), and its pid. It finds the signal dispositions we found
 /// (see [`signals::restore_for_child`]).
-pub fn detached(
+pub(crate) fn detached(
     cmd: &mut Command,
     fds: &[(RawFd, RawFd)],
 ) -> io::Result<(Option<ChildStdin>, u32)> {
@@ -124,7 +124,7 @@ pub fn detached(
 /// waits for it and passes it the signals it gets, so a terminal's Ctrl-C
 /// reaches it once. It finds the signal dispositions we found, as for
 /// [`detached`].
-pub fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
+pub(crate) fn child(cmd: &mut Command, fds: &[(RawFd, RawFd)]) -> io::Result<Child> {
     let mut fds = fds.to_vec();
     // SAFETY: as in detached: move_fds makes only async-signal-safe calls
     // (fcntl, dup2) and allocates nothing, and restore_for_child atomic loads

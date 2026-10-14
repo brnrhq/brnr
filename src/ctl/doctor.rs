@@ -98,7 +98,7 @@ impl Report {
     }
 }
 
-pub fn main(args: &[String]) -> Result<(), String> {
+pub(crate) fn main(args: &[String]) -> Result<(), String> {
     let (mut fix, mut json_out, mut report) = (false, false, false);
     for arg in args {
         match arg.as_str() {

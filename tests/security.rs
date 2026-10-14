@@ -704,9 +704,9 @@ fn adr_0002_acp_passes_bytes_unchanged() {
     let sent: String = (lines.iter())
         .map(|(id, l)| {
             let Some(id) = id else { return format!("{l}\n") };
-            let spans = brnr::json::members(l.as_bytes(), "id");
+            let spans = brnr::internals::json::members(l.as_bytes(), "id");
             let ours = format!("\"brnr-{id}\"");
-            let line = brnr::json::replace(l.as_bytes(), &spans, ours.as_bytes());
+            let line = brnr::internals::json::replace(l.as_bytes(), &spans, ours.as_bytes());
             format!("{}\n", String::from_utf8(line).unwrap())
         })
         .collect();

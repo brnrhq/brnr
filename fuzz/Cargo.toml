@@ -15,7 +15,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-brnr = { path = ".." }
+brnr = { path = "..", features = ["internals"] }
 libfuzzer-sys = "0.4.13"
 serde_json = "1.0.151"
 

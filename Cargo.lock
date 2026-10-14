@@ -54,6 +54,7 @@ name = "brnr"
 version = "0.8.0"
 dependencies = [
  "agent-client-protocol-schema",
+ "brnr",
  "libc",
  "serde",
  "serde_json",

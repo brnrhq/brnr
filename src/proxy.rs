@@ -57,7 +57,7 @@ struct Options {
 /// one relaying the host's frames.
 type SignalLink = Arc<Mutex<UnixStream>>;
 
-pub fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
+pub(crate) fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.collect();
     if args.first().is_some_and(|a| a == "-h" || a == "--help") {
         println!("{USAGE}\n\n{HELP}");

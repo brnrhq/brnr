@@ -22,8 +22,8 @@
 
 use std::sync::Once;
 
-use brnr::host::fuzz::Harness;
-use brnr::{frame, json};
+use brnr::internals::host::fuzz::Harness;
+use brnr::internals::{frame, json};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 

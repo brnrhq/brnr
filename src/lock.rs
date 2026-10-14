@@ -30,7 +30,7 @@ const TRIES: u32 = 20;
 const PAUSE: Duration = Duration::from_millis(5);
 
 /// This process's hold on a session. Dropping it lets go.
-pub struct Lock {
+pub(crate) struct Lock {
     path: PathBuf,
     file: File,
 }
@@ -45,7 +45,7 @@ impl Drop for Lock {
     }
 }
 
-pub enum Error {
+pub(crate) enum Error {
     /// Another process holds it: its pid.
     Held(u32),
     /// It can't be taken: why, naming the path. Neither held nor free, and
@@ -55,25 +55,25 @@ pub enum Error {
 
 /// A lock file, what it says, and the process holding it, if one does, with
 /// the runtime directory that process was started with.
-pub struct Entry {
-    pub path: PathBuf,
-    pub session: Option<String>,
-    pub pid: Option<u32>,
-    pub dir: Option<PathBuf>,
+pub(crate) struct Entry {
+    pub(crate) path: PathBuf,
+    pub(crate) session: Option<String>,
+    pub(crate) pid: Option<u32>,
+    pub(crate) dir: Option<PathBuf>,
 }
 
 impl Entry {
     /// Whether its holder's runtime directory is another than this
     /// process's: a process whose socket and metadata the commands run here
     /// don't see (ADR 65).
-    pub fn elsewhere(&self) -> bool {
+    pub(crate) fn elsewhere(&self) -> bool {
         let here = paths::runtime_dir();
         self.pid.is_some() && self.dir.as_deref().is_some_and(|dir| !same_dir(dir, &here))
     }
 }
 
 /// Takes `session`'s lock, or says which process holds it.
-pub fn take(session: &str) -> Result<Lock, Error> {
+pub(crate) fn take(session: &str) -> Result<Lock, Error> {
     let dir = paths::session_locks();
     paths::ensure_private(&dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
     let path = paths::session_lock(session);
@@ -116,19 +116,19 @@ pub fn take(session: &str) -> Result<Lock, Error> {
 }
 
 /// The pid of the process holding `session`'s lock, if one does.
-pub fn holder(session: &str) -> Option<u32> {
+pub(crate) fn holder(session: &str) -> Option<u32> {
     look(paths::session_lock(session))?.pid
 }
 
 /// The runtime directory of the process holding `session`'s lock, when it
 /// isn't this process's: the commands run here can't reach that process,
 /// and `BRNR_DIR` set to it can (ADR 65).
-pub fn holder_dir(session: &str) -> Option<PathBuf> {
+pub(crate) fn holder_dir(session: &str) -> Option<PathBuf> {
     look(paths::session_lock(session)).filter(Entry::elsewhere)?.dir
 }
 
 /// Every lock file, held or not.
-pub fn all() -> Vec<Entry> {
+pub(crate) fn all() -> Vec<Entry> {
     let Ok(dir) = fs::read_dir(paths::session_locks()) else { return Vec::new() };
     dir.flatten()
         .map(|e| e.path())
@@ -139,7 +139,7 @@ pub fn all() -> Vec<Entry> {
 
 /// What is where a lock file goes but isn't a file (a directory, a
 /// symlink): its session can't be locked (ADR 50). Each, and what it is.
-pub fn unusable() -> Vec<(PathBuf, &'static str)> {
+pub(crate) fn unusable() -> Vec<(PathBuf, &'static str)> {
     let Ok(dir) = fs::read_dir(paths::session_locks()) else { return Vec::new() };
     let what = |kind: fs::FileType| match () {
         () if kind.is_file() => None,
@@ -158,7 +158,7 @@ pub fn unusable() -> Vec<(PathBuf, &'static str)> {
 
 /// Removes a lock file nobody holds, as its holder would have: one left by a
 /// process that died.
-pub fn remove(path: &Path) -> bool {
+pub(crate) fn remove(path: &Path) -> bool {
     let Ok(file) = open(path) else { return false };
     matches!(flock(&file, libc::LOCK_EX), Ok(true))
         && same(&file, path)

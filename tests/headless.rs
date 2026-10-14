@@ -4082,7 +4082,7 @@ fn prompt_with_id(id: &str, text: &str) -> String {
 
 /// The id of a message, as it is written.
 fn raw_id(line: &str) -> Option<String> {
-    let found = brnr::json::members(line.as_bytes(), "id");
+    let found = brnr::internals::json::members(line.as_bytes(), "id");
     found.last().map(|span| line[span.clone()].to_owned())
 }
 

@@ -17,15 +17,15 @@ const DIFF_LIMIT: usize = 4_000_000;
 /// Unchanged lines around each change in a diff.
 const CONTEXT: usize = 3;
 
-pub struct Options {
+pub(crate) struct Options {
     /// A column with the session id (for hosts with several sessions).
-    pub session: bool,
+    pub(crate) session: bool,
     /// Start with the event's time.
-    pub time: bool,
+    pub(crate) time: bool,
 }
 
 impl Options {
-    pub fn foreground() -> Options {
+    pub(crate) fn foreground() -> Options {
         Options { session: false, time: true }
     }
 }
@@ -34,7 +34,7 @@ impl Options {
 /// indented under the description: every event brnr emits has a line, so
 /// what `--events` chooses is shown in text as in JSON. `None` for what
 /// isn't an event.
-pub fn event(e: &Value, o: &Options) -> Option<String> {
+pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
     let s = |v: &Value| v.as_str().unwrap_or("?").to_owned();
     let what = match e["event"].as_str()? {
         "user_message" => match e["by"].as_str() {
@@ -184,7 +184,7 @@ pub fn event(e: &Value, o: &Options) -> Option<String> {
 /// How the agent ended, as an `exited` event's `status` has it (ADR 11):
 /// `agent exited with code 1`, `agent killed by SIGTERM`, or `agent exited
 /// (status unknown)` for a status brnr didn't get.
-pub fn exited(status: &Value) -> String {
+pub(crate) fn exited(status: &Value) -> String {
     if let Some(code) = status["code"].as_i64() {
         format!("agent exited with code {code}")
     } else if let Some(sig) = status["signal"].as_i64() {
@@ -195,7 +195,7 @@ pub fn exited(status: &Value) -> String {
 }
 
 /// A signal's name, `SIGTERM`, or `signal 99` for one without a name here.
-pub fn signal(sig: i64) -> String {
+pub(crate) fn signal(sig: i64) -> String {
     const NAMES: &[(i32, &str)] = &[
         (libc::SIGHUP, "SIGHUP"),
         (libc::SIGINT, "SIGINT"),
@@ -226,7 +226,7 @@ pub fn signal(sig: i64) -> String {
 /// newline and tab, and the bidirectional overrides that reorder what is
 /// shown, are escaped as `\u001b` and the like (which, inside a JSON string,
 /// is the same character escaped, so JSON stays JSON).
-pub fn clean(text: &str) -> Cow<'_, str> {
+pub(crate) fn clean(text: &str) -> Cow<'_, str> {
     if !text.chars().any(unsafe_char) {
         return Cow::Borrowed(text);
     }
@@ -252,7 +252,7 @@ fn unsafe_char(c: char) -> bool {
 
 /// What `usage_update` says of a session: `12.3k of 200.0k tokens, cost
 /// 0.42 USD` (the context window, and the cost if the agent gives one).
-pub fn usage(usage: &Value) -> Option<String> {
+pub(crate) fn usage(usage: &Value) -> Option<String> {
     let (used, size) = (usage["used"].as_u64()?, usage["size"].as_u64()?);
     let mut line = format!("{} of {} tokens", tokens(used), tokens(size));
     if let (Some(amount), Some(currency)) =
@@ -273,7 +273,7 @@ fn tokens(n: u64) -> String {
 }
 
 /// `plan (2/5):` and one line per entry: `[x]` done, `[>]` in progress.
-pub fn plan(entries: &Value) -> String {
+pub(crate) fn plan(entries: &Value) -> String {
     let entries = entries.as_array().map_or(&[][..], Vec::as_slice);
     let done = entries.iter().filter(|e| e["status"] == "completed").count();
     let mut out = format!("plan ({done}/{}):", entries.len());
@@ -291,7 +291,7 @@ pub fn plan(entries: &Value) -> String {
 /// A tool call in full: title, kind, paths, input and content (diffs for
 /// edits). A command with control characters in it says so: they are shown
 /// escaped, which is not what would run.
-pub fn tool_call(tool: &Value) -> String {
+pub(crate) fn tool_call(tool: &Value) -> String {
     clean(&tool_call_text(tool)).into_owned()
 }
 
@@ -358,7 +358,7 @@ enum Op {
 }
 
 /// A unified diff of `old` → `new`, hunks only (no file headers).
-pub fn diff(old: &str, new: &str) -> String {
+pub(crate) fn diff(old: &str, new: &str) -> String {
     let a: Vec<&str> = old.lines().collect();
     let b: Vec<&str> = new.lines().collect();
     if a.len().saturating_mul(b.len()) > DIFF_LIMIT {

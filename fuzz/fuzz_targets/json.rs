@@ -3,7 +3,7 @@
 
 #![no_main]
 
-use brnr::{json, schema};
+use brnr::internals::{json, schema};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 

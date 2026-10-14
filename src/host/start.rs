@@ -27,7 +27,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::{Sender, SyncSender};
+#[cfg(any(test, feature = "internals"))]
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -40,6 +42,7 @@ use super::{Ev, Host};
 pub(super) enum StartChannel {
     /// A simulated start in the fuzz harness: reports are collected without
     /// sockets, threads or peers, as the agent's input and editor link are.
+    #[cfg(any(test, feature = "internals"))]
     Collected(Sender<Value>),
     Socket {
         /// Its id as a peer, once it is one.
@@ -107,6 +110,7 @@ impl Host {
         }
         let (peer, mut stream, closer, events) = match channel {
             StartChannel::Socket { peer, stream, closer, events } => (peer, stream, closer, events),
+            #[cfg(any(test, feature = "internals"))]
             StartChannel::Collected(tx) => return tx.send(ready).is_ok(),
         };
         self.test_hold_ready(&stream);
@@ -131,6 +135,7 @@ impl Host {
             Some(StartChannel::Socket { mut stream, .. }) => {
                 let _ = write_report(&mut stream, &report);
             }
+            #[cfg(any(test, feature = "internals"))]
             Some(StartChannel::Collected(tx)) => {
                 let _ = tx.send(report);
             }

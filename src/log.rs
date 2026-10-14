@@ -89,7 +89,7 @@ const REDACTED: &str = "<redacted>";
 const OPENING: &[&str] = &["session/new", "session/load", "session/resume", "session/fork"];
 
 #[derive(Clone, Copy)]
-pub enum Dir {
+pub(crate) enum Dir {
     EditorToAgent,
     AgentToEditor,
     /// Something the host sent the agent: an injected prompt, a cancel, or
@@ -104,7 +104,7 @@ pub enum Dir {
 }
 
 impl Dir {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Dir::EditorToAgent => "editor->agent",
             Dir::AgentToEditor => "agent->editor",
@@ -116,10 +116,10 @@ impl Dir {
     }
 }
 
-pub struct Ids {
-    pub host_id: String,
-    pub host_pid: u32,
-    pub agent_pid: u32,
+pub(crate) struct Ids {
+    pub(crate) host_id: String,
+    pub(crate) host_pid: u32,
+    pub(crate) agent_pid: u32,
 }
 
 enum Cmd {
@@ -150,7 +150,7 @@ impl Cmd {
 
 /// Where the host hands its records. A no-op when not logging.
 #[derive(Clone)]
-pub struct Sink(Option<(Sender<Cmd>, Arc<Queue>)>);
+pub(crate) struct Sink(Option<(Sender<Cmd>, Arc<Queue>)>);
 
 /// What the host and the logger share of the logger's queue.
 #[derive(Default)]
@@ -242,7 +242,7 @@ impl Lost {
 impl Sink {
     /// Starts `session`'s files (appending if they exist) under `cwd`'s
     /// project folder. Records for a session not opened go to the host log.
-    pub fn open_session(&self, session: &str, cwd: &Path) {
+    pub(crate) fn open_session(&self, session: &str, cwd: &Path) {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: it says where the session's records go.
             let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
@@ -251,7 +251,7 @@ impl Sink {
 
     /// Closes `session`'s files once what was recorded before is written.
     /// Records for it after go to the host log, until it is opened again.
-    pub fn close_session(&self, session: &str) {
+    pub(crate) fn close_session(&self, session: &str) {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: a process that serves session after session
             // would otherwise hold every file it ever opened.
@@ -262,7 +262,7 @@ impl Sink {
     /// Calls `then` once everything recorded before it is written, with the
     /// note of a gap that ends there (at once when not logging). Never
     /// skipped, and never waited for: `then` runs on the logger's thread.
-    pub fn when_written(&self, then: impl FnOnce() + Send + 'static) {
+    pub(crate) fn when_written(&self, then: impl FnOnce() + Send + 'static) {
         let Some((tx, _)) = &self.0 else { return then() };
         if let Err(mpsc::SendError(Cmd::Written(then))) = tx.send(Cmd::Written(Box::new(then))) {
             then();
@@ -271,7 +271,7 @@ impl Sink {
 
     /// An ACP message: into the session's raw file (none with `log =
     /// "events"`), or the host log.
-    pub fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
+    pub(crate) fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
         self.record(session, true, false, |ts| Cmd::Msg {
             session: session.map(str::to_owned),
             ts,
@@ -283,7 +283,7 @@ impl Sink {
     /// An event: into the session's events file, or the host log. It is
     /// written out here, on the caller's stack: it may nest as deeply as the
     /// ACP it came from (see json.rs).
-    pub fn note(&self, session: Option<&str>, event: Value) {
+    pub(crate) fn note(&self, session: Option<&str>, event: Value) {
         // How the process ended is never skipped: it is what tells an exit
         // from a death (`brnr doctor`, ADR 11).
         let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
@@ -297,7 +297,7 @@ impl Sink {
     /// An event for `session`, which this process doesn't have open, into
     /// each of its events files ([`transcripts`]): an editor's deletion of a
     /// session it hasn't opened here (ADR 63). Never skipped.
-    pub fn append(&self, session: &str, event: Value) {
+    pub(crate) fn append(&self, session: &str, event: Value) {
         self.record(Some(session), false, true, |ts| Cmd::Append {
             session: session.to_owned(),
             ts,
@@ -338,20 +338,20 @@ impl Sink {
     }
 }
 
-pub struct Logger {
+pub(crate) struct Logger {
     sink: Sink,
     host_log: Option<PathBuf>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Logger {
-    pub fn disabled() -> Logger {
+    pub(crate) fn disabled() -> Logger {
         Logger { sink: Sink(None), host_log: None, thread: None }
     }
 
     /// Creates the host log. Done before anything else, so a problem with
     /// the log directory fails early. Sessions get a raw file if `acp`.
-    pub fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
+    pub(crate) fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
         let path = paths::host_log(&ids.host_id);
         let (host, made) = open_append(&path)?;
         let (tx, rx) = mpsc::channel();
@@ -370,16 +370,16 @@ impl Logger {
         Ok(Logger { sink: Sink(Some((tx, queue))), host_log: Some(path), thread: Some(thread) })
     }
 
-    pub fn sink(&self) -> Sink {
+    pub(crate) fn sink(&self) -> Sink {
         self.sink.clone()
     }
 
-    pub fn host_log(&self) -> Option<&Path> {
+    pub(crate) fn host_log(&self) -> Option<&Path> {
         self.host_log.as_deref()
     }
 
     /// Writes everything recorded so far.
-    pub fn finish(self) {
+    pub(crate) fn finish(self) {
         if let (Some((tx, _)), Some(thread)) = (&self.sink.0, self.thread) {
             let _ = tx.send(Cmd::Finish);
             let _ = thread.join();
@@ -715,7 +715,7 @@ fn embed(out: &mut Vec<u8>, line: &[u8]) {
 /// request that opens a session, the values of its MCP servers' `env` and
 /// `headers` are `"<redacted>"` (ADR 25 in docs/adr). The keys and the
 /// structure stay. Run it on a stack that takes the message.
-pub fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
+pub(crate) fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
     let method = msg.get("method")?.as_str()?;
     if !OPENING.contains(&method) {
         return None;
@@ -732,7 +732,7 @@ pub fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
 /// Redacts a list of ACP `McpServer`s in place: the `value` of each of
 /// their `env` and `headers` entries, or each value where they are a map.
 /// Whether there was a value to redact.
-pub fn redact_mcp_servers(servers: &mut Value) -> bool {
+pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
     let mut any = false;
     for server in servers.as_array_mut().into_iter().flatten() {
         for key in ["env", "headers"] {
@@ -755,7 +755,7 @@ pub fn redact_mcp_servers(servers: &mut Value) -> bool {
 /// A record of a host log or transcript with what [`redacted`] and
 /// `Request::recorded` redact redacted (ADR 25 in docs/adr), as brnr
 /// records it now: for one an older brnr wrote, shown again.
-pub fn redact_record(record: &mut Value) {
+pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
         && let Ok(msg) = serde_json::from_slice(&bytes)
     {
@@ -769,7 +769,7 @@ pub fn redact_record(record: &mut Value) {
 }
 
 /// What [`open_private`] made private: each path, and the mode it had.
-pub type Made = Vec<(PathBuf, u32)>;
+pub(crate) type Made = Vec<(PathBuf, u32)>;
 
 /// Opens `path`, under the state directory, for appending, so a session's
 /// file grows across hosts that serve it. Transcripts hold prompts and tool
@@ -885,7 +885,7 @@ fn at(path: &Path, err: io::Error) -> io::Error {
 /// resumed in another folder has one in each. A symlinked folder isn't
 /// looked in, as [`purge`] doesn't: what is written there is refused anyway
 /// (ADR 59).
-pub fn transcripts(session: &str) -> Vec<PathBuf> {
+pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
     let name = format!("{}.jsonl", paths::file_name(session));
     let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
     let mut found: Vec<PathBuf> = folders
@@ -906,7 +906,7 @@ pub fn transcripts(session: &str) -> Vec<PathBuf> {
 /// 55). The files written to, what couldn't be written to and why, each
 /// file tried whatever the one before did, and what was made private, with
 /// the mode it had: there is no host log to note it in.
-pub fn record_in_transcripts(
+pub(crate) fn record_in_transcripts(
     session: &str,
     agent_pid: u32,
     event: &Value,
@@ -942,7 +942,7 @@ pub fn record_in_transcripts(
 /// the state directory is reached through a link put in it: a symlinked
 /// folder isn't looked in, and a symlink with a transcript's name is removed,
 /// not what it points at. The paths deleted, and what couldn't be.
-pub fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
+pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
     let (mut deleted, mut failed) = (Vec::new(), Vec::new());
     let root = paths::state_dir();
     let projects_path = root.join("projects");
@@ -1007,7 +1007,7 @@ fn refused(path: &Path, why: &str) -> io::Error {
 }
 
 /// `20261001T171839` in UTC: the start of a host id.
-pub fn compact_utc(ts: SystemTime) -> String {
+pub(crate) fn compact_utc(ts: SystemTime) -> String {
     let full = rfc3339(ts);
     format!(
         "{}{}{}T{}{}{}",
@@ -1060,7 +1060,7 @@ pub fn rfc3339(ts: SystemTime) -> String {
 /// is one. None for anything else, a leap second (`:60`, which a
 /// [`SystemTime`] can't hold), and a time whose UTC is outside the years
 /// 0000 to 9999, which [`rfc3339`] can't write.
-pub fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
+pub(crate) fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
     let b = ts.as_bytes();
     let num = |from: usize, len: usize| digits(b.get(from..from + len)?);
     let at = |i: usize, c: &[u8]| b.get(i).is_some_and(|x| c.contains(x));
@@ -1116,7 +1116,7 @@ pub fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
 /// `ts` in UTC as [`rfc3339`] writes it, if it is an RFC 3339 time
 /// ([`parse_rfc3339`]): brnr's own as they are, an agent's in brnr's form,
 /// so that each is shown, and orders as a string, as the time it is.
-pub fn utc(ts: &str) -> Option<String> {
+pub(crate) fn utc(ts: &str) -> Option<String> {
     parse_rfc3339(ts).map(rfc3339)
 }
 
