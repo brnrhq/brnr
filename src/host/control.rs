@@ -27,10 +27,16 @@
 //!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
 //!   (started bridges are subscribed from the start)
-//! - `pending`: permission requests waiting for an answer, in full
+//! - `pending`: permission requests waiting for an answer, in full, and
+//!   beside them `elicitations`, the agent's requests for input (ADR 68)
 //! - `allow` / `reject` `{session, request, always?, option?}`: with the
 //!   option of kind `allow_once` (`allow_always` with `always`), or
 //!   `reject_once` (`reject_always`), or the option named (ADR 63)
+//! - `elicitation` `{session, request, action: accept|decline|cancel,
+//!   content?}` (ADR 68): answers an elicitation with ACP's action, an
+//!   accept's `content` (an object of the form's fields) checked against its
+//!   schema first; `session` is null for one scoped to a request outside any
+//!   session
 //! - `set_config` `{session, mode?, model?, thought_level?, options?: {id:
 //!   value}}` (`config set`, ADR 63): resolved as a start's settings are
 //!   (ADR 58), sent one at a time, and answered once the agent has set them
@@ -56,9 +62,9 @@
 //!   agent's process group)
 //!
 //! On an editor's session every command that acts on it (`send`, `cancel`,
-//! `queue clear --context`, `allow`, `reject`, `set_config` and `close`) is
-//! experimental: refused unless the editor's profile enables it (ADR 4, see
-//! experimental.rs). Bridges observe it freely.
+//! `queue clear --context`, `allow`, `reject`, `elicitation`, `set_config`
+//! and `close`) is experimental: refused unless the editor's profile enables
+//! it (ADR 4, see experimental.rs). Bridges observe it freely.
 //!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
@@ -93,7 +99,8 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::{Choice, Held};
+use super::acp::{AgentRequest, Choice, Held};
+use super::elicitation;
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::{Ev, Host};
@@ -115,6 +122,9 @@ pub(crate) const EVENTS: &[&str] = &[
     "session_changed",
     "permission_request",
     "permission_resolved",
+    "elicitation_request",
+    "elicitation_resolved",
+    "elicitation_completed",
     "turn_ended",
     "message_dropped",
     "context_dropped",
@@ -509,11 +519,14 @@ impl Host {
             Some("cancel") => now(self.cancel_turn(req)),
             Some("queue") => now(self.queue(req)),
             Some("subscribe") => now(self.subscribe(peer, req)),
-            Some("pending") => {
-                Ok(Some(json!({ "ok": true, "pending": self.pending_permissions() })))
-            }
+            Some("pending") => Ok(Some(json!({
+                "ok": true,
+                "pending": self.pending_permissions(),
+                "elicitations": self.pending_elicitations(),
+            }))),
             Some("allow") => now(self.answer(peer, req, Choice::Allow)),
             Some("reject") => now(self.answer(peer, req, Choice::Reject)),
+            Some("elicitation") => now(self.elicitation(peer, req)),
             Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
             Some("new" | "resume") => self.open(peer, req).map(|()| None),
             Some("stop") => {
@@ -574,10 +587,9 @@ impl Host {
         self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
-        let ours = self
-            .agent_requests
-            .iter()
-            .any(|r| r.handle.as_deref() == Some(&handle) && r.session.as_ref() == Some(&session));
+        let ours = self.agent_requests.iter().any(|r| {
+            r.is_permission() && r.held() == Some(&handle) && r.session.as_ref() == Some(&session)
+        });
         if !ours {
             return Err(format!("no pending request {handle} in session {session}"));
         }
@@ -595,7 +607,7 @@ impl Host {
         let why_not = self.check_experimental(Experimental::Permission).err();
         self.agent_requests
             .iter()
-            .filter(|r| r.handle.is_some())
+            .filter(|r| r.is_permission())
             .map(|r| {
                 json!({
                     "request": r.handle,
@@ -613,11 +625,64 @@ impl Host {
             .collect()
     }
 
+    /// `elicitation` (ADR 68): answers elicitation `request` of `session`
+    /// (null for one scoped to a request outside any) with `action`, and an
+    /// accept's `content`, checked against the form's schema before anything
+    /// is sent.
+    fn elicitation(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+        let session = match &req["session"] {
+            Value::Null => None,
+            _ => Some(self.sessions[self.session_index(req)?].id.clone()),
+        };
+        self.check_experimental(Experimental::Elicitation)?;
+        let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
+        let action = req["action"].as_str().ok_or("missing action: accept, decline or cancel")?;
+        let ours = self
+            .agent_requests
+            .iter()
+            .any(|r| r.is_elicitation() && r.held() == Some(&handle) && r.session == session);
+        if !ours {
+            return Err(match &session {
+                Some(session) => format!("no pending elicitation {handle} in session {session}"),
+                None => format!("no pending elicitation {handle} outside a session"),
+            });
+        }
+        let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
+        let result = self.resolve_elicitation(&handle, action, &req["content"], &by)?;
+        Ok(json!({ "ok": true, "session": session, "request": handle, "result": result }))
+    }
+
+    /// The elicitations waiting, each in full (see elicitation.rs), with
+    /// whether `brnr elicitation accept` would be taken (ADR 4) and when the
+    /// timeout cancels it.
+    fn pending_elicitations(&self) -> Vec<Value> {
+        let owner = if self.editor_attached() { "editor" } else { "headless" };
+        let why_not = self.check_experimental(Experimental::Elicitation).err();
+        self.agent_requests
+            .iter()
+            .filter(|r| r.is_elicitation())
+            .map(|r| {
+                let mut e = elicitation::describe(r);
+                e["request"] = json!(r.handle);
+                e["session"] = json!(r.session);
+                e["owner"] = json!(owner);
+                e["answerable"] = json!(why_not.is_none());
+                e["why_not"] = json!(why_not);
+                e["timeout_seconds"] = json!(
+                    r.deadline.map(|d| d.saturating_duration_since(Instant::now()).as_secs())
+                );
+                e
+            })
+            .collect()
+    }
+
     fn status_report(&self) -> Value {
         let mut report = self.info.clone();
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
         report["pending"] = json!(self.pending_permissions().len());
+        report["elicitations"] =
+            json!(self.agent_requests.iter().filter(|r| r.is_elicitation()).count());
         report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
@@ -634,12 +699,12 @@ impl Host {
             .map(|i| {
                 let s = &self.sessions[i];
                 let mut session = s.state.report();
-                let pending = self
-                    .agent_requests
-                    .iter()
-                    .filter(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
-                    .count();
-                let state = match (pending, s.prompts.is_empty()) {
+                let held = |r: &&AgentRequest| r.session.as_ref() == Some(&s.id);
+                let requests = self.agent_requests.iter().filter(held);
+                let (asking, pending): (Vec<_>, Vec<_>) =
+                    requests.filter(|r| r.held().is_some()).partition(|r| r.is_elicitation());
+                let (pending, elicitations) = (pending.len(), asking.len());
+                let state = match (pending + elicitations, s.prompts.is_empty()) {
                     (n, _) if n > 0 => "waiting",
                     (_, false) => "busy",
                     _ => "idle",
@@ -658,6 +723,7 @@ impl Host {
                     "held": s.held.len(),
                     "context": s.context.len(),
                     "pending": pending,
+                    "elicitations": elicitations,
                     "shared": s.shared(),
                     "lock_error": s.lock_error(),
                     "last_turn": s.last_turn,

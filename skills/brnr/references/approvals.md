@@ -4,7 +4,7 @@ When a worker's agent wants to do something its mode doesn't allow without
 asking (edit a file, run a command), it asks, and the turn waits for an
 answer. With no editor attached, brnr is the agent's client: the request
 waits for `brnr permission allow` or `brnr permission reject`, or for
-`permission_timeout` in the profile, which rejects it once, or cancels its
+`response_timeout` in the profile, which rejects it once, or cancels its
 turn.
 
 ## The rule
@@ -98,3 +98,35 @@ editor, in front of the user. Leave it there: say it is waiting, if it
 matters to your task. brnr refuses to answer it unless the editor's profile
 enables it (`answerable`, `why_not`), and even then it is the user's, in the
 editor.
+
+## Elicitations: the agent asking for input
+
+An agent can also ask the user for input (ADR 68): a form (`mode: "form"`,
+its fields in `schema`), or a URL to open (`mode: "url"`), such as an MCP
+server's login. The turn waits for it as for an approval, and the same rule
+holds: the answer is the user's. brnr never opens a URL; neither do you.
+
+```sh
+brnr event wait $s --for elicitation --timeout 600 --json
+brnr elicitation requests --json
+brnr elicitation show $s e1
+```
+
+`elicitation show` (`--json` has the `schema` as the agent sent it) is what
+to show the user: the message, then each field with its type, whether it is
+required, its bounds and choices, or the URL. Ask for the values, or for the
+user to open the URL. Then answer with what the user gave:
+
+```sh
+brnr elicitation accept $s e1 --field name=Ada --field color=green --json
+brnr elicitation decline $s e1 --json
+```
+
+`accept` takes each field as `--field name=value` (again for each value of a
+list), checked against the form before anything is sent: a field the form
+doesn't have, a missing required one, or a value of the wrong type, out of
+bounds or not a choice fails, naming the field, and nothing is sent. For a
+URL, `accept` (with no fields) once the user says they have done it.
+`decline` is the user's no; `cancel` says nobody answered. One asked outside
+any session (`session: null`, a login while the agent starts) is named by
+its process: `--pid <pid>` in place of `$s`.

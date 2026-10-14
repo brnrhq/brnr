@@ -69,7 +69,7 @@ impl Harness {
             settings: Settings { mode: Some("plan".into()), ..Settings::default() },
             prompt: Some(Prompt { text: "hello".into(), blocks: Vec::new() }),
             stop_when_idle: Some(1),
-            permission_timeout: Some(1),
+            response_timeout: Some(1),
             ..Headless::default()
         };
         let mut harness = Harness::new(Role::Headless(Box::new(headless)), strict);

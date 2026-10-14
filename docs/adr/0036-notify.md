@@ -6,6 +6,10 @@ Resolves review item 4 with ADR 35.
 Amended by 63: `brnr notify` is `brnr event notify`, with the same flags,
 and `watch` is `event watch`.
 
+Amended by 68: the default events are `permission_request`,
+`elicitation_request`, `turn_ended` and `exited`, and `BRNR_REQUEST` is an
+elicitation's handle too.
+
 ## Context
 
 Notifications are what most people want from a bridge: a message when an

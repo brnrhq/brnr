@@ -1,8 +1,9 @@
 //! The claims of docs/threat-model.md that no other test checks: who can
 //! reach a process and its files (P13), what the agent's text can't do
-//! (P8), how approvals end unanswered (ADR 27, 63), what is recorded of secrets
-//! (ADR 25), and what `brnr acp` passes unchanged (P1). Against the fake
-//! agent (fake_agent.py), each test in its own directories.
+//! (P8), how approvals and elicitations end unanswered (ADR 27, 63, 68), what
+//! is recorded of secrets (ADR 25), and what `brnr acp` passes unchanged
+//! (P1). Against the fake agent (fake_agent.py), each test in its own
+//! directories.
 
 mod common;
 
@@ -441,7 +442,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
         .map(|c| c["result"]["outcome"].clone())
 }
 
-/// Without `permission_timeout` a request waits for an answer for as long as
+/// Without `response_timeout` a request waits for an answer for as long as
 /// it takes: nothing answers it for the user.
 #[test]
 fn adr_0027_an_unanswered_request_waits() {
@@ -464,7 +465,7 @@ fn adr_0027_an_unanswered_request_waits() {
 #[test]
 fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
-    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 1\n");
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
@@ -473,7 +474,7 @@ fn adr_0027_a_timeout_never_allows() {
     env.stop();
 }
 
-/// The permission timeout answers with the request's `reject_once` option;
+/// The response timeout answers with the request's `reject_once` option;
 /// one without exactly one has its turn cancelled (`session/cancel`), which
 /// answers it, and every request pending in the session, `cancelled`. Never
 /// `reject_always`, which nobody chose. `permission show` says which it
@@ -481,7 +482,7 @@ fn adr_0027_a_timeout_never_allows() {
 #[test]
 fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
     // Long enough for `permission show` to be asked before it fires.
-    let timeout = "[profiles.default.headless]\npermission_timeout = 3\n";
+    let timeout = "[profiles.default.headless]\nresponse_timeout = 3\n";
     let predicts = |env: &Env, how: &str| {
         let pending = || env.ok(&["permission", "requests"]).contains("p1");
         assert!(wait_for(Duration::from_secs(5), pending), "never asked");
@@ -542,6 +543,35 @@ fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
         }
         env.stop();
     }
+}
+
+/// The response timeout covers elicitations too (ADR 68), and answers one
+/// nobody did `cancel`: never `decline`, which is the user's no, nor
+/// `accept`. Its turn is not cancelled. `elicitation show` says so before it
+/// happens.
+#[test]
+fn adr_0068_a_timeout_cancels_never_accepts() {
+    let env = Env::new("s-eltimeout");
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "elicit form"]);
+    let asked = || env.ok(&["elicitation", "requests"]).contains("e1");
+    assert!(wait_for(Duration::from_secs(5), asked), "never asked");
+    let shown = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(shown.contains("cancelled in ") && shown.contains("s if nobody answers"), "{shown}");
+    let answer = || {
+        let ours = |c: &Value| c["id"] == "elicit-1" && c.get("method").is_none();
+        env.calls().into_iter().find(ours).map(|c| c["result"].clone())
+    };
+    assert!(answer().is_none(), "answered before it was shown");
+    assert!(wait_for(Duration::from_secs(10), || answer().is_some()), "unanswered");
+    assert_eq!(answer().unwrap(), json!({ "action": "cancel" }));
+    assert!(env.calls_of("session/cancel").is_empty(), "cancelled the turn");
+    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("elicitation e1 cancelled, by timeout"), "{log}");
+    env.stop();
 }
 
 /// A request is answered only as the request of its own session.

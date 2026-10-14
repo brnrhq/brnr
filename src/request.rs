@@ -88,7 +88,7 @@ pub(crate) struct Headless {
     /// Seconds until the start fails.
     pub(crate) start_timeout: u64,
     pub(crate) stop_when_idle: Option<u64>,
-    pub(crate) permission_timeout: Option<u64>,
+    pub(crate) response_timeout: Option<u64>,
     /// What the start channel is subscribed to once the start commits: the
     /// events `--wait` follows its turn by; none without `--wait`.
     pub(crate) events: Vec<String>,

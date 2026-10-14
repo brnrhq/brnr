@@ -7,9 +7,10 @@
 //! - `send` goes only while no prompt runs: the editor controls its turns,
 //!   so nothing is held, steered or interrupts. It is echoed (`echo` in
 //!   acp.rs, ADR 5), and so is `context` as it joins the editor's prompt.
-//! - `cancel` and `permission`: a permission request the host answers is
-//!   withdrawn from the editor with `$/cancel_request`, and for an allow
-//!   or a reject its tool call is updated. If the editor answers anyway, its
+//! - `cancel`, `permission` and `elicitation`: a permission request or an
+//!   elicitation the host answers is withdrawn from the editor with
+//!   `$/cancel_request`, and for an allow or a reject its tool call is
+//!   updated (ADR 68 for elicitations). If the editor answers anyway, its
 //!   answer is dropped, so the agent never gets two, and the editor is told
 //!   in the session.
 //! - `config`: the agent answers a change only to whoever asked (ADR 28),
@@ -33,9 +34,10 @@ use crate::lock;
 /// what the editor is told if it does.
 pub(super) struct Answered {
     session: Option<String>,
-    /// The tool call's title, as the request has it.
+    /// The tool call's title, or the elicitation's message, as the request
+    /// has it.
     title: String,
-    /// `allowed`, `rejected` or `cancelled`.
+    /// `allowed`, `rejected` or `cancelled`; `accepted` or `declined`.
     how: &'static str,
     /// Who answered it: `cancel`, or a peer's label.
     by: String,
@@ -87,36 +89,37 @@ impl Host {
     // ---- approvals ------------------------------------------------------
 
     /// The host answered the agent's request `req`, `how` (`allowed`,
-    /// `rejected` or `cancelled`), which the editor was shown too: it is
-    /// withdrawn from the editor. An allowed tool call is in progress, a
-    /// rejected one has failed: the status the agent's own updates take it
-    /// on from, so neither contradicts the other. An allow or a reject is
-    /// also told in the session, saying by whom.
+    /// `rejected` or `cancelled`; an elicitation's `accepted`, `declined` or
+    /// `cancelled`), which the editor was shown too: it is withdrawn from
+    /// the editor. An allowed tool call is in progress, a rejected one has
+    /// failed: the status the agent's own updates take it on from, so
+    /// neither contradicts the other. An allow or a reject, an accept or a
+    /// decline, is also told in the session, saying by whom.
     pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &str) {
         if !self.editor_attached() {
             return;
         }
-        let tool = &req.params["toolCall"];
-        let title = tool["title"].as_str().unwrap_or("the request").to_owned();
+        let title = req.title();
         let answered =
             Answered { session: req.session.clone(), title: title.clone(), how, by: by.to_owned() };
         self.answered.insert(req.key.clone(), answered);
         let params = json!({ "requestId": req.id });
         let msg = json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": params });
         self.send_editor(req.session.as_deref(), &msg);
-        let status = match how {
-            "allowed" => "in_progress",
-            "rejected" => "failed",
+        let (status, note) = match how {
+            "allowed" => (Some("in_progress"), "Allowed via brnr"),
+            "rejected" => (Some("failed"), "Rejected via brnr"),
+            "accepted" => (None, "Accepted via brnr"),
+            "declined" => (None, "Declined via brnr"),
             _ => return,
         };
         let Some(session) = &req.session else { return };
-        if let Some(id) = tool["toolCallId"].as_str() {
+        if let (Some(status), Some(id)) = (status, req.params["toolCall"]["toolCallId"].as_str()) {
             let update =
                 json!({ "sessionUpdate": "tool_call_update", "toolCallId": id, "status": status });
             self.update_editor(session, update);
         }
         let text = format!("\"{title}\" was {how} {}.", who(by));
-        let note = if how == "allowed" { "Allowed via brnr" } else { "Rejected via brnr" };
         self.echo(session, note, &[text_block(&text)]);
     }
 

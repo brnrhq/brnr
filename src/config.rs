@@ -19,7 +19,8 @@
 //! model = "opus"                      #   level and config options by id,
 //! thought_level = "high"              #   set before the first prompt
 //! options = { effort = "high" }
-//! permission_timeout = 600            # seconds until an unanswered request is rejected
+//! response_timeout = 600              # seconds until an unanswered approval is rejected,
+//!                                     #   or an elicitation cancelled (ADR 68)
 //! stop_when_idle = 600                # close a session idle this many seconds
 //! auth = "api-key"                    # the agent's login method, run first (ADR 30)
 //!
@@ -82,7 +83,7 @@ pub(crate) struct Headless {
     pub(crate) thought_level: Option<String>,
     #[serde(default)]
     pub(crate) options: BTreeMap<String, String>,
-    pub(crate) permission_timeout: Option<u64>,
+    pub(crate) response_timeout: Option<u64>,
     pub(crate) stop_when_idle: Option<u64>,
     pub(crate) auth: Option<String>,
     #[serde(default)]
@@ -155,16 +156,18 @@ pub(crate) enum Experimental {
     Context,
     Cancel,
     Permission,
+    Elicitation,
     Config,
     Close,
 }
 
 impl Experimental {
-    pub(crate) const ALL: [Experimental; 6] = [
+    pub(crate) const ALL: [Experimental; 7] = [
         Experimental::Send,
         Experimental::Context,
         Experimental::Cancel,
         Experimental::Permission,
+        Experimental::Elicitation,
         Experimental::Config,
         Experimental::Close,
     ];
@@ -175,6 +178,7 @@ impl Experimental {
             Experimental::Context => "context",
             Experimental::Cancel => "cancel",
             Experimental::Permission => "permission",
+            Experimental::Elicitation => "elicitation",
             Experimental::Config => "config",
             Experimental::Close => "close",
         }
@@ -318,7 +322,7 @@ const HEADLESS_KEYS: &[&str] = &[
     "model",
     "thought_level",
     "options",
-    "permission_timeout",
+    "response_timeout",
     "stop_when_idle",
     "auth",
     "mcp_servers",

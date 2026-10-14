@@ -28,6 +28,7 @@ mod acp;
 mod control;
 mod death;
 mod display;
+mod elicitation;
 mod experimental;
 mod flow;
 // For the tests here and the fuzz targets (through `internals`, lib.rs);
@@ -331,8 +332,9 @@ struct Host {
     start_done: bool,
     info: Value,
     host_id: String,
-    /// How long an unanswered permission request waits before it is rejected.
-    permission_timeout: Option<Duration>,
+    /// How long an unanswered permission request waits before it is
+    /// rejected, and an elicitation before it is cancelled (ADR 68).
+    response_timeout: Option<Duration>,
     agent_pid: pid_t,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
     /// that stops reading can't stall the host; dropping this closes the
@@ -401,6 +403,10 @@ struct Host {
     /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
     next_permission: u64,
+    next_elicitation: u64,
+    /// URL elicitations held or accepted, by the agent's `elicitationId`,
+    /// until the agent says each is complete (ADR 68).
+    url_elicitations: HashMap<String, elicitation::UrlElicitation>,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
     /// A line past `LINE_BYTES` is going through unread, from the editor or
@@ -599,7 +605,7 @@ impl Host {
             start_done: false,
             info: Value::Null,
             host_id: String::new(),
-            permission_timeout: h.permission_timeout.map(Duration::from_secs),
+            response_timeout: h.response_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: None,
             to_agent: Backlog::default(),
@@ -630,6 +636,8 @@ impl Host {
             prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,
+            next_elicitation: 0,
+            url_elicitations: HashMap::new(),
             editor_buf: Vec::new(),
             editor_long: false,
             agent_long: false,

@@ -143,8 +143,8 @@ terminals, as it could directly; a headless session offers it neither
 (a turn still running is lost).
 
 Watching an editor's session (`event watch`, `event log`, `session status`,
-`permission requests`, `permission show`, `event notify`, bridges) always
-works. Acting on it doesn't, by default: ACP has one
+`permission requests`, `permission show`, `elicitation requests`,
+`elicitation show`, `event notify`, bridges) always works. Acting on it doesn't, by default: ACP has one
 client per session, the editor, and every action from outside leaves the
 editor's view behind the agent's in some way.
 
@@ -162,8 +162,9 @@ experimental = ["send", "permission"]
 |---|---|---|
 | `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
 | `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr". |
-| `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
+| `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled` and its elicitations `cancel`, and withdrawn from the editor (`$/cancel_request`). |
 | `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
+| `elicitation` | `elicitation accept`, `elicitation decline`, `elicitation cancel` | The request is withdrawn from the editor, and the editor told at once who answered ("Accepted via brnr", "Declined via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `session close`, `session resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
 
@@ -263,6 +264,7 @@ command's, has none.
 ```sh
 brnr event wait $s                 # until no turn is running and nothing is held
 brnr event wait $s --for permission   # until an approval is waiting
+brnr event wait $s --for elicitation  # until the agent asks for input
 brnr event wait $s --for turn      # the next turn's end; --for exit: its process's
 brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md
 ```
@@ -270,11 +272,11 @@ brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- b
 `event wait`, `prompt send --wait` and `session new --wait` exit 0 when the turn
 ended normally (`end_turn`); 1 when it failed or stopped for another reason,
 when its message was dropped (`brnr: m3 was dropped (cancel)`), when the agent
-exited first, or when the session closed before the turn or approval waited
-for; and 124 on `--timeout <s>`. `event wait` on a session that is idle
-already, or that closes while it waits, exits as its last turn ended. While
-`prompt send --wait` and `session new --wait` wait, approvals are announced
-on stderr; `session new --wait` says `started …` there too, so stdout is the
+exited first, or when the session closed before the turn, approval or
+elicitation waited for; and 124 on `--timeout <s>`. `event wait` on a session
+that is idle already, or that closes while it waits, exits as its last turn
+ended. While `prompt send --wait` and `session new --wait` wait, approvals
+and elicitations are announced on stderr; `session new --wait` says `started …` there too, so stdout is the
 reply and nothing else. With `--json`, the turn is one object at its end:
 `session`, `message`, `reply`, `stop_reason`, `error`, `dropped` (and `pid`,
 for `session new` and `resume`).
@@ -297,7 +299,7 @@ always kind with `--always`; one of a kind brnr doesn't know goes with either
 verb. `reject` never answers `cancelled`, which ACP keeps for a cancelled
 turn: `prompt cancel` is what does that.
 
-A headless request waits until it is answered, or for `permission_timeout`
+A headless request waits until it is answered, or for `response_timeout`
 (in the profile's headless part), if set: then it is answered with its
 `reject_once` option, or, without exactly one, its turn is cancelled
 (`session/cancel`), which answers it and every request pending in the session
@@ -310,6 +312,38 @@ says when a command has any. `--json` has the text as the agent sent it. On an
 editor's session `permission show` says the request is waiting in the editor,
 and that it can be answered here too, experimentally, where `permission` is
 enabled, or else why it can't (`answerable` and `why_not` in `--json`).
+
+### Elicitations
+
+```sh
+brnr elicitation requests          # the agent asking for input, in every session
+brnr elicitation show $s e1        # one in full: the message, the form's fields, or the URL
+brnr elicitation accept $s e1 --field name=Ada --field color=green   # checked against the form
+brnr elicitation decline $s e1     # the user's no
+brnr elicitation cancel $s e1      # no answer given, as a timeout sends
+```
+
+An elicitation is the agent asking for input (ACP's `elicitation/create`, ADR
+68): a form, or a URL to open, such as an MCP server's login. Headless, brnr
+advertises both modes, and holds each request until it is answered, as it
+holds an approval. `accept` takes the form's values as `--field name=value`
+(again for each value of a list) or as one JSON object on stdin (`-`), and the
+process checks them against the form before anything is sent: each field is
+one of the form's, the required ones are given, and each value is of its type
+(`42` for an integer, `true` for a boolean), within its bounds and one of its
+choices; `pattern` and `format` are left to the agent. What doesn't fit fails
+the command, naming the field, and nothing is sent. A URL is shown, never
+opened: open it yourself, then `accept` it, with no fields. A mode brnr
+doesn't know can only be declined or cancelled. One asked outside any session
+(a login, while the agent authenticates) is named by its process, `--pid
+<pid>` in place of the session.
+
+`response_timeout` covers elicitations too: one nobody answered is answered
+`cancel`, never `decline` or `accept`, and `elicitation show` says when. `prompt
+cancel` answers the session's elicitations `cancel` too. On an editor's
+session the request reaches the editor as the agent sent it, and is seen
+(`elicitation_request`, `elicitation_resolved`) as approvals are; answering it
+here is the experimental `elicitation`.
 
 ### Settings
 
@@ -391,7 +425,7 @@ agent, profile and MCP servers, in `--cwd` (or here), and
 `session resume --pid <pid> <id>` resumes one there (in its recorded cwd),
 taking its lock as any resume does, with `--take-over` as without `--pid`.
 What starts a process (`--profile`, `--auth`, `--strict`, `--stop-when-idle`,
-`--permission-timeout`, `--foreground`, `--quiet`, `-- <agent>`) is an error
+`--response-timeout`, `--foreground`, `--quiet`, `-- <agent>`) is an error
 with it. The session, its settings (over the profile's) and its prompt commit
 as one, as a start does, and the prompt goes only then. A setting that fails
 after the agent opened the session closes it again, and the error says so (an
@@ -478,6 +512,7 @@ show the same events, live or read back from the transcript:
 | `plan`, `usage` | the plan; the context window and cost, as the agent reports them |
 | `session_changed` | the title, mode, config options or commands: what changed |
 | `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
+| `elicitation_request`, `elicitation_resolved`, `elicitation_completed` | the agent asking for input: its `message`, `mode`, `scope`, a form's `schema` or a `url`; the `action` sent (`accept`, with its `content`, `decline` or `cancel`) and who sent it; the agent saying a URL's flow is done |
 | `turn_ended` | its `stop_reason` or `error`, and the `messages` it carried |
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
@@ -503,9 +538,9 @@ session ends when it closes.
 ### Notifications
 
 `brnr event notify` runs a command for each event of a session, or of every
-session in a process (`--pid`): by default `permission_request`, `turn_ended`
-and `exited`; `--events` as for `event watch`, where `default` means these
-three. The event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`,
+session in a process (`--pid`): by default `permission_request`,
+`elicitation_request`, `turn_ended` and `exited`; `--events` as for `event
+watch`, where `default` means these four. The event is in its environment (`BRNR_EVENT`, `BRNR_TEXT`,
 `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION_ID`, `BRNR_REQUEST`, `BRNR_PID`)
 and, as JSON, on its stdin; nothing is put on its command line, so what the
 agent writes can't become arguments. The text, title and message are escaped
@@ -564,13 +599,14 @@ or from the profile, fail the start before anything is set, as does a
 setting the agent has no option for.
 
 `--stop-when-idle <s>` closes a session once it has been idle that many
-seconds (no turn running, nothing held, no approval waiting), counting from
-the start; `0` is as soon as it is. Its last session isn't closed: the
-process stops instead. `--permission-timeout <s>` answers an approval nobody
-answered in that many seconds as `permission_timeout` does: with its
+seconds (no turn running, nothing held, no approval or elicitation waiting),
+counting from the start; `0` is as soon as it is. Its last session isn't closed: the
+process stops instead. `--response-timeout <s>` answers an approval nobody
+answered in that many seconds as `response_timeout` does: with its
 `reject_once` option, or, without exactly one, by cancelling its turn, which
-answers every request pending in the session `cancelled`. Each wins over the
-profile's `stop_when_idle` and `permission_timeout`.
+answers every request pending in the session `cancelled`; an elicitation, by
+answering it `cancel`. Each wins over the profile's `stop_when_idle` and
+`response_timeout`.
 
 `--foreground` keeps the session in the terminal, for a supervisor such as
 systemd or a container. It shows the session's events on stdout (`--json`: as
@@ -595,7 +631,8 @@ brnr: turns taken in the agent's own client, or with `log = false`, aren't
 in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
-`brnr permission allow`/`reject` or a bridge, elicitation is declined, and anything else is answered with
+`brnr permission allow`/`reject` or a bridge, elicitations for `brnr elicitation
+accept`/`decline`/`cancel` or a bridge, and anything else is answered with
 "method not found". How much the agent asks is the agent's own setting: its
 mode (`--mode`, `brnr config set --mode`). brnr doesn't log in for you. If the agent needs
 a login, the start fails with the agent's methods: log in with the agent's own
@@ -665,7 +702,7 @@ mode = "plan"                       # the agent's mode, model, thought level
 model = "opus"                      #   and config options by id, set before
 thought_level = "high"              #   the first prompt; the flags win
 options = { effort = "high" }
-permission_timeout = 600            # reject once (else cancel the turn) what
+response_timeout = 600              # reject once (else cancel the turn) what
                                     #   nobody answered in 10 minutes
 stop_when_idle = 600                # close a session idle 10 minutes
 # auth = "api-key"                  # a login method to run first (codex-acp's)

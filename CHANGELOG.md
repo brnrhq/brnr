@@ -39,9 +39,34 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- Elicitations, the agent asking for input (`elicitation/create`): a form,
+  or a URL to open, such as an MCP server's login. Headless, brnr advertises
+  both modes, which claude-agent-acp needs for AskUserQuestion. `brnr
+  elicitation requests`, `show`, `accept`, `decline` and `cancel` list, show
+  and answer them; `accept --field name=value` (or a JSON object on stdin)
+  is checked against the form before anything is sent, and a URL is shown,
+  never opened. One outside any session is named with `--pid`. Events
+  `elicitation_request`, `elicitation_resolved` and `elicitation_completed`,
+  for watchers, bridges and editor sessions too; `event wait --for
+  elicitation`; `event notify` runs for `elicitation_request` by default;
+  `prompt send --wait` announces one on stderr; `session status` counts
+  `elicitations`, and a session with one is `waiting`. The socket's
+  `pending` has `elicitations`, and `elicitation` answers one. On an
+  editor's session, answering is the experimental `elicitation` (ADR 68).
 
 ### Changed
 
+- **Breaking:** a headless session's elicitation waits for an answer, where
+  brnr declined it at once: an unattended run now waits on it. Set
+  `response_timeout` (or `--response-timeout`), which cancels one nobody
+  answered, never declines or accepts it (ADR 68).
+- **Breaking:** the headless `permission_timeout` is `response_timeout`, and
+  `session new` and `session resume`'s `--permission-timeout` is
+  `--response-timeout`: one timeout for the user's responses, which answers
+  a permission request nobody answered `reject_once` (else cancels its turn)
+  and an elicitation `cancel`. Rename the key in your profiles and the flag
+  in your scripts; a profile with `permission_timeout` fails to load
+  (ADR 68).
 - **Breaking:** `prompt send`'s options go before its prompt: from the
   prompt's first word on, every word is the prompt's, as after `--`, so an
   option after the text (`brnr prompt send $s "fix it" --wait`) is sent as

@@ -1,6 +1,6 @@
 # 68. Elicitations are held and answered as approvals are
 
-Accepted 2026-10-14. Implemented. Amends 4, 21, 27, 33, 35, 58 and 63.
+Accepted 2026-10-14. Implemented. Amends 4, 21, 27, 33, 35, 36, 58 and 63.
 Resolves #195.
 
 ## Context
@@ -98,9 +98,9 @@ words for them (P1, P2):
   (`CreateElicitationResponse`), so an accept's `content` has ACP's value
   types. `accept` of a URL elicitation takes no fields; one of a mode brnr
   doesn't know can only be declined or cancelled. A request-scoped
-  elicitation has no session: it is listed with none and named by its
-  process, `--pid <pid>` in place of `<session>`, as `event watch` names
-  one.
+  elicitation has no session: it is listed with none (`--pid <pid>` in
+  the table's SESSION column) and named by its process, `--pid <pid>` in
+  place of `<session>`, as `event watch` names one.
 - **Socket and bridges** (ADR 35): `pending` answers with `elicitations`
   beside `pending`, each in full with `answerable` and `why_not`;
   `elicitation {session, request, action: accept|decline|cancel,
@@ -143,7 +143,8 @@ words for them (P1, P2):
 - claude-agent-acp turns AskUserQuestion back on for headless sessions once
   it sees `elicitation.form`, and MCP servers' elicitations and URL logins
   reach the user. Not checked here: it needs the real adapter with
-  credentials (`adapters/check.py` checks what brnr advertises, below).
+  credentials, past what `adapters/check.py` can run;
+  `adr_0068_headless_advertises_elicitation` checks what brnr advertises.
 - A headless session's turn now waits on an elicitation where it was
   declined at once: set `response_timeout` for unattended runs.
 - Bridges that list `pending` see a new `elicitations` key; one that
@@ -192,6 +193,8 @@ Run `cargo test --release adr_0068_`. Named claims and their assertions:
     `elicitation/complete` after an accepted URL is `elicitation_completed`.
   - `adr_0068_wait_for_elicitation`: `event wait --for elicitation` returns
     when one is waiting, at once if one already is.
+  - `adr_0068_send_wait_reports_an_elicitation`: `prompt send --wait` says
+    on stderr that input is asked for, and how to give it.
   - `adr_0068_a_bridge_sees_the_elicitation`: a started bridge gets
     `elicitation_request` and `elicitation_resolved`.
   - `adr_0068_a_request_scoped_elicitation_is_answered_by_pid`: a URL

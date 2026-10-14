@@ -4,8 +4,9 @@
 //! json.rs reads a line (ADR 26). What it acts on in the copy is read with
 //! `agent-client-protocol-schema`'s types: [`read`] takes a part of the
 //! copy as the type its method gives it, a session update, a capability, a
-//! permission option. A part the types don't take stays `serde_json::Value`,
-//! read as far as brnr can (P4), and is forwarded untouched all the same:
+//! permission option, an elicitation and its form's schema (ADR 68). A
+//! part the types don't take stays `serde_json::Value`, read as far as brnr
+//! can (P4), and is forwarded untouched all the same:
 //!
 //! - the JSON-RPC envelope: ids of any JSON type, kept as the peer sent
 //!   them (the crate's `RequestId` is an `i64`, a string or null), and each
@@ -44,10 +45,12 @@ pub use agent_client_protocol_schema::v1::{
     SessionUpdate,
 };
 pub(crate) use agent_client_protocol_schema::v1::{
-    ContentBlock, Error, ErrorCode, MessageId, SessionConfigOptionValue, SessionInfo,
-    SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
+    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
+    ElicitationScope, ElicitationUrlCapabilities, Error, ErrorCode, MessageId, MultiSelectItems,
+    SessionConfigOptionValue, SessionInfo, SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
 };
-
 /// `value`, a part of a message as json.rs read it, as the schema's `T`, if
 /// it is one. Run it on a stack that takes `value` (see json.rs).
 pub fn read<T: DeserializeOwned>(value: &Value) -> Option<T> {

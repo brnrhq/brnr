@@ -240,7 +240,7 @@ events = ["nope"]
 #[test]
 fn misplaced_keys_fail() {
     let env = Env::new("dr-layout");
-    let config = "[profiles.old]\ncwd = \"/tmp\"\npermission_timeout = 5\n\n[profiles.ok.editor]\nexperimental = [\"nope\"]\n";
+    let config = "[profiles.old]\ncwd = \"/tmp\"\nresponse_timeout = 5\n\n[profiles.ok.editor]\nexperimental = [\"nope\"]\n";
     write(&env.dir.join("none.toml"), config, 0o600);
     let (ok, text) = doctor(&env, &[]);
     assert!(!ok, "{text}");
@@ -257,8 +257,7 @@ fn misplaced_keys_fail() {
         "{text}"
     );
     assert!(
-        fails[2]
-            .contains("profiles.old: permission_timeout is for brnr session new and resume only"),
+        fails[2].contains("profiles.old: response_timeout is for brnr session new and resume only"),
         "{text}"
     );
 

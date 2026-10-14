@@ -160,6 +160,7 @@ const TURN_EVENTS: &[&str] = &[
     "user_message",
     "agent_message",
     "permission_request",
+    "elicitation_request",
     "turn_ended",
     "message_dropped",
     "session_closed",
@@ -170,8 +171,8 @@ const TURN_EVENTS: &[&str] = &[
 /// agent's messages as they come (or, with `json`, the turn as one object at
 /// the end: `{session, message, reply, stop_reason, error, dropped}` and
 /// `json`'s fields), and returns the turn's exit status: 1, too, for a message
-/// dropped before it was sent (`dropped` says why). Approvals on the way are
-/// announced on stderr, with how to answer them.
+/// dropped before it was sent (`dropped` says why). Approvals and
+/// elicitations on the way are announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
     arg: &str,
@@ -204,6 +205,13 @@ pub(super) fn wait_for_message(
                 errln!(
                     "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr permission allow {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
+                );
+            }
+            "elicitation_request" if ours => {
+                let request = e["request"].as_str().unwrap_or("?");
+                errln!(
+                    "brnr: waiting for input {request}: {} (brnr elicitation show {arg} {request}; brnr elicitation accept {arg} {request})",
+                    e["message"].as_str().unwrap_or("?")
                 );
             }
             "turn_ended" if carries(&e, message) => {
@@ -366,7 +374,7 @@ struct StartArgs {
     pid: Option<String>,
     take_over: bool,
     stop_when_idle: Option<u64>,
-    permission_timeout: Option<u64>,
+    response_timeout: Option<u64>,
     auth: Option<String>,
     strict: bool,
     wait: bool,
@@ -414,9 +422,9 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             "--stop-when-idle" => {
                 a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
             }
-            "--permission-timeout" => {
-                let secs = value("--permission-timeout")?;
-                a.permission_timeout = Some(seconds("--permission-timeout", &secs)?);
+            "--response-timeout" => {
+                let secs = value("--response-timeout")?;
+                a.response_timeout = Some(seconds("--response-timeout", &secs)?);
             }
             "--strict" => a.strict = true,
             "--wait" => a.wait = true,
@@ -443,7 +451,7 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             ("--auth", a.auth.is_some()),
             ("--strict", a.strict),
             ("--stop-when-idle", a.stop_when_idle.is_some()),
-            ("--permission-timeout", a.permission_timeout.is_some()),
+            ("--response-timeout", a.response_timeout.is_some()),
             ("--foreground", a.foreground),
             ("--quiet", a.quiet),
             ("-- <agent>", a.agent_given),
@@ -591,7 +599,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         prompt,
         start_timeout: timeout,
         stop_when_idle: a.stop_when_idle.or(h.stop_when_idle),
-        permission_timeout: a.permission_timeout.or(h.permission_timeout),
+        response_timeout: a.response_timeout.or(h.response_timeout),
         events,
         foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
     };
@@ -992,8 +1000,8 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    if !matches!(what.as_str(), "idle" | "turn" | "permission" | "exit") {
-        return Err(format!("--for idle|turn|permission|exit, not {what}"));
+    if !matches!(what.as_str(), "idle" | "turn" | "permission" | "elicitation" | "exit") {
+        return Err(format!("--for idle|turn|permission|elicitation|exit, not {what}"));
     }
     let arg = arg.ok_or(USAGE)?;
     let hosts = discover()?;
@@ -1001,7 +1009,13 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
     // Subscribed before looking, so nothing happens unseen in between.
-    conn.subscribe(&["turn_ended", "permission_request", "session_closed", "exited"])?;
+    conn.subscribe(&[
+        "turn_ended",
+        "permission_request",
+        "elicitation_request",
+        "session_closed",
+        "exited",
+    ])?;
     let mine = |e: &Value| e["session"] == session.as_str();
     // What ended the wait: printed as text, or with --json as itself.
     let done = |what: &Value, text: String| {
@@ -1021,6 +1035,14 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             let pending = conn.call(json!({ "cmd": "pending" }))?;
             if let Some(p) = pending["pending"].as_array().into_iter().flatten().find(|p| mine(p)) {
                 done(p, describe_permission(p))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+        }
+        "elicitation" => {
+            let pending = conn.call(json!({ "cmd": "pending" }))?;
+            let waiting = pending["elicitations"].as_array().into_iter().flatten();
+            if let Some(e) = waiting.into_iter().find(|e| mine(e)) {
+                done(e, describe_elicitation(e))?;
                 return Ok(ExitCode::SUCCESS);
             }
         }
@@ -1060,11 +1082,15 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
                 return Ok(ended_as(&last_turn));
             }
-            ("session_closed", "turn" | "permission") if mine(&e) => {
+            ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
                 return Err("the session closed".into());
             }
             ("permission_request", "permission") if mine(&e) => {
                 done(&e, describe_permission(&e))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            ("elicitation_request", "elicitation") if mine(&e) => {
+                done(&e, describe_elicitation(&e))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("turn_ended", "turn") if mine(&e) => {
@@ -1107,6 +1133,10 @@ fn ended_as(turn: &Value) -> ExitCode {
 
 fn describe_permission(p: &Value) -> String {
     format!("approval {}: {}", text(&p["request"]), text(&p["title"]))
+}
+
+fn describe_elicitation(e: &Value) -> String {
+    format!("elicitation {}: {}", text(&e["request"]), text(&e["message"]))
 }
 
 // ---- cancel and queue ----------------------------------------------------

@@ -10,8 +10,9 @@
 //!   `session fork`, `session close`
 //! - delete.rs: `session delete`
 //! - sessions.rs: `session list`
-//! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
-//!   `doctor`; skill.rs: `skill`
+//! - show.rs: `permission show`; elicitation.rs: `elicitation requests`,
+//!   `show`, `accept`, `decline` and `cancel`; notify.rs: `event notify`;
+//!   doctor.rs: `doctor`; skill.rs: `skill`
 //! - here: `process list`, `process stop`, `session status`,
 //!   `permission requests`, `permission allow` and `reject`, `event watch`
 //!
@@ -56,6 +57,7 @@ macro_rules! errln {
 
 mod delete;
 mod doctor;
+mod elicitation;
 mod history;
 mod notify;
 mod sessions;
@@ -66,7 +68,8 @@ mod talk;
 
 /// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
 /// its commands act on.
-const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "config", "event"];
+const GROUPS: &[&str] =
+    &["process", "session", "prompt", "queue", "permission", "elicitation", "config", "event"];
 
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
@@ -91,7 +94,7 @@ session
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
-           [--permission-timeout <s>] [--foreground [--quiet]]
+           [--response-timeout <s>] [--foreground [--quiet]]
   session: [--cwd <dir>] [--mode <m>] [--model <m>] [--thought-level <l>]
            [--option <o>=<v>]...
   prompt:  [--prompt <text> | -] [--file <path>]... [--image <path>]...
@@ -116,6 +119,13 @@ permission
   brnr permission allow <session> <request> [--always] [--option <id>] [--json]
   brnr permission reject <session> <request> [--always] [--option <id>] [--json]
 
+elicitation
+  brnr elicitation requests [<session>] [--json]
+  brnr elicitation show (<session> | --pid <pid>) <request> [--json]
+  brnr elicitation accept (<session> | --pid <pid>) <request> [--field <k>=<v>]... [-] [--json]
+  brnr elicitation decline (<session> | --pid <pid>) <request> [--json]
+  brnr elicitation cancel (<session> | --pid <pid>) <request> [--json]
+
 config
   brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
   brnr config set <session> [--mode <m>] [--model <m>] [--thought-level <l>]
@@ -126,7 +136,8 @@ event
   brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
   brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
                     -- <command> [args...]
-  brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
+  brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
+                  [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -135,9 +146,9 @@ brnr
   brnr --version
 
 brnr <group> --help lists a group's commands. <session> is a session's id, as brnr session list
-shows it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid>
-is a brnr process, which runs one agent for one or more sessions, as brnr process list shows
-them. --json prints the same data as the text: one JSON value, or one event per line for event
+shows it. <request> is a pending approval's or elicitation's handle, as brnr permission requests
+and brnr elicitation requests show them. <pid> is a brnr process, which runs one agent for one or
+more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.";
 
@@ -182,6 +193,11 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         ("permission", Some("requests")) => done(pending(rest)),
         ("permission", Some("show")) => show::show(rest),
         ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
+        ("elicitation", Some("requests")) => done(elicitation::requests(rest)),
+        ("elicitation", Some("show")) => done(elicitation::show(rest)),
+        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
+            done(elicitation::answer(rest, verb))
+        }
         ("config", Some("get")) => settings::config_get(rest),
         ("config", Some("set")) => settings::config_set(rest),
         ("event", Some("log")) => history::log(rest),
@@ -670,6 +686,7 @@ fn status(args: &[String]) -> Result<(), String> {
         "tools": x["tools"],
         "plan": x["plan"],
         "pending": x["pending"],
+        "elicitations": x["elicitations"],
         "held": x["held"],
         "context": x["context"],
         "usage": x["usage"],
@@ -736,15 +753,19 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
     // The state as JSON has it: `busy` is working, `waiting` is a turn
-    // waiting for an approval; how long when the turn's start is known.
+    // waiting for an approval or for input (ADR 68); how long when the
+    // turn's start is known.
     let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
+    let input = pending("elicitations").is_some() && pending("pending").is_none();
+    let waiting = if input { "input" } else { "an approval" };
     match (x["state"].as_str(), working) {
         (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
         (Some("busy"), None) => out.push_str("working\n"),
         (Some("waiting"), Some(working)) => {
-            out.push_str(&format!("waiting for an approval, {working}\n"))
+            out.push_str(&format!("waiting for {waiting}, {working}\n"))
         }
-        (Some("waiting"), None) => out.push_str("waiting for an approval\n"),
+        (Some("waiting"), None) => out.push_str(&format!("waiting for {waiting}\n")),
         (state, _) => out.push_str(&format!("{}\n", state.unwrap_or("?"))),
     }
     for tool in x["tools"].as_array().into_iter().flatten() {
@@ -758,8 +779,11 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if x["plan"].is_array() {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
-    if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
+    if let Some(n) = pending("pending") {
         out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
+    }
+    if let Some(n) = pending("elicitations") {
+        out.push_str(&format!("{n} elicitation(s) waiting: brnr elicitation requests {arg}\n"));
     }
     let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
     if held + context > 0 {
@@ -1242,7 +1266,8 @@ mod tests {
     use super::*;
 
     /// `session status` says the state its JSON has: idle, busy (working, and
-    /// for how long when it knows) or waiting for an approval (ADR 34).
+    /// for how long when it knows) or waiting for an approval (ADR 34), or for
+    /// input (ADR 68).
     #[test]
     fn adr_0034_status_says_the_sessions_state() {
         let state = |state: &str, secs: Value| {
@@ -1255,6 +1280,9 @@ mod tests {
         assert_eq!(state("busy", Value::Null), "working");
         assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
         assert_eq!(state("waiting", Value::Null), "waiting for an approval");
+        // Waiting for an elicitation only (ADR 68).
+        let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
+        assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
     }
 
     /// What `session list` and `session resume` take from a transcript, whatever

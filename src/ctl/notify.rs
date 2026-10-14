@@ -8,7 +8,8 @@
 //!
 //! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr event watch` would
 //!   show it; `BRNR_TITLE`: the session's title, else its id;
-//! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's handle),
+//! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's or an elicitation's
+//!   handle),
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
 //!
@@ -16,7 +17,8 @@
 //! watch` shows them, and are cut at 32 KiB; the event on stdin has them whole.
 //!
 //! `--events` is read as for `event watch`, but its default (and `default`)
-//! is `permission_request`, `turn_ended`, `exited`. It exits when the process
+//! is `permission_request`, `elicitation_request` (ADR 68), `turn_ended`,
+//! `exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
@@ -58,7 +60,8 @@ use crate::{host, render, signals, sys};
 use super::talk::Conn;
 use super::{USAGE, discover, events_arg, session_or_pid};
 
-const DEFAULT_EVENTS: &[&str] = &["permission_request", "turn_ended", "exited"];
+const DEFAULT_EVENTS: &[&str] =
+    &["permission_request", "elicitation_request", "turn_ended", "exited"];
 
 /// The most of the agent's text one variable gets. Linux refuses to start a
 /// program with a variable over 128 KiB, and macOS one whose environment and

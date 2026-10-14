@@ -1093,7 +1093,10 @@ fn adr_0067_headless_sessions_offer_neither() {
     assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client", "anyway"]), refused);
     assert_eq!(env.ok(&["session", "fork", "sess-1"]), "forked sess-1 into sess-2\n");
     assert_eq!(env.ok(&["prompt", "send", "sess-2", "--wait", "client"]), neither);
-    assert_eq!(env.calls_of("initialize")[0]["params"]["clientCapabilities"], json!({}));
+    // Elicitation is offered headless (ADR 68); fs and terminal are not.
+    let init = env.calls_of("initialize");
+    let caps = &init[0]["params"]["clientCapabilities"];
+    assert!(caps["fs"].is_null() && caps["terminal"].is_null(), "{caps}");
 
     let env = Env::new("hl-takeover");
     env.write_config("[profiles.default.editor]\nexperimental = [\"close\"]\n");
@@ -1109,7 +1112,7 @@ fn adr_0067_headless_sessions_offer_neither() {
         .map(|c| c["params"]["clientCapabilities"].clone())
         .collect();
     assert_eq!(offered.len(), 2, "{offered:?}");
-    assert_eq!(offered[1], json!({}));
+    assert!(offered[1]["fs"].is_null() && offered[1]["terminal"].is_null(), "{offered:?}");
 }
 
 // ---- watching ----------------------------------------------------------
@@ -2514,12 +2517,12 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 #[test]
 fn adr_0008_acp_reports_a_config_error() {
     let env = Env::new("ed-config");
-    env.write_config("[profiles.default]\npermission_timeout = 600\n");
+    env.write_config("[profiles.default]\nresponse_timeout = 600\n");
     let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
-    assert!(err.contains("profiles.default: permission_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
+    assert!(err.contains("profiles.default: response_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -4000,6 +4003,107 @@ fn adr_0004_approve_answers_in_the_editors_place() {
         .map(|c| c["result"]["outcome"]["optionId"].clone())
         .collect();
     assert_eq!(answers, ["allow", "reject"]);
+}
+
+/// `brnr acp` with sess-1 open, for an editor that takes elicitations in
+/// both modes, with `actions` enabled in its profile.
+fn eliciting_editor(env: &Env, actions: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let names: Vec<String> = actions.iter().map(|a| format!("{a:?}")).collect();
+    env.write_config(&format!(
+        "[profiles.default.editor]\nexperimental = [{}]\n",
+        names.join(", ")
+    ));
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let caps = serde_json::json!({ "elicitation": { "form": {}, "url": {} } });
+    let params = serde_json::json!({ "protocolVersion": 1, "clientCapabilities": caps });
+    let init =
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params });
+    writeln!(to_agent, "{init}").unwrap();
+    response(&mut from_agent, 1);
+    let new = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                                  "params": { "cwd": env.dir, "mcpServers": [] } });
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"]["sessionId"], "sess-1");
+    (editor, to_agent, from_agent)
+}
+
+/// An editor's elicitation reaches it as the agent sent it, and is
+/// `elicitation_request`, `owner` `editor`, for watchers and bridges; the
+/// editor's answer is `elicitation_resolved` `by` `editor`. Answering it
+/// from outside is the experimental `elicitation`: refused unless the
+/// profile enables it, and with it the request is withdrawn from the
+/// editor, which is told who answered, and its late answer dropped.
+#[test]
+fn adr_0068_an_editors_elicitation_is_seen_and_reaches_the_editor() {
+    let env = Env::new("ex-elicit");
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &[]);
+    writeln!(to_agent, "{}", editor_prompt(3, "elicit form")).unwrap();
+    let asked = message(&mut from_agent, |m| m["method"] == "elicitation/create");
+    assert_eq!(asked["id"], "elicit-1");
+    assert_eq!(
+        (&asked["params"]["mode"], &asked["params"]["requestedSchema"]["title"]),
+        (&"form".into(), &"About you".into()),
+        "{asked}"
+    );
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "requests", "sess-1", "--json"])).unwrap();
+    assert_eq!((&pending[0]["request"], &pending[0]["owner"]), (&"e1".into(), &"editor".into()));
+    let err = env.fails(&["elicitation", "decline", "sess-1", "e1"]);
+    let says = "`elicitation` on an editor's session is experimental; enable it with \
+                `experimental = [\"elicitation\"]` under `[profiles.default.editor]`";
+    assert!(err.contains(says), "{err}");
+    let show = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(show.contains("e1, session sess-1, waiting in the editor"), "{show}");
+    assert!(show.contains("answer it in the editor (`elicitation` on an editor's"), "{show}");
+    let declined = r#"{"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}"#;
+    writeln!(to_agent, "{declined}").unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "all"]);
+    let events: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let request = events.iter().find(|e| e["event"] == "elicitation_request").unwrap();
+    assert_eq!((&request["owner"], &request["request"]), (&"editor".into(), &"e1".into()));
+    let resolved = events.iter().find(|e| e["event"] == "elicitation_resolved").unwrap();
+    assert_eq!(
+        (&resolved["action"], &resolved["by"]),
+        (&"decline".into(), &"editor".into()),
+        "{resolved}"
+    );
+    drop((to_agent, from_agent));
+
+    let env = Env::new("ex-elicit-on");
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &["elicitation"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "elicit form")).unwrap();
+    message(&mut from_agent, |m| m["method"] == "elicitation/create");
+    let show = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(show.contains("answer: in the editor, or brnr elicitation accept sess-1 e1"), "{show}");
+    let accept =
+        ["elicitation", "accept", "sess-1", "e1", "--field", "name=ab", "--field", "color=red"];
+    assert_eq!(env.ok(&accept), "e1 accepted\n");
+    let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+    assert_eq!(withdrawn["params"]["requestId"], "elicit-1");
+    let told = update(&mut from_agent, "tool_call");
+    assert_eq!(told["title"], "Accepted via brnr", "{told}");
+    let text = told["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    let says = "\"Tell me about you\" was accepted through brnr's control socket";
+    assert!(text.contains(says), "{text}");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let late = r#"{"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}"#;
+    writeln!(to_agent, "{late}").unwrap();
+    let note = update(&mut from_agent, "tool_call");
+    assert_eq!(note["title"], "Already accepted via brnr", "{note}");
+    let answers: Vec<Value> = (env.calls().into_iter())
+        .filter(|c| c["id"] == "elicit-1" && c.get("method").is_none())
+        .map(|c| c["result"].clone())
+        .collect();
+    let content = serde_json::json!({ "name": "ab", "color": "red" });
+    assert_eq!(answers, [serde_json::json!({ "action": "accept", "content": content })]);
 }
 
 /// The agent answers a change of mode or config option only to the host,

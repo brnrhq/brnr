@@ -1,6 +1,7 @@
 //! Events as text, the one way brnr shows a session: `brnr event watch`,
 //! `brnr event log` and a session in the foreground all use it. Also a tool
-//! call in full (input, paths, diffs), for `brnr permission show`.
+//! call in full (input, paths, diffs), for `brnr permission show`, and a
+//! form's fields, for `brnr elicitation show` (ADR 68).
 //!
 //! What the agent sends reaches a terminal only through [`clean`], so its
 //! text can't move the cursor, rewrite the line or talk to the terminal
@@ -100,6 +101,51 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                     format!("permission {request} {}, by {by}", answer.unwrap_or("answered"))
                 }
             }
+        }
+        // The agent asking for input (ADR 68): a form's fields, or a URL,
+        // shown but never opened.
+        "elicitation_request" => {
+            let editor = if e["owner"] == "editor" { " (in the editor)" } else { "" };
+            let how = match e["mode"].as_str() {
+                Some("form") => {
+                    let fields: Vec<&str> = e["schema"]["properties"]
+                        .as_object()
+                        .into_iter()
+                        .flat_map(|p| p.keys())
+                        .map(String::as_str)
+                        .collect();
+                    format!("form: {}", fields.join(" "))
+                }
+                Some("url") => format!("url: {}", s(&e["url"])),
+                mode => mode.unwrap_or("?").to_owned(),
+            };
+            format!("elicitation {}{editor}: {} [{how}]", s(&e["request"]), s(&e["message"]))
+        }
+        // Accepted (with the content), declined or cancelled, and by whom.
+        "elicitation_resolved" => {
+            let (request, by) = (s(&e["request"]), s(&e["by"]));
+            let action = match e["action"].as_str() {
+                Some("accept") => "accepted".to_owned(),
+                Some("decline") => "declined".to_owned(),
+                Some("cancel") => "cancelled".to_owned(),
+                action => action.unwrap_or("answered").to_owned(),
+            };
+            let content: Vec<String> = e["content"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, v)| format!("{k}={}", show(v)))
+                .collect();
+            let with = if content.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", content.join(" "))
+            };
+            format!("elicitation {request} {action}{with}, by {by}")
+        }
+        // The agent says a URL's flow is done.
+        "elicitation_completed" => {
+            format!("elicitation {} completed: {}", s(&e["request"]), s(&e["elicitation_id"]))
         }
         "turn_ended" => match e["error"].as_object() {
             Some(error) => format!("turn failed: {} ({})", s(&error["message"]), s(&e["by"])),
@@ -347,6 +393,90 @@ fn tool_call_text(tool: &Value) -> String {
     out
 }
 
+/// A form's fields, an elicitation's `requestedSchema` as the agent sent
+/// it, one a line, for `brnr elicitation show` (ADR 68): each field's name,
+/// type and whether it is required, its title and description, its bounds,
+/// and the values it takes.
+pub(crate) fn form(schema: &Value) -> String {
+    clean(&form_text(schema)).into_owned()
+}
+
+fn form_text(schema: &Value) -> String {
+    let mut out = String::new();
+    for key in ["title", "description"] {
+        if let Some(text) = schema[key].as_str() {
+            out.push_str(&format!("{}\n", text.trim_end()));
+        }
+    }
+    let required = schema["required"].as_array().into_iter().flatten();
+    let required: Vec<&str> = required.filter_map(Value::as_str).collect();
+    let fields = schema["properties"].as_object().into_iter().flatten();
+    for (name, p) in fields {
+        let kind = match p["type"].as_str() {
+            Some("array") => "list",
+            Some(kind) => kind,
+            None => "?",
+        };
+        let needed = if required.contains(&name.as_str()) { ", required" } else { "" };
+        let mut says: Vec<String> = ["title", "description"]
+            .iter()
+            .filter_map(|k| p[*k].as_str().map(|t| t.trim_end().to_owned()))
+            .collect();
+        says.extend(range(&p["minLength"], &p["maxLength"], " characters"));
+        says.extend(range(&p["minimum"], &p["maximum"], ""));
+        says.extend(range(&p["minItems"], &p["maxItems"], " values"));
+        let titled = |options: &Value| -> Vec<String> {
+            let options = options.as_array().into_iter().flatten();
+            options
+                .map(|o| match o["title"].as_str() {
+                    Some(title) => format!("{} ({title})", show(&o["const"])),
+                    None => show(&o["const"]),
+                })
+                .collect()
+        };
+        let plain = |values: &Value| -> Vec<String> {
+            values.as_array().into_iter().flatten().map(show).collect()
+        };
+        for (choices, how) in [
+            (plain(&p["enum"]), "one of"),
+            (titled(&p["oneOf"]), "one of"),
+            (plain(&p["items"]["enum"]), "any of"),
+            (titled(&p["items"]["anyOf"]), "any of"),
+        ] {
+            if !choices.is_empty() {
+                says.push(format!("{how} {}", choices.join(", ")));
+            }
+        }
+        for key in ["format", "pattern", "default"] {
+            if !p[key].is_null() {
+                says.push(format!("{key} {}", show(&p[key])));
+            }
+        }
+        let says = if says.is_empty() { String::new() } else { format!(": {}", says.join("; ")) };
+        out.push_str(&format!("  {name} ({kind}{needed}){says}\n"));
+    }
+    out
+}
+
+/// `1 to 5<unit>`, `at least 1<unit>` or `at most 5<unit>`, if either bound
+/// is given.
+fn range(min: &Value, max: &Value, unit: &str) -> Option<String> {
+    match (min.is_number(), max.is_number()) {
+        (true, true) => Some(format!("{min} to {max}{unit}")),
+        (true, false) => Some(format!("at least {min}{unit}")),
+        (false, true) => Some(format!("at most {max}{unit}")),
+        (false, false) => None,
+    }
+}
+
+/// A value as a form shows it: a string as it is, anything else as JSON.
+fn show(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        v => v.to_string(),
+    }
+}
+
 fn indent(text: &str, by: &str) -> String {
     text.lines().map(|l| format!("{by}{l}")).collect::<Vec<_>>().join("\n")
 }
@@ -579,6 +709,38 @@ mod tests {
         let e = json!({ "event": "session_closed", "session": id, "by": "idle" });
         let line = event(&e, &Options { session: true, time: false }).unwrap();
         assert_eq!(line, format!("{id}  session closed (idle)"));
+    }
+
+    #[test]
+    fn adr_0068_elicitation_events_have_lines() {
+        use serde_json::json;
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let schema = json!({ "properties": { "name": {}, "color": {} } });
+        let form = json!({ "event": "elicitation_request", "request": "e1", "mode": "form",
+                           "message": "Which?", "schema": schema, "owner": "headless" });
+        assert_eq!(shown(form), "elicitation e1: Which? [form: name color]");
+        let url = json!({ "event": "elicitation_request", "request": "e2", "mode": "url",
+                          "message": "Log in", "url": "https://x.example/a", "owner": "editor" });
+        assert_eq!(shown(url), "elicitation e2 (in the editor): Log in [url: https://x.example/a]");
+        let accepted = json!({ "event": "elicitation_resolved", "request": "e1", "action": "accept",
+                               "content": { "name": "ab", "count": 7 }, "by": "socket#3" });
+        assert_eq!(shown(accepted), "elicitation e1 accepted (name=ab count=7), by socket#3");
+        let cancelled = json!({ "event": "elicitation_resolved", "request": "e1",
+                                "action": "cancel", "content": null, "by": "timeout" });
+        assert_eq!(shown(cancelled), "elicitation e1 cancelled, by timeout");
+        let done =
+            json!({ "event": "elicitation_completed", "request": "e2", "elicitation_id": "el-1" });
+        assert_eq!(shown(done), "elicitation e2 completed: el-1");
+        // `elicitation show`'s fields, the agent's text escaped.
+        let schema = json!({ "properties": {
+            "name": { "type": "string", "title": "Name\x1b[2K", "minLength": 1 },
+            "tags": { "type": "array", "items": { "anyOf": [{ "const": "a", "title": "A" }] } },
+        }, "required": ["name"] });
+        assert_eq!(
+            super::form(&schema),
+            "  name (string, required): Name\\u001b[2K; at least 1 characters\n  \
+             tags (list): any of a (A)\n"
+        );
     }
 
     #[test]

@@ -17,6 +17,10 @@ says what is in scope for a report; the principles cited are
 - **Approvals.** A permission request is the agent asking before it acts. An
   answer given by the wrong party, or given when nobody answered, is an
   action the user didn't take.
+- **Elicitations.** The agent asking the user for input (ADR 68): a form's
+  values, or a URL to open, such as an MCP server's login. An accept given by
+  the wrong party, or for nobody, is input the user didn't give; a URL the
+  agent sends is its text, and opening it is the user's to do.
 - **Prompts and code in transcripts.** `~/.brnr` keeps every session's events
   and raw ACP (ADR 22): prompts, the agent's replies, tool calls with their
   input and output, diffs of the user's code, and, in an editor's session,
@@ -120,7 +124,7 @@ written for this document.
 | The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 62). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0062_the_editors_stdout_ends_with_the_agents`, `adr_0062_stderr_comes_as_it_is_written`, `adr_0062_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0062_brnrs_own_lines_end_with_the_agents_stdout` |
 | The editor's `fs` and `terminal` capabilities reach the agent as the editor sent them, in strict mode and without: they are no longer a named change. The agent's `fs/*` and `terminal/*` requests reach the editor as the agent wrote them, and the editor's answers, results and errors, reach the agent: the editor serves them, as it would directly, and brnr neither approves nor answers them in an editor's session (ADR 67). | `editor_request`, `agent_request`, `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0067_the_editors_capabilities_reach_the_agent`, `adr_0067_the_agents_file_and_terminal_requests_reach_the_editor` |
 | The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0042_shared_sessions_let_an_editor_load_a_held_session` |
-| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped` |
+| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`, `adr_0068_an_editors_elicitation_is_seen_and_reaches_the_editor` |
 
 ### B4: the agent's text, and its approvals
 
@@ -131,7 +135,10 @@ written for this document.
 | The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
 | Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
 | A headless process offers the agent no `fs` or `terminal` (one started headless, forked in it, or taken over from an editor), and answers a request for them "method not found": brnr reads, writes and runs nothing for the agent (ADR 67). | `begin_headless_start` (src/host/requests.rs); `answer_as_client` (src/host/acp.rs) | `headless.rs`: `adr_0067_headless_sessions_offer_neither` |
-| `permission_timeout` (or `--permission-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
+| `response_timeout` (or `--response-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
+| Headless, an elicitation waits until someone answers it, and `response_timeout` answers it only `cancel`: never `accept`, nor `decline`, the user's no (ADR 68). | `answer_as_client`, `fire_permission_timers`, `resolve_elicitation` (src/host/acp.rs) | `security.rs`: `adr_0068_a_timeout_cancels_never_accepts`; `cli.rs`: `adr_0068_requests_and_show_list_an_elicitation` |
+| An accept sends only what fits the form: fields it names, the required ones, values of their type, within their bounds and choices, checked in the host for the CLI and bridges alike; one that doesn't fit sends nothing. An elicitation is answered only in its own session, or outside any by its process (ADR 68). | `response`, `check` (src/host/elicitation.rs); `elicitation` (src/host/control.rs) | `cli.rs`: `adr_0068_accept_checks_fields_against_the_schema`, `adr_0068_a_request_scoped_elicitation_is_answered_by_pid`; src/host/elicitation.rs: `what_doesnt_fit_names_the_field` |
+| An elicitation's URL is shown escaped, never opened or run: brnr has no code that opens one (P8, ADR 68). | `render::clean`; `show` (src/ctl/elicitation.rs) | `cli.rs`: `adr_0068_requests_and_show_list_an_elicitation`; src/render.rs: `adr_0068_elicitation_events_have_lines` |
 | A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 63). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0063_allow_and_reject_pick_by_kind`, `adr_0063_a_missing_or_doubled_kind_fails`, `adr_0063_option_must_be_on_the_verbs_side` |
 
 ### B5: bridges and `event notify` commands
@@ -227,9 +234,15 @@ What brnr doesn't enforce, or doesn't test, today.
   requests the agent makes; it doesn't sandbox the agent. A malicious
   adapter or npm package, or an agent in a permissive mode, acts without
   asking, and nothing in brnr can stop it.
-- **`permission_timeout` is headless only.** An editor's session waits for
-  the editor; with `permission` enabled, any of the user's processes may answer
-  it (ADR 4).
+- **`response_timeout` is headless only.** An editor's session waits for
+  the editor; with `permission` (or `elicitation`) enabled, any of the user's
+  processes may answer it (ADR 4, ADR 68).
+- **An elicitation's `pattern` and `format` aren't checked.** brnr has no
+  regex engine; a value that doesn't match them is sent, and the agent (or
+  the MCP server behind it) checks them itself (ADR 68).
+- **A headless turn waits on an elicitation.** The agent asked and brnr
+  doesn't answer for the user, so an unattended run with no
+  `response_timeout` waits for as long as nobody answers (ADR 68).
 - **A state directory shared by two machines.** Session locks are in the
   state directory (ADR 65), so two machines sharing it (a network home
   directory) contend for one lock only where the file system carries `flock`
@@ -257,7 +270,8 @@ What brnr doesn't enforce, or doesn't test, today.
   request's (ADR 61). Not tested.
 - **The agent's ids are passed to the editor as they are.** An agent that
   reuses an id after the host answered a request with it (on
-  `brnr prompt cancel`, or `brnr permission allow`) can have the editor's
+  `brnr prompt cancel`, `brnr permission allow` or `brnr elicitation
+  accept`) can have the editor's
   late answer to the first taken as its answer to the second (ADR 61). Not
   tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up

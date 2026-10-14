@@ -307,8 +307,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     after the model and before the prompt; the flag wins over the profile;
     two values for it from one source, or an agent without one, fail the
     start before anything is set.
-  - `adr_0063_permission_timeout_flag_wins_over_the_profile`: a shorter
-    `--permission-timeout` rejects before the profile's would, and a longer
+  - `adr_0063_response_timeout_flag_wins_over_the_profile`: a shorter
+    `--response-timeout` rejects before the profile's would, and a longer
     one keeps the profile's from answering.
   - `adr_0063_allow_and_reject_pick_by_kind`: each verb, with and without
     `--always`, answers with the option of its kind, whatever their order,

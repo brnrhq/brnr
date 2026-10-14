@@ -210,7 +210,7 @@ fn adr_0021_huge_timeouts_are_never() {
     let env = Env::new("c-huge");
     let huge = i64::MAX.to_string();
     env.write_config(&format!(
-        "[profiles.default.headless]\npermission_timeout = {huge}\nstop_when_idle = {huge}\n"
+        "[profiles.default.headless]\nresponse_timeout = {huge}\nstop_when_idle = {huge}\n"
     ));
     let out =
         env.brnr(&new_args(&[])).env("BRNR_START_TIMEOUT", u64::MAX.to_string()).output().unwrap();
@@ -2522,6 +2522,405 @@ fn adr_0063_option_must_be_on_the_verbs_side() {
     assert_eq!(answers(&env)[1]["optionId"], "always");
 }
 
+// ---- elicitations (ADR 68) -----------------------------------------------
+
+/// Sends `elicit <how>` to `session` and waits for its elicitation, as
+/// `event wait --for elicitation --json` has it.
+fn elicit_in(env: &Env, session: &str, how: &str) -> Value {
+    env.ok(&["prompt", "send", session, &format!("elicit {how}")]);
+    let waited = ["event", "wait", session, "--for", "elicitation", "--timeout", "10", "--json"];
+    serde_json::from_str(&env.ok(&waited)).unwrap()
+}
+
+fn elicit(env: &Env, how: &str) -> Value {
+    elicit_in(env, "sess-1", how)
+}
+
+/// What the fake agent was answered to its elicitations, in order.
+fn elicited(env: &Env) -> Vec<Value> {
+    let ours = |c: &Value| c["id"].as_str().is_some_and(|id| id.starts_with("elicit-"));
+    (env.calls().into_iter())
+        .filter(|c| ours(c) && c.get("method").is_none())
+        .map(|c| c["result"].clone())
+        .collect()
+}
+
+/// sess-1's events named `name`, in order.
+fn events_named(env: &Env, name: &str) -> Vec<Value> {
+    events(env, "sess-1").into_iter().filter(|e| e["event"] == name).collect()
+}
+
+/// brnr's initialize advertises both modes, an object each, and the fake
+/// agent, which asks only a client that did, asks.
+#[test]
+fn adr_0068_headless_advertises_elicitation() {
+    let env = Env::new("c-elcaps");
+    env.start(&[]);
+    let init = &env.calls_of("initialize")[0];
+    let caps = &init["params"]["clientCapabilities"]["elicitation"];
+    assert_eq!(caps, &json!({ "form": {}, "url": {} }), "{init}");
+    assert_eq!(elicit(&env, "form")["request"], "e1");
+}
+
+/// `requests` lists what is waiting, a form and a URL, and `show` has each
+/// in full, in text and JSON: the message, mode and scope, the form's
+/// fields, the URL printed as the agent sent it, for the user to open.
+#[test]
+fn adr_0068_requests_and_show_list_an_elicitation() {
+    let env = Env::new("c-elshow");
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    let form = elicit(&env, "tool");
+    assert_eq!((&form["request"], &form["mode"]), (&"e1".into(), &"form".into()), "{form}");
+    let url = elicit_in(&env, "sess-2", "url");
+    assert_eq!(url["request"], "e2", "{url}");
+    let table = env.ok(&["elicitation", "requests"]);
+    let rows: Vec<Vec<&str>> =
+        table.lines().map(|l| l.split_whitespace().take(4).collect()).collect();
+    assert_eq!(
+        rows,
+        [
+            vec!["SESSION", "REQUEST", "OWNER", "MODE"],
+            vec!["sess-1", "e1", "headless", "form"],
+            vec!["sess-2", "e2", "headless", "url"],
+        ],
+        "{table}"
+    );
+    assert!(table.lines().nth(2).unwrap().ends_with("Log in to the fake"), "{table}");
+    let json: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "requests", "sess-2", "--json"])).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1, "{json}");
+    assert_eq!((&json[0]["request"], &json[0]["scope"]), (&"e2".into(), &"session".into()));
+
+    let show = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    for want in [
+        "e1, session sess-1\nTell me about you\nmode: form, for the tool call t1\nfields:\n",
+        "  name (string, required): Name; 1 to 5 characters\n",
+        "  count (integer): 1 to 10\n",
+        "  ok (boolean): Go ahead?\n",
+        "  color (string, required): one of red, green\n",
+        "  size (string): one of s (Small), l (Large)\n",
+        "  tags (list): at most 2 values; any of a, b, c\n",
+        "answer: brnr elicitation accept sess-1 e1 --field name=<value> --field color=<value> \
+         [--field <k>=<v>]..., brnr elicitation decline sess-1 e1 or cancel sess-1 e1\n",
+    ] {
+        assert!(show.contains(want), "missing {want:?} in\n{show}");
+    }
+    assert!(!show.contains("if nobody answers"), "no timeout, yet: {show}");
+    let json: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "show", "sess-1", "e1", "--json"])).unwrap();
+    assert_eq!((&json["scope"], &json["tool_call"]), (&"tool_call".into(), &"t1".into()));
+    assert_eq!(json["schema"]["required"], json!(["name", "color"]), "{json}");
+    assert_eq!((&json["answerable"], &json["owner"]), (&Value::Bool(true), &"headless".into()));
+
+    let show = env.ok(&["elicitation", "show", "sess-2", "e2"]);
+    for want in [
+        "e2, session sess-2\nLog in to the fake\nmode: url, for the session\n",
+        "url: https://login.example/a?b=1\nbrnr doesn't open it: open it yourself, then accept\n",
+        "answer: brnr elicitation accept sess-2 e2, brnr elicitation decline sess-2 e2",
+    ] {
+        assert!(show.contains(want), "missing {want:?} in\n{show}");
+    }
+    let json: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "show", "sess-2", "e2", "--json"])).unwrap();
+    assert_eq!(json["url"], "https://login.example/a?b=1");
+    assert_eq!(json["elicitation_id"], "el-2");
+    let err = env.fails(&["elicitation", "show", "sess-2", "e1"]);
+    assert!(err.contains("no pending elicitation e1 in sess-2"), "{err}");
+
+    let status = env.ok(&["session", "status", "sess-1"]);
+    assert!(status.contains("waiting for input"), "{status}");
+    assert!(status.contains("1 elicitation(s) waiting: brnr elicitation requests sess-1"));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!((&status["state"], &status["elicitations"]), (&"waiting".into(), &1.into()));
+    let log = env.ok(&["event", "log", "sess-1"]);
+    let line = "elicitation e1: Tell me about you [form: name count ratio ok color size tags]";
+    assert!(log.contains(line), "{log}");
+    assert!(elicited(&env).is_empty(), "answered for the user");
+}
+
+/// `accept` sends the fields, from `--field` or stdin, typed as the form
+/// asks; what doesn't fit the form fails, naming the field, and nothing is
+/// sent.
+#[test]
+fn adr_0068_accept_checks_fields_against_the_schema() {
+    let env = Env::new("c-elaccept");
+    env.start(&[]);
+    elicit(&env, "form");
+    let ok = ["--field", "name=a", "--field", "color=red"];
+    for (fields, says) in [
+        (&["--field", "nope=1"][..], "e1: the form has no field nope"),
+        (&["--field", "color=red"], "e1: name is required"),
+        (&["--field", "count=x"], "e1: count must be an integer, not \"x\""),
+        (&["--field", "count=11"], "e1: count is 11; at most 10"),
+        (&["--field", "ratio=2"], "e1: ratio is 2; at most 1.5"),
+        (&["--field", "ok=yes"], "e1: ok must be true or false, not \"yes\""),
+        (&["--field", "size=m"], "e1: size must be one of s, l, not \"m\""),
+        (&["--field", "tags=a", "--field", "tags=b", "--field", "tags=c"], "e1: tags has 3 values"),
+        (&["--field", "tags=z"], "e1: tags has a value that must be one of a, b, c"),
+        (&["--field", "name"], "--field name: not <name>=<value>"),
+    ] {
+        let mut args = vec!["elicitation", "accept", "sess-1", "e1"];
+        args.extend(fields);
+        if !fields.contains(&"color=red") {
+            args.extend(if fields[1].starts_with("name") { &ok[2..] } else { &ok[..] });
+        }
+        let err = env.fails(&args);
+        assert!(err.contains(says), "{args:?}: {err}");
+    }
+    let err = env.fails(&["elicitation", "accept", "sess-1", "e1", "--field", "name=toolong"]);
+    assert!(err.contains("e1: name is 7 characters; at most 5"), "{err}");
+    let out = env.run_with_stdin(&["elicitation", "accept", "sess-1", "e1", "-"], b"[1]");
+    assert!(stderr(&out).contains("stdin must be one JSON object"), "{}", stderr(&out));
+    let mut both = vec!["elicitation", "accept", "sess-1", "e1", "-"];
+    both.extend(ok);
+    assert!(env.fails(&both).contains("with --field or on stdin (-), not both"));
+    assert!(elicited(&env).is_empty(), "sent anyway: {:?}", elicited(&env));
+    assert!(env.ok(&["elicitation", "requests", "sess-1"]).contains("e1"));
+
+    let fields =
+        ["name=ab", "color=green", "count=3", "ratio=0.5", "ok=true", "size=l", "tags=a", "tags=b"];
+    let mut args = vec!["elicitation", "accept", "sess-1", "e1"];
+    for field in &fields {
+        args.extend(["--field", field]);
+    }
+    assert_eq!(env.ok(&args), "e1 accepted\n");
+    let content = json!({ "name": "ab", "color": "green", "count": 3, "ratio": 0.5, "ok": true,
+                          "size": "l", "tags": ["a", "b"] });
+    settled(&env);
+    assert_eq!(elicited(&env), [json!({ "action": "accept", "content": content })]);
+    let resolved = &events_named(&env, "elicitation_resolved")[0];
+    assert_eq!((&resolved["action"], &resolved["content"]), (&"accept".into(), &content));
+    assert!(resolved["by"].as_str().unwrap().starts_with("socket#"), "{resolved}");
+    // From stdin, typed already; with --json, what was sent.
+    elicit(&env, "form");
+    let input = br#"{"name": "cd", "color": "red", "count": 4, "tags": ["c"]}"#;
+    let out = env.run_with_stdin(&["elicitation", "accept", "sess-1", "e2", "-", "--json"], input);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let content = json!({ "name": "cd", "color": "red", "count": 4, "tags": ["c"] });
+    assert_eq!(
+        json,
+        json!({ "session": "sess-1", "request": "e2", "action": "accept", "content": content })
+    );
+    settled(&env);
+    assert_eq!(elicited(&env)[1], json!({ "action": "accept", "content": content }));
+}
+
+/// `decline` and `cancel` send their actions, with `elicitation_resolved`;
+/// a URL is accepted without fields, and a mode brnr doesn't know can only
+/// be declined or cancelled.
+#[test]
+fn adr_0068_decline_and_cancel() {
+    let env = Env::new("c-eldecline");
+    env.start(&[]);
+    elicit(&env, "form");
+    assert!(
+        env.fails(&["elicitation", "decline", "sess-1", "e1", "--field", "a=b"])
+            .contains("unknown option: --field")
+    );
+    assert_eq!(env.ok(&["elicitation", "decline", "sess-1", "e1"]), "e1 declined\n");
+    settled(&env);
+    elicit(&env, "form");
+    let json: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "cancel", "sess-1", "e2", "--json"]))
+            .unwrap();
+    assert_eq!(json["action"], "cancel", "{json}");
+    settled(&env);
+    elicit(&env, "url");
+    let err = env.fails(&["elicitation", "accept", "sess-1", "e3", "--field", "a=b"]);
+    assert!(err.contains("e3 asks to open a URL, not for fields"), "{err}");
+    assert_eq!(env.ok(&["elicitation", "accept", "sess-1", "e3"]), "e3 accepted\n");
+    settled(&env);
+    elicit(&env, "other");
+    let show = env.ok(&["elicitation", "show", "sess-1", "e4"]);
+    assert!(show.contains("mode: _other, for the session\nbrnr doesn't know this mode"), "{show}");
+    assert!(show.contains("answer: brnr elicitation decline sess-1 e4 or cancel sess-1 e4"));
+    let err = env.fails(&["elicitation", "accept", "sess-1", "e4"]);
+    assert!(err.contains("e4's mode _other isn't one brnr can accept"), "{err}");
+    assert_eq!(env.ok(&["elicitation", "decline", "sess-1", "e4"]), "e4 declined\n");
+    settled(&env);
+    let actions = [
+        json!({ "action": "decline" }),
+        json!({ "action": "cancel" }),
+        json!({ "action": "accept" }),
+        json!({ "action": "decline" }),
+    ];
+    assert_eq!(elicited(&env), actions);
+    let resolved: Vec<Value> =
+        events_named(&env, "elicitation_resolved").iter().map(|e| e["action"].clone()).collect();
+    assert_eq!(resolved, ["decline", "cancel", "accept", "decline"]);
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("elicitation e1 declined, by socket#"), "{log}");
+    assert!(log.contains("elicitation e2 cancelled, by socket#"), "{log}");
+}
+
+/// The agent's `elicitation/complete` after an accepted URL is
+/// `elicitation_completed`, naming the elicitation it belongs to.
+#[test]
+fn adr_0068_url_accept_is_followed_by_complete() {
+    let env = Env::new("c-elcomplete");
+    env.start(&[]);
+    elicit(&env, "url");
+    env.ok(&["elicitation", "accept", "sess-1", "e1"]);
+    settled(&env);
+    let completed = events_named(&env, "elicitation_completed");
+    assert_eq!(completed.len(), 1, "{completed:?}");
+    let ids = (&completed[0]["session"], &completed[0]["request"], &completed[0]["elicitation_id"]);
+    assert_eq!(ids, (&"sess-1".into(), &"e1".into(), &"el-1".into()));
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("elicitation e1 completed: el-1"));
+}
+
+/// `event wait --for elicitation` returns once one is waiting, and at once
+/// if one already is.
+#[test]
+fn adr_0068_wait_for_elicitation() {
+    let env = Env::new("c-elwait");
+    env.start(&[]);
+    let waited = ["event", "wait", "sess-1", "--for", "elicitation", "--timeout", "10"];
+    let mut wait = env.brnr(&waited).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    assert!(wait.try_wait().unwrap().is_none(), "returned with nothing waiting");
+    env.ok(&["prompt", "send", "sess-1", "elicit form"]);
+    assert!(wait_exit(&mut wait, Duration::from_secs(10)));
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), "elicitation e1: Tell me about you\n");
+    assert_eq!(env.ok(&waited), "elicitation e1: Tell me about you\n", "already waiting");
+    let mut json = waited.to_vec();
+    json.push("--json");
+    let json: Value = serde_json::from_str(&env.ok(&json)).unwrap();
+    assert_eq!((&json["request"], &json["mode"]), (&"e1".into(), &"form".into()));
+    let err = env.fails(&["event", "wait", "sess-1", "--for", "nothing"]);
+    assert!(err.contains("--for idle|turn|permission|elicitation|exit"), "{err}");
+}
+
+/// `prompt send --wait` says on stderr that input is asked for, and how to
+/// give it.
+#[test]
+fn adr_0068_send_wait_reports_an_elicitation() {
+    let env = Env::new("c-elsend");
+    env.start(&[]);
+    let mut send = env
+        .brnr(&["prompt", "send", "sess-1", "--wait", "elicit form"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut err = BufReader::new(send.stderr.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("waiting for input") {
+        line.clear();
+        assert!(err.read_line(&mut line).unwrap() > 0, "no elicitation notice");
+    }
+    assert!(line.contains("e1: Tell me about you"), "{line}");
+    assert!(line.contains("brnr elicitation show sess-1 e1"), "{line}");
+    env.ok(&["elicitation", "cancel", "sess-1", "e1"]);
+    assert!(wait_exit(&mut send, Duration::from_secs(10)));
+}
+
+/// A started bridge gets `elicitation_request`, answers it with the socket's
+/// `elicitation`, and gets `elicitation_resolved`.
+#[test]
+fn adr_0068_a_bridge_sees_the_elicitation() {
+    let env = Env::new("c-elbridge");
+    let got = env.dir.join("bridge-events");
+    let bridge = format!(
+        r#"import json, sys
+out = open({:?}, "a")
+for line in sys.stdin:
+    out.write(line)
+    out.flush()
+    e = json.loads(line)
+    if e.get("event") == "elicitation_request":
+        content = {{"name": "bo", "color": "green"}}
+        req = {{"cmd": "elicitation", "session": e["session"], "request": e["request"],
+               "action": "accept", "content": content, "req_id": "el"}}
+        print(json.dumps(req), flush=True)
+"#,
+        got.display().to_string()
+    );
+    let script = env.dir.join("bridge.py");
+    fs::write(&script, bridge).unwrap();
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = [\"python3\", {:?}]\n",
+        script.display().to_string()
+    ));
+    env.start(&[]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "elicit form"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let content = json!({ "name": "bo", "color": "green" });
+    assert_eq!(elicited(&env), [json!({ "action": "accept", "content": content })]);
+    let lines = || fs::read_to_string(&got).unwrap_or_default();
+    assert!(wait_for(Duration::from_secs(5), || lines().contains("elicitation_resolved")));
+    let seen: Vec<Value> = lines().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let request = seen.iter().find(|e| e["event"] == "elicitation_request").unwrap();
+    assert_eq!(
+        (&request["owner"], &request["schema"]["title"]),
+        (&"headless".into(), &"About you".into())
+    );
+    let answered = seen.iter().find(|e| e["req_id"] == "el").unwrap();
+    assert_eq!(
+        (&answered["ok"], &answered["result"]["action"]),
+        (&Value::Bool(true), &"accept".into())
+    );
+    let resolved = seen.iter().find(|e| e["event"] == "elicitation_resolved").unwrap();
+    assert!(resolved["by"].as_str().unwrap_or_default().contains("python3"), "{resolved}");
+}
+
+/// An elicitation scoped to a request outside any session (a login, during
+/// `authenticate`) has no session: it is listed with its process, and
+/// answered with `--pid`.
+#[test]
+fn adr_0068_a_request_scoped_elicitation_is_answered_by_pid() {
+    let env = Env::new("c-elpid").agent("ELICIT_AUTH", "1");
+    let mut new = env
+        .brnr(&new_args(&["--auth", "fake-login"]))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let listed = || env.ok(&["elicitation", "requests"]).contains("e1");
+    assert!(wait_for(Duration::from_secs(10), listed), "never listed");
+    let pid = env.pid();
+    let json: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "requests", "--json"])).unwrap();
+    let row = &json[0];
+    assert_eq!(
+        (&row["session"], &row["scope"], &row["mode"]),
+        (&Value::Null, &"request".into(), &"url".into())
+    );
+    assert_eq!(row["pid"].to_string(), pid);
+    let table = env.ok(&["elicitation", "requests"]);
+    assert!(table.lines().nth(1).unwrap().starts_with(&format!("--pid {pid}  e1")), "{table}");
+    let show = env.ok(&["elicitation", "show", "--pid", &pid, "e1"]);
+    assert!(show.starts_with(&format!("e1, process {pid}, outside any session\n")), "{show}");
+    assert!(show.contains("url: https://login.example/auth\n"), "{show}");
+    assert!(show.contains(&format!("answer: brnr elicitation accept --pid {pid} e1")), "{show}");
+    let err = env.fails(&["elicitation", "show", "--pid", &pid, "e9"]);
+    assert!(err.contains(&format!("no pending elicitation e9 outside a session in process {pid}")));
+    assert_eq!(env.ok(&["elicitation", "accept", "--pid", &pid, "e1"]), "e1 accepted\n");
+    assert!(wait_exit(&mut new, Duration::from_secs(10)), "session new still waiting");
+    let out = new.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(elicited(&env), [json!({ "action": "accept" })]);
+}
+
+/// `prompt cancel` answers the session's elicitations `cancel`, `by`
+/// `cancel`, as it does its permission requests: their turn is gone.
+#[test]
+fn adr_0068_prompt_cancel_cancels_the_sessions_elicitations() {
+    let env = Env::new("c-elcancel");
+    env.start(&[]);
+    elicit(&env, "form");
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    settled(&env);
+    assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
+    let resolved = &events_named(&env, "elicitation_resolved")[0];
+    assert_eq!((&resolved["action"], &resolved["by"]), (&"cancel".into(), &"cancel".into()));
+    assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
+}
+
 // ---- lifecycle -----------------------------------------------------------
 
 #[test]
@@ -2780,7 +3179,7 @@ fn adr_0033_profile_layout_errors_say_where() {
         ),
         (
             "[profiles.default.editor]\nexperimental = [\"send\", \"fork\"]\n",
-            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, permission, config, close)"#,
+            r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, permission, elicitation, config, close)"#,
         ),
         (
             "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
@@ -3248,7 +3647,7 @@ fn adr_0063_profile_keys_and_actions_have_the_new_names() {
         ),
         (
             "[profiles.default.editor]\nexperimental = [\"approve\"]\n",
-            r#"profiles.default.editor.experimental: unknown action "approve" (actions: send, context, cancel, permission, config, close)"#,
+            r#"profiles.default.editor.experimental: unknown action "approve" (actions: send, context, cancel, permission, elicitation, config, close)"#,
         ),
         (
             "[profiles.default.editor]\nexperimental = [\"settings\"]\n",
@@ -3644,8 +4043,8 @@ fn adr_0063_new_and_resume_replace_start() {
         (new_args(&["--option", "model"]), "brnr: --option takes <option>=<value>, not model"),
         (new_args(&["--mode", "plan", "--mode", "x"]), "brnr: --mode plan and --mode x disagree"),
         (
-            new_args(&["--permission-timeout", "soon"]),
-            "brnr: --permission-timeout: not a number of seconds: soon",
+            new_args(&["--response-timeout", "soon"]),
+            "brnr: --response-timeout: not a number of seconds: soon",
         ),
         (new_args(&["sess-1"]), "usage:\n  brnr session new [--pid <pid>] [<new flags>]"),
         (vec!["session", "resume"], "usage:\n  brnr session resume [--pid <pid>] <session>"),
@@ -3658,7 +4057,7 @@ fn adr_0063_new_and_resume_replace_start() {
     // Each one's usage has the flags they share.
     let usage = env.fails(&["session", "resume"]);
     assert!(!usage.contains("brnr session new"), "{usage}");
-    for flag in ["--permission-timeout <s>", "--thought-level <l>", "--option <o>=<v>", "--wait"] {
+    for flag in ["--response-timeout <s>", "--thought-level <l>", "--option <o>=<v>", "--wait"] {
         assert!(usage.contains(flag), "{flag}: {usage}");
     }
     assert!(
@@ -3805,7 +4204,7 @@ fn adr_0063_pid_refuses_process_flags() {
         &["--auth", "fake-login"],
         &["--strict"],
         &["--stop-when-idle", "5"],
-        &["--permission-timeout", "5"],
+        &["--response-timeout", "5"],
         &["--foreground"],
         &["--foreground", "--quiet"],
         &["--", AGENT],
@@ -4127,13 +4526,13 @@ fn adr_0063_thought_level_is_the_option_of_its_category() {
     assert!(sets(&env).is_empty() && env.prompts().is_empty(), "{err}");
 }
 
-/// `--permission-timeout` is the profile's `permission_timeout` as a flag,
+/// `--response-timeout` is the profile's `response_timeout` as a flag,
 /// and wins over it, as a start's other flags do (ADR 58, ADR 63).
 #[test]
-fn adr_0063_permission_timeout_flag_wins_over_the_profile() {
+fn adr_0063_response_timeout_flag_wins_over_the_profile() {
     let env = Env::new("c-permflag");
-    env.write_config("[profiles.default.headless]\npermission_timeout = 600\n");
-    env.start(&["--permission-timeout", "1"]);
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 600\n");
+    env.start(&["--response-timeout", "1"]);
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
     assert!(
         wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()),
@@ -4147,8 +4546,8 @@ fn adr_0063_permission_timeout_flag_wins_over_the_profile() {
     env.stop();
 
     let env = Env::new("c-permflag2");
-    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
-    env.start(&["--permission-timeout", "600"]);
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 1\n");
+    env.start(&["--response-timeout", "600"]);
     env.ok(&["prompt", "send", "sess-1", "perm edit"]);
     assert!(wait_for(Duration::from_secs(5), || env
         .ok(&["permission", "requests"])

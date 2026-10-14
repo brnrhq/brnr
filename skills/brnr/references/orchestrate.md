@@ -86,12 +86,13 @@ result:
 | 1 | it failed (`error`), stopped for another reason (`stop_reason`), its message was dropped (`dropped`), the agent exited, or the session closed first | tell the user what brnr said on stderr or in the JSON; don't retry quietly |
 | 124 | your `--timeout` passed | the worker is still going: wait again, `brnr prompt cancel`, or ask the user |
 
-A worker waiting for an approval doesn't end its turn: `event wait` runs
-until your timeout. `prompt send --wait` and `session new --wait` say on stderr
-when an approval comes (`brnr: waiting for approval p1: …`); with
-`event wait`, wait for it too (`--for permission`) or check
-`brnr permission requests --json` when it times out. Then see the approvals
-reference.
+A worker waiting for an approval, or for input (an elicitation), doesn't end
+its turn: `event wait` runs until your timeout. `prompt send --wait` and
+`session new --wait` say on stderr when one comes (`brnr: waiting for
+approval p1: …`, `brnr: waiting for input e1: …`); with `event wait`, wait
+for it too (`--for permission`, `--for elicitation`) or check
+`brnr permission requests --json` and `brnr elicitation requests --json` when
+it times out. Then see the approvals reference.
 
 ## One task, one command
 
