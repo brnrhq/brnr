@@ -878,6 +878,7 @@ fn adr_0023_a_tool_call_again_updates_the_one_running() {
     let tools = status(&env)["tools"].clone();
     assert_eq!(tools.as_array().unwrap().len(), 1, "{tools}");
     assert_eq!(tools[0]["status"], "in_progress", "{tools}");
+    assert_eq!(tools[0]["locations"], json!([{ "path": "/work/build.sh" }]), "{tools}");
     let log = env.ok(&["event", "log", "sess-1", "--events", "tool_call,tool_progress"]);
     let lines: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
     assert_eq!(lines, ["tool: Start the build (execute)", "tool: Run the build in_progress"]);

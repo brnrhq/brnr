@@ -225,6 +225,11 @@ impl Host {
                 if let Some(pos) =
                     state.tools.iter().position(|t| t.tool_call_id == tool.tool_call_id)
                 {
+                    let mut tool = tool;
+                    // Left out, they stay as they were, as an update's do.
+                    if raw.get("locations").is_none() {
+                        tool.locations = state.tools[pos].locations.take();
+                    }
                     let was = std::mem::replace(&mut state.tools[pos], tool).status;
                     return tool_status(&session, &mut state.tools, pos, was);
                 }
