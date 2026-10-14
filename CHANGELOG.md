@@ -107,6 +107,11 @@ brnr's own conventions:
   the history again. Meanwhile `event log` of it waits for those records,
   and `session resume` and `session delete` say it is closing there, free
   in 2 s at most (ADR 48).
+- A session whose load fails after the agent has replayed its history
+  (`session resume --pid`, or a start) is held, and the command answered,
+  the same way, once the process has written what it recorded of the
+  replay, where its lock went at once and a resume elsewhere could write
+  before those records, or record the history again (ADR 48).
 - After an ACP line nested deeper than 128, the host takes a stack that deep
   only while it keeps something of the line, not for every event after it
   (ADR 26).

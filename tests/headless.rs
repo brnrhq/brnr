@@ -2050,6 +2050,99 @@ fn adr_0048_a_closing_session_is_read_once_written_and_said_to_be_closing() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
+/// What `events`, a session's transcript, has of process `first`, then of
+/// the process after it: nothing of the first's comes after the second's.
+fn first_then_second(events: &[Value], first: i32) {
+    let pids: Vec<_> = events.iter().map(|r| r["host_pid"].as_i64().unwrap()).collect();
+    let last_of_first = pids.iter().rposition(|&p| p == i64::from(first));
+    let first_of_second = pids.iter().position(|&p| p != i64::from(first));
+    assert!(last_of_first.is_some(), "the first process recorded nothing: {events:#?}");
+    assert!(first_of_second.is_some(), "the second process recorded nothing: {events:#?}");
+    assert!(last_of_first < first_of_second, "the resume wrote before the first: {events:#?}");
+}
+
+/// A bridge's load of a session brnr has no transcript of, which fails
+/// after the agent has replayed its history (recorded, ADR 57), while the
+/// process's logger is behind: the process holds the session's lock, and
+/// answers the bridge, once its records are written, as a close's are, and
+/// says the session is closing meanwhile. The next process's records come
+/// after them, and its load finds the transcript (ADR 48).
+#[test]
+fn adr_0048_a_failed_load_is_written_before_the_session_is_resumed() {
+    let env = Env::new("loadfail");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let env = env.agent("NO_RESUME", "1").agent("LOAD_FAIL", "1");
+    env.start(&[]);
+    let first = env.host_pid();
+    let pid = first.to_string();
+    env.ok(&["event", "log", "sess-1"]);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut from_host = BufReader::new(conn.try_clone().unwrap()).lines();
+    let mut closing = || {
+        writeln!(conn, r#"{{"cmd":"status"}}"#).unwrap();
+        let status: Value = serde_json::from_str(&from_host.next().unwrap().unwrap()).unwrap();
+        status["closing"] == json!(["old-1"])
+    };
+    fs::write(&stall, "").unwrap();
+    let load = ["session", "resume", "--pid", &pid, "old-1"];
+    let mut load = unstalled(&env, &load).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(5), &mut closing), "old-1 isn't listed as closing");
+    let said = format!(
+        "old-1 is closing in process {pid}; it's free once its records are written (2 s at most)"
+    );
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains(&said), "{err}");
+    assert!(load.try_wait().unwrap().is_none(), "answered before its records were written");
+    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&lock).unwrap()["pid"], first);
+    fs::remove_file(&stall).unwrap();
+    let out = load.wait_with_output().unwrap();
+    assert!(!out.status.success(), "the failed load succeeded");
+    assert!(stderr(&out).contains("session/load failed: Can't load"), "{}", stderr(&out));
+    // Let go of: the next process loads it, finding the transcript.
+    let mut resume = unstalled(&env, &resume_args("old-1", &[]));
+    let out = resume.env_remove("LOAD_FAIL").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    env.ok(&["event", "log", "old-1"]); // The second process's logger, caught up.
+    let events = records(&project(&env).0.join("old-1.jsonl"));
+    first_then_second(&events, first);
+    let history: Vec<_> = events.iter().filter(|r| r["event"]["event"] == "history").collect();
+    assert_eq!(history.len(), 1, "{events:#?}");
+    assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
+}
+
+/// The same for a headless start whose load fails: the process, which
+/// stops, holds the session's lock until its records are written, with its
+/// exit's at the latest, so the next process's come after them (ADR 48).
+#[test]
+fn adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed() {
+    let env = Env::new("startloadfail");
+    let stall = env.dir.join("stall");
+    fs::write(&stall, "").unwrap();
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let env = env.agent("NO_RESUME", "1").agent("LOAD_FAIL", "1");
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    // Held while its logger is behind: the lock file is there, the process's.
+    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    let first = serde_json::from_str::<Value>(&lock).unwrap()["pid"].as_i64().unwrap() as i32;
+    assert_eq!(first, env.host_pid(), "held by another process");
+    fs::remove_file(&stall).unwrap();
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()));
+    assert!(!env.dir.join("run/sessions/old-1.lock").exists(), "not let go of");
+    let mut resume = unstalled(&env, &resume_args("old-1", &[]));
+    let out = resume.env_remove("LOAD_FAIL").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    env.ok(&["event", "log", "old-1"]);
+    let events = records(&project(&env).0.join("old-1.jsonl"));
+    first_then_second(&events, first);
+    let history: Vec<_> = events.iter().filter(|r| r["event"]["event"] == "history").collect();
+    assert_eq!(history.len(), 1, "{events:#?}");
+    assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says
