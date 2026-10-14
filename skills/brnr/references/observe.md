@@ -67,7 +67,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
 {"event": "session_closed", "session": "0f6c…", "by": "idle"}
 {"event": "session_deleted", "session": "0f6c…", "by": "delete"}
-{"event": "history", "session": "0f6c…", "updates": 42, "recorded": true, "loads": 1}
+{"event": "history", "session": "0f6c…", "updates": 42, "recorded": true, "recorded_updates": 42, "loads": 1}
 {"event": "exited", "status": {"code": 0}}
 ```
 
@@ -101,6 +101,10 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   happened through brnr. `loads` is how many loads it covers: more than 1
   when an editor loaded the session again before the agent answered, and
   then a recorded history is in the log once per load, each copy marked.
+  `recorded_updates` is how many of the `updates` are in the log: all when
+  `recorded`, none when not, fewer when the session was closed while it
+  loaded (`history: 4 updates replayed by the agent, 3 recorded`); its
+  `history` then follows a `session_reopened`.
 - `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
   brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
   said, such as the answer to a turn, is lost. It is the process's.

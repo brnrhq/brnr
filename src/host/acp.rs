@@ -42,7 +42,11 @@
 //!   `replayed`. Either way a `history` event says which, and how many
 //!   updates the agent replayed, and the editor gets the replay as the agent
 //!   sent it. Loads of an editor's that overlap share one replay, until the
-//!   last is answered, and one `history` event, with how many `loads`.
+//!   last is answered, and one `history` event, with how many `loads`. A
+//!   replay outlasts its session's close while a load of it is unanswered:
+//!   counted, not recorded, and the session's again if the load succeeds
+//!   (`session_reopened`), when `recorded_updates` says how many the
+//!   transcript has.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3); with
@@ -73,7 +77,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{Map, Value, json};
 
 use super::flow::LINE_BYTES;
-use super::requests::{HostRequest, PeerOp};
+use super::requests::{HostRequest, PeerOp, history};
 use super::state::SessionState;
 use super::{Host, LOG_FLUSH, control, id_key, text_block};
 use crate::config::{Feature, Log};
@@ -122,6 +126,9 @@ pub(super) struct Replay {
     pub(super) record: bool,
     /// The updates the agent has replayed.
     pub(super) updates: u64,
+    /// Of those, the ones recorded: all if `record`, but those that came
+    /// while the session was closed (`Host::closed_loads`).
+    pub(super) recorded_updates: u64,
     /// The ids of the tool calls running before it, while their turn runs:
     /// the others, the history's, aren't running now.
     pub(super) tools: Vec<String>,
@@ -691,7 +698,13 @@ impl Host {
     /// be told (P4): what either replays is taken as the replay is, recorded
     /// or not, and one `history` event covers them all.
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
-        let open = self.find(session);
+        // One closed while a load of it is unanswered opens with its replay.
+        let open = match self.find(session) {
+            None if self.closed_loads.contains_key(session) => {
+                Some(self.open_session(session, cwd))
+            }
+            open => open,
+        };
         if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
             replay.loads += 1;
             replay.unanswered += 1;
@@ -717,6 +730,7 @@ impl Host {
             (Some(i), _) => i,
             // Closed meanwhile, as the editor asked, and the agent answered
             // the close before the load: its last answer wins, and says so.
+            // The replay goes on, its own again (see `open_session`).
             (None, Some(_)) => {
                 let i = self.open_session(session, cwd);
                 self.emit(
@@ -724,7 +738,7 @@ impl Host {
                 );
                 i
             }
-            (None, None) => return,
+            (None, None) => return self.closed_load_failed(session),
         };
         if let Some(result) = result {
             self.sessions[i].state.result(result);
@@ -742,6 +756,22 @@ impl Host {
             self.sink.close_session(&self.sessions.remove(i).id);
         } else {
             self.drop_replay(i); // Loaded again, or resumed, and failed.
+        }
+    }
+
+    /// A load of `session`, closed meanwhile, failed. Its replay goes with
+    /// the last of its loads; if one of them succeeded before the close,
+    /// its `history` says so, with the session closed (ADR 57).
+    fn closed_load_failed(&mut self, session: &str) {
+        let Some(replay) = self.closed_loads.get_mut(session) else { return };
+        replay.unanswered = replay.unanswered.saturating_sub(1);
+        if replay.unanswered > 0 {
+            return;
+        }
+        if let Some(replay) = self.closed_loads.remove(session)
+            && replay.loaded
+        {
+            self.emit(history(session, &replay));
         }
     }
 
@@ -868,6 +898,13 @@ impl Host {
                         }
                         return self.send_link(frame::DATA, line);
                     }
+                    replay.recorded_updates += u64::from(update);
+                } else if let Some(replay) =
+                    session.as_deref().and_then(|s| self.closed_loads.get_mut(s))
+                {
+                    // Its session closed while it was loading: counted, with
+                    // no files to record it in (ADR 57).
+                    replay.updates += u64::from(update);
                 }
                 if update && let Some(session) = &session {
                     self.track_update(session, &msg["params"]["update"]);
@@ -1368,8 +1405,12 @@ impl Host {
     pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
         self.flush_agent_message(i);
         self.drop_all(i, "close");
-        let Session { id: session, hold, .. } = self.sessions.remove(i);
+        let Session { id: session, hold, replay, .. } = self.sessions.remove(i);
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
+        // A load of it still to be answered may open it again (ADR 57).
+        if let Some(replay) = replay.filter(|r| r.unanswered > 0 && self.editor_attached()) {
+            self.closed_loads.insert(session.clone(), replay);
+        }
         // After its last record, so nothing of it is lost (ADR 22).
         self.sink.close_session(&session);
         let lock = match hold {
@@ -1873,7 +1914,8 @@ impl Host {
             agent_message_id: None,
             state: SessionState::default(),
             turn_started: None,
-            replay: None,
+            // One a load still to be answered had, closed under it (ADR 57).
+            replay: self.closed_loads.remove(session),
             idle_since: None,
             idle_done: false,
             last_active: SystemTime::now(),

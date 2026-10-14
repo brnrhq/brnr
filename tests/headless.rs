@@ -3173,6 +3173,106 @@ fn adr_0057_a_load_answered_after_its_close_reopens_the_session() {
     let _ = editor.kill();
 }
 
+/// The editor's load of old-1 (id 2), then its close (id 3) once the
+/// replay is in, answered before the load: the gate `later` still holds the
+/// load's answer.
+fn load_then_close(env: &Env, to_agent: &mut ChildStdin, from_agent: &mut BufReader<ChildStdout>) {
+    writeln!(to_agent, "{}", editor_load(env, 2, "old-1")).unwrap();
+    update(from_agent, "session_info_update");
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(from_agent, 3)["result"].is_object());
+}
+
+/// A load answered after its session's close, which replayed more after the
+/// close: the updates before it are recorded, those after can't be, the
+/// session's files being closed, and all are counted. Once the load
+/// succeeds, the `session_reopened` is followed by the load's `history`,
+/// which says how many of its updates were recorded (ADR 57).
+#[test]
+fn adr_0057_a_loads_history_is_counted_across_its_sessions_close() {
+    let env = Env::new("ed-load-close-count");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LATE_HISTORY", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    load_then_close(&env, &mut to_agent, &mut from_agent);
+    fs::write(&later, "").unwrap();
+    // The editor gets the late update all the same (ADR 2).
+    let late = update(&mut from_agent, "agent_message_chunk");
+    assert_eq!(late["content"]["text"], "late history");
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let events = logged(&env, "old-1", "session_closed,session_reopened,history");
+    let names: Vec<&Value> = events.iter().map(|e| &e["event"]).collect();
+    assert_eq!(names, ["session_closed", "session_reopened", "history"], "{events:?}");
+    let history = &events[2];
+    let said = (&history["updates"], &history["recorded"], &history["recorded_updates"]);
+    assert_eq!(said, (&4.into(), &true.into(), &3.into()), "{history}");
+    assert_eq!(history["loads"], 1, "{history}");
+    let text = env.ok(&["event", "log", "old-1"]);
+    assert!(text.contains("history: 4 updates replayed by the agent, 3 recorded"), "{text}");
+    assert!(!text.contains("late history"), "recorded after the close:\n{text}");
+    let _ = editor.kill();
+}
+
+/// A load that fails after its session's close leaves it closed, with no
+/// `history`, and nothing of its count stays: the next load's `history` is
+/// its own (ADR 57).
+#[test]
+fn adr_0057_a_load_that_fails_after_its_sessions_close_has_no_history() {
+    let env = Env::new("ed-load-close-fail");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    load_then_close(&env, &mut to_agent, &mut from_agent);
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let open = env.ok(&["session", "list", "--include", "active"]);
+    assert!(!open.contains("old-1"), "{open}");
+    assert!(logged(&env, "old-1", "session_reopened,history").is_empty());
+    // Loaded again, it has a history of its own.
+    writeln!(to_agent, "{}", editor_load(&env, 4, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    let said = (&history[0]["updates"], &history[0]["loads"], &history[0]["recorded"]);
+    assert_eq!(said, (&3.into(), &1.into(), &false.into()), "{}", history[0]);
+    assert_eq!(history[0]["recorded_updates"], 0, "{}", history[0]);
+    let _ = editor.kill();
+}
+
+/// Two loads of a session that overlap, and its close answered before
+/// either: the first answer reopens it, and the one replay goes on until the
+/// second, whose `history` covers both loads and all their updates (ADR 57).
+#[test]
+fn adr_0057_overlapping_loads_closed_meanwhile_have_one_history() {
+    let env = Env::new("ed-loads-close");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    for id in [2, 3] {
+        writeln!(to_agent, "{}", editor_load(&env, id, "old-1")).unwrap();
+        update(&mut from_agent, "session_info_update");
+    }
+    let close = request_with_id("4", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    fs::write(&later, "").unwrap();
+    let mut answered = 0;
+    while answered < 2 {
+        let msg = message(&mut from_agent, |m| m["id"] == 2 || m["id"] == 3);
+        assert!(msg["result"].is_object(), "{msg}");
+        answered += 1;
+    }
+    let events = logged(&env, "old-1", "session_closed,session_reopened,history");
+    let names: Vec<&Value> = events.iter().map(|e| &e["event"]).collect();
+    assert_eq!(names, ["session_closed", "session_reopened", "history"], "{events:?}");
+    let history = &events[2];
+    let said = (&history["updates"], &history["loads"], &history["recorded_updates"]);
+    assert_eq!(said, (&6.into(), &2.into(), &6.into()), "{history}");
+    assert_eq!(history["recorded"], true, "{history}");
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.

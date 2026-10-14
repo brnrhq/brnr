@@ -66,7 +66,7 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Session};
+use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Replay, Session};
 use control::{Closer, Peer};
 pub use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
@@ -374,6 +374,10 @@ struct Host {
     /// Sessions this process has taken (or failed to take) the lock of
     /// before the agent opened them: a resume or a load not yet answered.
     claimed: HashMap<String, Hold>,
+    /// The replays of editors' sessions closed while a load of them was
+    /// unanswered, until the last is (ADR 57): still counted, though not
+    /// recorded, and the session's again if a load succeeds.
+    closed_loads: HashMap<String, Replay>,
     /// Sessions closed here, until their records are written (ADR 48).
     letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
@@ -614,6 +618,7 @@ impl Host {
             sessions: Vec::new(),
             pending: HashMap::new(),
             claimed: HashMap::new(),
+            closed_loads: HashMap::new(),
             letting_go: Vec::new(),
             client_requests: HashMap::new(),
             agent_requests: Vec::new(),
