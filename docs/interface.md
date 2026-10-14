@@ -21,7 +21,10 @@ Most commands are `brnr <group> <verb>`, grouped by what they act on:
 ([ADR 63](adr/0063-commands-are-grouped-by-what-they-act-on.md)).
 `brnr <group> --help` prints one group's syntax, as does a group without a
 verb (exiting 1). `brnr <group> <verb> --help` (or `-h`, anywhere before a
-`--`) prints that command's. A command brnr doesn't have, such as the names these
+`--` and, for `prompt send`, before the prompt) prints that command's. An
+option a command doesn't take fails as unknown, never read as its
+`<session>` or `<pid>`; a word with one dash, such as `-x`, is an argument
+(but for `brnr skill`). A command brnr doesn't have, such as the names these
 replaced (`brnr send`), fails as unknown.
 
 `--` separates brnr options from the agent or notification command and its
@@ -40,7 +43,7 @@ usage:
 
 process
   brnr process list [--json]
-  brnr process stop <pid>
+  brnr process stop <pid> [--json]
 
 session
   brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
@@ -50,7 +53,7 @@ session
                    the same, carrying on a session
   brnr session status <session> [--json]
   brnr session fork <session> [--json]
-  brnr session close <session>
+  brnr session close <session> [--json]
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
@@ -122,7 +125,7 @@ with the agent's capabilities.
 | `brnr acp` | Editor ACP on stdin; launches the selected agent. | Agent ACP on stdout; diagnostics and agent stderr on stderr. See [editor transport](#editor-transport). |
 | `brnr session new`, `brnr session resume` | Starts a process for a headless session, new or resumed; sets cwd, authentication and settings before an optional prompt. With `--pid <pid>`, opens the session in that running process instead: the session and prompt flags only. | Startup summary; JSON object with `session`, numeric `pid`, and `message` (null without a prompt). |
 | `brnr process list` | Lists discovered running hosts. | Table or JSON array of `pid`, `owner`, `agent`, `sessions`, `uptime_seconds`, `cwd`. An unresponsive host has owner `unreachable`. |
-| `brnr process stop` | Stops the specified host and its agent; affects all its sessions. | Stopping acknowledgment; errors on stderr. |
+| `brnr process stop` | Stops the specified host and its agent; affects all its sessions. | Stopping acknowledgment; JSON object with numeric `pid` and `status` (`stopping`). Errors on stderr. |
 | `brnr prompt send` | Sends text/attachments to one session. Positional words form the prompt; `-` reads it from stdin. | Acknowledgment with `session`, `status`, and `message`; context-only submissions have no message ID. Status is `delivered`, `held`, `steered` or `interrupting`. With `--wait`, a completed-turn result instead. |
 | `brnr event wait` | Waits for `idle` (default), `turn`, `permission`, or process `exit`. | Condition summary or JSON for the condition/last turn. See [exit codes](#exit-codes). |
 | `brnr prompt cancel` | Cancels the turn; drops held messages unless `--keep-held`. | Acknowledgment with session, status and dropped `{message, text}` objects. Context is retained. |
@@ -130,13 +133,13 @@ with the agent's capabilities.
 | `brnr queue show` | Shows one held message in full. | Its ID, whether it interrupts, its text, and each attachment (a file's URI, an image's type and size); JSON has `session`, `message`, `text`, `interrupt`, `attachments` and `blocks`, the attachments as ACP content blocks. A message not held fails. |
 | `brnr queue drop` | Drops one held message by ID. | As `queue list`, with the message in `dropped`. |
 | `brnr queue clear` | Drops the held messages (`--messages`), the held context (`--context`), or with neither flag both. | As `queue list`, with the messages in `dropped`; each dropped message or context is an event. |
-| `brnr permission requests` | Lists pending approvals across hosts, optionally filtered by session. | Table or JSON array of approval objects. |
+| `brnr permission requests` | Lists pending approvals across the hosts that answer, optionally filtered by session; a host that doesn't answer is passed over, as `process list` and `session list` pass over it (they show it `unreachable`), with `brnr: process <pid> is not answering; its approvals aren't listed` on stderr, in text and `--json` alike; the exit status stays 0. | Table or JSON array of approval objects. |
 | `brnr permission show` | Displays one pending approval in full. | Tool/command/diff details; JSON approval object includes `request`, `session`, `owner`, `answerable`, `why_not`, `title`, `kind`, `tool_call`, `options`, `timeout_seconds`. |
 | `brnr permission allow`, `brnr permission reject` | Answers an approval with its option of kind `allow_once` (`allow_always` with `--always`) or `reject_once` (`reject_always`); `--option` names the agent's option ID instead, of the verb's side if its kind is ACP's (and the always kind with `--always`). | Acknowledgment with `session`, `request`, `outcome` (ACP's). A missing or doubled kind, or an option of the other side, fails, listing the options; nothing is answered. |
-| `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that), with a session open in a process that the agent lists there whatever its recorded cwd; an agent that can't list fails. A cwd is the same however it is spelled (a trailing slash, a symlink); an `unreachable` session is the cwd's if the agent lists it there or brnr has its transcript there. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
+| `brnr session list` | brnr's sessions, open and with a transcript, in every cwd (`--cwd`: one), with nothing started. With `--profile` or `-- <agent>`, only the cwd's (here unless `--cwd`), joined on the session id with the agent's own (`session/list`, every page, from the agent started just for that), with a session open in a process that the agent lists there whatever its recorded cwd; an agent that can't list fails. A cwd is the same however it is spelled (a trailing slash, a symlink); an `unreachable` session is the cwd's if the agent lists it there or brnr has its transcript there. `--include active` keeps sessions open in a process (`idle`, `busy`, `waiting`, `unreachable`), `--include inactive` the rest; both by default. | Session table or JSON array, most recently active first, with `session`, `title`, `state`, `pid`, `agent`, `source` (`brnr`, `agent` or `both`), `last_active`, `cwd`. `last_active` is an RFC 3339 time in UTC to the microsecond (`2026-10-11T06:00:00.000000Z`; the text shows it to the second), an agent's `updatedAt` converted from its offset, and rows are ordered by the time it names; one that isn't an RFC 3339 time is as the agent gave it, said on stderr, after the rows with a time. A session only the agent knows is `inactive`, with `pid` null. Title, PID, time and cwd can be null. |
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON includes the new `session`. |
-| `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; errors on stderr. |
+| `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; JSON object with the closed `session`. Errors on stderr. |
 | `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `made-private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions; `--last` selects recent turns and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
@@ -150,8 +153,12 @@ with the agent's capabilities.
 
 ### Prompts, attachments and lifecycle flags
 
+- `prompt send`'s options go before its prompt: from the prompt's first
+  word on, every word is the prompt's, as after `--` (`prompt send $s
+  explain ls -h` sends `explain ls -h`).
 - `session new --prompt -` and `prompt send <session> -` read prompt text from
-  stdin.
+  stdin. `prompt send`'s `-` goes alone: a word after it fails the command,
+  rather than being sent; quote a prompt that starts `- `.
   `--file` and `--image` may repeat; they become ACP content blocks. See
   [files and images](adr/0032-files-and-images.md) for encoding and capability
   requirements. A failed read prevents submission.
@@ -185,7 +192,7 @@ with the agent's capabilities.
   request startup settings, winning over the profile's, setting by setting.
   `--stop-when-idle` and `--permission-timeout` are numbers of seconds,
   winning over the profile's `stop_when_idle` and `permission_timeout`;
-  `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session.
+  `--stop-when-idle 0` closes as soon as idle. `--timeout` bounds waiting, not the lifetime of the session, and goes with `--wait`: without it, it fails the command.
 - `--wait` requires a prompt or attachment. `session new --wait`,
   `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
@@ -211,7 +218,9 @@ Activity fields are `state` (`idle`, `busy`, `waiting`), `turn_seconds`,
 `last_message`, `last_active`, `stop_when_idle`, `stopping`, and
 `uptime_seconds`. `pending`, `held`, and `context` are counts; use
 `permission requests` and `queue list` for their contents. `last_message` is a preview, not the full
-transcript. Tool, plan and usage data come from the agent.
+transcript. Tool, plan and usage data come from the agent. `tools` has the
+running turn's tool calls the agent hasn't finished, one per id; once a turn
+ends, cancelled or failed too, none of its calls is listed.
 
 ### Exit codes
 
@@ -303,7 +312,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 
 | `cmd` | Additional request fields | Success reply, in addition to `ok` and optional `req_id` |
 |---|---|---|
-| `status` | None | Host metadata, owner, uptime, `starting` (until the first session commits), `stopping`, the idle setting, `capabilities`, pending count, bridge labels, and `sessions` array. Sessions use `session_id`, not the CLI's `session`. |
+| `status` | None | Host metadata, owner, uptime, `starting` (until the first session commits), `stopping`, `closing` (the sessions it has closed and holds the locks of until their records are written, ADR 48), the idle setting, `capabilities`, pending count, bridge labels, and `sessions` array. Sessions use `session_id`, not the CLI's `session`. |
 | `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer; inspect recorded gaps/errors for lost data. |
 | `send` | `session`; optional `text`, `blocks` (ACP content-block array), `mode` (`prompt`, `steer`, `interrupt`, `context`), `replace` (boolean). | `session`, `status`, `message`; context mode returns `status:"held"` without a message ID. |
 | `cancel` | `session`; optional boolean `keep_held`. | `session`, `status`, `dropped` objects (`message`, `text`). |
@@ -331,6 +340,12 @@ lists every event and its meaning, including message/turn correlation,
 approvals, config patches and process exits. `exited` and `line_too_long`
 are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
+`session_reopened` follows a `session_closed` when the agent answered an
+editor's load of the session with success after its close: the session is
+open again. `history` carries `updates`, `recorded` and `loads`: an editor's loads of a
+session that overlap share one replay and one `history` event, so `loads`
+can be more than 1, and a recorded history is then in the transcript once
+per load.
 
 Socket clients must subscribe to get live events. Profile-started bridges
 are subscribed from startup. Bridge defaults include all events except

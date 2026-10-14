@@ -34,7 +34,9 @@ other.
 - `permission_timeout = <seconds>` denies a request nobody answered in time.
   Only deny: allowing on timeout would approve whatever an unattended agent
   asked for.
-- `brnr pending [<session>]` lists the approvals waiting, as a table.
+- `brnr pending [<session>]` lists the approvals waiting, as a table; with
+  no session, those of each process that answers, one that doesn't passed
+  over as `list` and `sessions` do (ADR 3), and said to be on stderr (P3).
   `brnr show <session> <request>` shows one in full: the tool, its kind,
   paths, the command or input, and for edits a diff made from the tool call's
   `oldText`/`newText` with a small line diff (very large ones show the new
@@ -73,3 +75,4 @@ Run `cargo test --release adr_0027_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0027_show_explains_a_permission_request`.
   - `adr_0027_show_escapes_a_spoofed_command`.
+  - `adr_0027_requests_passes_over_a_silent_process`.

@@ -30,6 +30,12 @@ const REFERENCES: &[(&str, &str)] = &[
 const DIRS: &[&str] = &["~/.claude/skills", "~/.agents/skills"];
 
 pub(super) fn skill(args: &[String]) -> Result<(), String> {
+    // An option `skill` doesn't take, wherever it is; `install` has its own.
+    if args.first().is_none_or(|a| a != "install")
+        && let Some(flag) = args.iter().find(|a| a.starts_with("--"))
+    {
+        return Err(format!("unknown option: {flag}"));
+    }
     match args {
         [] => out!("{SKILL}"),
         [cmd, rest @ ..] if cmd == "install" => return install(rest),
@@ -51,6 +57,7 @@ fn install(args: &[String]) -> Result<(), String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--dir" => dirs.push(paths::expand(it.next().ok_or("--dir needs a directory")?)),
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ => return Err(USAGE.to_owned()),
         }
     }

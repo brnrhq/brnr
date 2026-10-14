@@ -79,7 +79,8 @@ brnr doctor [--fix | --report] | skill [<reference> | install [--dir <dir>]...] 
   prompt:  --prompt <text> | -   --file <path>   --image <path>   --wait [--timeout <s>]
 ```
 
-`--json` stays wherever a command prints data (ADR 34). `--` always ends
+`--json` stays wherever a command prints data (ADR 34), which since its
+amendment for #170 includes `process stop` and `session close`. `--` always ends
 brnr's options: what follows is the agent's argument vector, or notify's
 command's. `--profile` and `-- <agent>` combine as they do today.
 
@@ -128,6 +129,13 @@ command's. `--profile` and `-- <agent>` combine as they do today.
     CWD. A session only the agent knows is `inactive` with SOURCE `agent`,
     replacing ADR 15's `-`. TITLE and LAST ACTIVE are the agent's where it
     gives them, as in ADR 15.
+  - LAST ACTIVE is in UTC, in `--json` and text alike: an agent's
+    `updatedAt` is read with its offset and written as brnr writes its own
+    times (`2026-10-11T08:00:00+02:00` is `2026-10-11T06:00:00.000000Z`),
+    and the rows are ordered by the time each names, most recent first, not
+    by how it is written (#152). One that isn't an RFC 3339 time is passed
+    on as the agent gave it and said on stderr (P4), after the rows with a
+    time and before those with none.
 - **`session delete`** is `session/delete`, refused for a session open in a
   process ("close it first") and for an agent without
   `sessionCapabilities.delete` (P7). The agent is the one brnr recorded for
@@ -260,7 +268,19 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     section per group; `brnr <group> --help`, and a group without a verb,
     print the group's commands; an unknown verb is said, with the group's
     usage; a command used wrongly shows its own; a verb's `--help` or `-h`,
-    before any `--`, prints its usage, and after `--` is the command's.
+    before any `--`, prints its usage, and after `--` is the command's, as
+    after a prompt's first word it is the prompt's.
+  - `adr_0063_a_prompts_words_are_never_options`: after `prompt send`'s
+    first word, `-h`, `--help`, `--wait` and `--json` are the prompt's text,
+    sent as given; before it they are options; `-` (stdin) goes alone.
+  - `adr_0063_a_flag_is_never_a_session_or_pid`: `session status --json`
+    without a session is a usage error; an option `session status`,
+    `session close` or `process stop` doesn't take is unknown, and nothing
+    is done.
+  - `adr_0063_a_single_dash_word_is_an_argument`: `event log`, as the
+    other commands, takes `-x` as an argument, and has no `-f`.
+  - `adr_0063_an_unknown_option_is_said`: by `session list`, `process
+    list`, `doctor` and `skill` too, rather than printing their usage.
   - `adr_0063_config_get_lists_options_choices_and_modes`: every option with
     its category, value and choices, each choice with its name and
     description, and the v1 modes as a row with no option, the same in text
@@ -312,6 +332,12 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     knows is `inactive` with source `agent`, the agent's title and time win
     where it gives them, over brnr's title too, and another cwd's are left
     out; an agent that can't list fails.
+  - `adr_0063_list_reads_the_agents_times_in_utc`: an agent's times with
+    offsets (`+02:00`, `-05:30`) and fractions of any width are in UTC in
+    `--json` and text, and ordered by the time they name, finer than the
+    microseconds brnr writes, against a session brnr recorded; one that
+    isn't an RFC 3339 time is as given, said, and after those with a time,
+    before those with none.
   - `adr_0063_list_finds_a_cwd_however_it_is_spelled`: a session opened
     with `--cwd <dir>/` or a symlink to `<dir>` is `<dir>`'s, with an agent
     named or not, and the open one the agent lists is `both` and `active`,
@@ -393,3 +419,10 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     points at, nor an id that climbs names, is deleted.
 - [src/render.rs](../../src/render.rs)
   - `adr_0063_a_deletion_is_shown_with_who_deleted`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0063_a_time_is_read_with_its_offset_and_written_in_utc`: offsets,
+    `Z`, fractions of any width (cut to the microsecond), across days,
+    years and leap days, before 1970, and brnr's own as they are.
+  - `adr_0063_what_isnt_an_rfc3339_time_isnt_read`: a missing or malformed
+    part, a value out of range, a leap second, or a UTC year outside 0000
+    to 9999.

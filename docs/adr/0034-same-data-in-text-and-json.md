@@ -1,7 +1,10 @@
 # 34. Same data in text and JSON; `--json` wherever a command prints data
 
 Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
-2026-10-07. Implemented.
+2026-10-07. Implemented. Its running tools are the running turn's (#164):
+a tool call the agent left unfinished, in a turn that was cancelled or
+failed, isn't running once the turn has ended, so `status` no longer lists
+it. ACP has no status for such a call, so brnr gives it none.
 
 Amended by 63: the usage starts with `acp`, then has a section per group
 (`process`, `session`, `prompt`, `queue`, `permission`, `config`, `event`),
@@ -11,6 +14,10 @@ prints a group's. `list`, `status` and `ps` are `session list`,
 `event log`, `event watch` and `session new --foreground`; and `stop`,
 `close` and `notify`, without `--json`, are `process stop`,
 `session close` and `event notify`.
+
+Amended 2026-10-12 (#170): `stop` and `close` (`process stop` and `session
+close`, ADR 63) take `--json` too, as each prints what it did; `notify`
+still doesn't.
 
 ## Decision
 
@@ -25,8 +32,10 @@ prints a group's. `list`, `status` and `ps` are `session list`,
   prints from it.
 - Every command that prints data takes `--json`: one JSON value, or one event
   per line for `log`, `watch` and `start --foreground`. Errors stay on stderr,
-  with the same exit status. Commands whose answer is their exit status
-  (`stop`, `close`, `notify`) don't take it.
+  with the same exit status. `stop` and `close` take it too, though their
+  answer is mostly their exit status: they print what they did, the process
+  stopping (`{pid, status}`) and the session closed (`{session}`, as `fork`
+  names its session). `notify` doesn't: its stdout is its command's.
 - The usage starts with the commands that start a process (`acp`, `start`),
   then groups the rest by what they are about: processes (`ps`, `stop`),
   chat (`send`, `wait`, `cancel`, `queue`), approvals (`pending`, `show`,
@@ -51,3 +60,16 @@ Run `cargo test --release adr_0034_`. Named claims and their assertions:
 
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0034_status_summarizes_the_session`.
+  - `adr_0034_stop_and_close_take_json`: `session close --json` prints
+    `{session}` and `process stop --json` `{pid, status}`, what their text
+    says.
+  - `adr_0034_a_cancelled_turns_tool_calls_are_not_running`.
+  - `adr_0034_a_failed_turns_tool_calls_are_not_running`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0034_a_turn_ending_in_a_replay_leaves_no_tool_call_running`.
+  - `adr_0034_a_failed_loads_history_leaves_no_tool_call_running`.
+  - `adr_0034_a_replays_call_with_a_finished_calls_id_is_not_running`.
+- [src/ctl.rs](../../src/ctl.rs)
+  - `adr_0034_status_says_the_sessions_state`.
+- [src/render.rs](../../src/render.rs)
+  - `adr_0034_text_shows_values_not_json`.

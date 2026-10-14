@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use brnr::host::alive;
 use brnr::{paths, render};
 
-use super::{Found, USAGE, call, default_events, discover, events_arg, find_session};
+use super::{Found, USAGE, call, closing_in, default_events, discover, events_arg, find_session};
 
 const POLL: Duration = Duration::from_millis(200);
 
@@ -44,10 +44,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
                 let n = it.next().ok_or("--last needs a number")?;
                 last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
             }
-            "--follow" | "-f" => follow = true,
+            "--follow" => follow = true,
             "--events" => events = events_arg(it.next(), &default_events())?,
             "--json" => json_out = true,
-            flag if flag.starts_with('-') => return Err(format!("unknown option: {flag}")),
+            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
             _ if target.is_none() => target = Some(arg.clone()),
             _ => return Err(USAGE.to_owned()),
         }
@@ -138,8 +138,19 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 /// recorded until now first: a thread of its own writes it, and what was
 /// just seen happen (a turn `session new --wait` reported) may not be there
 /// yet (ADR 48).
+///
+/// One closing in its process is read once that process has written its
+/// records, `session_closed` last, and let go of it (ADR 48).
 fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
-    let hosts = discover()?;
+    let mut hosts = discover()?;
+    if let Some(host) = closing_in(&hosts, arg) {
+        // Answered once what it recorded before is written: the close's
+        // records, and the lock gone with them.
+        if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
+            errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
+        }
+        hosts = discover()?;
+    }
     match find_session(&hosts, arg)? {
         Found::Running(host, id) => {
             let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
