@@ -148,6 +148,7 @@ written for this document.
 | A started bridge runs the profile's command as the user, with `BRNR_PID` and `BRNR_SOCKET`; it can do anything a socket client can (ADR 35). | `start_bridge` (src/host/control.rs) | `cli.rs`: `adr_0036_notify_works_as_a_bridge`, `adr_0035_a_bridge_that_closes_its_stdout_gets_events` |
 | A bridge gets every event but `acp` unless it asks for it by name, so the raw ACP isn't forwarded by default. | `Peer::wants` (src/host/control.rs) | `security.rs`: `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks` |
 | A reader that falls behind is cut off and told, and never holds the session up (ADR 6). | `send_to`, `drop_peer` (src/host/control.rs) | `headless.rs`: `adr_0006_slow_watcher_is_disconnected`; `cli.rs`: `adr_0036_notify_cut_off_as_a_bridge_stops_its_command` |
+| Asking whether a peer was cut off (`was_cut_off`) gives a position, never an event, for that peer or another, and takes nothing away from it: the record stays for its owner. What a command cut off catches up on, it reads from the transcript itself, as the user (B2), and only the events it subscribed to, as live: a peer that didn't ask for `acp` gets no raw ACP. A peer learns nothing it couldn't by subscribing (ADR 69). | `was_cut_off` (src/host/control.rs); `Follow::read`, `Found::wanted` (src/ctl/catch_up.rs) | `security.rs`: `adr_0069_was_cut_off_says_where_never_what` |
 
 What a bridge sends beyond the machine, and to whom, is the bridge's: brnr
 can't see past its stdin. That is the reach P13 says a bridge adds.

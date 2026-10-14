@@ -55,6 +55,7 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
+mod catch_up;
 mod delete;
 mod doctor;
 mod elicitation;
@@ -201,7 +202,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         ("config", Some("get")) => settings::config_get(rest),
         ("config", Some("set")) => settings::config_set(rest),
         ("event", Some("log")) => history::log(rest),
-        ("event", Some("watch")) => done(watch(rest)),
+        ("event", Some("watch")) => watch(rest),
         ("event", Some("notify")) => notify::notify(rest),
         ("event", Some("wait")) => talk::wait(rest),
         (group, Some("-h" | "--help")) if grouped => {
@@ -952,8 +953,11 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 
 /// Prints a session's events (`<session>`), or a process's (`--pid`), until
 /// the process exits (or the session closes), as `brnr event log` shows them. A
-/// session's are its own plus the process's (the agent exiting).
-fn watch(args: &[String]) -> Result<(), String> {
+/// session's are its own plus the process's (the agent exiting). Cut off for
+/// falling behind, it catches up from the transcript and goes on; unable to,
+/// it ends with what it missed, an `events-missed` note, and exits 3 (ADR
+/// 69).
+fn watch(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut pid) = (None, None);
     let mut events = default_events();
     let mut json_out = false;
@@ -981,42 +985,43 @@ fn watch(args: &[String]) -> Result<(), String> {
             events.push(end.to_string());
         }
     }
-    let mut conn = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
-    writeln!(conn, "{}", json!({ "cmd": "subscribe", "events": events }))
-        .map_err(|e| e.to_string())?;
-    let mut lines = BufReader::new(conn).lines();
-    let first: Value = lines
-        .next()
-        .and_then(Result::ok)
-        .and_then(|l| serde_json::from_str(&l).ok())
-        .ok_or("no answer from the process")?;
-    if first["ok"].as_bool() != Some(true) {
-        return Err(first["error"].as_str().unwrap_or("subscribe failed").to_owned());
-    }
+    let mut conn = talk::Conn::open(host)?;
+    let names: Vec<&str> = events.iter().map(String::as_str).collect();
+    conn.subscribe(&names, only_session.as_deref())?;
     let mut out = io::stdout().lock();
     let options = render::Options { session: only_session.is_none(), time: true };
-    for line in lines.map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+    let show = |out: &mut io::StdoutLock, event: &Value| {
+        let text = if json_out { Some(event.to_string()) } else { render::event(event, &options) };
+        match text {
+            Some(text) => writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()),
+            None => Ok(()),
+        }
+    };
+    loop {
+        let event = match conn.next_event(None) {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(why) => match conn.missed() {
+                Some(note) => {
+                    let _ = show(&mut out, note);
+                    return Ok(ExitCode::from(catch_up::MISSED));
+                }
+                None => return Err(why),
+            },
+        };
         let name = event["event"].as_str().unwrap_or_default();
         if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
             && only != session
         {
             continue;
         }
-        let end = ends.contains(&name);
-        if shown.iter().any(|e| e == name) {
-            let text = if json_out { Some(line) } else { render::event(&event, &options) };
-            if let Some(text) = text
-                && writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()).is_err()
-            {
-                return Ok(());
-            }
+        if shown.iter().any(|e| e == name) && show(&mut out, &event).is_err() {
+            return Ok(ExitCode::SUCCESS);
         }
-        if end {
-            return Ok(());
+        if ends.contains(&name) {
+            return Ok(ExitCode::SUCCESS);
         }
     }
-    Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
 /// The value of `--events` (for `event watch`, `event log` and `event

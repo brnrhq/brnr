@@ -82,6 +82,7 @@ with environment variables:
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
                     array of ACP permission options) instead
+  PERM_PAD=<n>      a permission request's tool call input has n bytes more
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
   ELICIT_AUTH=1     authenticate first asks for a URL to be opened, an
@@ -118,7 +119,8 @@ and by the prompt's text:
                     tool_call comes again, same id, with a new title and status
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
-  big <n>           answers with one message of n bytes
+  big <n> [think]   answers with one message of n bytes; think: a thought
+                    of n bytes first
   long <n> [stderr] writes one line of n MiB of x, 1 MiB at a time, then
                     answers; on stdout the line ends in a newline, on stderr
                     it is left open
@@ -389,6 +391,8 @@ def run(mid, sid, text):
         say(sid, text[len("reply ") :])
         end_turn(mid)
     elif first == "big":
+        if words[2:] == ["think"]:
+            say(sid, "t" * int(words[1]), "agent_thought_chunk")
         say(sid, "z" * int(words[1]))
         end_turn(mid)
     elif first == "long":
@@ -681,6 +685,8 @@ def ask(mid, sid, kind):
             "kind": "execute",
             "rawInput": {"command": command},
         }
+    if env("PERM_PAD"):
+        tool["rawInput"]["pad"] = "p" * int(env("PERM_PAD"))
     params = {"sessionId": sid, "toolCall": tool, "options": options}
     send(
         {

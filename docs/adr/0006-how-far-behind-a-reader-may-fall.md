@@ -22,6 +22,10 @@ dropped), said by a `line_too_long` event.
 Amended by 60: lines longer than 16 MiB that come while a peer is past it
 don't count toward it either, up to 64 MiB of them.
 
+Amended by 69: a peer cut off catches up from the transcript, by the
+positions every event now has; a `records-skipped` note says the positions
+it lost (`first_seq`, `last_seq`).
+
 ## Context
 
 Every reader of a session can fall behind: a bridge or a watcher, the

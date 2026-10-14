@@ -1118,7 +1118,8 @@ fn adr_0067_headless_sessions_offer_neither() {
 // ---- watching ----------------------------------------------------------
 
 /// A watcher that stops reading is disconnected instead of having every
-/// event queued for it in the host.
+/// event queued for it in the host. It then catches up from the transcript
+/// (ADR 69), so it stays until the process stops.
 #[test]
 fn adr_0006_slow_watcher_is_disconnected() {
     // About 30 MB of events: more than a peer's queue holds.
@@ -1139,14 +1140,218 @@ fn adr_0006_slow_watcher_is_disconnected() {
     assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
-    assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
-    assert!(!watch.wait().unwrap().success());
-    let mut err = String::new();
-    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(err.contains("closed the connection"), "{err}");
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    assert!(wait_for(Duration::from_secs(20), dropped), "the watcher wasn't cut off");
     // It may still be working through the burst; it must get there.
     let answers = || env.run(&["session", "status", "sess-1"]).status.success();
     assert!(wait_for(Duration::from_secs(30), answers), "host stopped answering");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+}
+
+// ---- catching up -------------------------------------------------------
+
+/// `brnr event watch …` for `env`, its stdout read to its end on a thread,
+/// as JSON lines.
+fn watcher(env: &Env, args: &[&str]) -> (Child, std::thread::JoinHandle<Vec<Value>>) {
+    let mut watch = env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        lines.map(|l| serde_json::from_str(&l).unwrap()).collect()
+    });
+    (watch, lines)
+}
+
+/// The positions of `events` (ADR 69).
+fn seqs(events: &[Value]) -> Vec<u64> {
+    events.iter().map(|e| e["seq"].as_u64().unwrap_or_else(|| panic!("no seq: {e}"))).collect()
+}
+
+/// A watcher cut off for falling behind (stopped, here, while two 6 MB
+/// replies came, each as its ACP message and its event) catches up from the
+/// transcript and goes on live: it gets every event once, in order, as the
+/// transcript has them. Another watcher is told it was cut off.
+#[test]
+fn adr_0069_a_watcher_cut_off_catches_up() {
+    let env = Env::new("catchup");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "peer_cut_off"];
+    let (mut told, told_lines) = watcher(&env, &args);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
+    env.stop();
+    for w in [&mut watch, &mut told] {
+        assert!(wait_exit(w, Duration::from_secs(30)), "watch didn't end");
+    }
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+
+    let got = lines.join().unwrap();
+    let texts: Vec<usize> = (got.iter())
+        .filter(|e| e["event"] == "agent_message")
+        .map(|e| e["text"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(texts, [6_000_000, 6_000_000, 5], "the agent's messages");
+    assert_eq!(got.last().unwrap()["event"], "exited");
+    // Its own cut-off, which it asked for too, came from the host log.
+    let own = got.iter().filter(|e| e["event"] == "peer_cut_off").count();
+    assert_eq!(own, 1, "its own cut-off");
+    // Once each, in order, and none of what the transcript has left out.
+    let session: Vec<Value> = got.into_iter().filter(|e| e["event"] != "peer_cut_off").collect();
+    let got = seqs(&session);
+    assert!(got.windows(2).all(|w| w[0] < w[1]), "out of order or twice: {got:?}");
+    let log = env.ok(&["event", "log", "sess-1", "--events", "all", "--json"]);
+    let logged: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    // The session's `session/new` has its position in the host log only.
+    let logged = logged.iter().filter_map(|e| e["seq"].as_u64());
+    let logged: Vec<u64> = logged.filter(|n| *n >= got[0]).collect();
+    assert_eq!(got, logged, "the watcher's events and the transcript's");
+
+    let told = told_lines.join().unwrap();
+    let cut = told.iter().find(|e| e["event"] == "peer_cut_off").expect("not told");
+    let host = host_logs(&env);
+    assert!(host.contains(&format!(r#""peer":"{}""#, cut["peer"].as_str().unwrap())), "{cut}");
+    assert!(cut["last_queued"].as_u64() < Some(*got.last().unwrap()), "{cut}");
+}
+
+/// The burst of #117: a thought and a message each over 16 MiB, to a
+/// watcher that asked for `acp`, come to it as four lines past 64 MiB, which
+/// cut it off even when it keeps up (here it reads nothing meanwhile, so
+/// that it surely is). It catches up from the transcript: both reach it.
+#[test]
+fn adr_0069_a_burst_past_64_mib_reaches_a_watcher() {
+    let env = Env::new("burst117");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    let size = (16 << 20) + 1;
+    env.ok(&["prompt", "send", "sess-1", "--wait", &format!("big {size} think")]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(60)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    let got = lines.join().unwrap();
+    let long = |name: &str| {
+        let text = |e: &&Value| e["event"] == name && e["text"].as_str().unwrap().len() == size;
+        got.iter().filter(text).count()
+    };
+    assert_eq!((long("agent_thought"), long("agent_message")), (1, 1));
+    let got = seqs(&got);
+    assert!(got.windows(2).all(|w| w[0] < w[1]), "out of order or twice");
+}
+
+/// A watcher cut off where the transcript can't have what it missed (here
+/// none is kept, `log = false`) says what it missed, after which event, and
+/// why, as its last line, and exits 3 (ADR 69).
+#[test]
+fn adr_0069_a_watcher_that_cant_catch_up_says_what_it_missed() {
+    let env = Env::new("nocatchup");
+    env.write_config("[profiles.default]\nlog = false\n");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    assert_eq!(watch.wait().unwrap().code(), Some(3));
+    let got = lines.join().unwrap();
+    let note = got.last().unwrap();
+    assert_eq!(note["event"], "events-missed", "{note}");
+    assert_eq!(note["error"], "the process keeps no transcript (log = false)");
+    let before = &got[got.len() - 2];
+    assert_eq!(note["after"], before["seq"], "{note}");
+    assert!(note["until"].as_u64() > note["after"].as_u64(), "{note}");
+    env.stop();
+}
+
+/// `prompt send --wait`, cut off while its message is held behind another
+/// turn (stopped, here, while that turn's four 6 MB messages came), catches
+/// up: it prints its turn's reply and exits as the turn ended (ADR 69).
+#[test]
+fn adr_0069_a_wait_cut_off_catches_up() {
+    let env = Env::new("waitcatchup");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "hang"]);
+    let wait = env
+        .brnr(&["prompt", "send", "sess-1", "--wait", "reply done"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = || env.ok(&["queue", "list", "sess-1"]).contains("m2 (after turn)");
+    assert!(wait_for(Duration::from_secs(10), held), "not held");
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["prompt", "send", "sess-1", "--interrupt", "many 4 6000000"]);
+    env.ok(&["event", "wait", "sess-1"]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(cut, "the wait wasn't cut off");
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success(), "send --wait: {}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+    env.stop();
+}
+
+/// `event wait --for turn`, cut off while four 6 MB approvals came (stopped,
+/// here), catches up on the turn's end (ADR 69).
+#[test]
+fn adr_0069_event_wait_cut_off_catches_up() {
+    let env = Env::new("evwaitcatchup").agent("PERM_PAD", "6000000");
+    env.start(&[]);
+    let wait = env
+        .brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(300));
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["prompt", "send", "sess-1", "perm edit 4"]);
+    let pending = || env.ok(&["permission", "requests", "sess-1"]).contains("p4 ");
+    assert!(wait_for(Duration::from_secs(10), pending), "no approvals");
+    for n in 1..=4 {
+        env.ok(&["permission", "allow", "sess-1", &format!("p{n}")]);
+    }
+    env.ok(&["event", "wait", "sess-1"]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(cut, "the wait wasn't cut off");
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success(), "event wait: {}", stderr(&out));
+    let ended: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (ended["event"].as_str(), ended["stop_reason"].as_str()),
+        (Some("turn_ended"), Some("end_turn"))
+    );
+    env.stop();
 }
 
 /// A watcher that keeps reading stays connected through a burst, and ends

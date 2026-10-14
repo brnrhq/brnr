@@ -3453,41 +3453,19 @@ fn adr_0036_notify_cut_off_as_a_bridge_stops_its_command() {
     env.stop();
 }
 
-/// On the socket, a notifier that falls behind while its command runs is
-/// cut off by its connection closing, and does the same; so does one sent
-/// SIGTERM.
+/// On the socket, a notifier sent SIGTERM while its command runs stops the
+/// command, says so, and exits non-zero.
 #[test]
-fn adr_0036_notify_cut_off_on_the_socket_stops_its_command() {
-    let env = Env::new("c-notifyslowsock");
+fn adr_0036_notify_stopped_stops_its_command() {
+    let env = Env::new("c-notifystop");
     env.start(&[]);
     let pids = env.dir.join("pids");
     let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
-    let notify = || {
-        env.brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
-    };
-    let mut slow = notify();
-    sleep(Duration::from_millis(500));
-    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
-    let command = command_pid(&pids);
-    for _ in 0..8 {
-        if slow.try_wait().unwrap().is_some() {
-            break;
-        }
-        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
-    }
-    assert!(wait_exit(&mut slow, Duration::from_secs(15)), "notify kept running");
-    let out = slow.wait_with_output().unwrap();
-    assert!(!out.status.success(), "notify exited 0");
-    let want = "brnr: cut off (the process closed the connection); stopped sh (turn_ended); \
-                no more notifications";
-    assert!(stderr(&out).contains(want), "{}", stderr(&out));
-    assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
-
-    fs::remove_file(&pids).unwrap();
-    let mut stopped = notify();
+    let mut stopped = env
+        .brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     sleep(Duration::from_millis(500));
     env.ok(&["prompt", "send", "sess-1", "--wait", "reply again"]);
     let command = command_pid(&pids);
@@ -3499,6 +3477,47 @@ fn adr_0036_notify_cut_off_on_the_socket_stops_its_command() {
     assert!(stderr(&out).contains(want), "{}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
     env.stop();
+}
+
+/// On the socket, a notifier that falls behind while its command runs is
+/// cut off; it lets the command finish, then catches up from the transcript,
+/// running the command for each event it missed, and goes on (ADR 69).
+#[test]
+fn adr_0069_notify_cut_off_catches_up_once_its_command_is_done() {
+    let env = Env::new("c-notifycatchup");
+    env.start(&[]);
+    let (gate, out) = (env.dir.join("gate"), env.dir.join("out"));
+    let script = format!(
+        "while [ ! -e '{}' ]; do sleep 0.05; done; echo \"$BRNR_EVENT\" >> '{}'",
+        gate.display(),
+        out.display()
+    );
+    let mut notify = env
+        .brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(500));
+    // The first turn's end starts the command, which waits for the gate;
+    // the next four turns' messages, 24 MB, cut notify off meanwhile.
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    for _ in 0..4 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let log = || {
+        let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+        dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
+    };
+    let dropped = || log().contains(r#""event":"peer-dropped""#);
+    assert!(wait_for(Duration::from_secs(10), dropped), "notify wasn't cut off");
+    fs::write(&gate, "").unwrap();
+    let lines = || fs::read_to_string(&out).unwrap_or_default().lines().count();
+    assert!(wait_for(Duration::from_secs(10), || lines() == 5), "{} notifications", lines());
+    env.stop();
+    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
+    let done = notify.wait_with_output().unwrap();
+    assert!(done.status.success(), "notify: {}", stderr(&done));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended\n".repeat(5) + "exited\n");
 }
 
 /// A message too big for a command's environment is cut there (the event on

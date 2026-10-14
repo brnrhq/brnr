@@ -666,6 +666,68 @@ env = {{ GITHUB_TOKEN = "bridge-secret" }}
     env.stop();
 }
 
+/// `was_cut_off` says where a peer was cut off, never what it was sent: its
+/// answer has no event in it, for that peer or any other. What a watcher
+/// cut off catches up on, it reads from the transcript as the user, and only
+/// the events it subscribed to: one that didn't ask for `acp` gets no raw
+/// ACP, though the transcript has it (ADR 69).
+#[test]
+fn adr_0069_was_cut_off_says_where_never_what() {
+    let env = Env::new("s-cutoff");
+    env.start(&[]);
+    let mut watch = env
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        lines.map(|l| serde_json::from_str::<Value>(&l).unwrap()).collect::<Vec<_>>()
+    });
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..4 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let log = || {
+        let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+        dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
+    };
+    let dropped = || log().contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    let records: Vec<Value> = log().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let note = records.iter().find(|r| r["event"]["event"] == "peer-dropped").unwrap();
+    let peer = note["event"]["peer"].as_str().unwrap();
+
+    let socket = env.dir.join("run").join(format!("{}.sock", env.pid()));
+    let ask = |peer: &str| {
+        let mut conn = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        writeln!(conn, "{}", json!({ "cmd": "was_cut_off", "peer": peer })).unwrap();
+        let mut line = String::new();
+        BufReader::new(conn).read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let answer = ask(peer);
+    let keys: Vec<&String> = answer.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["ok", "peer", "cut_off", "last_queued"], "{answer}");
+    assert_eq!(
+        (&answer["cut_off"], &answer["last_queued"]),
+        (&json!(true), &note["event"]["last_queued"])
+    );
+    assert_eq!(ask("socket#0")["cut_off"], false);
+
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    assert!(watch.wait().unwrap().success());
+    let got = lines.join().unwrap();
+    let names: Vec<&str> = got.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(names, ["agent_message", "turn_ended"].repeat(4), "and nothing else");
+}
+
 // ---- brnr acp (P1) -----------------------------------------------------
 
 /// `hex` as a JSON `\u` escape.

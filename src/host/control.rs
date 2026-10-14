@@ -13,7 +13,7 @@
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
 //!   is in its transcript, which a logger thread writes (`brnr event log`,
-//!   ADR 48)
+//!   ADR 48); `lost` if a file has lost records it hasn't noted yet (ADR 69)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
 //!   replace?}` (ADR 18 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
@@ -26,7 +26,14 @@
 //!   message `show` (an id; anything else is refused) in full, its content
 //!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
-//!   (started bridges are subscribed from the start)
+//!   (started bridges are subscribed from the start). The answer names the
+//!   connection (`peer`), the process (`host_id`) and the last event before
+//!   it (`seq`): every event has a position, its `seq`, one more than the
+//!   last event's or ACP message's of the process (ADR 69)
+//! - `was_cut_off` `{peer}`: whether the process cut that connection off,
+//!   and the last event it queued for it (`last_queued`), so that a peer
+//!   that has reconnected can catch up from the transcript (ADR 69). It
+//!   says only where; the events are in the transcript
 //! - `pending`: permission requests waiting for an answer, in full, and
 //!   beside them `elicitations`, the agent's requests for input (ADR 68)
 //! - `allow` / `reject` `{session, request, always?, option?}`: with the
@@ -82,6 +89,9 @@
 //! takes a peer past it doesn't count, nor (up to [`ASIDE_BYTES`] of them)
 //! lines longer than the whole queue, so one long message doesn't either,
 //! even when it comes twice, as its ACP message and its event (ADR 49, 60).
+//! A peer cut off is noted in the host log (`peer-dropped`), kept among the
+//! last [`CUT_OFFS`] for `was_cut_off`, and told to the other peers, as a
+//! `peer_cut_off` event (ADR 69).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -133,6 +143,7 @@ pub(crate) const EVENTS: &[&str] = &[
     "session_deleted",
     "history",
     "line_too_long",
+    "peer_cut_off",
     "exited",
     "acp",
 ];
@@ -150,6 +161,10 @@ const QUEUE_BYTES: usize = 16 << 20;
 /// count toward it (ADR 60): two of the longest lines the host reads
 /// (ADR 51), a message's ACP line and its event.
 const ASIDE_BYTES: usize = 64 << 20;
+
+/// How many cut-offs the process keeps for `was_cut_off` (ADR 69): a peer
+/// reconnecting after this many more were cut off is told it wasn't.
+const CUT_OFFS: usize = 64;
 
 pub(super) static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
 
@@ -378,9 +393,13 @@ impl Host {
         Ok(())
     }
 
-    /// Logs an ACP message and shows it to peers subscribed to `acp`.
+    /// Logs an ACP message and shows it to peers subscribed to `acp`, at
+    /// the next position, whether a peer wants it or not: one that is cut
+    /// off finds it in the transcript there (ADR 69).
     pub(super) fn record(&mut self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
-        self.sink.msg(session, dir, bytes);
+        self.seq += 1;
+        let seq = self.seq;
+        self.sink.msg(session, dir, bytes, Some(seq));
         if self.peers.values().any(|p| p.wants("acp")) {
             let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
             // As the host reads it, where this stack takes it (see json.rs).
@@ -388,7 +407,9 @@ impl Host {
                 .then(|| json::parse::<Value>(body))
                 .flatten()
                 .unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
-            self.emit(json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg }));
+            let event =
+                json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg });
+            self.emit_at(seq, event);
         }
     }
 
@@ -404,8 +425,15 @@ impl Host {
 
     /// Sends `event` to every subscribed peer that wants it, and (but for
     /// `acp`, which is the raw transcript already) records it in the
-    /// transcript, where `brnr event log` reads it back. Returns it as sent.
-    pub(super) fn emit(&mut self, mut event: Value) -> Value {
+    /// transcript, where `brnr event log` reads it back, at the next
+    /// position (ADR 69). Returns it as sent.
+    pub(super) fn emit(&mut self, event: Value) -> Value {
+        self.seq += 1;
+        self.emit_at(self.seq, event)
+    }
+
+    /// [`emit`](Self::emit) at position `seq`, an ACP message's.
+    fn emit_at(&mut self, seq: u64, mut event: Value) -> Value {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
@@ -415,6 +443,7 @@ impl Host {
         {
             event["replayed"] = json!(true);
         }
+        event["seq"] = json!(seq);
         let line = event.to_string();
         if name != "acp" {
             self.sink.note(event["session"].as_str(), event.clone());
@@ -441,6 +470,7 @@ impl Host {
         for peer in peers {
             self.send_to(peer, line.clone());
         }
+        self.tell_cut_offs();
         event
     }
 
@@ -469,11 +499,22 @@ impl Host {
         }
     }
 
-    /// Cuts off a peer that stopped reading.
+    /// Cuts off a peer that stopped reading. It was sent nothing after the
+    /// last event so far, which is kept among the last cut-offs and told to
+    /// the other peers once the line that cut it off has reached them, so
+    /// that each sees events in order (ADR 69).
     fn drop_peer(&mut self, peer: u64) {
         let Some(p) = self.peers.remove(&peer) else { return };
-        let event = json!({ "event": "peer-dropped", "peer": p.label, "reason": "fell behind" });
+        let last = self.seq;
+        let reason = "fell behind";
+        let event = json!({ "event": "peer-dropped", "peer": p.label, "reason": reason, "last_queued": last });
         self.sink.note(None, event);
+        if self.cut_offs.len() == CUT_OFFS {
+            self.cut_offs.pop_front();
+        }
+        self.cut_offs.push_back((p.label.clone(), last));
+        let told = json!({ "event": "peer_cut_off", "peer": p.label, "last_queued": last });
+        self.untold.push_back(told);
         match p.closer {
             Closer::Socket(conn) => {
                 let _ = conn.shutdown(Shutdown::Both);
@@ -501,6 +542,29 @@ impl Host {
             response["req_id"] = req_id;
         }
         self.send_to(peer, response.to_string());
+        self.tell_cut_offs();
+    }
+
+    /// The `peer_cut_off` events of the peers cut off since, each after the
+    /// line that cut it off (ADR 69).
+    fn tell_cut_offs(&mut self) {
+        while let Some(event) = self.untold.pop_front() {
+            self.emit(event);
+        }
+    }
+
+    /// `was_cut_off`: whether the peer named `peer` was cut off, and the last
+    /// event queued for it then (ADR 69). A position, never an event: what
+    /// it missed is in the transcript, which the asker reads as itself.
+    fn was_cut_off(&self, req: &Value) -> Result<Value, String> {
+        let peer = req["peer"].as_str().ok_or("missing peer")?;
+        let cut = self.cut_offs.iter().rev().find(|(label, _)| label == peer);
+        Ok(json!({
+            "ok": true,
+            "peer": peer,
+            "cut_off": cut.is_some(),
+            "last_queued": cut.map(|(_, last)| *last),
+        }))
     }
 
     /// `Ok(None)`: the answer comes from the agent, later.
@@ -519,6 +583,7 @@ impl Host {
             Some("cancel") => now(self.cancel_turn(req)),
             Some("queue") => now(self.queue(req)),
             Some("subscribe") => now(self.subscribe(peer, req)),
+            Some("was_cut_off") => now(self.was_cut_off(req)),
             Some("pending") => Ok(Some(json!({
                 "ok": true,
                 "pending": self.pending_permissions(),
@@ -548,7 +613,8 @@ impl Host {
 
     /// `logged`: answered from the logger's thread once it has written what
     /// the process recorded before it was asked, so that what a peer has
-    /// seen happen is in the transcript (ADR 48). The event loop doesn't
+    /// seen happen is in the transcript (ADR 48), with `lost` if a file has
+    /// lost records it hasn't noted yet (ADR 69). The event loop doesn't
     /// wait for it (P1); a peer gone meanwhile isn't answered.
     fn when_logged(&mut self, peer: u64, req_id: Option<Value>) {
         let Some(queue) = self.peer_queue(peer) else { return };
@@ -556,7 +622,10 @@ impl Host {
         if let Some(req_id) = req_id {
             response["req_id"] = req_id;
         }
-        self.sink.when_written(move || queue.post(response.to_string()));
+        self.sink.when_written(move |lost| {
+            response["lost"] = json!(lost);
+            queue.post(response.to_string());
+        });
     }
 
     fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
@@ -579,7 +648,9 @@ impl Host {
         let names = events.unwrap_or_else(|| {
             EVENTS.iter().filter(|e| **e != "acp").map(|e| e.to_string()).collect()
         });
-        Ok(json!({ "ok": true, "events": names }))
+        // Where it starts, to catch up from if it is cut off (ADR 69).
+        let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
+        Ok(json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "seq": seq }))
     }
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {

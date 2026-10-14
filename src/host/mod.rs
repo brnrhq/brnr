@@ -466,6 +466,15 @@ struct Host {
     // Bridges; see control.rs.
     peers: HashMap<u64, Peer>,
     bridge_pids: Vec<pid_t>,
+    /// The position of the last event emitted or ACP message recorded: each
+    /// gets the next, its `seq` (ADR 69).
+    seq: u64,
+    /// The last peers cut off, by label, and the last event queued for
+    /// each, for a peer to ask whether it was (ADR 69).
+    cut_offs: VecDeque<(String, u64)>,
+    /// `peer_cut_off` events still to emit, once the event that cut the
+    /// peer off has reached every other peer.
+    untold: VecDeque<Value>,
 
     status: Option<c_int>,
     /// The agent's stdout hasn't ended: once it has, so has the editor's
@@ -665,6 +674,9 @@ impl Host {
             features,
             peers: HashMap::new(),
             bridge_pids: Vec::new(),
+            seq: 0,
+            cut_offs: VecDeque::new(),
+            untold: VecDeque::new(),
             status: None,
             stdout_open: true,
             stderr_open: true,
@@ -1059,7 +1071,7 @@ impl Host {
     /// 48). A stalled disk holds the sessions no longer.
     fn wait_logged(&self) {
         let (tx, rx) = mpsc::channel();
-        self.sink.when_written(move || {
+        self.sink.when_written(move |_| {
             let _ = tx.send(());
         });
         let _ = rx.recv_timeout(LOG_FLUSH);
@@ -1243,7 +1255,7 @@ impl Host {
         if skip {
             return;
         }
-        self.sink.msg(None, Dir::AgentStderr, &piece);
+        self.sink.msg(None, Dir::AgentStderr, &piece, None);
         if self.start_done || rest {
             return;
         }

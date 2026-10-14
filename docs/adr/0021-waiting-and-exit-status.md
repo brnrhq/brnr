@@ -10,6 +10,9 @@ Amended by 68: `event wait --for elicitation` waits for an elicitation as
 `--for permission` waits for an approval, and `prompt send --wait` announces
 one on stderr too.
 
+Amended by 69: a wait cut off for falling behind catches up from the
+transcript; one that can't says what it missed and exits 3.
+
 ## Decision
 
 - `brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>]`:

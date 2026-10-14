@@ -10,6 +10,9 @@ Amended 2026-10-14 (#193): a session whose open failed after the process
 recorded something of it (a load's replay) is let go of, and the open
 answered, the same way.
 
+Amended by 69: `logged` says `lost` when a file has lost records it
+hasn't noted yet.
+
 ## Context
 
 A process's records are written by a thread of its own (src/log.rs), so the

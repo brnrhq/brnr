@@ -10,6 +10,10 @@ Amended by 68: the default events are `permission_request`,
 `elicitation_request`, `turn_ended` and `exited`, and `BRNR_REQUEST` is an
 elicitation's handle too.
 
+Amended by 69: on the socket, `event notify` cut off lets its command
+finish, then catches up from the transcript; one that can't says what it
+missed and exits 3.
+
 ## Context
 
 Notifications are what most people want from a bridge: a message when an
@@ -81,5 +85,5 @@ Run `cargo test --release adr_0036_`. Named claims and their assertions:
   - `adr_0036_notify_stdin_ends_with_its_input`.
   - `adr_0036_notify_fails_when_cut_off`.
   - `adr_0036_notify_cut_off_as_a_bridge_stops_its_command`.
-  - `adr_0036_notify_cut_off_on_the_socket_stops_its_command`.
+  - `adr_0036_notify_stopped_stops_its_command`.
   - `adr_0036_notify_cuts_what_the_environment_cant_hold`.

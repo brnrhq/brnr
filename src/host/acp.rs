@@ -1028,7 +1028,9 @@ impl Host {
                     self.sessions[i].state.result(result.unwrap_or(&Value::Null));
                 }
                 if let Some(request) = request {
-                    self.sink.msg(session.as_deref(), dir, &request);
+                    // A copy, in the session's file, of what the host log has with its
+                    // position: none here (ADR 69).
+                    self.sink.msg(session.as_deref(), dir, &request, None);
                 }
                 session
             }
@@ -1552,7 +1554,7 @@ impl Host {
         let release = Release { lock, answers: answers.into_iter().collect() };
         let held = Arc::new(Mutex::new(Some(release)));
         let written = held.clone();
-        self.sink.when_written(move || {
+        self.sink.when_written(move |_| {
             // Taken out first, so the lock isn't held while it goes.
             let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(release) = release {

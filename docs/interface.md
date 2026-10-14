@@ -269,6 +269,7 @@ can give a situation that has none a code of its own.
 | Ordinary CLI command | 0 on success; 1 for invalid arguments or an operation failure. |
 | `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`elicitation`/`exit` succeeds when its requested condition occurs. |
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
+| `event watch`, `event notify`, `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 3 when the process cut the command off for falling behind and it couldn't catch up from the transcript: what it missed is an `events-missed` note, `after` the last event it got, `until` where it reconnected (null for a process gone), and `error`, why ([ADR 69](adr/0069-a-peer-cut-off-catches-up.md)). `event watch` prints it as its last event; the others say it on stderr. |
 | `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
 | `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
@@ -381,11 +382,12 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `cmd` | Additional request fields | Success reply, in addition to `ok` and optional `req_id` |
 |---|---|---|
 | `status` | None | Host metadata, owner, uptime, `starting` (until the first session commits), `stopping`, `closing` (the sessions it has closed, or failed to open, and holds the locks of until their records are written, ADR 48), the idle setting, `capabilities`, `pending` and `elicitations` counts, bridge labels, and `sessions` array. Sessions use `session_id`, not the CLI's `session`. |
-| `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer; inspect recorded gaps/errors for lost data. |
+| `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer, with `lost`: true when a file has lost records it hasn't noted yet (a full disk); inspect recorded gaps/errors for lost data. |
 | `send` | `session`; optional `text`, `blocks` (ACP content-block array), `mode` (`prompt`, `steer`, `interrupt`, `context`), `replace` (boolean). | `session`, `status`, `message`; context mode returns `status:"held"` without a message ID. |
 | `cancel` | `session`; optional boolean `keep_held`. | `session`, `status`, `dropped` objects (`message`, `text`). |
 | `queue` | `session`; optional `drop` (message ID), `clear`, `clear_context` (booleans); or `show` (message ID) alone; a `show` that is not a message ID is refused. | `session`, `held`, `context`, `dropped`; with `show`, that message: `session`, `message`, `text`, `interrupt`, `attachments`, `blocks`. |
-| `subscribe` | Optional `events`: array of event names or string `"all"`. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. |
+| `subscribe` | Optional `events`: array of event names or string `"all"`. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. `peer`, this connection's name (`socket#7`); `host_id`; `seq`, the last event's position before the subscription. |
+| `was_cut_off` | `peer`, a connection's name as `subscribe` gave it. | `peer`; `cut_off`, whether the process cut that connection off for falling behind (of its last 64 cut-offs); `last_queued`, the last position queued for it then, else null. A position only, never an event: catch up from the transcript ([ADR 69](adr/0069-a-peer-cut-off-catches-up.md)). |
 | `pending` | None | `pending`: approval objects for the host's sessions; `elicitations`: elicitation objects, as `elicitation show --json` has them. |
 | `allow`, `reject` | `session`, `request`; optional `always` boolean, `option` string. | `session`, `request`, `outcome`. |
 | `elicitation` | `session` (null for one outside any session), `request`, `action` (`accept`, `decline` or `cancel`); for an accept of a form, `content`: an object of the form's fields, checked against its schema before anything is sent. | `session`, `request`, `result`: the response sent to the agent (`action`, and an accept's `content`). |
@@ -403,8 +405,11 @@ experimental editor action.
 
 ### Events and connection lifetime
 
-Events have an `event` name and timestamp `ts`, with host identity metadata;
-session events have `session`. The [event catalogue](../README.md#events)
+Events have an `event` name and timestamp `ts`, with host identity metadata,
+and `seq`, their position: one more than the last event's or ACP message's of
+the host, the same in the transcript (a raw ACP record has it before `dir`);
+session events have `session`. `peer_cut_off` (`peer`, `last_queued`) tells
+the other peers that one was cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,
 approvals, elicitations, config patches and process exits. `exited` and `line_too_long`
 are process events. `session_changed` carries `what` and `value`; config
@@ -431,7 +436,13 @@ are subscribed from startup. Bridge defaults include all events except
 and `tool_progress`. CLI `--events default,...` expands a display preset;
 bridge `events` arrays take explicit names, not the CLI preset syntax.
 
-Read continuously: a slow observer can be disconnected. Profile bridges
+Read continuously: a slow observer can be disconnected, and `peer-dropped`
+in the host log says so, with `last_queued`. To catch up, connect again,
+ask `was_cut_off`, `subscribe` again (its `seq` is where live events start),
+send `logged`, and read the host's records between your last event's `seq`
+and that one from the transcript (the host log names each session's files),
+as brnr's own commands do. A profile-started bridge can't: it is sent SIGTERM.
+Profile bridges
 get final events and then stdin EOF when their host stops; they should exit
 on EOF and receive SIGTERM if still running two seconds later. Closing a
 started bridge's stdout only ends its requests, not its event subscription.

@@ -202,6 +202,23 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             }
             what
         }
+        // A peer the process cut off for falling behind, and the last event
+        // queued for it (ADR 69).
+        "peer_cut_off" => {
+            format!(
+                "{} cut off, behind: sent nothing after event {}",
+                s(&e["peer"]),
+                e["last_queued"]
+            )
+        }
+        // What a command cut off couldn't catch up on, and why (ADR 69).
+        "events-missed" => {
+            let until = match e["until"].as_u64() {
+                Some(until) => format!(" up to {until}"),
+                None => String::new(),
+            };
+            format!("cut off: events after {}{until} missed: {}", e["after"], s(&e["error"]))
+        }
         // With a reason when brnr itself died (a panic, ADR 11).
         "exited" => match e["reason"].as_str() {
             Some(reason) => format!("{}; {reason}", exited(&e["status"])),

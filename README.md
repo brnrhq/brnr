@@ -273,11 +273,13 @@ brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- b
 ended normally (`end_turn`); 1 when it failed or stopped for another reason,
 when its message was dropped (`brnr: m3 was dropped (cancel)`), when the agent
 exited first, or when the session closed before the turn, approval or
-elicitation waited for; and 124 on `--timeout <s>`. `event wait` on a session
-that is idle already, or that closes while it waits, exits as its last turn
-ended. While `prompt send --wait` and `session new --wait` wait, approvals
-and elicitations are announced on stderr; `session new --wait` says `started …` there too, so stdout is the
-reply and nothing else. With `--json`, the turn is one object at its end:
+elicitation waited for; 124 on `--timeout <s>`; and 3 when brnr cut the
+command off for falling behind and the transcript can't say what it missed
+(see [when a reader falls behind](#when-a-reader-falls-behind)). `event wait`
+on a session that is idle already, or that closes while it waits, exits as
+its last turn ended. While `prompt send --wait` and `session new --wait`
+wait, approvals and elicitations are announced on stderr; `session new --wait`
+says `started …` there too, so stdout is the reply and nothing else. With `--json`, the turn is one object at its end:
 `session`, `message`, `reply`, `stop_reason`, `error`, `dropped` (and `pid`,
 for `session new` and `resume`).
 
@@ -523,11 +525,14 @@ show the same events, live or read back from the transcript:
 | `session_deleted` | the agent deleted the session, `by` `delete` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), how many of them are (`recorded_updates`: fewer only when the session closed while its load was unanswered), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
+| `peer_cut_off` | a `peer` (a watcher, a bridge) cut off for falling behind, and the `last_queued` event it was sent |
 | `exited` | the agent exited: its `status`, and a `reason` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
 Each names its session; `exited` and `line_too_long` are the process's, and
-are in every session's transcript. For config options and commands, `session_changed` is a JSON merge
+are in every session's transcript; `peer_cut_off` is the process's too, in
+its host log. Each has its position, `seq`: one more than the last event's
+or ACP message's of its process, live and in the transcript. For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
 `--events` chooses, for `event watch`, `event log` and `event notify` alike:
@@ -549,8 +554,11 @@ agent writes can't become arguments. The text, title and message are escaped
 as `event watch` shows them and cut at 32 KiB; the event on stdin is whole.
 Commands run one at a time, in order, each in a process group of its own.
 `event notify` exits when the process does (or the session closes). Cut off
-first, as one that falls behind is, it stops the command it is running, says
-on stderr that no more notifications come, and exits non-zero.
+for falling behind, it lets the command finish, then catches up, running the
+command for each event it missed, as `event watch` does; unable to, it says
+what it missed and exits 3. Its connection ending otherwise first, or
+stopped by a signal, it stops the command it is running, says on stderr that
+no more notifications come, and exits non-zero.
 
 ```sh
 brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
@@ -568,7 +576,10 @@ command = ["brnr", "event", "notify", "--stdin", "--",
 If the bridge's `events` limit what it gets, they must include
 `agent_message`, `session_changed` and `exited`, which `event notify` needs
 for its environment and to know when to stop. What it says on stderr, that it
-was cut off included, is in the host log (`bridge-stderr`).
+was cut off included, is in the host log (`bridge-stderr`). A started bridge
+doesn't catch up: its stdin is closed, and it is sent SIGTERM. For
+notifications that never miss a turn, run `brnr event notify <session>` on
+the socket instead.
 
 ## Headless sessions
 
@@ -733,7 +744,8 @@ as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
-`pending`, `allow`, `reject`, `set_config`, `fork`, `new`, `resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`was_cut_off`, `pending`, `allow`, `reject`, `set_config`, `fork`, `new`,
+`resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
@@ -760,6 +772,18 @@ that reaches every peer that keeps up, and the
 foreground's display skips events. Nor does brnr's own record: past 64 MiB
 waiting for a slow disk, records are skipped, and
 [the transcript](#transcripts) says so.
+
+A burst bigger still (a thought and a message each over 16 MiB, to a
+watcher that asked for `acp`) can cut off a peer that keeps up. brnr's
+commands catch up: `event watch`, `event notify`, `event wait` and the
+`--wait`s, cut off, ask the process whether it cut them off
+(`was_cut_off`), subscribe again, and read what they missed from the
+transcript, by the events' positions, before going on live; a peer cut off
+is a `peer_cut_off` event to the others. Where the transcript can't have
+it all (`log = false`, `log = "events"` for `acp`, records skipped), or
+when cut off 4 times in a row while catching up, the command says what it
+missed, an `events-missed` note (`after`, `until`, `error`), and exits 3.
+Started bridges are cut off as before (ADR 69).
 
 However long the lines: the session's pipes hold back past 16 MiB queued,
 and brnr reads a line of up to 32 MiB, held beside that while it waits for
@@ -809,7 +833,8 @@ raw file, most of the space; `log = false` writes nothing but the session
 locks.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
-(`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host
+(`count`, `acp` of them raw ACP, `since`, `until`, and the positions of the
+events among them, `first_seq` and `last_seq`) marks the gap in the host
 log and in each session's events file that lost some. Records a full disk
 didn't take are noted likewise, with the `error`, in the file that lost them
 (a raw file's in its events file) once it takes records again. How a process

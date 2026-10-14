@@ -283,14 +283,18 @@ fn record(line: &[u8]) -> Option<(String, Value)> {
         return Some((ts, record["event"].take()));
     }
     let msg = record.get("msg").or(record.get("raw"))?;
-    let event = json!({
+    // As the process sent it, with its position (ADR 69).
+    let mut event = json!({
         "event": "acp",
+        "dir": record["dir"],
+        "session": record["session_id"],
+        "msg": msg,
         "ts": record["ts"],
         "host_id": record["host_id"],
-        "session": record["session_id"],
-        "dir": record["dir"],
-        "msg": msg,
     });
+    if record["seq"].is_u64() {
+        event["seq"] = record["seq"].clone();
+    }
     Some((ts, event))
 }
 

@@ -53,6 +53,24 @@ brnr's own conventions:
   `elicitations`, and a session with one is `waiting`. The socket's
   `pending` has `elicitations`, and `elicitation` answers one. On an
   editor's session, answering is the experimental `elicitation` (ADR 68).
+- A command the process cuts off for falling behind catches up: `event
+  watch`, `event notify`, `event wait` and the `--wait`s ask the process
+  whether it cut them off (`was_cut_off`, a new request), subscribe again,
+  and read what they missed from the transcript before going on live, so a
+  burst bigger than a peer's queue and the 64 MiB set aside (#117) no longer
+  loses events. Where the transcript can't have them (`log = false`,
+  `log = "events"` for `acp`, records skipped), or cut off 4 times in a row
+  while catching up, the command says what it missed, an `events-missed`
+  note, and exits 3 (ADR 69).
+- Every event, live and in the transcript, and every raw ACP record has its
+  position in its process, `seq`; `subscribe` answers with the connection's
+  `peer`, `host_id` and the `seq` it starts after, as `session new --wait`'s
+  ready report does; `logged` answers `lost` when a file has lost records it
+  hasn't noted yet; and `records-skipped` says the positions it lost,
+  `first_seq` and `last_seq` (ADR 69).
+- A `peer_cut_off` event tells the other peers that one was cut off, and the
+  `last_queued` event it was sent, as the host log's `peer-dropped` now says
+  too (ADR 69).
 
 ### Changed
 
@@ -109,6 +127,10 @@ brnr's own conventions:
   `cancel`, `permission`, `config`, `close`) stays experimental, opt-in by
   name, for all of 1.x; one leaves experimental only by an ADR with evidence
   from real editors (ADR 67).
+- `event notify` on the socket, cut off for falling behind while its
+  command runs, lets the command finish and catches up, where it stopped
+  the command and exited 1; a started bridge (`--stdin`) is cut off as
+  before (ADR 69).
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
 

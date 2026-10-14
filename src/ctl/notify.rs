@@ -24,10 +24,13 @@
 //! Commands run one at a time, in order, each in a process group of its
 //! own, and no event is read while one runs: one that takes too long makes
 //! notify fall behind, and the process cuts it off as it does any peer that
-//! does (ADR 6 in docs/adr). Cut off, or stopped by a signal (HUP, INT, QUIT
-//! or TERM), notify stops the command it is running (SIGTERM to its group,
-//! SIGKILL [`STOP_WAIT`] later), says on stderr that it was cut off and
-//! that no more notifications come, and exits non-zero.
+//! does (ADR 6 in docs/adr). On the socket, cut off, notify lets the command
+//! finish, then catches up from the transcript and goes on (ADR 69); unable
+//! to, it says what it missed and exits 3. Its connection ended otherwise
+//! (the process killed), or stopped by a signal (HUP, INT, QUIT or TERM),
+//! notify stops the command it is running (SIGTERM to its group, SIGKILL
+//! [`STOP_WAIT`] later), says on stderr that it was cut off and that no more
+//! notifications come, and exits non-zero.
 //!
 //! With `--stdin` it reads the events from its stdin, one per line, instead of
 //! connecting: a started bridge's transport (ADR 35 and 36 in docs/adr). As a
@@ -37,9 +40,10 @@
 //! limits them, must include `agent_message`, `session_changed` and `exited`
 //! for the environment and the end. Its stdin ending before `exited` is being
 //! cut off; the process cuts off a bridge that falls behind with SIGTERM, and a
-//! started bridge's stderr is in the host log (`bridge-stderr`). On the socket,
-//! being cut off is the connection closing before `exited`, which notify also
-//! looks for while a command runs.
+//! started bridge's stderr is in the host log (`bridge-stderr`): a started
+//! bridge doesn't catch up (ADR 69). On the socket, the connection closing
+//! before `exited` is being cut off, which notify also looks for while a
+//! command runs, and asks the process about.
 
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -57,6 +61,7 @@ use serde_json::Value;
 
 use crate::{host, render, signals, sys};
 
+use super::catch_up::MISSED;
 use super::talk::Conn;
 use super::{USAGE, discover, events_arg, session_or_pid};
 
@@ -115,7 +120,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     let Events { source, process, only, mut titles } =
         Events::open(stdin, session.as_deref(), pid.as_deref(), &wanted)?;
     // Looked at while a command runs, until the process hangs up.
-    let mut hangup = source.socket();
+    let mut hangup = source.socket().0;
     let (tx, rx) = mpsc::channel();
     let (ask, asks) = mpsc::channel();
     let t = tx.clone();
@@ -136,8 +141,19 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         } else {
             let _ = ask.send(Ask::Next);
             match next(&rx) {
-                Ok(e) => e,
-                Err(why) => return Err(cut_off(&why, None)),
+                Ok((e, socket)) => {
+                    // Caught up, on a new connection (ADR 69).
+                    if socket.is_some() {
+                        hangup = socket;
+                    }
+                    e
+                }
+                Err(Stop::Ended(why)) => return Err(cut_off(&why, None)),
+                Err(Stop::Missed(note)) => {
+                    let text = render::event(&note, &options).unwrap_or_default();
+                    errln!("brnr: {text}; no more notifications");
+                    return Ok(ExitCode::from(MISSED));
+                }
             }
         };
         let name = e["event"].as_str().unwrap_or_default().to_owned();
@@ -181,15 +197,20 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                         return Err(cut_off(&render::signal(sig.into()), stopped.as_deref()));
                     }
                     // What the process sent before it hung up says whether
-                    // that was the end or notify being cut off.
-                    Ok(Msg::Rest(rest, why)) => {
+                    // that was the end; else the process says whether it
+                    // cut notify off, which catches up once the command is
+                    // done (ADR 69).
+                    Ok(Msg::Rest(rest, why, cut)) => {
                         draining = false;
-                        if !rest.iter().any(|e| ends(e, only.as_deref())) {
+                        let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
+                        if !end_too && !cut {
                             let stopped = running.take().map(|r| r.stop(&rx));
                             return Err(cut_off(&why, stopped.as_deref()));
                         }
                         ahead.extend(rest);
-                        end = Some(why);
+                        if end_too {
+                            end = Some(why);
+                        }
                     }
                     Err(RecvTimeoutError::Timeout)
                         if running.is_some() && hangup.as_ref().is_some_and(hung_up) =>
@@ -223,16 +244,25 @@ fn cut_off(why: &str, stopped: Option<&str>) -> String {
 
 /// What reaches notify's loop.
 enum Msg {
-    /// The next event, as asked for.
-    Event(Value),
+    /// The next event, as asked for, and the connection, if it is a new one
+    /// (caught up, ADR 69).
+    Event(Value, Option<UnixStream>),
     /// No more events, as asked for the next: why.
-    End(String),
-    /// What there was still to read once the process had hung up, and why
-    /// there was no more.
-    Rest(Vec<Value>, String),
+    End(Stop),
+    /// What there was still to read once the process had hung up, why there
+    /// was no more, and whether the process had cut notify off.
+    Rest(Vec<Value>, String, bool),
     Signal(c_int),
     /// The command with this pid has exited; it isn't reaped yet.
     Done(i32),
+}
+
+/// Why there are no more events.
+enum Stop {
+    /// The connection or stdin ended.
+    Ended(String),
+    /// Cut off, it couldn't catch up: what it missed (ADR 69).
+    Missed(Value),
 }
 
 /// What the reader is asked for.
@@ -240,28 +270,39 @@ enum Ask {
     /// The next event.
     Next,
     /// Everything left, once the process has hung up: no more than it had
-    /// sent by then.
+    /// sent by then, without catching up.
     Rest,
 }
 
 /// The next event: one at a time, as notify asks, so it is read no faster
 /// than notify gets through them, and the process sees it fall behind.
 fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
+    // How many times the connection the loop has was made again.
+    let mut told = 0;
     for ask in asks {
-        let mut rest = Vec::new();
+        if matches!(ask, Ask::Rest) {
+            let (rest, why, cut) = source.rest();
+            let _ = tx.send(Msg::Rest(rest, why, cut));
+            if cut {
+                continue;
+            }
+            return;
+        }
         loop {
             match source.next() {
-                Ok(Some(e)) if matches!(ask, Ask::Next) => {
-                    let _ = tx.send(Msg::Event(e));
+                Ok(Some(e)) => {
+                    let (socket, made) = source.socket();
+                    let socket = socket.filter(|_| made != told);
+                    told = made;
+                    let _ = tx.send(Msg::Event(e, socket));
                     break;
                 }
-                Ok(Some(e)) => rest.push(e),
                 Ok(None) => {}
                 Err(why) => {
-                    let _ = tx.send(match ask {
-                        Ask::Next => Msg::End(why),
-                        Ask::Rest => Msg::Rest(rest, why),
-                    });
+                    let _ = tx.send(Msg::End(match source.missed() {
+                        Some(note) => Stop::Missed(note),
+                        None => Stop::Ended(why),
+                    }));
                     return;
                 }
             }
@@ -269,16 +310,16 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
     }
 }
 
-/// The next event, waited for with no command running; `Err` for why there
-/// is none.
-fn next(rx: &Receiver<Msg>) -> Result<Value, String> {
+/// The next event, waited for with no command running, and its connection
+/// if it is a new one; `Err` for why there is none.
+fn next(rx: &Receiver<Msg>) -> Result<(Value, Option<UnixStream>), Stop> {
     loop {
         match rx.recv() {
-            Ok(Msg::Event(e)) => return Ok(e),
-            Ok(Msg::End(why)) => return Err(why),
-            Ok(Msg::Signal(sig)) => return Err(render::signal(sig.into())),
+            Ok(Msg::Event(e, socket)) => return Ok((e, socket)),
+            Ok(Msg::End(stop)) => return Err(stop),
+            Ok(Msg::Signal(sig)) => return Err(Stop::Ended(render::signal(sig.into()))),
             Ok(_) => {}
-            Err(_) => return Err("no more events".to_owned()),
+            Err(_) => return Err(Stop::Ended("no more events".to_owned())),
         }
     }
 }
@@ -318,7 +359,7 @@ struct Events {
 }
 
 enum Source {
-    Socket(Conn),
+    Socket(Box<Conn>),
     /// A started bridge's (ADR 35 in docs/adr).
     Stdin(Stdin),
 }
@@ -345,7 +386,7 @@ impl Events {
         let hosts = discover()?;
         let (host, only) = session_or_pid(&hosts, session, pid)?;
         let mut conn = Conn::open(host)?;
-        conn.subscribe(wanted)?;
+        conn.subscribe(wanted, only.as_deref())?;
         // Titles the agent gave before we subscribed.
         let status = conn.call(serde_json::json!({ "cmd": "status" }))?;
         let titles: HashMap<String, String> = status["sessions"]
@@ -356,7 +397,12 @@ impl Events {
                 Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
             })
             .collect();
-        Ok(Events { source: Source::Socket(conn), process: host.id().to_owned(), only, titles })
+        Ok(Events {
+            source: Source::Socket(Box::new(conn)),
+            process: host.id().to_owned(),
+            only,
+            titles,
+        })
     }
 }
 
@@ -379,10 +425,31 @@ impl Source {
         }
     }
 
-    /// The connection, to see the process hang up while a command runs.
-    fn socket(&self) -> Option<UnixStream> {
+    /// The connection, to see the process hang up while a command runs,
+    /// and how many times it was made again.
+    fn socket(&self) -> (Option<UnixStream>, u32) {
         match self {
-            Source::Socket(conn) => conn.socket().ok(),
+            Source::Socket(conn) => {
+                let (socket, made) = conn.socket();
+                (socket.ok(), made)
+            }
+            Source::Stdin(_) => (None, 0),
+        }
+    }
+
+    /// What is left before the process hung up, why it did, and whether it
+    /// cut notify off (ADR 69).
+    fn rest(&mut self) -> (Vec<Value>, String, bool) {
+        match self {
+            Source::Socket(conn) => conn.rest(),
+            Source::Stdin(_) => (Vec::new(), "stdin closed".into(), false),
+        }
+    }
+
+    /// What it missed, cut off, if it couldn't catch up.
+    fn missed(&self) -> Option<Value> {
+        match self {
+            Source::Socket(conn) => conn.missed().cloned(),
             Source::Stdin(_) => None,
         }
     }
