@@ -14,6 +14,11 @@ and `options`; `queue` takes `show`; and requests `new` and `resume` open a
 session in the running process (`session new --pid`, `session resume
 --pid`).
 
+Amended by 64: from 1.0.0, the compatibility promise covers the protocol
+as a bridge brnr starts speaks it, on its stdin and stdout; the control
+socket is private, in the runtime directory, and not an interface, so a
+client connecting to it directly has no promise.
+
 ## Context
 
 A bridge connects brnr's sessions to something else: Slack, push

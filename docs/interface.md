@@ -5,6 +5,10 @@ transport, configuration, and bridge protocol. It applies to the source
 revision containing it; use the same tag as your installed `brnr --version`.
 Before 1.0 these interfaces can change without compatibility aliases; see
 [ADR 1, P9](adr/0001-principles.md#p9-no-backwards-compatibility-before-10).
+From 1.0.0, what is marked **Covered** here is kept compatible within a
+major version, and what is marked **Not covered** can change in any release
+([ADR 64](adr/0064-what-the-compatibility-promise-covers.md));
+[compatibility](#compatibility) has the rules.
 For installation and a walkthrough, start with the [README](../README.md).
 
 ## Command syntax
@@ -35,6 +39,10 @@ invoke a shell explicitly if shell syntax is needed. With no agent after
 when that profile exists. `brnr --help` prints the syntax below, a section
 per group; `-h` is an alias, and `-V` aliases `--version`. `brnr host` is internal, not a command
 for users to start by hand.
+
+**Covered** from 1.0.0: the commands, their flags and positional arguments,
+and what each means. **Not covered**: the usage text itself, as `--help`
+prints it, and `brnr host`.
 
 ```text
 usage:
@@ -119,6 +127,11 @@ human-readable table or summary. It does not convert usage errors or
 ordinary diagnostics into JSON. Parse JSON, not human-readable columns.
 Unknown or unavailable values may be null; agent-supplied objects vary
 with the agent's capabilities.
+
+**Covered** from 1.0.0: each command's `--json` structure, its fields, their
+types and what they mean. **Not covered**: the human-readable tables and
+summaries, and the wording of diagnostics and errors, on stderr or in a JSON
+field.
 
 | Command | Input and effect | Output |
 |---|---|---|
@@ -224,6 +237,9 @@ ends, cancelled or failed too, none of its calls is listed.
 
 ### Exit codes
 
+**Covered** from 1.0.0: the code of each situation below. A minor release
+can give a situation that has none a code of its own.
+
 | Context | Result |
 |---|---|
 | Ordinary CLI command | 0 on success; 1 for invalid arguments or an operation failure. |
@@ -255,11 +271,22 @@ See [editor setup and deviations](../README.md#use-it-from-an-editor) and
 experimental actions are documented there; strict mode passes the editor's
 capabilities through and disables experimental actions.
 
+**Covered** from 1.0.0: ACP version 1
+([ADR 54](adr/0054-acp-version-1.md)), and what passes between the editor
+and the agent: unchanged, but for the changes the README and ADRs 2, 3 and
+4 name, with the defaults they have at 1.0.0.
+
 ## Configuration and environment
 
 Configuration is TOML. [Profiles](../README.md#profiles) gives a complete
 example. Unknown keys, keys in the wrong section, and unknown feature/action
 names fail to load. `doctor` validates every profile.
+
+**Covered** from 1.0.0: the TOML below, its sections, keys, values and
+names; the environment variables below, `BRNR_DIR` as where the runtime
+directory is, not what is in it; and what `event notify`'s command and a
+started bridge get in their environment, but `BRNR_SOCKET`. A configuration
+that uses a key added in a later 1.x release doesn't load in an earlier one.
 
 | Section | Keys and input types |
 |---|---|
@@ -291,6 +318,14 @@ can instead connect to `$BRNR_DIR/<pid>.sock` and write/read the same
 protocol. Access is restricted by the private runtime directory; this is
 a local control interface, not an HTTP service or a sandbox boundary
 against other programs running as the same user.
+
+**Covered** from 1.0.0: the protocol as a bridge brnr starts from a profile
+speaks it, on its stdout and stdin: each `cmd`, its fields and its reply,
+the events, and how long the bridge lasts. **Not covered**: the control
+socket, which is in the private runtime directory and is not an interface:
+its path, how processes and their metadata files are found, and a client
+connecting to it directly, which speaks this protocol today but has no
+promise and can change in any release; and the wording of `error`.
 
 Send one UTF-8 JSON object followed by a newline per request. `cmd` is a
 command string; optional `req_id` is echoed unchanged in the reply. Use a
@@ -352,6 +387,10 @@ of a session that overlap share one replay and one `history` event, so
 `loads` can be more than 1, and a recorded history is then in the
 transcript once per load.
 
+**Covered** from 1.0.0: each event's name and fields, wherever it goes: a
+bridge's stdin, `--json` lines, `event notify`'s stdin and its variables.
+Ignore the events and fields you don't know: a minor release can add them.
+
 Socket clients must subscribe to get live events. Profile-started bridges
 are subscribed from startup. Bridge defaults include all events except
 `acp`; the CLI display defaults additionally omit `agent_thought`, `usage`
@@ -371,8 +410,14 @@ See [buffering and cutoffs](../README.md#when-a-reader-falls-behind) for the
 host/session identity fields, logging modes, redaction and `records-skipped`
 gap records. Read history through `event log` where possible. A transcript is not
 a guarantee of complete history: disk backlog/errors, disabled logging,
-and abrupt process death can lose records. These formats also follow the
-pre-1.0 compatibility policy.
+and abrupt process death can lose records.
+
+**Covered** from 1.0.0: each session's events and raw ACP files, where they
+are under `$BRNR_HOME` and their records; a 1.x brnr reads what an earlier
+1.x wrote; and where each other file under `$BRNR_HOME` is. **Not
+covered**: what host logs (`hosts/<run id>.jsonl`) and session lock files
+contain, and what is in the runtime directory: sockets, metadata files and
+session lock files.
 
 Human-readable output escapes agent control characters; JSON retains the
 agent's text, so escape it before displaying it in a terminal or UI. MCP
@@ -388,3 +433,29 @@ file is a `session-log-failed` host-log record.
 `doctor --report` is for review before
 sharing; it does not upload anything. See the [threat model](threat-model.md)
 for trust boundaries and the documented host-SIGKILL cleanup limitation.
+
+## Compatibility
+
+Before 1.0.0 every interface here can change outright, with no aliases or
+shims (P9). From 1.0.0, what the sections above mark **Covered** is kept
+compatible within a major version, and anything they don't name is not
+covered ([ADR 64](adr/0064-what-the-compatibility-promise-covers.md)). The
+library on crates.io is covered as part of the command line: its public API
+is a facade that mirrors it (#147); its internals, behind a feature that is off by
+default, are not. Stable error codes (#205) are covered once they land.
+
+- A minor release can add a command, flag, JSON field, event, event field,
+  bridge request, config key, or an exit code for a situation that had
+  none.
+- Only a major release removes or renames any of those, changes a field's
+  type or what it means, or changes the exit code of a situation that has
+  one.
+- Ignore the fields and events you don't know.
+- A deprecated form keeps working until the next major version; the
+  [changelog](../CHANGELOG.md) says what to use instead.
+
+Security fixes are made on the latest major version; see
+[SECURITY.md](../SECURITY.md). Before 1.0.0-rc.1, the names and shapes of
+`--json` output (#150), events and transcript records (#151), the exit code
+of a usage error (#153) and flags and config keys spelled two ways (#154)
+are still being settled.

@@ -9,6 +9,9 @@ Amended by 53: a session id in a file name is escaped, one name per id (P8).
 Amended by 59: transcripts are written only where only the user can read
 them, existing ones included (P13).
 
+Amended by 64: from 1.0.0, P9's compatibility within a major version is of
+what ADR 64 lists as covered, and of nothing else.
+
 The rules the other decisions are measured against. They were drawn out of
 the former decision log when every entry was reviewed (October 2026), and
 sharpened where earlier decisions pulled against them. Decisions cite them as

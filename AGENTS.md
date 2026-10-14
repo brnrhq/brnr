@@ -28,6 +28,16 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   form, with no aliases or shims. Say so in the pull request, and in
   CHANGELOG.md's `[Unreleased]`, the next release's notes, under Changed or
   Removed, starting with **Breaking:**.
+- From 1.0.0, what [ADR 64](docs/adr/0064-what-the-compatibility-promise-covers.md)
+  covers is kept within a major version: commands, flags and arguments,
+  `--json`, exit codes, events, a started bridge's protocol, transcripts,
+  config TOML, ACP and what `brnr acp` passes through. Add freely; a
+  removal, rename, or change of a field's type or meaning or of an exit code
+  waits for the next major, the old form deprecated and working until then.
+  Where files are under `$BRNR_HOME`, and how the runtime directory is
+  found, are covered; text output, help, error wording, what host logs and
+  lock files contain, the control socket (private, not an interface) and
+  what is in the runtime directory aren't.
 
 ## Where things are
 

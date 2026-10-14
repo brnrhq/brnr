@@ -157,6 +157,19 @@ describes; one that breaks a principle says which, and why. Before 1.0 there
 is no backwards compatibility: a change replaces what it changes, with no
 aliases or shims.
 
+From 1.0.0, what [ADR 64](docs/adr/0064-what-the-compatibility-promise-covers.md)
+covers is kept compatible within a major version: the commands and their
+flags and arguments, `--json` structures, exit codes, events, the protocol
+of a started bridge, transcripts, where files are under `$BRNR_HOME`,
+config TOML, and ACP with what `brnr acp` passes through. Text output, help
+text, error wording, what host logs and lock files contain, the control
+socket (private, not an interface) and what is in the runtime directory are
+not. In a minor release, adding a command, flag, JSON field, event, config
+key, or an exit code for a new situation is fine. Removing or renaming one, changing a
+field's type or meaning, or changing an existing situation's exit code waits
+for the next major; until then the old form is deprecated, and keeps
+working.
+
 ## Pull requests
 
 - Against `main`, which changes only through pull requests.
@@ -173,7 +186,9 @@ aliases or shims.
   under its change type (Added, Changed, Deprecated, Removed, Fixed,
   Security): what is now true, in a sentence, with its ADR. A breaking change
   goes under Changed or Removed, starts with **Breaking:**, and says what to
-  do instead. That section is the next release's notes.
+  do instead; from 1.0.0 only in a major release, and a form deprecated
+  before then goes under Deprecated, with what to use instead (ADR 64).
+  That section is the next release's notes.
 - Releases are the maintainers' (`release.sh`, in the README).
 
 ## Security

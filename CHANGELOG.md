@@ -13,6 +13,10 @@ brnr's own conventions:
 - Before 1.0 nothing is kept for compatibility (ADR 1, P9). A breaking
   change goes under Changed or Removed, starts with **Breaking:**, and says
   what to do instead.
+- From 1.0.0, what ADR 64 covers is kept compatible within a major version.
+  A breaking change to it waits for the next major, where it is marked as
+  above. A form replaced in a minor release goes under Deprecated, says what
+  to use instead, and keeps working until the next major.
 - Security names a fixed vulnerability by its advisory (`GHSA-…`) and CVE
   ids where it has them.
 - An entry cites the ADR it follows. 0.6.0 and earlier came before
