@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::request::{self, Request, Role};
-use brnr::{config, lock, paths, render, signals, spawn, sys};
+use crate::request::{self, Request, Role};
+use crate::{config, lock, paths, render, signals, spawn, sys};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, closing, closing_in, connect, discover,
@@ -653,10 +653,10 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             return Ok(exit_status(child)); // It has said why, on our stderr.
         }
         let error = ready["error"].as_str().unwrap_or("the process exited without a session");
-        if brnr::bug::is_panic(error) {
+        if crate::bug::is_panic(error) {
             // A detached process has no terminal to say where to report it.
             errln!("brnr: {error}");
-            eprintln!("{}", brnr::bug::link(error, command));
+            eprintln!("{}", crate::bug::link(error, command));
             return Ok(ExitCode::FAILURE);
         }
         return Err(error.to_owned());

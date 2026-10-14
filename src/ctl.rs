@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, log, paths, render};
+use crate::host::{EVENTS, QUIET, alive};
+use crate::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -51,7 +51,7 @@ macro_rules! out {
 }
 /// `eprintln!` for messages with the agent's words in them.
 macro_rules! errln {
-    ($($arg:tt)*) => { eprintln!("{}", brnr::render::clean(&format!($($arg)*))) };
+    ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
 mod delete;
@@ -150,7 +150,7 @@ const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `acp` and `host`. A group's
 /// commands are `brnr <group> <verb>`; the others, one word.
-pub fn main(args: Vec<String>) -> ExitCode {
+pub(crate) fn main(args: Vec<String>) -> ExitCode {
     let cmd = args.first().map_or("", String::as_str);
     let grouped = GROUPS.contains(&cmd);
     let verb = if grouped { args.get(1).map(String::as_str) } else { None };
@@ -238,7 +238,7 @@ fn has_usage(group: &str, verb: &str) -> bool {
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
-pub fn command(args: &[String]) -> String {
+pub(crate) fn command(args: &[String]) -> String {
     let n = match args.first() {
         Some(group) if GROUPS.contains(&group.as_str()) => 2,
         _ => 1,

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use brnr::render;
+use crate::render;
 
 use super::{USAGE, call, discover, print_json, running_session};
 

@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use brnr::host::alive;
-use brnr::{paths, render};
+use crate::host::alive;
+use crate::{paths, render};
 
 use super::{Found, USAGE, call, closing_in, default_events, discover, events_arg, find_session};
 

@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use brnr::paths;
+use crate::paths;
 
 use super::USAGE;
 

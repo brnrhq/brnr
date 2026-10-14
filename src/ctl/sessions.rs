@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, lock, log, paths, signals, spawn, sys};
+use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
+use crate::{config, json, lock, log, paths, signals, spawn, sys};
 
 use super::{
     Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,

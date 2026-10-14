@@ -26,8 +26,8 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use brnr::schema::ErrorCode;
-use brnr::{lock, log};
+use crate::schema::ErrorCode;
+use crate::{lock, log};
 
 use super::sessions::{Asked, named_agent};
 use super::{Found, USAGE, closing, closing_in, discover, find_session, print_json, running_in};

@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 use libc::c_int;
 use serde_json::Value;
 
-use brnr::{host, render, signals, sys};
+use crate::{host, render, signals, sys};
 
 use super::talk::Conn;
 use super::{USAGE, discover, events_arg, session_or_pid};

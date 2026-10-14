@@ -45,8 +45,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use brnr::host::check_bridge;
-use brnr::{bug, config, lock, log, paths, signals, spawn, sys};
+use crate::host::check_bridge;
+use crate::{bug, config, lock, log, paths, signals, spawn, sys};
 
 use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, text, when};
 
