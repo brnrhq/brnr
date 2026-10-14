@@ -98,7 +98,12 @@ impl Env {
     }
 
     pub fn hosts(&self) -> Vec<Value> {
-        let Ok(entries) = fs::read_dir(self.dir.join("run")) else { return Vec::new() };
+        self.hosts_in(&self.dir.join("run"))
+    }
+
+    /// The metadata of the processes running in runtime directory `run`.
+    pub fn hosts_in(&self, run: &Path) -> Vec<Value> {
+        let Ok(entries) = fs::read_dir(run) else { return Vec::new() };
         entries
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -169,7 +174,11 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for host in self.hosts() {
+        // Those started with another runtime directory in it too (`run2`).
+        let entries = fs::read_dir(&self.dir).into_iter().flatten().flatten();
+        let runs = entries.filter(|e| e.file_name().to_string_lossy().starts_with("run"));
+        let hosts: Vec<Value> = runs.flat_map(|e| self.hosts_in(&e.path())).collect();
+        for host in hosts {
             for key in ["agent_pid", "host_pid"] {
                 if let Some(pid) = host[key].as_i64() {
                     kill(-(pid as i32), libc::SIGKILL);

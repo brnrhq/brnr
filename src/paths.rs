@@ -2,9 +2,8 @@
 //!
 //! - Control sockets and metadata: `$BRNR_DIR`, else
 //!   `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>`. Each host
-//!   writes `<id>.sock` and `<id>.json` there, and holds
-//!   `sessions/<session id>.lock` for each session it serves (see lock.rs);
-//!   the directory is private to the user, which is the access control.
+//!   writes `<id>.sock` and `<id>.json` there; the directory is private to
+//!   the user, which is the access control.
 //! - Logs: under `$BRNR_HOME`, else `~/.brnr`, laid out like the
 //!   agents' own transcripts so they can be joined with them:
 //!   `projects/<folder>/<session id>.jsonl` per ACP session, its events,
@@ -13,10 +12,17 @@
 //!   into `-` (as `~/.claude/projects` does); and `hosts/<host id>.jsonl`
 //!   for what belongs to no session.
 //!
+//!   Session locks go with the transcripts, `sessions/<session id>.lock`
+//!   there (see lock.rs): two processes that write one transcript, however
+//!   each found its runtime directory, contend for one lock (ADR 65).
+//!
 //!   A session id in a file name is escaped (`file_name`, ADR 53): one name
 //!   per id, so two sessions never share a transcript or a lock.
 //! - Config: `$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`,
 //!   else `~/.config/brnr/config.toml`.
+//!
+//! How each is found, `file_name` and `project_key` are fixed for 1.x
+//! (ADR 65).
 
 use std::env;
 use std::fs::{self, DirBuilder};
@@ -84,9 +90,10 @@ pub fn session_log(cwd: &Path, session: &str) -> PathBuf {
         .join(format!("{}.jsonl", file_name(session)))
 }
 
-/// Where the session locks are (see lock.rs).
+/// Where the session locks are (see lock.rs): with the transcripts, so
+/// that processes that share them share the locks too (ADR 65).
 pub fn session_locks() -> PathBuf {
-    runtime_dir().join("sessions")
+    state_dir().join("sessions")
 }
 
 pub fn session_lock(session: &str) -> PathBuf {

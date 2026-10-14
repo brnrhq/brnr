@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::{
     Host, USAGE, closing, discover, one_arg, print_json, print_table, request_timeout,
-    response_json, running_session, text,
+    response_json, running_in, running_session, text,
 };
 
 /// The agent may take a while to switch model or fork a session.
@@ -337,7 +337,7 @@ pub(super) fn held<'a>(
 ) -> Result<(&'a Host, Value), String> {
     let running = format!("{session} is running in process {pid}");
     let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
-        return Err(format!("{running}, which brnr doesn't list"));
+        return Err(running_in(session, pid, ", which brnr doesn't list"));
     };
     let Some(status) = &host.status else {
         return Err(format!("{running}, which is not answering"));

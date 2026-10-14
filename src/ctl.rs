@@ -347,6 +347,22 @@ fn closing(session: &str, pid: impl Display) -> String {
     )
 }
 
+/// "`session` is running in process `pid`", then `hint`; for a process
+/// started with another runtime directory, which the commands run here
+/// can't reach, that directory instead, and that `BRNR_DIR` set to it
+/// reaches the process (ADR 65).
+fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
+    match lock::holder_dir(session) {
+        Some(dir) => format!(
+            "{session} is running in process {pid} with runtime directory {} (BRNR_DIR={} \
+             reaches it)",
+            dir.display(),
+            dir.display()
+        ),
+        None => format!("{session} is running in process {pid}{hint}"),
+    }
+}
+
 /// The process holding `session`'s lock as it closes it, if one is: see
 /// `closing`.
 fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
@@ -365,7 +381,8 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
                 Err(format!("{arg} is running in process {pid}, which is not answering"))
             }
             Some(host) if host.closing(arg) => Err(closing(arg, pid)),
-            _ => Err(format!("{arg} is opening in process {pid}")),
+            Some(_) => Err(format!("{arg} is opening in process {pid}")),
+            None => Err(running_in(arg, pid, ", which brnr doesn't list")),
         };
     }
     if let Some(host) = hosts.iter().find(|h| serves(h)) {

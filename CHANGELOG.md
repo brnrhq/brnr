@@ -53,6 +53,23 @@ brnr's own conventions:
 - **Breaking:** `event log` has no `-f`: use `--follow`. A word with one
   dash is an argument there and in `session new` and `resume`, as for the
   other commands, not an unknown option (ADR 63).
+- **Breaking:** a session's lock is `$BRNR_HOME/sessions/<id>.lock`, beside
+  its transcript, where it was `$BRNR_DIR/sessions/<id>.lock`. Two
+  processes whose runtime directories differed (on Linux, a shell with
+  `XDG_RUNTIME_DIR` and a cron job without it) but shared `~/.brnr` each
+  took a lock of their own, so both could own one session and append to one
+  transcript, and each environment's commands saw only its own process. Now
+  the second resume is refused, naming the process and its runtime
+  directory (`sess-1 is running in process 4466 with runtime directory
+  /run/user/1000/brnr (BRNR_DIR=/run/user/1000/brnr reaches it)`), with or
+  without `--take-over`; `session list` there shows the session
+  `unreachable` with that pid; commands on it, and an editor's load of it,
+  are told the same; and `doctor` lists locks left by processes that are
+  gone under `session locks`. `log = false` still writes the locks there. A
+  lock left in `$BRNR_DIR/sessions/` is read by nothing: remove the
+  directory. How the runtime and state directories are found, and how a
+  session id (`file_name`) and a cwd (`project_key`) become file names, are
+  fixed for 1.x (ADR 3, ADR 65).
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
 

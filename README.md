@@ -352,16 +352,22 @@ brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5
 ```
 
 A process holds a lock for each session it serves
-(`$BRNR_DIR/sessions/<id>.lock`), so which process has a session is known
-without asking it. A process that doesn't answer (within 5 seconds) still has
-its sessions: `session list` and `process list` show them `unreachable`,
-commands on them say the process isn't answering, and `session resume`
-refuses them, naming the process, as it does any session that is running. A
-process that is gone, even one whose pid another process has now (nobody
-listens on its socket), isn't shown or counted as running, and its metadata
-and socket are removed. `--take-over` asks the owner to close the session
-(an editor's process does only if its profile enables `close`) and resumes it
-in a new headless process; sessions beside it keep running.
+(`~/.brnr/sessions/<id>.lock`, beside the transcripts, so two processes that
+write one transcript contend for one lock however each found its runtime
+directory), so which process has a session is known without asking it. A
+process that doesn't answer (within 5 seconds) still has its sessions:
+`session list` and `process list` show them `unreachable`, commands on them
+say the process isn't answering, and `session resume` refuses them, naming
+the process, as it does any session that is running. A process started with
+another runtime directory (`BRNR_DIR`; a cron job without `XDG_RUNTIME_DIR`,
+say) can't be reached from this one: `session list` shows its sessions
+`unreachable` too, and a refusal names its runtime directory and that
+`BRNR_DIR` set to it reaches the process. A process that is gone, even one
+whose pid another process has now (nobody listens on its socket), isn't shown
+or counted as running, and its metadata and socket are removed. `--take-over`
+asks the owner to close the session (an editor's process does only if its
+profile enables `close`) and resumes it in a new headless process; sessions
+beside it keep running.
 
 A session whose lock can't be taken (`sessions/` isn't private, or a directory
 is where its lock file goes) isn't served headless: `session new` fails with the
@@ -728,7 +734,12 @@ Like the agents' own transcripts, keyed by project folder:
 ~/.brnr/projects/<folder>/<session id>.jsonl       # a session's events
 ~/.brnr/projects/<folder>/<session id>.acp.jsonl   # its raw ACP
 ~/.brnr/hosts/<run id>.jsonl                       # each process's, for what belongs to no session
+~/.brnr/sessions/<session id>.lock                 # held by the process serving the session
 ```
+
+This layout, how `~/.brnr` and the runtime directory are found, and how a cwd
+and a session id become names (below) are fixed for 1.x (ADR 65); what the
+host logs and the locks contain isn't (ADR 64).
 
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
@@ -751,7 +762,8 @@ a transcript. Every record carries `host_id`, `host_pid`, `proxy_pid` and
 `agent_pid` for joining: `proxy_pid` is null for a headless process, and the
 `session_deleted` that `session delete` records is no process's, its
 `host_id`, `host_pid` and `proxy_pid` null. `log = "events"` leaves out the
-raw file, most of the space; `log = false` writes nothing.
+raw file, most of the space; `log = false` writes nothing but the session
+locks.
 
 Records skipped behind a slow disk are counted, and a `records-skipped` record
 (`count`, `acp` of them raw ACP, `since`, `until`) marks the gap in the host
@@ -779,7 +791,7 @@ what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),
 and a session whose file can't be is served without it, with a
 `session-log-failed` record in the host log saying why. There is no
-override; `log = false` writes nothing.
+override; `log = false` writes no transcripts.
 
 ## Adapters
 
@@ -815,8 +827,8 @@ brnr doctor --report               # a bug report to read, then paste into an is
 
 It checks that the runtime directory is private, isn't a symlink, is short
 enough for socket paths, and holds nothing left by processes that are gone
-(their metadata, sockets and session locks), nor anything that keeps a
-session from being locked; that transcripts are readable
+(their metadata and sockets); that nothing keeps a session from being locked,
+and no lock is left by a process that is gone; that transcripts are readable
 only by you; that the config parses, with every key in its part, and each
 profile's agent, cwd, MCP servers and bridges are valid; where the adapters
 are found; and that every running process answers, naming the sessions one
@@ -855,9 +867,9 @@ the panic, and in the foreground by the process itself.
 
 | Variable | Default |
 |---|---|
-| `BRNR_HOME` | `~/.brnr` (transcripts) |
+| `BRNR_HOME` | `~/.brnr` (transcripts and session locks) |
 | `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
-| `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets, metadata and session locks; brnr refuses one others can use) |
+| `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata; brnr refuses one others can use) |
 | `BRNR_START_TIMEOUT` | `120`: seconds a start has to commit |
 
 ## Releasing

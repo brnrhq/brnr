@@ -2,12 +2,13 @@
 //! and says what's wrong.
 //!
 //! - the runtime directory: private to the user, not a symlink, short enough
-//!   for a socket path, and free of metadata, sockets and session locks left
-//!   by processes that are gone. Gone is what a process's socket says (see
+//!   for a socket path, and free of metadata and sockets left by processes
+//!   that are gone. Gone is what a process's socket says (see
 //!   `gone` in ctl.rs): one nobody listens on was left by a process that is
 //!   gone, even when its pid is another process's now;
-//! - session locks: that each session can be locked (ADR 50), `sessions/`
-//!   being a private directory with nothing but files where lock files go;
+//! - session locks, in the state directory (ADR 65): that each session can
+//!   be locked (ADR 50), `sessions/` being a private directory with nothing
+//!   but files where lock files go, and none left by a process that is gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
 //!   (ADR 33), and every profile's settings, cwd, agent and bridges are
@@ -113,9 +114,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
     }
     let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
-    if hosts.is_some() {
-        session_locks(&mut r);
-    }
+    session_locks(&mut r);
     transcripts(&mut r);
     config_file(&mut r);
     adapters(&mut r);
@@ -238,42 +237,37 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
     stale.retain(|p| p.exists());
     stale.sort();
     stale.dedup();
-    // Session locks nobody holds: the kernel let go when their process died,
-    // and the file stayed.
-    let locks: Vec<PathBuf> =
-        lock::all().into_iter().filter(|e| e.pid.is_none()).map(|e| e.path).collect();
-    if stale.is_empty() && locks.is_empty() {
+    if stale.is_empty() {
         return Some(hosts);
     }
-    let mut names: Vec<String> =
+    let names: Vec<String> =
         stale.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into()).collect();
-    for p in &locks {
-        names.push(format!("sessions/{}", p.file_name().unwrap_or_default().to_string_lossy()));
-    }
+    left_behind(r, what, &names, || stale.iter().for_each(|p| drop(fs::remove_file(p))));
+    Some(hosts)
+}
+
+/// What processes that are gone left, `names`, said; with `--fix`, removed
+/// by `remove` first.
+fn left_behind(r: &mut Report, what: &str, names: &[String], remove: impl FnOnce()) {
     if r.fix {
-        stale.iter().for_each(|p| drop(fs::remove_file(p)));
-        for p in &locks {
-            lock::remove(p);
-        }
-        r.line(
-            Level::Ok,
-            what,
-            format!("removed what processes that are gone left behind: {}", names.join(", ")),
-        );
+        remove();
+        let msg = format!("removed what processes that are gone left behind: {}", names.join(", "));
+        r.line(Level::Ok, what, msg);
     } else {
         let msg =
             format!("left by processes that are gone: {} (brnr doctor --fix)", names.join(", "));
         r.line(Level::Warn, what, msg);
     }
-    Some(hosts)
 }
 
-/// What keeps sessions from being locked (ADR 50): a `sessions/` that isn't
-/// a private directory, or something other than a file where a session's
-/// lock file goes. A headless start of such a session fails, and an editor's
-/// process serves it without the lock. Said only when there is something to
-/// say, and never fixed: brnr didn't make them, and they may hold the user's
-/// files.
+/// The session locks, in the state directory (ADR 65). What keeps sessions
+/// from being locked (ADR 50): a `sessions/` that isn't a private directory,
+/// or something other than a file where a session's lock file goes. A
+/// headless start of such a session fails, and an editor's process serves it
+/// without the lock. Said only when there is something to say, and never
+/// fixed: brnr didn't make them, and they may hold the user's files. Then
+/// the locks nobody holds: the kernel let go when their process died, and
+/// the file stayed; `--fix` removes them.
 fn session_locks(r: &mut Report) {
     let what = "session locks";
     let dir = paths::session_locks();
@@ -292,6 +286,15 @@ fn session_locks(r: &mut Report) {
         );
         r.line(Level::Fail, what, msg);
     }
+    let locks: Vec<PathBuf> =
+        lock::all().into_iter().filter(|e| e.pid.is_none()).map(|e| e.path).collect();
+    if locks.is_empty() {
+        return;
+    }
+    let name =
+        |p: &PathBuf| format!("sessions/{}", p.file_name().unwrap_or_default().to_string_lossy());
+    let names: Vec<String> = locks.iter().map(name).collect();
+    left_behind(r, what, &names, || locks.iter().for_each(|p| _ = lock::remove(p)));
 }
 
 /// Whether what a process left without its metadata (`<pid>.sock`,

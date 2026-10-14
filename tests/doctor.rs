@@ -147,7 +147,7 @@ fn stale_metadata_is_removed() {
 fn stale_session_locks_are_removed() {
     let env = Env::new("dr-locks");
     env.start(&[]);
-    let sessions = env.dir.join("run/sessions");
+    let sessions = env.dir.join("home/sessions");
     let stale = sessions.join("old-1.lock");
     write(&stale, &format!(r#"{{"pid":{},"session":"old-1"}}"#, dead_pid()), 0o600);
     let (ok, text) = doctor(&env, &[]);
@@ -167,10 +167,10 @@ fn stale_session_locks_are_removed() {
 #[test]
 fn adr_0050_what_keeps_a_session_from_being_locked_fails() {
     let env = Env::new("dr-nolock");
-    let sessions = env.dir.join("run/sessions");
+    let sessions = env.dir.join("home/sessions");
     mkdir(&sessions.join("sess-1.lock"), 0o700);
     symlink("/dev/null", sessions.join("sess-2.lock")).unwrap();
-    for dir in ["run", "run/sessions"] {
+    for dir in ["home", "home/sessions"] {
         fs::set_permissions(env.dir.join(dir), fs::Permissions::from_mode(0o700)).unwrap();
     }
     for args in [&[][..], &["--fix"]] {

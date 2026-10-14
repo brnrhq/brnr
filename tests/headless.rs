@@ -425,16 +425,16 @@ fn host_logs(env: &Env) -> String {
     dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect()
 }
 
-/// What is left in the runtime dir.
+/// What is left in the runtime dir, and the session locks left in the state
+/// dir (ADR 65); the locks' directory itself stays.
 fn runtime_files(env: &Env) -> Vec<String> {
     let names = |dir: &Path| -> Vec<String> {
         let entries = fs::read_dir(dir).into_iter().flatten();
         entries.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
     };
-    // The session locks' directory stays; what matters is what's in it.
-    let run = env.dir.join("run");
-    let mut files: Vec<String> = names(&run).into_iter().filter(|n| n != "sessions").collect();
-    files.extend(names(&run.join("sessions")).into_iter().map(|n| format!("sessions/{n}")));
+    let mut files = names(&env.dir.join("run"));
+    let locks = names(&env.dir.join("home/sessions"));
+    files.extend(locks.into_iter().map(|n| format!("sessions/{n}")));
     files
 }
 
@@ -1662,7 +1662,7 @@ fn adr_0053_distinct_ids_never_share_a_lock() {
         start_as(&env, id);
     }
     // Each lock names its own session and process.
-    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("run/sessions"))
+    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("home/sessions"))
         .unwrap()
         .map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap())
         .map(|l: Value| (l["session"].as_str().unwrap().to_owned(), l["pid"].clone()))
@@ -1828,7 +1828,7 @@ fn waits_for_the_disk(env: &Env, mut cmd: Command, stall: &Path, first: i32, wha
     assert!(wait_for(Duration::from_secs(10), closed), "the agent wasn't asked to close it");
     sleep(Duration::from_millis(300));
     let early = waiting.try_wait().unwrap().is_some();
-    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap_or_default();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/sess-1.lock")).unwrap_or_default();
     let holder = serde_json::from_str::<Value>(&lock).map(|l| l["pid"].clone()).ok();
     fs::remove_file(stall).unwrap();
     let out = waiting.wait_with_output().unwrap();
@@ -1995,7 +1995,7 @@ fn adr_0048_a_close_resumed_in_its_process_is_answered_once_written() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(took >= Duration::from_millis(1900), "answered before it was written: {took:?}");
     assert!(took < Duration::from_secs(10), "answered after {took:?}");
-    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/sess-1.lock")).unwrap();
     let holder = serde_json::from_str::<Value>(&lock).unwrap()["pid"].to_string();
     assert_eq!(holder, pid, "the process let go of the session it resumed");
     fs::remove_file(&stall).unwrap();
@@ -2095,7 +2095,7 @@ fn adr_0048_a_failed_load_is_written_before_the_session_is_resumed() {
     let err = env.fails(&resume_args("old-1", &[]));
     assert!(err.contains(&said), "{err}");
     assert!(load.try_wait().unwrap().is_none(), "answered before its records were written");
-    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/old-1.lock")).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&lock).unwrap()["pid"], first);
     fs::remove_file(&stall).unwrap();
     let out = load.wait_with_output().unwrap();
@@ -2126,12 +2126,12 @@ fn adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed()
     let err = env.fails(&resume_args("old-1", &[]));
     assert!(err.contains("session/load failed: Can't load"), "{err}");
     // Held while its logger is behind: the lock file is there, the process's.
-    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/old-1.lock")).unwrap();
     let first = serde_json::from_str::<Value>(&lock).unwrap()["pid"].as_i64().unwrap() as i32;
     assert_eq!(first, env.host_pid(), "held by another process");
     fs::remove_file(&stall).unwrap();
     assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()));
-    assert!(!env.dir.join("run/sessions/old-1.lock").exists(), "not let go of");
+    assert!(!env.dir.join("home/sessions/old-1.lock").exists(), "not let go of");
     let mut resume = unstalled(&env, &resume_args("old-1", &[]));
     let out = resume.env_remove("LOAD_FAIL").output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
@@ -2473,7 +2473,12 @@ fn editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
 /// `brnr acp <args>`, initialized.
 fn editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let args: Vec<&str> = ["acp"].iter().chain(args).chain(&["--", AGENT]).copied().collect();
-    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    initialized(env.brnr(&args))
+}
+
+/// `brnr acp`, as `cmd` has it, initialized.
+fn initialized(mut cmd: Command) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let mut editor = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     writeln!(to_agent, "{INITIALIZE}").unwrap();
@@ -2929,6 +2934,27 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let _ = editor.kill();
 }
 
+/// An editor's load of a session held by a process started with another
+/// runtime directory, which this one's commands can't reach, is refused the
+/// same way, saying which `BRNR_DIR` releases it (ADR 65).
+#[test]
+fn adr_0065_an_editors_load_held_from_another_runtime_dir_is_refused() {
+    let env = Env::new("ed-tworun");
+    env.start(&[]);
+    let headless = env.pid();
+    let mut cmd = env.brnr(&["acp", "--", AGENT]);
+    cmd.env("BRNR_DIR", env.dir.join("run2"));
+    let (mut editor, mut to_agent, mut from_agent) = initialized(cmd);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
+    let release = format!("`BRNR_DIR={} brnr session close sess-1`", env.dir.join("run").display());
+    assert!(message.contains(&release), "{error}");
+    assert!(env.calls_of("session/load").is_empty());
+    let _ = editor.kill();
+}
+
 /// An editor's session whose lock can't be taken (a directory where its lock
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,
@@ -2939,7 +2965,7 @@ fn adr_0050_an_editors_session_that_cant_be_locked_is_passed_through() {
     use std::os::unix::fs::DirBuilderExt;
     let env = Env::new("ed-nolock");
     let unlockable = |session: &str| {
-        let lock = env.dir.join(format!("run/sessions/{session}.lock"));
+        let lock = env.dir.join(format!("home/sessions/{session}.lock"));
         fs::DirBuilder::new().recursive(true).mode(0o700).create(&lock).unwrap();
         lock
     };

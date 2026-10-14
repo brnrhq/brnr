@@ -298,9 +298,12 @@ doesn't load in an earlier one.
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
 
 [Environment variables](../README.md#environment) define `BRNR_HOME`
-(transcripts), `BRNR_CONFIG` (configuration file), `BRNR_DIR` (private
-runtime directory), and `BRNR_START_TIMEOUT` (startup deadline, default
-120 seconds), including their default paths. Agent executables and bridge
+(transcripts and session locks), `BRNR_CONFIG` (configuration file),
+`BRNR_DIR` (private runtime directory), and `BRNR_START_TIMEOUT` (startup
+deadline, default 120 seconds), including their default paths. How
+`BRNR_HOME` and `BRNR_DIR` are found, and the state directory's layout, are
+fixed for 1.x ([ADR 65](adr/0065-session-locks-live-with-the-transcripts.md));
+what host logs and lock files contain isn't. Agent executables and bridge
 commands inherit the launching environment; authentication variables are
 agent-specific. A started bridge additionally receives `BRNR_PID` and
 `BRNR_SOCKET`.
@@ -417,8 +420,8 @@ and abrupt process death can lose records.
 are under `$BRNR_HOME` and their records; a 1.x brnr reads what an earlier
 1.x wrote; and where each other file under `$BRNR_HOME` is. **Not
 covered**: what host logs (`hosts/<run id>.jsonl`) and session lock files
-contain, and what is in the runtime directory: sockets, metadata files and
-session lock files.
+(`sessions/<id>.lock`) contain, and what is in the runtime directory:
+sockets and metadata files.
 
 Human-readable output escapes agent control characters; JSON retains the
 agent's text, so escape it before displaying it in a terminal or UI. MCP

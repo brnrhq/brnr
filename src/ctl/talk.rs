@@ -40,7 +40,8 @@ use brnr::{config, lock, paths, render, signals, spawn, sys};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, closing, closing_in, connect, discover,
-    find_session, print_json, process, read_stdin, response_json, running_session, settings, text,
+    find_session, print_json, process, read_stdin, response_json, running_in, running_session,
+    settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -521,10 +522,8 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         // and is refused the same way if it has been taken meanwhile.
         let found = match lock::holder(&wanted) {
             Some(pid) if !a.take_over => {
-                return Err(format!(
-                    "{wanted} is running in process {pid} (--take-over closes it there and \
-                     resumes it here)"
-                ));
+                let hint = " (--take-over closes it there and resumes it here)";
+                return Err(running_in(&wanted, pid, hint));
             }
             Some(pid) => {
                 let (host, running) = settings::held(&hosts, &wanted, pid)?;
@@ -723,10 +722,9 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         let found = match lock::holder(wanted) {
             Some(holder) if holder.to_string() == pid => return Err(here),
             Some(holder) if !a.take_over => {
-                return Err(format!(
-                    "{wanted} is running in process {holder} (--take-over closes it there and \
-                     resumes it in process {pid})"
-                ));
+                let hint =
+                    format!(" (--take-over closes it there and resumes it in process {pid})");
+                return Err(running_in(wanted, holder, &hint));
             }
             Some(holder) => {
                 let (owner_host, running) = settings::held(&hosts, wanted, holder)?;

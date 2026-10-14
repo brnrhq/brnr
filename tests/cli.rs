@@ -1885,7 +1885,7 @@ fn adr_0003_resume_of_a_held_session_is_refused() {
     let env = Env::new("c-held");
     env.start(&[]);
     let pid = env.pid();
-    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/sess-1.lock")).unwrap();
     let lock: Value = serde_json::from_str(&lock).unwrap();
     assert_eq!((lock["pid"].to_string(), &lock["session"]), (pid.clone(), &"sess-1".into()));
     let err = env.fails(&resume_args("sess-1", &[]));
@@ -1901,7 +1901,7 @@ fn adr_0003_resume_of_a_held_session_is_refused() {
 /// opening the file fails.
 fn unlockable(env: &Env, session: &str) -> std::path::PathBuf {
     use std::os::unix::fs::DirBuilderExt;
-    let lock = env.dir.join(format!("run/sessions/{session}.lock"));
+    let lock = env.dir.join(format!("home/sessions/{session}.lock"));
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&lock).unwrap();
     lock
 }
@@ -2010,7 +2010,7 @@ fn adr_0050_a_second_owner_of_a_new_session_isnt_started() {
 
 /// The pid in `session`'s lock file.
 fn lock_holder(env: &Env, session: &str) -> String {
-    let lock = fs::read_to_string(env.dir.join(format!("run/sessions/{session}.lock"))).unwrap();
+    let lock = fs::read_to_string(env.dir.join(format!("home/sessions/{session}.lock"))).unwrap();
     serde_json::from_str::<Value>(&lock).unwrap()["pid"].to_string()
 }
 
@@ -2129,6 +2129,59 @@ fn adr_0003_a_dead_process_lets_go() {
     let out = env.run(&["session", "resume", "sess-1", "--wait", "--prompt", "reply again"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert_eq!(stdout(&out), "again\n");
+}
+
+/// Two processes whose runtime directories differ (an interactive shell's
+/// `$XDG_RUNTIME_DIR` and a cron job's `$TMPDIR`, say) and whose state
+/// directory is one share a session's transcript, so they share its lock: a
+/// resume from the second runtime directory can't own the session, and
+/// names the process holding it and the runtime directory that reaches it;
+/// `session list` there shows the session held, by that process.
+#[test]
+fn adr_0065_a_session_is_owned_once_however_the_runtime_dir_is_found() {
+    let env = Env::new("c-tworun");
+    env.start(&[]);
+    let pid = env.pid();
+    let run = env.dir.join("run");
+    let other = env.dir.join("run2");
+    let elsewhere = |args: &[&str]| env.brnr(args).env("BRNR_DIR", &other).output().unwrap();
+    let out = elsewhere(&resume_args("sess-1", &[]));
+    assert!(!out.status.success(), "a second process owns sess-1: {}", stdout(&out));
+    let said = format!(
+        "sess-1 is running in process {pid} with runtime directory {} (BRNR_DIR={} reaches it)",
+        run.display(),
+        run.display()
+    );
+    assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+    let started = env.hosts_in(&other);
+    assert!(started.is_empty(), "a second process started: {started:?}");
+    assert!(env.calls_of("session/resume").is_empty(), "the agent was asked to resume it");
+    assert_eq!(env.hosts().len(), 1);
+    // Said the same way when the process to resume it is in this runtime
+    // directory, and when the holder is to be asked to close it.
+    let out = elsewhere(&resume_args("sess-1", &["--take-over"]));
+    assert!(stderr(&out).contains(&said), "{}", stderr(&out));
+    assert!(env.calls_of("session/close").is_empty(), "the holder was asked to close it");
+    // Not inactive, nor dropped from the list: held, by a process this
+    // runtime directory can't reach.
+    let out = elsewhere(&["session", "list", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
+    assert_eq!(list[0]["pid"].to_string(), pid, "{list}");
+    let out = elsewhere(&["session", "list"]);
+    assert!(stdout(&out).contains("unreachable"), "{}", stdout(&out));
+    // Commands on it say where it is too, and change nothing.
+    for args in [&["session", "close", "sess-1"][..], &["session", "delete", "sess-1"]] {
+        let out = elsewhere(args);
+        assert!(!out.status.success(), "{args:?}: {}", stdout(&out));
+        assert!(stderr(&out).contains(&said), "{args:?}: {}", stderr(&out));
+    }
+    assert!(env.calls_of("session/close").is_empty(), "the holder was asked to close it");
+    assert!(env.calls_of("session/delete").is_empty(), "the agent was asked to delete it");
+    // Where it runs, it is reached as ever.
+    env.ok(&["session", "close", "sess-1"]);
 }
 
 /// A process that is gone isn't listed, even when its pid is another
@@ -2725,7 +2778,11 @@ experimental = [\"send\", \"context\", \"cancel\", \"permission\", \"config\", \
          features = [\"shared_sessions\"]\n",
     );
     env.start(&[]);
-    assert!(!env.dir.join("home").exists(), "log = false wrote transcripts");
+    // The state directory holds the session's lock (ADR 65), and nothing
+    // else.
+    for written in ["home/projects", "home/hosts"] {
+        assert!(!env.dir.join(written).exists(), "log = false wrote transcripts: {written}");
+    }
 }
 
 // ---- attachments ---------------------------------------------------------

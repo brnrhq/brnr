@@ -1971,10 +1971,17 @@ impl Host {
 }
 
 /// What the editor is told of a session process `pid` holds: how to
-/// release it.
+/// release it. One started with another runtime directory is reached
+/// through that (ADR 65), where its metadata is, read only if the
+/// directory is private, as this one's must be.
 fn held_elsewhere(session: &str, pid: u32) -> String {
-    let meta = fs::read(paths::runtime_dir().join(format!("{pid}.json"))).ok();
+    let elsewhere = lock::holder_dir(session);
+    let dir = elsewhere.clone().unwrap_or_else(paths::runtime_dir);
+    let meta = paths::check_private(&dir)
+        .ok()
+        .and_then(|()| fs::read(dir.join(format!("{pid}.json"))).ok());
     let meta: Value = meta.and_then(|m| serde_json::from_slice(&m).ok()).unwrap_or_default();
+    let through = elsewhere.map(|d| format!("BRNR_DIR={} ", d.display())).unwrap_or_default();
     if meta["proxy_pid"].is_number() {
         format!(
             "brnr: session {session} is open in another editor (brnr process {pid}); close it \
@@ -1983,7 +1990,7 @@ fn held_elsewhere(session: &str, pid: u32) -> String {
     } else {
         format!(
             "brnr: session {session} is running in brnr process {pid}; release it first with \
-             `brnr session close {session}`"
+             `{through}brnr session close {session}`"
         )
     }
 }

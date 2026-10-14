@@ -252,6 +252,21 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             }));
         }
     }
+    // Held by a process started with another runtime directory (ADR 65):
+    // running, where the commands run here don't reach, so neither inactive
+    // nor a process's listed here; its agent and cwd aren't known here.
+    for held in locks.iter().filter(|e| e.elsewhere()) {
+        rows.push(json!({
+            "session": held.session,
+            "title": null,
+            "state": "unreachable",
+            "pid": held.pid,
+            "agent": null,
+            "source": "brnr",
+            "last_active": null,
+            "cwd": null,
+        }));
+    }
     for p in inactive_sessions(hosts) {
         rows.push(json!({
             "session": p["session_id"],

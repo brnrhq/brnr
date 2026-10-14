@@ -30,7 +30,7 @@ use brnr::schema::ErrorCode;
 use brnr::{lock, log};
 
 use super::sessions::{Asked, named_agent};
-use super::{Found, USAGE, closing, closing_in, discover, find_session, print_json};
+use super::{Found, USAGE, closing, closing_in, discover, find_session, print_json, running_in};
 
 pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut purge, mut profile, mut json_out) = (None, false, None, false);
@@ -51,8 +51,11 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let id = session.ok_or(USAGE)?;
-    let open = |pid: &str| {
-        format!("{id} is open in process {pid}: close it first (brnr session close {id})")
+    // One open in a process started with another runtime directory is
+    // closed from there (ADR 65).
+    let open = |pid: &str| match lock::holder_dir(&id) {
+        Some(_) => running_in(&id, pid, ""),
+        None => format!("{id} is open in process {pid}: close it first (brnr session close {id})"),
     };
     let hosts = discover()?;
     if let Some(pid) = lock::holder(&id) {

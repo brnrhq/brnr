@@ -1,8 +1,9 @@
 //! Session locks (ADR 3 in docs/adr). A process holds an exclusive `flock` on
-//! `sessions/<id>.lock` in the runtime directory for each session it serves,
-//! with its pid and the session's id written inside: taking a session is
-//! taking its lock. The kernel lets go of it when the process ends, however
-//! it ends, so nothing has to be cleaned up; a process that closes a session
+//! `sessions/<id>.lock` in the state directory, beside the transcripts it
+//! guards (ADR 65), for each session it serves, with its pid, the session's
+//! id and its runtime directory written inside: taking a session is taking
+//! its lock. The kernel lets go of it when the process ends, however it
+//! ends, so nothing has to be cleaned up; a process that closes a session
 //! removes the file as it lets go.
 //!
 //! Whether a lock is held can be seen without asking its process (`holder`,
@@ -52,11 +53,23 @@ pub enum Error {
     Io(String),
 }
 
-/// A lock file, what it says, and the process holding it, if one does.
+/// A lock file, what it says, and the process holding it, if one does, with
+/// the runtime directory that process was started with.
 pub struct Entry {
     pub path: PathBuf,
     pub session: Option<String>,
     pub pid: Option<u32>,
+    pub dir: Option<PathBuf>,
+}
+
+impl Entry {
+    /// Whether its holder's runtime directory is another than this
+    /// process's: a process whose socket and metadata the commands run here
+    /// don't see (ADR 65).
+    pub fn elsewhere(&self) -> bool {
+        let here = paths::runtime_dir();
+        self.pid.is_some() && self.dir.as_deref().is_some_and(|dir| !same_dir(dir, &here))
+    }
 }
 
 /// Takes `session`'s lock, or says which process holds it.
@@ -84,14 +97,17 @@ pub fn take(session: &str) -> Result<Lock, Error> {
                 continue;
             }
             return match read(&mut file) {
-                Some((pid, _)) => Err(Error::Held(pid)),
+                Some((pid, ..)) => Err(Error::Held(pid)),
                 None => Err(failed(io::Error::other("held by a process that doesn't say which"))),
             };
         }
         if !same(&file, &path) {
             continue; // Its holder removed it as it let go.
         }
-        let record = json!({ "pid": std::process::id(), "session": session });
+        // Absolute, so that it names the directory from any cwd.
+        let dir = paths::runtime_dir();
+        let dir = std::path::absolute(&dir).unwrap_or(dir).to_string_lossy().into_owned();
+        let record = json!({ "pid": std::process::id(), "session": session, "dir": dir });
         file.set_len(0)
             .and_then(|()| file.write_all(format!("{record}\n").as_bytes()))
             .map_err(failed)?;
@@ -102,6 +118,13 @@ pub fn take(session: &str) -> Result<Lock, Error> {
 /// The pid of the process holding `session`'s lock, if one does.
 pub fn holder(session: &str) -> Option<u32> {
     look(paths::session_lock(session))?.pid
+}
+
+/// The runtime directory of the process holding `session`'s lock, when it
+/// isn't this process's: the commands run here can't reach that process,
+/// and `BRNR_DIR` set to it can (ADR 65).
+pub fn holder_dir(session: &str) -> Option<PathBuf> {
+    look(paths::session_lock(session)).filter(Entry::elsewhere)?.dir
 }
 
 /// Every lock file, held or not.
@@ -153,11 +176,12 @@ fn look(path: PathBuf) -> Option<Entry> {
         let said = read(&mut file);
         if flock(&file, libc::LOCK_SH).ok()? {
             // Nobody's: what it says is a process's that has gone.
-            return Some(Entry { path, session: said.map(|(_, s)| s), pid: None });
+            let session = said.map(|(_, s, _)| s);
+            return Some(Entry { path, session, pid: None, dir: None });
         }
         // Held: by the process it names, once that has written itself in.
-        if let Some((pid, session)) = read(&mut file).filter(|(pid, _)| alive(*pid)) {
-            return Some(Entry { path, session: Some(session), pid: Some(pid) });
+        if let Some((pid, session, dir)) = read(&mut file).filter(|(pid, ..)| alive(*pid)) {
+            return Some(Entry { path, session: Some(session), pid: Some(pid), dir });
         }
         sleep(PAUSE);
     }
@@ -171,14 +195,24 @@ fn open(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).custom_flags(flags).open(path)
 }
 
-/// The pid and session a lock file names.
-fn read(file: &mut File) -> Option<(u32, String)> {
+/// The pid and session a lock file names, and its holder's runtime
+/// directory.
+fn read(file: &mut File) -> Option<(u32, String, Option<PathBuf>)> {
     let mut text = String::new();
     file.rewind().ok()?;
     file.read_to_string(&mut text).ok()?;
     let record: Value = serde_json::from_str(&text).ok()?;
     let pid = u32::try_from(record["pid"].as_u64()?).ok()?;
-    Some((pid, record["session"].as_str()?.to_owned()))
+    let dir = record["dir"].as_str().map(PathBuf::from);
+    Some((pid, record["session"].as_str()?.to_owned(), dir))
+}
+
+/// Whether `a` and `b` name one directory, however each is spelled.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// `flock(op | LOCK_NB)`: false if someone else holds it.

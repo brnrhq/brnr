@@ -3,6 +3,11 @@
 Accepted 2026-10-14. Amends 1 (P9) and 35. Resolves #148. Nothing to
 implement: the promise starts at 1.0.0, and until then P9 is as it was.
 
+Amended by 65: the session locks are in the state directory
+(`$BRNR_HOME/sessions/<id>.lock`), not the runtime directory, so where they
+are is covered and what they contain isn't; ADR 65 lists how both
+directories are found and the state directory's layout.
+
 ## Context
 
 P9 has no backwards compatibility before 1.0, and from 1.0.0 on

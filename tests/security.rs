@@ -66,8 +66,8 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     let run = env.dir.join("run");
     assert_eq!(mode(&run), 0o700);
     assert_eq!(mode(&run.join(format!("{}.sock", env.pid()))), 0o600);
-    assert_eq!(mode(&run.join("sessions")), 0o700);
-    assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
+    assert_eq!(mode(&env.dir.join("home/sessions")), 0o700);
+    assert_eq!(mode(&env.dir.join("home/sessions/sess-1.lock")), 0o600);
     // The transcripts are the logger thread's to write (ADR 48).
     env.ok(&["event", "log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
@@ -147,11 +147,11 @@ fn a_runtime_dir_of_another_users_is_refused() {
     private_dir_error(&stderr(&out));
 }
 
-/// A runtime directory whose `sessions/` is the given mode, and that.
+/// A state directory whose `sessions/` is the given mode, and that.
 fn session_locks(env: &Env, mode: u32) -> PathBuf {
-    let sessions = env.dir.join("run/sessions");
+    let sessions = env.dir.join("home/sessions");
     fs::create_dir_all(&sessions).unwrap();
-    chmod(&env.dir.join("run"), 0o700);
+    chmod(&env.dir.join("home"), 0o700);
     chmod(&sessions, mode);
     sessions
 }
@@ -377,7 +377,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     env.ok(&["event", "log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
-    assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
+    assert!(env.dir.join(format!("home/sessions/{file}.lock")).is_file());
     let made = tree(&env.dir);
     let escaped: Vec<_> = made.iter().filter(|p| p.ends_with("escape")).collect();
     assert!(escaped.is_empty(), "{escaped:?}");

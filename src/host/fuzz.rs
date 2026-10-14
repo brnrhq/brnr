@@ -7,8 +7,8 @@
 //! There is no agent, no link, no log and no peer: nothing is spawned or
 //! signalled (the stop timer, the one thing that signals the agent, never
 //! fires here). What the host does to the filesystem it still does: an
-//! editor's `session/load` takes the session's lock in the runtime
-//! directory (`$BRNR_DIR`, see paths.rs), held until the harness drops.
+//! editor's `session/load` takes the session's lock in the state directory
+//! (`$BRNR_HOME`, see paths.rs, ADR 65), held until the harness drops.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -231,7 +231,7 @@ mod tests {
         let mut h = Harness::headless(false, None);
         h.sent();
         // No real session lock in this unit test. The fuzz targets use their
-        // own runtime directory for the locks they exercise.
+        // own state directory for the locks they exercise.
         h.host.claimed.insert("fuzz-start".into(), super::super::acp::Hold::Owner(None));
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1}}"#);
         h.sent();
