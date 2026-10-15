@@ -1649,6 +1649,140 @@ mod tests {
         process.join().unwrap();
     }
 
+    /// `session new --wait` (and `resume`) follows its turn on the start
+    /// channel, subscribed as the ready report says (`socket#start`, at 10).
+    /// Cut off there after one event, it catches up on the process's socket:
+    /// what it missed, 12 to 14, comes from the transcript, in order and once
+    /// each (11, which it got, and 15, which comes live, are in the
+    /// transcript too), then what comes live, 15 and 16. Cut off where it
+    /// can't catch up (records not written), it says what it missed and
+    /// exits 3.
+    #[test]
+    fn adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed() {
+        let dir = env::temp_dir().join(format!("brnr-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log, file) =
+            (dir.join("h.sock"), dir.join("host.jsonl"), dir.join("s.jsonl"));
+        let record = |event: Value| json!({ "ts": "t", "host_id": "h", "event": event });
+        let opened = json!({ "event": "session-opened", "session_id": "s", "file": file });
+        fs::write(&host_log, format!("{}\n", record(opened))).unwrap();
+        let event = |seq: u64, name: &str, text: &str| {
+            let mut e = json!({ "event": name, "session": "s", "host_id": "h", "seq": seq });
+            match name {
+                "user_message" => e["message"] = json!("m1"),
+                "turn_ended" => {
+                    (e["messages"], e["stop_reason"]) = (json!(["m1"]), json!("end_turn"))
+                }
+                _ => e["text"] = json!(text),
+            }
+            e
+        };
+        let recorded = [
+            event(11, "user_message", ""),
+            event(12, "agent_message", "one"),
+            event(13, "agent_message", "two"),
+            event(14, "agent_message", "three"),
+            event(15, "agent_message", "live"),
+        ];
+        let lines: String = recorded.iter().map(|e| format!("{}\n", record(e.clone()))).collect();
+        fs::write(&file, lines).unwrap();
+        // The process's socket: the start channel was cut off at 11; it
+        // subscribes again at 14, and 15 and 16 come live.
+        let listener = UnixListener::bind(&socket).unwrap();
+        let live = [event(15, "agent_message", "live"), event(16, "turn_ended", "")];
+        let process = thread::spawn(move || {
+            let mut stream = listener.incoming().next().unwrap().unwrap();
+            let mut asked = Vec::new();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                asked.push(req.clone());
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    "was_cut_off" => {
+                        json!({ "ok": true, "cut_off": req["peer"] == "socket#start" })
+                    }
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": "socket#1", "host_id": "h", "seq": 14 })
+                    }
+                    _ => json!({ "ok": true, "lost": false }),
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+                match req["cmd"].as_str().unwrap() {
+                    "subscribe" => writeln!(stream, "{}", live[0]).unwrap(),
+                    "logged" => {
+                        writeln!(stream, "{}", live[1]).unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            asked
+        });
+        let ready = json!({
+            "ok": true, "session": "s", "pid": 4242, "message": "m1",
+            "peer": "socket#start", "host_id": "h", "seq": 10,
+        });
+        // The start channel, as `start` reads it: the report, then the turn.
+        let start_channel = |then: &[Value]| {
+            let (ours, mut theirs) = UnixStream::pair().unwrap();
+            writeln!(theirs, "{ready}").unwrap();
+            for e in then {
+                writeln!(theirs, "{e}").unwrap();
+            }
+            let mut conn = Conn::new(ours).unwrap();
+            let report = conn.read(None).unwrap().unwrap();
+            assert_eq!(report, ready);
+            conn.subscribed_at(&report, TURN_EVENTS, "s");
+            // As the process names it; here, at the fake's.
+            let f = conn.follow.as_mut().expect("the start channel isn't followed");
+            assert_eq!(f.socket, paths::runtime_dir().join("4242.sock"));
+            assert_eq!(
+                (f.peer.as_str(), f.last, f.session.as_deref()),
+                ("socket#start", 10, Some("s"))
+            );
+            (f.socket, f.host_log) = (socket.clone(), host_log.clone());
+            conn
+        };
+        let mut conn = start_channel(&[event(11, "user_message", "")]);
+        let mut got = Vec::new();
+        while got.len() < 5 {
+            got.push(conn.next_event(None).unwrap().unwrap());
+        }
+        let seqs: Vec<_> = got.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, [11, 12, 13, 14, 15]);
+        assert_eq!(got, recorded, "what it got, what it missed, then what came live");
+        // The turn's end, live, ends the wait.
+        assert_eq!(wait_for_message(&mut conn, "s", "s", "m1", None, None), Ok(ExitCode::SUCCESS));
+        assert_eq!(conn.reconnects, 1);
+        let asked: Vec<_> = process.join().unwrap().into_iter().map(|r| r["cmd"].clone()).collect();
+        assert_eq!(asked, ["was_cut_off", "subscribe", "logged"]);
+        let _ = fs::remove_dir_all(&dir);
+
+        // A process with records it couldn't write (`logged` says `lost`):
+        // `cut_off_at`'s, asked nothing on its first connection, so that the
+        // second is the one catching up makes, subscribed again at 20.
+        let (first, process) = cut_off_at("none");
+        let socket = first.socket.clone().unwrap();
+        drop(first);
+        let mut conn = start_channel(&[]);
+        conn.follow.as_mut().unwrap().socket = socket;
+        let ended = started(&mut conn, &ready, true, true, None);
+        assert_eq!(ended, Ok(ExitCode::from(MISSED)));
+        let note = conn.missed().unwrap();
+        assert_eq!(
+            (&note["event"], &note["peer"]),
+            (&json!("events-missed"), &json!("socket#start"))
+        );
+        assert_eq!(
+            (note["after"].as_u64(), note["until"].as_u64()),
+            (Some(10), Some(20)),
+            "{note}"
+        );
+        process.join().unwrap();
+    }
+
     #[test]
     fn base64_matches_rfc4648() {
         for (raw, encoded) in

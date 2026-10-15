@@ -227,6 +227,7 @@ Run `cargo test --release adr_0069_`. Named claims and their assertions:
   - `adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up`.
   - `adr_0069_event_wait_cut_off_looking_says_what_it_missed`.
   - `adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where`.
+  - `adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
 - [src/ctl/notify.rs](../../src/ctl/notify.rs)
   - `adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
 - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs)
