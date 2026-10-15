@@ -164,11 +164,11 @@ of a started bridge, transcripts, where files are under `$BRNR_HOME`,
 config TOML, and ACP with what `brnr acp` passes through. Text output, help
 text, error wording, what host logs and lock files contain, the control
 socket (private, not an interface) and what is in the runtime directory are
-not. In a minor release, adding a command, flag, JSON field, event, config
-key, or an exit code for a new situation is fine. Removing or renaming one, changing a
-field's type or meaning, or changing an existing situation's exit code waits
-for the next major; until then the old form is deprecated, and keeps
-working.
+not. In a minor release, adding a command, flag, JSON field, event, event
+field, bridge request, config key, or an exit code for a new situation is
+fine. Removing or renaming one, changing a field's type or meaning, or
+changing an existing situation's exit code waits for the next major; until
+then the old form is deprecated, and keeps working.
 
 ## Pull requests
 

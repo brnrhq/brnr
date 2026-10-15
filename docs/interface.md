@@ -284,9 +284,10 @@ names fail to load. `doctor` validates every profile.
 
 **Covered** from 1.0.0: the TOML below, its sections, keys, values and
 names; the environment variables below, `BRNR_DIR` as where the runtime
-directory is, not what is in it; and what `event notify`'s command and a
-started bridge get in their environment, but `BRNR_SOCKET`. A configuration
-that uses a key added in a later 1.x release doesn't load in an earlier one.
+directory is, not what is in it; the `BRNR_*` variables `event notify`
+gives its command; and `BRNR_PID` in a started bridge's environment, but not
+`BRNR_SOCKET`. A configuration that uses a key added in a later 1.x release
+doesn't load in an earlier one.
 
 | Section | Keys and input types |
 |---|---|
