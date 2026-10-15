@@ -112,14 +112,16 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
   `session resume --wait` (on the start channel, or with `--pid`), `event
   wait`, and `event notify` on the socket. A request that only asks
   (`status`, `pending`) and was cut off unanswered is asked again once
-  caught up; one that acts (`send`) is never sent twice.
+  caught up (unable to catch up, the command says what it missed, as
+  below); one that acts (`send`) is never sent twice.
 - `event notify` cut off while its command runs lets the command finish,
   then catches up, and runs the command for each event it missed. Its
   connection ending otherwise (the process killed), it stops the command as
   ADR 36 has it.
 - Cut off again while it catches up (it reads nothing from the new
-  connection meanwhile), a command does the same again: 3 times in a row
-  with nothing read live in between, then it gives up, as below.
+  connection meanwhile), a command does the same again, up to 3 cut-offs
+  in a row with nothing read live in between; cut off a 4th time, it gives
+  up, as below.
 
 ### When it can't
 
@@ -222,6 +224,9 @@ Run `cargo test --release adr_0069_`. Named claims and their assertions:
   - `adr_0069_was_cut_off_says_where_never_what`.
 - [src/ctl/talk.rs](../../src/ctl/talk.rs)
   - `adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up`.
+  - `adr_0069_event_wait_cut_off_looking_says_what_it_missed`.
+- [src/ctl/notify.rs](../../src/ctl/notify.rs)
+  - `adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
 - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs)
   - `adr_0069_a_records_position_is_read_from_its_end_or_head`.
 - [src/log.rs](../../src/log.rs)
