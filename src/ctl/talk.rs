@@ -223,7 +223,7 @@ impl Conn {
             Some(f) => {
                 match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
                 {
-                    Ok(mut conn) => conn.was_cut_off(&f.peer).unwrap_or(false),
+                    Ok(mut conn) => conn.was_cut_off(&f.peer).is_some(),
                     Err(_) => f.cut_off_before_it_went(),
                 }
             }
@@ -234,37 +234,60 @@ impl Conn {
         (rest, why, cut)
     }
 
-    /// Asks the process whether it cut `peer` off.
-    fn was_cut_off(&mut self, peer: &str) -> Result<bool, String> {
-        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer }))?;
-        Ok(asked["cut_off"] == true)
+    /// Asks the process whether it cut `peer` off: if it did, the last
+    /// position then (`last_queued`), if it says; none if it didn't, or
+    /// doesn't answer.
+    fn was_cut_off(&mut self, peer: &str) -> Option<Option<u64>> {
+        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer })).ok()?;
+        (asked["cut_off"] == true).then(|| asked["last_queued"].as_u64())
     }
 
     /// The connection has ended (`why`) before the end the command waits
     /// for: if the process cut it off, what it missed, read from the
     /// transcript, is queued, followed by what comes live on a new
     /// subscription (ADR 69). `Err(why)` if it wasn't cut off; or, with
-    /// `missed` saying what it missed, if it can't catch up.
+    /// `missed` saying what it missed, if it can't catch up. A new
+    /// subscription that fails, or doesn't say where it starts, is one more
+    /// cut-off: there is no position to catch up to, so it is tried again.
     fn catch_up(&mut self, why: String) -> Result<(), String> {
         let Some(mut f) = self.follow.take() else { return Err(why) };
-        f.tries += 1;
-        let fresh = UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
-        let (mut live, until) = match fresh {
-            Ok(mut conn) => {
-                if !conn.was_cut_off(&f.peer).unwrap_or(false) {
+        // Once the process has said it cut `f.peer` off: where it was then.
+        let mut cut: Option<Option<u64>> = None;
+        let (mut live, until) = loop {
+            f.tries += 1;
+            let fresh =
+                UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
+            let mut conn = match fresh {
+                Ok(conn) => conn,
+                // Gone: its transcript is whole (ADR 48), and is read to its end.
+                Err(_) if cut.is_some() || f.cut_off_before_it_went() => break (None, None),
+                Err(_) => return Err(why),
+            };
+            if cut.is_none() {
+                cut = conn.was_cut_off(&f.peer);
+                if cut.is_none() {
                     return Err(why);
                 }
-                match conn.resubscribe(&f) {
-                    Ok((peer, until)) => {
-                        f.peer = peer;
-                        (Some(conn), Some(until))
-                    }
-                    Err((until, e)) => return Err(self.give_up(&f, until, &e)),
-                }
             }
-            // Gone: its transcript is whole (ADR 48), and is read to its end.
-            Err(_) if f.cut_off_before_it_went() => (None, None),
-            Err(_) => return Err(why),
+            match conn.resubscribe(&f) {
+                Ok((peer, until)) => {
+                    f.peer = peer;
+                    break (Some(conn), Some(until));
+                }
+                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), &e)),
+                Err((None, e)) if f.tries > TRIES => {
+                    // Live, as far as it knows: up to where the process
+                    // said it cut the peer off.
+                    let known = cut.flatten();
+                    let n = f.tries;
+                    let mut e = format!("cut off {n} times in a row while catching up ({e})");
+                    if known.is_none() {
+                        e.push_str("; the process says no position, so up to where is unknown");
+                    }
+                    return Err(self.give_up(&f, known, &e));
+                }
+                Err((None, _)) => {}
+            }
         };
         if f.tries > TRIES {
             let e = format!("cut off {} times in a row while catching up", f.tries);
@@ -1613,6 +1636,109 @@ mod tests {
         assert_eq!((note["after"].as_u64(), note["until"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A new subscription that fails, or doesn't say where it starts, is one
+    /// more cut-off, tried again under the same limit. A process that goes
+    /// meanwhile (its socket refuses) is caught up with to its end, so that
+    /// `until` is null only for a process that has gone. One that stays
+    /// gives up at the 4th, `until` where it said it cut the peer off
+    /// (`last_queued`, 30), or null with the error saying why if it said no
+    /// position.
+    #[test]
+    fn adr_0069_a_new_subscription_that_fails_is_one_more_cut_off() {
+        // A process that says it cut the peer off (`last_queued`) and fails
+        // each new subscription (no `seq`, or an error), then, after
+        // `serves` connections, goes or (`stays`) only stops answering.
+        let process = |name: &str, last_queued: Option<u64>, serves: usize, stays: bool| {
+            let dir = env::temp_dir().join(format!("brnr-resub-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+            let exited = json!({ "event": "exited", "status": 0, "seq": 12 });
+            let record = json!({ "ts": "t", "host_id": "h", "event": exited });
+            fs::write(&host_log, format!("{record}\n")).unwrap();
+            let listener = UnixListener::bind(&socket).unwrap();
+            let at = socket.clone();
+            let thread = thread::spawn(move || {
+                let mut asked = Vec::new();
+                for (k, stream) in (1..=serves).zip(listener.incoming()) {
+                    let mut stream = stream.unwrap();
+                    let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                    for line in lines.map_while(Result::ok) {
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        asked.push(format!("{k}:{}", req["cmd"].as_str().unwrap()));
+                        let mut answer = match req["cmd"].as_str().unwrap() {
+                            "was_cut_off" => {
+                                json!({ "ok": true, "cut_off": true, "last_queued": last_queued })
+                            }
+                            "subscribe" if k % 2 == 1 => {
+                                json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h" })
+                            }
+                            _ => json!({ "ok": false, "error": "connection gone" }),
+                        };
+                        answer["req_id"] = req["req_id"].clone();
+                        // Gone before the command hears, so that it can't
+                        // connect again.
+                        if req["cmd"] == "subscribe" && k == serves && !stays {
+                            fs::remove_file(&at).unwrap();
+                        }
+                        writeln!(stream, "{answer}").unwrap();
+                        if req["cmd"] == "subscribe" {
+                            break;
+                        }
+                    }
+                }
+                asked
+            });
+            // Cut off before it read anything.
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            drop(theirs);
+            let mut conn = Conn::new(ours).unwrap();
+            conn.follow = Some(Follow {
+                socket,
+                host_id: "h".into(),
+                host_log,
+                peer: "socket#0".into(),
+                events: vec!["exited".into()],
+                session: None,
+                last: 10,
+                tries: 0,
+            });
+            (conn, thread, dir)
+        };
+        let tries = TRIES as usize + 1;
+        let all: Vec<String> = (1..=tries).map(|k| format!("{k}:subscribe")).collect();
+        let once = |asked: Vec<String>, served: usize| {
+            let mut want = vec!["1:was_cut_off".to_owned()];
+            want.extend(all.iter().take(served).cloned());
+            assert_eq!(asked, want, "was_cut_off asked once, subscribe on each connection");
+        };
+
+        // Gone after two: caught up to its end from the transcript.
+        let (mut conn, thread, dir) = process("gone", Some(30), 2, false);
+        let caught = conn.next_event(None).unwrap().unwrap();
+        assert_eq!((&caught["event"], &caught["seq"]), (&json!("exited"), &json!(12)));
+        assert!(conn.missed().is_none());
+        once(thread.join().unwrap(), 2);
+        let _ = fs::remove_dir_all(&dir);
+
+        // Still running: gives up at the 4th, up to where it was cut off.
+        for (name, last_queued) in [("stays", Some(30)), ("nowhere", None)] {
+            let (mut conn, thread, dir) = process(name, last_queued, tries, true);
+            assert!(conn.next_event(None).is_err());
+            let note = conn.missed().expect("no events-missed note").clone();
+            assert_eq!(
+                (note["after"].as_u64(), note["until"].as_u64()),
+                (Some(10), last_queued),
+                "{note}"
+            );
+            let error = note["error"].as_str().unwrap();
+            assert!(error.starts_with("cut off 4 times in a row while catching up"), "{note}");
+            assert_eq!(error.contains("no position"), last_queued.is_none(), "{note}");
+            once(thread.join().unwrap(), tries);
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     /// `event wait`, cut off before the process answered its first look

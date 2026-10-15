@@ -107,7 +107,10 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
 
   A process that has gone can't be asked: its host log's `peer-dropped`
   for the peer says it was cut off, steps 2 and 3 are left out, and its
-  transcript, whole once it has gone (ADR 48), is read to its end.
+  transcript, whole once it has gone (ADR 48), is read to its end. So is
+  the transcript of one that goes while the command catches up, once it
+  has said that it cut the peer off: its socket refuses the next
+  connection.
 - So do `event watch`, `prompt send --wait`, `session new --wait` and
   `session resume --wait` (on the start channel, or with `--pid`), `event
   wait`, and `event notify` on the socket. A request that only asks
@@ -121,7 +124,10 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
 - Cut off again while it catches up (it reads nothing from the new
   connection meanwhile), a command does the same again, up to 3 cut-offs
   in a row with nothing read live in between; cut off a 4th time, it gives
-  up, as below.
+  up, as below. A new subscription that fails, or whose answer has no
+  `seq`, gives no R: that is one more cut-off, and the command connects
+  and subscribes again (the process has already said it cut the peer
+  off, so it isn't asked again).
 
 ### When it can't
 
@@ -138,9 +144,15 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
   {"event":"events-missed","ts":"…","host_id":"…","peer":"socket#7","after":120,"until":180,"error":"the process keeps no transcript (log = false)"}
   ```
 
-  `until` is null for a process that has gone (or, live, one whose new
-  subscription failed, so there is no position to say). `event watch` shows it as
-  its last event, in text or JSON; the others on stderr (`brnr: cut off:
+  `until` is R, where the command subscribed again. Given up at the 4th
+  cut-off in a row with no R (its last new subscription failed), it is
+  where the process said it cut the peer off, `was_cut_off`'s
+  `last_queued`. It is null in two cases only: the process has gone (its
+  socket refuses a new connection), so its transcript is read to its end;
+  or the process, live, cut the peer off but said no `last_queued`, which
+  brnr's own process always says, and `error` then says that it gave no
+  position. `event watch` shows it as its last event, in text or JSON;
+  the others on stderr (`brnr: cut off:
   events after 120 up to 180 missed: …`). It exits 3, which no other
   outcome has.
 
@@ -227,6 +239,7 @@ Run `cargo test --release adr_0069_`. Named claims and their assertions:
   - `adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up`.
   - `adr_0069_event_wait_cut_off_looking_says_what_it_missed`.
   - `adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where`.
+  - `adr_0069_a_new_subscription_that_fails_is_one_more_cut_off`.
   - `adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
 - [src/ctl/notify.rs](../../src/ctl/notify.rs)
   - `adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
