@@ -37,6 +37,12 @@ criteria = "safe-to-deploy"
 delta = "2.14.0 -> 2.14.2"
 notes = "Reviewed the compiled source and manifest delta against the imported audited version. Both disjoint mutable-access helpers validate all bounds and duplicate indices before deriving references from the exclusive slice pointer; no mutation occurs between checks and pointer use. Optional missing keys produce None. Bucket projections split distinct key/value fields. Index operations retain explicit checked bounds; same-key equality uses Eq. Empty-map macros use the existing safe const constructor. No new ambient I/O. Dependencies require separate coverage."
 
+[[audits.itoa]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+version = "1.0.18"
+notes = "Automated full source review of all packaged src/ files (lib.rs, u128_ext.rs) and the manifest; no build script, no_std, no default dependencies. Unsafe code is unchecked DECIMAL_PAIRS indexing, a cast of the 40-byte buffer to the sealed per-type array and from_utf8_unchecked on the written tail. Pair indices stay below 100 because every divmod100 input is below 10000, including the 1e16 split of u128, whose multiply-shift constant was checked to give an exact quotient for every u128 (M*1e16 - 2^179 < 2^51). The written region is contiguous, every write is bounds-checked, and it holds only ASCII digits and '-'. No filesystem, network, process, env, FFI or asm."
+
 [[audits.jiff-tzdb-platform]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
@@ -97,8 +103,20 @@ criteria = "safe-to-deploy"
 delta = "0.27.2 -> 0.28.0"
 notes = "Reviewed the compiled source and manifest delta against the imported audited version. Discriminant attributes remain compile-time supplied metadata; default variants receive the corresponding Default derive. String conversion generates safe match/default construction, with explicit custom-error validation and the existing PHF fallback. Iterator traits are core-qualified; character classification uses ASCII digits. No new unsafe code or ambient I/O. Dependencies require separate coverage."
 
+[[audits.toml]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+version = "1.1.6+spec-1.1.0"
+notes = "Automated full source review of all packaged src/ files (36 files) and the manifest. The crate is #![forbid(unsafe_code)] and has no build script, FFI, filesystem, network, process or environment access; the optional debug feature only writes traces to stderr through anstream. Parsing is recursive descent over toml_parser events, bounded by toml_parser's RecursionGuard (80 nested arrays/inline tables unless the unbounded feature is on) and an 80-segment limit per dotted key; together these still allow a few thousand levels of nested tables, which deserialization and drop walk recursively. Panics found are limited to serde API misuse and Display of hand-built invalid values. This review does not cover toml_parser, toml_datetime, toml_writer, serde_spanned or winnow, which need their own coverage."
+
 [[audits.toml_writer]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
 delta = "1.1.1+spec-1.1.0 -> 1.1.2+spec-1.1.0"
 notes = "Automated review of the complete crates.io delta and string metrics. Quote-run counters now use Saturating<u8>, preventing overflow on long runs while preserving delimiter decisions. No unsafe code or new I/O; remaining changes are package include patterns, lint and version metadata."
+
+[[audits.zmij]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+version = "1.0.23"
+notes = "Automated full source review of all packaged src/ files (lib.rs, traits.rs, stdarch_x86.rs, cfg(test) tests.rs), build.rs and the manifest; no_std, no default dependencies. Unsafe code is unchecked indexing into const-built power-of-10, exponent-shift, exponent-string and shuffle tables, raw-pointer writes into a 24-byte stack buffer followed by from_utf8_unchecked, SSE2/SSE4.1/NEON intrinsics gated by compile-time target_feature cfgs, and empty-comment asm! optimizer barriers. Index ranges were derived for every f32/f64 bit pattern, including NaN/inf passed to format_finite and subnormals; the largest write ends exactly at byte 24, and the digit arithmetic only produces bytes 0-9, so the output is ASCII. Aligned SIMD loads read u128 fields at 16-byte multiples of an align(64) struct. build.rs only runs `$RUSTC --version` and reads OPT_LEVEL to emit cfgs. No filesystem, network, env or FFI in the library."
