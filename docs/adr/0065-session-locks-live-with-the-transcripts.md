@@ -56,9 +56,11 @@ which the records so far describe but don't promise.
   its agent and cwd unknown here, and not `inactive`; commands on the
   session (`close`, `delete`, `prompt send`, …) say the same; and an
   editor's load of it is answered with the process and `BRNR_DIR=… brnr
-  session close <id>` to release it. The directory after `BRNR_DIR=` is
-  one shell word, in single quotes when it has a space, a quote or another
-  character a shell reads, so that what is shown runs as it is shown.
+  session close <id>` to release it, or, held by an editor there, with the
+  process and its runtime directory, to close it in that editor. The
+  directory after `BRNR_DIR=` is one shell word, in single quotes when it
+  has a space, a quote or another character a shell reads, so that what is
+  shown runs as it is shown.
 - Fixed for 1.x, kept within the major version from 1.0.0 (P9), as ADR 64
   has it: where things are is covered, and what host logs and lock files
   contain, and what is in the runtime directory, aren't:
@@ -140,6 +142,10 @@ Run `cargo test --release adr_0065_`. Named claims and their assertions:
     directory having a space, and then a quote, the command in the answer
     has it quoted, and run by a shell it releases the session, which then
     loads.
+  - `adr_0065_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`:
+    a load of a session an editor's process with another `BRNR_DIR` holds
+    is answered with that process, its runtime directory and the
+    `BRNR_DIR` that reaches it; the agent isn't asked.
 - [src/paths.rs](../../src/paths.rs)
   - `adr_0065_brnr_dir_is_one_shell_word`: a plain directory is written as
     it is; one with a space, a quote, `$`, `` ` ``, `;`, `*` or a leading

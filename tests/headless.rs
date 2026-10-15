@@ -2979,6 +2979,40 @@ fn adr_0065_the_release_command_runs_as_shown() {
     }
 }
 
+/// An editor's load of a session another editor holds, whose process has
+/// another runtime directory, is refused with that directory and the
+/// `BRNR_DIR` that reaches it, as one a headless process holds is (ADR 65).
+#[test]
+fn adr_0065_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir() {
+    let env = Env::new("ed-edrun");
+    let run = env.dir.join("run 'e");
+    let mut cmd = env.brnr(&["acp", "--", AGENT]);
+    cmd.env("BRNR_DIR", &run);
+    let (mut holder, mut to_holder, mut from_holder) = initialized(cmd);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_holder, "{new}").unwrap();
+    assert_eq!(response(&mut from_holder, 2)["result"]["sessionId"], "sess-1");
+    let hosts = env.hosts_in(&run);
+    let pid = hosts.iter().find(|h| h["proxy_pid"].is_number()).unwrap()["host_pid"].clone();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    let said = format!(
+        "session sess-1 is open in another editor (brnr process {pid}), with runtime directory {} \
+         (BRNR_DIR={} reaches it); close it there first",
+        run.display(),
+        quoted(&run.to_string_lossy())
+    );
+    assert!(message.contains(&said), "{error}");
+    assert!(env.calls_of("session/load").is_empty());
+    let _ = editor.kill();
+    let _ = holder.kill();
+}
+
 /// An editor's session whose lock can't be taken (a directory where its lock
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,
