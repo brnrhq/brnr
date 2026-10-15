@@ -138,7 +138,8 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
   {"event":"events-missed","ts":"…","host_id":"…","peer":"socket#7","after":120,"until":180,"error":"the process keeps no transcript (log = false)"}
   ```
 
-  `until` is null for a process that has gone. `event watch` shows it as
+  `until` is null for a process that has gone (or, live, one whose new
+  subscription failed, so there is no position to say). `event watch` shows it as
   its last event, in text or JSON; the others on stderr (`brnr: cut off:
   events after 120 up to 180 missed: …`). It exits 3, which no other
   outcome has.
@@ -225,6 +226,7 @@ Run `cargo test --release adr_0069_`. Named claims and their assertions:
 - [src/ctl/talk.rs](../../src/ctl/talk.rs)
   - `adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up`.
   - `adr_0069_event_wait_cut_off_looking_says_what_it_missed`.
+  - `adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where`.
 - [src/ctl/notify.rs](../../src/ctl/notify.rs)
   - `adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
 - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs)

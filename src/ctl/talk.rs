@@ -259,7 +259,7 @@ impl Conn {
                         f.peer = peer;
                         (Some(conn), Some(until))
                     }
-                    Err(e) => return Err(self.give_up(&f, None, &e)),
+                    Err((until, e)) => return Err(self.give_up(&f, until, &e)),
                 }
             }
             // Gone: its transcript is whole (ADR 48), and is read to its end.
@@ -290,14 +290,18 @@ impl Conn {
 
     /// Subscribes as `f` did, and waits for the process to have written what
     /// it recorded until then: the new subscription's peer, and where it
-    /// starts, which the transcript has everything up to.
-    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), String> {
+    /// starts, which the transcript has everything up to. `Err` says why it
+    /// can't, and where the new subscription starts once it has one.
+    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, String)> {
         let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
-        let answer = self.call(json!({ "cmd": "subscribe", "events": events }))?;
+        let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
+        let answer = answer.map_err(|e| (None, e))?;
         let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
-        let next = next.ok_or("the process doesn't say where its events are")?;
-        if self.call(json!({ "cmd": "logged" }))?["lost"] == true {
-            return Err("the process has records it couldn't write yet (a full disk?)".into());
+        let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
+        let at = Some(next.last);
+        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
+            let why = "the process has records it couldn't write yet (a full disk?)";
+            return Err((at, why.into()));
         }
         Ok((next.peer, next.last))
     }
@@ -1626,6 +1630,23 @@ mod tests {
             assert_eq!((&note["event"], &note["after"]), (&json!("events-missed"), &json!(11)));
             process.join().unwrap();
         }
+    }
+
+    /// A live process that can't be caught up with (here, it has records it
+    /// couldn't write) has the note say up to where: where the command
+    /// subscribed again (at 20); null is for a process that has gone.
+    #[test]
+    fn adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where() {
+        let (mut conn, process) = cut_off_at("status");
+        conn.subscribe(&["turn_ended"], None).unwrap();
+        assert!(conn.call(json!({ "cmd": "status" })).is_err());
+        let note = conn.missed().unwrap();
+        assert_eq!(
+            (note["after"].as_u64(), note["until"].as_u64()),
+            (Some(11), Some(20)),
+            "{note}"
+        );
+        process.join().unwrap();
     }
 
     #[test]
