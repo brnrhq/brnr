@@ -73,10 +73,11 @@ brnr's own conventions:
   fixed for 1.x (ADR 3, ADR 65).
 - **Breaking:** `brnr acp` no longer drops the editor's `fs` and `terminal`
   client capabilities, in strict mode or without: the agent gets them as the
-  editor offers them, and its `fs/*` and `terminal/*` requests go to the
-  editor, which answers them, so the agent can read unsaved buffers and run
-  commands in the editor's terminals, as it could directly. There is no
-  setting to drop them again: whether to serve them is the editor's. A
+  editor offers them, its `fs/*` and `terminal/*` requests go to the editor,
+  and the editor's answers come back to it. Whether real editors then serve
+  unsaved buffers and their terminals as they do run directly isn't checked
+  yet (ADR 67's real-editor checks, #216). There is no setting to drop them
+  again: whether to serve them is the editor's. A
   headless session still offers neither, and the host log has no
   `capabilities-dropped` record (ADR 67).
 - Every side-channel action on an editor's session (`send`, `context`,
