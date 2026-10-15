@@ -321,7 +321,7 @@ doesn't load in an earlier one.
 | Section | Keys and input types |
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
-| `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `response_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. A response timeout answers with the `reject_once` option, else cancels the turn; an elicitation it answers `cancel`. |
+| `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `response_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline, and neither has a default: an unattended run must set `response_timeout`, or a request nobody answers waits as long as the process runs. A response timeout answers with the `reject_once` option, else cancels the turn; an elicitation it answers `cancel`. |
 | `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `elicitation`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |

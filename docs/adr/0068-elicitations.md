@@ -146,7 +146,9 @@ words for them (P1, P2):
   credentials, past what `adapters/check.py` can run;
   `adr_0068_headless_advertises_elicitation` checks what brnr advertises.
 - A headless session's turn now waits on an elicitation where it was
-  declined at once: set `response_timeout` for unattended runs.
+  declined at once. `response_timeout` has no default, as before (P4: brnr
+  doesn't pick a deadline for the user), so an unattended run must set it,
+  and the README, interface.md and the skill say so.
 - Bridges that list `pending` see a new `elicitations` key; one that
   answers elicitations sends `elicitation`.
 

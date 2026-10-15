@@ -5,7 +5,9 @@ asking (edit a file, run a command), it asks, and the turn waits for an
 answer. With no editor attached, brnr is the agent's client: the request
 waits for `brnr permission allow` or `brnr permission reject`, or for
 `response_timeout` in the profile, which rejects it once, or cancels its
-turn.
+turn. An elicitation waits the same way, and the timeout answers it `cancel`.
+`response_timeout` has no default: a worker left to run unattended needs it
+set, or its turn waits for an answer that never comes.
 
 ## The rule
 

@@ -304,7 +304,9 @@ A headless request waits until it is answered, or for `response_timeout`
 `reject_once` option, or, without exactly one, its turn is cancelled
 (`session/cancel`), which answers it and every request pending in the session
 `cancelled`. A timeout never allows, nor answers `reject_always`: nobody chose
-that.
+that. `response_timeout` has no default (P4): without it, a request nobody
+answers waits as long as the process runs. An unattended run, with nobody to
+answer (a script, CI, a worker left alone), must set it.
 
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `permission show`

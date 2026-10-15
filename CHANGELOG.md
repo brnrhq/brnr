@@ -58,8 +58,8 @@ brnr's own conventions:
 
 - **Breaking:** a headless session's elicitation waits for an answer, where
   brnr declined it at once: an unattended run now waits on it. Set
-  `response_timeout` (or `--response-timeout`), which cancels one nobody
-  answered, never declines or accepts it (ADR 68).
+  `response_timeout` (or `--response-timeout`), which has no default and
+  cancels one nobody answered, never declines or accepts it (ADR 68).
 - **Breaking:** the headless `permission_timeout` is `response_timeout`, and
   `session new` and `session resume`'s `--permission-timeout` is
   `--response-timeout`: one timeout for the user's responses, which answers
