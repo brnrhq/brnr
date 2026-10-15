@@ -222,8 +222,8 @@ What brnr doesn't enforce, or doesn't test, today.
   directory) contend for one lock only where the file system carries `flock`
   between them, and a holder's pid is looked for on this machine: a lock
   another machine's process holds looks like no process's, and a resume
-  here is refused only when it takes the lock, with that machine's pid. Not
-  tested.
+  here is refused only when it tries to take the lock and can't, naming
+  that machine's pid. Not tested.
 - **A refused runtime directory is a denial of service.** With neither
   `BRNR_DIR` nor `XDG_RUNTIME_DIR` set, the directory is `$TMPDIR/brnr-<uid>`;
   where `$TMPDIR` is shared (`/tmp` on Linux), another user who creates that
