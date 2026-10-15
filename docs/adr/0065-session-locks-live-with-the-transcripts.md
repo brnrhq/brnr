@@ -56,7 +56,9 @@ which the records so far describe but don't promise.
   its agent and cwd unknown here, and not `inactive`; commands on the
   session (`close`, `delete`, `prompt send`, …) say the same; and an
   editor's load of it is answered with the process and `BRNR_DIR=… brnr
-  session close <id>` to release it.
+  session close <id>` to release it. The directory after `BRNR_DIR=` is
+  one shell word, in single quotes when it has a space, a quote or another
+  character a shell reads, so that what is shown runs as it is shown.
 - Fixed for 1.x, kept within the major version from 1.0.0 (P9), as ADR 64
   has it: where things are is covered, and what host logs and lock files
   contain, and what is in the runtime directory, aren't:
@@ -125,11 +127,23 @@ Run `cargo test --release adr_0065_`. Named claims and their assertions:
     runtime directory; `session list` there shows the session
     `unreachable` with that pid; `session close` and `session delete` there
     are refused the same way, and the agent isn't asked.
+  - `adr_0065_the_brnr_dir_said_is_one_shell_word`: with a holder whose
+    runtime directory has a space, and one whose has a quote, the refusal
+    names `BRNR_DIR='<its runtime directory>'`, and that put before
+    `brnr session close sess-1` in a shell closes the session.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0065_an_editors_load_held_from_another_runtime_dir_is_refused`: an
     editor's process with another `BRNR_DIR` answers the load with the
     holder and `BRNR_DIR=<its runtime directory> brnr session close sess-1`;
     the agent isn't asked.
+  - `adr_0065_the_release_command_runs_as_shown`: with the holder's runtime
+    directory having a space, and then a quote, the command in the answer
+    has it quoted, and run by a shell it releases the session, which then
+    loads.
+- [src/paths.rs](../../src/paths.rs)
+  - `adr_0065_brnr_dir_is_one_shell_word`: a plain directory is written as
+    it is; one with a space, a quote, `$`, `` ` ``, `;`, `*` or a leading
+    `~`, or an empty one, in single quotes, each quote in it as `'\''`.
 
 ADR 3's, 50's and 53's tests run against the lock in its new place, as do
 `what_brnr_makes_is_private_whatever_the_umask` (tests/security.rs) and

@@ -2184,6 +2184,29 @@ fn adr_0065_a_session_is_owned_once_however_the_runtime_dir_is_found() {
     env.ok(&["session", "close", "sess-1"]);
 }
 
+/// The `BRNR_DIR` a refusal names is one shell word, whatever is in the
+/// holder's runtime directory (a space, a quote): put before a command, it
+/// reaches the holder (ADR 65).
+#[test]
+fn adr_0065_the_brnr_dir_said_is_one_shell_word() {
+    for (i, name) in ["run 2", "run'2"].into_iter().enumerate() {
+        let env = Env::new(&format!("c-word{i}"));
+        let run = env.dir.join(name);
+        env.start_in(&run);
+        let pid = env.hosts_in(&run)[0]["host_pid"].to_string();
+        let assign = format!("BRNR_DIR={}", quoted(&run.to_string_lossy()));
+        let said = format!(
+            "sess-1 is running in process {pid} with runtime directory {} ({assign} reaches it)",
+            run.display()
+        );
+        let err = env.fails(&resume_args("sess-1", &[]));
+        assert!(err.contains(&said), "{err}");
+        let out = env.sh(&format!("{assign} brnr session close sess-1"));
+        assert!(out.status.success(), "{name}: {}", stderr(&out));
+        env.resume("sess-1", &[]);
+    }
+}
+
 /// A process that is gone isn't listed, even when its pid is another
 /// process's now: its socket refuses. What it left is removed.
 #[test]

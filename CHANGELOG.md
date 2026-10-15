@@ -64,7 +64,8 @@ brnr's own conventions:
   /run/user/1000/brnr (BRNR_DIR=/run/user/1000/brnr reaches it)`), with or
   without `--take-over`; `session list` there shows the session
   `unreachable` with that pid; commands on it, and an editor's load of it,
-  are told the same; and `doctor` lists locks left by processes that are
+  are told the same, with the directory after `BRNR_DIR=` quoted for the
+  shell where it needs to be; and `doctor` lists locks left by processes that are
   gone under `session locks`. `log = false` still writes the locks there. A
   lock left in `$BRNR_DIR/sessions/` is read by nothing: remove the
   directory. How the runtime and state directories are found, and how a

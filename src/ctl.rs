@@ -354,10 +354,9 @@ fn closing(session: &str, pid: impl Display) -> String {
 fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
     match lock::holder_dir(session) {
         Some(dir) => format!(
-            "{session} is running in process {pid} with runtime directory {} (BRNR_DIR={} \
-             reaches it)",
+            "{session} is running in process {pid} with runtime directory {} ({} reaches it)",
             dir.display(),
-            dir.display()
+            paths::brnr_dir_is(&dir)
         ),
         None => format!("{session} is running in process {pid}{hint}"),
     }

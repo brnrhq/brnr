@@ -2955,6 +2955,30 @@ fn adr_0065_an_editors_load_held_from_another_runtime_dir_is_refused() {
     let _ = editor.kill();
 }
 
+/// The command an editor's refused load is given runs as shown, its runtime
+/// directory one shell word whatever is in it (a space, a quote): it
+/// releases the session, which then loads (ADR 65).
+#[test]
+fn adr_0065_the_release_command_runs_as_shown() {
+    for (i, name) in ["run 2", "run'2"].into_iter().enumerate() {
+        let env = Env::new(&format!("ed-word{i}"));
+        let run = env.dir.join(name);
+        env.start_in(&run);
+        let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+        writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+        let error = response(&mut from_agent, 2)["error"].clone();
+        let message = error["message"].as_str().unwrap_or_default();
+        let command =
+            format!("BRNR_DIR={} brnr session close sess-1", quoted(&run.to_string_lossy()));
+        assert!(message.contains(&format!("`{command}`")), "{error}");
+        let out = env.sh(&command);
+        assert!(out.status.success(), "{name}: {}", stderr(&out));
+        writeln!(to_agent, "{}", editor_load(&env, 3, "sess-1")).unwrap();
+        assert!(response(&mut from_agent, 3)["result"].is_object(), "{name}");
+        let _ = editor.kill();
+    }
+}
+
 /// An editor's session whose lock can't be taken (a directory where its lock
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,

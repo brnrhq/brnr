@@ -137,6 +137,23 @@ pub fn project_key(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
+/// `BRNR_DIR=<dir>` as a shell reads it, `dir` one word whatever is in it:
+/// the assignment that reaches a process started with runtime directory
+/// `dir`, in a command shown to be run (ADR 65).
+pub fn brnr_dir_is(dir: &Path) -> String {
+    format!("BRNR_DIR={}", shell_word(&dir.to_string_lossy()))
+}
+
+/// `word` as one shell word: as it is when nothing in it is special to a
+/// shell, else in single quotes, with each `'` in it written `'\''`.
+fn shell_word(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-.,/:=+@%".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 /// Expands a leading `~/`.
 pub fn expand(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
@@ -153,6 +170,17 @@ fn home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adr_0065_brnr_dir_is_one_shell_word() {
+        let is = |dir: &str| brnr_dir_is(Path::new(dir));
+        assert_eq!(is("/run/user/1000/brnr"), "BRNR_DIR=/run/user/1000/brnr");
+        assert_eq!(is("/tmp/my run"), "BRNR_DIR='/tmp/my run'");
+        assert_eq!(is("/tmp/it's"), r"BRNR_DIR='/tmp/it'\''s'");
+        assert_eq!(is("/tmp/$x;`y`*"), "BRNR_DIR='/tmp/$x;`y`*'");
+        assert_eq!(is("~/run"), "BRNR_DIR='~/run'");
+        assert_eq!(is(""), "BRNR_DIR=''");
+    }
 
     #[test]
     fn a_sessions_two_files() {

@@ -1981,13 +1981,13 @@ fn held_elsewhere(session: &str, pid: u32) -> String {
         .ok()
         .and_then(|()| fs::read(dir.join(format!("{pid}.json"))).ok());
     let meta: Value = meta.and_then(|m| serde_json::from_slice(&m).ok()).unwrap_or_default();
-    let through = elsewhere.map(|d| format!("BRNR_DIR={} ", d.display())).unwrap_or_default();
     if meta["proxy_pid"].is_number() {
         format!(
             "brnr: session {session} is open in another editor (brnr process {pid}); close it \
              there first"
         )
     } else {
+        let through = elsewhere.map(|d| format!("{} ", paths::brnr_dir_is(&d))).unwrap_or_default();
         format!(
             "brnr: session {session} is running in brnr process {pid}; release it first with \
              `{through}brnr session close {session}`"
