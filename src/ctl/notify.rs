@@ -385,10 +385,25 @@ impl Events {
         }
         let hosts = discover()?;
         let (host, only) = session_or_pid(&hosts, session, pid)?;
-        let mut conn = Conn::open(host)?;
+        Events::on(Conn::open(host)?, host.id(), only, wanted)
+    }
+
+    /// Subscribed to `wanted` on `conn`, process `process`'s.
+    fn on(
+        mut conn: Conn,
+        process: &str,
+        only: Option<String>,
+        wanted: &[&str],
+    ) -> Result<Events, String> {
         conn.subscribe(wanted, only.as_deref())?;
-        // Titles the agent gave before we subscribed.
-        let status = conn.call(serde_json::json!({ "cmd": "status" }))?;
+        // Titles the agent gave before we subscribed. Cut off before it
+        // answered, and unable to catch up, notify goes on with none: what
+        // it read meanwhile comes first, then what it missed (ADR 69).
+        let status = match conn.call(serde_json::json!({ "cmd": "status" })) {
+            Ok(status) => status,
+            Err(_) if conn.missed().is_some() => Value::Null,
+            Err(why) => return Err(why),
+        };
         let titles: HashMap<String, String> = status["sessions"]
             .as_array()
             .into_iter()
@@ -399,7 +414,7 @@ impl Events {
             .collect();
         Ok(Events {
             source: Source::Socket(Box::new(conn)),
-            process: host.id().to_owned(),
+            process: process.to_owned(),
             only,
             titles,
         })
@@ -554,5 +569,24 @@ impl Running {
         sys::kill(-pid, libc::SIGKILL);
         let _ = self.child.wait();
         self.what
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cut off before the process answered its `status`, and unable to catch
+    /// up, notify goes on: the event it read meanwhile, left once the process
+    /// hung up, then what it missed (ADR 69).
+    #[test]
+    fn adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed() {
+        let (conn, process) = crate::ctl::talk::cut_off_at("status");
+        let mut events = Events::on(conn, "1", None, DEFAULT_EVENTS).unwrap();
+        let (rest, _, cut) = events.source.rest();
+        assert_eq!((rest.len(), &rest[0]["seq"], cut), (1, &Value::from(11), true));
+        assert!(events.source.next().is_err());
+        assert_eq!(events.source.missed().unwrap()["after"], 11);
+        process.join().unwrap();
     }
 }

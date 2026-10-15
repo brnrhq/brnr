@@ -227,7 +227,9 @@ impl Conn {
                     Err(_) => f.cut_off_before_it_went(),
                 }
             }
-            None => false,
+            // Given up catching up, in a request: what it read meanwhile
+            // is left, then what it missed.
+            None => self.missed.is_some(),
         };
         (rest, why, cut)
     }
@@ -1203,13 +1205,23 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     let arg = arg.ok_or(USAGE)?;
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
-    let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
+    wait_on(&mut conn, &session, &what, deadline(timeout), json_out)
+}
+
+/// `event wait` on `conn`, the process's, for `what` of `session`.
+fn wait_on(
+    conn: &mut Conn,
+    session: &str,
+    what: &str,
+    deadline: Option<Instant>,
+    json_out: bool,
+) -> Result<ExitCode, String> {
     // Subscribed before looking, so nothing happens unseen in between.
     let events =
         ["turn_ended", "permission_request", "elicitation_request", "session_closed", "exited"];
-    conn.subscribe(&events, Some(&session))?;
-    let mine = |e: &Value| e["session"] == session.as_str();
+    conn.subscribe(&events, Some(session))?;
+    let mine = |e: &Value| e["session"] == session;
     // What ended the wait: printed as text, or with --json as itself.
     let done = |what: &Value, text: String| {
         if json_out {
@@ -1223,7 +1235,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     // closed session exits as if it had waited for that turn (see ADR 21 in
     // docs/adr).
     let mut last_turn = Value::Null;
-    match what.as_str() {
+    match what {
         "permission" => {
             let pending = match conn.call(json!({ "cmd": "pending" })) {
                 Ok(pending) => pending,
@@ -1235,7 +1247,10 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         "elicitation" => {
-            let pending = conn.call(json!({ "cmd": "pending" }))?;
+            let pending = match conn.call(json!({ "cmd": "pending" })) {
+                Ok(pending) => pending,
+                Err(why) => return conn.ended(why),
+            };
             let waiting = pending["elicitations"].as_array().into_iter().flatten();
             if let Some(e) = waiting.into_iter().find(|e| mine(e)) {
                 done(e, describe_elicitation(e))?;
@@ -1243,7 +1258,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         "idle" => {
-            let (is_idle, s) = match idle(&mut conn, &session) {
+            let (is_idle, s) = match idle(conn, session) {
                 Ok(idle) => idle,
                 Err(why) => return conn.ended(why),
             };
@@ -1270,7 +1285,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
             Err(e) => return Err(e),
         };
-        match (e["event"].as_str().unwrap_or_default(), what.as_str()) {
+        match (e["event"].as_str().unwrap_or_default(), what) {
             ("exited", "exit") => {
                 done(&e, render::exited(&e["status"]))?;
                 return Ok(ExitCode::SUCCESS);
@@ -1299,7 +1314,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
             ("turn_ended", "idle") if mine(&e) => {
                 last_turn = e.clone();
-                let is_idle = match idle(&mut conn, &session) {
+                let is_idle = match idle(conn, session) {
                     Ok((is_idle, _)) => is_idle,
                     Err(why) => return conn.ended(why),
                 };
@@ -1478,6 +1493,50 @@ fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, String> 
     Ok(ExitCode::SUCCESS)
 }
 
+/// A connection to a process, for a test, that the process cuts off,
+/// unanswered, at its first `cmd` request, after one event more (at 11),
+/// and that can't be caught up with: the process says it cut it off, and
+/// that it has records it couldn't write (ADR 69).
+#[cfg(test)]
+pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, thread::JoinHandle<()>) {
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static MADE: AtomicU32 = AtomicU32::new(0);
+    let n = MADE.fetch_add(1, Ordering::Relaxed);
+    let dir = env::temp_dir().join(format!("brnr-cut-{}-{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("h.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let process = thread::spawn(move || {
+        for (k, stream) in (1..=2).zip(listener.incoming()) {
+            let mut stream = stream.unwrap();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    c if c == cmd => {
+                        writeln!(stream, "{}", json!({ "event": "turn_ended", "seq": 11 }))
+                            .unwrap();
+                        break;
+                    }
+                    "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h", "seq": 10 * k })
+                    }
+                    _ => json!({ "ok": true, "lost": true }),
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    });
+    let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();
+    conn.socket = Some(socket);
+    (conn, process)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,6 +1609,23 @@ mod tests {
         assert_eq!((note["after"].as_u64(), note["until"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `event wait`, cut off before the process answered its first look
+    /// (`pending`, or `status` for `idle`), and unable to catch up, says what
+    /// it missed and exits 3, as cut off while it waits does.
+    #[test]
+    fn adr_0069_event_wait_cut_off_looking_says_what_it_missed() {
+        for (what, cmd) in
+            [("permission", "pending"), ("elicitation", "pending"), ("idle", "status")]
+        {
+            let (mut conn, process) = cut_off_at(cmd);
+            let ended = wait_on(&mut conn, "s", what, None, true);
+            assert_eq!(ended, Ok(ExitCode::from(MISSED)), "--for {what}");
+            let note = conn.missed().unwrap();
+            assert_eq!((&note["event"], &note["after"]), (&json!("events-missed"), &json!(11)));
+            process.join().unwrap();
+        }
     }
 
     #[test]
