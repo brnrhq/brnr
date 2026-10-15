@@ -35,6 +35,10 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- Release candidates, `vX.Y.Z-rc.N`: a GitHub pre-release, and on crates.io
+  (`cargo install brnr --version X.Y.Z-rc.N --locked`), while Homebrew stays
+  on the last release. A release's notes take in its release candidates',
+  so they say everything since the last release (ADR 40).
 
 ### Changed
 
