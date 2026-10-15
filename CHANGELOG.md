@@ -35,6 +35,11 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- `echo_as` in a profile's editor part: `"user_message_chunk"` shows a
+  message or context sent to the editor's session through brnr as the
+  user's message, one `user_message_chunk` per block, for an editor that
+  renders one outside a turn; `"tool_call"`, "Message via brnr", stays the
+  default. brnr's own notes stay tool calls (ADR 70).
 
 ### Changed
 

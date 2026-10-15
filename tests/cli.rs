@@ -2697,6 +2697,14 @@ fn adr_0033_profile_layout_errors_say_where() {
             r#"profiles.default.editor.features: unknown feature "sharing" (features: shared_sessions)"#,
         ),
         (
+            "[profiles.default.editor]\necho_as = \"user_message\"\n",
+            r#"profiles.default.editor: echo_as is "tool_call" or "user_message_chunk", not "user_message""#,
+        ),
+        (
+            "[profiles.default]\necho_as = \"tool_call\"\n",
+            "profiles.default: echo_as is for brnr acp only; it goes under [profiles.default.editor]",
+        ),
+        (
             "[profiles.default]\nlog = true\n",
             r#"profiles.default: log is "all", "events" or false, not true"#,
         ),
@@ -2722,7 +2730,7 @@ fn adr_0033_profile_layout_errors_say_where() {
          [profiles.default.editor]
 experimental = [\"send\", \"context\", \"cancel\", \"permission\", \"config\", \"close\"]
 \
-         features = [\"shared_sessions\"]\n",
+         echo_as = \"tool_call\"\nfeatures = [\"shared_sessions\"]\n",
     );
     env.start(&[]);
     assert!(!env.dir.join("home").exists(), "log = false wrote transcripts");

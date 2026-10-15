@@ -478,6 +478,9 @@ fn describe_profile(profile: &config::Profile) -> String {
             out.push_str(&format!(", {what} {}", names.join(" ")));
         }
     }
+    if profile.editor.echo_as != config::EchoAs::ToolCall {
+        out.push_str(&format!(", echo_as {}", profile.editor.echo_as.name()));
+    }
     out
 }
 
