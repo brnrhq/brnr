@@ -8,6 +8,8 @@ Amended by 52: reproducibility and SBOM checks precede publication; a fresh runn
 Amended 2026-10-12 (#157): the `crates` job waits for the Homebrew smoke
 test, which 0.8.0 failed.
 Amended 2026-10-12 (#158): the package carries NOTICE.
+Amended 2026-10-15 (#156): a release candidate (ADR 40) is published too,
+without the Homebrew smoke test, which it skips.
 
 ## Context
 

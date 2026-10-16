@@ -12,6 +12,11 @@
 # crate to crates.io (ADR 47) with trusted publishing: crates.io trusts this
 # workflow in the crates-io environment, and the job trades GitHub's OIDC
 # token for a short-lived crates.io token. No token is stored.
+#
+# A release candidate's tag (vX.Y.Z-rc.N, ADR 40) makes a GitHub pre-release
+# and is published to crates.io, but leaves the formulae alone, so `brew
+# upgrade` stays on releases; the Homebrew smoke test, which installs from
+# the tap, is skipped with them.
 name: release
 
 on:
@@ -40,7 +45,7 @@ jobs:
         with:
           persist-credentials: false
       # The toolchain CI tests with, rather than whatever the runner has.
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # snapshot 2026-10-09; upstream tag moves
         with:
           toolchain: stable
 
@@ -91,19 +96,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ steps.tarball.outputs.path }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" "$TARBALL"
-          "brnr-${GITHUB_REF_NAME#v}.cdx.json"
-          --verify-tag --notes-file "$RUNNER_TEMP/notes.md" --title "$GITHUB_REF_NAME"
+        run: |
+          prerelease=()
+          case $GITHUB_REF_NAME in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+            "brnr-${GITHUB_REF_NAME#v}.cdx.json" "${prerelease[@]}" \
+            --verify-tag --notes-file "$RUNNER_TEMP/notes.md" --title "$GITHUB_REF_NAME"
 
       # Its credentials (the deploy key) stay, for the push below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
+        if: ${{ !contains(github.ref_name, '-') }}
         with:
           repository: brnrhq/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
 
       - name: Update the formulae
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           TARBALL: ${{ steps.tarball.outputs.path }}
         run: |
@@ -141,6 +150,7 @@ jobs:
 
   homebrew-smoke:
     needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -161,9 +171,14 @@ jobs:
           brnr doctor
 
   # Last, and only once everything else has passed: a crates.io version can
-  # be yanked but never replaced, where the tap's formula can be fixed.
+  # be yanked but never replaced, where the tap's formula can be fixed. A
+  # release candidate has no smoke test to wait for.
   crates:
     needs: [reproducible, release, homebrew-smoke]
+    if: >-
+      ${{ !cancelled() && needs.reproducible.result == 'success' && needs.release.result == 'success'
+      && (needs.homebrew-smoke.result == 'success'
+      || (needs.homebrew-smoke.result == 'skipped' && contains(github.ref_name, '-'))) }}
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
@@ -173,7 +188,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # snapshot 2026-10-09; upstream tag moves
         with:
           toolchain: stable
       # Revoked when the job ends.

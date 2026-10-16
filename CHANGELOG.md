@@ -40,6 +40,10 @@ brnr's own conventions:
   user's message, one `user_message_chunk` per block, for an editor that
   renders one outside a turn; `"tool_call"`, "Message via brnr", stays the
   default. brnr's own notes stay tool calls (ADR 70).
+- Release candidates, `vX.Y.Z-rc.N`: a GitHub pre-release, and on crates.io
+  (`cargo install brnr --version X.Y.Z-rc.N --locked`), while Homebrew stays
+  on the last release. A release's notes take in its release candidates',
+  so they say everything since the last release (ADR 40).
 
 ### Changed
 
@@ -59,6 +63,9 @@ brnr's own conventions:
 
 ### Fixed
 
+- Generating release notes refuses Git older than 2.13, whose unsupported
+  tag exclusion could make a final release list every commit instead of
+  those since the last stable release (ADR 40).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).
