@@ -37,6 +37,12 @@ criteria = "safe-to-deploy"
 delta = "2.14.0 -> 2.14.2"
 notes = "Reviewed the compiled source and manifest delta against the imported audited version. Both disjoint mutable-access helpers validate all bounds and duplicate indices before deriving references from the exclusive slice pointer; no mutation occurs between checks and pointer use. Optional missing keys produce None. Bucket projections split distinct key/value fields. Index operations retain explicit checked bounds; same-key equality uses Eq. Empty-map macros use the existing safe const constructor. No new ambient I/O. Dependencies require separate coverage."
 
+[[audits.itoa]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+version = "1.0.18"
+notes = "Automated full source review of all packaged src/ files (lib.rs, u128_ext.rs) and the manifest; no build script, no_std, no default dependencies. Unsafe code is unchecked DECIMAL_PAIRS indexing, a cast of the 40-byte buffer to the sealed per-type array and from_utf8_unchecked on the written tail. Pair indices stay below 100 because every divmod100 input is below 10000, including the 1e16 split of u128, whose multiply-shift constant was checked to give an exact quotient for every u128 (M*1e16 - 2^179 < 2^51). The written region is contiguous, every write is bounds-checked, and it holds only ASCII digits and '-'. No filesystem, network, process, env, FFI or asm."
+
 [[audits.jiff-tzdb-platform]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
@@ -102,3 +108,9 @@ who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"
 delta = "1.1.1+spec-1.1.0 -> 1.1.2+spec-1.1.0"
 notes = "Automated review of the complete crates.io delta and string metrics. Quote-run counters now use Saturating<u8>, preventing overflow on long runs while preserving delimiter decisions. No unsafe code or new I/O; remaining changes are package include patterns, lint and version metadata."
+
+[[audits.zmij]]
+who = "Automated source review (Claude Opus 5.5)"
+criteria = "safe-to-deploy"
+version = "1.0.23"
+notes = "Automated full source review of all packaged src/ files (lib.rs, traits.rs, stdarch_x86.rs, cfg(test) tests.rs), build.rs and the manifest; no_std, no default dependencies. Unsafe code is unchecked indexing into const-built power-of-10, exponent-shift, exponent-string and shuffle tables, raw-pointer writes into a 24-byte stack buffer followed by from_utf8_unchecked, SSE2/SSE4.1/NEON intrinsics gated by compile-time target_feature cfgs, and empty-comment asm! optimizer barriers. Index ranges were derived for every f32/f64 bit pattern, including NaN/inf passed to format_finite and subnormals; the largest write ends exactly at byte 24, and the digit arithmetic only produces bytes 0-9, so the output is ASCII. Aligned SIMD loads read u128 fields at 16-byte multiples of an align(64) struct. build.rs only runs `$RUSTC --version` and reads OPT_LEVEL to emit cfgs. No filesystem, network, env or FFI in the library."

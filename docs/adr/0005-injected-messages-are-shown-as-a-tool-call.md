@@ -9,6 +9,9 @@ enabled.
 Amended by 63: an approval answered elsewhere is "Allowed via brnr" or
 "Rejected via brnr", and the editor's late answer to one "Already allowed
 via brnr" or "Already rejected via brnr".
+Amended by 70: a message or context is shown as `user_message_chunk`s
+instead where the editor's profile has `echo_as = "user_message_chunk"`;
+brnr's notes stay tool calls.
 
 ## Context
 
