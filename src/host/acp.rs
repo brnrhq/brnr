@@ -13,9 +13,10 @@
 //!   while a prompt is running: until then it is held. With `--steer` it
 //!   goes into the running turn instead, as `_session/steering` (ADR 18 in
 //!   docs/adr). The responses are kept from the editor, and the editor is
-//!   shown the text as it is sent, as a completed tool call (`echo`). On an
-//!   editor's session it is the experimental `send` (ADR 4), refused while a
-//!   prompt runs.
+//!   shown the text as it is sent, as a completed tool call or, if its
+//!   profile says so, as `user_message_chunk`s (`echo_message`, ADR 70). On
+//!   an editor's session it is the experimental `send` (ADR 4), refused
+//!   while a prompt runs.
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
 //! - What the side channel does to an editor's session (ADR 4, see
@@ -84,7 +85,7 @@ use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp, history};
 use super::state::SessionState;
 use super::{Host, LOG_FLUSH, control, id_key, text_block};
-use crate::config::{Feature, Log};
+use crate::config::{EchoAs, Feature, Log};
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
 use crate::schema::{
@@ -866,7 +867,7 @@ impl Host {
         let event =
             json!({ "event": "context-attached", "to": "editor-prompt", "count": context.len() });
         self.sink.note(Some(session), event);
-        self.echo(session, "Context via brnr", &attached);
+        self.echo_message(session, "Context via brnr", &attached);
         Some(serde_json::to_vec(&msg).unwrap())
     }
 
@@ -1745,7 +1746,7 @@ impl Host {
         let request = ClientRequest { by: Requester::Prompt, session: Some(session.clone()) };
         self.client_requests.insert(key.clone(), request);
         let text = prompt_text(Some(&json!(blocks)));
-        self.echo(&session, "Message via brnr", &blocks);
+        self.echo_message(&session, "Message via brnr", &blocks);
         self.emit(json!({
             "event": "user_message",
             "session": session,
@@ -1838,7 +1839,7 @@ impl Host {
         };
         let blocks = held.content();
         let text = prompt_text(Some(&json!(blocks)));
-        self.echo(&session, "Message via brnr", &blocks);
+        self.echo_message(&session, "Message via brnr", &blocks);
         self.emit(json!({
             "event": "user_message",
             "session": session,
@@ -1943,11 +1944,29 @@ impl Host {
         self.cancel_requests(session, by);
     }
 
-    /// Shows the editor an injected message, as a completed tool call:
-    /// the one update an editor renders as a block of its own wherever the
-    /// turn is. A `user_message_chunk` out of turn is not rendered (see
-    /// ADR 5 in docs/adr). brnr's notes to the editor take the same form
-    /// (see experimental.rs).
+    /// Shows the editor an injected message, titled `title`, in the form its
+    /// profile's `echo_as` names (ADR 70): by default a completed tool call
+    /// (`echo`), or one `user_message_chunk` per block, untitled, for an
+    /// editor that renders those out of turn.
+    pub(super) fn echo_message(&mut self, session: &str, title: &str, blocks: &[Value]) {
+        if self.echo_as == EchoAs::ToolCall {
+            return self.echo(session, title, blocks);
+        }
+        if let Some(i) = self.find(session) {
+            self.flush_agent_message(i);
+        }
+        for block in blocks {
+            let update = json!({ "sessionUpdate": "user_message_chunk", "content": block });
+            self.update_editor(session, update);
+        }
+    }
+
+    /// Shows the editor brnr's text as a completed tool call: the one update
+    /// an editor renders as a block of its own wherever the turn is. A
+    /// `user_message_chunk` out of turn is not rendered by every editor (see
+    /// ADR 5 in docs/adr). brnr's notes to the editor take this form whatever
+    /// `echo_as` says, as they are brnr's words, not the user's (see
+    /// experimental.rs).
     pub(super) fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
         if let Some(i) = self.find(session) {
             self.flush_agent_message(i);

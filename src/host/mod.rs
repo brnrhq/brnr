@@ -59,7 +59,7 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::{c_int, pid_t};
 use serde_json::{Value, json};
 
-use crate::config::{Bridge, Experimental, Feature, Log};
+use crate::config::{Bridge, EchoAs, Experimental, Feature, Log};
 use crate::frame;
 use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
@@ -459,8 +459,10 @@ struct Host {
     /// leaves out the sessions' raw ACP.
     logging: Log,
     /// An editor's process: the actions on its session it allows (ADR 4),
-    /// and the process-management behaviours it turns on (ADR 42).
+    /// how a message sent through them is shown to it (ADR 70), and the
+    /// process-management behaviours it turns on (ADR 42).
     experimental: BTreeSet<Experimental>,
+    echo_as: EchoAs,
     features: BTreeSet<Feature>,
 
     // Bridges; see control.rs.
@@ -593,9 +595,9 @@ impl Host {
         let shown = h.foreground.as_ref();
         let show_events = shown.is_some_and(|f| !f.quiet);
         let json_events = shown.is_some_and(|f| f.json);
-        let (experimental, features) = match &editor {
-            Some(e) => (e.experimental.clone(), e.features.clone()),
-            None => (BTreeSet::new(), BTreeSet::new()),
+        let (experimental, echo_as, features) = match &editor {
+            Some(e) => (e.experimental.clone(), e.echo_as, e.features.clone()),
+            None => (BTreeSet::new(), EchoAs::ToolCall, BTreeSet::new()),
         };
         // No log until `set_up` starts it.
         let log = Logger::disabled();
@@ -662,6 +664,7 @@ impl Host {
             strict,
             logging,
             experimental,
+            echo_as,
             features,
             peers: HashMap::new(),
             bridge_pids: Vec::new(),

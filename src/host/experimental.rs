@@ -5,8 +5,9 @@
 //! is made up for here, in the editor's own channel:
 //!
 //! - `send` goes only while no prompt runs: the editor controls its turns,
-//!   so nothing is held, steered or interrupts. It is echoed (`echo` in
-//!   acp.rs, ADR 5), and so is `context` as it joins the editor's prompt.
+//!   so nothing is held, steered or interrupts. It is echoed
+//!   (`echo_message` in acp.rs, ADR 5, 70), and so is `context` as it joins
+//!   the editor's prompt.
 //! - `cancel`, `permission` and `elicitation`: a permission request or an
 //!   elicitation the host answers is withdrawn from the editor with
 //!   `$/cancel_request`, and for an allow or a reject its tool call is
@@ -20,7 +21,9 @@
 //!   editor is told in the session, and its later requests for it are
 //!   answered with an error saying where it continues.
 //!
-//! brnr's notes to the editor take the echo's form, a completed tool call.
+//! brnr's notes to the editor take the echo's form, a completed tool call,
+//! whatever the profile's `echo_as` says: they are brnr's words, and a
+//! `user_message_chunk` would make them the user's (ADR 70).
 
 use serde_json::{Map, Value, json};
 
