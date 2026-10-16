@@ -314,6 +314,7 @@ const SKIPPED: &[(&str, &str)] = &[
     ("./release.sh minor", "the maintainer's release, on GitHub"),
     ("./release.sh tag", "the maintainer's release, on GitHub"),
     ("./release.sh notes", "the maintainer's release, on GitHub"),
+    ("./release.sh 1.0.0-rc.1", "the maintainer's release, on GitHub"),
 ];
 
 /// Words in the examples a test can't have as written, and what stands in

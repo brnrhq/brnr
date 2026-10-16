@@ -7,6 +7,8 @@ profile with `config` fails to load.
 Amended by 68: the headless part's `permission_timeout` is
 `response_timeout`, the one timeout for the user's responses, approvals and
 elicitations alike.
+Amended by 70: the editor part has `echo_as`, how a message sent through
+brnr is shown to the editor.
 
 ## Context
 

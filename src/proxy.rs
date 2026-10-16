@@ -148,6 +148,7 @@ fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Re
         proxy_pid: std::process::id(),
         sigmask: mask,
         experimental: profile.editor.experimental.clone(),
+        echo_as: profile.editor.echo_as,
         features: profile.editor.features.clone(),
     };
     let mut request = Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))?;
