@@ -39,7 +39,8 @@
 # its release candidates', and its notes and commits start from the last
 # release, so they say everything since.
 #
-# Needs git, cargo and gh (logged in, with push access).
+# Needs git, cargo and gh (logged in, with push access). Generating release
+# notes needs Git 2.13 or newer, for git describe --exclude.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -221,6 +222,11 @@ prerelease() { [[ $1 == *-* ]]; }
 # The tag <version>'s notes and commits start from: the last one's, but for
 # a release, the last release's, so they cover its release candidates.
 last_tag() {
+    local git_version
+    git_version=$(git --version) || die "couldn't read Git's version"
+    [[ $git_version =~ ^git\ version\ ([0-9]+)\.([0-9]+)\. ]] || die "unrecognized Git version: $git_version"
+    (( BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 13) )) ||
+        die "generating release notes needs Git 2.13 or newer; found $git_version"
     if prerelease "$1"; then
         git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true
     else
@@ -374,7 +380,8 @@ case ${1:-} in
         prerelease "$current" && bump=rc
         version=$(next_version "$current" "${2:-$bump}")
         named_changelog "$version" "$(date -u +%Y-%m-%d)" >/dev/null || unnamed
-        release_notes "$version" "$(last_tag "$version")" <(named_changelog "$version" "$(date -u +%Y-%m-%d)")
+        last=$(last_tag "$version")
+        release_notes "$version" "$last" <(named_changelog "$version" "$(date -u +%Y-%m-%d)")
         ;;
     next)
         [ -n "${2:-}" ] || die "next <version | major | minor | patch | rc>"

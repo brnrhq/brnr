@@ -17,7 +17,9 @@ Two steps, because main only changes through reviewed pull requests:
 with the changes and the adapters' versions; `release.sh tag`, after the
 merge, checks that CI passed on main, tags, follows the release workflow and
 checks the tap. `release.sh notes` prints what the release pull request
-would say.
+would say. Generating release notes requires Git 2.13 or newer, checked
+before looking up the last tag: older Git cannot exclude release candidates
+from a final release's comparison, and must fail rather than list all commits.
 
 A release's notes are its section of `CHANGELOG.md`, which follows
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): what someone
@@ -28,7 +30,8 @@ change goes under Changed or Removed, starting with **Breaking:**.
 
 - A pull request that changes what users see adds its entry under
   `## [Unreleased]`.
-- `release.sh <bump>` refuses an empty Unreleased, and on the release branch
+- `release.sh <bump>` refuses an empty Unreleased unless a final release
+  folds in its release candidates' entries. On the release branch it
   heads what it has `## [X.Y.Z] - YYYY-MM-DD`, under a new, empty
   Unreleased. It moves the link definitions to match: `[X.Y.Z]` compares the
   last tag with `vX.Y.Z`, and `[Unreleased]` `vX.Y.Z` with HEAD. The release
@@ -109,7 +112,8 @@ Run `cargo test --release adr_0040_`. Named claims and their assertions:
     rc.2 to 1.0.0 through `release.sh next`, and what it refuses.
   - `adr_0040_a_release_takes_in_its_release_candidates`.
   - `adr_0040_a_releases_commits_start_from_the_last_release`, through
-    `release.sh notes` in a scratch repository with tags.
+    `release.sh notes` in a scratch repository with tags, including refusal
+    of Git older than 2.13 before it can produce notes from the wrong tag.
 
 Tagging, publishing and updating the tap mutate external repositories and
 registries, so the suite can't run them; release.yml and release.sh's

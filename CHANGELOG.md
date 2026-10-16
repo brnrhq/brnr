@@ -58,6 +58,9 @@ brnr's own conventions:
 
 ### Fixed
 
+- Generating release notes refuses Git older than 2.13, whose unsupported
+  tag exclusion could make a final release list every commit instead of
+  those since the last stable release (ADR 40).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).

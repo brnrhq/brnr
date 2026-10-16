@@ -862,6 +862,9 @@ the panic, and in the foreground by the process itself.
 
 ## Releasing
 
+Generating release notes requires Git 2.13 or newer, so a final release's
+comparison can exclude release candidates (ADR 40).
+
 ```sh
 ./release.sh minor     # or patch, major, 1.2.3: checks main, opens the release pull request
 ./release.sh tag       # once it's merged: tags, releases, updates the Homebrew tap

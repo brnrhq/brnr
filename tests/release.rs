@@ -378,4 +378,41 @@ fn adr_0040_a_releases_commits_start_from_the_last_release() {
     assert!(release.contains("## Commits since v0.8.0\n- After rc.1\n- For rc.1\n\n"), "{release}");
     assert!(release.contains("### Added\n\n- In 1.0.0-rc.1.\n"), "{release}");
     assert!(release.contains("## Adapters (Homebrew formula versions)"), "{release}");
+
+    // An old Git must fail before describe's unsupported --exclude can
+    // look like a repository with no previous release.
+    let bin = dir.join("bin");
+    fs::create_dir(&bin).unwrap();
+    install(&dir.join("release.sh"), &bin.join("git"));
+    fs::write(
+        bin.join("git"),
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf '%s\\n' \"$TEST_GIT_VERSION\"\n  exit 0\nfi\nPATH=$TEST_GIT_PATH exec git \"$@\"\n",
+    )
+    .unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&path));
+    let wrapped_path = std::env::join_paths(paths).unwrap();
+    for (version, supported) in [
+        ("git version 1.9.5", false),
+        ("git version 2.12.9", false),
+        ("git version 2.13.0", true),
+        ("git version 2.39.5 (Apple Git-154)", true),
+        ("git version 3.0.0", true),
+    ] {
+        let out = Command::new(dir.join("release.sh"))
+            .args(["notes", "1.0.0"])
+            .env("PATH", &wrapped_path)
+            .env("TEST_GIT_PATH", &path)
+            .env("TEST_GIT_VERSION", version)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.success(), supported, "{version}: {}", stderr(&out));
+        if supported {
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), release, "{version}");
+        } else {
+            assert!(out.stdout.is_empty(), "{version}: {out:?}");
+            assert!(stderr(&out).contains("needs Git 2.13 or newer"), "{}", stderr(&out));
+        }
+    }
 }
