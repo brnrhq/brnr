@@ -138,6 +138,12 @@ brnr's own conventions:
   `cancel`, `permission`, `config`, `close`) stays experimental, opt-in by
   name, for all of 1.x; one leaves experimental only by an ADR with evidence
   from real editors (ADR 67).
+- From 1.0.0, what `docs/interface.md` marks **Covered** is kept compatible
+  within a major version: the command line, `--json`, exit codes, events,
+  the protocol of the bridges brnr starts, transcripts, where brnr's files
+  are, config and what `brnr acp` passes through. Text output, error
+  wording, host logs and the control socket are not covered. Until 1.0.0
+  nothing is kept for compatibility, as before (ADR 64).
 - `event notify` on the socket, cut off for falling behind while its
   command runs, lets the command finish and catches up, where it stopped
   the command and exited 1; a started bridge (`--stdin`) is cut off as
@@ -162,9 +168,6 @@ brnr's own conventions:
   U+FFFD in the host log; a line of exactly 64 KiB is one record, not one
   and an empty one; and a failed start's tail cuts a long line between
   characters (ADR 11, ADR 51).
-- Generating release notes refuses Git older than 2.13, whose unsupported
-  tag exclusion could make a final release list every commit instead of
-  those since the last stable release (ADR 40).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).
@@ -238,7 +241,7 @@ brnr's own conventions:
   (ADR 56).
 - A headless process with `stop_when_idle` waits without using a whole CPU
   while the agent is slow to answer a session's `session/close`, once the
-  session's idle time has run out (ADR 12, 16).
+  session's idle time has run out (ADR 12, ADR 16).
 - The crate on crates.io carries NOTICE, as Apache-2.0 asks a
   redistribution to (ADR 47).
 - brnr works started with SIGCHLD ignored, as some supervisors leave it.
