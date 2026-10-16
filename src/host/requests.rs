@@ -196,8 +196,11 @@ impl Host {
                 HostRequest::Open(Open::New) => "session/new".to_owned(),
                 HostRequest::Open(Open::Resume(_)) => "session/resume".to_owned(),
                 HostRequest::Open(Open::Load(session)) => {
+                    // Its lock goes once its replay is written, with the
+                    // exit's records at the latest (ADR 48).
                     if let Some(i) = self.find(session) {
-                        self.sessions.remove(i);
+                        let hold = self.sessions.remove(i).hold;
+                        self.let_go(session.clone(), hold, None);
                     }
                     "session/load".to_owned()
                 }
@@ -506,7 +509,9 @@ impl Host {
     }
 
     pub(super) fn fail_start(&mut self, error: &str) {
-        self.claimed.clear(); // Nobody is to know of a session it was opening.
+        // Nobody is to know of a session it was opening: nothing was recorded
+        // under one still claimed, so its lock can go now (ADR 48).
+        self.claimed.clear();
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
@@ -552,14 +557,27 @@ impl Host {
             Open::Load(session) => ("session/load", Some(session)),
         };
         if let Some(error) = msg.get("error") {
-            if let Some(session) = &asked {
-                self.claimed.remove(session); // Its lock goes.
-                if let Some(i) = self.find(session) {
-                    self.sink.close_session(&self.sessions.remove(i).id); // A load's.
-                }
-            }
             let error = format!("{what} failed: {}", error_message(error));
-            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            let mut reply = json!({ "ok": false, "error": error });
+            // Its lock, taken as it opened, goes, and the bridge is answered,
+            // once what was recorded of it (a load's replay, ADR 57) is
+            // written, as a close's are: whoever resumes it next appends
+            // after that (ADR 48).
+            let hold = asked.as_ref().and_then(|session| match self.find(session) {
+                Some(i) => {
+                    self.sink.close_session(session); // A load's files.
+                    Some(self.sessions.remove(i).hold)
+                }
+                None => self.claimed.remove(session),
+            });
+            let (Some(session), Some(hold)) = (asked, hold) else {
+                self.reply(opening.peer, opening.req_id, reply);
+                return self.stop_if_empty();
+            };
+            if let Some(req_id) = opening.req_id {
+                reply["req_id"] = req_id;
+            }
+            self.let_go(session, hold, Some((opening.peer, reply)));
             return self.stop_if_empty();
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
@@ -740,6 +758,8 @@ impl Host {
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
                 // one that can't be locked, can't be served here (ADR 3, ADR 50).
+                // Nothing to let go of once written (ADR 48): this process
+                // took no lock on it, and opened no transcript for it.
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sink.close_session(&self.sessions.remove(i).id);
                     let error = format!("the agent forked into {session}, which {why}");

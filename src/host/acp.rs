@@ -1413,6 +1413,15 @@ impl Host {
         }
         // After its last record, so nothing of it is lost (ADR 22).
         self.sink.close_session(&session);
+        self.let_go(session, hold, answer);
+    }
+
+    /// Lets go of `session`, gone from `sessions`, and answers the peer in
+    /// `answer` with its reply, once the logger has written what this
+    /// process recorded of it, LOG_FLUSH at most (see `LettingGo`): a close's
+    /// records, or a failed open's (a load's replay, ADR 57), come before
+    /// the next process's (ADR 48).
+    pub(super) fn let_go(&mut self, session: String, hold: Hold, answer: Option<(u64, Value)>) {
         let lock = match hold {
             Hold::Owner(lock) => lock,
             Hold::Shared(_) | Hold::Unlocked(_) => None,

@@ -6,6 +6,9 @@ Amended 2026-10-12 (#161): a session closed in a process is let go of,
 and its close answered, once its records are written, as on exit, for 2 s
 at most; meanwhile the process's `status` lists it as `closing`, `log`
 waits for its records, and a resume is told it is closing there.
+Amended 2026-10-14 (#193): a session whose open failed after the process
+recorded something of it (a load's replay) is let go of, and the open
+answered, the same way.
 
 ## Context
 
@@ -60,6 +63,14 @@ process was gone, in a Linux container under load.
   come after the next process's, as they can after an exit. Opened in the
   same process again meanwhile, it keeps its lock there, and the close is
   still answered once its records are written.
+- A session whose open the agent fails in a process is held the same way,
+  until what the process recorded of it is written: a load's replay (ADR
+  57), or the close's records, when the open took back the lock of a
+  session closing there. A bridge's open (`session resume --pid`) is
+  answered with its error once they are; a start that fails lets go of the
+  session with its exit's records, at the latest. A fork into a session the
+  process couldn't lock has nothing to let go of: it took no lock, and
+  opened no transcript.
 - Until then the process's `status` lists the session in `closing`, so
   that brnr can tell it from one the process is opening: `log` of it sends
   `logged` to that process and reads the transcript once it is answered,
@@ -98,5 +109,7 @@ Run `cargo test --release adr_0048_`. Named claims and their assertions:
   - `adr_0048_a_close_waits_for_a_stalled_disk_2_s_at_most`.
   - `adr_0048_a_close_resumed_in_its_process_is_answered_once_written`.
   - `adr_0048_a_closing_session_is_read_once_written_and_said_to_be_closing`.
+  - `adr_0048_a_failed_load_is_written_before_the_session_is_resumed`.
+  - `adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed`.
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0048_log_shows_what_the_process_has_recorded`.
