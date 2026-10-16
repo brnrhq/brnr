@@ -303,6 +303,10 @@ impl Conn {
         if !conn.events.is_empty() {
             f.tries = 0;
         }
+        // Live while it subscribed: read, so caught up on no more.
+        if let Some(seq) = conn.events.iter().filter_map(|e| e["seq"].as_u64()).max() {
+            f.last = f.last.max(seq);
+        }
         self.events.append(&mut conn.events);
         let conn = live.unwrap();
         (self.reader, self.writer) = (conn.reader, conn.writer);
@@ -1635,6 +1639,76 @@ mod tests {
         assert_eq!(note["error"], "cut off 4 times in a row while catching up", "{note}");
         assert_eq!((note["after"].as_u64(), note["until"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An event that comes live while a command subscribes again (12, after
+    /// `subscribe` at 11) is one it has read: cut off once more before the
+    /// next line, it catches up after 12, so it gets each event once, in
+    /// order (11 to 13, all in the transcript).
+    #[test]
+    fn adr_0069_an_event_live_while_subscribing_again_comes_once() {
+        let dir = env::temp_dir().join(format!("brnr-once-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let event = |seq: u64| json!({ "event": "turn_ended", "seq": seq });
+        let lines: String = (11..=13)
+            .map(|n| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event(n) })))
+            .collect();
+        fs::write(&host_log, lines).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        // The k-th connection subscribes at `10 + k`; 12 comes live on the
+        // first between `subscribe` and `logged`, which cuts it off, 13 on
+        // the second after `logged`.
+        let process = thread::spawn(move || {
+            for (k, stream) in (1..=2).zip(listener.incoming()) {
+                let mut stream = stream.unwrap();
+                let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                for line in lines.map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let mut answer = match req["cmd"].as_str().unwrap() {
+                        "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                        "subscribe" => {
+                            json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h", "seq": 10 + k })
+                        }
+                        _ => json!({ "ok": true, "lost": false }),
+                    };
+                    answer["req_id"] = req["req_id"].clone();
+                    writeln!(stream, "{answer}").unwrap();
+                    match (k, req["cmd"].as_str().unwrap()) {
+                        (1, "subscribe") => writeln!(stream, "{}", event(12)).unwrap(),
+                        (1, "logged") => break,
+                        (_, "logged") => {
+                            writeln!(stream, "{}", event(13)).unwrap();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["turn_ended".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        let mut seqs = Vec::new();
+        while let Ok(Some(e)) = conn.next_event(None) {
+            seqs.push(e["seq"].as_u64().unwrap());
+        }
+        assert_eq!(seqs, [11, 12, 13]);
+        assert_eq!(conn.reconnects, 2);
+        process.join().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 

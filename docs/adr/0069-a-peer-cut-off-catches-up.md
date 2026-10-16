@@ -103,7 +103,9 @@ waits for an observer (P1, ADR 6); nothing is guessed (P4).
      event, L (or where it subscribed), up to R, in order of position, once
      each (`exited` is in every session's transcript and the host log).
   5. They come before what the new connection has sent since, and it goes
-     on there.
+     on there. Its last event is then the last the new connection sent, or
+     R if none: cut off again, it catches up after that, so that nothing
+     comes twice.
 
   A process that has gone can't be asked: its host log's `peer-dropped`
   for the peer says it was cut off, steps 2 and 3 are left out, and its
@@ -180,8 +182,9 @@ and the record isn't consumed, so asking can't take it from its owner.
 ## Consequences
 
 - A peer that keeps up gets every event, once and in order, whatever the
-  burst, as long as the transcript has it. #117's limit stays where ADR 60
-  set it; what changes is what follows a cut-off.
+  burst, as long as the transcript has it and it catches up within 3
+  cut-offs in a row; otherwise it says what it missed and exits 3. #117's
+  limit stays where ADR 60 set it; what changes is what follows a cut-off.
 - Every event line, live and recorded, and every raw ACP record is a few
   bytes longer.
 - A cut-off costs a connection and reads of the process's files: its host
@@ -241,6 +244,7 @@ Run `cargo test --release adr_0069_`. Named claims and their assertions:
   - `adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where`.
   - `adr_0069_a_new_subscription_that_fails_is_one_more_cut_off`.
   - `adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
+  - `adr_0069_an_event_live_while_subscribing_again_comes_once`.
 - [src/ctl/notify.rs](../../src/ctl/notify.rs)
   - `adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
 - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs)
