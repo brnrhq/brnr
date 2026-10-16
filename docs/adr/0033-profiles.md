@@ -4,6 +4,8 @@ Accepted 2026-10-07. Implemented.
 Amended by 63: the headless part is what `session new` and `resume` use;
 its `config` is `options`, beside `model` and `thought_level`, and a
 profile with `config` fails to load.
+Amended by 70: the editor part has `echo_as`, how a message sent through
+brnr is shown to the editor.
 
 ## Context
 

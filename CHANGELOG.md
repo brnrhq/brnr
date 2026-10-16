@@ -35,6 +35,15 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- `echo_as` in a profile's editor part: `"user_message_chunk"` shows a
+  message or context sent to the editor's session through brnr as the
+  user's message, one `user_message_chunk` per block, for an editor that
+  renders one outside a turn; `"tool_call"`, "Message via brnr", stays the
+  default. brnr's own notes stay tool calls (ADR 70).
+- Release candidates, `vX.Y.Z-rc.N`: a GitHub pre-release, and on crates.io
+  (`cargo install brnr --version X.Y.Z-rc.N --locked`), while Homebrew stays
+  on the last release. A release's notes take in its release candidates',
+  so they say everything since the last release (ADR 40).
 
 ### Changed
 
@@ -61,6 +70,9 @@ brnr's own conventions:
   U+FFFD in the host log; a line of exactly 64 KiB is one record, not one
   and an empty one; and a failed start's tail cuts a long line between
   characters (ADR 11, ADR 51).
+- Generating release notes refuses Git older than 2.13, whose unsupported
+  tag exclusion could make a final release list every commit instead of
+  those since the last stable release (ADR 40).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).

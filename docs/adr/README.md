@@ -92,6 +92,7 @@ of to-resolve; the map at the end says where each went.
 | [61](0061-request-ids-are-the-hosts.md) | Every request to the agent has an id of the host's | yes |
 | [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written | yes |
 | [63](0063-commands-are-grouped-by-what-they-act-on.md) | Commands are grouped by what they act on, with ACP's verbs | yes |
+| [70](0070-an-editors-profile-chooses-how-a-message-is-shown.md) | An editor's profile chooses how a message sent through brnr is shown to it | yes |
 
 ## Where the former entries went
 

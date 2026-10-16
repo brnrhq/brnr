@@ -5,6 +5,8 @@ Amends 40 and 47: checks before publication and after the tap update.
 Amended 2026-10-11: the smoke test runs the formula's own test too, which
 0.8.0 broke without the release failing.
 Amended 2026-10-12 (#157): crates.io publication waits for the smoke test.
+Amended 2026-10-15 (#156): a release candidate (ADR 40) leaves the tap
+alone, so it has no smoke test.
 
 ## Context
 
