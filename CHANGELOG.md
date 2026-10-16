@@ -35,6 +35,10 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- Release candidates, `vX.Y.Z-rc.N`: a GitHub pre-release, and on crates.io
+  (`cargo install brnr --version X.Y.Z-rc.N --locked`), while Homebrew stays
+  on the last release. A release's notes take in its release candidates',
+  so they say everything since the last release (ADR 40).
 
 ### Changed
 
@@ -54,6 +58,9 @@ brnr's own conventions:
 
 ### Fixed
 
+- Generating release notes refuses Git older than 2.13, whose unsupported
+  tag exclusion could make a final release list every commit instead of
+  those since the last stable release (ADR 40).
 - `brnr prompt send $s explain ls -h` sends `explain ls -h`: `-h` and
   `--help` print the usage only before the prompt, where they printed it,
   sending nothing, from anywhere in it (ADR 63).
