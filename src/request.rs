@@ -21,7 +21,7 @@ use libc::c_int;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{Bridge, Experimental, Feature, Log, Profile};
+use crate::config::{Bridge, EchoAs, Experimental, Feature, Log, Profile};
 use crate::{host, log, paths, spawn};
 
 #[derive(Serialize, Deserialize)]
@@ -59,6 +59,9 @@ pub struct Editor {
     pub sigmask: Vec<c_int>,
     /// Actions on the editor's session it allows (ADR 4).
     pub experimental: BTreeSet<Experimental>,
+    /// How a message sent to its session through the side channel is shown
+    /// to it (ADR 70).
+    pub echo_as: EchoAs,
     /// Process-management behaviours it turns on (ADR 42).
     pub features: BTreeSet<Feature>,
 }

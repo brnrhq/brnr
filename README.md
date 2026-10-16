@@ -153,12 +153,19 @@ experimental = ["send", "permission"]
 
 | Action | Commands | What brnr does for the editor |
 |---|---|---|
-| `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
-| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr". |
+| `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr", or as the user's message (`echo_as`, below). |
+| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr", or as the user's message (`echo_as`). |
 | `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
 | `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `session close`, `session resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
+
+A message or context is a tool call because not every editor renders a user
+message that arrives outside a turn. For an editor that does, `echo_as =
+"user_message_chunk"` in the editor part shows it as the user's message
+instead, one `user_message_chunk` per content block
+([ADR 70](docs/adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)).
+brnr's own notes ("Allowed via brnr" and the rest) stay tool calls.
 
 `session fork` is never available in an editor's process, and in strict mode
 none of these is, whatever the profile enables. `brnr process stop` isn't an
@@ -674,6 +681,7 @@ env = { GITHUB_TOKEN = "…" }
 
 [profiles.work.editor]              # brnr acp
 experimental = ["send", "permission"] # actions on the editor's session
+echo_as = "tool_call"               # or "user_message_chunk": how a message is shown
 features = ["shared_sessions"]      # process management
 ```
 
@@ -874,10 +882,14 @@ the panic, and in the foreground by the process itself.
 
 ## Releasing
 
+Generating release notes requires Git 2.13 or newer, so a final release's
+comparison can exclude release candidates (ADR 40).
+
 ```sh
 ./release.sh minor     # or patch, major, 1.2.3: checks main, opens the release pull request
 ./release.sh tag       # once it's merged: tags, releases, updates the Homebrew tap
 ./release.sh notes     # what the release pull request would say
+./release.sh 1.0.0-rc.1  # a release candidate; then rc for 1.0.0-rc.2, and 1.0.0 to release it
 ```
 
 A release's notes are its section of [CHANGELOG.md](CHANGELOG.md), in
@@ -886,6 +898,13 @@ pull requests add to under `[Unreleased]`. `./release.sh minor` names that
 section for the version on the release branch and moves its compare links,
 `./release.sh tag` won't tag a version without one, and the release workflow
 publishes it as the GitHub release's notes, or fails (ADR 40).
+
+A release candidate, `X.Y.Z-rc.N`, is a GitHub pre-release and is on
+crates.io (`cargo install brnr --version X.Y.Z-rc.N --locked`), but the
+Homebrew formulae stay at the last release. `X.Y.Z`'s section of
+CHANGELOG.md takes in its release candidates' sections, and its pull request
+lists the commits since the last release, so its notes say everything since.
+A version must come after the current one (ADR 40).
 
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.
