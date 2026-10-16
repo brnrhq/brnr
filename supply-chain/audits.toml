@@ -103,12 +103,6 @@ criteria = "safe-to-deploy"
 delta = "0.27.2 -> 0.28.0"
 notes = "Reviewed the compiled source and manifest delta against the imported audited version. Discriminant attributes remain compile-time supplied metadata; default variants receive the corresponding Default derive. String conversion generates safe match/default construction, with explicit custom-error validation and the existing PHF fallback. Iterator traits are core-qualified; character classification uses ASCII digits. No new unsafe code or ambient I/O. Dependencies require separate coverage."
 
-[[audits.toml]]
-who = "Automated source review (Claude Opus 5.5)"
-criteria = "safe-to-deploy"
-version = "1.1.6+spec-1.1.0"
-notes = "Automated full source review of all packaged src/ files (36 files) and the manifest. The crate is #![forbid(unsafe_code)] and has no build script, FFI, filesystem, network, process or environment access; the optional debug feature only writes traces to stderr through anstream. Parsing is recursive descent over toml_parser events, bounded by toml_parser's RecursionGuard (80 nested arrays/inline tables unless the unbounded feature is on) and an 80-segment limit per dotted key; together these still allow a few thousand levels of nested tables, which deserialization and drop walk recursively. Panics found are limited to serde API misuse and Display of hand-built invalid values. This review does not cover toml_parser, toml_datetime, toml_writer, serde_spanned or winnow, which need their own coverage."
-
 [[audits.toml_writer]]
 who = "Automated source review (GPT-6)"
 criteria = "safe-to-deploy"

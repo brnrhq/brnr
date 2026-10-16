@@ -210,6 +210,11 @@ criteria = "safe-to-deploy"
 version = "1.13.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.toml]]
+version = "1.1.6+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not certified: with default features, a valid 12.8 KB document of 79 nested inline tables, each under an 80-segment dotted key, nests about 6,300 tables and aborts a default 2 MiB thread with a stack overflow in toml::from_str (supply-chain/README.md)."
+
 [[exemptions.toml_parser]]
 version = "1.1.3+spec-1.1.0"
 criteria = "safe-to-deploy"
