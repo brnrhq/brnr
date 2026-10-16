@@ -112,6 +112,8 @@ and by the prompt's text:
   long <n> [stderr] writes one line of n MiB of x, 1 MiB at a time, then
                     answers; on stdout the line ends in a newline, on stderr
                     it is left open
+  stderr <n> [<t>]  writes n bytes of x, then t, then a newline on stderr,
+                    then answers
   many <n> [<size>] answers with n messages, each of its own (and size bytes
                     longer)
   think             thinks, then answers
@@ -372,6 +374,11 @@ def run(mid, sid, text):
             out.flush()
         if out is sys.stdout:
             out.write("\n")
+        end_turn(mid)
+    elif first == "stderr":
+        tail = words[2].encode() if len(words) > 2 else b""
+        sys.stderr.buffer.write(b"x" * int(words[1]) + tail + b"\n")
+        sys.stderr.buffer.flush()
         end_turn(mid)
     elif first == "many":
         pad = "m" * int(words[2]) if len(words) > 2 else ""

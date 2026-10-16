@@ -27,6 +27,10 @@ Amended by 63: `brnr start` is `brnr session new` (and `start --resume`
 `session resume`), and `list`, `ps` and `status` are `session list`,
 `process list` and `session status`.
 
+Amended 2026-10-14 (#192): a detached process's stderr reaches the host log
+(`host-stderr`) a line or a piece of 64 KiB at a time, as a bridge's does
+(ADR 51), where a line of any length was held whole.
+
 ## Context
 
 Early in the review's editor-mode run, the host, its agent and the proxy

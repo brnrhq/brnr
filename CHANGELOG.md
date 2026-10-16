@@ -63,6 +63,13 @@ brnr's own conventions:
 
 ### Fixed
 
+- A detached process's own stderr (`host-stderr` in the host log) is read
+  in pieces of 64 KiB at most, as the agent's and a bridge's are, where a
+  line of any length was held whole. The agent's stderr pieces end between
+  characters, so a character the 64 KiB boundary cut is no longer two
+  U+FFFD in the host log; a line of exactly 64 KiB is one record, not one
+  and an empty one; and a failed start's tail cuts a long line between
+  characters (ADR 11, ADR 51).
 - Generating release notes refuses Git older than 2.13, whose unsupported
   tag exclusion could make a final release list every commit instead of
   those since the last stable release (ADR 40).
