@@ -4,6 +4,11 @@ Accepted 2026-10-09. Implemented. Supersedes 15. Amends 2, 3, 4, 5, 7, 9,
 11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 27, 28, 33, 34, 35, 36, 38, 39, 41,
 43, 45, 46, 50, 54, 57, 58 and 59.
 
+Amended by 68: `--permission-timeout` and the profile's
+`permission_timeout` are `--response-timeout` and `response_timeout`, the
+one timeout for the user's responses: it answers an elicitation nobody
+answered `cancel`, and a permission request as below.
+
 ## Context
 
 brnr's commands are one flat level that grew a command at a time, and their
@@ -302,8 +307,8 @@ Run `cargo test --release adr_0063_`. Named claims and their assertions:
     after the model and before the prompt; the flag wins over the profile;
     two values for it from one source, or an agent without one, fail the
     start before anything is set.
-  - `adr_0063_permission_timeout_flag_wins_over_the_profile`: a shorter
-    `--permission-timeout` rejects before the profile's would, and a longer
+  - `adr_0063_response_timeout_flag_wins_over_the_profile`: a shorter
+    `--response-timeout` rejects before the profile's would, and a longer
     one keeps the profile's from answering.
   - `adr_0063_allow_and_reject_pick_by_kind`: each verb, with and without
     `--always`, answers with the option of its kind, whatever their order,

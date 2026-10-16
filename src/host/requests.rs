@@ -34,7 +34,10 @@ use super::state::SessionState;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
-use crate::schema::{self, AgentCapabilities, Error, ErrorCode, error_message};
+use crate::schema::{
+    self, AgentCapabilities, ElicitationCapabilities, ElicitationFormCapabilities,
+    ElicitationUrlCapabilities, Error, ErrorCode, error_message,
+};
 
 pub(super) enum HostRequest {
     Initialize,
@@ -145,11 +148,17 @@ pub(super) enum PeerOp {
 
 impl Host {
     /// Started with no editor (`brnr session new` or `resume`): the host
-    /// opens the session itself.
+    /// opens the session itself. It offers no `fs` or `terminal`: with no
+    /// editor, nothing would serve them (ADR 67 in docs/adr).
     pub(super) fn begin_headless_start(&mut self) {
+        // Elicitation in both modes (ADR 68): a form, or a URL the user
+        // opens; as the schema has them, an object per mode (ADR 43).
+        let elicitation = ElicitationCapabilities::new()
+            .form(ElicitationFormCapabilities::new())
+            .url(ElicitationUrlCapabilities::new());
         let params = json!({
             "protocolVersion": schema::PROTOCOL_VERSION,
-            "clientCapabilities": {},
+            "clientCapabilities": { "elicitation": elicitation },
             "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
         });
         self.host_request("initialize", params, HostRequest::Initialize);

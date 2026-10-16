@@ -22,18 +22,20 @@ the brnr that printed it (`brnr skill`).
    JSON. Don't write wrapper scripts, and don't parse the text output.
 2. **Use exact ids.** A session is the `session` that `brnr session new --json`
    printed, or one from `brnr session list --json`; a request the `request` from
-   `brnr permission requests --json`; a message the `message` from
+   `brnr permission requests --json` or `brnr elicitation requests --json`; a message the `message` from
    `brnr prompt send --json`. Never guess, never pick "the only one", never reuse an id you didn't get
    in this task without finding it in `brnr session list --json`.
 3. **Wait, don't poll.** Use `prompt send --wait`, `session new --wait` or
    `event wait --for`, always with `--timeout`, never a loop of `sleep` and
    `session status`. The exit
    status is the result: 0 the turn ended normally, 1 it failed, stopped or
-   its message was dropped, 124 your timeout passed (the worker goes on).
-4. **Approvals belong to the user.** Don't `permission allow` or `reject` unless the
+   its message was dropped, 124 your timeout passed (the worker goes on), 3
+   brnr cut the wait off and couldn't catch up on what it missed.
+4. **Approvals and elicitations belong to the user.** Don't `permission allow` or
+   `reject`, nor `elicitation accept`, `decline` or `cancel`, unless the
    user told you to, explicitly, for that session and that kind of request.
-   Otherwise show the request (`brnr permission show`), say in a sentence
-   what it would do, and wait for the user's answer. Don't switch a worker to a mode that
+   Otherwise show the request (`brnr permission show`, `brnr elicitation
+   show`), say in a sentence what it would do or asks, and wait for the user's answer. Don't switch a worker to a mode that
    asks less to get around this.
 5. **Clean up what you start; touch nothing else.** Start workers with
    `--stop-when-idle`, and `brnr session close` each when its work is done.
@@ -57,6 +59,7 @@ brnr session status $s --json                         # state, mode, model, tool
 brnr session list --include active --json            # open sessions: session, title, state, pid
 brnr permission requests --json                       # approvals waiting, in every session
 brnr permission show $s p1 --json                     # one in full: tool, paths, command, diff
+brnr elicitation requests --json                      # the agents asking for input: a form, a URL
 brnr session close $s --json                          # done with it: {session}, closed
 ```
 
@@ -71,8 +74,8 @@ Each is in `references/` next to this file, or printed by
 
 - `orchestrate`: a worker's life, several workers at once, exit statuses,
   steering, interrupting and held messages.
-- `approvals`: answering approvals, what counts as a delegation, what to
-  show the user.
+- `approvals`: answering approvals and elicitations, what counts as a
+  delegation, what to show the user.
 - `observe`: `session status`, `event log`, `event watch`, `event notify`,
   choosing events, and the events' JSON.
 - `setup`: installing brnr and the adapters, editors, profiles, `doctor`,

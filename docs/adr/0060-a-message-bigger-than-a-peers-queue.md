@@ -3,6 +3,9 @@
 Accepted 2026-10-09. Implemented. Amends ADR 6 and 49 (when a peer is
 behind) and 51 (each peer's queue, in what is bounded). Resolves #82.
 
+Amended by 69: a burst past 64 MiB still cuts a peer off, which then
+catches up from the transcript.
+
 ## Context
 
 ADR 6 promises that one message bigger than a peer's 16 MiB queue (20 MB in

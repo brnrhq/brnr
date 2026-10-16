@@ -19,21 +19,21 @@ use std::io::{self, ErrorKind, Read, Write};
 /// ACP bytes, either direction, on the link.
 pub const DATA: u8 = b'D';
 /// host → proxy: bytes the agent wrote to its stderr.
-pub const STDERR: u8 = b'E';
+pub(crate) const STDERR: u8 = b'E';
 /// host → proxy: the agent is running. JSON `{"id", "host_pid", "agent_pid"}`.
-pub const READY: u8 = b'R';
+pub(crate) const READY: u8 = b'R';
 /// host → proxy: startup failed. JSON `{"error": <message>, "code": <exit code>}`.
-pub const FAILED: u8 = b'F';
+pub(crate) const FAILED: u8 = b'F';
 /// host → proxy: the agent's raw wait status, i32 BE.
-pub const EXIT: u8 = b'X';
+pub(crate) const EXIT: u8 = b'X';
 /// proxy → host, on the signal link: a signal the proxy received, i32 BE.
-pub const SIGNAL: u8 = b'S';
+pub(crate) const SIGNAL: u8 = b'S';
 /// On the link, after the last `DATA` frame in its direction: proxy → host,
 /// the proxy's stdin reached EOF; host → proxy, the agent's stdout did, and
 /// the proxy's stdout ends (ADR 62).
-pub const EOF: u8 = b'Z';
+pub(crate) const EOF: u8 = b'Z';
 /// proxy → host, on the signal link: writing to the proxy's stdout failed.
-pub const STDOUT_CLOSED: u8 = b'C';
+pub(crate) const STDOUT_CLOSED: u8 = b'C';
 
 /// How much memory a payload is given before its bytes arrive.
 const UP_FRONT: usize = 64 << 10;

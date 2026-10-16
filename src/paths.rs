@@ -2,9 +2,8 @@
 //!
 //! - Control sockets and metadata: `$BRNR_DIR`, else
 //!   `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>`. Each host
-//!   writes `<id>.sock` and `<id>.json` there, and holds
-//!   `sessions/<session id>.lock` for each session it serves (see lock.rs);
-//!   the directory is private to the user, which is the access control.
+//!   writes `<id>.sock` and `<id>.json` there; the directory is private to
+//!   the user, which is the access control.
 //! - Logs: under `$BRNR_HOME`, else `~/.brnr`, laid out like the
 //!   agents' own transcripts so they can be joined with them:
 //!   `projects/<folder>/<session id>.jsonl` per ACP session, its events,
@@ -13,10 +12,17 @@
 //!   into `-` (as `~/.claude/projects` does); and `hosts/<host id>.jsonl`
 //!   for what belongs to no session.
 //!
+//!   Session locks go with the transcripts, `sessions/<session id>.lock`
+//!   there (see lock.rs): two processes that write one transcript, however
+//!   each found its runtime directory, contend for one lock (ADR 65).
+//!
 //!   A session id in a file name is escaped (`file_name`, ADR 53): one name
 //!   per id, so two sessions never share a transcript or a lock.
 //! - Config: `$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`,
 //!   else `~/.config/brnr/config.toml`.
+//!
+//! How each is found, `file_name` and `project_key` are fixed for 1.x
+//! (ADR 65).
 
 use std::env;
 use std::fs::{self, DirBuilder};
@@ -26,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use crate::sys;
 
-pub fn runtime_dir() -> PathBuf {
+pub(crate) fn runtime_dir() -> PathBuf {
     if let Some(dir) = env::var_os("BRNR_DIR") {
         return dir.into();
     }
@@ -39,7 +45,7 @@ pub fn runtime_dir() -> PathBuf {
 /// Creates `dir` (mode 0700) if needed and refuses one that someone else
 /// owns or others can access, or that is a symlink (which could point at any
 /// private directory of ours).
-pub fn ensure_private(dir: &Path) -> io::Result<()> {
+pub(crate) fn ensure_private(dir: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     check_private(dir)
 }
@@ -47,7 +53,7 @@ pub fn ensure_private(dir: &Path) -> io::Result<()> {
 /// What [`ensure_private`] checks, for a directory that must already exist:
 /// what brnr reads there (which processes run, where their sockets are) is
 /// only to be trusted if nobody else could have put it there.
-pub fn check_private(dir: &Path) -> io::Result<()> {
+pub(crate) fn check_private(dir: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(dir)?;
     if !meta.is_dir() || meta.uid() != sys::uid() || meta.mode() & 0o077 != 0 {
         return Err(io::Error::other("not a private directory owned by this user"));
@@ -55,14 +61,14 @@ pub fn check_private(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn state_dir() -> PathBuf {
+pub(crate) fn state_dir() -> PathBuf {
     match env::var_os("BRNR_HOME") {
         Some(dir) => dir.into(),
         None => home().join(".brnr"),
     }
 }
 
-pub fn config_file() -> PathBuf {
+pub(crate) fn config_file() -> PathBuf {
     if let Some(file) = env::var_os("BRNR_CONFIG") {
         return file.into();
     }
@@ -73,23 +79,24 @@ pub fn config_file() -> PathBuf {
     config.join("brnr").join("config.toml")
 }
 
-pub fn host_log(host_id: &str) -> PathBuf {
+pub(crate) fn host_log(host_id: &str) -> PathBuf {
     state_dir().join("hosts").join(format!("{host_id}.jsonl"))
 }
 
-pub fn session_log(cwd: &Path, session: &str) -> PathBuf {
+pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
     state_dir()
         .join("projects")
         .join(project_key(cwd))
         .join(format!("{}.jsonl", file_name(session)))
 }
 
-/// Where the session locks are (see lock.rs).
-pub fn session_locks() -> PathBuf {
-    runtime_dir().join("sessions")
+/// Where the session locks are (see lock.rs): with the transcripts, so
+/// that processes that share them share the locks too (ADR 65).
+pub(crate) fn session_locks() -> PathBuf {
+    state_dir().join("sessions")
 }
 
-pub fn session_lock(session: &str) -> PathBuf {
+pub(crate) fn session_lock(session: &str) -> PathBuf {
     session_locks().join(format!("{}.lock", file_name(session)))
 }
 
@@ -99,7 +106,7 @@ pub fn session_lock(session: &str) -> PathBuf {
 /// (P8): the name has no `/`, no `.` (so it is never `.` or `..`, nor named
 /// like another session's raw ACP file), and distinct ids get distinct names,
 /// also where the file system ignores case or Unicode normalization.
-pub fn file_name(session: &str) -> String {
+pub(crate) fn file_name(session: &str) -> String {
     if session.is_empty() {
         return "%".into();
     }
@@ -114,24 +121,41 @@ pub fn file_name(session: &str) -> String {
 }
 
 /// The raw ACP file beside a session's events file (`session_log`).
-pub fn acp_log(events: &Path) -> PathBuf {
+pub(crate) fn acp_log(events: &Path) -> PathBuf {
     events.with_extension("acp.jsonl")
 }
 
 /// Whether `path`, in a project folder, is a session's events file.
-pub fn is_events_log(path: &Path) -> bool {
+pub(crate) fn is_events_log(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl")
 }
 
 /// The folder name a project's logs go in: its path with every character
 /// other than ASCII letters and digits replaced by `-`.
-pub fn project_key(cwd: &Path) -> String {
+pub(crate) fn project_key(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
+/// `BRNR_DIR=<dir>` as a shell reads it, `dir` one word whatever is in it:
+/// the assignment that reaches a process started with runtime directory
+/// `dir`, in a command shown to be run (ADR 65).
+pub(crate) fn brnr_dir_is(dir: &Path) -> String {
+    format!("BRNR_DIR={}", shell_word(&dir.to_string_lossy()))
+}
+
+/// `word` as one shell word: as it is when nothing in it is special to a
+/// shell, else in single quotes, with each `'` in it written `'\''`.
+fn shell_word(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-.,/:=+@%".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 /// Expands a leading `~/`.
-pub fn expand(path: &str) -> PathBuf {
+pub(crate) fn expand(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
         Some(rest) => home().join(rest),
         None if path == "~" => home(),
@@ -146,6 +170,17 @@ fn home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adr_0065_brnr_dir_is_one_shell_word() {
+        let is = |dir: &str| brnr_dir_is(Path::new(dir));
+        assert_eq!(is("/run/user/1000/brnr"), "BRNR_DIR=/run/user/1000/brnr");
+        assert_eq!(is("/tmp/my run"), "BRNR_DIR='/tmp/my run'");
+        assert_eq!(is("/tmp/it's"), r"BRNR_DIR='/tmp/it'\''s'");
+        assert_eq!(is("/tmp/$x;`y`*"), "BRNR_DIR='/tmp/$x;`y`*'");
+        assert_eq!(is("~/run"), "BRNR_DIR='~/run'");
+        assert_eq!(is(""), "BRNR_DIR=''");
+    }
 
     #[test]
     fn a_sessions_two_files() {

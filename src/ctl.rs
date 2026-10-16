@@ -10,8 +10,9 @@
 //!   `session fork`, `session close`
 //! - delete.rs: `session delete`
 //! - sessions.rs: `session list`
-//! - show.rs: `permission show`; notify.rs: `event notify`; doctor.rs:
-//!   `doctor`; skill.rs: `skill`
+//! - show.rs: `permission show`; elicitation.rs: `elicitation requests`,
+//!   `show`, `accept`, `decline` and `cancel`; notify.rs: `event notify`;
+//!   doctor.rs: `doctor`; skill.rs: `skill`
 //! - here: `process list`, `process stop`, `session status`,
 //!   `permission requests`, `permission allow` and `reject`, `event watch`
 //!
@@ -36,8 +37,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use brnr::host::{EVENTS, QUIET, alive};
-use brnr::{lock, log, paths, render};
+use crate::host::{EVENTS, QUIET, alive};
+use crate::{lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -51,11 +52,13 @@ macro_rules! out {
 }
 /// `eprintln!` for messages with the agent's words in them.
 macro_rules! errln {
-    ($($arg:tt)*) => { eprintln!("{}", brnr::render::clean(&format!($($arg)*))) };
+    ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
+mod catch_up;
 mod delete;
 mod doctor;
+mod elicitation;
 mod history;
 mod notify;
 mod sessions;
@@ -66,7 +69,8 @@ mod talk;
 
 /// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
 /// its commands act on.
-const GROUPS: &[&str] = &["process", "session", "prompt", "queue", "permission", "config", "event"];
+const GROUPS: &[&str] =
+    &["process", "session", "prompt", "queue", "permission", "elicitation", "config", "event"];
 
 const USAGE: &str = "usage:
   brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
@@ -91,7 +95,7 @@ session
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
-           [--permission-timeout <s>] [--foreground [--quiet]]
+           [--response-timeout <s>] [--foreground [--quiet]]
   session: [--cwd <dir>] [--mode <m>] [--model <m>] [--thought-level <l>]
            [--option <o>=<v>]...
   prompt:  [--prompt <text> | -] [--file <path>]... [--image <path>]...
@@ -116,6 +120,13 @@ permission
   brnr permission allow <session> <request> [--always] [--option <id>] [--json]
   brnr permission reject <session> <request> [--always] [--option <id>] [--json]
 
+elicitation
+  brnr elicitation requests [<session>] [--json]
+  brnr elicitation show (<session> | --pid <pid>) <request> [--json]
+  brnr elicitation accept (<session> | --pid <pid>) <request> [--field <k>=<v>]... [-] [--json]
+  brnr elicitation decline (<session> | --pid <pid>) <request> [--json]
+  brnr elicitation cancel (<session> | --pid <pid>) <request> [--json]
+
 config
   brnr config get <session> [--mode] [--model] [--thought-level] [--option <o>]... [--json]
   brnr config set <session> [--mode <m>] [--model <m>] [--thought-level <l>]
@@ -126,7 +137,8 @@ event
   brnr event watch (<session> | --pid <pid>) [--events <default|all|event>,...] [--json]
   brnr event notify (<session> | --pid <pid> | --stdin) [--events <default|all|event>,...]
                     -- <command> [args...]
-  brnr event wait <session> [--for idle|turn|permission|exit] [--timeout <s>] [--json]
+  brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
+                  [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -135,9 +147,9 @@ brnr
   brnr --version
 
 brnr <group> --help lists a group's commands. <session> is a session's id, as brnr session list
-shows it. <request> is a pending approval's handle, as brnr permission requests shows it. <pid>
-is a brnr process, which runs one agent for one or more sessions, as brnr process list shows
-them. --json prints the same data as the text: one JSON value, or one event per line for event
+shows it. <request> is a pending approval's or elicitation's handle, as brnr permission requests
+and brnr elicitation requests show them. <pid> is a brnr process, which runs one agent for one or
+more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.";
 
@@ -150,7 +162,7 @@ const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `acp` and `host`. A group's
 /// commands are `brnr <group> <verb>`; the others, one word.
-pub fn main(args: Vec<String>) -> ExitCode {
+pub(crate) fn main(args: Vec<String>) -> ExitCode {
     let cmd = args.first().map_or("", String::as_str);
     let grouped = GROUPS.contains(&cmd);
     let verb = if grouped { args.get(1).map(String::as_str) } else { None };
@@ -182,10 +194,15 @@ pub fn main(args: Vec<String>) -> ExitCode {
         ("permission", Some("requests")) => done(pending(rest)),
         ("permission", Some("show")) => show::show(rest),
         ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
+        ("elicitation", Some("requests")) => done(elicitation::requests(rest)),
+        ("elicitation", Some("show")) => done(elicitation::show(rest)),
+        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
+            done(elicitation::answer(rest, verb))
+        }
         ("config", Some("get")) => settings::config_get(rest),
         ("config", Some("set")) => settings::config_set(rest),
         ("event", Some("log")) => history::log(rest),
-        ("event", Some("watch")) => done(watch(rest)),
+        ("event", Some("watch")) => watch(rest),
         ("event", Some("notify")) => notify::notify(rest),
         ("event", Some("wait")) => talk::wait(rest),
         (group, Some("-h" | "--help")) if grouped => {
@@ -238,7 +255,7 @@ fn has_usage(group: &str, verb: &str) -> bool {
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
-pub fn command(args: &[String]) -> String {
+pub(crate) fn command(args: &[String]) -> String {
     let n = match args.first() {
         Some(group) if GROUPS.contains(&group.as_str()) => 2,
         _ => 1,
@@ -347,6 +364,21 @@ fn closing(session: &str, pid: impl Display) -> String {
     )
 }
 
+/// "`session` is running in process `pid`", then `hint`; for a process
+/// started with another runtime directory, which the commands run here
+/// can't reach, that directory instead, and that `BRNR_DIR` set to it
+/// reaches the process (ADR 65).
+fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
+    match lock::holder_dir(session) {
+        Some(dir) => format!(
+            "{session} is running in process {pid} with runtime directory {} ({} reaches it)",
+            dir.display(),
+            paths::brnr_dir_is(&dir)
+        ),
+        None => format!("{session} is running in process {pid}{hint}"),
+    }
+}
+
 /// The process holding `session`'s lock as it closes it, if one is: see
 /// `closing`.
 fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
@@ -365,7 +397,8 @@ fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
                 Err(format!("{arg} is running in process {pid}, which is not answering"))
             }
             Some(host) if host.closing(arg) => Err(closing(arg, pid)),
-            _ => Err(format!("{arg} is opening in process {pid}")),
+            Some(_) => Err(format!("{arg} is opening in process {pid}")),
+            None => Err(running_in(arg, pid, ", which brnr doesn't list")),
         };
     }
     if let Some(host) = hosts.iter().find(|h| serves(h)) {
@@ -654,6 +687,7 @@ fn status(args: &[String]) -> Result<(), String> {
         "tools": x["tools"],
         "plan": x["plan"],
         "pending": x["pending"],
+        "elicitations": x["elicitations"],
         "held": x["held"],
         "context": x["context"],
         "usage": x["usage"],
@@ -720,15 +754,19 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
     // The state as JSON has it: `busy` is working, `waiting` is a turn
-    // waiting for an approval; how long when the turn's start is known.
+    // waiting for an approval or for input (ADR 68); how long when the
+    // turn's start is known.
     let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
+    let input = pending("elicitations").is_some() && pending("pending").is_none();
+    let waiting = if input { "input" } else { "an approval" };
     match (x["state"].as_str(), working) {
         (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
         (Some("busy"), None) => out.push_str("working\n"),
         (Some("waiting"), Some(working)) => {
-            out.push_str(&format!("waiting for an approval, {working}\n"))
+            out.push_str(&format!("waiting for {waiting}, {working}\n"))
         }
-        (Some("waiting"), None) => out.push_str("waiting for an approval\n"),
+        (Some("waiting"), None) => out.push_str(&format!("waiting for {waiting}\n")),
         (state, _) => out.push_str(&format!("{}\n", state.unwrap_or("?"))),
     }
     for tool in x["tools"].as_array().into_iter().flatten() {
@@ -742,8 +780,11 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if x["plan"].is_array() {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
-    if let Some(n) = x["pending"].as_u64().filter(|&n| n > 0) {
+    if let Some(n) = pending("pending") {
         out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
+    }
+    if let Some(n) = pending("elicitations") {
+        out.push_str(&format!("{n} elicitation(s) waiting: brnr elicitation requests {arg}\n"));
     }
     let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
     if held + context > 0 {
@@ -912,8 +953,11 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 
 /// Prints a session's events (`<session>`), or a process's (`--pid`), until
 /// the process exits (or the session closes), as `brnr event log` shows them. A
-/// session's are its own plus the process's (the agent exiting).
-fn watch(args: &[String]) -> Result<(), String> {
+/// session's are its own plus the process's (the agent exiting). Cut off for
+/// falling behind, it catches up from the transcript and goes on; unable to,
+/// it ends with what it missed, an `events-missed` note, and exits 3 (ADR
+/// 69).
+fn watch(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut pid) = (None, None);
     let mut events = default_events();
     let mut json_out = false;
@@ -941,42 +985,43 @@ fn watch(args: &[String]) -> Result<(), String> {
             events.push(end.to_string());
         }
     }
-    let mut conn = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
-    writeln!(conn, "{}", json!({ "cmd": "subscribe", "events": events }))
-        .map_err(|e| e.to_string())?;
-    let mut lines = BufReader::new(conn).lines();
-    let first: Value = lines
-        .next()
-        .and_then(Result::ok)
-        .and_then(|l| serde_json::from_str(&l).ok())
-        .ok_or("no answer from the process")?;
-    if first["ok"].as_bool() != Some(true) {
-        return Err(first["error"].as_str().unwrap_or("subscribe failed").to_owned());
-    }
+    let mut conn = talk::Conn::open(host)?;
+    let names: Vec<&str> = events.iter().map(String::as_str).collect();
+    conn.subscribe(&names, only_session.as_deref())?;
     let mut out = io::stdout().lock();
     let options = render::Options { session: only_session.is_none(), time: true };
-    for line in lines.map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+    let show = |out: &mut io::StdoutLock, event: &Value| {
+        let text = if json_out { Some(event.to_string()) } else { render::event(event, &options) };
+        match text {
+            Some(text) => writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()),
+            None => Ok(()),
+        }
+    };
+    loop {
+        let event = match conn.next_event(None) {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(why) => match conn.missed() {
+                Some(note) => {
+                    let _ = show(&mut out, note);
+                    return Ok(ExitCode::from(catch_up::MISSED));
+                }
+                None => return Err(why),
+            },
+        };
         let name = event["event"].as_str().unwrap_or_default();
         if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
             && only != session
         {
             continue;
         }
-        let end = ends.contains(&name);
-        if shown.iter().any(|e| e == name) {
-            let text = if json_out { Some(line) } else { render::event(&event, &options) };
-            if let Some(text) = text
-                && writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()).is_err()
-            {
-                return Ok(());
-            }
+        if shown.iter().any(|e| e == name) && show(&mut out, &event).is_err() {
+            return Ok(ExitCode::SUCCESS);
         }
-        if end {
-            return Ok(());
+        if ends.contains(&name) {
+            return Ok(ExitCode::SUCCESS);
         }
     }
-    Err("the process closed the connection (a watcher that falls behind is disconnected)".into())
 }
 
 /// The value of `--events` (for `event watch`, `event log` and `event
@@ -1226,7 +1271,8 @@ mod tests {
     use super::*;
 
     /// `session status` says the state its JSON has: idle, busy (working, and
-    /// for how long when it knows) or waiting for an approval (ADR 34).
+    /// for how long when it knows) or waiting for an approval (ADR 34), or for
+    /// input (ADR 68).
     #[test]
     fn adr_0034_status_says_the_sessions_state() {
         let state = |state: &str, secs: Value| {
@@ -1239,6 +1285,9 @@ mod tests {
         assert_eq!(state("busy", Value::Null), "working");
         assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
         assert_eq!(state("waiting", Value::Null), "waiting for an approval");
+        // Waiting for an elicitation only (ADR 68).
+        let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
+        assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
     }
 
     /// What `session list` and `session resume` take from a transcript, whatever

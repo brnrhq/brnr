@@ -98,7 +98,12 @@ impl Env {
     }
 
     pub fn hosts(&self) -> Vec<Value> {
-        let Ok(entries) = fs::read_dir(self.dir.join("run")) else { return Vec::new() };
+        self.hosts_in(&self.dir.join("run"))
+    }
+
+    /// The metadata of the processes running in runtime directory `run`.
+    pub fn hosts_in(&self, run: &Path) -> Vec<Value> {
+        let Ok(entries) = fs::read_dir(run) else { return Vec::new() };
         entries
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -156,6 +161,25 @@ impl Env {
         stderr(&out)
     }
 
+    /// `command` run by `sh` in this environment, this brnr first on `PATH`:
+    /// a command brnr shows, run as it is shown.
+    pub fn sh(&self, command: &str) -> Output {
+        let bin = Path::new(env!("CARGO_BIN_EXE_brnr")).parent().unwrap().to_owned();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths([bin].into_iter().chain(std::env::split_paths(&path)));
+        let brnr = self.brnr(&[]);
+        let envs = brnr.get_envs().filter_map(|(k, v)| Some((k, v?)));
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", command]).current_dir(&self.dir).envs(envs);
+        cmd.env("PATH", path.unwrap()).output().unwrap()
+    }
+
+    /// `brnr session new` with runtime directory `run`, which must succeed.
+    pub fn start_in(&self, run: &Path) {
+        let out = self.brnr(&new_args(&[])).env("BRNR_DIR", run).output().unwrap();
+        assert!(out.status.success(), "session new failed: {}", stderr(&out));
+    }
+
     pub fn write_config(&self, text: &str) {
         fs::write(self.dir.join("none.toml"), text).unwrap();
     }
@@ -169,7 +193,11 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for host in self.hosts() {
+        // Those started with another runtime directory in it too (`run2`).
+        let entries = fs::read_dir(&self.dir).into_iter().flatten().flatten();
+        let runs = entries.filter(|e| e.file_name().to_string_lossy().starts_with("run"));
+        let hosts: Vec<Value> = runs.flat_map(|e| self.hosts_in(&e.path())).collect();
+        for host in hosts {
             for key in ["agent_pid", "host_pid"] {
                 if let Some(pid) = host[key].as_i64() {
                     kill(-(pid as i32), libc::SIGKILL);
@@ -252,6 +280,11 @@ pub fn resume_args<'a>(session: &'a str, args: &[&'a str]) -> Vec<&'a str> {
     all.extend_from_slice(args);
     all.extend_from_slice(&["--", AGENT]);
     all
+}
+
+/// `word` in single quotes, as a shell reads it back.
+pub fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 pub fn stderr(out: &Output) -> String {

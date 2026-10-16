@@ -1,8 +1,9 @@
 //! The claims of docs/threat-model.md that no other test checks: who can
 //! reach a process and its files (P13), what the agent's text can't do
-//! (P8), how approvals end unanswered (ADR 27, 63), what is recorded of secrets
-//! (ADR 25), and what `brnr acp` passes unchanged (P1). Against the fake
-//! agent (fake_agent.py), each test in its own directories.
+//! (P8), how approvals and elicitations end unanswered (ADR 27, 63, 68), what
+//! is recorded of secrets (ADR 25), and what `brnr acp` passes unchanged
+//! (P1). Against the fake agent (fake_agent.py), each test in its own
+//! directories.
 
 mod common;
 
@@ -66,8 +67,8 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     let run = env.dir.join("run");
     assert_eq!(mode(&run), 0o700);
     assert_eq!(mode(&run.join(format!("{}.sock", env.pid()))), 0o600);
-    assert_eq!(mode(&run.join("sessions")), 0o700);
-    assert_eq!(mode(&run.join("sessions/sess-1.lock")), 0o600);
+    assert_eq!(mode(&env.dir.join("home/sessions")), 0o700);
+    assert_eq!(mode(&env.dir.join("home/sessions/sess-1.lock")), 0o600);
     // The transcripts are the logger thread's to write (ADR 48).
     env.ok(&["event", "log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
@@ -147,11 +148,11 @@ fn a_runtime_dir_of_another_users_is_refused() {
     private_dir_error(&stderr(&out));
 }
 
-/// A runtime directory whose `sessions/` is the given mode, and that.
+/// A state directory whose `sessions/` is the given mode, and that.
 fn session_locks(env: &Env, mode: u32) -> PathBuf {
-    let sessions = env.dir.join("run/sessions");
+    let sessions = env.dir.join("home/sessions");
     fs::create_dir_all(&sessions).unwrap();
-    chmod(&env.dir.join("run"), 0o700);
+    chmod(&env.dir.join("home"), 0o700);
     chmod(&sessions, mode);
     sessions
 }
@@ -377,7 +378,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     env.ok(&["event", "log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
-    assert!(env.dir.join(format!("run/sessions/{file}.lock")).is_file());
+    assert!(env.dir.join(format!("home/sessions/{file}.lock")).is_file());
     let made = tree(&env.dir);
     let escaped: Vec<_> = made.iter().filter(|p| p.ends_with("escape")).collect();
     assert!(escaped.is_empty(), "{escaped:?}");
@@ -441,7 +442,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
         .map(|c| c["result"]["outcome"].clone())
 }
 
-/// Without `permission_timeout` a request waits for an answer for as long as
+/// Without `response_timeout` a request waits for an answer for as long as
 /// it takes: nothing answers it for the user.
 #[test]
 fn adr_0027_an_unanswered_request_waits() {
@@ -464,7 +465,7 @@ fn adr_0027_an_unanswered_request_waits() {
 #[test]
 fn adr_0027_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
-    env.write_config("[profiles.default.headless]\npermission_timeout = 1\n");
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 1\n");
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
@@ -473,7 +474,7 @@ fn adr_0027_a_timeout_never_allows() {
     env.stop();
 }
 
-/// The permission timeout answers with the request's `reject_once` option;
+/// The response timeout answers with the request's `reject_once` option;
 /// one without exactly one has its turn cancelled (`session/cancel`), which
 /// answers it, and every request pending in the session, `cancelled`. Never
 /// `reject_always`, which nobody chose. `permission show` says which it
@@ -481,7 +482,7 @@ fn adr_0027_a_timeout_never_allows() {
 #[test]
 fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
     // Long enough for `permission show` to be asked before it fires.
-    let timeout = "[profiles.default.headless]\npermission_timeout = 3\n";
+    let timeout = "[profiles.default.headless]\nresponse_timeout = 3\n";
     let predicts = |env: &Env, how: &str| {
         let pending = || env.ok(&["permission", "requests"]).contains("p1");
         assert!(wait_for(Duration::from_secs(5), pending), "never asked");
@@ -542,6 +543,35 @@ fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
         }
         env.stop();
     }
+}
+
+/// The response timeout covers elicitations too (ADR 68), and answers one
+/// nobody did `cancel`: never `decline`, which is the user's no, nor
+/// `accept`. Its turn is not cancelled. `elicitation show` says so before it
+/// happens.
+#[test]
+fn adr_0068_a_timeout_cancels_never_accepts() {
+    let env = Env::new("s-eltimeout");
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "elicit form"]);
+    let asked = || env.ok(&["elicitation", "requests"]).contains("e1");
+    assert!(wait_for(Duration::from_secs(5), asked), "never asked");
+    let shown = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(shown.contains("cancelled in ") && shown.contains("s if nobody answers"), "{shown}");
+    let answer = || {
+        let ours = |c: &Value| c["id"] == "elicit-1" && c.get("method").is_none();
+        env.calls().into_iter().find(ours).map(|c| c["result"].clone())
+    };
+    assert!(answer().is_none(), "answered before it was shown");
+    assert!(wait_for(Duration::from_secs(10), || answer().is_some()), "unanswered");
+    assert_eq!(answer().unwrap(), json!({ "action": "cancel" }));
+    assert!(env.calls_of("session/cancel").is_empty(), "cancelled the turn");
+    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("elicitation e1 cancelled, by timeout"), "{log}");
+    env.stop();
 }
 
 /// A request is answered only as the request of its own session.
@@ -636,6 +666,68 @@ env = {{ GITHUB_TOKEN = "bridge-secret" }}
     env.stop();
 }
 
+/// `was_cut_off` says where a peer was cut off, never what it was sent: its
+/// answer has no event in it, for that peer or any other. What a watcher
+/// cut off catches up on, it reads from the transcript as the user, and only
+/// the events it subscribed to: one that didn't ask for `acp` gets no raw
+/// ACP, though the transcript has it (ADR 69).
+#[test]
+fn adr_0069_was_cut_off_says_where_never_what() {
+    let env = Env::new("s-cutoff");
+    env.start(&[]);
+    let mut watch = env
+        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        lines.map(|l| serde_json::from_str::<Value>(&l).unwrap()).collect::<Vec<_>>()
+    });
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..4 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let log = || {
+        let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
+        dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
+    };
+    let dropped = || log().contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    let records: Vec<Value> = log().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let note = records.iter().find(|r| r["event"]["event"] == "peer-dropped").unwrap();
+    let peer = note["event"]["peer"].as_str().unwrap();
+
+    let socket = env.dir.join("run").join(format!("{}.sock", env.pid()));
+    let ask = |peer: &str| {
+        let mut conn = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        writeln!(conn, "{}", json!({ "cmd": "was_cut_off", "peer": peer })).unwrap();
+        let mut line = String::new();
+        BufReader::new(conn).read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let answer = ask(peer);
+    let keys: Vec<&String> = answer.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["ok", "peer", "cut_off", "last_queued"], "{answer}");
+    assert_eq!(
+        (&answer["cut_off"], &answer["last_queued"]),
+        (&json!(true), &note["event"]["last_queued"])
+    );
+    assert_eq!(ask("socket#0")["cut_off"], false);
+
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    assert!(watch.wait().unwrap().success());
+    let got = lines.join().unwrap();
+    let names: Vec<&str> = got.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(names, ["agent_message", "turn_ended"].repeat(4), "and nothing else");
+}
+
 // ---- brnr acp (P1) -----------------------------------------------------
 
 /// `hex` as a JSON `\u` escape.
@@ -704,9 +796,9 @@ fn adr_0002_acp_passes_bytes_unchanged() {
     let sent: String = (lines.iter())
         .map(|(id, l)| {
             let Some(id) = id else { return format!("{l}\n") };
-            let spans = brnr::json::members(l.as_bytes(), "id");
+            let spans = brnr::internals::json::members(l.as_bytes(), "id");
             let ours = format!("\"brnr-{id}\"");
-            let line = brnr::json::replace(l.as_bytes(), &spans, ours.as_bytes());
+            let line = brnr::internals::json::replace(l.as_bytes(), &spans, ours.as_bytes());
             format!("{}\n", String::from_utf8(line).unwrap())
         })
         .collect();

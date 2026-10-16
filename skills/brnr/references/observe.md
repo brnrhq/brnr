@@ -13,9 +13,10 @@ brnr event log $s --json
 brnr event log $s --last 1 --json
 ```
 
-`session status` is one object: `state` (`idle`, `busy`, `waiting` for an approval),
-`turn_seconds`, `owner` (`headless` or `editor`), `title`, `mode`, `model`,
-`tools` running, `plan`, `pending` approvals, `held` messages, `context`,
+`session status` is one object: `state` (`idle`, `busy`, `waiting` for an
+approval or an elicitation), `turn_seconds`, `owner` (`headless` or
+`editor`), `title`, `mode`, `model`, `tools` running, `plan`, `pending`
+approvals, `elicitations` waiting, `held` messages, `context`,
 `usage`, `last_message` (cut at 4000 characters), `cwd`, `pid`,
 `stop_when_idle`. Use it to answer "what is it doing?", not to wait (use
 `event wait` for that).
@@ -62,6 +63,9 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "session_changed", "session": "0f6c…", "what": "title", "value": "Fix the failing tests"}
 {"event": "permission_request", "session": "0f6c…", "request": "p1", "owner": "headless", "title": "Edit src/lib.rs", "kind": "edit", "tool_call": {}, "options": []}
 {"event": "permission_resolved", "session": "0f6c…", "request": "p1", "answer": "allowed", "option_kind": "allow_once", "outcome": {"outcome": "selected", "optionId": "allow"}, "by": "socket#18"}
+{"event": "elicitation_request", "session": "0f6c…", "request": "e1", "owner": "headless", "mode": "form", "message": "Which branch?", "scope": "session", "tool_call": null, "scope_request": null, "schema": {}, "url": null, "elicitation_id": null}
+{"event": "elicitation_resolved", "session": "0f6c…", "request": "e1", "action": "accept", "content": {"branch": "main"}, "by": "socket#18"}
+{"event": "elicitation_completed", "session": "0f6c…", "request": "e2", "elicitation_id": "login-1"}
 {"event": "turn_ended", "session": "0f6c…", "by": "control", "messages": ["m1"], "stop_reason": "end_turn", "error": null}
 {"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}

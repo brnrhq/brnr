@@ -22,8 +22,8 @@
 
 use std::sync::Once;
 
-use brnr::host::fuzz::Harness;
-use brnr::{frame, json};
+use brnr::internals::host::fuzz::Harness;
+use brnr::internals::{frame, json};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
@@ -37,11 +37,15 @@ fn object(line: &[u8]) -> bool {
 fuzz_target!(|data: &[u8]| {
     static DIR: Once = Once::new();
     DIR.call_once(|| {
-        // Session locks go here, not where real sessions are.
+        // Session locks go here, in the state directory (ADR 65), not where
+        // real sessions are; the runtime directory too.
         let dir = std::env::temp_dir().join(format!("brnr-fuzz-{}", std::process::id()));
         // SAFETY: done first, before the host makes any thread; nothing else
         // in the process reads or writes the environment meanwhile.
-        unsafe { std::env::set_var("BRNR_DIR", dir) };
+        unsafe {
+            std::env::set_var("BRNR_DIR", dir.join("run"));
+            std::env::set_var("BRNR_HOME", dir.join("home"));
+        }
     });
     let mut lines = data.split(|&b| b == b'\n');
     let header = lines.next().unwrap_or_default();

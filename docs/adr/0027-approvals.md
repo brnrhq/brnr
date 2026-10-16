@@ -13,6 +13,13 @@ answers with `reject_once`, else cancels the turn, never `reject_always`.
 `pending` and `show` are `permission requests` and `show`; the experimental
 action is `permission`.
 
+Amended by 68: elicitation isn't declined; headless, brnr advertises
+`elicitation: {form, url}` and holds each `elicitation/create` as it holds
+a permission request, answered by `brnr elicitation accept`, `decline` or
+`cancel`, or a bridge, and by the timeout with `cancel`. `permission_timeout`
+is `response_timeout`, the one timeout for the user's responses, approvals
+and elicitations alike.
+
 ## Context
 
 brnr had a policy of its own for headless approvals: how the host answers

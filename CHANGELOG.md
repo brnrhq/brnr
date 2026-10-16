@@ -13,6 +13,10 @@ brnr's own conventions:
 - Before 1.0 nothing is kept for compatibility (ADR 1, P9). A breaking
   change goes under Changed or Removed, starts with **Breaking:**, and says
   what to do instead.
+- From 1.0.0, what ADR 64 covers is kept compatible within a major version.
+  A breaking change to it waits for the next major, where it is marked as
+  above. A form replaced in a minor release goes under Deprecated, says what
+  to use instead, and keeps working until the next major.
 - Security names a fixed vulnerability by its advisory (`GHSA-…`) and CVE
   ids where it has them.
 - An entry cites the ADR it follows. 0.6.0 and earlier came before
@@ -35,6 +39,38 @@ brnr's own conventions:
   follows, counting what it replayed across the close; what came while the
   session was closed isn't recorded, and `recorded_updates` says so:
   `history: 4 updates replayed by the agent, 3 recorded` (ADR 57).
+- Elicitations, the agent asking for input (`elicitation/create`): a form,
+  or a URL to open, such as an MCP server's login. Headless, brnr advertises
+  both modes, which claude-agent-acp needs for AskUserQuestion. `brnr
+  elicitation requests`, `show`, `accept`, `decline` and `cancel` list, show
+  and answer them; `accept --field name=value` (or a JSON object on stdin)
+  is checked against the form before anything is sent, and a URL is shown,
+  never opened. One outside any session is named with `--pid`. Events
+  `elicitation_request`, `elicitation_resolved` and `elicitation_completed`,
+  for watchers, bridges and editor sessions too; `event wait --for
+  elicitation`; `event notify` runs for `elicitation_request` by default;
+  `prompt send --wait` announces one on stderr; `session status` counts
+  `elicitations`, and a session with one is `waiting`. The socket's
+  `pending` has `elicitations`, and `elicitation` answers one. On an
+  editor's session, answering is the experimental `elicitation` (ADR 68).
+- A command the process cuts off for falling behind catches up: `event
+  watch`, `event notify`, `event wait` and the `--wait`s ask the process
+  whether it cut them off (`was_cut_off`, a new request), subscribe again,
+  and read what they missed from the transcript before going on live, so a
+  burst bigger than a peer's queue and the 64 MiB set aside (#117) no longer
+  loses events. Where the transcript can't have them (`log = false`,
+  `log = "events"` for `acp`, records skipped), or cut off 4 times in a row
+  while catching up, the command says what it missed, an `events-missed`
+  note, and exits 3 (ADR 69).
+- Every event, live and in the transcript, and every raw ACP record has its
+  position in its process, `seq`; `subscribe` answers with the connection's
+  `peer`, `host_id` and the `seq` it starts after, as `session new --wait`'s
+  ready report does; `logged` answers `lost` when a file has lost records it
+  hasn't noted yet; and `records-skipped` says the positions it lost,
+  `first_seq` and `last_seq` (ADR 69).
+- A `peer_cut_off` event tells the other peers that one was cut off, and the
+  `last_queued` event it was sent, as the host log's `peer-dropped` now says
+  too (ADR 69).
 - `echo_as` in a profile's editor part: `"user_message_chunk"` shows a
   message or context sent to the editor's session through brnr as the
   user's message, one `user_message_chunk` per block, for an editor that
@@ -47,6 +83,17 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** a headless session's elicitation waits for an answer, where
+  brnr declined it at once: an unattended run now waits on it. Set
+  `response_timeout` (or `--response-timeout`), which has no default and
+  cancels one nobody answered, never declines or accepts it (ADR 68).
+- **Breaking:** the headless `permission_timeout` is `response_timeout`, and
+  `session new` and `session resume`'s `--permission-timeout` is
+  `--response-timeout`: one timeout for the user's responses, which answers
+  a permission request nobody answered `reject_once` (else cancels its turn)
+  and an elicitation `cancel`. Rename the key in your profiles and the flag
+  in your scripts; a profile with `permission_timeout` fails to load
+  (ADR 68).
 - **Breaking:** `prompt send`'s options go before its prompt: from the
   prompt's first word on, every word is the prompt's, as after `--`, so an
   option after the text (`brnr prompt send $s "fix it" --wait`) is sent as
@@ -58,8 +105,51 @@ brnr's own conventions:
 - **Breaking:** `event log` has no `-f`: use `--follow`. A word with one
   dash is an argument there and in `session new` and `resume`, as for the
   other commands, not an unknown option (ADR 63).
+- **Breaking:** a session's lock is `$BRNR_HOME/sessions/<id>.lock`, beside
+  its transcript, where it was `$BRNR_DIR/sessions/<id>.lock`. Two
+  processes whose runtime directories differed (on Linux, a shell with
+  `XDG_RUNTIME_DIR` and a cron job without it) but shared `~/.brnr` each
+  took a lock of their own, so both could own one session and append to one
+  transcript, and each environment's commands saw only its own process. Now
+  the second resume is refused, naming the process and its runtime
+  directory (`sess-1 is running in process 4466 with runtime directory
+  /run/user/1000/brnr (BRNR_DIR=/run/user/1000/brnr reaches it)`), with or
+  without `--take-over`; `session list` there shows the session
+  `unreachable` with that pid; commands on it, and an editor's load of it,
+  are told the same, with the directory after `BRNR_DIR=` quoted for the
+  shell where it needs to be; and `doctor` lists locks left by processes that are
+  gone under `session locks`. `log = false` still writes the locks there. A
+  lock left in `$BRNR_DIR/sessions/` is read by nothing: remove the
+  directory. How the runtime and state directories are found, and how a
+  session id (`file_name`) and a cwd (`project_key`) become file names, are
+  fixed for 1.x (ADR 3, ADR 65).
+- **Breaking:** `brnr acp` no longer drops the editor's `fs` and `terminal`
+  client capabilities, in strict mode or without: the agent gets them as the
+  editor offers them, its `fs/*` and `terminal/*` requests go to the editor,
+  and the editor's answers come back to it. Whether real editors then serve
+  unsaved buffers and their terminals as they do run directly isn't checked
+  yet (ADR 67's real-editor checks, #216). There is no setting to drop them
+  again: whether to serve them is the editor's. A
+  headless session still offers neither, and the host log has no
+  `capabilities-dropped` record (ADR 67).
+- Every side-channel action on an editor's session (`send`, `context`,
+  `cancel`, `permission`, `config`, `close`) stays experimental, opt-in by
+  name, for all of 1.x; one leaves experimental only by an ADR with evidence
+  from real editors (ADR 67).
+- `event notify` on the socket, cut off for falling behind while its
+  command runs, lets the command finish and catches up, where it stopped
+  the command and exited 1; a started bridge (`--stdin`) is cut off as
+  before (ADR 69).
 - The adapters are built from claude-agent-acp 0.89.1 (`brnr-claude-adapter`)
   and codex-acp 2.2.2 (`brnr-codex-adapter`) (ADR 39).
+
+### Removed
+
+- **Breaking:** the `brnr` crate's public library API is removed: its
+  modules (`brnr::render`, `brnr::schema`, `brnr::json` and the rest) are
+  private, and its one public item is `brnr::run`, the command line as a
+  function. Run `brnr` with `--json`, or call `brnr::run`, instead; a typed
+  facade that mirrors the command line follows #150 (ADR 66).
 
 ### Fixed
 

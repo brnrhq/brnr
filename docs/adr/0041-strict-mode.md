@@ -6,6 +6,10 @@ Amended by 63: `send --steer` is `prompt send --steer`, `brnr fork` is
 `session fork`, `--strict` on `start` is on `session new` and
 `session resume`, and `brnr stop` is `process stop`.
 
+Amended by 67: dropping the editor's `fs` and `terminal` capabilities isn't
+one of the conventions any more; they reach the agent in strict mode and
+without.
+
 ## Context
 
 brnr follows ACP faithfully (P1). To the letter, that would leave out what
@@ -64,5 +68,4 @@ Run `cargo test --release adr_0041_`. Named claims and their assertions:
 
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0041_strict_mode_refuses_steering_and_fork`.
-  - `adr_0041_fs_and_terminal_pass_through_only_in_strict_mode`.
   - `adr_0041_strict_mode_has_no_experimental_actions`.

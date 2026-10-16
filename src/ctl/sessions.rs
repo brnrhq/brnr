@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use brnr::{config, json, lock, log, paths, signals, spawn, sys};
+use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
+use crate::{config, json, lock, log, paths, signals, spawn, sys};
 
 use super::{
     Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,
@@ -251,6 +251,21 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
                 "cwd": null,
             }));
         }
+    }
+    // Held by a process started with another runtime directory (ADR 65):
+    // running, where the commands run here don't reach, so neither inactive
+    // nor a process's listed here; its agent and cwd aren't known here.
+    for held in locks.iter().filter(|e| e.elsewhere()) {
+        rows.push(json!({
+            "session": held.session,
+            "title": null,
+            "state": "unreachable",
+            "pid": held.pid,
+            "agent": null,
+            "source": "brnr",
+            "last_active": null,
+            "cwd": null,
+        }));
     }
     for p in inactive_sessions(hosts) {
         rows.push(json!({

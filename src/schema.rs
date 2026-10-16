@@ -4,8 +4,9 @@
 //! json.rs reads a line (ADR 26). What it acts on in the copy is read with
 //! `agent-client-protocol-schema`'s types: [`read`] takes a part of the
 //! copy as the type its method gives it, a session update, a capability, a
-//! permission option. A part the types don't take stays `serde_json::Value`,
-//! read as far as brnr can (P4), and is forwarded untouched all the same:
+//! permission option, an elicitation and its form's schema (ADR 68). A
+//! part the types don't take stays `serde_json::Value`, read as far as brnr
+//! can (P4), and is forwarded untouched all the same:
 //!
 //! - the JSON-RPC envelope: ids of any JSON type, kept as the peer sent
 //!   them (the crate's `RequestId` is an `i64`, a string or null), and each
@@ -36,13 +37,20 @@ use agent_client_protocol_schema::v1::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-pub use agent_client_protocol_schema::ProtocolVersion;
+pub(crate) use agent_client_protocol_schema::ProtocolVersion;
+/// The types the json fuzz target reads (fuzz/fuzz_targets/json.rs), through
+/// `internals` (lib.rs).
 pub use agent_client_protocol_schema::v1::{
-    AgentCapabilities, AuthMethod, ContentBlock, Error, ErrorCode, ListSessionsResponse, MessageId,
-    NewSessionResponse, PermissionOptionKind, SessionConfigOptionValue, SessionInfo, SessionUpdate,
-    SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
+    AgentCapabilities, AuthMethod, ListSessionsResponse, NewSessionResponse, PermissionOptionKind,
+    SessionUpdate,
 };
-
+pub(crate) use agent_client_protocol_schema::v1::{
+    ContentBlock, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
+    ElicitationScope, ElicitationUrlCapabilities, Error, ErrorCode, MessageId, MultiSelectItems,
+    SessionConfigOptionValue, SessionInfo, SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
+};
 /// `value`, a part of a message as json.rs read it, as the schema's `T`, if
 /// it is one. Run it on a stack that takes `value` (see json.rs).
 pub fn read<T: DeserializeOwned>(value: &Value) -> Option<T> {
@@ -53,7 +61,7 @@ pub fn read<T: DeserializeOwned>(value: &Value) -> Option<T> {
 /// names, which have an unstable method only with its feature, none of
 /// which brnr builds. An extension method (`_…`) isn't stable, nor is one
 /// the schema still marks unstable (`session/fork`).
-pub fn stable(method: &str) -> bool {
+pub(crate) fn stable(method: &str) -> bool {
     let names = [
         serde_json::to_value(AGENT_METHOD_NAMES),
         serde_json::to_value(CLIENT_METHOD_NAMES),
@@ -75,13 +83,13 @@ pub fn error_message(error: &Value) -> String {
 
 /// The ACP version brnr speaks as a client, the one its `initialize` asks
 /// for (ADR 54).
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+pub(crate) const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
 
 /// Whether the agent's answer to brnr's `initialize` chose the version brnr
 /// speaks. An agent that doesn't speak the version asked for answers with
 /// one it does; a client that doesn't speak that one closes the connection
 /// and says so (ACP's initialization), rather than go on (ADR 54).
-pub fn check_protocol_version(result: &Value) -> Result<(), String> {
+pub(crate) fn check_protocol_version(result: &Value) -> Result<(), String> {
     let chosen = &result["protocolVersion"];
     match read::<ProtocolVersion>(chosen) {
         Some(version) if version == PROTOCOL_VERSION => Ok(()),

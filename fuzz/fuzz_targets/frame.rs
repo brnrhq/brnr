@@ -6,7 +6,7 @@
 
 use std::io::Cursor;
 
-use brnr::frame;
+use brnr::internals::frame;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

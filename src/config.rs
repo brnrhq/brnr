@@ -19,7 +19,8 @@
 //! model = "opus"                      #   level and config options by id,
 //! thought_level = "high"              #   set before the first prompt
 //! options = { effort = "high" }
-//! permission_timeout = 600            # seconds until an unanswered request is rejected
+//! response_timeout = 600              # seconds until an unanswered approval is rejected,
+//!                                     #   or an elicitation cancelled (ADR 68)
 //! stop_when_idle = 600                # close a session idle this many seconds
 //! auth = "api-key"                    # the agent's login method, run first (ADR 30)
 //!
@@ -58,54 +59,54 @@ struct ConfigFile {
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Profile {
-    pub agent: Option<Vec<String>>,
+pub(crate) struct Profile {
+    pub(crate) agent: Option<Vec<String>>,
     #[serde(default)]
-    pub log: Log,
+    pub(crate) log: Log,
     #[serde(default)]
-    pub strict: bool,
+    pub(crate) strict: bool,
     #[serde(default)]
-    pub bridges: Vec<Bridge>,
+    pub(crate) bridges: Vec<Bridge>,
     #[serde(default)]
-    pub headless: Headless,
+    pub(crate) headless: Headless,
     #[serde(default)]
-    pub editor: Editor,
+    pub(crate) editor: Editor,
 }
 
 /// What only `brnr session new` and `resume` use (ADR 12, 27, 28, 30, 31,
 /// 63).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Headless {
-    pub cwd: Option<String>,
-    pub mode: Option<String>,
-    pub model: Option<String>,
-    pub thought_level: Option<String>,
+pub(crate) struct Headless {
+    pub(crate) cwd: Option<String>,
+    pub(crate) mode: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) thought_level: Option<String>,
     #[serde(default)]
-    pub options: BTreeMap<String, String>,
-    pub permission_timeout: Option<u64>,
-    pub stop_when_idle: Option<u64>,
-    pub auth: Option<String>,
+    pub(crate) options: BTreeMap<String, String>,
+    pub(crate) response_timeout: Option<u64>,
+    pub(crate) stop_when_idle: Option<u64>,
+    pub(crate) auth: Option<String>,
     #[serde(default)]
-    pub mcp_servers: Vec<McpServer>,
+    pub(crate) mcp_servers: Vec<McpServer>,
 }
 
 /// What only `brnr acp` uses (ADR 4, 42, 70).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Editor {
+pub(crate) struct Editor {
     #[serde(default)]
-    pub experimental: BTreeSet<Experimental>,
+    pub(crate) experimental: BTreeSet<Experimental>,
     #[serde(default)]
-    pub echo_as: EchoAs,
+    pub(crate) echo_as: EchoAs,
     #[serde(default)]
-    pub features: BTreeSet<Feature>,
+    pub(crate) features: BTreeSet<Feature>,
 }
 
 /// What the host records (ADR 22): `"all"`, `"events"` (no raw ACP) or
 /// `false` (nothing).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Log {
+pub(crate) enum Log {
     #[default]
     All,
     Events,
@@ -153,31 +154,34 @@ impl<'de> Deserialize<'de> for Log {
 /// name (ADR 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Experimental {
+pub(crate) enum Experimental {
     Send,
     Context,
     Cancel,
     Permission,
+    Elicitation,
     Config,
     Close,
 }
 
 impl Experimental {
-    pub const ALL: [Experimental; 6] = [
+    pub(crate) const ALL: [Experimental; 7] = [
         Experimental::Send,
         Experimental::Context,
         Experimental::Cancel,
         Experimental::Permission,
+        Experimental::Elicitation,
         Experimental::Config,
         Experimental::Close,
     ];
 
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Experimental::Send => "send",
             Experimental::Context => "context",
             Experimental::Cancel => "cancel",
             Experimental::Permission => "permission",
+            Experimental::Elicitation => "elicitation",
             Experimental::Config => "config",
             Experimental::Close => "close",
         }
@@ -188,7 +192,7 @@ impl Experimental {
 /// side channel is shown to it as (ADR 5, 70).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EchoAs {
+pub(crate) enum EchoAs {
     /// A completed tool call, "Message via brnr": rendered by every editor.
     #[default]
     ToolCall,
@@ -198,9 +202,9 @@ pub enum EchoAs {
 }
 
 impl EchoAs {
-    pub const ALL: [EchoAs; 2] = [EchoAs::ToolCall, EchoAs::UserMessageChunk];
+    pub(crate) const ALL: [EchoAs; 2] = [EchoAs::ToolCall, EchoAs::UserMessageChunk];
 
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             EchoAs::ToolCall => "tool_call",
             EchoAs::UserMessageChunk => "user_message_chunk",
@@ -211,14 +215,14 @@ impl EchoAs {
 /// A process-management behaviour, off unless named (ADR 42).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Feature {
+pub(crate) enum Feature {
     SharedSessions,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 1] = [Feature::SharedSessions];
+    pub(crate) const ALL: [Feature; 1] = [Feature::SharedSessions];
 
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Feature::SharedSessions => "shared_sessions",
         }
@@ -229,23 +233,23 @@ impl Feature {
 /// (`url`, with `type` http or sse).
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpServer {
-    pub name: String,
-    pub command: Option<String>,
+pub(crate) struct McpServer {
+    pub(crate) name: String,
+    pub(crate) command: Option<String>,
     #[serde(default)]
-    pub args: Vec<String>,
+    pub(crate) args: Vec<String>,
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    pub url: Option<String>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) url: Option<String>,
     #[serde(rename = "type")]
-    pub kind: Option<String>,
+    pub(crate) kind: Option<String>,
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub(crate) headers: BTreeMap<String, String>,
 }
 
 impl McpServer {
     /// As ACP's `McpServer`.
-    pub fn to_acp(&self) -> Result<Value, String> {
+    pub(crate) fn to_acp(&self) -> Result<Value, String> {
         let pairs = |map: &BTreeMap<String, String>| -> Vec<Value> {
             map.iter().map(|(name, value)| json!({ "name": name, "value": value })).collect()
         };
@@ -281,13 +285,13 @@ impl McpServer {
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Bridge {
-    pub command: Vec<String>,
-    pub events: Option<Vec<String>>,
+pub(crate) struct Bridge {
+    pub(crate) command: Vec<String>,
+    pub(crate) events: Option<Vec<String>>,
 }
 
 /// The named profile, or `default` (or nothing) when no name is given.
-pub fn load(name: Option<&str>) -> Result<Profile, String> {
+pub(crate) fn load(name: Option<&str>) -> Result<Profile, String> {
     let path = paths::config_file();
     let profiles = match load_all() {
         Ok(Some(profiles)) => profiles,
@@ -306,7 +310,7 @@ pub fn load(name: Option<&str>) -> Result<Profile, String> {
 
 /// Every profile, or `None` if there is no config file. Otherwise what's
 /// wrong with it, each problem saying where.
-pub fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String>> {
+pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String>> {
     let path = paths::config_file();
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -345,7 +349,7 @@ const HEADLESS_KEYS: &[&str] = &[
     "model",
     "thought_level",
     "options",
-    "permission_timeout",
+    "response_timeout",
     "stop_when_idle",
     "auth",
     "mcp_servers",

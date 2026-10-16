@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// Nesting any thread's stack takes: serde_json's own limit.
-pub const SHALLOW: usize = 128;
+pub(crate) const SHALLOW: usize = 128;
 
 /// Stack per level of nesting. The deepest use is parsing an object: about
 /// 1 KiB a level, 3 KiB in a debug build. Built under a sanitizer (`--cfg
@@ -63,7 +63,7 @@ pub fn depth(text: &[u8]) -> usize {
 
 /// How deeply the deepest of `values` nests, as [`depth`] counts their
 /// text. It doesn't recurse, so any stack takes it.
-pub fn nesting<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
+pub(crate) fn nesting<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
     let mut deepest = 0;
     let mut todo: Vec<_> = values.into_iter().map(|v| (v, 0)).collect();
     while let Some((value, depth)) = todo.pop() {
@@ -78,7 +78,7 @@ pub fn nesting<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
 }
 
 /// Runs `f` on a stack that takes values nested `depth` deep: this thread's,
-/// up to [`SHALLOW`], else a thread's of its own. `None` if there is no such
+/// up to `SHALLOW`, else a thread's of its own. `None` if there is no such
 /// stack to be had.
 pub fn on_stack<R: Send>(depth: usize, f: impl FnOnce() -> R + Send) -> Option<R> {
     if depth <= SHALLOW {

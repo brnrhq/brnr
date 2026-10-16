@@ -24,14 +24,14 @@ static PIPE: AtomicI32 = AtomicI32::new(-1);
 /// Installs handlers for the forwarded signals and returns the pipe they are
 /// reported on, one byte per signal. Signals the caller ignores stay ignored,
 /// so the host, and through it the agent, inherits SIG_IGN (nohup).
-pub fn install() -> PipeReader {
+pub(crate) fn install() -> PipeReader {
     catch(FORWARDED)
 }
 
 /// Installs handlers for `sigs`, as [`install`] does for the forwarded
 /// ones (`brnr event notify` stops what it runs first, on those that end it).
 /// One process catches one set.
-pub fn catch(sigs: &[c_int]) -> PipeReader {
+pub(crate) fn catch(sigs: &[c_int]) -> PipeReader {
     let (rx, tx) = io::pipe().expect("pipe");
     let tx = tx.into_raw_fd();
     // SAFETY: fcntl(2) and sigaction(2) are given tx (ours: into_raw_fd took
@@ -73,7 +73,7 @@ extern "C" fn on_signal(sig: c_int) {
 
 /// The signals blocked in the calling thread. std resets the mask when it
 /// spawns a process, so the proxy hands this to the host explicitly.
-pub fn current_mask() -> Vec<c_int> {
+pub(crate) fn current_mask() -> Vec<c_int> {
     // SAFETY: all zeros is a valid sigset_t; pthread_sigmask(3) with a null
     // set only fills set, and sigismember reads it.
     unsafe {
@@ -85,7 +85,7 @@ pub fn current_mask() -> Vec<c_int> {
 
 /// Sets the calling thread's mask to exactly `sigs`. Safe between fork and
 /// exec.
-pub fn set_mask(sigs: &[c_int]) {
+pub(crate) fn set_mask(sigs: &[c_int]) {
     // SAFETY: pthread_sigmask(3) is given a valid set and a null oldset; it is
     // async-signal-safe, as between fork and exec requires.
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &sigset(sigs), null_mut()) };
@@ -99,7 +99,7 @@ static TTOU: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// under `stty tostop` its first write would otherwise stop it. `brnr session
 /// new --foreground` runs the host in a group of its own, writing to the
 /// terminal.
-pub fn write_from_background() {
+pub(crate) fn write_from_background() {
     // SAFETY: signal(2) with SIG_IGN installs no handler and takes no
     // pointers.
     let old = unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
@@ -114,7 +114,7 @@ static CHLD_IGNORED: AtomicBool = AtomicBool::new(false);
 /// and waiting for one fails (ECHILD). What we start gets it back ignored
 /// (see [`restore_for_child`]), as it would started by our caller. Called
 /// first thing, while there is one thread.
-pub fn wait_for_children() {
+pub(crate) fn wait_for_children() {
     // SAFETY: sigaction(2) is given pointers to valid sigactions or null; all
     // zeros is a valid sigaction, and SIG_DFL installs no handler.
     unsafe {
@@ -133,7 +133,7 @@ pub fn wait_for_children() {
 /// Gives a child SIGTTOU and SIGCHLD back as this process found them (see
 /// [`write_from_background`] and [`wait_for_children`]). Safe between fork
 /// and exec.
-pub fn restore_for_child() {
+pub(crate) fn restore_for_child() {
     let old = TTOU.load(Relaxed);
     if old != usize::MAX {
         // SAFETY: old is what signal(2) returned for SIGTTOU, a disposition to
@@ -149,7 +149,7 @@ pub fn restore_for_child() {
 
 /// Has `cmd` start with the dispositions this process found (see
 /// [`restore_for_child`]), where they differ from ours.
-pub fn as_found(cmd: &mut Command) -> &mut Command {
+pub(crate) fn as_found(cmd: &mut Command) -> &mut Command {
     if CHLD_IGNORED.load(Relaxed) || TTOU.load(Relaxed) != usize::MAX {
         // SAFETY: the closure runs in the child between fork and exec, where
         // only async-signal-safe calls may be made: restore_for_child makes
@@ -165,7 +165,7 @@ pub fn as_found(cmd: &mut Command) -> &mut Command {
 }
 
 /// Kills the whole process with `sig`'s default action.
-pub fn raise_default(sig: c_int) {
+pub(crate) fn raise_default(sig: c_int) {
     // SAFETY: a zeroed sigaction set to SIG_DFL and a valid sigset are what
     // sigaction(2) and pthread_sigmask(3) take; raise(3) takes a signal
     // number.

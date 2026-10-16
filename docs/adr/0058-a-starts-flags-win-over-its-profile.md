@@ -9,6 +9,8 @@ anything is set. A start is `session new` or `resume`: `--set` is
 the profile's `config` is `options`, beside `model` and `thought_level`,
 resolved as the flags are (`the profile's model large and its options
 llm=small both set the model`).
+Amended by 68: `--permission-timeout` is `--response-timeout`, winning over
+the profile's `response_timeout` (was `permission_timeout`).
 
 ## Context
 

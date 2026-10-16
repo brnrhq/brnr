@@ -17,6 +17,12 @@ Amended by 63: `session resume --pid <pid>` takes the lock in a running
 process, and `--take-over` closes the session where it runs first, as
 without `--pid`; a session process `<pid>` serves already is refused.
 
+Amended by 65: the lock is `sessions/<id>.lock` in the state directory,
+beside the transcripts, not in the runtime directory, so processes that
+share a transcript share its lock whatever runtime directory each found; it
+records its holder's runtime directory too, which a refusal names when it
+isn't the command's.
+
 ## Context
 
 A session must be served by one process at a time (P11): two processes on

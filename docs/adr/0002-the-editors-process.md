@@ -12,6 +12,12 @@ agent runs on, and brnr writes nothing more there of its own.
 Amended by 63: `brnr start --resume <session>` is
 `brnr session resume <session>`.
 
+Amended by 67: the editor's `initialize` reaches the agent with its `fs`
+and `terminal` capabilities, in strict mode and without, and the agent's
+`fs/*` and `terminal/*` requests go to the editor. There is no setting to
+drop them; the question comes back with ACP v2. A headless process offers
+neither.
+
 ## Context
 
 The editor runs brnr as its agent. brnr needs the agent in a process the

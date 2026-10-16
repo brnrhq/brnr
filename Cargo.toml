@@ -26,6 +26,16 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order", "unbounded_depth"] }
 toml = "1.1.6"
 
+[features]
+# `brnr::internals`: what the crate's own tests and fuzz targets reach
+# (ADR 66). Off for everyone else: it isn't part of the public API.
+internals = []
+
+# The integration tests are a crate of their own, so they reach `internals`
+# as any crate would: through the feature, enabled here.
+[dev-dependencies]
+brnr = { path = ".", features = ["internals"] }
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 # --cfg sanitized: built under a sanitizer (.github/workflows/sanitizers.yml),

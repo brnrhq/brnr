@@ -28,19 +28,22 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use brnr::request::{self, Request, Role};
-use brnr::{config, lock, paths, render, signals, spawn, sys};
+use crate::request::{self, Request, Role};
+use crate::{config, lock, paths, render, signals, spawn, sys};
+
+use super::catch_up::{Follow, MISSED, TRIES};
 
 use super::{
     Found, Host, START_GRACE, START_TIMEOUT, USAGE, call, closing, closing_in, connect, discover,
-    find_session, print_json, process, read_stdin, response_json, running_session, settings, text,
+    find_session, print_json, process, read_stdin, response_json, running_in, running_session,
+    settings, text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -53,33 +56,94 @@ const TIMED_OUT: u8 = 124;
 
 /// One control connection that is subscribed to events and also makes
 /// requests: responses are matched by `req_id`, and events that arrive in
-/// between are kept for `next_event`.
+/// between are kept for `next_event`. Cut off by the process for falling
+/// behind, it catches up from the transcript and goes on live on a new
+/// connection (ADR 69, see catch_up.rs).
 pub(super) struct Conn {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     events: VecDeque<Value>,
     next_req: u64,
+    /// The process's socket, to subscribe on again.
+    socket: Option<PathBuf>,
+    /// Subscribed: where it is, to catch up from.
+    follow: Option<Follow>,
+    /// What it missed, once it has given up catching up.
+    missed: Option<Value>,
+    /// How many times it has connected again.
+    reconnects: u32,
 }
 
 impl Conn {
     pub(super) fn open(host: &Host) -> Result<Conn, String> {
         let stream = connect(host).map_err(|e| format!("process {}: {e}", host.id()))?;
-        Conn::new(stream)
+        let mut conn = Conn::new(stream)?;
+        conn.socket = host.meta["socket"].as_str().map(PathBuf::from);
+        Ok(conn)
     }
 
     /// One over `stream`: a control connection, or the start channel.
     fn new(stream: UnixStream) -> Result<Conn, String> {
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
-        Ok(Conn { reader: BufReader::new(stream), writer, events: VecDeque::new(), next_req: 0 })
+        Ok(Conn {
+            reader: BufReader::new(stream),
+            writer,
+            events: VecDeque::new(),
+            next_req: 0,
+            socket: None,
+            follow: None,
+            missed: None,
+            reconnects: 0,
+        })
     }
 
-    /// Its connection, to look at without reading (`brnr event notify`).
-    pub(super) fn socket(&self) -> io::Result<UnixStream> {
-        self.writer.try_clone()
+    /// Its connection, to look at without reading (`brnr event notify`),
+    /// and how many times it has connected again, to tell a new one.
+    pub(super) fn socket(&self) -> (io::Result<UnixStream>, u32) {
+        (self.writer.try_clone(), self.reconnects)
     }
 
-    pub(super) fn subscribe(&mut self, events: &[&str]) -> Result<(), String> {
-        self.call(json!({ "cmd": "subscribe", "events": events })).map(drop)
+    /// Subscribes to `events`, of `session` (the command's to filter; the
+    /// process sends every session's) or of every session.
+    pub(super) fn subscribe(
+        &mut self,
+        events: &[&str],
+        session: Option<&str>,
+    ) -> Result<(), String> {
+        let answer = self.call(json!({ "cmd": "subscribe", "events": events }))?;
+        if let Some(socket) = self.socket.clone() {
+            self.follow = Follow::new(socket, &answer, events, session);
+        }
+        Ok(())
+    }
+
+    /// Follows only `session`, which the subscription came before.
+    fn only(&mut self, session: &str) {
+        if let Some(f) = &mut self.follow {
+            f.session = Some(session.to_owned());
+        }
+    }
+
+    /// The start channel, subscribed to `events` by the process `ready` names
+    /// once the start commits: as a subscription, from where it says.
+    fn subscribed_at(&mut self, ready: &Value, events: &[&str], session: &str) {
+        let socket = paths::runtime_dir().join(format!("{}.sock", ready["pid"]));
+        self.follow = Follow::new(socket, ready, events, Some(session));
+    }
+
+    /// What it missed and couldn't catch up on, once it has given up (ADR 69).
+    pub(super) fn missed(&self) -> Option<&Value> {
+        self.missed.as_ref()
+    }
+
+    /// How a command ends that has got `Err(why)` from the connection: with
+    /// [`MISSED`] once it has said what it missed, if it gave up catching
+    /// up; else as `why`.
+    pub(super) fn ended(&self, why: String) -> Result<ExitCode, String> {
+        let Some(note) = &self.missed else { return Err(why) };
+        let text = render::event(note, &render::Options { session: false, time: false });
+        errln!("brnr: {}", text.unwrap_or_default());
+        Ok(ExitCode::from(MISSED))
     }
 
     /// A request whose failure is an error.
@@ -88,7 +152,9 @@ impl Conn {
     }
 
     /// A request whose failure is an error, answered by `deadline`;
-    /// `Ok(None)` when it passes first.
+    /// `Ok(None)` when it passes first. One that only asks (`status`,
+    /// `pending`) is asked again once caught up, if the process cut the
+    /// connection off before it answered.
     fn call_until(
         &mut self,
         mut req: Value,
@@ -98,8 +164,18 @@ impl Conn {
         let id = format!("r{}", self.next_req);
         req["req_id"] = json!(id);
         writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
+        let again = matches!(req["cmd"].as_str(), Some("status" | "pending"));
         loop {
-            let Some(msg) = self.read(deadline)? else { return Ok(None) };
+            let msg = match self.read(deadline) {
+                Ok(Some(msg)) => msg,
+                Ok(None) => return Ok(None),
+                Err(why) if again && self.follow.is_some() => {
+                    self.catch_up(why)?;
+                    writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
+                    continue;
+                }
+                Err(why) => return Err(why),
+            };
             if msg["req_id"] == id.as_str() {
                 if msg["ok"].as_bool() != Some(true) {
                     return Err(msg["error"].as_str().unwrap_or("request failed").to_owned());
@@ -113,23 +189,160 @@ impl Conn {
     }
 
     /// The next event; `Ok(None)` when `deadline` passes, `Err` when the
-    /// connection closes.
+    /// connection closes, but for a cut-off it has caught up on.
     pub(super) fn next_event(
         &mut self,
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, String> {
-        if let Some(event) = self.events.pop_front() {
-            return Ok(Some(event));
-        }
         loop {
-            match self.read(deadline)? {
-                None => return Ok(None),
-                Some(msg) if msg.get("event").is_some() => return Ok(Some(msg)),
-                Some(_) => {} // A response nobody waits for.
+            if let Some(event) = self.events.pop_front() {
+                return Ok(Some(event));
+            }
+            match self.read(deadline) {
+                Ok(None) => return Ok(None),
+                Ok(Some(msg)) if msg.get("event").is_some() => return Ok(Some(msg)),
+                Ok(Some(_)) => {} // A response nobody waits for.
+                Err(why) => self.catch_up(why)?,
             }
         }
     }
 
+    /// What is left to read before the connection ends, without catching
+    /// up, why it ended, and whether the process cut it off: for `event
+    /// notify`, which looks while its command runs (ADR 69).
+    pub(super) fn rest(&mut self) -> (Vec<Value>, String, bool) {
+        let mut rest: Vec<Value> = self.events.drain(..).collect();
+        let why = loop {
+            match self.read(None) {
+                Ok(Some(msg)) if msg.get("event").is_some() => rest.push(msg),
+                Ok(_) => {}
+                Err(why) => break why,
+            }
+        };
+        let cut = match self.follow.as_ref() {
+            Some(f) => {
+                match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
+                {
+                    Ok(mut conn) => conn.was_cut_off(&f.peer).is_some(),
+                    Err(_) => f.cut_off_before_it_went(),
+                }
+            }
+            // Given up catching up, in a request: what it read meanwhile
+            // is left, then what it missed.
+            None => self.missed.is_some(),
+        };
+        (rest, why, cut)
+    }
+
+    /// Asks the process whether it cut `peer` off: if it did, the last
+    /// position then (`last_queued`), if it says; none if it didn't, or
+    /// doesn't answer.
+    fn was_cut_off(&mut self, peer: &str) -> Option<Option<u64>> {
+        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer })).ok()?;
+        (asked["cut_off"] == true).then(|| asked["last_queued"].as_u64())
+    }
+
+    /// The connection has ended (`why`) before the end the command waits
+    /// for: if the process cut it off, what it missed, read from the
+    /// transcript, is queued, followed by what comes live on a new
+    /// subscription (ADR 69). `Err(why)` if it wasn't cut off; or, with
+    /// `missed` saying what it missed, if it can't catch up. A new
+    /// subscription that fails, or doesn't say where it starts, is one more
+    /// cut-off: there is no position to catch up to, so it is tried again.
+    fn catch_up(&mut self, why: String) -> Result<(), String> {
+        let Some(mut f) = self.follow.take() else { return Err(why) };
+        // Once the process has said it cut `f.peer` off: where it was then.
+        let mut cut: Option<Option<u64>> = None;
+        let (mut live, until) = loop {
+            f.tries += 1;
+            let fresh =
+                UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
+            let mut conn = match fresh {
+                Ok(conn) => conn,
+                // Gone: its transcript is whole (ADR 48), and is read to its end.
+                Err(_) if cut.is_some() || f.cut_off_before_it_went() => break (None, None),
+                Err(_) => return Err(why),
+            };
+            if cut.is_none() {
+                cut = conn.was_cut_off(&f.peer);
+                if cut.is_none() {
+                    return Err(why);
+                }
+            }
+            match conn.resubscribe(&f) {
+                Ok((peer, until)) => {
+                    f.peer = peer;
+                    break (Some(conn), Some(until));
+                }
+                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), &e)),
+                Err((None, e)) if f.tries > TRIES => {
+                    // Live, as far as it knows: up to where the process
+                    // said it cut the peer off.
+                    let known = cut.flatten();
+                    let n = f.tries;
+                    let mut e = format!("cut off {n} times in a row while catching up ({e})");
+                    if known.is_none() {
+                        e.push_str("; the process says no position, so up to where is unknown");
+                    }
+                    return Err(self.give_up(&f, known, &e));
+                }
+                Err((None, _)) => {}
+            }
+        };
+        if f.tries > TRIES {
+            let e = format!("cut off {} times in a row while catching up", f.tries);
+            return Err(self.give_up(&f, until, &e));
+        }
+        let caught = match f.read(until) {
+            Ok(caught) => caught,
+            Err(e) => return Err(self.give_up(&f, until, &e)),
+        };
+        f.last = until.or(caught.last().and_then(|e| e["seq"].as_u64())).unwrap_or(f.last);
+        self.events.extend(caught);
+        let Some(conn) = live.as_mut() else { return Ok(()) };
+        if !conn.events.is_empty() {
+            f.tries = 0;
+        }
+        // Live while it subscribed: read, so caught up on no more.
+        if let Some(seq) = conn.events.iter().filter_map(|e| e["seq"].as_u64()).max() {
+            f.last = f.last.max(seq);
+        }
+        self.events.append(&mut conn.events);
+        let conn = live.unwrap();
+        (self.reader, self.writer) = (conn.reader, conn.writer);
+        self.reconnects += 1;
+        self.follow = Some(f);
+        Ok(())
+    }
+
+    /// Subscribes as `f` did, and waits for the process to have written what
+    /// it recorded until then: the new subscription's peer, and where it
+    /// starts, which the transcript has everything up to. `Err` says why it
+    /// can't, and where the new subscription starts once it has one.
+    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, String)> {
+        let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
+        let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
+        let answer = answer.map_err(|e| (None, e))?;
+        let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
+        let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
+        let at = Some(next.last);
+        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
+            let why = "the process has records it couldn't write yet (a full disk?)";
+            return Err((at, why.into()));
+        }
+        Ok((next.peer, next.last))
+    }
+
+    /// Gives up catching up: `missed` says what it missed, and why.
+    fn give_up(&mut self, f: &Follow, until: Option<u64>, why: &str) -> String {
+        let note = f.missed(until, why);
+        let text = render::event(&note, &render::Options { session: false, time: false });
+        self.missed = Some(note);
+        text.unwrap_or_else(|| why.to_owned())
+    }
+
+    /// The next line, an event or a response; an event moves on where a
+    /// subscription is.
     fn read(&mut self, deadline: Option<Instant>) -> Result<Option<Value>, String> {
         let timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
         if timeout == Some(Duration::ZERO) {
@@ -145,7 +358,17 @@ impl Conn {
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => Err("the process closed the connection".into()),
-            Ok(_) => Ok(Some(serde_json::from_str(&line).unwrap_or(Value::Null))),
+            // Cut short: the process cut the connection off mid-line.
+            Ok(_) if !line.ends_with('\n') => Err("the process closed the connection".into()),
+            Ok(_) => {
+                let msg: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                if let (Some(f), Some(seq)) = (&mut self.follow, msg["seq"].as_u64())
+                    && msg.get("event").is_some()
+                {
+                    (f.last, f.tries) = (seq, 0);
+                }
+                Ok(Some(msg))
+            }
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
@@ -159,6 +382,7 @@ const TURN_EVENTS: &[&str] = &[
     "user_message",
     "agent_message",
     "permission_request",
+    "elicitation_request",
     "turn_ended",
     "message_dropped",
     "session_closed",
@@ -169,8 +393,8 @@ const TURN_EVENTS: &[&str] = &[
 /// agent's messages as they come (or, with `json`, the turn as one object at
 /// the end: `{session, message, reply, stop_reason, error, dropped}` and
 /// `json`'s fields), and returns the turn's exit status: 1, too, for a message
-/// dropped before it was sent (`dropped` says why). Approvals on the way are
-/// announced on stderr, with how to answer them.
+/// dropped before it was sent (`dropped` says why). Approvals and
+/// elicitations on the way are announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
     arg: &str,
@@ -182,9 +406,13 @@ pub(super) fn wait_for_message(
     let mut started = false;
     let mut reply: Vec<String> = Vec::new();
     loop {
-        let Some(e) = conn.next_event(deadline)? else {
-            eprintln!("brnr: timed out waiting for the reply");
-            return Ok(ExitCode::from(TIMED_OUT));
+        let e = match conn.next_event(deadline) {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                eprintln!("brnr: timed out waiting for the reply");
+                return Ok(ExitCode::from(TIMED_OUT));
+            }
+            Err(why) => return conn.ended(why),
         };
         let ours = e["session"] == session;
         match e["event"].as_str().unwrap_or_default() {
@@ -203,6 +431,13 @@ pub(super) fn wait_for_message(
                 errln!(
                     "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr permission allow {arg} {request})",
                     e["title"].as_str().unwrap_or("?")
+                );
+            }
+            "elicitation_request" if ours => {
+                let request = e["request"].as_str().unwrap_or("?");
+                errln!(
+                    "brnr: waiting for input {request}: {} (brnr elicitation show {arg} {request}; brnr elicitation accept {arg} {request})",
+                    e["message"].as_str().unwrap_or("?")
                 );
             }
             "turn_ended" if carries(&e, message) => {
@@ -365,7 +600,7 @@ struct StartArgs {
     pid: Option<String>,
     take_over: bool,
     stop_when_idle: Option<u64>,
-    permission_timeout: Option<u64>,
+    response_timeout: Option<u64>,
     auth: Option<String>,
     strict: bool,
     wait: bool,
@@ -413,9 +648,9 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             "--stop-when-idle" => {
                 a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
             }
-            "--permission-timeout" => {
-                let secs = value("--permission-timeout")?;
-                a.permission_timeout = Some(seconds("--permission-timeout", &secs)?);
+            "--response-timeout" => {
+                let secs = value("--response-timeout")?;
+                a.response_timeout = Some(seconds("--response-timeout", &secs)?);
             }
             "--strict" => a.strict = true,
             "--wait" => a.wait = true,
@@ -442,7 +677,7 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             ("--auth", a.auth.is_some()),
             ("--strict", a.strict),
             ("--stop-when-idle", a.stop_when_idle.is_some()),
-            ("--permission-timeout", a.permission_timeout.is_some()),
+            ("--response-timeout", a.response_timeout.is_some()),
             ("--foreground", a.foreground),
             ("--quiet", a.quiet),
             ("-- <agent>", a.agent_given),
@@ -521,10 +756,8 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         // and is refused the same way if it has been taken meanwhile.
         let found = match lock::holder(&wanted) {
             Some(pid) if !a.take_over => {
-                return Err(format!(
-                    "{wanted} is running in process {pid} (--take-over closes it there and \
-                     resumes it here)"
-                ));
+                let hint = " (--take-over closes it there and resumes it here)";
+                return Err(running_in(&wanted, pid, hint));
             }
             Some(pid) => {
                 let (host, running) = settings::held(&hosts, &wanted, pid)?;
@@ -592,7 +825,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         prompt,
         start_timeout: timeout,
         stop_when_idle: a.stop_when_idle.or(h.stop_when_idle),
-        permission_timeout: a.permission_timeout.or(h.permission_timeout),
+        response_timeout: a.response_timeout.or(h.response_timeout),
         events,
         foreground: a.foreground.then_some(request::Foreground { quiet: a.quiet, json: a.json }),
     };
@@ -654,10 +887,10 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             return Ok(exit_status(child)); // It has said why, on our stderr.
         }
         let error = ready["error"].as_str().unwrap_or("the process exited without a session");
-        if brnr::bug::is_panic(error) {
+        if crate::bug::is_panic(error) {
             // A detached process has no terminal to say where to report it.
             errln!("brnr: {error}");
-            eprintln!("{}", brnr::bug::link(error, command));
+            eprintln!("{}", crate::bug::link(error, command));
             return Ok(ExitCode::FAILURE);
         }
         return Err(error.to_owned());
@@ -666,6 +899,9 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         return Ok(exit_status(child));
     }
     // The turn's events follow the report on the same channel.
+    if a.wait {
+        conn.subscribed_at(&ready, TURN_EVENTS, &text(&ready["session"]));
+    }
     started(&mut conn, &ready, a.wait, a.json, a.timeout)
 }
 
@@ -723,10 +959,9 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         let found = match lock::holder(wanted) {
             Some(holder) if holder.to_string() == pid => return Err(here),
             Some(holder) if !a.take_over => {
-                return Err(format!(
-                    "{wanted} is running in process {holder} (--take-over closes it there and \
-                     resumes it in process {pid})"
-                ));
+                let hint =
+                    format!(" (--take-over closes it there and resumes it in process {pid})");
+                return Err(running_in(wanted, holder, &hint));
             }
             Some(holder) => {
                 let (owner_host, running) = settings::held(&hosts, wanted, holder)?;
@@ -779,7 +1014,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let mut conn = Conn::open(host)?;
     if a.wait {
         // Before the prompt can go, so no event of its turn is missed.
-        conn.subscribe(TURN_EVENTS)?;
+        conn.subscribe(TURN_EVENTS, None)?;
     }
     // The process abandons the opening when its timeout passes, and says
     // so; this is for a process stuck too badly to (ADR 7).
@@ -789,6 +1024,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         Some(ready) => ready,
         None => return Err("timed out waiting for the session".into()),
     };
+    conn.only(&text(&ready["session"]));
     started(&mut conn, &ready, a.wait, a.json, a.timeout)
 }
 
@@ -952,7 +1188,7 @@ pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut conn = Conn::open(host)?;
-    conn.subscribe(TURN_EVENTS)?;
+    conn.subscribe(TURN_EVENTS, Some(&session))?;
     let response = conn.call(req)?;
     if !json_out {
         errln!("{}", describe_sent(&response));
@@ -994,17 +1230,29 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    if !matches!(what.as_str(), "idle" | "turn" | "permission" | "exit") {
-        return Err(format!("--for idle|turn|permission|exit, not {what}"));
+    if !matches!(what.as_str(), "idle" | "turn" | "permission" | "elicitation" | "exit") {
+        return Err(format!("--for idle|turn|permission|elicitation|exit, not {what}"));
     }
     let arg = arg.ok_or(USAGE)?;
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
-    let deadline = deadline(timeout);
     let mut conn = Conn::open(host)?;
+    wait_on(&mut conn, &session, &what, deadline(timeout), json_out)
+}
+
+/// `event wait` on `conn`, the process's, for `what` of `session`.
+fn wait_on(
+    conn: &mut Conn,
+    session: &str,
+    what: &str,
+    deadline: Option<Instant>,
+    json_out: bool,
+) -> Result<ExitCode, String> {
     // Subscribed before looking, so nothing happens unseen in between.
-    conn.subscribe(&["turn_ended", "permission_request", "session_closed", "exited"])?;
-    let mine = |e: &Value| e["session"] == session.as_str();
+    let events =
+        ["turn_ended", "permission_request", "elicitation_request", "session_closed", "exited"];
+    conn.subscribe(&events, Some(session))?;
+    let mine = |e: &Value| e["session"] == session;
     // What ended the wait: printed as text, or with --json as itself.
     let done = |what: &Value, text: String| {
         if json_out {
@@ -1018,16 +1266,33 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
     // closed session exits as if it had waited for that turn (see ADR 21 in
     // docs/adr).
     let mut last_turn = Value::Null;
-    match what.as_str() {
+    match what {
         "permission" => {
-            let pending = conn.call(json!({ "cmd": "pending" }))?;
+            let pending = match conn.call(json!({ "cmd": "pending" })) {
+                Ok(pending) => pending,
+                Err(why) => return conn.ended(why),
+            };
             if let Some(p) = pending["pending"].as_array().into_iter().flatten().find(|p| mine(p)) {
                 done(p, describe_permission(p))?;
                 return Ok(ExitCode::SUCCESS);
             }
         }
+        "elicitation" => {
+            let pending = match conn.call(json!({ "cmd": "pending" })) {
+                Ok(pending) => pending,
+                Err(why) => return conn.ended(why),
+            };
+            let waiting = pending["elicitations"].as_array().into_iter().flatten();
+            if let Some(e) = waiting.into_iter().find(|e| mine(e)) {
+                done(e, describe_elicitation(e))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+        }
         "idle" => {
-            let (is_idle, s) = idle(&mut conn, &session)?;
+            let (is_idle, s) = match idle(conn, session) {
+                Ok(idle) => idle,
+                Err(why) => return conn.ended(why),
+            };
             if is_idle {
                 done(&idle_now, "idle".into())?;
                 return Ok(ended_as(&s["last_turn"]));
@@ -1043,6 +1308,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 eprintln!("brnr: timed out");
                 return Ok(ExitCode::from(TIMED_OUT));
             }
+            Err(why) if conn.missed().is_some() => return conn.ended(why),
             Err(_) if what == "exit" => {
                 let gone = json!({ "event": "exited", "status": null });
                 done(&gone, render::exited(&gone["status"]))?;
@@ -1050,7 +1316,7 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
             Err(e) => return Err(e),
         };
-        match (e["event"].as_str().unwrap_or_default(), what.as_str()) {
+        match (e["event"].as_str().unwrap_or_default(), what) {
             ("exited", "exit") => {
                 done(&e, render::exited(&e["status"]))?;
                 return Ok(ExitCode::SUCCESS);
@@ -1062,11 +1328,15 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
                 done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
                 return Ok(ended_as(&last_turn));
             }
-            ("session_closed", "turn" | "permission") if mine(&e) => {
+            ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
                 return Err("the session closed".into());
             }
             ("permission_request", "permission") if mine(&e) => {
                 done(&e, describe_permission(&e))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            ("elicitation_request", "elicitation") if mine(&e) => {
+                done(&e, describe_elicitation(&e))?;
                 return Ok(ExitCode::SUCCESS);
             }
             ("turn_ended", "turn") if mine(&e) => {
@@ -1075,7 +1345,11 @@ pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
             }
             ("turn_ended", "idle") if mine(&e) => {
                 last_turn = e.clone();
-                if idle(&mut conn, &session)?.0 {
+                let is_idle = match idle(conn, session) {
+                    Ok((is_idle, _)) => is_idle,
+                    Err(why) => return conn.ended(why),
+                };
+                if is_idle {
                     // Behind the session, the turns that ended after this
                     // one are queued, before the status that says it is
                     // idle: it went idle after the last of them.
@@ -1109,6 +1383,10 @@ fn ended_as(turn: &Value) -> ExitCode {
 
 fn describe_permission(p: &Value) -> String {
     format!("approval {}: {}", text(&p["request"]), text(&p["title"]))
+}
+
+fn describe_elicitation(e: &Value) -> String {
+    format!("elicitation {}: {}", text(&e["request"]), text(&e["message"]))
 }
 
 // ---- cancel and queue ----------------------------------------------------
@@ -1246,9 +1524,464 @@ fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, String> 
     Ok(ExitCode::SUCCESS)
 }
 
+/// A connection to a process, for a test, that the process cuts off,
+/// unanswered, at its first `cmd` request, after one event more (at 11),
+/// and that can't be caught up with: the process says it cut it off, and
+/// that it has records it couldn't write (ADR 69).
+#[cfg(test)]
+pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, thread::JoinHandle<()>) {
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static MADE: AtomicU32 = AtomicU32::new(0);
+    let n = MADE.fetch_add(1, Ordering::Relaxed);
+    let dir = env::temp_dir().join(format!("brnr-cut-{}-{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("h.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let process = thread::spawn(move || {
+        for (k, stream) in (1..=2).zip(listener.incoming()) {
+            let mut stream = stream.unwrap();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    c if c == cmd => {
+                        writeln!(stream, "{}", json!({ "event": "turn_ended", "seq": 11 }))
+                            .unwrap();
+                        break;
+                    }
+                    "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h", "seq": 10 * k })
+                    }
+                    _ => json!({ "ok": true, "lost": true }),
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    });
+    let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();
+    conn.socket = Some(socket);
+    (conn, process)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A process that cuts every new connection off again once it has
+    /// answered `was_cut_off`, `subscribe` (the k-th at `10 k`) and `logged`,
+    /// the first after one event more (at `10 k + 1`): a command gives up
+    /// once it is cut off more than `TRIES` times in a row with nothing read
+    /// live in between, and says what it missed.
+    #[test]
+    fn adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up() {
+        let dir = env::temp_dir().join(format!("brnr-tries-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        fs::write(&host_log, "").unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let process = thread::spawn(move || {
+            let mut served = 0;
+            for (k, stream) in (1..).zip(listener.incoming()) {
+                let mut stream = stream.unwrap();
+                served = k;
+                let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                while let Some(Ok(line)) = lines.next() {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let answer = match req["cmd"].as_str().unwrap() {
+                        "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                        "subscribe" => {
+                            json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h", "seq": 10 * k })
+                        }
+                        _ => json!({ "ok": true, "lost": false }),
+                    };
+                    let mut answer = answer;
+                    answer["req_id"] = req["req_id"].clone();
+                    writeln!(stream, "{answer}").unwrap();
+                    if req["cmd"] == "logged" {
+                        if k == 1 {
+                            let event = json!({ "event": "turn_ended", "seq": 10 * k + 1 });
+                            writeln!(stream, "{event}").unwrap();
+                        }
+                        break;
+                    }
+                }
+                if k == TRIES as u64 + 2 {
+                    break;
+                }
+            }
+            served
+        });
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["turn_ended".into()],
+            session: None,
+            last: 0,
+            tries: 0,
+        });
+        let live = conn.next_event(None).unwrap().unwrap();
+        assert_eq!(live["seq"], 11);
+        assert!(conn.next_event(None).is_err());
+        let note = conn.missed().unwrap();
+        assert_eq!(note["error"], "cut off 4 times in a row while catching up", "{note}");
+        assert_eq!((note["after"].as_u64(), note["until"].as_u64()), (Some(40), Some(50)));
+        assert_eq!(process.join().unwrap(), 5, "connections after the first");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An event that comes live while a command subscribes again (12, after
+    /// `subscribe` at 11) is one it has read: cut off once more before the
+    /// next line, it catches up after 12, so it gets each event once, in
+    /// order (11 to 13, all in the transcript).
+    #[test]
+    fn adr_0069_an_event_live_while_subscribing_again_comes_once() {
+        let dir = env::temp_dir().join(format!("brnr-once-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let event = |seq: u64| json!({ "event": "turn_ended", "seq": seq });
+        let lines: String = (11..=13)
+            .map(|n| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event(n) })))
+            .collect();
+        fs::write(&host_log, lines).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        // The k-th connection subscribes at `10 + k`; 12 comes live on the
+        // first between `subscribe` and `logged`, which cuts it off, 13 on
+        // the second after `logged`.
+        let process = thread::spawn(move || {
+            for (k, stream) in (1..=2).zip(listener.incoming()) {
+                let mut stream = stream.unwrap();
+                let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                for line in lines.map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let mut answer = match req["cmd"].as_str().unwrap() {
+                        "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                        "subscribe" => {
+                            json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h", "seq": 10 + k })
+                        }
+                        _ => json!({ "ok": true, "lost": false }),
+                    };
+                    answer["req_id"] = req["req_id"].clone();
+                    writeln!(stream, "{answer}").unwrap();
+                    match (k, req["cmd"].as_str().unwrap()) {
+                        (1, "subscribe") => writeln!(stream, "{}", event(12)).unwrap(),
+                        (1, "logged") => break,
+                        (_, "logged") => {
+                            writeln!(stream, "{}", event(13)).unwrap();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["turn_ended".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        let mut seqs = Vec::new();
+        while let Ok(Some(e)) = conn.next_event(None) {
+            seqs.push(e["seq"].as_u64().unwrap());
+        }
+        assert_eq!(seqs, [11, 12, 13]);
+        assert_eq!(conn.reconnects, 2);
+        process.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A new subscription that fails, or doesn't say where it starts, is one
+    /// more cut-off, tried again under the same limit. A process that goes
+    /// meanwhile (its socket refuses) is caught up with to its end, so that
+    /// `until` is null only for a process that has gone. One that stays
+    /// gives up at the 4th, `until` where it said it cut the peer off
+    /// (`last_queued`, 30), or null with the error saying why if it said no
+    /// position.
+    #[test]
+    fn adr_0069_a_new_subscription_that_fails_is_one_more_cut_off() {
+        // A process that says it cut the peer off (`last_queued`) and fails
+        // each new subscription (no `seq`, or an error), then, after
+        // `serves` connections, goes or (`stays`) only stops answering.
+        let process = |name: &str, last_queued: Option<u64>, serves: usize, stays: bool| {
+            let dir = env::temp_dir().join(format!("brnr-resub-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+            let exited = json!({ "event": "exited", "status": 0, "seq": 12 });
+            let record = json!({ "ts": "t", "host_id": "h", "event": exited });
+            fs::write(&host_log, format!("{record}\n")).unwrap();
+            let listener = UnixListener::bind(&socket).unwrap();
+            let at = socket.clone();
+            let thread = thread::spawn(move || {
+                let mut asked = Vec::new();
+                for (k, stream) in (1..=serves).zip(listener.incoming()) {
+                    let mut stream = stream.unwrap();
+                    let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                    for line in lines.map_while(Result::ok) {
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        asked.push(format!("{k}:{}", req["cmd"].as_str().unwrap()));
+                        let mut answer = match req["cmd"].as_str().unwrap() {
+                            "was_cut_off" => {
+                                json!({ "ok": true, "cut_off": true, "last_queued": last_queued })
+                            }
+                            "subscribe" if k % 2 == 1 => {
+                                json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h" })
+                            }
+                            _ => json!({ "ok": false, "error": "connection gone" }),
+                        };
+                        answer["req_id"] = req["req_id"].clone();
+                        // Gone before the command hears, so that it can't
+                        // connect again.
+                        if req["cmd"] == "subscribe" && k == serves && !stays {
+                            fs::remove_file(&at).unwrap();
+                        }
+                        writeln!(stream, "{answer}").unwrap();
+                        if req["cmd"] == "subscribe" {
+                            break;
+                        }
+                    }
+                }
+                asked
+            });
+            // Cut off before it read anything.
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            drop(theirs);
+            let mut conn = Conn::new(ours).unwrap();
+            conn.follow = Some(Follow {
+                socket,
+                host_id: "h".into(),
+                host_log,
+                peer: "socket#0".into(),
+                events: vec!["exited".into()],
+                session: None,
+                last: 10,
+                tries: 0,
+            });
+            (conn, thread, dir)
+        };
+        let tries = TRIES as usize + 1;
+        let all: Vec<String> = (1..=tries).map(|k| format!("{k}:subscribe")).collect();
+        let once = |asked: Vec<String>, served: usize| {
+            let mut want = vec!["1:was_cut_off".to_owned()];
+            want.extend(all.iter().take(served).cloned());
+            assert_eq!(asked, want, "was_cut_off asked once, subscribe on each connection");
+        };
+
+        // Gone after two: caught up to its end from the transcript.
+        let (mut conn, thread, dir) = process("gone", Some(30), 2, false);
+        let caught = conn.next_event(None).unwrap().unwrap();
+        assert_eq!((&caught["event"], &caught["seq"]), (&json!("exited"), &json!(12)));
+        assert!(conn.missed().is_none());
+        once(thread.join().unwrap(), 2);
+        let _ = fs::remove_dir_all(&dir);
+
+        // Still running: gives up at the 4th, up to where it was cut off.
+        for (name, last_queued) in [("stays", Some(30)), ("nowhere", None)] {
+            let (mut conn, thread, dir) = process(name, last_queued, tries, true);
+            assert!(conn.next_event(None).is_err());
+            let note = conn.missed().expect("no events-missed note").clone();
+            assert_eq!(
+                (note["after"].as_u64(), note["until"].as_u64()),
+                (Some(10), last_queued),
+                "{note}"
+            );
+            let error = note["error"].as_str().unwrap();
+            assert!(error.starts_with("cut off 4 times in a row while catching up"), "{note}");
+            assert_eq!(error.contains("no position"), last_queued.is_none(), "{note}");
+            once(thread.join().unwrap(), tries);
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// `event wait`, cut off before the process answered its first look
+    /// (`pending`, or `status` for `idle`), and unable to catch up, says what
+    /// it missed and exits 3, as cut off while it waits does.
+    #[test]
+    fn adr_0069_event_wait_cut_off_looking_says_what_it_missed() {
+        for (what, cmd) in
+            [("permission", "pending"), ("elicitation", "pending"), ("idle", "status")]
+        {
+            let (mut conn, process) = cut_off_at(cmd);
+            let ended = wait_on(&mut conn, "s", what, None, true);
+            assert_eq!(ended, Ok(ExitCode::from(MISSED)), "--for {what}");
+            let note = conn.missed().unwrap();
+            assert_eq!((&note["event"], &note["after"]), (&json!("events-missed"), &json!(11)));
+            process.join().unwrap();
+        }
+    }
+
+    /// A live process that can't be caught up with (here, it has records it
+    /// couldn't write) has the note say up to where: where the command
+    /// subscribed again (at 20); null is for a process that has gone.
+    #[test]
+    fn adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where() {
+        let (mut conn, process) = cut_off_at("status");
+        conn.subscribe(&["turn_ended"], None).unwrap();
+        assert!(conn.call(json!({ "cmd": "status" })).is_err());
+        let note = conn.missed().unwrap();
+        assert_eq!(
+            (note["after"].as_u64(), note["until"].as_u64()),
+            (Some(11), Some(20)),
+            "{note}"
+        );
+        process.join().unwrap();
+    }
+
+    /// `session new --wait` (and `resume`) follows its turn on the start
+    /// channel, subscribed as the ready report says (`socket#start`, at 10).
+    /// Cut off there after one event, it catches up on the process's socket:
+    /// what it missed, 12 to 14, comes from the transcript, in order and once
+    /// each (11, which it got, and 15, which comes live, are in the
+    /// transcript too), then what comes live, 15 and 16. Cut off where it
+    /// can't catch up (records not written), it says what it missed and
+    /// exits 3.
+    #[test]
+    fn adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed() {
+        let dir = env::temp_dir().join(format!("brnr-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log, file) =
+            (dir.join("h.sock"), dir.join("host.jsonl"), dir.join("s.jsonl"));
+        let record = |event: Value| json!({ "ts": "t", "host_id": "h", "event": event });
+        let opened = json!({ "event": "session-opened", "session_id": "s", "file": file });
+        fs::write(&host_log, format!("{}\n", record(opened))).unwrap();
+        let event = |seq: u64, name: &str, text: &str| {
+            let mut e = json!({ "event": name, "session": "s", "host_id": "h", "seq": seq });
+            match name {
+                "user_message" => e["message"] = json!("m1"),
+                "turn_ended" => {
+                    (e["messages"], e["stop_reason"]) = (json!(["m1"]), json!("end_turn"))
+                }
+                _ => e["text"] = json!(text),
+            }
+            e
+        };
+        let recorded = [
+            event(11, "user_message", ""),
+            event(12, "agent_message", "one"),
+            event(13, "agent_message", "two"),
+            event(14, "agent_message", "three"),
+            event(15, "agent_message", "live"),
+        ];
+        let lines: String = recorded.iter().map(|e| format!("{}\n", record(e.clone()))).collect();
+        fs::write(&file, lines).unwrap();
+        // The process's socket: the start channel was cut off at 11; it
+        // subscribes again at 14, and 15 and 16 come live.
+        let listener = UnixListener::bind(&socket).unwrap();
+        let live = [event(15, "agent_message", "live"), event(16, "turn_ended", "")];
+        let process = thread::spawn(move || {
+            let mut stream = listener.incoming().next().unwrap().unwrap();
+            let mut asked = Vec::new();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                asked.push(req.clone());
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    "was_cut_off" => {
+                        json!({ "ok": true, "cut_off": req["peer"] == "socket#start" })
+                    }
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": "socket#1", "host_id": "h", "seq": 14 })
+                    }
+                    _ => json!({ "ok": true, "lost": false }),
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+                match req["cmd"].as_str().unwrap() {
+                    "subscribe" => writeln!(stream, "{}", live[0]).unwrap(),
+                    "logged" => {
+                        writeln!(stream, "{}", live[1]).unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            asked
+        });
+        let ready = json!({
+            "ok": true, "session": "s", "pid": 4242, "message": "m1",
+            "peer": "socket#start", "host_id": "h", "seq": 10,
+        });
+        // The start channel, as `start` reads it: the report, then the turn.
+        let start_channel = |then: &[Value]| {
+            let (ours, mut theirs) = UnixStream::pair().unwrap();
+            writeln!(theirs, "{ready}").unwrap();
+            for e in then {
+                writeln!(theirs, "{e}").unwrap();
+            }
+            let mut conn = Conn::new(ours).unwrap();
+            let report = conn.read(None).unwrap().unwrap();
+            assert_eq!(report, ready);
+            conn.subscribed_at(&report, TURN_EVENTS, "s");
+            // As the process names it; here, at the fake's.
+            let f = conn.follow.as_mut().expect("the start channel isn't followed");
+            assert_eq!(f.socket, paths::runtime_dir().join("4242.sock"));
+            assert_eq!(
+                (f.peer.as_str(), f.last, f.session.as_deref()),
+                ("socket#start", 10, Some("s"))
+            );
+            (f.socket, f.host_log) = (socket.clone(), host_log.clone());
+            conn
+        };
+        let mut conn = start_channel(&[event(11, "user_message", "")]);
+        let mut got = Vec::new();
+        while got.len() < 5 {
+            got.push(conn.next_event(None).unwrap().unwrap());
+        }
+        let seqs: Vec<_> = got.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, [11, 12, 13, 14, 15]);
+        assert_eq!(got, recorded, "what it got, what it missed, then what came live");
+        // The turn's end, live, ends the wait.
+        assert_eq!(wait_for_message(&mut conn, "s", "s", "m1", None, None), Ok(ExitCode::SUCCESS));
+        assert_eq!(conn.reconnects, 1);
+        let asked: Vec<_> = process.join().unwrap().into_iter().map(|r| r["cmd"].clone()).collect();
+        assert_eq!(asked, ["was_cut_off", "subscribe", "logged"]);
+        let _ = fs::remove_dir_all(&dir);
+
+        // A process with records it couldn't write (`logged` says `lost`):
+        // `cut_off_at`'s, asked nothing on its first connection, so that the
+        // second is the one catching up makes, subscribed again at 20.
+        let (first, process) = cut_off_at("none");
+        let socket = first.socket.clone().unwrap();
+        drop(first);
+        let mut conn = start_channel(&[]);
+        conn.follow.as_mut().unwrap().socket = socket;
+        let ended = started(&mut conn, &ready, true, true, None);
+        assert_eq!(ended, Ok(ExitCode::from(MISSED)));
+        let note = conn.missed().unwrap();
+        assert_eq!(
+            (&note["event"], &note["peer"]),
+            (&json!("events-missed"), &json!("socket#start"))
+        );
+        assert_eq!(
+            (note["after"].as_u64(), note["until"].as_u64()),
+            (Some(10), Some(20)),
+            "{note}"
+        );
+        process.join().unwrap();
+    }
 
     #[test]
     fn base64_matches_rfc4648() {

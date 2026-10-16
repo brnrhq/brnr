@@ -28,10 +28,13 @@ mod acp;
 mod control;
 mod death;
 mod display;
+mod elicitation;
 mod experimental;
 mod flow;
-#[doc(hidden)]
-pub mod fuzz;
+// For the tests here and the fuzz targets (through `internals`, lib.rs);
+// not in a build without the feature, such as users'.
+#[cfg(any(test, feature = "internals"))]
+pub(crate) mod fuzz;
 mod requests;
 mod start;
 mod state;
@@ -68,7 +71,7 @@ use crate::sys;
 
 use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Replay, Session};
 use control::{Closer, Peer};
-pub use control::{EVENTS, QUIET, check_bridge};
+pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use requests::Capabilities;
@@ -120,7 +123,7 @@ const PIECE: usize = 64 << 10;
 const STOP_TERM_AFTER: Duration = Duration::from_secs(5);
 const STOP_KILL_AFTER: Duration = Duration::from_secs(5);
 
-pub fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
+pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     // It takes no flags and reads no config: everything is in the request.
     // SAFETY: isatty(3) takes a descriptor number and touches no memory.
     if args.next().is_some() || unsafe { libc::isatty(0) } == 1 || !is_socket(CHANNEL_FD) {
@@ -329,8 +332,9 @@ struct Host {
     start_done: bool,
     info: Value,
     host_id: String,
-    /// How long an unanswered permission request waits before it is rejected.
-    permission_timeout: Option<Duration>,
+    /// How long an unanswered permission request waits before it is
+    /// rejected, and an elicitation before it is cancelled (ADR 68).
+    response_timeout: Option<Duration>,
     agent_pid: pid_t,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
     /// that stops reading can't stall the host; dropping this closes the
@@ -399,6 +403,10 @@ struct Host {
     /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
     next_permission: u64,
+    next_elicitation: u64,
+    /// URL elicitations held or accepted, by the agent's `elicitationId`,
+    /// until the agent says each is complete (ADR 68).
+    url_elicitations: HashMap<String, elicitation::UrlElicitation>,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
     /// A line past `LINE_BYTES` is going through unread, from the editor or
@@ -460,6 +468,15 @@ struct Host {
     // Bridges; see control.rs.
     peers: HashMap<u64, Peer>,
     bridge_pids: Vec<pid_t>,
+    /// The position of the last event emitted or ACP message recorded: each
+    /// gets the next, its `seq` (ADR 69).
+    seq: u64,
+    /// The last peers cut off, by label, and the last event queued for
+    /// each, for a peer to ask whether it was (ADR 69).
+    cut_offs: VecDeque<(String, u64)>,
+    /// `peer_cut_off` events still to emit, once the event that cut the
+    /// peer off has reached every other peer.
+    untold: VecDeque<Value>,
 
     status: Option<c_int>,
     /// The agent's stdout hasn't ended: once it has, so has the editor's
@@ -599,7 +616,7 @@ impl Host {
             start_done: false,
             info: Value::Null,
             host_id: String::new(),
-            permission_timeout: h.permission_timeout.map(Duration::from_secs),
+            response_timeout: h.response_timeout.map(Duration::from_secs),
             agent_pid,
             agent_in: None,
             to_agent: Backlog::default(),
@@ -630,6 +647,8 @@ impl Host {
             prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,
+            next_elicitation: 0,
+            url_elicitations: HashMap::new(),
             editor_buf: Vec::new(),
             editor_long: false,
             agent_long: false,
@@ -658,6 +677,9 @@ impl Host {
             features,
             peers: HashMap::new(),
             bridge_pids: Vec::new(),
+            seq: 0,
+            cut_offs: VecDeque::new(),
+            untold: VecDeque::new(),
             status: None,
             stdout_open: true,
             stderr_open: true,
@@ -1052,7 +1074,7 @@ impl Host {
     /// 48). A stalled disk holds the sessions no longer.
     fn wait_logged(&self) {
         let (tx, rx) = mpsc::channel();
-        self.sink.when_written(move || {
+        self.sink.when_written(move |_| {
             let _ = tx.send(());
         });
         let _ = rx.recv_timeout(LOG_FLUSH);
@@ -1236,7 +1258,7 @@ impl Host {
         if skip {
             return;
         }
-        self.sink.msg(None, Dir::AgentStderr, &piece);
+        self.sink.msg(None, Dir::AgentStderr, &piece, None);
         if self.start_done || rest {
             return;
         }
@@ -1729,7 +1751,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
 
 /// Blocks until `pid`, a child, has terminated, without reaping it: until
 /// it is reaped, its pid (and process group id) can't be another's.
-pub fn wait_exited(pid: pid_t) -> io::Result<()> {
+pub(crate) fn wait_exited(pid: pid_t) -> io::Result<()> {
     unsafe {
         // SAFETY: info is a siginfo_t (all zeros is a valid one) for waitid(2)
         // to fill.
@@ -1761,7 +1783,7 @@ fn reap(pid: pid_t) -> io::Result<c_int> {
 /// theirs is. One that is someone else's (`kill` says EPERM) isn't brnr's,
 /// whatever pid a file of brnr's recorded. That a pid is alive doesn't say
 /// it is still the process that recorded it: see `gone` in ctl.rs.
-pub fn alive(pid: i64) -> bool {
+pub(crate) fn alive(pid: i64) -> bool {
     pid > 0 && sys::kill(pid as pid_t, 0)
 }
 

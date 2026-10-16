@@ -31,6 +31,9 @@ Amended by 63: `session delete` writes `session_deleted` into the
 session's events file itself, a record of no process's (`host_id` null),
 and with `--purge` deletes both files.
 
+Amended by 69: every event, and every raw ACP record, has its position in
+its process, `seq`.
+
 ## Context
 
 The transcript records raw ACP. A readable history needs the interpretation

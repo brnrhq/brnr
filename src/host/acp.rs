@@ -9,8 +9,6 @@
 //!   back to it with its id as it wrote it (ADR 61). In a line, only the id
 //!   changes. The editor's `$/cancel_request` names its own requests, and
 //!   goes with their ids on the agent's side.
-//! - The editor's `initialize` loses the `fs` and `terminal` client
-//!   capabilities ([`DROPPED_CAPABILITIES`]), but in strict mode.
 //! - An injected message goes to the agent as a `session/prompt`, never
 //!   while a prompt is running: until then it is held. With `--steer` it
 //!   goes into the running turn instead, as `_session/steering` (ADR 18 in
@@ -22,16 +20,21 @@
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
 //! - What the side channel does to an editor's session (ADR 4, see
-//!   experimental.rs): a permission request the host answered in the
-//!   editor's place is withdrawn from it (`$/cancel_request`), and its late
-//!   answer dropped; brnr's notes to it take the echo's form; and a session
-//!   brnr closed under it has its later requests answered by the host.
+//!   experimental.rs): a permission request or an elicitation the host
+//!   answered in the editor's place is withdrawn from it
+//!   (`$/cancel_request`), and its late answer dropped; brnr's notes to it
+//!   take the echo's form; and a session brnr closed under it has its later
+//!   requests answered by the host.
 //! - With no editor attached, the host answers what the agent asks of its
 //!   client. Permission requests wait for an allow or reject from a bridge
-//!   or the CLI, by the option's kind (ADR 63), until `permission_timeout`
+//!   or the CLI, by the option's kind (ADR 63), until `response_timeout`
 //!   rejects them once, or cancels their turn; how much the agent asks is
-//!   the agent's mode (`--mode`, see ADR 27 in docs/adr).
-//!   Elicitation is declined, and anything else gets "method not found".
+//!   the agent's mode (`--mode`, see ADR 27 in docs/adr). Elicitations
+//!   (`elicitation/create`, a form or a URL for the user) wait the same
+//!   way for an accept, decline or cancel, until the same timeout cancels
+//!   them (ADR 68, see elicitation.rs). Anything else gets "method not
+//!   found": `fs` and `terminal` too, which a headless process doesn't
+//!   offer (ADR 67 in docs/adr).
 //! - While a `session/load`, headless or the editor's, replays a session's
 //!   history (ADR 57): if brnr has a transcript of the session, the replayed
 //!   updates are neither recorded nor turned into events, as the transcript
@@ -77,6 +80,7 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
+use super::elicitation::{self, UrlElicitation};
 use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp, history};
 use super::state::SessionState;
@@ -89,10 +93,8 @@ use crate::schema::{
 };
 use crate::{frame, json, paths};
 
-/// Client capabilities removed from the editor's `initialize`. ACP v2 drops
-/// them and they add nothing an agent needs, so no agent comes to rely on
-/// them (ADR 2 in docs/adr).
-const DROPPED_CAPABILITIES: &[&str] = &["fs", "terminal"];
+/// The most URL elicitations the host keeps waiting for their completion.
+const URL_ELICITATIONS: usize = 1024;
 
 /// A `session/prompt` the agent hasn't answered yet.
 pub(super) struct Prompt {
@@ -395,13 +397,40 @@ pub(super) struct AgentRequest {
     method: String,
     pub(super) session: Option<String>,
     pub(super) params: Value,
-    /// `p<n>` for a permission request: what bridges and brnr call it.
+    /// `p<n>` for a permission request, `e<n>` for an elicitation: what
+    /// bridges and brnr call it. None for a request brnr doesn't hold.
     pub(super) handle: Option<String>,
-    /// When `permission_timeout` answers it.
+    /// When `response_timeout` answers it.
     pub(super) deadline: Option<Instant>,
 }
 
 impl AgentRequest {
+    /// A `session/request_permission` (ADR 27).
+    pub(super) fn is_permission(&self) -> bool {
+        self.method == "session/request_permission"
+    }
+
+    /// An `elicitation/create` (ADR 68).
+    pub(super) fn is_elicitation(&self) -> bool {
+        self.method == "elicitation/create"
+    }
+
+    /// Its handle, if brnr holds it.
+    pub(super) fn held(&self) -> Option<&str> {
+        self.handle.as_deref()
+    }
+
+    /// The title brnr tells the editor by (see experimental.rs): the tool
+    /// call's, or the elicitation's message.
+    pub(super) fn title(&self) -> String {
+        let title = if self.is_elicitation() {
+            self.params["message"].as_str()
+        } else {
+            self.params["toolCall"]["title"].as_str()
+        };
+        title.unwrap_or("the request").to_owned()
+    }
+
     /// How deeply what it keeps of the request nests (see `Host::holds`).
     pub(super) fn holds(&self) -> usize {
         let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
@@ -632,9 +661,10 @@ impl Host {
     ) -> Option<Vec<u8>> {
         let cwd = msg.get("params").and_then(|p| p["cwd"].as_str()).map(str::to_owned);
         match (method, session) {
+            // Its client capabilities, `fs` and `terminal` too, reach the
+            // agent as the editor sent them (ADR 67 in docs/adr).
             ("initialize", _) => {
                 self.pending.insert(key.to_owned(), Pending::Initialize);
-                return self.drop_capabilities(msg);
             }
             ("session/new", _) => {
                 let pending = Pending::New { cwd, request: None, dir: Dir::EditorToAgent };
@@ -792,22 +822,6 @@ impl Host {
         self.write_editor(None, &msg);
     }
 
-    fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
-        if self.strict {
-            return None; // As stable ACP v1 has them (ADR 41).
-        }
-        let caps = msg.get_mut("params")?.get_mut("clientCapabilities")?.as_object_mut()?;
-        let dropped: Map<String, Value> = DROPPED_CAPABILITIES
-            .iter()
-            .filter_map(|&k| Some((k.to_owned(), caps.shift_remove(k)?)))
-            .collect();
-        if dropped.is_empty() {
-            return None;
-        }
-        self.sink.note(None, json!({ "event": "capabilities-dropped", "dropped": dropped }));
-        Some(serde_json::to_vec(&msg).unwrap())
-    }
-
     /// Tracks the editor's prompt as the start of a turn and appends any
     /// held context to it.
     fn editor_prompt(
@@ -884,7 +898,13 @@ impl Host {
             (None, Some(id)) => self.agent_response(&id_key(&id), &msg, line),
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
             (method, None) => {
-                let session = param_session(&msg);
+                let mut session = param_session(&msg);
+                let mut completed = None;
+                if method.as_deref() == Some("elicitation/complete") {
+                    let event = self.elicitation_complete(&msg);
+                    session = event.as_ref().and_then(|e| e["session"].as_str()).map(str::to_owned);
+                    completed = event;
+                }
                 let update = method.as_deref() == Some("session/update");
                 let i = session.as_deref().and_then(|s| self.find(s));
                 if let Some(i) = i
@@ -912,6 +932,9 @@ impl Host {
                 }
                 self.record(session.as_deref(), Dir::AgentToEditor, line);
                 self.send_link(frame::DATA, line);
+                if let Some(event) = completed {
+                    self.emit(event);
+                }
             }
         }
     }
@@ -1006,7 +1029,9 @@ impl Host {
                     self.sessions[i].state.result(result.unwrap_or(&Value::Null));
                 }
                 if let Some(request) = request {
-                    self.sink.msg(session.as_deref(), dir, &request);
+                    // A copy, in the session's file, of what the host log has with its
+                    // position: none here (ADR 69).
+                    self.sink.msg(session.as_deref(), dir, &request, None);
                 }
                 session
             }
@@ -1066,19 +1091,55 @@ impl Host {
             handle: None,
             deadline: None,
         };
-        if req.method == "session/request_permission" {
+        if req.is_permission() {
             self.next_permission += 1;
             req.handle = Some(format!("p{}", self.next_permission));
+        } else if req.is_elicitation() {
+            self.next_elicitation += 1;
+            req.handle = Some(format!("e{}", self.next_elicitation));
+            self.remember_url(&req);
         }
         if !self.editor_attached() {
             return self.answer_as_client(req);
         }
         self.send_link(frame::DATA, line);
-        let event = req.handle.is_some().then(|| permission_event(&req, "editor"));
+        let event = request_event(&req, "editor");
         self.agent_requests.push(req);
         if let Some(event) = event {
             self.emit(event);
         }
+    }
+
+    /// Keeps a URL elicitation's id, so the agent's `elicitation/complete`
+    /// for it can be told to whom it belonged (ADR 68). Up to
+    /// [`URL_ELICITATIONS`]: past that, an agent that never completes them
+    /// would have the host keep them without limit, and the completion of
+    /// one not kept is told without its handle.
+    fn remember_url(&mut self, req: &AgentRequest) {
+        if self.url_elicitations.len() >= URL_ELICITATIONS {
+            return;
+        }
+        if let (Some(id), Some(handle)) = (elicitation::elicitation_id(req), req.held()) {
+            let held = UrlElicitation { session: req.session.clone(), handle: handle.to_owned() };
+            self.url_elicitations.insert(id, held);
+        }
+    }
+
+    /// The agent's `elicitation/complete`: a URL's flow is done (ADR 68),
+    /// as `elicitation_completed`. It names the elicitation, not a session;
+    /// the session is the request's, if brnr kept it.
+    fn elicitation_complete(&mut self, msg: &Map<String, Value>) -> Option<Value> {
+        let id = msg.get("params")?.get("elicitationId")?.as_str()?;
+        let (session, handle) = match self.url_elicitations.remove(id) {
+            Some(held) => (held.session, Some(held.handle)),
+            None => (None, None),
+        };
+        Some(json!({
+            "event": "elicitation_completed",
+            "session": session,
+            "request": handle,
+            "elicitation_id": id,
+        }))
     }
 
     /// The editor answered one of the agent's requests.
@@ -1090,9 +1151,16 @@ impl Host {
     ) -> Option<String> {
         let pos = self.agent_requests.iter().position(|r| r.key == key)?;
         let req = self.agent_requests.remove(pos);
-        if req.handle.is_some() {
-            let outcome = msg.get("result").map_or(Value::Null, |r| r["outcome"].clone());
-            self.emit(resolved_event(&req, &outcome, None, by));
+        let result = msg.get("result").cloned().unwrap_or(Value::Null);
+        if req.is_permission() {
+            self.emit(resolved_event(&req, &result["outcome"], None, by));
+        } else if req.is_elicitation() {
+            if result["action"] != "accept"
+                && let Some(id) = elicitation::elicitation_id(&req)
+            {
+                self.url_elicitations.remove(&id);
+            }
+            self.emit(elicitation::resolved_event(&req, &result, by));
         }
         req.session
     }
@@ -1103,13 +1171,18 @@ impl Host {
         match req.method.as_str() {
             "session/request_permission" => {
                 // None, never, for a timeout too far off to say.
-                req.deadline = self.permission_timeout.and_then(|t| Instant::now().checked_add(t));
+                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
                 let event = permission_event(&req, "headless");
                 self.agent_requests.push(req);
                 self.emit(event);
             }
+            // Held as a permission request is, until someone answers it
+            // or the same timeout cancels it (ADR 68).
             "elicitation/create" => {
-                self.respond(&req, json!({ "result": { "action": "decline" } }))
+                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
+                let event = elicitation::request_event(&req, "headless");
+                self.agent_requests.push(req);
+                self.emit(event);
             }
             method => {
                 let message = format!("{method} is not supported without an editor");
@@ -1138,7 +1211,7 @@ impl Host {
         let pos = self
             .agent_requests
             .iter()
-            .position(|r| r.handle.as_deref() == Some(handle))
+            .position(|r| r.is_permission() && r.held() == Some(handle))
             .ok_or_else(|| format!("no pending request {handle}"))?;
         if self.status.is_some() || self.agent_in.is_none() {
             return Err("the agent is no longer accepting input".into());
@@ -1201,16 +1274,66 @@ impl Host {
         Ok(outcome)
     }
 
+    /// Answers elicitation `handle` with `action`, ACP's `accept` (its
+    /// `content` checked against the form's schema first, see
+    /// elicitation.rs), `decline` or `cancel`, by `by` (ADR 68). Nothing is
+    /// sent for content that doesn't fit (P4). On an editor's session,
+    /// where this is the experimental `elicitation` (see experimental.rs),
+    /// the request is then withdrawn from the editor.
+    pub(super) fn resolve_elicitation(
+        &mut self,
+        handle: &str,
+        action: &str,
+        content: &Value,
+        by: &str,
+    ) -> Result<Value, String> {
+        let pos = self
+            .agent_requests
+            .iter()
+            .position(|r| r.is_elicitation() && r.held() == Some(handle))
+            .ok_or_else(|| format!("no pending elicitation {handle}"))?;
+        if self.status.is_some() || self.agent_in.is_none() {
+            return Err("the agent is no longer accepting input".into());
+        }
+        let result = elicitation::response(&self.agent_requests[pos], action, content)?;
+        let req = self.agent_requests.remove(pos);
+        if action != "accept"
+            && let Some(id) = elicitation::elicitation_id(&req)
+        {
+            self.url_elicitations.remove(&id);
+        }
+        self.respond(&req, json!({ "result": result }));
+        let how = match action {
+            "accept" => "accepted",
+            "decline" => "declined",
+            _ => "cancelled",
+        };
+        self.withdraw(&req, how, by);
+        self.emit(elicitation::resolved_event(&req, &result, by));
+        Ok(result)
+    }
+
     /// ACP: a client that cancels a turn answers that session's pending
-    /// permission requests with `cancelled`, `by` `cancel` or `timeout`. If
-    /// the editor is showing one, it is withdrawn, and its late answer
-    /// dropped (see experimental.rs).
-    fn cancel_permissions(&mut self, session: &str, by: &str) {
+    /// permission requests with `cancelled`, `by` `cancel` or `timeout`. Its
+    /// pending elicitations are answered `cancel` the same way (ADR 68):
+    /// the turn they were asked in is gone. If the editor is showing one,
+    /// it is withdrawn, and its late answer dropped (see experimental.rs).
+    fn cancel_requests(&mut self, session: &str, by: &str) {
         let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
             .into_iter()
             .partition(|r| r.handle.is_some() && r.session.as_deref() == Some(session));
         self.agent_requests = keep;
         for req in cancel {
+            if req.is_elicitation() {
+                let result = json!({ "action": "cancel" });
+                if let Some(id) = elicitation::elicitation_id(&req) {
+                    self.url_elicitations.remove(&id);
+                }
+                self.respond(&req, json!({ "result": result }));
+                self.withdraw(&req, "cancelled", by);
+                self.emit(elicitation::resolved_event(&req, &result, by));
+                continue;
+            }
             let outcome = json!({ "outcome": "cancelled" });
             self.respond(&req, json!({ "result": { "outcome": outcome } }));
             self.withdraw(&req, "cancelled", by);
@@ -1432,7 +1555,7 @@ impl Host {
         let release = Release { lock, answers: answers.into_iter().collect() };
         let held = Arc::new(Mutex::new(Some(release)));
         let written = held.clone();
-        self.sink.when_written(move || {
+        self.sink.when_written(move |_| {
             // Taken out first, so the lock isn't held while it goes.
             let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(release) = release {
@@ -1749,11 +1872,13 @@ impl Host {
     }
 
     /// Answers permission requests nobody answered within
-    /// `permission_timeout` with their `reject_once` option (ADR 63). One
+    /// `response_timeout` with their `reject_once` option (ADR 63). One
     /// without one (or with two: which, brnr can't say) has its turn
     /// cancelled, which answers it and every request pending in its session
     /// `cancelled`, as ACP requires. Never `reject_always`, which nobody
-    /// chose, and never an allow.
+    /// chose, and never an allow. An elicitation nobody answered is
+    /// answered `cancel`, which ACP has for no choice made (ADR 68): never
+    /// `decline`, which is the user's no, nor `accept`.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
         if self.editor_attached() {
             return;
@@ -1772,10 +1897,13 @@ impl Host {
                 continue;
             };
             req.deadline = None;
+            let elicitation = req.is_elicitation();
             let options = req.params["options"].as_array().into_iter().flatten();
             let once = options.filter(|o| o["kind"] == "reject_once").count();
             let session = req.session.clone();
-            let result = if once == 1 {
+            let result = if elicitation {
+                self.resolve_elicitation(&handle, "cancel", &Value::Null, "timeout")
+            } else if once == 1 {
                 self.resolve_permission(&handle, Choice::Reject, false, None, "timeout")
             } else if self.status.is_some() || self.agent_in.is_none() {
                 Err("the agent is no longer accepting input".to_owned())
@@ -1803,7 +1931,8 @@ impl Host {
     }
 
     /// Cancels `session`'s turn (`session/cancel`), answering its pending
-    /// permission requests `cancelled`, `by` `cancel` or `timeout`.
+    /// permission requests `cancelled` and its elicitations `cancel`, `by`
+    /// `cancel` or `timeout`.
     pub(super) fn cancel(&mut self, session: &str, by: &str) {
         let msg = json!({
             "jsonrpc": "2.0",
@@ -1814,7 +1943,7 @@ impl Host {
         line.push(b'\n');
         self.record(Some(session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
-        self.cancel_permissions(session, by);
+        self.cancel_requests(session, by);
     }
 
     /// Shows the editor an injected message, titled `title`, in the form its
@@ -1990,19 +2119,34 @@ impl Host {
 }
 
 /// What the editor is told of a session process `pid` holds: how to
-/// release it.
+/// release it. One started with another runtime directory is reached
+/// through that (ADR 65), where its metadata is, read only if the
+/// directory is private, as this one's must be; the directory is said
+/// whether an editor holds the session or not.
 fn held_elsewhere(session: &str, pid: u32) -> String {
-    let meta = fs::read(paths::runtime_dir().join(format!("{pid}.json"))).ok();
+    let elsewhere = lock::holder_dir(session);
+    let dir = elsewhere.clone().unwrap_or_else(paths::runtime_dir);
+    let meta = paths::check_private(&dir)
+        .ok()
+        .and_then(|()| fs::read(dir.join(format!("{pid}.json"))).ok());
     let meta: Value = meta.and_then(|m| serde_json::from_slice(&m).ok()).unwrap_or_default();
     if meta["proxy_pid"].is_number() {
+        let there = elsewhere.map_or_else(String::new, |d| {
+            format!(
+                ", with runtime directory {} ({} reaches it)",
+                d.display(),
+                paths::brnr_dir_is(&d)
+            )
+        });
         format!(
-            "brnr: session {session} is open in another editor (brnr process {pid}); close it \
-             there first"
+            "brnr: session {session} is open in another editor (brnr process {pid}){there}; close \
+             it there first"
         )
     } else {
+        let through = elsewhere.map(|d| format!("{} ", paths::brnr_dir_is(&d))).unwrap_or_default();
         format!(
             "brnr: session {session} is running in brnr process {pid}; release it first with \
-             `brnr session close {session}`"
+             `{through}brnr session close {session}`"
         )
     }
 }
@@ -2091,6 +2235,18 @@ fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &s
         "outcome": outcome,
         "by": by,
     })
+}
+
+/// The event for a request brnr holds, `permission_request` or
+/// `elicitation_request`; none for one it doesn't.
+fn request_event(req: &AgentRequest, owner: &str) -> Option<Value> {
+    if req.is_permission() {
+        Some(permission_event(req, owner))
+    } else if req.is_elicitation() {
+        Some(elicitation::request_event(req, owner))
+    } else {
+        None
+    }
 }
 
 fn permission_event(req: &AgentRequest, owner: &str) -> Value {

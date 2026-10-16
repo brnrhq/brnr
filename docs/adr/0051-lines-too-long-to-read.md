@@ -18,6 +18,9 @@ any length was held whole; a piece of the agent's stderr ends between
 characters, a line of exactly 64 KiB is one record, not one and an empty
 one, and a failed start's tail cuts a line between characters.
 
+Amended by 67: no `initialize` is stripped of `fs` and `terminal`, so a
+long one loses nothing either.
+
 ## Context
 
 ADR 6 caps what is on its way through the host at 16 MiB, counted in bytes,

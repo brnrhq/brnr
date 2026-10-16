@@ -57,6 +57,8 @@ enum Before {
     Slow,
     /// An approval waiting, `p1`.
     Approval,
+    /// An elicitation waiting, `e1`: the fake agent's form (ADR 68).
+    Elicitation,
     /// A session that ran a turn and was closed.
     Ended,
 }
@@ -107,6 +109,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Waiting, for scripts
     ("brnr event wait $s", Idle, Succeeds),
     ("brnr event wait $s --for permission", Approval, Succeeds),
+    ("brnr event wait $s --for elicitation", Elicitation, Succeeds),
     ("brnr event wait $s --for turn", Slow, Succeeds),
     (
         r#"brnr session new --wait --stop-when-idle 0 --prompt "fix the failing tests" -- brnr-claude-adapter > answer.md"#,
@@ -118,6 +121,16 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr permission show $s p1", Approval, Says("Edit src/lib.rs")),
     ("brnr permission allow $s p1", Approval, Says("p1 allow")),
     ("brnr permission reject $s p1", Approval, Says("p1 reject")),
+    // Elicitations
+    ("brnr elicitation requests", Elicitation, Says("e1")),
+    ("brnr elicitation show $s e1", Elicitation, Says("name (string, required)")),
+    (
+        "brnr elicitation accept $s e1 --field name=Ada --field color=green",
+        Elicitation,
+        Says("e1 accepted"),
+    ),
+    ("brnr elicitation decline $s e1", Elicitation, Says("e1 declined")),
+    ("brnr elicitation cancel $s e1", Elicitation, Says("e1 cancelled")),
     // Settings: each runs without its optional argument and with it.
     ("brnr config get $s [--model]", Idle, Says("* small")),
     ("brnr config set $s --mode plan", Idle, Says("mode=plan")),
@@ -189,6 +202,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr session list --include active --json", Idle, Says(r#""session": "sess-1""#)),
     ("brnr permission requests --json", Approval, Says(r#""request": "p1""#)),
     ("brnr permission show $s p1 --json", Approval, Says(r#""oldText""#)),
+    ("brnr elicitation requests --json", Elicitation, Says(r#""request": "e1""#)),
     // Its references: orchestrate
     (
         "brnr session new --json --stop-when-idle 600 --cwd ~/work/project --prompt - -- brnr-claude-adapter < task.md",
@@ -254,6 +268,17 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Approval,
         Says(r#""optionId": "allow""#),
     ),
+    (
+        "brnr event wait $s --for elicitation --timeout 600 --json",
+        Elicitation,
+        Says(r#""request": "e1""#),
+    ),
+    (
+        "brnr elicitation accept $s e1 --field name=Ada --field color=green --json",
+        Elicitation,
+        Says(r#""action": "accept""#),
+    ),
+    ("brnr elicitation decline $s e1 --json", Elicitation, Says(r#""action": "decline""#)),
     // observe
     ("brnr event log $s --json", Idle, Says(r#""event":"agent_message""#)),
     ("brnr event watch $s --json", Idle, Follows(r#""event":"agent_message""#)),
@@ -600,6 +625,10 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         Approval => {
             env.start(&["--prompt", "perm edit"]);
             env.ok(&["event", "wait", s, "--for", "permission", "--timeout", "10"]);
+        }
+        Elicitation => {
+            env.start(&["--prompt", "elicit form"]);
+            env.ok(&["event", "wait", s, "--for", "elicitation", "--timeout", "10"]);
         }
     }
     if let Ended = before {

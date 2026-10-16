@@ -5,8 +5,7 @@
 //! By default brnr also speaks the conventions current agents and editors
 //! implement alike, ahead of the spec. Strict mode doesn't: what needs one
 //! is refused, saying why, and so is every experimental action on an
-//! editor's session (ADR 4), whatever the profile enables. The editor's
-//! `fs` and `terminal` capabilities pass through (see acp.rs). The only
+//! editor's session (ADR 4), whatever the profile enables. The only
 //! `_meta` brnr acts on is steering's, so in strict mode none is.
 //!
 //! Which methods are stable is the schema's to say (see schema.rs): the

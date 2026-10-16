@@ -14,7 +14,9 @@
 //! before it reads the report, and the session then carries on, as after any
 //! commit. Committed, the channel becomes a peer, subscribed with `--wait`
 //! to the events brnr session new follows its turn by, before the prompt goes,
-//! so it misses none of them.
+//! so it misses none of them. The report names it as a peer, with the last
+//! event before it, as a subscription's answer does, to catch up from should
+//! it be cut off (ADR 69).
 //!
 //! brnr session new never writes on it; the host reads it on a thread for EOF.
 //! brnr session new gone before the commit means nobody knows of the session:
@@ -27,7 +29,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::{Sender, SyncSender};
+#[cfg(any(test, feature = "internals"))]
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,10 +40,14 @@ use serde_json::{Value, json};
 use super::control::{self, Closer, Peer, Queue};
 use super::{Ev, Host};
 
+/// The start channel's name as a peer.
+const START_PEER: &str = "socket#start";
+
 /// The start channel while the start is under way.
 pub(super) enum StartChannel {
     /// A simulated start in the fuzz harness: reports are collected without
     /// sockets, threads or peers, as the agent's input and editor link are.
+    #[cfg(any(test, feature = "internals"))]
     Collected(Sender<Value>),
     Socket {
         /// Its id as a peer, once it is one.
@@ -105,8 +113,13 @@ impl Host {
         if let Some(message) = message {
             ready["message"] = json!(message);
         }
+        // Where its events start, as a subscription's answer says (ADR 69).
+        ready["peer"] = json!(START_PEER);
+        ready["host_id"] = json!(self.host_id);
+        ready["seq"] = json!(self.seq);
         let (peer, mut stream, closer, events) = match channel {
             StartChannel::Socket { peer, stream, closer, events } => (peer, stream, closer, events),
+            #[cfg(any(test, feature = "internals"))]
             StartChannel::Collected(tx) => return tx.send(ready).is_ok(),
         };
         self.test_hold_ready(&stream);
@@ -117,7 +130,7 @@ impl Host {
         let (queue, lines, queued) = Queue::new();
         thread::spawn(move || control::write_lines(stream, lines, queued));
         // A socket peer, as brnr's own connections are: not a bridge.
-        let mut p = Peer::new(queue, "socket#start".into(), Closer::Socket(closer));
+        let mut p = Peer::new(queue, START_PEER.into(), Closer::Socket(closer));
         (p.subscribed, p.events) = (true, Some(events));
         self.peers.insert(peer, p);
         true
@@ -131,6 +144,7 @@ impl Host {
             Some(StartChannel::Socket { mut stream, .. }) => {
                 let _ = write_report(&mut stream, &report);
             }
+            #[cfg(any(test, feature = "internals"))]
             Some(StartChannel::Collected(tx)) => {
                 let _ = tx.send(report);
             }

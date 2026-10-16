@@ -22,14 +22,14 @@ const NEW_ISSUE: &str = "https://github.com/brnrhq/brnr/issues/new?template=bug.
 const MESSAGE_CHARS: usize = 1000;
 
 /// `brnr 0.6.0`, as `brnr --version` says it.
-pub fn version() -> String {
+pub(crate) fn version() -> String {
     format!("brnr {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// The OS, its version and the kernel's: `macOS 26.4 (Darwin 25.4.0,
 /// arm64)`, `Ubuntu 24.04.1 LTS (Linux 6.8.0-45-generic, x86_64)`. Read
 /// from files and `uname`, running nothing, so a panic hook can call it.
-pub fn os() -> String {
+pub(crate) fn os() -> String {
     let (kernel, release, machine) = sys::uname()
         .unwrap_or_else(|| (env::consts::OS.into(), "?".into(), env::consts::ARCH.into()));
     let kernel = format!("{kernel} {release}, {machine}");
@@ -60,7 +60,7 @@ fn product() -> Option<String> {
 }
 
 /// `brnr panicked at src/host/acp.rs:120:5: <message>`.
-pub fn describe(info: &PanicHookInfo) -> String {
+pub(crate) fn describe(info: &PanicHookInfo) -> String {
     let payload = info.payload();
     let message = (payload.downcast_ref::<&str>().copied())
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
@@ -74,14 +74,14 @@ pub fn describe(info: &PanicHookInfo) -> String {
 }
 
 /// Whether an error is a panic's, as [`describe`] puts it.
-pub fn is_panic(error: &str) -> bool {
+pub(crate) fn is_panic(error: &str) -> bool {
     error.starts_with("brnr panicked")
 }
 
 /// The pre-filled form for a panic, `panic` as [`describe`] says it, in
 /// `brnr <command>`: the title is where it panicked, and the version, the OS
 /// and the message are filled in.
-pub fn issue_url(panic: &str, command: &str) -> String {
+pub(crate) fn issue_url(panic: &str, command: &str) -> String {
     let short: String = panic.chars().take(MESSAGE_CHARS).collect();
     let cut = if short.len() < panic.len() { " …" } else { "" };
     let at = panic.strip_prefix("brnr panicked at ").and_then(|rest| rest.split(": ").next());
@@ -101,7 +101,7 @@ pub fn issue_url(panic: &str, command: &str) -> String {
 }
 
 /// What brnr prints after a panic's message: one line, then the link.
-pub fn link(panic: &str, command: &str) -> String {
+pub(crate) fn link(panic: &str, command: &str) -> String {
     format!(
         "brnr: a bug in brnr. This link opens a report of it, filled in \
          (nothing is sent until you submit it):\n{}",
@@ -111,7 +111,7 @@ pub fn link(panic: &str, command: &str) -> String {
 
 /// For `brnr <command>` but `host`: a panic prints the link on stderr after
 /// Rust's message. For the tests, `BRNR_TEST_PANIC=cli` panics here.
-pub fn install(command: &str) {
+pub(crate) fn install(command: &str) {
     let command = command.to_owned();
     let shown = panic::take_hook();
     panic::set_hook(Box::new(move |info| {

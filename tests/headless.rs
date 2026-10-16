@@ -425,16 +425,16 @@ fn host_logs(env: &Env) -> String {
     dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect()
 }
 
-/// What is left in the runtime dir.
+/// What is left in the runtime dir, and the session locks left in the state
+/// dir (ADR 65); the locks' directory itself stays.
 fn runtime_files(env: &Env) -> Vec<String> {
     let names = |dir: &Path| -> Vec<String> {
         let entries = fs::read_dir(dir).into_iter().flatten();
         entries.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
     };
-    // The session locks' directory stays; what matters is what's in it.
-    let run = env.dir.join("run");
-    let mut files: Vec<String> = names(&run).into_iter().filter(|n| n != "sessions").collect();
-    files.extend(names(&run.join("sessions")).into_iter().map(|n| format!("sessions/{n}")));
+    let mut files = names(&env.dir.join("run"));
+    let locks = names(&env.dir.join("home/sessions"));
+    files.extend(locks.into_iter().map(|n| format!("sessions/{n}")));
     files
 }
 
@@ -997,40 +997,129 @@ fn adr_0041_strict_mode_refuses_steering_and_fork() {
     env.write_config("[profiles.default]\nstrict = true\n");
     env.start(&[]);
     assert!(env.fails(&["session", "fork", "sess-1"]).contains("which strict mode doesn't"));
+    let env = Env::new("ed-strictarg");
+    assert!(env.fails(&["acp", "--strict=yes", "--", AGENT]).contains("--strict takes no value"));
 }
 
-/// The editor's `fs` and `terminal` capabilities don't reach the agent, as
-/// in ACP v2 (ADR 2), but in strict mode, as stable v1 has them.
+// ---- the editor's client capabilities (ADR 67) -------------------------
+
+/// What an editor that offers its file system and terminal sends as
+/// `initialize`.
+const CAPABLE_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+
+/// `brnr acp <args>`, initialized by an editor offering its file system and
+/// terminal, with sess-1 open.
+fn capable_editor(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let args: Vec<&str> = ["acp"].iter().chain(args).chain(&["--", AGENT]).copied().collect();
+    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    writeln!(to_agent, "{CAPABLE_INITIALIZE}").unwrap();
+    response(&mut from_agent, 1);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"]["sessionId"], "sess-1");
+    (editor, to_agent, from_agent)
+}
+
+/// The editor's `fs` and `terminal` capabilities reach the agent as the
+/// editor sent them, in strict mode and without: brnr no longer drops them.
 #[test]
-fn adr_0041_fs_and_terminal_pass_through_only_in_strict_mode() {
-    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+fn adr_0067_the_editors_capabilities_reach_the_agent() {
+    let sent: Value = serde_json::from_str(CAPABLE_INITIALIZE).unwrap();
     for (name, strict) in [("ed-caps", false), ("ed-strict", true)] {
         let env = Env::new(name);
-        let mut args = vec!["acp", "--", AGENT];
-        if strict {
-            args.insert(1, "--strict");
-        }
-        let mut editor =
-            env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-        let mut to_agent = editor.stdin.take().unwrap();
-        let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
-        writeln!(to_agent, "{initialize}").unwrap();
-        line_with(&mut from_agent, "protocolVersion");
+        let args: &[&str] = if strict { &["--strict"] } else { &[] };
+        let (mut editor, _to_agent, _from_agent) = capable_editor(&env, args);
         assert_eq!(started_record(&env)["request"]["strict"], strict);
         let caps = &env.calls_of("initialize")[0]["params"]["clientCapabilities"];
-        assert_eq!(caps.get("fs").is_some(), strict, "{name}: {caps}");
-        assert_eq!(caps.get("terminal").is_some(), strict, "{name}: {caps}");
+        assert_eq!(caps, &sent["params"]["clientCapabilities"], "{name}");
         let _ = editor.kill();
         let _ = editor.wait();
     }
-    let env = Env::new("ed-strictarg");
-    assert!(env.fails(&["acp", "--strict=yes", "--", AGENT]).contains("--strict takes no value"));
+}
+
+/// The agent's `fs/*` and `terminal/*` requests reach the editor as the
+/// agent wrote them, and the editor's answers, results and errors, reach the
+/// agent.
+#[test]
+fn adr_0067_the_agents_file_and_terminal_requests_reach_the_editor() {
+    let env = Env::new("ed-client");
+    let (_editor, mut to_agent, mut from_agent) = capable_editor(&env, &[]);
+    writeln!(to_agent, "{}", editor_prompt(3, "client")).unwrap();
+    // Without the capabilities the agent asks nothing and answers the prompt.
+    let asked = |from_agent: &mut BufReader<ChildStdout>, method: &str| {
+        let msg = message(from_agent, |m| m["method"] == method || m["id"] == 3);
+        assert_eq!(msg["method"], method, "{msg}");
+        msg
+    };
+    let read = asked(&mut from_agent, "fs/read_text_file");
+    assert_eq!(read["id"], "fs-1");
+    assert_eq!(read["params"], json!({ "sessionId": "sess-1", "path": "/work/notes.txt" }));
+    writeln!(to_agent, r#"{{"jsonrpc":"2.0","id":"fs-1","result":{{"content":"unsaved text"}}}}"#)
+        .unwrap();
+    let said = update(&mut from_agent, "agent_message_chunk");
+    assert_eq!(said["content"]["text"], "read: unsaved text");
+    let create = asked(&mut from_agent, "terminal/create");
+    assert_eq!(create["id"], "terminal-2");
+    let params = json!({ "sessionId": "sess-1", "command": "echo", "args": ["hi"] });
+    assert_eq!(create["params"], params);
+    let refused = r#"{"jsonrpc":"2.0","id":"terminal-2","error":{"code":-32603,"message":"no terminal here"}}"#;
+    writeln!(to_agent, "{refused}").unwrap();
+    let said = update(&mut from_agent, "agent_message_chunk");
+    assert_eq!(said["content"]["text"], "\nterminal failed: no terminal here");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let answers: Vec<Value> =
+        env.calls().into_iter().filter(|c| c.get("method").is_none()).collect();
+    assert_eq!(answers[0]["result"]["content"], "unsaved text", "{answers:?}");
+    assert_eq!(answers[1]["error"]["message"], "no terminal here", "{answers:?}");
+}
+
+/// A session served headless offers the agent neither the file system nor a
+/// terminal, as no editor is there to serve them: one started headless, one
+/// forked from it, and one taken over from an editor that offered both. An
+/// agent that asks anyway is told the host doesn't serve them.
+#[test]
+fn adr_0067_headless_sessions_offer_neither() {
+    let neither = "no fs\nno terminal\n";
+    let env = Env::new("hl-client");
+    env.start(&[]);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    let refused = "fs failed: fs/read_text_file is not supported without an editor\n\
+                   terminal failed: terminal/create is not supported without an editor\n";
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client", "anyway"]), refused);
+    assert_eq!(env.ok(&["session", "fork", "sess-1"]), "forked sess-1 into sess-2\n");
+    assert_eq!(env.ok(&["prompt", "send", "sess-2", "--wait", "client"]), neither);
+    // Elicitation is offered headless (ADR 68); fs and terminal are not.
+    let init = env.calls_of("initialize");
+    let caps = &init[0]["params"]["clientCapabilities"];
+    assert!(caps["fs"].is_null() && caps["terminal"].is_null(), "{caps}");
+
+    let env = Env::new("hl-takeover");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"close\"]\n");
+    let (_editor, _to_agent, _from_agent) = capable_editor(&env, &[]);
+    let editors = env.pid();
+    let out = env.run(&resume_args("sess-1", &["--take-over"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_ne!(status["pid"].to_string(), editors);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    let offered: Vec<Value> = (env.calls_of("initialize").iter())
+        .map(|c| c["params"]["clientCapabilities"].clone())
+        .collect();
+    assert_eq!(offered.len(), 2, "{offered:?}");
+    assert!(offered[1]["fs"].is_null() && offered[1]["terminal"].is_null(), "{offered:?}");
 }
 
 // ---- watching ----------------------------------------------------------
 
 /// A watcher that stops reading is disconnected instead of having every
-/// event queued for it in the host.
+/// event queued for it in the host. It then catches up from the transcript
+/// (ADR 69), so it stays until the process stops.
 #[test]
 fn adr_0006_slow_watcher_is_disconnected() {
     // About 30 MB of events: more than a peer's queue holds.
@@ -1051,14 +1140,218 @@ fn adr_0006_slow_watcher_is_disconnected() {
     assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
-    assert!(wait_exit(&mut watch, Duration::from_secs(20)), "watch is still connected");
-    assert!(!watch.wait().unwrap().success());
-    let mut err = String::new();
-    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(err.contains("closed the connection"), "{err}");
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    assert!(wait_for(Duration::from_secs(20), dropped), "the watcher wasn't cut off");
     // It may still be working through the burst; it must get there.
     let answers = || env.run(&["session", "status", "sess-1"]).status.success();
     assert!(wait_for(Duration::from_secs(30), answers), "host stopped answering");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+}
+
+// ---- catching up -------------------------------------------------------
+
+/// `brnr event watch …` for `env`, its stdout read to its end on a thread,
+/// as JSON lines.
+fn watcher(env: &Env, args: &[&str]) -> (Child, std::thread::JoinHandle<Vec<Value>>) {
+    let mut watch = env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = watch.stdout.take().unwrap();
+    let lines = std::thread::spawn(move || {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        lines.map(|l| serde_json::from_str(&l).unwrap()).collect()
+    });
+    (watch, lines)
+}
+
+/// The positions of `events` (ADR 69).
+fn seqs(events: &[Value]) -> Vec<u64> {
+    events.iter().map(|e| e["seq"].as_u64().unwrap_or_else(|| panic!("no seq: {e}"))).collect()
+}
+
+/// A watcher cut off for falling behind (stopped, here, while two 6 MB
+/// replies came, each as its ACP message and its event) catches up from the
+/// transcript and goes on live: it gets every event once, in order, as the
+/// transcript has them. Another watcher is told it was cut off.
+#[test]
+fn adr_0069_a_watcher_cut_off_catches_up() {
+    let env = Env::new("catchup");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "peer_cut_off"];
+    let (mut told, told_lines) = watcher(&env, &args);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
+    env.stop();
+    for w in [&mut watch, &mut told] {
+        assert!(wait_exit(w, Duration::from_secs(30)), "watch didn't end");
+    }
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+
+    let got = lines.join().unwrap();
+    let texts: Vec<usize> = (got.iter())
+        .filter(|e| e["event"] == "agent_message")
+        .map(|e| e["text"].as_str().unwrap().len())
+        .collect();
+    assert_eq!(texts, [6_000_000, 6_000_000, 5], "the agent's messages");
+    assert_eq!(got.last().unwrap()["event"], "exited");
+    // Its own cut-off, which it asked for too, came from the host log.
+    let own = got.iter().filter(|e| e["event"] == "peer_cut_off").count();
+    assert_eq!(own, 1, "its own cut-off");
+    // Once each, in order, and none of what the transcript has left out.
+    let session: Vec<Value> = got.into_iter().filter(|e| e["event"] != "peer_cut_off").collect();
+    let got = seqs(&session);
+    assert!(got.windows(2).all(|w| w[0] < w[1]), "out of order or twice: {got:?}");
+    let log = env.ok(&["event", "log", "sess-1", "--events", "all", "--json"]);
+    let logged: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    // The session's `session/new` has its position in the host log only.
+    let logged = logged.iter().filter_map(|e| e["seq"].as_u64());
+    let logged: Vec<u64> = logged.filter(|n| *n >= got[0]).collect();
+    assert_eq!(got, logged, "the watcher's events and the transcript's");
+
+    let told = told_lines.join().unwrap();
+    let cut = told.iter().find(|e| e["event"] == "peer_cut_off").expect("not told");
+    let host = host_logs(&env);
+    assert!(host.contains(&format!(r#""peer":"{}""#, cut["peer"].as_str().unwrap())), "{cut}");
+    assert!(cut["last_queued"].as_u64() < Some(*got.last().unwrap()), "{cut}");
+}
+
+/// The burst of #117: a thought and a message each over 16 MiB, to a
+/// watcher that asked for `acp`, come to it as four lines past 64 MiB, which
+/// cut it off even when it keeps up (here it reads nothing meanwhile, so
+/// that it surely is). It catches up from the transcript: both reach it.
+#[test]
+fn adr_0069_a_burst_past_64_mib_reaches_a_watcher() {
+    let env = Env::new("burst117");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    let size = (16 << 20) + 1;
+    env.ok(&["prompt", "send", "sess-1", "--wait", &format!("big {size} think")]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(60)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    let got = lines.join().unwrap();
+    let long = |name: &str| {
+        let text = |e: &&Value| e["event"] == name && e["text"].as_str().unwrap().len() == size;
+        got.iter().filter(text).count()
+    };
+    assert_eq!((long("agent_thought"), long("agent_message")), (1, 1));
+    let got = seqs(&got);
+    assert!(got.windows(2).all(|w| w[0] < w[1]), "out of order or twice");
+}
+
+/// A watcher cut off where the transcript can't have what it missed (here
+/// none is kept, `log = false`) says what it missed, after which event, and
+/// why, as its last line, and exits 3 (ADR 69).
+#[test]
+fn adr_0069_a_watcher_that_cant_catch_up_says_what_it_missed() {
+    let env = Env::new("nocatchup");
+    env.write_config("[profiles.default]\nlog = false\n");
+    env.start(&[]);
+    let (mut watch, lines) =
+        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    assert_eq!(watch.wait().unwrap().code(), Some(3));
+    let got = lines.join().unwrap();
+    let note = got.last().unwrap();
+    assert_eq!(note["event"], "events-missed", "{note}");
+    assert_eq!(note["error"], "the process keeps no transcript (log = false)");
+    let before = &got[got.len() - 2];
+    assert_eq!(note["after"], before["seq"], "{note}");
+    assert!(note["until"].as_u64() > note["after"].as_u64(), "{note}");
+    env.stop();
+}
+
+/// `prompt send --wait`, cut off while its message is held behind another
+/// turn (stopped, here, while that turn's four 6 MB messages came), catches
+/// up: it prints its turn's reply and exits as the turn ended (ADR 69).
+#[test]
+fn adr_0069_a_wait_cut_off_catches_up() {
+    let env = Env::new("waitcatchup");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "hang"]);
+    let wait = env
+        .brnr(&["prompt", "send", "sess-1", "--wait", "reply done"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = || env.ok(&["queue", "list", "sess-1"]).contains("m2 (after turn)");
+    assert!(wait_for(Duration::from_secs(10), held), "not held");
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["prompt", "send", "sess-1", "--interrupt", "many 4 6000000"]);
+    env.ok(&["event", "wait", "sess-1"]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(cut, "the wait wasn't cut off");
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success(), "send --wait: {}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+    env.stop();
+}
+
+/// `event wait --for turn`, cut off while four 6 MB approvals came (stopped,
+/// here), catches up on the turn's end (ADR 69).
+#[test]
+fn adr_0069_event_wait_cut_off_catches_up() {
+    let env = Env::new("evwaitcatchup").agent("PERM_PAD", "6000000");
+    env.start(&[]);
+    let wait = env
+        .brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    sleep(Duration::from_millis(300));
+    kill(wait.id() as i32, libc::SIGSTOP);
+    env.ok(&["prompt", "send", "sess-1", "perm edit 4"]);
+    let pending = || env.ok(&["permission", "requests", "sess-1"]).contains("p4 ");
+    assert!(wait_for(Duration::from_secs(10), pending), "no approvals");
+    for n in 1..=4 {
+        env.ok(&["permission", "allow", "sess-1", &format!("p{n}")]);
+    }
+    env.ok(&["event", "wait", "sess-1"]);
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    kill(wait.id() as i32, libc::SIGCONT);
+    assert!(cut, "the wait wasn't cut off");
+    let out = wait.wait_with_output().unwrap();
+    assert!(out.status.success(), "event wait: {}", stderr(&out));
+    let ended: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (ended["event"].as_str(), ended["stop_reason"].as_str()),
+        (Some("turn_ended"), Some("end_turn"))
+    );
+    env.stop();
 }
 
 /// A watcher that keeps reading stays connected through a burst, and ends
@@ -1662,7 +1955,7 @@ fn adr_0053_distinct_ids_never_share_a_lock() {
         start_as(&env, id);
     }
     // Each lock names its own session and process.
-    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("run/sessions"))
+    let mut locked: Vec<(String, Value)> = fs::read_dir(env.dir.join("home/sessions"))
         .unwrap()
         .map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap())
         .map(|l: Value| (l["session"].as_str().unwrap().to_owned(), l["pid"].clone()))
@@ -1828,7 +2121,7 @@ fn waits_for_the_disk(env: &Env, mut cmd: Command, stall: &Path, first: i32, wha
     assert!(wait_for(Duration::from_secs(10), closed), "the agent wasn't asked to close it");
     sleep(Duration::from_millis(300));
     let early = waiting.try_wait().unwrap().is_some();
-    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap_or_default();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/sess-1.lock")).unwrap_or_default();
     let holder = serde_json::from_str::<Value>(&lock).map(|l| l["pid"].clone()).ok();
     fs::remove_file(stall).unwrap();
     let out = waiting.wait_with_output().unwrap();
@@ -1995,7 +2288,7 @@ fn adr_0048_a_close_resumed_in_its_process_is_answered_once_written() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(took >= Duration::from_millis(1900), "answered before it was written: {took:?}");
     assert!(took < Duration::from_secs(10), "answered after {took:?}");
-    let lock = fs::read_to_string(env.dir.join("run/sessions/sess-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/sess-1.lock")).unwrap();
     let holder = serde_json::from_str::<Value>(&lock).unwrap()["pid"].to_string();
     assert_eq!(holder, pid, "the process let go of the session it resumed");
     fs::remove_file(&stall).unwrap();
@@ -2095,7 +2388,7 @@ fn adr_0048_a_failed_load_is_written_before_the_session_is_resumed() {
     let err = env.fails(&resume_args("old-1", &[]));
     assert!(err.contains(&said), "{err}");
     assert!(load.try_wait().unwrap().is_none(), "answered before its records were written");
-    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/old-1.lock")).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&lock).unwrap()["pid"], first);
     fs::remove_file(&stall).unwrap();
     let out = load.wait_with_output().unwrap();
@@ -2126,12 +2419,12 @@ fn adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed()
     let err = env.fails(&resume_args("old-1", &[]));
     assert!(err.contains("session/load failed: Can't load"), "{err}");
     // Held while its logger is behind: the lock file is there, the process's.
-    let lock = fs::read_to_string(env.dir.join("run/sessions/old-1.lock")).unwrap();
+    let lock = fs::read_to_string(env.dir.join("home/sessions/old-1.lock")).unwrap();
     let first = serde_json::from_str::<Value>(&lock).unwrap()["pid"].as_i64().unwrap() as i32;
     assert_eq!(first, env.host_pid(), "held by another process");
     fs::remove_file(&stall).unwrap();
     assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()));
-    assert!(!env.dir.join("run/sessions/old-1.lock").exists(), "not let go of");
+    assert!(!env.dir.join("home/sessions/old-1.lock").exists(), "not let go of");
     let mut resume = unstalled(&env, &resume_args("old-1", &[]));
     let out = resume.env_remove("LOAD_FAIL").output().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
@@ -2429,12 +2722,12 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 #[test]
 fn adr_0008_acp_reports_a_config_error() {
     let env = Env::new("ed-config");
-    env.write_config("[profiles.default]\npermission_timeout = 600\n");
+    env.write_config("[profiles.default]\nresponse_timeout = 600\n");
     let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
-    assert!(err.contains("profiles.default: permission_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
+    assert!(err.contains("profiles.default: response_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }
 
@@ -2475,7 +2768,12 @@ fn editor(env: &Env) -> (Child, ChildStdin, BufReader<ChildStdout>) {
 /// `brnr acp <args>`, initialized.
 fn editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let args: Vec<&str> = ["acp"].iter().chain(args).chain(&["--", AGENT]).copied().collect();
-    let mut editor = env.brnr(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    initialized(env.brnr(&args))
+}
+
+/// `brnr acp`, as `cmd` has it, initialized.
+fn initialized(mut cmd: Command) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let mut editor = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut to_agent = editor.stdin.take().unwrap();
     let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
     writeln!(to_agent, "{INITIALIZE}").unwrap();
@@ -2932,6 +3230,85 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let _ = editor.kill();
 }
 
+/// An editor's load of a session held by a process started with another
+/// runtime directory, which this one's commands can't reach, is refused the
+/// same way, saying which `BRNR_DIR` releases it (ADR 65).
+#[test]
+fn adr_0065_an_editors_load_held_from_another_runtime_dir_is_refused() {
+    let env = Env::new("ed-tworun");
+    env.start(&[]);
+    let headless = env.pid();
+    let mut cmd = env.brnr(&["acp", "--", AGENT]);
+    cmd.env("BRNR_DIR", env.dir.join("run2"));
+    let (mut editor, mut to_agent, mut from_agent) = initialized(cmd);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
+    let release = format!("`BRNR_DIR={} brnr session close sess-1`", env.dir.join("run").display());
+    assert!(message.contains(&release), "{error}");
+    assert!(env.calls_of("session/load").is_empty());
+    let _ = editor.kill();
+}
+
+/// The command an editor's refused load is given runs as shown, its runtime
+/// directory one shell word whatever is in it (a space, a quote): it
+/// releases the session, which then loads (ADR 65).
+#[test]
+fn adr_0065_the_release_command_runs_as_shown() {
+    for (i, name) in ["run 2", "run'2"].into_iter().enumerate() {
+        let env = Env::new(&format!("ed-word{i}"));
+        let run = env.dir.join(name);
+        env.start_in(&run);
+        let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+        writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+        let error = response(&mut from_agent, 2)["error"].clone();
+        let message = error["message"].as_str().unwrap_or_default();
+        let command =
+            format!("BRNR_DIR={} brnr session close sess-1", quoted(&run.to_string_lossy()));
+        assert!(message.contains(&format!("`{command}`")), "{error}");
+        let out = env.sh(&command);
+        assert!(out.status.success(), "{name}: {}", stderr(&out));
+        writeln!(to_agent, "{}", editor_load(&env, 3, "sess-1")).unwrap();
+        assert!(response(&mut from_agent, 3)["result"].is_object(), "{name}");
+        let _ = editor.kill();
+    }
+}
+
+/// An editor's load of a session another editor holds, whose process has
+/// another runtime directory, is refused with that directory and the
+/// `BRNR_DIR` that reaches it, as one a headless process holds is (ADR 65).
+#[test]
+fn adr_0065_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir() {
+    let env = Env::new("ed-edrun");
+    let run = env.dir.join("run 'e");
+    let mut cmd = env.brnr(&["acp", "--", AGENT]);
+    cmd.env("BRNR_DIR", &run);
+    let (mut holder, mut to_holder, mut from_holder) = initialized(cmd);
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    writeln!(to_holder, "{new}").unwrap();
+    assert_eq!(response(&mut from_holder, 2)["result"]["sessionId"], "sess-1");
+    let hosts = env.hosts_in(&run);
+    let pid = hosts.iter().find(|h| h["proxy_pid"].is_number()).unwrap()["host_pid"].clone();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "sess-1")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    let said = format!(
+        "session sess-1 is open in another editor (brnr process {pid}), with runtime directory {} \
+         (BRNR_DIR={} reaches it); close it there first",
+        run.display(),
+        quoted(&run.to_string_lossy())
+    );
+    assert!(message.contains(&said), "{error}");
+    assert!(env.calls_of("session/load").is_empty());
+    let _ = editor.kill();
+    let _ = holder.kill();
+}
+
 /// An editor's session whose lock can't be taken (a directory where its lock
 /// file goes) is passed through, as the proxy passes on what it can't be
 /// sure of: the editor opens and loads sessions as it would without brnr,
@@ -2942,7 +3319,7 @@ fn adr_0050_an_editors_session_that_cant_be_locked_is_passed_through() {
     use std::os::unix::fs::DirBuilderExt;
     let env = Env::new("ed-nolock");
     let unlockable = |session: &str| {
-        let lock = env.dir.join(format!("run/sessions/{session}.lock"));
+        let lock = env.dir.join(format!("home/sessions/{session}.lock"));
         fs::DirBuilder::new().recursive(true).mode(0o700).create(&lock).unwrap();
         lock
     };
@@ -3882,6 +4259,107 @@ fn adr_0004_approve_answers_in_the_editors_place() {
     assert_eq!(answers, ["allow", "reject"]);
 }
 
+/// `brnr acp` with sess-1 open, for an editor that takes elicitations in
+/// both modes, with `actions` enabled in its profile.
+fn eliciting_editor(env: &Env, actions: &[&str]) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let names: Vec<String> = actions.iter().map(|a| format!("{a:?}")).collect();
+    env.write_config(&format!(
+        "[profiles.default.editor]\nexperimental = [{}]\n",
+        names.join(", ")
+    ));
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let caps = serde_json::json!({ "elicitation": { "form": {}, "url": {} } });
+    let params = serde_json::json!({ "protocolVersion": 1, "clientCapabilities": caps });
+    let init =
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params });
+    writeln!(to_agent, "{init}").unwrap();
+    response(&mut from_agent, 1);
+    let new = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                                  "params": { "cwd": env.dir, "mcpServers": [] } });
+    writeln!(to_agent, "{new}").unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"]["sessionId"], "sess-1");
+    (editor, to_agent, from_agent)
+}
+
+/// An editor's elicitation reaches it as the agent sent it, and is
+/// `elicitation_request`, `owner` `editor`, for watchers and bridges; the
+/// editor's answer is `elicitation_resolved` `by` `editor`. Answering it
+/// from outside is the experimental `elicitation`: refused unless the
+/// profile enables it, and with it the request is withdrawn from the
+/// editor, which is told who answered, and its late answer dropped.
+#[test]
+fn adr_0068_an_editors_elicitation_is_seen_and_reaches_the_editor() {
+    let env = Env::new("ex-elicit");
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &[]);
+    writeln!(to_agent, "{}", editor_prompt(3, "elicit form")).unwrap();
+    let asked = message(&mut from_agent, |m| m["method"] == "elicitation/create");
+    assert_eq!(asked["id"], "elicit-1");
+    assert_eq!(
+        (&asked["params"]["mode"], &asked["params"]["requestedSchema"]["title"]),
+        (&"form".into(), &"About you".into()),
+        "{asked}"
+    );
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["elicitation", "requests", "sess-1", "--json"])).unwrap();
+    assert_eq!((&pending[0]["request"], &pending[0]["owner"]), (&"e1".into(), &"editor".into()));
+    let err = env.fails(&["elicitation", "decline", "sess-1", "e1"]);
+    let says = "`elicitation` on an editor's session is experimental; enable it with \
+                `experimental = [\"elicitation\"]` under `[profiles.default.editor]`";
+    assert!(err.contains(says), "{err}");
+    let show = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(show.contains("e1, session sess-1, waiting in the editor"), "{show}");
+    assert!(show.contains("answer it in the editor (`elicitation` on an editor's"), "{show}");
+    let declined = r#"{"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}"#;
+    writeln!(to_agent, "{declined}").unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "all"]);
+    let events: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let request = events.iter().find(|e| e["event"] == "elicitation_request").unwrap();
+    assert_eq!((&request["owner"], &request["request"]), (&"editor".into(), &"e1".into()));
+    let resolved = events.iter().find(|e| e["event"] == "elicitation_resolved").unwrap();
+    assert_eq!(
+        (&resolved["action"], &resolved["by"]),
+        (&"decline".into(), &"editor".into()),
+        "{resolved}"
+    );
+    drop((to_agent, from_agent));
+
+    let env = Env::new("ex-elicit-on");
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &["elicitation"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "elicit form")).unwrap();
+    message(&mut from_agent, |m| m["method"] == "elicitation/create");
+    let show = env.ok(&["elicitation", "show", "sess-1", "e1"]);
+    assert!(show.contains("answer: in the editor, or brnr elicitation accept sess-1 e1"), "{show}");
+    let accept =
+        ["elicitation", "accept", "sess-1", "e1", "--field", "name=ab", "--field", "color=red"];
+    assert_eq!(env.ok(&accept), "e1 accepted\n");
+    let withdrawn = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+    assert_eq!(withdrawn["params"]["requestId"], "elicit-1");
+    let told = update(&mut from_agent, "tool_call");
+    assert_eq!(told["title"], "Accepted via brnr", "{told}");
+    let text = told["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    let says = "\"Tell me about you\" was accepted through brnr's control socket";
+    assert!(text.contains(says), "{text}");
+    assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "end_turn");
+    let late = r#"{"jsonrpc":"2.0","id":"elicit-1","result":{"action":"decline"}}"#;
+    writeln!(to_agent, "{late}").unwrap();
+    let note = update(&mut from_agent, "tool_call");
+    assert_eq!(note["title"], "Already accepted via brnr", "{note}");
+    let answers: Vec<Value> = (env.calls().into_iter())
+        .filter(|c| c["id"] == "elicit-1" && c.get("method").is_none())
+        .map(|c| c["result"].clone())
+        .collect();
+    let content = serde_json::json!({ "name": "ab", "color": "red" });
+    assert_eq!(answers, [serde_json::json!({ "action": "accept", "content": content })]);
+}
+
 /// The agent answers a change of mode or config option only to the host,
 /// which asked; the editor is sent the update itself (ADR 28).
 #[test]
@@ -4047,7 +4525,7 @@ fn prompt_with_id(id: &str, text: &str) -> String {
 
 /// The id of a message, as it is written.
 fn raw_id(line: &str) -> Option<String> {
-    let found = brnr::json::members(line.as_bytes(), "id");
+    let found = brnr::internals::json::members(line.as_bytes(), "id");
     found.last().map(|span| line[span.clone()].to_owned())
 }
 

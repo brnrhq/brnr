@@ -82,8 +82,19 @@ with environment variables:
   ALLOW_ONLY=1      a permission request offers only an allow option
   PERM_OPTIONS=<json>  a permission request offers these options (a JSON
                     array of ACP permission options) instead
+  PERM_PAD=<n>      a permission request's tool call input has n bytes more
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
+  ELICIT_AUTH=1     authenticate first asks for a URL to be opened, an
+                    elicitation scoped to the authenticate request (no
+                    session), and answers once that is answered: {} for an
+                    accept, an error otherwise
+
+An elicitation is asked only of a client whose initialize advertised its mode
+(clientCapabilities.elicitation.form or .url, an object): otherwise the turn
+says it wasn't asked. The answer is said in the session ("elicited" and the
+response as JSON) and ends the turn; an accepted URL elicitation is first
+completed (elicitation/complete).
 
 $/cancel_request for the prompt that hangs answers it with an error, -32800.
 
@@ -108,7 +119,8 @@ and by the prompt's text:
                     tool_call comes again, same id, with a new title and status
   slow <s>          answers after s seconds, reading nothing meanwhile
   reply <text>      answers with <text>
-  big <n>           answers with one message of n bytes
+  big <n> [think]   answers with one message of n bytes; think: a thought
+                    of n bytes first
   long <n> [stderr] writes one line of n MiB of x, 1 MiB at a time, then
                     answers; on stdout the line ends in a newline, on stderr
                     it is left open
@@ -130,7 +142,21 @@ and by the prompt's text:
                     input nests n deep, 10000 by default) or garbled (the
                     line isn't JSON)
   fail [tool]       the turn fails; with tool, a tool call (t2) running
+  elicit <how>      asks for input (elicitation/create), how being form (a
+                    form of every field type, scoped to the session), tool
+                    (the same, scoped to tool call t1), url (a URL to open,
+                    elicitation id el-<n>) or other (a mode _other ACP
+                    doesn't have)
   verbatim          writes VERBATIM, then a line that isn't JSON, then answers
+  client            uses its client's file system, then its terminal, as far
+                    as initialize offered them (clientCapabilities
+                    fs.readTextFile, terminal): asks fs/read_text_file of
+                    /work/notes.txt, then terminal/create of echo, each once
+                    the last is answered; says what each answer was ("read:
+                    <content>", "terminal: <terminalId>", "<what> failed:
+                    <message>", one line each), or "no fs", "no terminal" for
+                    one not offered, and answers the prompt once done
+  client anyway     the same, but asks for both whatever initialize offered
 """
 
 import json
@@ -365,6 +391,8 @@ def run(mid, sid, text):
         say(sid, text[len("reply ") :])
         end_turn(mid)
     elif first == "big":
+        if words[2:] == ["think"]:
+            say(sid, "t" * int(words[1]), "agent_thought_chunk")
         say(sid, "z" * int(words[1]))
         end_turn(mid)
     elif first == "long":
@@ -467,6 +495,8 @@ def run(mid, sid, text):
         sys.stdout.write(VERBATIM % sid + "\n" + "not json, from the agent\n")
         sys.stdout.flush()
         end_turn(mid)
+    elif first == "client":
+        use_client(mid, sid, ["fs", "terminal"], words[1:2] == ["anyway"])
     elif first == "odd":
         how = words[1] if len(words) > 1 else "surrogate"
         request = f"perm-{len(asking) + 1}"
@@ -490,6 +520,8 @@ def run(mid, sid, text):
             line = line[:-1]
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
+    elif first == "elicit":
+        elicit(mid, sid, words[1] if len(words) > 1 else "form")
     elif first == "perm" or env("PERMISSION"):
         kind = words[1] if first == "perm" and len(words) > 1 else "edit"
         n = int(words[2]) if first == "perm" and len(words) > 2 else 1
@@ -497,6 +529,113 @@ def run(mid, sid, text):
             ask(mid, sid, kind)
     else:
         end_turn(mid)
+
+
+def use_client(mid, sid, steps, anyway=False):
+    """Asks the client for the next of steps (fs, terminal) its initialize
+    offered (anyway: whatever it offered), saying "no <step>" for each it
+    didn't; once none is left, ends prompt mid's turn."""
+    global client_requests
+    while steps:
+        what, steps = steps[0], steps[1:]
+        if what == "fs" and (anyway or (client_caps.get("fs") or {}).get("readTextFile")):
+            method, params = "fs/read_text_file", {"sessionId": sid, "path": "/work/notes.txt"}
+        elif what == "terminal" and (anyway or client_caps.get("terminal")):
+            method = "terminal/create"
+            params = {"sessionId": sid, "command": "echo", "args": ["hi"]}
+        else:
+            tell(mid, sid, f"no {what}")
+            continue
+        client_requests += 1
+        request = f"{what}-{client_requests}"
+        using[request] = (mid, sid, what, steps, anyway)
+        send({"jsonrpc": "2.0", "id": request, "method": method, "params": params})
+        return
+    end_turn(mid)
+
+
+def tell(mid, sid, text):
+    """Says text in prompt mid's turn, on a line after what it said before."""
+    say(sid, "\n" + text if mid in told else text)
+    told.add(mid)
+
+
+def client_answered(msg):
+    """The client's answer to one of use_client's requests."""
+    turn, sid, what, steps, anyway = using.pop(msg["id"])
+    if "error" in msg:
+        tell(turn, sid, f"{what} failed: {msg['error'].get('message')}")
+    elif what == "fs":
+        tell(turn, sid, f"read: {msg['result']['content']}")
+    else:
+        tell(turn, sid, f"terminal: {msg['result']['terminalId']}")
+    use_client(turn, sid, steps, anyway)
+
+
+# The form `elicit form` asks for: every type of field, with bounds and
+# choices.
+FORM = {
+    "type": "object",
+    "title": "About you",
+    "properties": {
+        "name": {"type": "string", "title": "Name", "minLength": 1, "maxLength": 5},
+        "count": {"type": "integer", "minimum": 1, "maximum": 10},
+        "ratio": {"type": "number", "maximum": 1.5},
+        "ok": {"type": "boolean", "description": "Go ahead?"},
+        "color": {"type": "string", "enum": ["red", "green"]},
+        "size": {
+            "type": "string",
+            "oneOf": [{"const": "s", "title": "Small"}, {"const": "l", "title": "Large"}],
+        },
+        "tags": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["a", "b", "c"]},
+            "maxItems": 2,
+        },
+    },
+    "required": ["name", "color"],
+}
+
+
+def elicit(mid, sid, how):
+    """Asks for input in prompt mid's turn, if the client advertised the mode."""
+    mode = "url" if how == "url" else "_other" if how == "other" else "form"
+    if mode != "_other" and elicit_modes.get(mode) is None:
+        say(sid, f"not asked: {mode} not advertised")
+        end_turn(mid)
+        return
+    request = f"elicit-{len(eliciting) + 1}"
+    params = {"sessionId": sid, "mode": mode, "message": "Tell me about you"}
+    if how == "tool":
+        params["toolCallId"] = "t1"
+    if mode == "form":
+        params["requestedSchema"] = FORM
+    elif mode == "url":
+        params["message"] = "Log in to the fake"
+        params["elicitationId"] = f"el-{len(eliciting) + 1}"
+        params["url"] = "https://login.example/a?b=1"
+    eliciting[request] = (mid, sid, params.get("elicitationId"))
+    send({"jsonrpc": "2.0", "id": request, "method": "elicitation/create", "params": params})
+
+
+def elicited(mid, msg):
+    """The client answered elicitation request mid."""
+    global authenticated
+    turn, sid, url = eliciting.pop(mid)
+    answer = msg.get("result") or msg.get("error")
+    if url and (msg.get("result") or {}).get("action") == "accept":
+        params = {"elicitationId": url}
+        send({"jsonrpc": "2.0", "method": "elicitation/complete", "params": params})
+    if sid is None:
+        # An authenticate's, outside any session.
+        if (msg.get("result") or {}).get("action") == "accept":
+            authenticated = True
+            result(turn, {})
+        else:
+            error(turn, -32000, "Login not completed")
+        return
+    say(sid, "elicited " + json.dumps(answer, sort_keys=True))
+    end_turn(turn)
 
 
 def running_tool(sid, twice=False):
@@ -546,6 +685,8 @@ def ask(mid, sid, kind):
             "kind": "execute",
             "rawInput": {"command": command},
         }
+    if env("PERM_PAD"):
+        tool["rawInput"]["pad"] = "p" * int(env("PERM_PAD"))
     params = {"sessionId": sid, "toolCall": tool, "options": options}
     send(
         {
@@ -596,6 +737,12 @@ sessions = int(env("FIRST_SESSION") or 0)
 authenticated = False
 hanging = None  # id of a prompt that runs until cancelled
 asking = {}  # permission request id -> (prompt id, session)
+client_caps = {}  # what initialize's clientCapabilities offered
+client_requests = 0  # fs and terminal requests made of the client
+using = {}  # such a request's id -> (prompt id, session, what, steps left, anyway)
+told = set()  # the prompts whose turns use_client has said something in
+eliciting = {}  # elicitation request id -> (prompt id, session, elicitation id)
+elicit_modes = {}  # the client's clientCapabilities.elicitation
 
 for line in sys.stdin.buffer:
     if env("RAW_LOG"):
@@ -614,7 +761,11 @@ for line in sys.stdin.buffer:
     if env("FAULT") and env("FAULT_PHASE") == "setup" and method == fault_setup:
         fault(method)
     if method == "initialize":
-        client_session = (params.get("clientCapabilities") or {}).get("session") or {}
+        client_caps = params.get("clientCapabilities") or {}
+        client_session = client_caps.get("session") or {}
+        elicit_modes = {
+            k: v for k, v in (client_caps.get("elicitation") or {}).items() if isinstance(v, dict)
+        }
         if (client_session.get("configOptions") or {}).get("boolean") is not None:
             fast = False
         session_caps = {"list": {}, "fork": {}, "close": {}}
@@ -648,7 +799,20 @@ for line in sys.stdin.buffer:
             answer["_meta"] = {"steering": {"supported": True}}
         result(mid, answer)
     elif method == "authenticate":
-        if env("AUTH_FAIL") or params.get("methodId") != "fake-login":
+        if env("ELICIT_AUTH"):
+            request = f"elicit-{len(eliciting) + 1}"
+            eliciting[request] = (mid, None, "el-auth")
+            ask_url = {
+                "mode": "url",
+                "requestId": mid,
+                "message": "Log in to the fake",
+                "elicitationId": "el-auth",
+                "url": "https://login.example/auth",
+            }
+            send(
+                {"jsonrpc": "2.0", "id": request, "method": "elicitation/create", "params": ask_url}
+            )
+        elif env("AUTH_FAIL") or params.get("methodId") != "fake-login":
             error(mid, -32000, "Login failed")
         else:
             authenticated = True
@@ -816,6 +980,10 @@ for line in sys.stdin.buffer:
         if hanging is not None and params.get("requestId") == hanging:
             error(hanging, -32800, "Request cancelled")
             hanging = None
+    elif method is None and mid in using:
+        client_answered(msg)
+    elif method is None and mid in eliciting:
+        elicited(mid, msg)
     elif method is None and mid in asking:
         turn = asking.pop(mid)
         if turn not in asking.values():

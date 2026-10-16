@@ -23,6 +23,13 @@ published with credit to you, unless you'd rather not be named.
 Before 1.0, only the latest release gets fixes; upgrading is the fix
 (`brew upgrade brnr`).
 
+From 1.0.0, security fixes are made on the latest major version, in a new
+release of it. Upgrading within that major is the fix, and it breaks nothing
+the compatibility promise covers
+([ADR 64](docs/adr/0064-what-the-compatibility-promise-covers.md)). There is
+one major version so far, so no support period for older majors is set yet;
+it will be once a second major exists.
+
 ## In scope
 
 [docs/threat-model.md](docs/threat-model.md) says who can reach what, how
@@ -32,7 +39,7 @@ brnr keeps it so, the test for each claim, and the known gaps.
   socket, reading or writing the runtime directory, metadata or session
   locks.
 - Approvals: one answered, or a tool call run, without the user, a bridge or
-  `permission_timeout` answering it as configured.
+  `response_timeout` answering it as configured.
 - Secrets: a value brnr knows is secret (ADR 25) written unredacted to a
   transcript, host log or event; a transcript readable by others.
 - `brnr acp` changing what passes between the editor and the agent beyond

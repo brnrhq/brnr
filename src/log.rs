@@ -89,7 +89,7 @@ const REDACTED: &str = "<redacted>";
 const OPENING: &[&str] = &["session/new", "session/load", "session/resume", "session/fork"];
 
 #[derive(Clone, Copy)]
-pub enum Dir {
+pub(crate) enum Dir {
     EditorToAgent,
     AgentToEditor,
     /// Something the host sent the agent: an injected prompt, a cancel, or
@@ -104,7 +104,7 @@ pub enum Dir {
 }
 
 impl Dir {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Dir::EditorToAgent => "editor->agent",
             Dir::AgentToEditor => "agent->editor",
@@ -116,23 +116,24 @@ impl Dir {
     }
 }
 
-pub struct Ids {
-    pub host_id: String,
-    pub host_pid: u32,
-    pub agent_pid: u32,
+pub(crate) struct Ids {
+    pub(crate) host_id: String,
+    pub(crate) host_pid: u32,
+    pub(crate) agent_pid: u32,
 }
 
 enum Cmd {
     Open { session: String, cwd: PathBuf },
     Close { session: String },
-    Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8> },
-    Note { session: Option<String>, ts: SystemTime, event: String },
+    Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8>, seq: Option<u64> },
+    Note { session: Option<String>, ts: SystemTime, event: String, seq: Option<u64> },
     // An event for a session not open here, into its transcripts.
     Append { session: String, ts: SystemTime, event: String },
     // The queue has room again after `gap`.
     Skipped { ts: SystemTime, gap: Gap },
-    // Called once what was queued before it is written.
-    Written(Box<dyn FnOnce() + Send>),
+    // Called once what was queued before it is written, with whether a file
+    // has lost records it hasn't noted yet.
+    Written(Box<dyn FnOnce(bool) + Send>),
     Finish,
 }
 
@@ -150,7 +151,7 @@ impl Cmd {
 
 /// Where the host hands its records. A no-op when not logging.
 #[derive(Clone)]
-pub struct Sink(Option<(Sender<Cmd>, Arc<Queue>)>);
+pub(crate) struct Sink(Option<(Sender<Cmd>, Arc<Queue>)>);
 
 /// What the host and the logger share of the logger's queue.
 #[derive(Default)]
@@ -200,6 +201,9 @@ struct Lost {
     /// When the first and the last of them were made.
     since: SystemTime,
     until: SystemTime,
+    /// The first and the last position (`seq`, ADR 69) among them, of those
+    /// that had one: an event's or an ACP message's.
+    seqs: Option<(u64, u64)>,
     /// Why a file didn't take them, the first time; none if they were
     /// skipped.
     error: Option<String>,
@@ -207,11 +211,11 @@ struct Lost {
 
 impl Lost {
     fn none(ts: SystemTime) -> Lost {
-        Lost { count: 0, acp: 0, since: ts, until: ts, error: None }
+        Lost { count: 0, acp: 0, since: ts, until: ts, seqs: None, error: None }
     }
 
-    fn one(ts: SystemTime, raw: bool) -> Lost {
-        Lost { count: 1, acp: raw.into(), ..Lost::none(ts) }
+    fn one(ts: SystemTime, raw: bool, seq: Option<u64>) -> Lost {
+        Lost { count: 1, acp: raw.into(), seqs: seq.map(|n| (n, n)), ..Lost::none(ts) }
     }
 
     fn add(&mut self, other: &Lost) {
@@ -219,6 +223,10 @@ impl Lost {
         self.acp += other.acp;
         self.since = self.since.min(other.since);
         self.until = self.until.max(other.until);
+        self.seqs = match (self.seqs, other.seqs) {
+            (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+            (one, other) => one.or(other),
+        };
         if self.error.is_none() {
             self.error.clone_from(&other.error);
         }
@@ -232,6 +240,11 @@ impl Lost {
             "since": rfc3339(self.since),
             "until": rfc3339(self.until),
         });
+        // What a peer catching up from the transcript can't find (ADR 69).
+        if let Some((first, last)) = self.seqs {
+            note["first_seq"] = json!(first);
+            note["last_seq"] = json!(last);
+        }
         if let Some(error) = &self.error {
             note["error"] = json!(error);
         }
@@ -242,7 +255,7 @@ impl Lost {
 impl Sink {
     /// Starts `session`'s files (appending if they exist) under `cwd`'s
     /// project folder. Records for a session not opened go to the host log.
-    pub fn open_session(&self, session: &str, cwd: &Path) {
+    pub(crate) fn open_session(&self, session: &str, cwd: &Path) {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: it says where the session's records go.
             let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
@@ -251,7 +264,7 @@ impl Sink {
 
     /// Closes `session`'s files once what was recorded before is written.
     /// Records for it after go to the host log, until it is opened again.
-    pub fn close_session(&self, session: &str) {
+    pub(crate) fn close_session(&self, session: &str) {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: a process that serves session after session
             // would otherwise hold every file it ever opened.
@@ -260,45 +273,51 @@ impl Sink {
     }
 
     /// Calls `then` once everything recorded before it is written, with the
-    /// note of a gap that ends there (at once when not logging). Never
-    /// skipped, and never waited for: `then` runs on the logger's thread.
-    pub fn when_written(&self, then: impl FnOnce() + Send + 'static) {
-        let Some((tx, _)) = &self.0 else { return then() };
+    /// note of a gap that ends there (at once when not logging), and whether
+    /// a file has lost records it hasn't noted yet, a full disk's (ADR 69).
+    /// Never skipped, and never waited for: `then` runs on the logger's
+    /// thread.
+    pub(crate) fn when_written(&self, then: impl FnOnce(bool) + Send + 'static) {
+        let Some((tx, _)) = &self.0 else { return then(false) };
         if let Err(mpsc::SendError(Cmd::Written(then))) = tx.send(Cmd::Written(Box::new(then))) {
-            then();
+            then(false);
         }
     }
 
     /// An ACP message: into the session's raw file (none with `log =
-    /// "events"`), or the host log.
-    pub fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
-        self.record(session, true, false, |ts| Cmd::Msg {
+    /// "events"`), or the host log; with its position, `seq`, if it has one
+    /// (ADR 69).
+    pub(crate) fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8], seq: Option<u64>) {
+        self.record(session, true, false, seq, |ts| Cmd::Msg {
             session: session.map(str::to_owned),
             ts,
             dir,
             bytes: bytes.to_vec(),
+            seq,
         });
     }
 
     /// An event: into the session's events file, or the host log. It is
     /// written out here, on the caller's stack: it may nest as deeply as the
     /// ACP it came from (see json.rs).
-    pub fn note(&self, session: Option<&str>, event: Value) {
+    pub(crate) fn note(&self, session: Option<&str>, event: Value) {
         // How the process ended is never skipped: it is what tells an exit
         // from a death (`brnr doctor`, ADR 11).
         let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
-        self.record(session, false, keep, |ts| Cmd::Note {
+        let seq = event["seq"].as_u64();
+        self.record(session, false, keep, seq, |ts| Cmd::Note {
             session: session.map(str::to_owned),
             ts,
             event: event.to_string(),
+            seq,
         });
     }
 
     /// An event for `session`, which this process doesn't have open, into
     /// each of its events files ([`transcripts`]): an editor's deletion of a
     /// session it hasn't opened here (ADR 63). Never skipped.
-    pub fn append(&self, session: &str, event: Value) {
-        self.record(Some(session), false, true, |ts| Cmd::Append {
+    pub(crate) fn append(&self, session: &str, event: Value) {
+        self.record(Some(session), false, true, None, |ts| Cmd::Append {
             session: session.to_owned(),
             ts,
             event: event.to_string(),
@@ -313,6 +332,7 @@ impl Sink {
         session: Option<&str>,
         raw: bool,
         keep: bool,
+        seq: Option<u64>,
         make: impl FnOnce(SystemTime) -> Cmd,
     ) {
         let Some((tx, queue)) = &self.0 else { return };
@@ -323,7 +343,7 @@ impl Sink {
             let room = if gap.is_some() { ROOM_BYTES } else { LOG_BYTES };
             if !keep && queue.bytes.load(Relaxed) > room {
                 let new = || Gap { all: Lost::none(ts), sessions: HashMap::new() };
-                gap.get_or_insert_with(new).add(session, Lost::one(ts, raw));
+                gap.get_or_insert_with(new).add(session, Lost::one(ts, raw, seq));
                 return;
             }
             // Room again: the gap is noted where it was, before this record.
@@ -338,20 +358,20 @@ impl Sink {
     }
 }
 
-pub struct Logger {
+pub(crate) struct Logger {
     sink: Sink,
     host_log: Option<PathBuf>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Logger {
-    pub fn disabled() -> Logger {
+    pub(crate) fn disabled() -> Logger {
         Logger { sink: Sink(None), host_log: None, thread: None }
     }
 
     /// Creates the host log. Done before anything else, so a problem with
     /// the log directory fails early. Sessions get a raw file if `acp`.
-    pub fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
+    pub(crate) fn start(ids: Ids, proxy_pid: Option<u32>, acp: bool) -> io::Result<Logger> {
         let path = paths::host_log(&ids.host_id);
         let (host, made) = open_append(&path)?;
         let (tx, rx) = mpsc::channel();
@@ -370,16 +390,16 @@ impl Logger {
         Ok(Logger { sink: Sink(Some((tx, queue))), host_log: Some(path), thread: Some(thread) })
     }
 
-    pub fn sink(&self) -> Sink {
+    pub(crate) fn sink(&self) -> Sink {
         self.sink.clone()
     }
 
-    pub fn host_log(&self) -> Option<&Path> {
+    pub(crate) fn host_log(&self) -> Option<&Path> {
         self.host_log.as_deref()
     }
 
     /// Writes everything recorded so far.
-    pub fn finish(self) {
+    pub(crate) fn finish(self) {
         if let (Some((tx, _)), Some(thread)) = (&self.sink.0, self.thread) {
             let _ = tx.send(Cmd::Finish);
             let _ = thread.join();
@@ -442,17 +462,18 @@ impl Writer {
         match cmd {
             Cmd::Open { session, cwd } => self.open(session, &cwd),
             Cmd::Close { session } => drop(self.sessions.remove(&session)),
-            Cmd::Msg { session, ts, dir, bytes } => {
+            Cmd::Msg { session, ts, dir, bytes, seq } => {
                 let files = session.as_deref().and_then(|s| self.sessions.get(s));
                 // A session's, with no raw file to go in, is left out.
                 if files.is_none_or(|f| f.acp.is_some()) {
-                    let mut body = format!(r#""dir":"{}","#, dir.name()).into_bytes();
+                    let at = seq.map(|n| format!(r#""seq":{n},"#)).unwrap_or_default();
+                    let mut body = format!(r#"{at}"dir":"{}","#, dir.name()).into_bytes();
                     embed(&mut body, bytes.strip_suffix(b"\n").unwrap_or(&bytes));
-                    self.write(ts, session.as_deref(), true, &body);
+                    self.write(ts, session.as_deref(), true, &body, seq);
                 }
             }
-            Cmd::Note { session, ts, event } => {
-                self.write(ts, session.as_deref(), false, &event_body(event));
+            Cmd::Note { session, ts, event, seq } => {
+                self.write(ts, session.as_deref(), false, &event_body(event), seq);
             }
             Cmd::Append { session, ts, event } => {
                 let record = self.head.record(ts, Some(&session), &event_body(event));
@@ -468,7 +489,13 @@ impl Writer {
                 if let Some((ts, gap)) = self.queue.end_gap() {
                     self.skipped(ts, gap);
                 }
-                then();
+                let failed = |out: &Out| out.failed.is_some();
+                let lost = failed(&self.host)
+                    || self
+                        .sessions
+                        .values()
+                        .any(|f| failed(&f.events) || f.acp.as_ref().is_some_and(failed));
+                then(lost);
             }
             Cmd::Finish => {
                 if let Some((ts, gap)) = self.queue.end_gap() {
@@ -545,7 +572,7 @@ impl Writer {
     }
 
     fn note(&mut self, ts: SystemTime, session: Option<&str>, event: Value) {
-        self.write(ts, session, false, &event_body(event));
+        self.write(ts, session, false, &event_body(event), None);
     }
 
     /// The records `gap` skipped, noted in each session's events file that
@@ -575,10 +602,17 @@ impl Writer {
     /// has none open. The host has no stderr to report a failed write on:
     /// it is noted in the file once the file takes records again (see
     /// [`Out::write`]); the raw file's, in the events file.
-    fn write(&mut self, ts: SystemTime, session: Option<&str>, raw: bool, body: &[u8]) {
+    fn write(
+        &mut self,
+        ts: SystemTime,
+        session: Option<&str>,
+        raw: bool,
+        body: &[u8],
+        seq: Option<u64>,
+    ) {
         let head = &self.head;
         let record = head.record(ts, session, body);
-        let one = Lost::one(ts, raw);
+        let one = Lost::one(ts, raw, seq);
         let Some(files) = session.and_then(|s| self.sessions.get_mut(s)) else {
             return self.host.write(head, None, ts, &record, one);
         };
@@ -715,7 +749,7 @@ fn embed(out: &mut Vec<u8>, line: &[u8]) {
 /// request that opens a session, the values of its MCP servers' `env` and
 /// `headers` are `"<redacted>"` (ADR 25 in docs/adr). The keys and the
 /// structure stay. Run it on a stack that takes the message.
-pub fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
+pub(crate) fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
     let method = msg.get("method")?.as_str()?;
     if !OPENING.contains(&method) {
         return None;
@@ -732,7 +766,7 @@ pub fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
 /// Redacts a list of ACP `McpServer`s in place: the `value` of each of
 /// their `env` and `headers` entries, or each value where they are a map.
 /// Whether there was a value to redact.
-pub fn redact_mcp_servers(servers: &mut Value) -> bool {
+pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
     let mut any = false;
     for server in servers.as_array_mut().into_iter().flatten() {
         for key in ["env", "headers"] {
@@ -755,7 +789,7 @@ pub fn redact_mcp_servers(servers: &mut Value) -> bool {
 /// A record of a host log or transcript with what [`redacted`] and
 /// `Request::recorded` redact redacted (ADR 25 in docs/adr), as brnr
 /// records it now: for one an older brnr wrote, shown again.
-pub fn redact_record(record: &mut Value) {
+pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
         && let Ok(msg) = serde_json::from_slice(&bytes)
     {
@@ -769,7 +803,7 @@ pub fn redact_record(record: &mut Value) {
 }
 
 /// What [`open_private`] made private: each path, and the mode it had.
-pub type Made = Vec<(PathBuf, u32)>;
+pub(crate) type Made = Vec<(PathBuf, u32)>;
 
 /// Opens `path`, under the state directory, for appending, so a session's
 /// file grows across hosts that serve it. Transcripts hold prompts and tool
@@ -885,7 +919,7 @@ fn at(path: &Path, err: io::Error) -> io::Error {
 /// resumed in another folder has one in each. A symlinked folder isn't
 /// looked in, as [`purge`] doesn't: what is written there is refused anyway
 /// (ADR 59).
-pub fn transcripts(session: &str) -> Vec<PathBuf> {
+pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
     let name = format!("{}.jsonl", paths::file_name(session));
     let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
     let mut found: Vec<PathBuf> = folders
@@ -906,7 +940,7 @@ pub fn transcripts(session: &str) -> Vec<PathBuf> {
 /// 55). The files written to, what couldn't be written to and why, each
 /// file tried whatever the one before did, and what was made private, with
 /// the mode it had: there is no host log to note it in.
-pub fn record_in_transcripts(
+pub(crate) fn record_in_transcripts(
     session: &str,
     agent_pid: u32,
     event: &Value,
@@ -942,7 +976,7 @@ pub fn record_in_transcripts(
 /// the state directory is reached through a link put in it: a symlinked
 /// folder isn't looked in, and a symlink with a transcript's name is removed,
 /// not what it points at. The paths deleted, and what couldn't be.
-pub fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
+pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
     let (mut deleted, mut failed) = (Vec::new(), Vec::new());
     let root = paths::state_dir();
     let projects_path = root.join("projects");
@@ -1007,7 +1041,7 @@ fn refused(path: &Path, why: &str) -> io::Error {
 }
 
 /// `20261001T171839` in UTC: the start of a host id.
-pub fn compact_utc(ts: SystemTime) -> String {
+pub(crate) fn compact_utc(ts: SystemTime) -> String {
     let full = rfc3339(ts);
     format!(
         "{}{}{}T{}{}{}",
@@ -1060,7 +1094,7 @@ pub fn rfc3339(ts: SystemTime) -> String {
 /// is one. None for anything else, a leap second (`:60`, which a
 /// [`SystemTime`] can't hold), and a time whose UTC is outside the years
 /// 0000 to 9999, which [`rfc3339`] can't write.
-pub fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
+pub(crate) fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
     let b = ts.as_bytes();
     let num = |from: usize, len: usize| digits(b.get(from..from + len)?);
     let at = |i: usize, c: &[u8]| b.get(i).is_some_and(|x| c.contains(x));
@@ -1116,7 +1150,7 @@ pub fn parse_rfc3339(ts: &str) -> Option<SystemTime> {
 /// `ts` in UTC as [`rfc3339`] writes it, if it is an RFC 3339 time
 /// ([`parse_rfc3339`]): brnr's own as they are, an agent's in brnr's form,
 /// so that each is shown, and orders as a string, as the time it is.
-pub fn utc(ts: &str) -> Option<String> {
+pub(crate) fn utc(ts: &str) -> Option<String> {
     parse_rfc3339(ts).map(rfc3339)
 }
 
@@ -1204,8 +1238,8 @@ mod tests {
         sink.note(None, json!({ "event": "before" }));
         queue.bytes.store(LOG_BYTES + 1, Relaxed);
         sink.note(Some("s"), json!({ "event": "a" }));
-        sink.msg(Some("s"), Dir::AgentToEditor, b"{}\n");
-        sink.msg(None, Dir::AgentStderr, b"x");
+        sink.msg(Some("s"), Dir::AgentToEditor, b"{}\n", None);
+        sink.msg(None, Dir::AgentStderr, b"x", None);
         // Back under the cap, but not down to room yet: the gap goes on.
         queue.bytes.store(ROOM_BYTES + 1, Relaxed);
         sink.note(Some("s"), json!({ "event": "b" }));
@@ -1250,12 +1284,12 @@ mod tests {
         writer.sessions.insert("t".into(), Files { events: appending(&t), acp: None });
         let ts = SystemTime::now();
         let mut gap = Gap { all: Lost::none(ts), sessions: HashMap::new() };
-        gap.add(Some("s"), Lost::one(ts, false));
-        gap.add(Some("s"), Lost::one(ts, true));
-        gap.add(Some("t"), Lost::one(ts, true));
+        gap.add(Some("s"), Lost::one(ts, false, None));
+        gap.add(Some("s"), Lost::one(ts, true, None));
+        gap.add(Some("t"), Lost::one(ts, true, None));
         // Not open: its records go in the host log.
-        gap.add(Some("u"), Lost::one(ts, false));
-        gap.add(None, Lost::one(ts, true));
+        gap.add(Some("u"), Lost::one(ts, false, None));
+        gap.add(None, Lost::one(ts, true, None));
         writer.skipped(ts, gap);
         // Raw ACP for a session without a raw file had nowhere to go.
         assert_eq!(skipped(&s), [(1, 0)]);
@@ -1283,6 +1317,7 @@ mod tests {
             session: Some("s".into()),
             ts: SystemTime::now(),
             event: json!({ "event": event }).to_string(),
+            seq: None,
         };
         for cmd in [note("last"), Cmd::Close { session: "s".into() }, note("after")] {
             assert!(writer.handle(cmd));
@@ -1309,14 +1344,14 @@ mod tests {
         for i in 0..3 {
             let ts = t0 + Duration::from_secs(i);
             let record = head.record(ts, None, &event_body(json!({ "event": i })));
-            out.write(&head, None, ts, &record, Lost::one(ts, i == 2));
+            out.write(&head, None, ts, &record, Lost::one(ts, i == 2, None));
         }
         // It takes records again, after a write that left part of a line.
         std::fs::write(&path, r#"{"ts":"cut"#).unwrap();
         (out.file, out.cut) = (appending(&path).file, true);
         let ts = t0 + Duration::from_secs(5);
         let record = head.record(ts, None, &event_body(json!({ "event": "back" })));
-        out.write(&head, None, ts, &record, Lost::one(ts, false));
+        out.write(&head, None, ts, &record, Lost::one(ts, false, None));
 
         let lines = lines(&path);
         assert_eq!(lines.len(), 3, "{lines:?}");
@@ -1328,6 +1363,44 @@ mod tests {
         assert!(note["error"].is_string(), "{note}");
         assert_eq!(lines[2].as_ref().unwrap()["event"]["event"], "back");
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A gap says which positions it lost (ADR 69), and `when_written` whether
+    /// a file has lost records it hasn't noted yet, for a peer catching up.
+    #[test]
+    fn adr_0069_what_the_transcript_lost_is_said_by_position() {
+        let ts = SystemTime::now();
+        let mut lost = Lost::one(ts, false, Some(9));
+        lost.add(&Lost::one(ts, true, Some(5)));
+        lost.add(&Lost::one(ts, false, None));
+        let note = lost.note();
+        assert_eq!(
+            (&note["first_seq"], &note["last_seq"], &note["count"]),
+            (&json!(5), &json!(9), &json!(3))
+        );
+        assert!(Lost::one(ts, false, None).note().get("first_seq").is_none());
+
+        let host = scratch("lost-host");
+        let mut writer = Writer {
+            head: head(),
+            acp: false,
+            host: appending(&host),
+            host_path: host.clone(),
+            sessions: HashMap::new(),
+            queue: Arc::default(),
+            stall: None,
+        };
+        let written = |writer: &mut Writer| {
+            let (tx, rx) = mpsc::channel();
+            assert!(writer.handle(Cmd::Written(Box::new(move |lost| tx.send(lost).unwrap()))));
+            rx.recv().unwrap()
+        };
+        assert!(!written(&mut writer));
+        // Open for reading only: no write goes in, as on a full disk.
+        writer.host = Out::new(File::open(&host).unwrap());
+        writer.note(ts, None, json!({ "event": "lost", "seq": 3 }));
+        assert!(written(&mut writer), "a record lost and not noted yet");
+        let _ = std::fs::remove_file(host);
     }
 
     /// A directory of this test's own, empty, holding `home`: the state
