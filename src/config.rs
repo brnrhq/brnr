@@ -31,6 +31,7 @@
 //!
 //! [profiles.work.editor]              # brnr acp
 //! experimental = ["send", "permission"] # actions on the editor's session (ADR 4)
+//! echo_as = "tool_call"               # or "user_message_chunk" (ADR 70)
 //! features = ["shared_sessions"]      # process management (ADR 42)
 //! ```
 //!
@@ -89,12 +90,14 @@ pub(crate) struct Headless {
     pub(crate) mcp_servers: Vec<McpServer>,
 }
 
-/// What only `brnr acp` uses (ADR 4, 42).
+/// What only `brnr acp` uses (ADR 4, 42, 70).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Editor {
     #[serde(default)]
     pub(crate) experimental: BTreeSet<Experimental>,
+    #[serde(default)]
+    pub(crate) echo_as: EchoAs,
     #[serde(default)]
     pub(crate) features: BTreeSet<Feature>,
 }
@@ -177,6 +180,30 @@ impl Experimental {
             Experimental::Permission => "permission",
             Experimental::Config => "config",
             Experimental::Close => "close",
+        }
+    }
+}
+
+/// The `session/update` a message sent to an editor's session through the
+/// side channel is shown to it as (ADR 5, 70).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EchoAs {
+    /// A completed tool call, "Message via brnr": rendered by every editor.
+    #[default]
+    ToolCall,
+    /// The message's own `user_message_chunk`s, for an editor that renders
+    /// them out of turn.
+    UserMessageChunk,
+}
+
+impl EchoAs {
+    pub(crate) const ALL: [EchoAs; 2] = [EchoAs::ToolCall, EchoAs::UserMessageChunk];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            EchoAs::ToolCall => "tool_call",
+            EchoAs::UserMessageChunk => "user_message_chunk",
         }
     }
 }
@@ -323,7 +350,7 @@ const HEADLESS_KEYS: &[&str] = &[
     "auth",
     "mcp_servers",
 ];
-const EDITOR_KEYS: &[&str] = &["experimental", "features"];
+const EDITOR_KEYS: &[&str] = &["experimental", "echo_as", "features"];
 
 impl Part {
     fn of(key: &str) -> Option<Part> {
@@ -425,6 +452,14 @@ fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<Stri
             "experimental" => {
                 let names: Vec<&str> = Experimental::ALL.iter().map(|e| e.name()).collect();
                 check_names(&format!("{here}.experimental"), "action", &names, value, problems);
+            }
+            "echo_as" => {
+                if !EchoAs::ALL.iter().any(|e| value.as_str() == Some(e.name())) {
+                    let names: Vec<String> =
+                        EchoAs::ALL.iter().map(|e| format!("{:?}", e.name())).collect();
+                    problems
+                        .push(format!("{here}: echo_as is {}, not {value}", names.join(" or ")));
+                }
             }
             "features" => {
                 let names: Vec<&str> = Feature::ALL.iter().map(|f| f.name()).collect();

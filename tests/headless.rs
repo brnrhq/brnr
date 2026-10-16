@@ -2530,7 +2530,8 @@ fn adr_0008_acp_hands_over_one_request() {
     let env = Env::new("ed-request");
     env.write_config(
         "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
-         [profiles.default.editor]\nexperimental = [\"send\", \"permission\"]\nfeatures = [\"shared_sessions\"]\n",
+         [profiles.default.editor]\nexperimental = [\"send\", \"permission\"]\n\
+         echo_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n",
     );
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
     let request = started_record(&env)["request"].clone();
@@ -2540,6 +2541,7 @@ fn adr_0008_acp_hands_over_one_request() {
     assert_eq!(part["proxy_pid"], editor.id(), "{request}");
     assert_eq!(part["experimental"], serde_json::json!(["send", "permission"]));
     assert_eq!(part["features"], serde_json::json!(["shared_sessions"]));
+    assert_eq!(part["echo_as"], "user_message_chunk");
     assert!(part["sigmask"].is_array());
     assert!(request["role"].get("headless").is_none(), "{request}");
     // No headless setting reaches an editor's session.
@@ -2934,7 +2936,8 @@ fn adr_0002_an_editors_process_needs_its_signal_link() {
     let mut child = cmd.spawn().unwrap();
     drop(theirs);
     let editor = serde_json::json!({
-        "proxy_pid": std::process::id(), "sigmask": [], "experimental": [], "features": [],
+        "proxy_pid": std::process::id(), "sigmask": [], "experimental": [], "echo_as": "tool_call",
+        "features": [],
     });
     let request = serde_json::json!({
         "profile": null, "agent": [AGENT], "cwd": env.dir, "strict": false, "log": "all",
@@ -3920,6 +3923,52 @@ fn adr_0005_context_joins_the_editors_next_prompt() {
     assert_eq!(echo["content"][0]["content"]["text"], "kept");
     response(&mut from_agent, 3);
     assert_eq!(env.prompts(), ["reply ok\nkept"]);
+}
+
+/// With `echo_as = "user_message_chunk"`, `send` and `context` are shown to
+/// the editor as the user's own message, one chunk per block, and no tool
+/// call; brnr's notes are still tool calls.
+#[test]
+fn adr_0070_messages_can_be_shown_as_user_message_chunks() {
+    let env = Env::new("ex-echo-as");
+    env.write_config(
+        "[profiles.default.editor]\nexperimental = [\"send\", \"context\", \"permission\"]\n\
+         echo_as = \"user_message_chunk\"\n",
+    );
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let echo = |from_agent: &mut BufReader<ChildStdout>| {
+        let kinds = ["tool_call", "user_message_chunk"];
+        let msg = message(from_agent, |m| {
+            kinds.iter().any(|k| m["params"]["update"]["sessionUpdate"] == *k)
+        });
+        msg["params"]["update"].clone()
+    };
+    env.ok(&["prompt", "send", "sess-1", "reply hi"]);
+    let chunk = echo(&mut from_agent);
+    assert_eq!(chunk["sessionUpdate"], "user_message_chunk", "{chunk}");
+    assert_eq!(chunk["content"], serde_json::json!({ "type": "text", "text": "reply hi" }));
+    wait_idle(&env);
+    env.ok(&["prompt", "send", "sess-1", "--context", "kept"]);
+    writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
+    let chunk = echo(&mut from_agent);
+    assert_eq!(chunk["sessionUpdate"], "user_message_chunk", "{chunk}");
+    assert_eq!(chunk["content"]["text"], "kept");
+    response(&mut from_agent, 3);
+    writeln!(to_agent, "{}", editor_prompt(4, "perm edit")).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    let told = update(&mut from_agent, "tool_call");
+    assert_eq!(told["title"], "Allowed via brnr", "{told}");
+    response(&mut from_agent, 4);
+    assert_eq!(env.prompts(), ["reply hi", "reply ok\nkept", "perm edit"]);
+    // Events don't change with it.
+    let log = env.ok(&["event", "log", "sess-1", "--json"]);
+    let by: Vec<Value> = (log.lines())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["event"] == "user_message")
+        .map(|e| e["by"].clone())
+        .collect();
+    assert_eq!(by, ["control", "editor", "editor"], "{log}");
 }
 
 /// `cancel` answers the agent's pending request `cancelled` and withdraws it

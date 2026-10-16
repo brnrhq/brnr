@@ -307,7 +307,7 @@ doesn't load in an earlier one.
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
 | `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `permission_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline. A permission timeout answers with the `reject_once` option, else cancels the turn. |
-| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. |
+| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. `echo_as`: `"tool_call"` (default) or `"user_message_chunk"`, how a message or context sent through brnr is shown to the editor ([ADR 70](adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)). |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
 
