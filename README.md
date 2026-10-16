@@ -153,12 +153,19 @@ experimental = ["send", "permission"]
 
 | Action | Commands | What brnr does for the editor |
 |---|---|---|
-| `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr". |
-| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr". |
+| `send` | `prompt send` | Sent only while no turn runs: the editor controls its turns, so nothing is held, steered or interrupts. Shown as a completed tool call, "Message via brnr", or as the user's message (`echo_as`, below). |
+| `context` | `prompt send --context`, `queue clear --context` (or neither flag) | Added to the editor's next prompt, shown as "Context via brnr", or as the user's message (`echo_as`). |
 | `cancel` | `prompt cancel` | The agent's pending approvals are answered `cancelled`, and withdrawn from the editor (`$/cancel_request`). |
 | `permission` | `permission allow`, `permission reject` | The request is withdrawn from the editor, its tool call set `in_progress` or `failed`, and the editor told at once who answered ("Allowed via brnr", "Rejected via brnr"). If the editor answers anyway, its answer is dropped and it is told who answered first. |
 | `config` | `config set` | The editor is sent the `current_mode_update` or `config_option_update` the agent sends only to whoever asked. |
 | `close` | `session close`, `session resume --take-over` | The turn is cancelled, the editor is told ("Session closed via brnr", "Session taken over by brnr (process 4466)"), and its later requests for the session get an error saying where it continues. |
+
+A message or context is a tool call because not every editor renders a user
+message that arrives outside a turn. For an editor that does, `echo_as =
+"user_message_chunk"` in the editor part shows it as the user's message
+instead, one `user_message_chunk` per content block
+([ADR 70](docs/adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)).
+brnr's own notes ("Allowed via brnr" and the rest) stay tool calls.
 
 `session fork` is never available in an editor's process, and in strict mode
 none of these is, whatever the profile enables. `brnr process stop` isn't an
@@ -668,6 +675,7 @@ env = { GITHUB_TOKEN = "…" }
 
 [profiles.work.editor]              # brnr acp
 experimental = ["send", "permission"] # actions on the editor's session
+echo_as = "tool_call"               # or "user_message_chunk": how a message is shown
 features = ["shared_sessions"]      # process management
 ```
 
