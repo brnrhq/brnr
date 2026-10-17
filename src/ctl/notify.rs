@@ -300,7 +300,10 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
     for ask in asks {
         if matches!(ask, Ask::Rest) {
             let (rest, why, cut) = source.rest();
-            let _ = tx.send(Msg::Rest(rest, why, cut));
+            // Not sent, notify has ended: let go of here.
+            if let Err(mpsc::SendError(Msg::Rest(rest, ..))) = tx.send(Msg::Rest(rest, why, cut)) {
+                json::free(Value::Array(rest));
+            }
             if cut {
                 continue;
             }
@@ -590,6 +593,9 @@ impl Running {
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Done(done)) if done == pid => break,
+                // Stopped while draining: what is left goes with it.
+                Ok(Msg::Rest(rest, ..)) => json::free(Value::Array(rest)),
+                Ok(Msg::Event(e, _)) => json::free(e),
                 Ok(_) => {}
                 Err(_) => break,
             }
