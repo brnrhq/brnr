@@ -84,6 +84,9 @@ brnr's own conventions:
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
   agent reported them again (ADR 16, ADR 22, #238).
+- `brnr permission requests` lists a request nested deeper than 128,
+  where it failed with `recursion limit exceeded`: it reads the host's
+  answer as the host reads the agent's line (ADR 26, #239).
 
 ## [0.9.0] - 2026-10-16
 

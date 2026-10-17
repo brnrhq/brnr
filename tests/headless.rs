@@ -4231,6 +4231,27 @@ fn adr_0026_a_deep_request_that_times_out_is_answered() {
     env.stop();
 }
 
+/// `brnr permission requests` reads the host's answer as the host reads the
+/// agent's line: a request nested past serde_json's 128 is listed, in text
+/// and `--json`, and one a million deep doesn't overflow brnr's stack.
+#[test]
+fn adr_0026_a_deep_request_is_listed() {
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("ed-deep-{depth}"));
+        let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+        writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {depth}"))).unwrap();
+        line_with(&mut from_agent, "session/request_permission");
+        let pending: Value =
+            serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
+        assert_eq!(pending[0]["request"], "p1", "{depth}: {pending}");
+        assert_eq!(pending[0]["title"], "Edit src/lib.rs", "{depth}: {pending}");
+        let text = env.ok(&["permission", "requests", "sess-1"]);
+        assert!(text.contains("p1") && text.contains("Edit src/lib.rs"), "{depth}: {text}");
+        writeln!(to_agent, "{ALLOW}").unwrap();
+        line_with(&mut from_agent, "end_turn");
+    }
+}
+
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
 /// held back: an answer to an id the host doesn't know goes to the agent.
 #[test]

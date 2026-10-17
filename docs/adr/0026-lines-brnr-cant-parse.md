@@ -31,7 +31,9 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
   and for what comes after it, events and timers alike, while the host
   keeps something of it). The line itself is forwarded byte for byte, as
   always. This stays brnr's own work with the official schema types too
-  (ADR 43): they parse with serde_json.
+  (ADR 43): they parse with serde_json. `brnr permission requests` reads
+  the host's answer the same way, on a stack sized to it: a request the
+  host holds is listed however deep it nests.
 - For a line that isn't JSON at all: the host keeps the ids of agent
   requests it answered itself (permission requests cancelled, or answered
   from outside, ADR 4) and drops only the editor's late answers to those,
@@ -63,5 +65,6 @@ Run `cargo test --release adr_0026_`. Named claims and their assertions:
   - `adr_0026_a_lone_surrogate_is_read`.
   - `adr_0026_deep_nesting_is_read`.
   - `adr_0026_a_deep_request_that_times_out_is_answered`.
+  - `adr_0026_a_deep_request_is_listed`.
   - `adr_0026_an_answer_the_host_cant_place_reaches_the_agent`.
   - `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`.
