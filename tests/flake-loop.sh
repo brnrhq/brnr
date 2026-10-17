@@ -83,7 +83,13 @@ if ((nstress)); then echo "stressors: ${stress[*]}"; fi
 fails=0
 for ((r = 1; r <= rounds; r++)); do
     for ((p = 1; p <= par; p++)); do
+        # A script's job starts with SIGINT and SIGQUIT ignored, and a test
+        # that stops something with SIGINT would fail; under job control
+        # (set -m) it starts with them as cargo test leaves them. Off at once,
+        # so that bash prints no job notices.
+        set -m
         "$bin" ${1+"$@"} </dev/null >"$out/$r.$p.log" 2>&1 &
+        set +m
         runs+=($!)
     done
     for ((p = 1; p <= par; p++)); do

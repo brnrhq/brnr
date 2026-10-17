@@ -94,3 +94,19 @@ fn a_stressor_stops_at_its_time_limit() {
     kill(run.child.id() as i32, libc::SIGTERM);
     assert!(wait_exit(&mut run.child, GONE), "SIGTERM ends the script");
 }
+
+#[test]
+fn a_run_takes_ctrl_c_as_cargo_test_leaves_it() {
+    // A run that SIGINTs itself dies of it, as under cargo test, unless the
+    // script started it with SIGINT ignored: then it says "ignored".
+    let dir = std::env::temp_dir().join(format!("brnr-t{}-int", std::process::id()));
+    let out = Command::new(SCRIPT)
+        .args(["-r", "1", "-p", "1", "-s", "0", "-o", dir.to_str().unwrap()])
+        .args(["/bin/sh", "-c", "kill -INT $$; echo ignored"])
+        .output()
+        .unwrap();
+    let log = fs::read_to_string(dir.join("1.1.log"));
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().next(), Some("runs=1 fails=1"));
+    assert_eq!(log.unwrap(), "", "the run went on past its SIGINT");
+}
