@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, lock, log, paths, render, signals, spawn, sys};
+use crate::{config, json, lock, log, paths, render, signals, spawn, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
 
@@ -361,7 +361,11 @@ impl Conn {
             // Cut short: the process cut the connection off mid-line.
             Ok(_) if !line.ends_with('\n') => Err("the process closed the connection".into()),
             Ok(_) => {
-                let msg: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                // As the host reads it (see json.rs): an event carries what
+                // the agent sent as deep as it nested it (ADR 26).
+                let line = line.as_bytes();
+                let msg = json::on_stack(json::depth(line), || json::parse::<Value>(line));
+                let msg = msg.flatten().unwrap_or(Value::Null);
                 if let (Some(f), Some(seq)) = (&mut self.follow, msg["seq"].as_u64())
                     && msg.get("event").is_some()
                 {

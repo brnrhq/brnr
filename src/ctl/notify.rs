@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 use libc::c_int;
 use serde_json::Value;
 
-use crate::{host, render, signals, sys};
+use crate::{host, json, render, signals, sys};
 
 use super::catch_up::MISSED;
 use super::talk::Conn;
@@ -431,8 +431,9 @@ impl Source {
                 let mut line = Vec::new();
                 match stdin.lock().read_until(b'\n', &mut line) {
                     Ok(0) => Err("stdin closed".into()),
-                    Ok(_) => Ok(serde_json::from_slice::<Value>(&line)
-                        .ok()
+                    // As the host reads it (see json.rs), as the socket's.
+                    Ok(_) => Ok(json::on_stack(json::depth(&line), || json::parse::<Value>(&line))
+                        .flatten()
                         .filter(|e| e.get("event").is_some())),
                     Err(e) => Err(format!("stdin: {e}")),
                 }

@@ -4252,6 +4252,66 @@ fn adr_0026_a_deep_request_is_listed() {
     }
 }
 
+/// What follows a session reads its events as the host reads the agent's
+/// line: a request nested past serde_json's 128 is announced by `prompt
+/// send --wait`, shown by `event watch` and waited on by `event wait`.
+#[test]
+fn adr_0026_a_deep_request_is_followed() {
+    let env = Env::new("deep-follow");
+    env.start(&[]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "permission_request"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "10", "odd deep 200"];
+    let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
+    let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
+    let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
+    let notice = notice.unwrap_or_default();
+    assert!(notice.contains("approval p1: Edit src/lib.rs"), "{notice}");
+    let args = ["event", "wait", "sess-1", "--for", "permission", "--json", "--timeout", "5"];
+    let waited = env.ok(&args);
+    assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    assert!(send.wait().unwrap().success());
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
+    let mut shown = String::new();
+    watch.stdout.take().unwrap().read_to_string(&mut shown).unwrap();
+    assert!(shown.contains(&"[".repeat(200)), "watch showed {shown:?}");
+}
+
+/// So does `event notify`: its command runs for a request nested past 128,
+/// with the event whole on its stdin, from the socket and from `--stdin`.
+#[test]
+fn adr_0026_a_deep_request_is_notified() {
+    let env = Env::new("deep-notify");
+    env.start(&[]);
+    let deep = "[".repeat(200);
+    let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
+    let out = env.dir.join("notified");
+    let script = format!("cat >> '{}'", out.display());
+    let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
+    let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "odd deep 200"]);
+    assert!(wait_for(Duration::from_secs(5), || notified(&out)), "not run");
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.stop();
+    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't end");
+
+    let out = env.dir.join("notified-stdin");
+    let script = format!("cat >> '{}'", out.display());
+    let request = format!(
+        r#"{{"event":"permission_request","request":"p1","tool_call":{deep}{}}}"#,
+        "]".repeat(200)
+    );
+    let input = format!("{request}\n{}\n", r#"{"event":"exited","status":{"code":0}}"#);
+    let args = ["event", "notify", "--stdin", "--events", "permission_request", "--"];
+    let ran = env.run_with_stdin(&[&args[..], &["sh", "-c", &script]].concat(), input.as_bytes());
+    assert!(ran.status.success(), "{}", stderr(&ran));
+    assert!(wait_for(Duration::from_secs(5), || notified(&out)), "--stdin: not run");
+}
+
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
 /// held back: an answer to an id the host doesn't know goes to the agent.
 #[test]
