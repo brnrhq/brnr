@@ -1437,7 +1437,7 @@ impl Host {
     fn fire_start_timer(&mut self, now: Instant) {
         if self.start_deadline.is_some_and(|t| now >= t) {
             self.start_deadline = None;
-            if !self.start_done && !self.stop_requested {
+            if !self.start_done && !self.stop_requested && !self.test_hold_start_timer(now) {
                 self.fail_start("timed out waiting for the session");
             }
         }

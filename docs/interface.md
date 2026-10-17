@@ -231,8 +231,8 @@ field.
 - `--wait` requires a prompt or attachment. `session new --wait`,
   `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
-  `session`, `message`, `reply` (string), `stop_reason`, `error`, `dropped`,
-  and `pid` for `session new` and `session resume`. Missing error/drop information is null. A command
+  `session`, `message`, `reply` (string), `stop_reason`, `error`, `tokens`,
+  `dropped`, and `pid` for `session new` and `session resume`. Missing error/drop information is null. A command
   may fail before a completion object is available.
 - `--foreground` instead stays attached, displaying event lines;
   `--json` makes them JSON lines and `--quiet` suppresses the display.
@@ -250,12 +250,14 @@ field.
 
 Activity fields are `state` (`idle`, `busy`, `waiting`), `turn_seconds`,
 `mode`, `model`, `tools`, `plan`, `pending`, `elicitations`, `held`,
-`context`, `usage`, `last_message`, `last_active`, `stop_when_idle`,
+`context`, `usage`, `last_turn`, `last_message`, `last_active`, `stop_when_idle`,
 `stopping`, and `uptime_seconds`. `pending`, `elicitations`, `held`, and
 `context` are counts; use `permission requests`, `elicitation requests` and
 `queue list` for their contents. A session with an approval or an
 elicitation waiting is `waiting`. `last_message` is a preview, not the full
-transcript. Tool, plan and usage data come from the agent. `tools` has the
+transcript. `last_turn` is how the last turn ended, `{stop_reason, error,
+tokens}` as its `turn_ended` has them, or null before the first. Tool, plan,
+usage and token data come from the agent. `tools` has the
 running turn's tool calls the agent hasn't finished, one per id; once a turn
 ends, cancelled or failed too, none of its calls is listed.
 

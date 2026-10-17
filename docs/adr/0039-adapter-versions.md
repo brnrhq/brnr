@@ -26,7 +26,9 @@ Amended by 63: `brnr status` is `brnr session status`.
   weekly; the next brnr release ships them. A nightly workflow
   (`canary.yml`) builds the newest releases first, without moving the pins,
   checks them with brnr and opens an issue when they fail, so a breaking
-  release is known before Dependabot proposes it.
+  release is known before Dependabot proposes it. Every pull request, a
+  Dependabot one included, builds the pinned adapters and checks them with
+  brnr the same way (`adapters/check.py --brnr`).
 
 ## Consequences
 

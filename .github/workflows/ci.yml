@@ -2,8 +2,9 @@
 # main, on Linux and macOS, and lints on aarch64 Linux too. The integration
 # tests drive the real binary against tests/fake_agent.py, so they need
 # python3 (both runners have it).
-# The adapters are built and checked too, so that a pull request moving their
-# npm versions (Dependabot's) is tested; cargo deny checks the crates
+# The adapters are built and checked with brnr too (stand-in agents, so no
+# credentials), so that a pull request moving their npm versions
+# (Dependabot's) is tested; cargo deny checks the crates
 # (deny.toml) and cargo vet that each is audited or exempted (supply-chain/);
 # the code builds with the oldest Rust Cargo.toml says it does
 # (rust-version); and what isn't Rust is linted: the workflows (actionlint,
@@ -64,8 +65,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --release --all-targets -- -D warnings
 
+  # With brnr, so a pin that breaks it (doctor, session list, a fork) fails
+  # here, not in the nightly canary after the pull request is merged.
   adapters:
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -77,9 +80,17 @@ jobs:
           persist-credentials: false
       # check.py itself first, against stub adapters.
       - run: adapters/test_check.py
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - run: adapters/build.sh "$RUNNER_TEMP/adapters"
-      - run: adapters/check.py "$RUNNER_TEMP/adapters"
+      - run: cargo build --release
+      # Next to brnr, as Homebrew installs them, outside target/ (cached).
+      - run: |
+          adapters/build.sh "$RUNNER_TEMP/adapters"
+          cp target/release/brnr "$RUNNER_TEMP/adapters/"
+      - run: adapters/check.py --brnr "$RUNNER_TEMP/adapters"
 
   deny:
     timeout-minutes: 10

@@ -592,7 +592,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
 /// The first record in a file that brnr can read (ADR 55).
 fn first_record(path: &Path) -> Option<Value> {
     let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
-    lines.map_while(Result::ok).find_map(|line| as_record(&line))
+    lines.map_while(Result::ok).find_map(|line| log::as_record(&line))
 }
 
 /// The last record in a file that brnr can read, read backwards so a long
@@ -622,21 +622,16 @@ fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Val
         tail = chunk;
         // Its lines, last first; the first is whole only at the file's start.
         while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = as_record(&tail[i + 1..]).filter(&wanted) {
+            if let Some(found) = log::as_record(&tail[i + 1..]).filter(&wanted) {
                 return Some(found);
             }
             tail.truncate(i);
         }
         if start == 0 {
-            return as_record(&tail).filter(&wanted);
+            return log::as_record(&tail).filter(&wanted);
         }
         end = start;
     }
-}
-
-/// A line of a transcript as a record, if it is one.
-fn as_record(line: &[u8]) -> Option<Value> {
-    serde_json::from_slice(line).ok().filter(Value::is_object)
 }
 
 fn agent_name(argv: &Value) -> String {
@@ -691,6 +686,9 @@ fn status(args: &[String]) -> Result<(), String> {
         "held": x["held"],
         "context": x["context"],
         "usage": x["usage"],
+        // How the last turn ended, and the tokens the agent said it used
+        // (ADR 71).
+        "last_turn": x["last_turn"],
         "last_message": x["last_message"],
         "last_active": x["last_active"],
         "stop_when_idle": st["stop_when_idle"],
@@ -794,6 +792,11 @@ fn describe_status(x: &Value, arg: &str) -> String {
     }
     if let Some(usage) = render::usage(&x["usage"]) {
         out.push_str(&format!("context window: {usage}\n"));
+    }
+    let last = &x["last_turn"];
+    if last.is_object() {
+        let tokens = render::turn_tokens(&last["tokens"]);
+        out.push_str(&format!("{}{tokens}\n", render::turn(last, "last turn")));
     }
     if let Some(last) = x["last_message"].as_str() {
         let last = last.trim().replace('\n', " ");

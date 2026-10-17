@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, lock, paths, render, signals, spawn, sys};
+use crate::{config, lock, log, paths, render, signals, spawn, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
 
@@ -391,9 +391,9 @@ const TURN_EVENTS: &[&str] = &[
 
 /// Follows the turn that answers `message` until it ends, printing the
 /// agent's messages as they come (or, with `json`, the turn as one object at
-/// the end: `{session, message, reply, stop_reason, error, dropped}` and
-/// `json`'s fields), and returns the turn's exit status: 1, too, for a message
-/// dropped before it was sent (`dropped` says why). Approvals and
+/// the end: `{session, message, reply, stop_reason, error, tokens, dropped}`
+/// and `json`'s fields), and returns the turn's exit status: 1, too, for a
+/// message dropped before it was sent (`dropped` says why). Approvals and
 /// elicitations on the way are announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
@@ -464,7 +464,7 @@ pub(super) fn wait_for_message(
 
 /// The turn as `--json` prints it, from the event that ended it
 /// (`turn_ended`, or `message_dropped` for a message never sent): `out` with
-/// `{session, message, reply, stop_reason, error, dropped}`.
+/// `{session, message, reply, stop_reason, error, tokens, dropped}`.
 fn print_turn(
     mut out: Value,
     session: &str,
@@ -479,6 +479,7 @@ fn print_turn(
         ("reply", json!(reply.join("\n\n"))),
         ("stop_reason", end["stop_reason"].clone()),
         ("error", end["error"].clone()),
+        ("tokens", end["tokens"].clone()),
         ("dropped", dropped),
     ] {
         out[k] = v;
@@ -762,6 +763,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             Some(pid) => {
                 let (host, running) = settings::held(&hosts, &wanted, pid)?;
                 owner = Some((host, wanted.clone()));
+                transcript = true;
                 Some(running)
             }
             // A session brnr has no transcript of (one only the agent knows)
@@ -772,11 +774,16 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                 Ok(Found::Running(host, _)) => {
                     return Err(format!("{wanted} is running in process {}", host.id()));
                 }
-                Ok(Found::Inactive(past)) => Some(past),
+                // One holding only openings, which a load that failed
+                // leaves, isn't a transcript of it (ADR 57).
+                Ok(Found::Inactive(past)) => {
+                    let file = past["log"].as_str().map(Path::new);
+                    transcript = file.is_some_and(log::has_records);
+                    Some(past)
+                }
                 Err(_) => None,
             },
         };
-        transcript = found.is_some();
         if let Some(past) = found {
             a.resume = past["session_id"].as_str().map(str::to_owned);
             resume_cwd = past["cwd"].as_str().map(str::to_owned);

@@ -17,7 +17,8 @@ brnr event log $s --last 1 --json
 approval or an elicitation), `turn_seconds`, `owner` (`headless` or
 `editor`), `title`, `mode`, `model`, `tools` running, `plan`, `pending`
 approvals, `elicitations` waiting, `held` messages, `context`,
-`usage`, `last_message` (cut at 4000 characters), `cwd`, `pid`,
+`usage`, `last_turn` (`stop_reason`, `error`, `tokens`), `last_message`
+(cut at 4000 characters), `cwd`, `pid`,
 `stop_when_idle`. Use it to answer "what is it doing?", not to wait (use
 `event wait` for that).
 
@@ -66,7 +67,7 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "elicitation_request", "session": "0f6c…", "request": "e1", "owner": "headless", "mode": "form", "message": "Which branch?", "scope": "session", "tool_call": null, "scope_request": null, "schema": {}, "url": null, "elicitation_id": null}
 {"event": "elicitation_resolved", "session": "0f6c…", "request": "e1", "action": "accept", "content": {"branch": "main"}, "by": "socket#18"}
 {"event": "elicitation_completed", "session": "0f6c…", "request": "e2", "elicitation_id": "login-1"}
-{"event": "turn_ended", "session": "0f6c…", "by": "control", "messages": ["m1"], "stop_reason": "end_turn", "error": null}
+{"event": "turn_ended", "session": "0f6c…", "by": "control", "messages": ["m1"], "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}}
 {"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
 {"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
 {"event": "session_closed", "session": "0f6c…", "by": "idle"}
@@ -86,7 +87,13 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   the chosen option's kind, `by` who answered (`editor`, `cancel`,
   `timeout`, or a connection).
 - `turn_ended`: `stop_reason` (`end_turn`, `cancelled`, …) or an `error`
-  (`{code, message}`), and the `messages` the turn carried.
+  (`{code, message}`), the `messages` the turn carried, and `tokens`: the
+  counts the agent reported for the turn (`total`, `input`, `output`,
+  `thought`, `cached_read`, `cached_write`), each null where it gave none that
+  is a count (a JSON integer that fits a `u64`; not `1e3`), and `tokens` null
+  when the answer has no `usage` object. brnr adds nothing up; what the counts
+  cover (subagents, earlier model calls) is the agent's to say. `usage` is the
+  context window, not a turn's tokens.
 - `message_dropped`: `by` `cancel`, `queue`, `close`, `exit` or `steer`;
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
   sent that the agent never got.

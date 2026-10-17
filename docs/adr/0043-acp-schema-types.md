@@ -9,13 +9,17 @@ Written with its types: `session/set_config_option`'s params (ADR 28).
 Strict mode's stable methods are the crate's. Left to `serde_json::Value`,
 as the types don't take them or brnr passes them on as they were said: the
 JSON-RPC envelope and the editor's requests, extension methods and `_meta`,
-the unstable `fork` capability, update kinds the schema lacks, what brnr
-rewrites, and what events and the status carry as it was said (a prompt's
-content, a permission request's tool call and options, locations, plan
-entries, config options, commands, modes, stop reasons).
+the unstable `fork` capability, a prompt answer's unstable `usage` (ADR
+71), update kinds the schema lacks, what brnr rewrites, and what events and
+the status carry as it was said (a prompt's content, a permission request's
+tool call and options, locations, plan entries, config options, commands,
+modes, stop reasons).
 
 Amended by 63: `brnr sessions`' `session/list` is `brnr session list`'s,
 with an agent named.
+
+Amended by 71: a `session/prompt` answer's `usage`, unstable ACP, is read as
+a `Value` for the turn's tokens; the crate's unstable features stay off.
 
 ## Context
 

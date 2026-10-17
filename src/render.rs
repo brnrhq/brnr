@@ -147,10 +147,9 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
         "elicitation_completed" => {
             format!("elicitation {} completed: {}", s(&e["request"]), s(&e["elicitation_id"]))
         }
-        "turn_ended" => match e["error"].as_object() {
-            Some(error) => format!("turn failed: {} ({})", s(&error["message"]), s(&e["by"])),
-            None => format!("turn ended: {} ({})", s(&e["stop_reason"]), s(&e["by"])),
-        },
+        "turn_ended" => {
+            format!("{} ({}){}", turn(e, "turn"), s(&e["by"]), turn_tokens(&e["tokens"]))
+        }
         "message_dropped" => {
             format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
         }
@@ -324,6 +323,28 @@ pub(crate) fn usage(usage: &Value) -> Option<String> {
         line.push_str(&format!(", cost {amount:.2} {currency}"));
     }
     Some(line)
+}
+
+/// How a turn ended, `turn_ended` or the status's `last_turn`, as
+/// `<what> ended: end_turn` or `<what> failed: <its error>`.
+pub(crate) fn turn(e: &Value, what: &str) -> String {
+    let s = |v: &Value| v.as_str().unwrap_or("?").to_owned();
+    match e["error"].as_object() {
+        Some(error) => format!("{what} failed: {}", s(&error["message"])),
+        None => format!("{what} ended: {}", s(&e["stop_reason"])),
+    }
+}
+
+/// The tokens the agent said a turn used (ADR 71), as `; tokens: 1.2k
+/// total, 1.0k input, 234 output, …`: each count it gave, and nothing for
+/// one it didn't, as the cost in [`usage`]; nothing at all when it gave
+/// none.
+pub(crate) fn turn_tokens(counts: &Value) -> String {
+    let known: Vec<String> = ["total", "input", "output", "thought", "cached_read", "cached_write"]
+        .iter()
+        .filter_map(|k| Some(format!("{} {}", tokens(counts[k].as_u64()?), k.replace('_', " "))))
+        .collect();
+    if known.is_empty() { String::new() } else { format!("; tokens: {}", known.join(", ")) }
 }
 
 /// `950`, `12.3k`, `1.2M`.
@@ -726,6 +747,25 @@ mod tests {
         let e = json!({ "event": "session_closed", "session": id, "by": "idle" });
         let line = event(&e, &Options { session: true, time: false }).unwrap();
         assert_eq!(line, format!("{id}  session closed (idle)"));
+    }
+
+    /// A turn's tokens (ADR 71): each count the agent gave, none it
+    /// didn't, and nothing when there are none, as the cost of `usage`.
+    #[test]
+    fn adr_0071_text_shows_the_counts_the_agent_gave() {
+        use serde_json::json;
+        let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
+        let tokens = json!({ "total": 1_234_000, "input": 999, "output": null, "cached_write": 0 });
+        let ended = json!({ "event": "turn_ended", "stop_reason": "end_turn", "by": "editor",
+                            "tokens": tokens });
+        let said = "turn ended: end_turn (editor); tokens: 1.2M total, 999 input, 0 cached write";
+        assert_eq!(shown(ended), said);
+        let none = json!({ "total": null, "input": null });
+        for tokens in [Value::Null, none] {
+            let ended = json!({ "event": "turn_ended", "stop_reason": "cancelled", "by": "control",
+                                "tokens": tokens });
+            assert_eq!(shown(ended), "turn ended: cancelled (control)");
+        }
     }
 
     #[test]

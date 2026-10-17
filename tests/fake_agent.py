@@ -37,6 +37,8 @@ with environment variables:
   LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
   LOAD_FAIL=1       the first session/load, once it has replayed, answers
                     with an error
+  LOAD_REFUSED=1    the first session/load answers with an error at once,
+                    replaying nothing
   LATE_HISTORY=1    with LOAD_LATER, a load replays one more agent message,
                     late history, once the file exists, before its answer
   NO_CLOSE=1        don't offer session/close
@@ -85,6 +87,8 @@ with environment variables:
   PERM_PAD=<n>      a permission request's tool call input has n bytes more
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
+  PROMPT_USAGE=<json>  every session/prompt answer has this text as its
+                    result's usage, as it is (unstable ACP's token counts)
   ELICIT_AUTH=1     authenticate first asks for a URL to be opened, an
                     elicitation scoped to the authenticate request (no
                     session), and answers once that is answered: {} for an
@@ -282,7 +286,15 @@ def say(session, text, kind="agent_message_chunk"):
 
 
 def end_turn(mid, reason="end_turn"):
-    result(mid, {"stopReason": reason})
+    usage = env("PROMPT_USAGE")
+    if usage is None:
+        result(mid, {"stopReason": reason})
+        return
+    answer = {"jsonrpc": "2.0", "id": mid, "result": {"stopReason": reason}}
+    line = json.dumps(answer)[:-2] + ', "usage": ' + usage + "}}"
+    with sending:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
 
 def opened(session):
@@ -837,6 +849,10 @@ for line in sys.stdin.buffer:
         if method == "session/load" and env("LOAD_ENDS_TURN") and hanging is not None:
             end_turn(hanging, "cancelled")
             hanging = None
+        if method == "session/load" and env("LOAD_REFUSED") and not loads_failed:
+            loads_failed += 1
+            error(mid, -32603, "Can't load the session")
+            continue
         if method == "session/load" and not env("NO_HISTORY"):
             update(
                 sid,
