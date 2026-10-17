@@ -36,6 +36,9 @@ brnr's own conventions:
   opens the session it forks. `adapters/check.py --brnr` checks a fork
   prompted and closed in one process, and its parent prompted after (ADR 16,
   ADR 39, #227).
+- `brnr permission requests` lists a request nested deeper than 128,
+  where it failed with `recursion limit exceeded`: it reads the host's
+  answer as the host reads the agent's line (ADR 26, #239).
 
 ## [0.9.0] - 2026-10-16
 

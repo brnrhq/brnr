@@ -38,7 +38,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::host::{EVENTS, QUIET, alive};
-use crate::{lock, log, paths, render};
+use crate::{json, lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -856,12 +856,33 @@ fn pending(args: &[String]) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    let mut rows = Vec::new();
+    let mut answers = Vec::new();
     for host in chosen {
-        let response = request(host, &json!({ "cmd": "pending" }))
+        let line = exchange(host, &json!({ "cmd": "pending" }), ANSWER_WAIT)
             .map_err(|e| format!("process {}: {e}", host.id()))?;
+        answers.push((host.id(), line));
+    }
+    // A request nests as deep as the agent made it: read as the host reads
+    // the agent's line, and listed and let go on a stack that takes it
+    // (ADR 26).
+    let depth = answers.iter().map(|(_, line)| json::depth(line.as_bytes())).max().unwrap_or(0);
+    json::on_stack(depth, || list_pending(&answers, only.as_deref(), json_out))
+        .unwrap_or_else(|| Err(format!("no stack to be had for an answer {depth} deep")))
+}
+
+/// The permission requests in each process's `answers` (of session `only`,
+/// if given), as a table or `--json`.
+fn list_pending(
+    answers: &[(&str, String)],
+    only: Option<&str>,
+    json_out: bool,
+) -> Result<(), String> {
+    let mut rows = Vec::new();
+    for (id, line) in answers {
+        let response: Value = json::parse(line.as_bytes())
+            .ok_or_else(|| format!("process {id}: its answer isn't JSON"))?;
         for p in response["pending"].as_array().into_iter().flatten() {
-            if only.as_deref().is_some_and(|id| p["session"] != id) {
+            if only.is_some_and(|id| p["session"] != id) {
                 continue;
             }
             let options: Vec<Value> = p["options"]
@@ -1201,12 +1222,20 @@ fn connect(host: &Host) -> io::Result<UnixStream> {
     UnixStream::connect(PathBuf::from(socket))
 }
 
+/// How long a request waits for its answer, unless it says otherwise.
+const ANSWER_WAIT: Duration = Duration::from_secs(5);
+
 fn request(host: &Host, req: &Value) -> io::Result<Value> {
-    request_timeout(host, req, Duration::from_secs(5))
+    request_timeout(host, req, ANSWER_WAIT)
 }
 
 /// A request and its answer, waiting up to `timeout` for it.
 fn request_timeout(host: &Host, req: &Value, timeout: Duration) -> io::Result<Value> {
+    serde_json::from_str(&exchange(host, req, timeout)?).map_err(io::Error::other)
+}
+
+/// A request and the line that answers it, waiting up to `timeout` for it.
+fn exchange(host: &Host, req: &Value, timeout: Duration) -> io::Result<String> {
     let mut conn = connect(host)?;
     conn.set_read_timeout(Some(timeout))?;
     writeln!(conn, "{req}")?;
@@ -1215,7 +1244,7 @@ fn request_timeout(host: &Host, req: &Value, timeout: Duration) -> io::Result<Va
         ErrorKind::WouldBlock | ErrorKind::TimedOut => io::Error::other("not answering"),
         _ => e,
     })?;
-    serde_json::from_str(&line).map_err(io::Error::other)
+    Ok(line)
 }
 
 /// A request whose failure is the command's failure.
