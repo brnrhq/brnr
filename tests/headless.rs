@@ -3953,6 +3953,43 @@ fn adr_0026_a_deep_request_is_notified() {
     assert!(wait_for(Duration::from_secs(5), || notified(&out)), "--stdin: not run");
 }
 
+/// And so does catching up (ADR 69): a watcher cut off before a request
+/// nested past 128 gets it from the transcript.
+#[test]
+fn adr_0026_a_deep_event_is_caught_up() {
+    let env = Env::new("deep-catchup");
+    env.start(&[]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = BufReader::new(watch.stdout.take().unwrap());
+    let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    }
+    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    // Asked for once it is cut off: the request can only reach it from the
+    // transcript.
+    if cut {
+        env.ok(&["prompt", "send", "sess-1", "odd deep 200"]);
+        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+    }
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
+    let lines: Vec<String> = lines.join().unwrap();
+    let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
+    let request = request.expect("no permission_request");
+    assert!(request.contains(&format!(r#""rawInput":{}"#, "[".repeat(200))), "{request}");
+}
+
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
 /// held back: an answer to an id the host doesn't know goes to the agent.
 #[test]
