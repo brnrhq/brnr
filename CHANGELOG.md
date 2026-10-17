@@ -43,6 +43,11 @@ brnr's own conventions:
   (from the socket and `--stdin`) see a permission request nested deeper
   than 128, which they dropped without a word: they read events as the
   host reads the agent's line (ADR 26, #250).
+- Those commands, and `session new --wait`, follow an event nested about a
+  million deep, where they overflowed their stack and aborted (exit 134):
+  each event is used and let go of on a stack that takes it, as the host
+  does; with no such stack to be had, they say so and exit non-zero (ADR 26,
+  #252).
 
 ## [0.9.0] - 2026-10-16
 
