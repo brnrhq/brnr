@@ -17,7 +17,10 @@ a stand-in that prints its arguments on stderr and exits 3:
 With --brnr, <dir> has brnr in it too, and brnr is checked with them, in a
 scratch home: brnr doctor finds each next to it and reads its version, and
 brnr session list lists the Claude adapter's sessions (initialize and
-session/list through brnr's ACP client).
+session/list through brnr's ACP client). Then a fork's lifecycle in one brnr
+process (ADR 16), through the Claude adapter with fake_claude.py as its
+Claude Code: a session started with a prompt, forked, the fork prompted and
+closed, and the session prompted again; each prompt answered "ok".
 
     adapters/check.py [--brnr] [<dir>]      default: target/release
 
@@ -173,9 +176,9 @@ if with_brnr:
         HOME=os.path.join(scratch, "home"),
     )
 
-    def run_brnr(*args):
+    def run_brnr(*args, env=benv):
         return subprocess.run(
-            [brnr, *args], capture_output=True, text=True, timeout=60, env=benv, cwd=scratch
+            [brnr, *args], capture_output=True, text=True, timeout=60, env=env, cwd=scratch
         )
 
     doctor = run_brnr("doctor", "--json")
@@ -201,5 +204,63 @@ if with_brnr:
         failed = True
     else:
         print(f"ok   brnr session list -- brnr-claude-adapter: {len(listed)} sessions")
+
+    # A fork prompted and closed in the process that forked it, and its parent
+    # prompted after (ADR 16), with fake_claude.py as Claude Code.
+    fenv = dict(
+        benv,
+        CLAUDE_CODE_EXECUTABLE=os.path.join(here, "fake_claude.py"),
+        CLAUDE_CONFIG_DIR=os.path.join(scratch, "claude"),
+    )
+
+    def step(what, args, want, seen=""):
+        """brnr's JSON answer to args if it has want's values, else None; prints
+        what's line, with seen if ok."""
+        global failed
+        p = run_brnr(*args, env=fenv)
+        try:
+            got = json.loads(p.stdout)
+        except json.JSONDecodeError:
+            got = None
+        if (
+            p.returncode == 0
+            and isinstance(got, dict)
+            and all(got.get(k) == v for k, v in want.items())
+        ):
+            print(f"ok   {what}{seen}")
+            return got
+        error = got.get("error") if isinstance(got, dict) else None
+        print(f"FAIL {what}: {shown(error or got or p.stdout + p.stderr)}")
+        failed = True
+        return None
+
+    wait = ("--wait", "--timeout", f"{timeout:g}", "--json")
+    replied = ({"reply": "ok", "error": None}, ": replied 'ok'")
+    parent = step(
+        "brnr session new --prompt -- brnr-claude-adapter, with a stand-in Claude Code",
+        ("session", "new", "--prompt", "Reply ok.", *wait, "--", "brnr-claude-adapter"),
+        *replied,
+    )
+    parent = parent and parent["session"]
+    fork = parent and step(
+        "brnr session fork", ("session", "fork", parent, "--json"), {"from": parent}
+    )
+    if fork:
+        fork = fork["session"]
+        step(
+            "brnr prompt send to the fork, in the process that forked it",
+            ("prompt", "send", fork, *wait, "Reply ok."),
+            *replied,
+        )
+        step("brnr session close the fork", ("session", "close", fork, "--json"), {"session": fork})
+        step(
+            "brnr prompt send to its parent, after",
+            ("prompt", "send", parent, *wait, "Reply ok."),
+            *replied,
+        )
+    # Only this scratch BRNR_DIR's processes: the one session new started.
+    processes = run_brnr("process", "list", "--json")
+    for process in json.loads(processes.stdout or "[]"):
+        run_brnr("process", "stop", str(process["pid"]))
     shutil.rmtree(scratch, ignore_errors=True)
 sys.exit(1 if failed else 0)
