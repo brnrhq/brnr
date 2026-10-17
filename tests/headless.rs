@@ -2532,6 +2532,42 @@ fn adr_0057_a_load_that_replays_and_fails_counts_its_replay() {
     let _ = editor.kill();
 }
 
+/// The messages old-1's transcript has, each as its text and whether it
+/// was replayed.
+fn old_messages(env: &Env) -> Vec<Value> {
+    let messages = logged(env, "old-1", "user_message,agent_message");
+    messages.iter().map(|m| json!([m["text"], m["replayed"]])).collect()
+}
+
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent replays and then fails: its last agent message, held still as the
+/// load fails, is recorded, replayed, as the rest of the replay is (P3,
+/// ADR 57, #255).
+#[test]
+fn adr_0057_an_editors_failed_load_records_its_last_replayed_message() {
+    let env = Env::new("ed-failedlast").agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let said = [json!(["old question", true]), json!(["replayed history", true])];
+    wait_for(Duration::from_secs(5), || on_disk(&env, "old-1") && old_messages(&env) == said);
+    assert_eq!(old_messages(&env), said);
+    let _ = editor.kill();
+}
+
+/// The same for a bridge's load, answered once the replay is written
+/// (P3, ADR 48, ADR 57, #255).
+#[test]
+fn adr_0057_a_bridges_failed_load_records_its_last_replayed_message() {
+    let env = Env::new("failedlast").agent("NO_RESUME", "1").agent("LOAD_FAIL", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    let said = [json!(["old question", true]), json!(["replayed history", true])];
+    assert_eq!(old_messages(&env), said);
+}
+
 /// A session served and closed while the disk is too slow for its records,
 /// all of them skipped, its close's too: its events file holds only its
 /// opening, which isn't a transcript of it, and its process doesn't count

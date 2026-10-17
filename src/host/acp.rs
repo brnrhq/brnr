@@ -785,9 +785,13 @@ impl Host {
         if replay.unanswered > 0 {
             return;
         }
-        if replay.loaded {
+        let (loaded, opened) = (replay.loaded, replay.opened);
+        // The last replayed message, while it is still marked as replayed,
+        // whether the load succeeded or not (P3).
+        self.flush_agent_message(i);
+        if loaded {
             self.end_replay(i);
-        } else if replay.opened {
+        } else if opened {
             // Its lock goes with it, and its files are closed.
             self.sink.close_session(&self.sessions.remove(i).id);
         } else {

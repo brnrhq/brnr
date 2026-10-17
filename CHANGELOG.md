@@ -51,6 +51,9 @@ brnr's own conventions:
   the history again, and one after a session closed with all its records
   skipped by a slow disk records it, as another process's would (ADR 57,
   #247).
+- A load that replays and then fails, the editor's or a bridge's, records
+  the last agent message the agent replayed, marked replayed, as the rest
+  of the replay; it was dropped (ADR 57, #255).
 
 ## [0.9.0] - 2026-10-16
 

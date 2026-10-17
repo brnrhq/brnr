@@ -92,7 +92,8 @@ conversation, and nothing said it was missing (P3).
   remembers each session it has handed the logger a record of beyond its
   openings, for its events file, as the disk has it once that is written.
   A load that failed after the agent replayed so leaves a transcript, of
-  what it recorded; one that failed before the agent replayed, or a
+  what it recorded, which is all the replay, the agent message it ended
+  with too (P3); one that failed before the agent replayed, or a
   session closed with all its records, its close's too, skipped by a disk
   too slow for them (ADR 6), leaves only openings, and the next load, in
   that process too, records the history.
@@ -191,6 +192,8 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again`.
   - `adr_0057_an_editors_load_after_a_failed_load_records_the_history`.
   - `adr_0057_a_load_that_replays_and_fails_counts_its_replay`.
+  - `adr_0057_an_editors_failed_load_records_its_last_replayed_message`.
+  - `adr_0057_a_bridges_failed_load_records_its_last_replayed_message`.
   - `adr_0057_a_session_closed_with_nothing_recorded_is_no_transcript`.
 - [src/log.rs](../../src/log.rs)
   - `adr_0057_only_openings_are_no_transcript`.
