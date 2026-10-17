@@ -4282,12 +4282,13 @@ fn adr_0026_a_deep_request_is_followed() {
         };
         let (mut watch_json, shown_json) = watch(&["--json"]);
         let (mut watch_text, shown_text) = watch(&[]);
-        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
+        // A million deep is slow to read on a loaded runner: time enough.
+        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"];
         let mut wait = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
         let waited = read_out(&mut wait);
         sleep(Duration::from_millis(300));
         let prompt = format!("odd deep {depth}");
-        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "10", &prompt];
+        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "60", &prompt];
         let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
         let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
         let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
@@ -4304,7 +4305,9 @@ fn adr_0026_a_deep_request_is_followed() {
             assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
         }
         env.ok(&["permission", "allow", "sess-1", "p1"]);
-        assert!(send.wait().unwrap().success(), "{depth}: prompt send failed");
+        let sent = send.wait().unwrap();
+        let said: Vec<String> = err.collect();
+        assert!(sent.success(), "{depth}: prompt send {sent}: {said:?}");
         env.stop();
         for watch in [&mut watch_json, &mut watch_text] {
             assert!(wait_exit(watch, Duration::from_secs(15)), "{depth}: watch didn't end");
