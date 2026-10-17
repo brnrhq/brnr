@@ -391,9 +391,9 @@ const TURN_EVENTS: &[&str] = &[
 
 /// Follows the turn that answers `message` until it ends, printing the
 /// agent's messages as they come (or, with `json`, the turn as one object at
-/// the end: `{session, message, reply, stop_reason, error, dropped}` and
-/// `json`'s fields), and returns the turn's exit status: 1, too, for a message
-/// dropped before it was sent (`dropped` says why). Approvals and
+/// the end: `{session, message, reply, stop_reason, error, tokens, dropped}`
+/// and `json`'s fields), and returns the turn's exit status: 1, too, for a
+/// message dropped before it was sent (`dropped` says why). Approvals and
 /// elicitations on the way are announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
@@ -464,7 +464,7 @@ pub(super) fn wait_for_message(
 
 /// The turn as `--json` prints it, from the event that ended it
 /// (`turn_ended`, or `message_dropped` for a message never sent): `out` with
-/// `{session, message, reply, stop_reason, error, dropped}`.
+/// `{session, message, reply, stop_reason, error, tokens, dropped}`.
 fn print_turn(
     mut out: Value,
     session: &str,
@@ -479,6 +479,7 @@ fn print_turn(
         ("reply", json!(reply.join("\n\n"))),
         ("stop_reason", end["stop_reason"].clone()),
         ("error", end["error"].clone()),
+        ("tokens", end["tokens"].clone()),
         ("dropped", dropped),
     ] {
         out[k] = v;

@@ -828,6 +828,52 @@ fn adr_0002_acp_passes_bytes_unchanged() {
     assert!(all.contains("not json, from the editor"), "the raw ACP is kept");
 }
 
+/// A prompt's answer reaches the editor as the agent wrote it, its unstable
+/// `usage` included, byte for byte but for the id (ADR 61), while brnr's
+/// `turn_ended` has the counts it read in it (ADR 71).
+#[test]
+fn adr_0071_the_editor_gets_the_answers_usage_as_the_agent_sent_it() {
+    let usage = r#"{ "outputTokens":2,"inputTokens" :10, "totalTokens": 12,"_meta":{"n":2.50,"e":"cafE9"}}"#
+        .replace("E9", &escaped("00e9"));
+    let env = Env::new("s-tokens").agent("PROMPT_USAGE", &usage);
+    let mut editor = env
+        .brnr(&["acp", "--", AGENT])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to_agent = editor.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(editor.stdout.take().unwrap());
+    let cwd = serde_json::to_string(&env.dir).unwrap();
+    for line in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#.to_owned(),
+        format!(r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{cwd},"mcpServers":[]}}}}"#),
+    ] {
+        writeln!(to_agent, "{line}").unwrap();
+    }
+    lines_until(&mut from_agent, 2);
+    writeln!(to_agent, r#"{{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{{"sessionId":"sess-1","prompt":[{{"type":"text","text":"reply hi"}}]}}}}"#).unwrap();
+    let answer = lines_until(&mut from_agent, 3).pop().unwrap();
+    // As fake_agent.py writes it, with the editor's id.
+    let sent = format!(
+        r#"{{"jsonrpc": "2.0", "id": 3, "result": {{"stopReason": "end_turn", "usage": {usage}}}}}"#
+    );
+    assert_eq!(answer, format!("{sent}\n"), "the editor got other bytes");
+
+    let ended = || {
+        let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "turn_ended"]);
+        log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).next()
+    };
+    assert!(wait_for(WITHIN, || ended().is_some()), "no turn_ended");
+    let tokens = json!({
+        "total": 12, "input": 10, "output": 2,
+        "thought": null, "cached_read": null, "cached_write": null,
+    });
+    assert_eq!(ended().unwrap()["tokens"], tokens);
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, WITHIN), "acp didn't exit");
+}
+
 /// The agent's stderr comes out of `brnr acp`'s stderr as it was written,
 /// and `brnr acp` exits as the agent did.
 #[test]

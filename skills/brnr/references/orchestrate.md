@@ -54,7 +54,7 @@ the `turn_ended` event). `prompt send --wait` prints the turn as one object
 at its end:
 
 ```json
-{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "dropped": null}
+{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}, "dropped": null}
 ```
 
 **Read.** The reply is in `prompt send --wait`'s `reply`. For what the worker did

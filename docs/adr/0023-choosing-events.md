@@ -8,6 +8,10 @@ Whatever `--events` chose, `log` also shows a gap in the transcript
 the id of a call that is running is that call, not a second one (#164): it
 updates it, as a `tool_call_update` would, with no second start.
 
+Amended by 71: `turn_ended` has `tokens`, the tokens the agent reported for
+the turn, and its line shows each count given: `turn ended: end_turn
+(control); tokens: 1.2k total, 1.0k input, 234 output`.
+
 ## Context
 
 `watch` first subscribed to everything, `acp` included: one raw line per

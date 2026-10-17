@@ -19,6 +19,9 @@ Amended 2026-10-12 (#170): `stop` and `close` (`process stop` and `session
 close`, ADR 63) take `--json` too, as each prints what it did; `notify`
 still doesn't.
 
+Amended by 71: `status` has the last turn too, `last_turn` (`stop_reason`,
+`error`, `tokens`), and its text a line for it.
+
 ## Decision
 
 - A command's text and its `--json` carry the same data (P5). `list` is an
