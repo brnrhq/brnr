@@ -857,8 +857,11 @@ log and in each session's events file that lost some. Records a full disk
 didn't take are noted likewise, with the `error`, in the file that lost them
 (a raw file's in its events file) once it takes records again. How a process
 ended (`exited`, or a panic) is never skipped, so `brnr doctor` can tell an
-exit from a death. `brnr event log` always shows a gap, whatever `--events`
-chose.
+exit from a death. A process that exits waits for its records to be written,
+however long the disk takes, once it is no longer listed and has let go of
+its sessions; a signal (Ctrl-C, `kill`) gives up on them, and it says on
+stderr how much it didn't write. `brnr event log` always shows a gap,
+whatever `--events` chose.
 
 The values of MCP servers' `env` and `headers` are recorded as
 `"<redacted>"`, in the raw ACP, the host log and `acp` events alike; the agent

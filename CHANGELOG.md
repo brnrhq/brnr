@@ -47,6 +47,10 @@ brnr's own conventions:
   opens the session it forks. `adapters/check.py --brnr` checks a fork
   prompted and closed in one process, and its parent prompted after (ADR 16,
   ADR 39, #227).
+- A process whose disk stalls as it exits can be ended with a signal
+  (Ctrl-C, `kill`), and says on stderr how much of its records it didn't
+  write; until then it waits for the disk, as before. A panic lets go of
+  the process's sessions before it waits, as an exit does (ADR 48, #165).
 - A headless process no longer dies when `response_timeout` answers a
   permission request nested deeper than its main thread's stack takes (a
   million deep): the event loop's timers run on a stack that takes what the

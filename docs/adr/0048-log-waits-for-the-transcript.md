@@ -9,6 +9,11 @@ waits for its records, and a resume is told it is closing there.
 Amended 2026-10-14 (#193): a session whose open failed after the process
 recorded something of it (a load's replay) is let go of, and the open
 answered, the same way.
+Amended 2026-10-16 (#165): a process that exits then waits for the rest
+of its records without a time limit, as it does for the display's reader;
+a signal gives up on them, and the process says on stderr how much it
+didn't write. A panic lets go of the process's sessions as an exit does,
+before it waits.
 
 Amended by 69: `logged` says `lost` when a file has lost records it
 hasn't noted yet.
@@ -55,7 +60,13 @@ process was gone, in a Linux container under load.
   of its sessions, until its logger has written what it recorded, `exited`
   last, for 2 s at most: once it is gone, `log`, `list --all` and
   `--resume` read its sessions' transcripts whole, and a resume doesn't
-  start appending to one before its `exited`.
+  start appending to one before its `exited`. A panic does the same.
+  Then, unlisted and holding no session, it waits for the rest without a
+  time limit, as for the display's reader in the foreground (ADR 9), and
+  exits once it is written. A signal to it (Ctrl-C, `kill`) gives up on
+  it: the process says on its stderr how much it didn't write (`brnr:
+  process 4466: 1234 bytes of records not written: the disk didn't take
+  them`), and exits as it would have.
 - A process that closes a session (`session close`, `session resume
   --take-over`, its idle time running out, the editor) holds its lock, and
   answers the close, until its logger has written what it recorded of the
@@ -88,6 +99,11 @@ process was gone, in a Linux container under load.
   5 s when the disk is stalled.
 - Tests that read a transcript, or kill a process whose transcript they
   need, wait for it the same way, by running `brnr log`.
+- A headless process whose disk stalls stays after it stopped being
+  listed, holding no session and no agent, only its queue (64 MiB at most,
+  ADR 6), until the disk takes it or a signal ends it (`kill`). Ended so,
+  its host log can lack `exited`, and `brnr doctor` lists it as a death
+  nothing recorded (ADR 11): the disk has no record of the exit.
 
 ## Considered
 
@@ -98,6 +114,11 @@ process was gone, in a Linux container under load.
   (P1, ADR 6).
 - Waiting in the tests only (for a record to appear in the file): every
   user's script that runs `log` after `--wait` would have the same race.
+- A time limit on exit (10 s, 30 s): a headless process would drop records
+  with nobody told, its stderr unwatched and its host log, the record, on
+  the stalled disk (P3), to free a process that by then holds nothing. A
+  limit the user can't see is a guess (P4); the user's signal is the
+  explicit choice.
 
 ## Tests
 
@@ -105,6 +126,9 @@ Run `cargo test --release adr_0048_`. Named claims and their assertions:
 
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0048_an_exit_is_written_before_the_process_goes`.
+  - `adr_0048_a_signal_gives_up_on_a_stalled_disk_at_exit`.
+  - `adr_0048_a_foreground_exit_given_up_on_says_what_it_didnt_write`.
+  - `adr_0048_a_panic_lets_go_of_its_sessions_before_it_waits`.
   - `adr_0048_a_close_is_written_before_the_session_is_resumed`.
   - `adr_0048_a_take_over_is_written_before_the_session_is_resumed`.
   - `adr_0048_a_last_session_closed_is_written_before_it_is_resumed`.
