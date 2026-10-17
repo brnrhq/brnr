@@ -58,7 +58,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   `tests/security.rs` checks the claims of the threat model.
   `tests/docs.rs` runs the examples in the README, the site and the skill
   (`skills/brnr/`): an example added or changed needs its line in
-  `EXAMPLES` there (or `SKIPPED`, with why).
+  `EXAMPLES` there (or `SKIPPED`, with why). To make a flaky test fail,
+  run it under load with `tests/flake-loop.sh` (`-h`), not a loop of your
+  own: its stressors stop with it.
 - `fuzz/`: cargo-fuzz targets for the parsers that read bytes from outside
   (frame.rs, json.rs, the host through `host::fuzz::Harness`), a workspace
   of its own on nightly; seeds in `fuzz/seeds/`. CI fuzzes them with
@@ -78,7 +80,7 @@ cargo fmt --check
 cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release: some tests stream tens of thousands of events
 ruff check && ruff format --check
-shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh
+shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh tests/flake-loop.sh
 ```
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
