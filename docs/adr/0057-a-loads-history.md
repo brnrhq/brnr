@@ -119,7 +119,8 @@ conversation, and nothing said it was missing (P3).
   `history` event's `recorded: false` says that the replay was left out, so
   that what is missing is known to be missing, not silently gone.
 - Deleting a session's transcript makes its next load record the history
-  again.
+  again, except in a process that served the session before the delete:
+  that process remembers the transcript it started until it exits.
 
 ## Considered
 
