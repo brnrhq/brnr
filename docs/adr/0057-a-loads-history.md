@@ -17,6 +17,11 @@ Amended 2026-10-16 (#191): an events file holding only `session-opened`
 records, which a load that failed leaves, isn't a transcript of the
 session, so the next load records the history; and a process counts a
 session a load opened as served there only once the load succeeded.
+Amended 2026-10-17 (#247): what a process counts as a session's transcript
+before the disk has it is what it has handed the logger for the session's
+events file beyond its openings, so a failed load that replayed counts, and
+a session closed with nothing recorded doesn't, as for another process
+reading the disk.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -84,9 +89,12 @@ conversation, and nothing said it was missing (P3).
 - A session a process has served, and closed since, has its transcript in
   that process, for an editor's load and a bridge's alike, whether or not
   the logger, which writes behind (ADR 48), has written it yet: the process
-  remembers each session it has started a transcript of. One a load
-  opened, it remembers only once the load succeeded: a load that failed
-  before the agent replayed left only the opening, and the next load, in
+  remembers each session it has handed the logger a record of beyond its
+  openings, for its events file, as the disk has it once that is written.
+  A load that failed after the agent replayed so leaves a transcript, of
+  what it recorded; one that failed before the agent replayed, or a
+  session closed with all its records, its close's too, skipped by a disk
+  too slow for them (ADR 6), leaves only openings, and the next load, in
   that process too, records the history.
 - The editor's loads of a session that overlap (one sent before the agent
   has answered the one before) all reach the agent, and share one replay,
@@ -133,9 +141,13 @@ conversation, and nothing said it was missing (P3).
   that what is missing is known to be missing, not silently gone.
 - Deleting a session's transcript makes its next load record the history
   again, except in a process that served the session before the delete:
-  that process remembers the transcript it started until it exits. A load
-  that failed before the agent replayed anything leaves only its opening,
-  no transcript, so the next load records the history too.
+  that process remembers what it recorded of the session until it exits. A
+  load that failed before the agent replayed anything leaves only its
+  opening, no transcript, so the next load records the history too.
+- A record the logger was handed and the disk then failed to take (a full
+  disk) still counts in its process, which can't tell: until it exits, a
+  load there records nothing of the history, where another process's
+  would. The failed write is noted in the file (P3).
 
 ## Considered
 
@@ -178,8 +190,11 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_bridges_load_of_a_session_served_here_records_nothing_again`.
   - `adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again`.
   - `adr_0057_an_editors_load_after_a_failed_load_records_the_history`.
+  - `adr_0057_a_load_that_replays_and_fails_counts_its_replay`.
+  - `adr_0057_a_session_closed_with_nothing_recorded_is_no_transcript`.
 - [src/log.rs](../../src/log.rs)
   - `adr_0057_only_openings_are_no_transcript`.
+  - `adr_0057_a_record_beyond_the_opening_counts_at_once`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

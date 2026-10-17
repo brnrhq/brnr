@@ -2504,6 +2504,67 @@ fn adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again() {
     let _ = editor.kill();
 }
 
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent replays and then fails, while the logger is behind: what it
+/// recorded of the replay counts in the process as it will on disk, so the
+/// editor's next load there records the history no more than one in
+/// another process would (ADR 48, ADR 57, #247).
+#[test]
+fn adr_0057_a_load_that_replays_and_fails_counts_its_replay() {
+    let env = Env::new("ed-failedreplay");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let messages = logged(&env, "old-1", "user_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    assert_eq!(texts, [(&"old question".into(), &true.into())], "recorded again");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &false.into()));
+    let _ = editor.kill();
+}
+
+/// A session served and closed while the disk is too slow for its records,
+/// all of them skipped, its close's too: its events file holds only its
+/// opening, which isn't a transcript of it, and its process doesn't count
+/// one either, so a load of it there records the history, as one in
+/// another process would (ADR 6, ADR 57, #247).
+#[test]
+fn adr_0057_a_session_closed_with_nothing_recorded_is_no_transcript() {
+    let env = Env::new("unrecorded");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    // Past the logger's 64 MiB: 1000 messages of 50 kB, each an event and
+    // raw ACP. Then the queue is full.
+    env.ok(&["prompt", "send", "sess-1", "many 1000 50000"]);
+    let out = env.run(&["event", "wait", "sess-1", "--timeout", "60"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let new = env.ok(&["session", "new", "--pid", &pid]);
+    assert!(new.contains("sess-2"), "{new}");
+    env.ok(&["session", "close", "sess-2"]);
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "sess-1", "--events", "session_closed"]); // Caught up.
+    let events = records(&project(&env).0.join("sess-2.jsonl"));
+    let names: Vec<&Value> = events.iter().map(|r| &r["event"]["event"]).collect();
+    assert_eq!(names, ["session-opened"], "{events:#?}");
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2"]);
+    let history = logged(&env, "sess-2", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says

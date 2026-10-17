@@ -54,7 +54,7 @@
 //! nothing, as if the disk had stopped.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -160,11 +160,27 @@ struct Queue {
     bytes: AtomicUsize,
     /// Records skipped since the queue was last full, until it has room.
     gap: Mutex<Option<Gap>>,
+    /// The sessions open, and those recorded (see [`Sink::recorded`]): the
+    /// host's alone.
+    sessions: Mutex<Sessions>,
+}
+
+/// The sessions the host has had opened and not closed since, and those it
+/// has queued a record of beyond their openings for, into their events
+/// files, which are never trimmed.
+#[derive(Default)]
+struct Sessions {
+    open: HashSet<String>,
+    recorded: HashSet<String>,
 }
 
 impl Queue {
     fn gap(&self) -> MutexGuard<'_, Option<Gap>> {
         self.gap.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn sessions(&self) -> MutexGuard<'_, Sessions> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The gap, if there is one, and when it ended: now.
@@ -256,7 +272,8 @@ impl Sink {
     /// Starts `session`'s files (appending if they exist) under `cwd`'s
     /// project folder. Records for a session not opened go to the host log.
     pub(crate) fn open_session(&self, session: &str, cwd: &Path) {
-        if let Some((tx, _)) = &self.0 {
+        if let Some((tx, queue)) = &self.0 {
+            queue.sessions().open.insert(session.to_owned());
             // Never skipped: it says where the session's records go.
             let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
         }
@@ -265,11 +282,22 @@ impl Sink {
     /// Closes `session`'s files once what was recorded before is written.
     /// Records for it after go to the host log, until it is opened again.
     pub(crate) fn close_session(&self, session: &str) {
-        if let Some((tx, _)) = &self.0 {
+        if let Some((tx, queue)) = &self.0 {
+            queue.sessions().open.remove(session);
             // Never skipped: a process that serves session after session
             // would otherwise hold every file it ever opened.
             let _ = tx.send(Cmd::Close { session: session.to_owned() });
         }
+    }
+
+    /// Whether a record of `session` beyond its openings has gone to the
+    /// logger for its events file, from this process, ever: what makes the
+    /// file a transcript ([`has_records`], ADR 57), whether or not the
+    /// logger, which writes behind (ADR 48), has written it yet. A record
+    /// skipped isn't counted, as it is never written. Never, when not
+    /// logging.
+    pub(crate) fn recorded(&self, session: &str) -> bool {
+        self.0.as_ref().is_some_and(|(_, queue)| queue.sessions().recorded.contains(session))
     }
 
     /// Calls `then` once everything recorded before it is written, with the
@@ -305,12 +333,19 @@ impl Sink {
         // from a death (`brnr doctor`, ADR 11).
         let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
         let seq = event["seq"].as_u64();
-        self.record(session, false, keep, seq, |ts| Cmd::Note {
+        let queued = self.record(session, false, keep, seq, |ts| Cmd::Note {
             session: session.map(str::to_owned),
             ts,
             event: event.to_string(),
             seq,
         });
+        // Into the session's events file, if it is open (see `recorded`).
+        if let (true, Some(session), Some((_, queue))) = (queued, session, &self.0) {
+            let mut sessions = queue.sessions();
+            if sessions.open.contains(session) && !sessions.recorded.contains(session) {
+                sessions.recorded.insert(session.to_owned());
+            }
+        }
     }
 
     /// An event for `session`, which this process doesn't have open, into
@@ -325,8 +360,9 @@ impl Sink {
     }
 
     /// Queues the record `make` makes, or, with the queue full, counts it
-    /// skipped without making it, unless it is one to `keep`. Never waits for
-    /// the logger to write: it only takes the lock to take the gap.
+    /// skipped without making it, unless it is one to `keep`; whether it was
+    /// queued. Never waits for the logger to write: it only takes the lock
+    /// to take the gap.
     fn record(
         &self,
         session: Option<&str>,
@@ -334,8 +370,8 @@ impl Sink {
         keep: bool,
         seq: Option<u64>,
         make: impl FnOnce(SystemTime) -> Cmd,
-    ) {
-        let Some((tx, queue)) = &self.0 else { return };
+    ) -> bool {
+        let Some((tx, queue)) = &self.0 else { return false };
         let ts = {
             let mut gap = queue.gap();
             // Read under the lock: a gap the logger ends is before it.
@@ -344,7 +380,7 @@ impl Sink {
             if !keep && queue.bytes.load(Relaxed) > room {
                 let new = || Gap { all: Lost::none(ts), sessions: HashMap::new() };
                 gap.get_or_insert_with(new).add(session, Lost::one(ts, raw, seq));
-                return;
+                return false;
             }
             // Room again: the gap is noted where it was, before this record.
             if let Some(gap) = gap.take() {
@@ -355,6 +391,7 @@ impl Sink {
         let cmd = make(ts);
         queue.bytes.fetch_add(cmd.size(), Relaxed);
         let _ = tx.send(cmd);
+        true
     }
 }
 
@@ -1686,6 +1723,33 @@ mod tests {
             assert_eq!(parse_rfc3339(given), None, "{given}");
             assert_eq!(utc(given), None, "{given}");
         }
+    }
+
+    /// What the host has queued for a session's events file beyond its
+    /// opening, while it is open, counts it recorded, as it will on disk:
+    /// not its raw ACP, nor a record skipped, nor one for a session not
+    /// open, which goes elsewhere (ADR 57, #247).
+    #[test]
+    fn adr_0057_a_record_beyond_the_opening_counts_at_once() {
+        let (tx, _rx) = mpsc::channel();
+        let queue = Arc::new(Queue::default());
+        let sink = Sink(Some((tx, queue.clone())));
+        let event = || json!({ "event": "a" });
+        for session in ["noted", "raw", "skipped", "closed"] {
+            sink.open_session(session, Path::new("/"));
+        }
+        sink.note(Some("noted"), event());
+        sink.close_session("noted"); // Still counted: the record stays.
+        sink.msg(Some("raw"), Dir::AgentToEditor, b"{}", None);
+        sink.close_session("closed");
+        sink.note(Some("closed"), event());
+        sink.note(Some("not-open"), event());
+        sink.append("not-open", event());
+        queue.bytes.store(LOG_BYTES + 1, Relaxed);
+        sink.note(Some("skipped"), event());
+        let counted = ["noted", "raw", "skipped", "closed", "not-open"].map(|s| sink.recorded(s));
+        assert_eq!(counted, [true, false, false, false, false]);
+        assert!(!Sink(None).recorded("noted"), "counted without a logger");
     }
 
     /// An events file holding only openings, which a load that failed

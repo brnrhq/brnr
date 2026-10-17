@@ -74,7 +74,7 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::mem::take;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
@@ -145,9 +145,6 @@ pub(super) struct Replay {
     /// The session was opened for them: if none succeeds, and no resume has
     /// opened it meanwhile, it closes again.
     pub(super) opened: bool,
-    /// Their opening started the session's transcript, which counts as
-    /// brnr's (`Host::transcribed`) once one of them succeeds (ADR 57).
-    pub(super) counts: bool,
 }
 
 pub(super) struct Session {
@@ -728,8 +725,10 @@ impl Host {
     /// failed leaves, is none ([`log::has_records`]). One not open here
     /// opens now, so that the replay is the session's; one open here has its
     /// transcript already, from this process, whether or not the logger has
-    /// written it yet, unless the process logs nothing, and so has one this
-    /// process served before and has closed since; one another process
+    /// written it yet, unless the process logs nothing; one this process
+    /// served before and has closed since has one if the process recorded
+    /// anything of it beyond its openings, a failed load's replay too, as
+    /// the disk will once the logger has written it; one another process
     /// holds has that one's. A load while the session's replay runs joins
     /// that replay, as which load an update is for can't be told (P4): what
     /// either replays is taken as the replay is, recorded or not, and one
@@ -808,9 +807,6 @@ impl Host {
         if let Some(replay) = self.closed_loads.remove(session)
             && replay.loaded
         {
-            if replay.counts {
-                self.transcribed.insert(session.to_owned());
-            }
             self.emit(history(session, &replay));
         }
     }
@@ -2061,9 +2057,9 @@ impl Host {
                     json!({ "event": "session-shared", "session_id": session, "held_by": pid });
                 self.sink.note(None, event);
             }
-            Hold::Owner(_) => self.transcribe(session, &cwd),
+            Hold::Owner(_) => self.sink.open_session(session, &cwd),
             // One the headless process won't serve gets no transcript.
-            Hold::Unlocked(_) if self.editor_attached() => self.transcribe(session, &cwd),
+            Hold::Unlocked(_) if self.editor_attached() => self.sink.open_session(session, &cwd),
             Hold::Unlocked(_) => {}
         }
         self.sessions.push(Session {
@@ -2093,22 +2089,12 @@ impl Host {
         self.sessions.len() - 1
     }
 
-    /// `session`'s transcript, started, and counted as brnr's at once, but
-    /// for a load's (see `begin_replay`).
-    fn transcribe(&mut self, session: &str, cwd: &Path) {
-        self.sink.open_session(session, cwd);
-        if self.logging != Log::Off {
-            self.transcribed.insert(session.to_owned());
-        }
-    }
-
     /// Whether brnr has a transcript of `session`, in any folder, counting
-    /// one this process is writing that the disk may not have yet; an events
-    /// file holding only openings, which a load that failed leaves, is none
-    /// (ADR 57).
+    /// what this process has recorded of it that the disk may not have yet;
+    /// an events file holding only openings, which a load that failed
+    /// leaves, is none (ADR 57).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
-        self.transcribed.contains(session)
-            || log::transcripts(session).iter().any(|p| log::has_records(p))
+        self.sink.recorded(session) || log::transcripts(session).iter().any(|p| log::has_records(p))
     }
 
     /// `session`'s lock, for a session this process is to serve. One another

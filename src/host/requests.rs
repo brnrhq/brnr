@@ -359,10 +359,6 @@ impl Host {
         // A message still coming isn't the history's.
         self.flush_agent_message(i);
         let tools = self.sessions[i].state.tools.iter().map(|t| t.tool_call_id.clone()).collect();
-        // A transcript the load opened counts once the load succeeds: one
-        // that fails before the agent replays leaves only its opening, and
-        // the next load is to record the history (ADR 57).
-        let counts = record && self.transcribed.remove(&self.sessions[i].id);
         let replay = Replay {
             record,
             updates: 0,
@@ -372,7 +368,6 @@ impl Host {
             unanswered: 1,
             loaded: false,
             opened: false,
-            counts,
         };
         self.sessions[i].replay = Some(replay);
     }
@@ -395,9 +390,6 @@ impl Host {
         self.flush_agent_message(i);
         let Some(replay) = self.drop_replay(i) else { return };
         let session = self.sessions[i].id.clone();
-        if replay.counts {
-            self.transcribed.insert(session.clone());
-        }
         self.emit(history(&session, &replay));
     }
 
