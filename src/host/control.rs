@@ -1131,9 +1131,11 @@ impl Host {
             let open = HostRequest::Opening(Open::Resume(session), opening);
             self.host_request("session/resume", params, open);
         } else {
-            // The agent replays the history: recorded unless the transcript
-            // has it already (ADR 57).
-            let record = !paths::session_log(&opening.cwd, &session).exists();
+            // The agent replays the history: recorded unless brnr has a
+            // transcript of the session, in any folder, as for the editor's
+            // load; one holding only openings, left by a load that failed,
+            // isn't one (ADR 57).
+            let record = !self.has_transcript(&session);
             let i = self.open_session(&session, Some(&dir));
             self.sessions[i].opening = true;
             self.begin_replay(i, record);

@@ -2436,6 +2436,171 @@ fn adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed()
     assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
 }
 
+/// Whether `session` has an events file in any project folder.
+fn on_disk(env: &Env, session: &str) -> bool {
+    let folders = fs::read_dir(env.dir.join("home/projects")).into_iter().flatten().flatten();
+    folders.into_iter().any(|f| f.path().join(format!("{session}.jsonl")).exists())
+}
+
+/// What old-1's transcript has of the history its loads replayed: each
+/// `history` event's `recorded`, and the replayed messages' texts.
+fn old_history(env: &Env) -> (Vec<Value>, Vec<Value>) {
+    let events = records(&project(env).0.join("old-1.jsonl"));
+    let events = events.iter().map(|r| &r["event"]);
+    let history = events.clone().filter(|e| e["event"] == "history");
+    let replayed = events.filter(|e| e["replayed"] == true && e["event"] == "agent_message");
+    (
+        history.map(|e| e["recorded"].clone()).collect(),
+        replayed.map(|e| e["text"].clone()).collect(),
+    )
+}
+
+/// A bridge's load of a session this process served and closed while its
+/// logger is behind, the transcript not on disk yet: the process has it
+/// all the same, so the history the agent replays is recorded once, by the
+/// first load (ADR 48, ADR 57).
+#[test]
+fn adr_0057_a_bridges_load_of_a_session_served_here_records_nothing_again() {
+    let env = Env::new("servedload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let load = ["session", "resume", "--pid", &pid, "old-1"];
+    for args in [&load[..], &["session", "close", "old-1"], &load] {
+        let out = unstalled(&env, args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let (history, replayed) = old_history(&env);
+    assert_eq!(history, [true, false], "recorded again: {replayed:?}");
+    assert_eq!(replayed, ["replayed history"]);
+}
+
+/// The same for the editor's load of a session its process served and
+/// closed, while the logger is behind (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again() {
+    let env = Env::new("ed-servedload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 2, "old-1");
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 4, "old-1");
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let (history, replayed) = old_history(&env);
+    assert_eq!(history, [true, false], "recorded again: {replayed:?}");
+    assert_eq!(replayed, ["replayed history"]);
+    let _ = editor.kill();
+}
+
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent replays and then fails, while the logger is behind: what it
+/// recorded of the replay counts in the process as it will on disk, so the
+/// editor's next load there records the history no more than one in
+/// another process would (ADR 48, ADR 57, #247).
+#[test]
+fn adr_0057_a_load_that_replays_and_fails_counts_its_replay() {
+    let env = Env::new("ed-failedreplay");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let messages = logged(&env, "old-1", "user_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    assert_eq!(texts, [(&"old question".into(), &true.into())], "recorded again");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &false.into()));
+    let _ = editor.kill();
+}
+
+/// The messages old-1's transcript has, each as its text and whether it
+/// was replayed.
+fn old_messages(env: &Env) -> Vec<Value> {
+    let messages = logged(env, "old-1", "user_message,agent_message");
+    messages.iter().map(|m| json!([m["text"], m["replayed"]])).collect()
+}
+
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent replays and then fails: its last agent message, held still as the
+/// load fails, is recorded, replayed, as the rest of the replay is (P3,
+/// ADR 57, #255).
+#[test]
+fn adr_0057_an_editors_failed_load_records_its_last_replayed_message() {
+    let env = Env::new("ed-failedlast").agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let said = [json!(["old question", true]), json!(["replayed history", true])];
+    wait_for(Duration::from_secs(5), || on_disk(&env, "old-1") && old_messages(&env) == said);
+    assert_eq!(old_messages(&env), said);
+    let _ = editor.kill();
+}
+
+/// The same for a bridge's load, answered once the replay is written
+/// (P3, ADR 48, ADR 57, #255).
+#[test]
+fn adr_0057_a_bridges_failed_load_records_its_last_replayed_message() {
+    let env = Env::new("failedlast").agent("NO_RESUME", "1").agent("LOAD_FAIL", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    let said = [json!(["old question", true]), json!(["replayed history", true])];
+    assert_eq!(old_messages(&env), said);
+}
+
+/// A session served and closed while the disk is too slow for its records,
+/// all of them skipped, its close's too: its events file holds only its
+/// opening, which isn't a transcript of it, and its process doesn't count
+/// one either, so a load of it there records the history, as one in
+/// another process would (ADR 6, ADR 57, #247).
+#[test]
+fn adr_0057_a_session_closed_with_nothing_recorded_is_no_transcript() {
+    let env = Env::new("unrecorded");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    // Past the logger's 64 MiB: 1000 messages of 50 kB, each an event and
+    // raw ACP. Then the queue is full.
+    env.ok(&["prompt", "send", "sess-1", "many 1000 50000"]);
+    let out = env.run(&["event", "wait", "sess-1", "--timeout", "60"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let new = env.ok(&["session", "new", "--pid", &pid]);
+    assert!(new.contains("sess-2"), "{new}");
+    env.ok(&["session", "close", "sess-2"]);
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "sess-1", "--events", "session_closed"]); // Caught up.
+    let events = records(&project(&env).0.join("sess-2.jsonl"));
+    let names: Vec<&Value> = events.iter().map(|r| &r["event"]["event"]).collect();
+    assert_eq!(names, ["session-opened"], "{events:#?}");
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2"]);
+    let history = logged(&env, "sess-2", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says
@@ -3747,6 +3912,38 @@ fn adr_0057_a_loads_history_is_counted_across_its_sessions_close() {
     let text = env.ok(&["event", "log", "old-1"]);
     assert!(text.contains("history: 4 updates replayed by the agent, 3 recorded"), "{text}");
     assert!(!text.contains("late history"), "recorded after the close:\n{text}");
+    let _ = editor.kill();
+}
+
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent refuses, replaying nothing: the session closes again, its events
+/// file holding only its opening, which isn't a transcript of it. The
+/// editor's next load records the history the agent replays (ADR 57, #191).
+#[test]
+fn adr_0057_an_editors_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("ed-load-refused").agent("LOAD_REFUSED", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    // The failed load's opening is written before the next load looks.
+    let projects = env.dir.join("home/projects");
+    let opened = || {
+        let folders = fs::read_dir(&projects).into_iter().flatten().flatten();
+        folders
+            .map(|f| f.path().join("old-1.jsonl"))
+            .any(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("session-opened")))
+    };
+    assert!(wait_for(Duration::from_secs(5), opened), "the failed load's opening isn't written");
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert_eq!(replay, REPLAY[..3]);
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
     let _ = editor.kill();
 }
 

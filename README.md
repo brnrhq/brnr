@@ -640,9 +640,10 @@ events, saying how many (`… 120 events not shown`); stdout closing
 session's cwd, with the agent and profile it last had, and appends to the
 same transcript. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
-it has never seen, or whose transcript is gone), so repeated loads don't
-record it twice. A `history` event says how many updates were replayed and
-whether they were recorded. An editor's `session/load` through `brnr acp` is
+it has never seen, whose transcript is gone, or whose loads all failed,
+leaving only their openings), so repeated loads don't record it twice. A
+`history` event says how many updates were replayed and whether they were
+recorded. An editor's `session/load` through `brnr acp` is
 recorded the same way, and the editor gets the replay as the agent sent it.
 Its loads of a session that overlap share one replay and one `history`
 event, with how many `loads`; a recorded replay then has the history once per

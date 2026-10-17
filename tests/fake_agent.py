@@ -37,6 +37,8 @@ with environment variables:
   LOAD_LATER=<file>  as LOAD_GATE, but reading on meanwhile
   LOAD_FAIL=1       the first session/load, once it has replayed, answers
                     with an error
+  LOAD_REFUSED=1    the first session/load answers with an error at once,
+                    replaying nothing
   LATE_HISTORY=1    with LOAD_LATER, a load replays one more agent message,
                     late history, once the file exists, before its answer
   NO_CLOSE=1        don't offer session/close
@@ -837,6 +839,10 @@ for line in sys.stdin.buffer:
         if method == "session/load" and env("LOAD_ENDS_TURN") and hanging is not None:
             end_turn(hanging, "cancelled")
             hanging = None
+        if method == "session/load" and env("LOAD_REFUSED") and not loads_failed:
+            loads_failed += 1
+            error(mid, -32603, "Can't load the session")
+            continue
         if method == "session/load" and not env("NO_HISTORY"):
             update(
                 sid,

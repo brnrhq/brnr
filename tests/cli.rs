@@ -1878,6 +1878,44 @@ fn adr_0057_a_load_without_the_transcript_records_the_history() {
     assert_eq!(history[0]["recorded"], true);
 }
 
+/// A load that failed leaves an events file holding only its openings,
+/// which isn't a transcript of the session: the next load records the
+/// history the agent replays (ADR 57, #191).
+#[test]
+fn adr_0057_a_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let out = env.brnr(&resume_args("old-1", &[])).env_remove("LOAD_REFUSED").output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    let text = env.ok(&["event", "log", "old-1"]);
+    assert!(text.contains("(replayed) agent: replayed history"), "{text}");
+}
+
+/// The same for a bridge's loads in one running process: the first fails,
+/// and the process doesn't count the transcript it opened as one, so the
+/// second records the history (ADR 57, ADR 63, #191).
+#[test]
+fn adr_0057_a_bridges_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-bridge-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    env.ok(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+}
+
 /// A load whose agent replays nothing says so: no updates, none recorded.
 #[test]
 fn adr_0057_a_load_of_an_empty_history_says_so() {
@@ -4217,6 +4255,30 @@ fn adr_0063_resume_in_a_running_process_by_loading() {
     assert_eq!(env.calls_of("session/load")[0]["params"]["sessionId"], "sess-2");
     let history = events(&env, "sess-2").into_iter().find(|e| e["event"] == "history").unwrap();
     assert_eq!(history["recorded"], false);
+}
+
+/// A bridge's load of a session in a cwd other than the one it was served
+/// in finds its transcript in that one's project folder, as `session
+/// resume` does: the replay isn't recorded again (ADR 57, ADR 63).
+#[test]
+fn adr_0057_a_bridges_load_finds_the_transcript_in_another_folder() {
+    let env = Env::new("c-pid-elsewhere").agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "new", "--pid", &pid]);
+    env.ok(&["session", "close", "sess-2"]);
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2", "--cwd", other.to_str().unwrap()]);
+    let load = &env.calls_of("session/load")[0]["params"];
+    assert_eq!(load["cwd"], other.to_str().unwrap(), "{load}");
+    let history = logged(&env, "sess-2", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], false, "recorded again: {history:?}");
+    assert!(replayed(&env, "sess-2").is_empty(), "{:?}", replayed(&env, "sess-2"));
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let found = folders.filter(|f| f.path().join("sess-2.jsonl").is_file()).count();
+    assert_eq!(found, 2, "not a transcript in each folder");
 }
 
 /// With `--pid`, the flags that start a process, and `-- <agent>`, are an

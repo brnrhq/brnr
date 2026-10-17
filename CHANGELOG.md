@@ -36,6 +36,24 @@ brnr's own conventions:
   opens the session it forks. `adapters/check.py --brnr` checks a fork
   prompted and closed in one process, and its parent prompted after (ADR 16,
   ADR 39, #227).
+- A bridge's load of a session (`session resume --pid`, an agent without
+  `session/resume`) finds its transcript in any folder, and one the process
+  served and closed moments before, its logger behind, where it recorded
+  the agent's replay on top of the history again; so does the editor's
+  load of one its process served and closed (ADR 57, #190).
+- A load after one that failed records the history the agent replays: the
+  events file a failed load leaves, holding only its openings, no longer
+  counts as brnr's transcript of the session, for `session resume`, a
+  bridge's resume or an editor's `session/load` (ADR 57, #191).
+- A process counts a session as having a transcript once it has recorded
+  something of it beyond its opening, as the disk does: a load there after
+  one that replayed and then failed, its logger behind, no longer records
+  the history again, and one after a session closed with all its records
+  skipped by a slow disk records it, as another process's would (ADR 57,
+  #247).
+- A load that replays and then fails, the editor's or a bridge's, records
+  the last agent message the agent replayed, marked replayed, as the rest
+  of the replay; it was dropped (ADR 57, #255).
 
 ## [0.9.0] - 2026-10-16
 

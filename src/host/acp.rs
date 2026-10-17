@@ -720,14 +720,19 @@ impl Host {
 
     /// The editor's `session/load` of `session`, whose history the agent
     /// replays before it answers: recorded only if brnr has no transcript of
-    /// the session, in any folder, as a headless start's is (ADR 57). One not
-    /// open here opens now, so that the replay is the session's; one open
-    /// here has its transcript already, from this process, whether or not
-    /// the logger has written it yet, unless the process logs nothing; one
-    /// another process holds has that one's. A load while the session's
-    /// replay runs joins that replay, as which load an update is for can't
-    /// be told (P4): what either replays is taken as the replay is, recorded
-    /// or not, and one `history` event covers them all.
+    /// the session, in any folder, as a headless start's and a bridge's are
+    /// (ADR 57): an events file holding only openings, which a load that
+    /// failed leaves, is none ([`log::has_records`]). One not open here
+    /// opens now, so that the replay is the session's; one open here has its
+    /// transcript already, from this process, whether or not the logger has
+    /// written it yet, unless the process logs nothing; one this process
+    /// served before and has closed since has one if the process recorded
+    /// anything of it beyond its openings, a failed load's replay too, as
+    /// the disk will once the logger has written it; one another process
+    /// holds has that one's. A load while the session's replay runs joins
+    /// that replay, as which load an update is for can't be told (P4): what
+    /// either replays is taken as the replay is, recorded or not, and one
+    /// `history` event covers them all.
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
         // One closed while a load of it is unanswered opens with its replay.
         let open = match self.find(session) {
@@ -743,7 +748,7 @@ impl Host {
         }
         let record = match open.map(|i| &self.sessions[i].hold) {
             Some(Hold::Owner(_) | Hold::Unlocked(_)) => self.logging == Log::Off,
-            Some(Hold::Shared(_)) | None => log::transcripts(session).is_empty(),
+            Some(Hold::Shared(_)) | None => !self.has_transcript(session),
         };
         let i = self.open_session(session, cwd);
         self.begin_replay(i, record);
@@ -780,9 +785,13 @@ impl Host {
         if replay.unanswered > 0 {
             return;
         }
-        if replay.loaded {
+        let (loaded, opened) = (replay.loaded, replay.opened);
+        // The last replayed message, while it is still marked as replayed,
+        // whether the load succeeded or not (P3).
+        self.flush_agent_message(i);
+        if loaded {
             self.end_replay(i);
-        } else if replay.opened {
+        } else if opened {
             // Its lock goes with it, and its files are closed.
             self.sink.close_session(&self.sessions.remove(i).id);
         } else {
@@ -2082,6 +2091,14 @@ impl Host {
             opening: false,
         });
         self.sessions.len() - 1
+    }
+
+    /// Whether brnr has a transcript of `session`, in any folder, counting
+    /// what this process has recorded of it that the disk may not have yet;
+    /// an events file holding only openings, which a load that failed
+    /// leaves, is none (ADR 57).
+    pub(super) fn has_transcript(&self, session: &str) -> bool {
+        self.sink.recorded(session) || log::transcripts(session).iter().any(|p| log::has_records(p))
     }
 
     /// `session`'s lock, for a session this process is to serve. One another
