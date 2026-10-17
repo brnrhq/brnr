@@ -17,6 +17,13 @@ process, the process says it if it opened the session as a fork, else its
 transcript's first record does (a fork resumed since); for one that has
 ended, its transcript's first record.
 
+Amended 2026-10-17 (#238): a fork an editor makes through `brnr acp`
+(`session/fork`) opens in its process as `brnr session fork`'s does: as the
+agent answers, in the cwd the request names, with `forked_from`, the request
+in its source's transcript and the fork's. Before, the process took it for a
+session it had not heard of until its first prompt, opened it then in the
+process's own cwd, and didn't know it was a fork.
+
 ## Decision
 
 - `brnr fork <session>` forks the session (`session/fork`) into a new one in
@@ -56,3 +63,8 @@ Run `cargo test --release adr_0016_`. Named claims and their assertions:
     process has ended, and with the fork resumed in another process, its
     transcript still says it, its first record a `session-opened` with
     `forked_from`.
+- [tests/headless.rs](../../tests/headless.rs)
+  - `adr_0016_an_editors_fork_keeps_its_source`: an editor's `session/fork`
+    through `brnr acp` is listed at once, in its own cwd, with
+    `forked_from` in `session list` and `session status`; its transcript
+    starts with a `session-opened` with `forked_from` and has the request.

@@ -347,8 +347,9 @@ impl Session {
 /// A request whose response the host acts on: one that creates or ends a
 /// session, the editor's `initialize`, or the editor's own steer.
 pub(super) enum Pending {
-    /// `session/new`, or the host's `session/fork` of `forked_from`. Its
-    /// request is logged once the response says which session it belongs to.
+    /// `session/new`, or a `session/fork` of `forked_from`, the editor's or
+    /// the host's. Its request is logged in the session's file once the
+    /// response says which session it opened.
     New {
         cwd: Option<String>,
         request: Option<Vec<u8>>,
@@ -568,8 +569,10 @@ impl Host {
                     let by = Requester::Editor { raw, key: id_key(&id) };
                     let request = ClientRequest { by, session: session.clone() };
                     self.client_requests.insert(key.clone(), request);
-                    if method == "session/new" {
-                        deferred = Some(key);
+                    match method.as_str() {
+                        "session/new" => (session, deferred) = (None, Some(key)),
+                        "session/fork" => deferred = Some(key),
+                        _ => {}
                     }
                 }
                 (Some(method), None) if method == "$/cancel_request" => {
@@ -602,11 +605,12 @@ impl Host {
         }
         line.push(b'\n');
         // A session/new goes in the host log now, so one the agent never
-        // answers is still on record, and in the session's file once the
-        // response names it. What is recorded keeps the MCP servers' secrets
-        // out (ADR 25 in docs/adr); the agent gets the line as it came, but
-        // for a request's id (ADR 61) and the named changes.
-        let session = if deferred.is_some() { None } else { session };
+        // answers is still on record, and a session/fork in its source's
+        // file, as `brnr session fork`'s does; either goes in the session's
+        // file too once the response names it. What is recorded keeps the
+        // MCP servers' secrets out (ADR 25 in docs/adr); the agent gets the
+        // line as it came, but for a request's id (ADR 61) and the named
+        // changes.
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
         if let Some(Pending::New { request, .. }) =
@@ -672,9 +676,11 @@ impl Host {
             ("initialize", _) => {
                 self.pending.insert(key.to_owned(), Pending::Initialize);
             }
-            ("session/new", _) => {
+            ("session/new" | "session/fork", _) => {
+                // A fork's source is the session it names (ADR 16).
+                let forked_from = session.clone().filter(|_| method == "session/fork");
                 let pending =
-                    Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from: None };
+                    Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from };
                 self.pending.insert(key.to_owned(), pending);
             }
             ("session/load" | "session/resume", Some(session)) => {
