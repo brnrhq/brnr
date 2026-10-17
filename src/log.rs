@@ -49,9 +49,11 @@
 //! gap, a session's only its own. A write that fails (a full disk) is
 //! counted the same way, and noted, with the `error`, in the file that
 //! lost it once that file takes a record again (the raw file's, in its
-//! events file). What is queued is never dropped. For the tests,
-//! `BRNR_TEST_LOG_STALL` names a file: while it exists, the logger writes
-//! nothing, as if the disk had stopped.
+//! events file). What is queued is never dropped: the host, exiting, waits
+//! for it all to be written however long the disk takes, unless a signal
+//! gives up on it, and then says on stderr how much wasn't (ADR 48). For
+//! the tests, `BRNR_TEST_LOG_STALL` names a file: while it exists, the
+//! logger writes nothing, as if the disk had stopped.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -398,12 +400,22 @@ impl Logger {
         self.host_log.as_deref()
     }
 
-    /// Writes everything recorded so far.
-    pub(crate) fn finish(self) {
-        if let (Some((tx, _)), Some(thread)) = (&self.sink.0, self.thread) {
+    /// Asks the logger to write everything recorded so far, then stop; the
+    /// host waits for it (`finished`), however long the disk takes.
+    pub(crate) fn finish(&self) {
+        if let Some((tx, _)) = &self.sink.0 {
             let _ = tx.send(Cmd::Finish);
-            let _ = thread.join();
         }
+    }
+
+    /// Whether the logger has stopped: once asked to, it has written it all.
+    pub(crate) fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    /// Bytes of the records queued that the logger hasn't written yet.
+    pub(crate) fn unwritten(&self) -> usize {
+        self.sink.0.as_ref().map_or(0, |(_, queue)| queue.bytes.load(Relaxed))
     }
 }
 

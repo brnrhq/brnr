@@ -488,6 +488,8 @@ struct Host {
     stop_requested: bool,
     /// The next escalation of a stop.
     stopping: Option<(Instant, StopStage)>,
+    /// Exiting, a signal gave up on a wait (`wait_out`), and on those after.
+    given_up: bool,
 }
 
 impl Host {
@@ -686,6 +688,7 @@ impl Host {
             drain_until: None,
             stop_requested: false,
             stopping: None,
+            given_up: false,
         }
     }
 
@@ -823,7 +826,7 @@ impl Host {
         let _ = fs::remove_file(&self.meta_path);
         self.sink.note(None, json!({ "event": "exited", "status": null, "reason": error }));
         self.release_stderr();
-        std::mem::replace(&mut self.log, Logger::disabled()).finish();
+        self.end_log();
         (error, code)
     }
 
@@ -981,14 +984,7 @@ impl Host {
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         self.wait_logged();
-        // Let go of the sessions as brnr stops listing the process (ADR 3).
-        self.let_go_of_closed();
-        self.claimed.clear();
-        for s in &mut self.sessions {
-            if let Hold::Owner(lock) = &mut s.hold {
-                lock.take();
-            }
-        }
+        self.let_go_of_sessions();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
@@ -1003,7 +999,7 @@ impl Host {
             self.wait_out(|| writer.is_finished());
         }
         self.release_stderr();
-        self.log.finish();
+        self.end_log();
         let code = match self.status {
             Some(s) if libc::WIFEXITED(s) => libc::WEXITSTATUS(s) as u8,
             Some(s) => 128 + libc::WTERMSIG(s) as u8,
@@ -1042,8 +1038,10 @@ impl Host {
     /// The rest of a death, once the agent is killed and whoever waits for
     /// the start told: `exited`, with the reason, in the host log, every
     /// session's file and to the peers still reached; the `.sock` and
-    /// `.json` files removed; bridges given the time to act on `exited`
-    /// they get on any exit; the display, stderr and the log let go of.
+    /// `.json` files removed, and the sessions let go of first, as on any
+    /// exit; bridges given the time to act on `exited` they get on any exit;
+    /// the display, stderr and the log let go of. A stalled disk holds the
+    /// process, not its sessions.
     fn wind_up(&mut self, reason: &str) {
         // Held messages that never became a prompt, as on a normal exit
         // (ADR 20); a second panic here mustn't cost the `exited` below.
@@ -1058,26 +1056,57 @@ impl Host {
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         self.wait_logged();
-        self.let_go_of_closed();
+        self.let_go_of_sessions();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
         self.close_display();
         self.release_stderr();
-        std::mem::replace(&mut self.log, Logger::disabled()).finish();
+        self.end_log();
     }
 
     /// Exiting, before brnr stops listing the process and its sessions are
     /// let go of: waits up to LOG_FLUSH for its transcript to have what was
     /// recorded, `exited` last, so that `event log`, `session list` and
     /// `session resume` of a session that isn't running read it whole (ADR
-    /// 48). A stalled disk holds the sessions no longer.
+    /// 48). A stalled disk holds the sessions no longer; the process waits on
+    /// for the rest (`end_log`).
     fn wait_logged(&self) {
         let (tx, rx) = mpsc::channel();
         self.sink.when_written(move |_| {
             let _ = tx.send(());
         });
         let _ = rx.recv_timeout(LOG_FLUSH);
+    }
+
+    /// Exiting, once `wait_logged` is through: the sessions are let go of as
+    /// brnr stops listing the process (ADR 3), those closing here too.
+    fn let_go_of_sessions(&mut self) {
+        self.let_go_of_closed();
+        self.claimed.clear();
+        for s in &mut self.sessions {
+            if let Hold::Owner(lock) = &mut s.hold {
+                lock.take();
+            }
+        }
+    }
+
+    /// Exiting, last: waits for the logger to have written everything
+    /// recorded, however long the disk takes, as for the display's reader
+    /// (ADR 48). A signal gives up on it, and stderr, the display closed,
+    /// says how much wasn't written; the logger is left to the exit.
+    fn end_log(&mut self) {
+        let log = std::mem::replace(&mut self.log, Logger::disabled());
+        log.finish();
+        let unwritten = if self.wait_out(|| log.finished()) { 0 } else { log.unwritten() };
+        if unwritten > 0 {
+            let id = std::process::id();
+            let _ = writeln!(
+                io::stderr(),
+                "brnr: process {id}: {unwritten} bytes of records not written: \
+                 the disk didn't take them"
+            );
+        }
     }
 
     /// Exiting: the last events (`exited`) reach the peers, within
@@ -1116,16 +1145,21 @@ impl Host {
 
     /// Exiting, waits until `done`: until a reader has taken what is queued
     /// for it, however long that takes, as a pipe's writer would. A signal
-    /// to the process (Ctrl-C, `kill`) gives up on it.
-    fn wait_out(&self, done: impl Fn() -> bool) {
+    /// to the process (Ctrl-C, `kill`) gives up on it, and on the waits
+    /// after it. Whether it was done.
+    fn wait_out(&mut self, done: impl Fn() -> bool) -> bool {
         let tick = Duration::from_millis(10);
         while !done() {
+            if self.given_up {
+                return false;
+            }
             match self.rx.recv_timeout(tick) {
-                Ok(Ev::Signal(_)) => return,
+                Ok(Ev::Signal(_)) => self.given_up = true,
                 Err(RecvTimeoutError::Disconnected) => thread::sleep(tick),
                 Ok(_) | Err(RecvTimeoutError::Timeout) => {}
             }
         }
+        true
     }
 
     /// What the process wrote on stderr is in the host log before it closes.

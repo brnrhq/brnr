@@ -2082,20 +2082,107 @@ fn adr_0055_a_transcript_cut_short_is_still_its_sessions() {
 /// A process that exits is listed, and holds its sessions, until its
 /// transcript has `exited`, so that what reads it once the process has gone
 /// (`event log`, `session list`, `session resume`) reads it whole (ADR 48). A
-/// stalled disk holds it up for 2 s at most.
+/// stalled disk holds that up for 2 s at most; the process itself waits on,
+/// without a time limit, and exits once the disk has taken the rest.
 #[test]
 fn adr_0048_an_exit_is_written_before_the_process_goes() {
     let env = Env::new("exitlog");
     let stall = env.dir.join("stall");
     let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
     env.start(&["--wait", "--prompt", "reply hi"]);
+    let pid = env.host_pid();
     env.ok(&["event", "log", "sess-1"]);
     fs::write(&stall, "").unwrap();
     env.stop();
     sleep(Duration::from_millis(500));
     assert_eq!(env.hosts().len(), 1, "gone before its transcript was written");
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    sleep(Duration::from_secs(1));
+    assert!(alive(pid), "exited before its records were written");
     fs::remove_file(&stall).unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(pid)), "the disk took them, it stayed");
+    let exited = env.ok(&["event", "log", "sess-1", "--json", "--events", "exited"]);
+    assert!(exited.contains(r#""event":"exited""#), "{exited}");
+}
+
+/// An exit waits for a stalled disk without a time limit, and a signal to
+/// the process gives up on it (ADR 48).
+#[test]
+fn adr_0048_a_signal_gives_up_on_a_stalled_disk_at_exit() {
+    let env = Env::new("exitsig");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    env.start(&[]);
+    let pid = env.host_pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    sleep(Duration::from_secs(2));
+    assert!(alive(pid), "gave up on its records unasked");
+    kill(pid, libc::SIGTERM);
+    assert!(wait_for(Duration::from_secs(5), || !alive(pid)), "a signal didn't give up on them");
+    fs::remove_file(&stall).unwrap();
+}
+
+/// In the foreground too: the exit waits for a stalled disk, Ctrl-C gives
+/// up on it, and stderr says how much of the records the process didn't
+/// write. Its exit status is the agent's still (ADR 48).
+#[test]
+fn adr_0048_a_foreground_exit_given_up_on_says_what_it_didnt_write() {
+    let env = Env::new("fgstall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let mut fg = env
+        .brnr(&new_args(&["--foreground", "--quiet"]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let active = || env.ok(&["session", "list", "--include", "active"]).contains("sess-1");
+    assert!(wait_for(Duration::from_secs(10), active), "no session");
+    let pid = env.host_pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "the disk held it");
+    sleep(Duration::from_secs(2));
+    assert!(fg.try_wait().unwrap().is_none(), "gave up on its records unasked");
+    kill(fg.id() as i32, libc::SIGINT);
+    assert!(wait_exit(&mut fg, Duration::from_secs(5)), "Ctrl-C didn't give up on them");
+    let mut err = String::new();
+    fg.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(fg.wait().unwrap().success(), "{err}");
+    let said = format!("brnr: process {pid}: ");
+    let told = |l: &str| l.starts_with(&said) && l.contains(" bytes of records not written");
+    assert!(err.lines().any(told), "{err}");
+    fs::remove_file(&stall).unwrap();
+}
+
+/// A panic lets go of the process's sessions before it waits for its
+/// records, as an exit does: a stalled disk holds the process, not its
+/// sessions (ADR 48, ADR 11).
+#[test]
+fn adr_0048_a_panic_lets_go_of_its_sessions_before_it_waits() {
+    let env = Env::new("panicstall");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let out = env.brnr(&new_args(&[])).env("BRNR_TEST_PANIC", "1").output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let host = env.hosts().remove(0);
+    let pid = host["host_pid"].as_i64().unwrap() as i32;
+    env.ok(&["event", "log", "sess-1"]);
+    let lock = env.dir.join("home/sessions/sess-1.lock");
+    assert!(lock.exists(), "sess-1 isn't locked");
+    fs::write(&stall, "").unwrap();
+    let mut conn = UnixStream::connect(host["socket"].as_str().unwrap()).unwrap();
+    writeln!(conn, r#"{{"cmd":"panic","on":"loop"}}"#).unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !lock.exists()), "it held sess-1");
+    assert!(alive(pid), "exited before its records were written");
+    let out = unstalled(&env, &resume_args("sess-1", &[])).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    fs::remove_file(&stall).unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(pid)), "the disk took them, it stayed");
 }
 
 /// What process `pid` wrote to `events` of each kind, by index in the file.
