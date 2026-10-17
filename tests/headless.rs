@@ -3893,101 +3893,153 @@ fn adr_0026_a_deep_request_is_listed() {
     }
 }
 
+/// Its stdout, read as it comes (a deep event fills a pipe), once it exits.
+fn read_out(child: &mut Child) -> std::thread::JoinHandle<String> {
+    let mut stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).unwrap();
+        out
+    })
+}
+
 /// What follows a session reads its events as the host reads the agent's
 /// line: a request nested past serde_json's 128 is announced by `prompt
-/// send --wait`, shown by `event watch` and waited on by `event wait`.
+/// send --wait`, shown by `event watch`, as text and `--json`, and waited on
+/// by `event wait`, as it comes and once it is pending; and one a million
+/// deep doesn't overflow brnr's stack. `event wait --json` indents what it
+/// prints: a request a million deep would be a terabyte of it, so it is
+/// waited on so at 200 only.
 #[test]
 fn adr_0026_a_deep_request_is_followed() {
-    let env = Env::new("deep-follow");
-    env.start(&[]);
-    let args = ["event", "watch", "sess-1", "--json", "--events", "permission_request"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(300));
-    let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "10", "odd deep 200"];
-    let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
-    let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
-    let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
-    let notice = notice.unwrap_or_default();
-    assert!(notice.contains("approval p1: Edit src/lib.rs"), "{notice}");
-    let args = ["event", "wait", "sess-1", "--for", "permission", "--json", "--timeout", "5"];
-    let waited = env.ok(&args);
-    assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
-    env.ok(&["permission", "allow", "sess-1", "p1"]);
-    assert!(send.wait().unwrap().success());
-    env.stop();
-    assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch didn't end");
-    let mut shown = String::new();
-    watch.stdout.take().unwrap().read_to_string(&mut shown).unwrap();
-    assert!(shown.contains(&"[".repeat(200)), "watch showed {shown:?}");
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-follow-{depth}"));
+        env.start(&[]);
+        let watch = |json: &[&str]| {
+            let args = [&["event", "watch", "sess-1", "--events", "permission_request"], json];
+            let mut watch = env.brnr(&args.concat()).stdout(Stdio::piped()).spawn().unwrap();
+            let out = read_out(&mut watch);
+            (watch, out)
+        };
+        let (mut watch_json, shown_json) = watch(&["--json"]);
+        let (mut watch_text, shown_text) = watch(&[]);
+        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
+        let mut wait = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+        let waited = read_out(&mut wait);
+        sleep(Duration::from_millis(300));
+        let prompt = format!("odd deep {depth}");
+        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "10", &prompt];
+        let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
+        let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
+        let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
+        let notice = notice.unwrap_or_default();
+        assert!(notice.contains("approval p1: Edit src/lib.rs"), "{depth}: {notice}");
+        assert!(wait.wait().unwrap().success(), "{depth}: event wait failed");
+        let waited = waited.join().unwrap();
+        assert_eq!(waited.trim(), "approval p1: Edit src/lib.rs", "{depth}");
+        // Pending by now: from the process's answer, not an event.
+        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "5"];
+        assert_eq!(env.ok(&args).trim(), "approval p1: Edit src/lib.rs", "{depth}");
+        if depth == 200 {
+            let waited = env.ok(&[&args[..], &["--json"]].concat());
+            assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
+        }
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+        assert!(send.wait().unwrap().success(), "{depth}: prompt send failed");
+        env.stop();
+        for watch in [&mut watch_json, &mut watch_text] {
+            assert!(wait_exit(watch, Duration::from_secs(15)), "{depth}: watch didn't end");
+            assert!(watch.wait().unwrap().success(), "{depth}: watch failed");
+        }
+        let shown = shown_json.join().unwrap();
+        assert!(shown.contains(&"[".repeat(depth)), "{depth}: watch showed {} bytes", shown.len());
+        let shown = shown_text.join().unwrap();
+        assert!(
+            shown.contains("permission p1: Edit src/lib.rs"),
+            "{depth}: watch showed {shown:?}"
+        );
+    }
 }
 
 /// So does `event notify`: its command runs for a request nested past 128,
-/// with the event whole on its stdin, from the socket and from `--stdin`.
+/// with the event whole on its stdin, from the socket and from `--stdin`,
+/// and for one a million deep too.
 #[test]
 fn adr_0026_a_deep_request_is_notified() {
-    let env = Env::new("deep-notify");
-    env.start(&[]);
-    let deep = "[".repeat(200);
-    let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
-    let out = env.dir.join("notified");
-    let script = format!("cat >> '{}'", out.display());
-    let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
-    let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
-    sleep(Duration::from_millis(300));
-    env.ok(&["prompt", "send", "sess-1", "odd deep 200"]);
-    assert!(wait_for(Duration::from_secs(5), || notified(&out)), "not run");
-    env.ok(&["permission", "allow", "sess-1", "p1"]);
-    env.stop();
-    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't end");
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-notify-{depth}"));
+        env.start(&[]);
+        let deep = "[".repeat(depth);
+        let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
+        let out = env.dir.join("notified");
+        let script = format!("cat >> '{}'", out.display());
+        let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
+        let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
+        sleep(Duration::from_millis(300));
+        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        assert!(wait_for(Duration::from_secs(10), || notified(&out)), "{depth}: not run");
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+        env.stop();
+        assert!(wait_exit(&mut notify, Duration::from_secs(15)), "{depth}: notify didn't end");
+        assert!(notify.wait().unwrap().success(), "{depth}: notify failed");
 
-    let out = env.dir.join("notified-stdin");
-    let script = format!("cat >> '{}'", out.display());
-    let request = format!(
-        r#"{{"event":"permission_request","request":"p1","tool_call":{deep}{}}}"#,
-        "]".repeat(200)
-    );
-    let input = format!("{request}\n{}\n", r#"{"event":"exited","status":{"code":0}}"#);
-    let args = ["event", "notify", "--stdin", "--events", "permission_request", "--"];
-    let ran = env.run_with_stdin(&[&args[..], &["sh", "-c", &script]].concat(), input.as_bytes());
-    assert!(ran.status.success(), "{}", stderr(&ran));
-    assert!(wait_for(Duration::from_secs(5), || notified(&out)), "--stdin: not run");
+        let out = env.dir.join("notified-stdin");
+        let script = format!("cat >> '{}'", out.display());
+        let request = format!(
+            r#"{{"event":"permission_request","request":"p1","tool_call":{deep}{}}}"#,
+            "]".repeat(depth)
+        );
+        // A line that isn't an event, as deep, is passed over.
+        let other = format!(r#"{{"note":{deep}{}}}"#, "]".repeat(depth));
+        let exited = r#"{"event":"exited","status":{"code":0}}"#;
+        let input = format!("{other}\n{request}\n{exited}\n");
+        let args = ["event", "notify", "--stdin", "--events", "permission_request", "--"];
+        let args = [&args[..], &["sh", "-c", &script]].concat();
+        let ran = env.run_with_stdin(&args, input.as_bytes());
+        assert!(ran.status.success(), "{depth}: {}", stderr(&ran));
+        assert!(wait_for(Duration::from_secs(10), || notified(&out)), "{depth}: --stdin: not run");
+    }
 }
 
 /// And so does catching up (ADR 69): a watcher cut off before a request
-/// nested past 128 gets it from the transcript.
+/// nested past 128, or a million deep, gets it from the transcript.
 #[test]
 fn adr_0026_a_deep_event_is_caught_up() {
-    let env = Env::new("deep-catchup");
-    env.start(&[]);
-    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let stdout = BufReader::new(watch.stdout.take().unwrap());
-    let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
-    sleep(Duration::from_millis(300));
-    kill(watch.id() as i32, libc::SIGSTOP);
-    for _ in 0..2 {
-        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-catchup-{depth}"));
+        env.start(&[]);
+        let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+        let mut watch =
+            env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let stdout = BufReader::new(watch.stdout.take().unwrap());
+        let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
+        sleep(Duration::from_millis(300));
+        kill(watch.id() as i32, libc::SIGSTOP);
+        for _ in 0..2 {
+            env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+        }
+        let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
+        let cut = wait_for(Duration::from_secs(10), dropped);
+        // Asked for once it is cut off: the request can only reach it from
+        // the transcript.
+        if cut {
+            env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+            env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+            env.ok(&["permission", "allow", "sess-1", "p1"]);
+        }
+        kill(watch.id() as i32, libc::SIGCONT);
+        assert!(cut, "{depth}: the watcher wasn't cut off");
+        env.stop();
+        assert!(wait_exit(&mut watch, Duration::from_secs(30)), "{depth}: watch didn't end");
+        let mut err = String::new();
+        watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+        assert!(watch.wait().unwrap().success(), "{depth}: watch failed: {err}");
+        let lines: Vec<String> = lines.join().unwrap();
+        let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
+        let request = request.expect("no permission_request");
+        let raw = format!(r#""rawInput":{}"#, "[".repeat(depth));
+        assert!(request.contains(&raw), "{depth}: {} bytes", request.len());
     }
-    let dropped = || host_logs(&env).contains(r#""event":"peer-dropped""#);
-    let cut = wait_for(Duration::from_secs(10), dropped);
-    // Asked for once it is cut off: the request can only reach it from the
-    // transcript.
-    if cut {
-        env.ok(&["prompt", "send", "sess-1", "odd deep 200"]);
-        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
-        env.ok(&["permission", "allow", "sess-1", "p1"]);
-    }
-    kill(watch.id() as i32, libc::SIGCONT);
-    assert!(cut, "the watcher wasn't cut off");
-    env.stop();
-    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
-    let mut err = String::new();
-    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(watch.wait().unwrap().success(), "watch failed: {err}");
-    let lines: Vec<String> = lines.join().unwrap();
-    let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
-    let request = request.expect("no permission_request");
-    assert!(request.contains(&format!(r#""rawInput":{}"#, "[".repeat(200))), "{request}");
 }
 
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
