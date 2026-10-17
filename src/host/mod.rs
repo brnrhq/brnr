@@ -881,11 +881,18 @@ impl Host {
                 }
                 self.drain_until = Some(now + DRAIN);
             }
-            self.fire_start_timer(now);
-            self.fire_stop_timer(now);
-            self.fire_permission_timers(now);
-            self.fire_idle_timers(now);
-            self.fire_letting_go(now);
+            // Timers answer and drop what the host holds, as events do: on a
+            // stack that takes it too.
+            let timers = move |host: &mut Host| {
+                host.fire_start_timer(now);
+                host.fire_stop_timer(now);
+                host.fire_permission_timers(now);
+                host.fire_idle_timers(now);
+                host.fire_letting_go(now);
+            };
+            if self.deep(0, timers).is_none() {
+                timers(self);
+            }
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
