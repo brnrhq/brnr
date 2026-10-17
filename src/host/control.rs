@@ -788,6 +788,7 @@ impl Host {
                     "state": state,
                     "last_active": log::rfc3339(s.last_active),
                     "cwd": s.cwd.to_string_lossy(),
+                    "forked_from": s.forked_from,
                     "busy": !s.prompts.is_empty(),
                     "turn_seconds": s.turn_started.map(|t| t.elapsed().as_secs()),
                     "prompts": s.prompts.len(),

@@ -34,6 +34,10 @@ brnr's own conventions:
   shows the last turn now, in text and `--json`, and a turn's text line ends
   with its counts: `turn ended: end_turn (control); tokens: 1.2k total, 1.0k
   input, 234 output` (ADR 71).
+- `session list` and `session status` say which session a fork came from
+  (`forked_from`, a FORKED FROM column in the list), also once its process
+  has ended: the fork's transcript records it in its first record,
+  `session-opened` (ADR 16, ADR 22).
 
 ### Changed
 
