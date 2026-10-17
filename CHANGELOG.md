@@ -30,7 +30,7 @@ brnr's own conventions:
   have `tokens`: the counts the agent reported in its answer to the prompt
   (ACP's unstable `usage`), `total`, `input`, `output`, `thought`,
   `cached_read` and `cached_write`, each null where it gave none, and null
-  when it gave none at all. brnr adds nothing up. `session status` shows the
+  when the answer has no `usage` object. brnr adds nothing up. `session status` shows the
   last turn now, in text and `--json`, and a turn's text line ends with its
   counts: `turn ended: end_turn (control); tokens: 1.2k total, 1.0k input,
   234 output` (ADR 71).
