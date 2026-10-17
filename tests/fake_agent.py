@@ -87,6 +87,8 @@ with environment variables:
   PERM_PAD=<n>      a permission request's tool call input has n bytes more
   PROTOCOL_VERSION=<json>  the protocolVersion initialize answers with (1);
                     the missing key with `missing`
+  PROMPT_USAGE=<json>  every session/prompt answer has this text as its
+                    result's usage, as it is (unstable ACP's token counts)
   ELICIT_AUTH=1     authenticate first asks for a URL to be opened, an
                     elicitation scoped to the authenticate request (no
                     session), and answers once that is answered: {} for an
@@ -284,7 +286,15 @@ def say(session, text, kind="agent_message_chunk"):
 
 
 def end_turn(mid, reason="end_turn"):
-    result(mid, {"stopReason": reason})
+    usage = env("PROMPT_USAGE")
+    if usage is None:
+        result(mid, {"stopReason": reason})
+        return
+    answer = {"jsonrpc": "2.0", "id": mid, "result": {"stopReason": reason}}
+    line = json.dumps(answer)[:-2] + ', "usage": ' + usage + "}}"
+    with sending:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
 
 def opened(session):

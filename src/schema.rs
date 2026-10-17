@@ -15,7 +15,7 @@
 //!   whatever else they carry or leave out;
 //! - extension methods and `_meta` (`_session/steering` and how agents
 //!   advertise it), and what isn't stable ACP (`session/fork`, the `fork`
-//!   session capability);
+//!   session capability, a prompt answer's `usage`, ADR 71);
 //! - session update kinds the schema doesn't have (an adapter's own, an
 //!   unstable or a newer one), or a known kind without what the schema
 //!   requires of it: such an update is passed on unread;

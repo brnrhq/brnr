@@ -216,7 +216,7 @@ action on a session: it stops an editor's process as it does any other.
 
 ```sh
 brnr session list                  # brnr's sessions: open ones and ended ones (--include active: open only)
-brnr session status $s             # what it's doing: turn, tools, plan, usage, last message
+brnr session status $s             # what it's doing: turn, tools, plan, usage, last turn and message
 brnr prompt send $s "also update the changelog"                # held while a turn runs
 brnr prompt send $s --steer "and the tests too"                # into the running turn
 brnr prompt send $s --interrupt "stop, wrong branch"
@@ -287,8 +287,8 @@ on a session that is idle already, or that closes while it waits, exits as
 its last turn ended. While `prompt send --wait` and `session new --wait`
 wait, approvals and elicitations are announced on stderr; `session new --wait`
 says `started …` there too, so stdout is the reply and nothing else. With `--json`, the turn is one object at its end:
-`session`, `message`, `reply`, `stop_reason`, `error`, `dropped` (and `pid`,
-for `session new` and `resume`).
+`session`, `message`, `reply`, `stop_reason`, `error`, `tokens`, `dropped`
+(and `pid`, for `session new` and `resume`).
 
 ### Approvals
 
@@ -524,7 +524,7 @@ show the same events, live or read back from the transcript:
 | `session_changed` | the title, mode, config options or commands: what changed |
 | `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
 | `elicitation_request`, `elicitation_resolved`, `elicitation_completed` | the agent asking for input: its `message`, `mode`, `scope`, a form's `schema` or a `url`; the `action` sent (`accept`, with its `content`, `decline` or `cancel`) and who sent it; the agent saying a URL's flow is done |
-| `turn_ended` | its `stop_reason` or `error`, and the `messages` it carried |
+| `turn_ended` | its `stop_reason` or `error`, the `tokens` the agent reported for it, and the `messages` it carried |
 | `message_dropped` | a message that never went, `by` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, `by` `queue`, `close` or `exit` |
 | `session_closed` | `by` `close` (`brnr session close`, `--take-over`), `idle` or `editor` |
@@ -541,6 +541,15 @@ are in every session's transcript; `peer_cut_off` is the process's too, in
 its host log. Each has its position, `seq`: one more than the last event's
 or ACP message's of its process, live and in the transcript. For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
+
+A turn's `tokens` are the counts the agent put in its answer to the prompt
+(`usage`, unstable in ACP): `{"total", "input", "output", "thought",
+"cached_read", "cached_write"}`, each the agent's number, or `null` where it
+gave none that is a count (a JSON integer that fits a `u64`; not `1e3`), and
+`tokens` itself `null` when the answer has no `usage` object. brnr adds
+nothing up and doesn't say what they cover: whether subagents or earlier model
+calls are in them is the agent's to say. `session status` has the last turn's,
+in `last_turn` (ADR 71).
 
 `--events` chooses, for `event watch`, `event log` and `event notify` alike:
 names, `all`, and `default` (`--events default,agent_thought` adds thoughts).

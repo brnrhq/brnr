@@ -686,6 +686,9 @@ fn status(args: &[String]) -> Result<(), String> {
         "held": x["held"],
         "context": x["context"],
         "usage": x["usage"],
+        // How the last turn ended, and the tokens the agent said it used
+        // (ADR 71).
+        "last_turn": x["last_turn"],
         "last_message": x["last_message"],
         "last_active": x["last_active"],
         "stop_when_idle": st["stop_when_idle"],
@@ -789,6 +792,11 @@ fn describe_status(x: &Value, arg: &str) -> String {
     }
     if let Some(usage) = render::usage(&x["usage"]) {
         out.push_str(&format!("context window: {usage}\n"));
+    }
+    let last = &x["last_turn"];
+    if last.is_object() {
+        let tokens = render::turn_tokens(&last["tokens"]);
+        out.push_str(&format!("{}{tokens}\n", render::turn(last, "last turn")));
     }
     if let Some(last) = x["last_message"].as_str() {
         let last = last.trim().replace('\n', " ");

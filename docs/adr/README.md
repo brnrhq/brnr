@@ -99,6 +99,7 @@ of to-resolve; the map at the end says where each went.
 | [68](0068-elicitations.md) | Elicitations are held and answered as approvals are | yes |
 | [69](0069-a-peer-cut-off-catches-up.md) | A peer cut off catches up from the transcript | yes |
 | [70](0070-an-editors-profile-chooses-how-a-message-is-shown.md) | An editor's profile chooses how a message sent through brnr is shown to it | yes |
+| [71](0071-a-turns-tokens-are-what-the-agent-reported.md) | A turn's tokens are what the agent reported | yes |
 
 ## Where the former entries went
 

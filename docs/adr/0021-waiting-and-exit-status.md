@@ -13,6 +13,9 @@ one on stderr too.
 Amended by 69: a wait cut off for falling behind catches up from the
 transcript; one that can't says what it missed and exits 3.
 
+Amended by 71: `--wait --json`'s object has `tokens` too, after `error`:
+the tokens the agent reported for the turn, or null.
+
 ## Decision
 
 - `brnr wait <session> [--for idle|turn|permission|exit] [--timeout <s>]`:
