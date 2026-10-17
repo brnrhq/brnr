@@ -53,7 +53,7 @@ the brnr that printed it (`brnr skill`).
 brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md   # {session, pid, message}
 brnr prompt send $s --json "now add tests for it"     # {status, session, message}: delivered, held, …
 brnr event wait $s --timeout 600 --json               # until idle; exit 0, 1 or 124
-brnr prompt send $s --wait --timeout 600 --json "what did you change?"   # {session, message, reply, stop_reason, error, dropped}
+brnr prompt send $s --wait --timeout 600 --json "what did you change?"   # {session, message, reply, stop_reason, error, tokens, dropped}
 brnr event log $s --last 1 --json                     # the latest turn's events, one per line
 brnr session status $s --json                         # state, mode, model, tools, plan, pending, held
 brnr session list --include active --json            # open sessions: session, title, state, pid

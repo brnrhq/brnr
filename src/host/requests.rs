@@ -574,6 +574,8 @@ impl Host {
             // after that (ADR 48).
             let hold = asked.as_ref().and_then(|session| match self.find(session) {
                 Some(i) => {
+                    // The last replayed message, still marked as replayed (P3).
+                    self.flush_agent_message(i);
                     self.sink.close_session(session); // A load's files.
                     Some(self.sessions.remove(i).hold)
                 }

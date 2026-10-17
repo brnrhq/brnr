@@ -886,6 +886,121 @@ fn adr_0023_a_tool_call_again_updates_the_one_running() {
     turn_ended(&env);
 }
 
+// ---- a turn's tokens (ADR 71) -----------------------------------------------
+
+/// sess-1, its first turn (`reply hi`) answered with `usage` as the agent
+/// says it in `usage`, once that turn has ended.
+fn turn_with_usage(name: &str, usage: Option<&str>) -> Env {
+    let env = Env::new(name);
+    let env = match usage {
+        Some(usage) => env.agent("PROMPT_USAGE", usage),
+        None => env,
+    };
+    env.start(&["--prompt", "reply hi"]);
+    turn_ended(&env);
+    idle(&env);
+    env
+}
+
+/// The session's `turn_ended` events, as `event log --json` has them.
+fn turns_ended(env: &Env) -> Vec<Value> {
+    events(env, "sess-1").into_iter().filter(|e| e["event"] == "turn_ended").collect()
+}
+
+/// The text of the session's `turn_ended` events, without their times.
+fn turns_ended_text(env: &Env) -> Vec<String> {
+    let log = env.ok(&["event", "log", "sess-1", "--events", "turn_ended"]);
+    log.lines().map(|l| l[10..].to_owned()).collect()
+}
+
+/// The line of `session status` that says how the last turn ended.
+fn last_turn_text(env: &Env) -> String {
+    let text = env.ok(&["session", "status", "sess-1"]);
+    let line = text.lines().find(|l| l.starts_with("last turn "));
+    line.unwrap_or_else(|| panic!("no last turn in\n{text}")).to_owned()
+}
+
+/// The tokens a `session/prompt` answer reports are in its `turn_ended`, in
+/// the status's `last_turn` and in `prompt send --wait --json`, each count
+/// as the agent gave it, in JSON and in text alike (P5).
+#[test]
+fn adr_0071_a_turns_tokens_are_what_the_agent_reported() {
+    let usage = r#"{"totalTokens": 1234, "inputTokens": 1000, "outputTokens": 234, "thoughtTokens": 50, "cachedReadTokens": 500, "cachedWriteTokens": 20, "_meta": {"note": "x"}}"#;
+    let env = turn_with_usage("c-tokens", Some(usage));
+    let tokens = json!({
+        "total": 1234, "input": 1000, "output": 234,
+        "thought": 50, "cached_read": 500, "cached_write": 20,
+    });
+    let ended = turns_ended(&env);
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0]["tokens"], tokens, "{}", ended[0]);
+    let last = &status(&env)["last_turn"];
+    assert_eq!(last, &json!({ "stop_reason": "end_turn", "error": null, "tokens": tokens }));
+
+    let said = "; tokens: 1.2k total, 1.0k input, 234 output, 50 thought, 500 cached read, \
+                20 cached write";
+    assert_eq!(turns_ended_text(&env), [format!("turn ended: end_turn (control){said}")]);
+    assert_eq!(last_turn_text(&env), format!("last turn ended: end_turn{said}"));
+
+    let out = env.ok(&["prompt", "send", "sess-1", "--wait", "--json", "reply again"]);
+    let turn: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((&turn["reply"], &turn["tokens"]), (&json!("again"), &tokens), "{turn}");
+}
+
+/// A count the agent left out, or gave as something other than a count (a
+/// whole number, not negative), is null, and left out of the text; a
+/// `usage` that isn't an object gives no counts at all. None is worked out
+/// from the others.
+#[test]
+fn adr_0071_a_count_the_agent_didnt_give_is_null() {
+    // Only the counts the schema requires.
+    let required = r#"{"totalTokens": 1234, "inputTokens": 1000, "outputTokens": 234}"#;
+    let env = turn_with_usage("c-tokens-req", Some(required));
+    let tokens = json!({
+        "total": 1234, "input": 1000, "output": 234,
+        "thought": null, "cached_read": null, "cached_write": null,
+    });
+    assert_eq!(turns_ended(&env)[0]["tokens"], tokens);
+    assert_eq!(status(&env)["last_turn"]["tokens"], tokens);
+    let said = "; tokens: 1.2k total, 1.0k input, 234 output";
+    assert_eq!(turns_ended_text(&env), [format!("turn ended: end_turn (control){said}")]);
+    assert_eq!(last_turn_text(&env), format!("last turn ended: end_turn{said}"));
+
+    // Of the wrong type, and no total even where the parts are known.
+    let odd = r#"{"totalTokens": "1234", "inputTokens": -1, "outputTokens": 2.5, "thoughtTokens": null, "cachedReadTokens": 1e3, "cachedWriteTokens": 7}"#;
+    let env = turn_with_usage("c-tokens-odd", Some(odd));
+    let tokens = json!({
+        "total": null, "input": null, "output": null,
+        "thought": null, "cached_read": null, "cached_write": 7,
+    });
+    assert_eq!(turns_ended(&env)[0]["tokens"], tokens);
+    assert_eq!(status(&env)["last_turn"]["tokens"], tokens);
+    assert_eq!(turns_ended_text(&env), ["turn ended: end_turn (control); tokens: 7 cached write"]);
+
+    let env = turn_with_usage("c-tokens-arr", Some("[1234, 1000, 234]"));
+    assert_eq!(turns_ended(&env)[0]["tokens"], Value::Null);
+    assert_eq!(status(&env)["last_turn"]["tokens"], Value::Null);
+    assert_eq!(turns_ended_text(&env), ["turn ended: end_turn (control)"]);
+}
+
+/// An answer without `usage` says the tokens are unknown: `tokens` is
+/// there, null, and the text says nothing of them.
+#[test]
+fn adr_0071_a_turn_without_usage_has_its_tokens_unknown() {
+    let env = turn_with_usage("c-tokens-none", None);
+    let ended = turns_ended(&env);
+    assert!(ended[0].as_object().unwrap().contains_key("tokens"), "{}", ended[0]);
+    assert_eq!(ended[0]["tokens"], Value::Null);
+    let last = &status(&env)["last_turn"];
+    assert_eq!(last, &json!({ "stop_reason": "end_turn", "error": null, "tokens": null }));
+    assert_eq!(turns_ended_text(&env), ["turn ended: end_turn (control)"]);
+    assert_eq!(last_turn_text(&env), "last turn ended: end_turn");
+    let out = env.ok(&["prompt", "send", "sess-1", "--wait", "--json", "reply again"]);
+    let turn: Value = serde_json::from_str(&out).unwrap();
+    assert!(turn.as_object().unwrap().contains_key("tokens"), "{turn}");
+    assert_eq!(turn["tokens"], Value::Null);
+}
+
 // ---- settings ------------------------------------------------------------
 
 /// The v1 modes are listed by `config get --mode` and set by `config set
@@ -1876,6 +1991,44 @@ fn adr_0057_a_load_without_the_transcript_records_the_history() {
     let history = logged(&env, "sess-1", "history");
     assert_eq!(history.len(), 1, "{history:?}");
     assert_eq!(history[0]["recorded"], true);
+}
+
+/// A load that failed leaves an events file holding only its openings,
+/// which isn't a transcript of the session: the next load records the
+/// history the agent replays (ADR 57, #191).
+#[test]
+fn adr_0057_a_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let out = env.brnr(&resume_args("old-1", &[])).env_remove("LOAD_REFUSED").output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    let text = env.ok(&["event", "log", "old-1"]);
+    assert!(text.contains("(replayed) agent: replayed history"), "{text}");
+}
+
+/// The same for a bridge's loads in one running process: the first fails,
+/// and the process doesn't count the transcript it opened as one, so the
+/// second records the history (ADR 57, ADR 63, #191).
+#[test]
+fn adr_0057_a_bridges_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-bridge-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    env.ok(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
 }
 
 /// A load whose agent replays nothing says so: no updates, none recorded.
@@ -4217,6 +4370,30 @@ fn adr_0063_resume_in_a_running_process_by_loading() {
     assert_eq!(env.calls_of("session/load")[0]["params"]["sessionId"], "sess-2");
     let history = events(&env, "sess-2").into_iter().find(|e| e["event"] == "history").unwrap();
     assert_eq!(history["recorded"], false);
+}
+
+/// A bridge's load of a session in a cwd other than the one it was served
+/// in finds its transcript in that one's project folder, as `session
+/// resume` does: the replay isn't recorded again (ADR 57, ADR 63).
+#[test]
+fn adr_0057_a_bridges_load_finds_the_transcript_in_another_folder() {
+    let env = Env::new("c-pid-elsewhere").agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "new", "--pid", &pid]);
+    env.ok(&["session", "close", "sess-2"]);
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2", "--cwd", other.to_str().unwrap()]);
+    let load = &env.calls_of("session/load")[0]["params"];
+    assert_eq!(load["cwd"], other.to_str().unwrap(), "{load}");
+    let history = logged(&env, "sess-2", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], false, "recorded again: {history:?}");
+    assert!(replayed(&env, "sess-2").is_empty(), "{:?}", replayed(&env, "sess-2"));
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let found = folders.filter(|f| f.path().join("sess-2.jsonl").is_file()).count();
+    assert_eq!(found, 2, "not a transcript in each folder");
 }
 
 /// With `--pid`, the flags that start a process, and `-- <agent>`, are an
