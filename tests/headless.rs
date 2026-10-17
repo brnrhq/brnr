@@ -2436,6 +2436,74 @@ fn adr_0048_a_start_whose_load_failed_is_written_before_the_session_is_resumed()
     assert_eq!(history[0]["event"]["recorded"], false, "recorded again: {events:#?}");
 }
 
+/// Whether `session` has an events file in any project folder.
+fn on_disk(env: &Env, session: &str) -> bool {
+    let folders = fs::read_dir(env.dir.join("home/projects")).into_iter().flatten().flatten();
+    folders.into_iter().any(|f| f.path().join(format!("{session}.jsonl")).exists())
+}
+
+/// What old-1's transcript has of the history its loads replayed: each
+/// `history` event's `recorded`, and the replayed messages' texts.
+fn old_history(env: &Env) -> (Vec<Value>, Vec<Value>) {
+    let events = records(&project(env).0.join("old-1.jsonl"));
+    let events = events.iter().map(|r| &r["event"]);
+    let history = events.clone().filter(|e| e["event"] == "history");
+    let replayed = events.filter(|e| e["replayed"] == true && e["event"] == "agent_message");
+    (
+        history.map(|e| e["recorded"].clone()).collect(),
+        replayed.map(|e| e["text"].clone()).collect(),
+    )
+}
+
+/// A bridge's load of a session this process served and closed while its
+/// logger is behind, the transcript not on disk yet: the process has it
+/// all the same, so the history the agent replays is recorded once, by the
+/// first load (ADR 48, ADR 57).
+#[test]
+fn adr_0057_a_bridges_load_of_a_session_served_here_records_nothing_again() {
+    let env = Env::new("servedload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["event", "log", "sess-1"]);
+    fs::write(&stall, "").unwrap();
+    let load = ["session", "resume", "--pid", &pid, "old-1"];
+    for args in [&load[..], &["session", "close", "old-1"], &load] {
+        let out = unstalled(&env, args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let (history, replayed) = old_history(&env);
+    assert_eq!(history, [true, false], "recorded again: {replayed:?}");
+    assert_eq!(replayed, ["replayed history"]);
+}
+
+/// The same for the editor's load of a session its process served and
+/// closed, while the logger is behind (ADR 57).
+#[test]
+fn adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again() {
+    let env = Env::new("ed-servedload");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 2, "old-1");
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    load_in_editor(&env, &mut to_agent, &mut from_agent, 4, "old-1");
+    assert!(!on_disk(&env, "old-1"), "written while the disk stalled");
+    fs::remove_file(&stall).unwrap();
+    env.ok(&["event", "log", "old-1"]); // The logger, caught up.
+    let (history, replayed) = old_history(&env);
+    assert_eq!(history, [true, false], "recorded again: {replayed:?}");
+    assert_eq!(replayed, ["replayed history"]);
+    let _ = editor.kill();
+}
+
 /// A disk too slow for brnr's own record neither slows the session nor
 /// fills the host's memory: past 64 MiB queued for the logger, records are
 /// skipped and counted, and once it catches up a `records-skipped` note says

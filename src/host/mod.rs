@@ -40,7 +40,7 @@ mod start;
 mod state;
 mod strict;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
@@ -383,6 +383,10 @@ struct Host {
     /// unanswered, until the last is (ADR 57): still counted, though not
     /// recorded, and the session's again if a load succeeds.
     closed_loads: HashMap<String, Replay>,
+    /// The sessions this process has started a transcript of: one the
+    /// logger, which writes behind, may not have on disk yet has one all
+    /// the same (ADR 57). One id for each session served, never trimmed.
+    transcribed: HashSet<String>,
     /// Sessions closed here, until their records are written (ADR 48).
     letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
@@ -639,6 +643,7 @@ impl Host {
             pending: HashMap::new(),
             claimed: HashMap::new(),
             closed_loads: HashMap::new(),
+            transcribed: HashSet::new(),
             letting_go: Vec::new(),
             client_requests: HashMap::new(),
             agent_requests: Vec::new(),

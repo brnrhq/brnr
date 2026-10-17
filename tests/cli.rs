@@ -4219,6 +4219,30 @@ fn adr_0063_resume_in_a_running_process_by_loading() {
     assert_eq!(history["recorded"], false);
 }
 
+/// A bridge's load of a session in a cwd other than the one it was served
+/// in finds its transcript in that one's project folder, as `session
+/// resume` does: the replay isn't recorded again (ADR 57, ADR 63).
+#[test]
+fn adr_0057_a_bridges_load_finds_the_transcript_in_another_folder() {
+    let env = Env::new("c-pid-elsewhere").agent("NO_RESUME", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    env.ok(&["session", "new", "--pid", &pid]);
+    env.ok(&["session", "close", "sess-2"]);
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    env.ok(&["session", "resume", "--pid", &pid, "sess-2", "--cwd", other.to_str().unwrap()]);
+    let load = &env.calls_of("session/load")[0]["params"];
+    assert_eq!(load["cwd"], other.to_str().unwrap(), "{load}");
+    let history = logged(&env, "sess-2", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], false, "recorded again: {history:?}");
+    assert!(replayed(&env, "sess-2").is_empty(), "{:?}", replayed(&env, "sess-2"));
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let found = folders.filter(|f| f.path().join("sess-2.jsonl").is_file()).count();
+    assert_eq!(found, 2, "not a transcript in each folder");
+}
+
 /// With `--pid`, the flags that start a process, and `-- <agent>`, are an
 /// error, and nothing is sent (P7, ADR 63).
 #[test]

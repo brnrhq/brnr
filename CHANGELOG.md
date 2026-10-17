@@ -36,6 +36,11 @@ brnr's own conventions:
   opens the session it forks. `adapters/check.py --brnr` checks a fork
   prompted and closed in one process, and its parent prompted after (ADR 16,
   ADR 39, #227).
+- A bridge's load of a session (`session resume --pid`, an agent without
+  `session/resume`) finds its transcript in any folder, and one the process
+  served and closed moments before, its logger behind, where it recorded
+  the agent's replay on top of the history again; so does the editor's
+  load of one its process served and closed (ADR 57, #190).
 
 ## [0.9.0] - 2026-10-16
 

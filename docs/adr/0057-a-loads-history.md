@@ -10,6 +10,9 @@ session's close is answered opens it again, with a `session_reopened`.
 Amended 2026-10-14 (#118): a load's replay is counted across its session's
 close, and its `history` follows the `session_reopened`; `recorded_updates`
 says how many of the `updates` the transcript has.
+Amended 2026-10-16 (#190): a bridge's load (`session resume --pid`) looks
+for the transcript in any folder too, and a session the process has served
+has its transcript there, written or not.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -63,8 +66,15 @@ conversation, and nothing said it was missing (P3).
   any folder, and a `history` event says either way. A session open in the
   editor's process has its transcript, the process's, whether or not the
   disk has it yet (unless it logs nothing, `log = false`), so loading it
-  again there records nothing of the replay again. The editor gets the replay as the agent sent
-  it (ADR 2): only what brnr records and emits follows the rule.
+  again there records nothing of the replay again. The editor gets the
+  replay as the agent sent it (ADR 2): only what brnr records and emits
+  follows the rule.
+- A bridge's load (`session resume --pid`, ADR 63) follows it too: in any
+  folder, whatever the cwd it is resumed in.
+- A session a process has served, and closed since, has its transcript in
+  that process, for an editor's load and a bridge's alike, whether or not
+  the logger, which writes behind (ADR 48), has written it yet: the process
+  remembers each session it has started a transcript of.
 - The editor's loads of a session that overlap (one sent before the agent
   has answered the one before) all reach the agent, and share one replay,
   as which load an update is for can't be told (P4). Until the last of them
@@ -130,6 +140,7 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_first_load_records_the_replayed_history`.
   - `adr_0057_a_load_without_the_transcript_records_the_history`.
   - `adr_0057_a_load_of_an_empty_history_says_so`.
+  - `adr_0057_a_bridges_load_finds_the_transcript_in_another_folder`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0057_an_editors_load_records_the_history_only_without_a_transcript`.
   - `adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again`.
@@ -139,6 +150,8 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_loads_history_is_counted_across_its_sessions_close`.
   - `adr_0057_a_load_that_fails_after_its_sessions_close_has_no_history`.
   - `adr_0057_overlapping_loads_closed_meanwhile_have_one_history`.
+  - `adr_0057_a_bridges_load_of_a_session_served_here_records_nothing_again`.
+  - `adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's
