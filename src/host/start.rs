@@ -181,6 +181,29 @@ impl Host {
     }
 }
 
+/// `BRNR_TEST_START_TIMER=stderr` (see [`Host::test_hold_start_timer`]), read
+/// once, the first time the start timer would fire: until when it is held.
+static TEST_START_TIMER_UNTIL: LazyLock<Option<Instant>> = LazyLock::new(|| {
+    let hold = env::var_os("BRNR_TEST_START_TIMER").is_some_and(|v| v == "stderr");
+    hold.then(|| Instant::now() + Duration::from_secs(30))
+});
+
+impl Host {
+    /// For the tests, with `BRNR_TEST_START_TIMER=stderr`: a start timeout
+    /// that has passed fails the start only once the agent has written on
+    /// stderr (for up to 30 s more), so that the error has a line to show
+    /// however slowly the agent starts. Whether it is held; held, the
+    /// deadline moves 10 ms on, so the event loop sleeps rather than spins.
+    pub(super) fn test_hold_start_timer(&mut self, now: Instant) -> bool {
+        let wrote = !self.stderr_tail.is_empty() || !self.stderr_line.is_empty();
+        let held = !wrote && TEST_START_TIMER_UNTIL.is_some_and(|until| now < until);
+        if held {
+            self.start_deadline = Some(now + Duration::from_millis(10));
+        }
+        held
+    }
+}
+
 /// Whether the other end has closed, without waiting or taking anything.
 fn closed(stream: &UnixStream) -> bool {
     let mut byte = 0u8;
