@@ -8,6 +8,15 @@ Amended by 63: a new session in a running process is offered after all,
 but in strict mode: `session/new` and `session/resume` are stable ACP. A
 headless process with no session left stops unless one is being opened.
 
+Amended 2026-10-16 (#230): a fork's source is recorded and shown. The
+`session-opened` record that starts the fork's transcript, and the host
+log's, name the session it was forked from, `forked_from` (ADR 22), and
+`session list` (a FORKED FROM column) and `session status` say it, in text
+and `--json` alike (P5), null where there is none. For a session open in a
+process, the process says it if it opened the session as a fork, else its
+transcript's first record does (a fork resumed since); for one that has
+ended, its transcript's first record.
+
 ## Decision
 
 - `brnr fork <session>` forks the session (`session/fork`) into a new one in
@@ -42,3 +51,8 @@ Run `cargo test --release adr_0016_`. Named claims and their assertions:
 - [tests/cli.rs](../../tests/cli.rs)
   - `adr_0016_fork_and_close`.
   - `adr_0016_close_cancels_the_turn_first`.
+  - `adr_0016_a_fork_keeps_its_source`: `session list` and `session status`
+    say which session a fork came from, and null for the parent; once the
+    process has ended, and with the fork resumed in another process, its
+    transcript still says it, its first record a `session-opened` with
+    `forked_from`.

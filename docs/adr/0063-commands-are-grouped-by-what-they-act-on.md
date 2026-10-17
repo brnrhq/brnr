@@ -9,6 +9,10 @@ Amended by 68: `--permission-timeout` and the profile's
 one timeout for the user's responses: it answers an elicitation nobody
 answered `cancel`, and a permission request as below.
 
+Amended 2026-10-16 (#230): `session list` has a FORKED FROM column, after
+LAST ACTIVE, and `session status` a `forked_from`: the session a fork came
+from, or null (ADR 16).
+
 ## Context
 
 brnr's commands are one flat level that grew a command at a time, and their

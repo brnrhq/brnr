@@ -1249,7 +1249,17 @@ fn adr_0063_list_without_an_agent_is_brnrs_index() {
     for r in &rows {
         assert_eq!((&r["source"], &r["agent"]), (&"brnr".into(), &"fake_agent.py".into()), "{r}");
         let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
-        let want = ["session", "title", "state", "pid", "agent", "source", "last_active", "cwd"];
+        let want = [
+            "session",
+            "title",
+            "state",
+            "pid",
+            "agent",
+            "source",
+            "last_active",
+            "forked_from",
+            "cwd",
+        ];
         assert_eq!(keys, want, "{r}");
     }
     // Most recently active first.
@@ -1262,7 +1272,10 @@ fn adr_0063_list_without_an_agent_is_brnrs_index() {
     let head: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
     assert_eq!(
         head,
-        ["SESSION", "TITLE", "STATE", "PID", "AGENT", "SOURCE", "LAST", "ACTIVE", "CWD"]
+        [
+            "SESSION", "TITLE", "STATE", "PID", "AGENT", "SOURCE", "LAST", "ACTIVE", "FORKED",
+            "FROM", "CWD"
+        ]
     );
     let line = table.lines().find(|l| l.starts_with("mine-1")).unwrap_or_else(|| panic!("{table}"));
     let cells: Vec<&str> = line.split_whitespace().collect();
@@ -1586,6 +1599,67 @@ fn adr_0016_fork_and_close() {
         wait_for(Duration::from_secs(15), || !alive(host)),
         "the process kept running with no session"
     );
+}
+
+/// A fork names the session it came from, in `session list` and `session
+/// status`, text and JSON alike, and in its transcript's first record, so
+/// that `session list` still says it once the process has ended (ADR 16).
+#[test]
+fn adr_0016_a_fork_keeps_its_source() {
+    let env = Env::new("c-forkfrom");
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    let list = || serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap();
+    let row = |rows: &Value, id: &str| {
+        let found = rows.as_array().unwrap().iter().find(|r| r["session"] == id).cloned();
+        found.unwrap_or_else(|| panic!("no {id}: {rows}"))
+    };
+    let rows = list();
+    let (fork, parent) = (row(&rows, "sess-2"), row(&rows, "sess-1"));
+    assert_eq!((&fork["forked_from"], &parent["forked_from"]), (&json!("sess-1"), &json!(null)));
+    let status = |id: &str| -> Value {
+        serde_json::from_str(&env.ok(&["session", "status", id, "--json"])).unwrap()
+    };
+    assert_eq!(status("sess-2")["forked_from"], "sess-1");
+    assert_eq!(status("sess-1")["forked_from"], Value::Null);
+    assert!(env.ok(&["session", "status", "sess-2"]).contains("\nforked from sess-1\n"));
+    assert!(!env.ok(&["session", "status", "sess-1"]).contains("forked from"));
+
+    let host = env.host_pid();
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the process kept running");
+    let rows = list();
+    let (fork, parent) = (row(&rows, "sess-2"), row(&rows, "sess-1"));
+    assert_eq!((&fork["state"], &parent["state"]), (&json!("inactive"), &json!("inactive")));
+    assert_eq!((&fork["forked_from"], &parent["forked_from"]), (&json!("sess-1"), &json!(null)));
+    // FORKED FROM is a column of the text, `-` where there is none (P5).
+    let text = env.ok(&["session", "list"]);
+    let col = text.find("FORKED FROM").unwrap_or_else(|| panic!("{text}"));
+    let cell = |id: &str| {
+        let line = text.lines().find(|l| l.starts_with(id)).unwrap_or_else(|| panic!("{text}"));
+        line[col..].split_whitespace().next().unwrap_or_default().to_owned()
+    };
+    assert_eq!((cell("sess-2"), cell("sess-1")), ("sess-1".into(), "-".into()), "{text}");
+
+    // The fork's transcript says so first, and the parent's doesn't.
+    let first = |id: &str| -> Value {
+        let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+        let mut files = folders.map(|f| f.path().join(format!("{id}.jsonl")));
+        let text = fs::read_to_string(files.find(|p| p.exists()).unwrap()).unwrap();
+        serde_json::from_str(text.lines().next().unwrap()).unwrap()
+    };
+    let (fork, parent) = (first("sess-2"), first("sess-1"));
+    assert_eq!(fork["event"]["event"], "session-opened", "{fork}");
+    assert_eq!(fork["event"]["forked_from"], "sess-1", "{fork}");
+    assert_eq!(parent["event"]["event"], "session-opened", "{parent}");
+    assert!(parent["event"].get("forked_from").is_none(), "{parent}");
+
+    // Resumed in a process that doesn't know it was a fork, its transcript
+    // still says so.
+    env.resume("sess-2", &[]);
+    assert_eq!(row(&list(), "sess-2")["forked_from"], "sess-1");
+    assert_eq!(status("sess-2")["forked_from"], "sess-1");
+    env.stop();
 }
 
 /// The transcript files `pid` has open (None without /proc or lsof).

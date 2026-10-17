@@ -20,8 +20,8 @@ use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsRespo
 use crate::{config, json, lock, log, paths, signals, spawn, sys};
 
 use super::{
-    Host, USAGE, agent_name, discover, first_record, inactive_sessions, print_json, print_table,
-    when,
+    Host, USAGE, agent_name, discover, first_record, forked_from, inactive_sessions, print_json,
+    print_table, when,
 };
 
 /// How long an agent started to be asked has to start and answer.
@@ -123,6 +123,7 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
                 "agent": program,
                 "source": "agent",
                 "last_active": x.updated_at,
+                "forked_from": null,
                 "cwd": x.cwd,
             }));
         }
@@ -162,7 +163,17 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
         outln!("no {state}sessions{place}");
         return Ok(ExitCode::SUCCESS);
     }
-    let head = ["SESSION", "TITLE", "STATE", "PID", "AGENT", "SOURCE", "LAST ACTIVE", "CWD"];
+    let head = [
+        "SESSION",
+        "TITLE",
+        "STATE",
+        "PID",
+        "AGENT",
+        "SOURCE",
+        "LAST ACTIVE",
+        "FORKED FROM",
+        "CWD",
+    ];
     let mut table = vec![head.map(String::from)];
     let cell = |v: &Value| v.as_str().unwrap_or("-").to_owned();
     for r in &rows {
@@ -174,6 +185,7 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
             cell(&r["agent"]),
             cell(&r["source"]),
             r["last_active"].as_str().map_or("-".to_owned(), when),
+            cell(&r["forked_from"]),
             cell(&r["cwd"]),
         ]);
     }
@@ -236,6 +248,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
                 "agent": agent,
                 "source": "brnr",
                 "last_active": s["last_active"],
+                "forked_from": forked_from(s),
                 "cwd": s["cwd"],
             }));
         }
@@ -248,6 +261,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
                 "agent": agent,
                 "source": "brnr",
                 "last_active": null,
+                "forked_from": null,
                 "cwd": null,
             }));
         }
@@ -264,6 +278,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "agent": null,
             "source": "brnr",
             "last_active": null,
+            "forked_from": null,
             "cwd": null,
         }));
     }
@@ -276,6 +291,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "agent": agent_name(&p["agent"]),
             "source": "brnr",
             "last_active": p["last_active"],
+            "forked_from": p["forked_from"],
             "cwd": p["cwd"],
         }));
     }

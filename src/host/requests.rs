@@ -178,8 +178,10 @@ impl Host {
         let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());
         self.record(session.as_deref(), Dir::ControlToAgent, &recorded);
         if matches!(method, "session/new" | "session/fork") {
-            let pending =
-                super::acp::Pending::New { cwd, request: Some(recorded), dir: Dir::ControlToAgent };
+            // A fork's source is the session it names (ADR 16).
+            let forked_from = session.filter(|_| method == "session/fork");
+            let (request, dir) = (Some(recorded), Dir::ControlToAgent);
+            let pending = super::acp::Pending::New { cwd, request, dir, forked_from };
             self.pending.insert(key, pending);
         }
         self.write_agent(&line);
