@@ -545,11 +545,11 @@ patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 A turn's `tokens` are the counts the agent put in its answer to the prompt
 (`usage`, unstable in ACP): `{"total", "input", "output", "thought",
 "cached_read", "cached_write"}`, each the agent's number, or `null` where it
-gave none that is a count (a whole number, not negative), and `tokens` itself
-`null` when the answer has no `usage` object. brnr adds nothing up and doesn't
-say what they cover: whether subagents or earlier model calls are in them is
-the agent's to say. `session status` has the last turn's, in `last_turn`
-(ADR 71).
+gave none that is a count (a JSON integer that fits a `u64`; not `1e3`), and
+`tokens` itself `null` when the answer has no `usage` object. brnr adds
+nothing up and doesn't say what they cover: whether subagents or earlier model
+calls are in them is the agent's to say. `session status` has the last turn's,
+in `last_turn` (ADR 71).
 
 `--events` chooses, for `event watch`, `event log` and `event notify` alike:
 names, `all`, and `default` (`--events default,agent_thought` adds thoughts).

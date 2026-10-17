@@ -90,9 +90,9 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   (`{code, message}`), the `messages` the turn carried, and `tokens`: the
   counts the agent reported for the turn (`total`, `input`, `output`,
   `thought`, `cached_read`, `cached_write`), each null where it gave none that
-  is a count (a whole number, not negative), and `tokens` null when the answer
-  has no `usage` object. brnr adds nothing up; what the counts cover
-  (subagents, earlier model calls) is the agent's to say. `usage` is the
+  is a count (a JSON integer that fits a `u64`; not `1e3`), and `tokens` null
+  when the answer has no `usage` object. brnr adds nothing up; what the counts
+  cover (subagents, earlier model calls) is the agent's to say. `usage` is the
   context window, not a turn's tokens.
 - `message_dropped`: `by` `cancel`, `queue`, `close`, `exit` or `steer`;
   `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
