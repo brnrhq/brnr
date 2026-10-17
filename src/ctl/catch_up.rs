@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::{log, paths};
+use crate::{json, log, paths};
 
 /// The exit status of a command that was cut off and couldn't catch up.
 pub(super) const MISSED: u8 = 3;
@@ -150,7 +150,9 @@ impl Found<'_> {
             if position(&line).is_some_and(|n| !self.missed(n)) {
                 continue;
             }
-            let Ok(mut record) = serde_json::from_slice::<Value>(&line) else { continue };
+            // As the host reads it (see json.rs), as the socket's events.
+            let record = json::on_stack(json::depth(&line), || json::parse::<Value>(&line));
+            let Some(Some(mut record)) = record else { continue };
             if record["host_id"] != *f.host_id {
                 continue;
             }

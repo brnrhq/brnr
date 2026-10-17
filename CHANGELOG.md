@@ -39,6 +39,10 @@ brnr's own conventions:
 - `brnr permission requests` lists a request nested deeper than 128,
   where it failed with `recursion limit exceeded`: it reads the host's
   answer as the host reads the agent's line (ADR 26, #239).
+- `brnr prompt send --wait`, `event wait`, `event watch` and `event notify`
+  (from the socket and `--stdin`) see a permission request nested deeper
+  than 128, which they dropped without a word: they read events as the
+  host reads the agent's line (ADR 26, #250).
 
 ## [0.9.0] - 2026-10-16
 
