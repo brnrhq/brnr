@@ -13,6 +13,9 @@ says how many of the `updates` the transcript has.
 Amended 2026-10-16 (#190): a bridge's load (`session resume --pid`) looks
 for the transcript in any folder too, and a session the process has served
 has its transcript there, written or not.
+Amended 2026-10-16 (#191): an events file holding only `session-opened`
+records, which a load that failed leaves, isn't a transcript of the
+session, so the next load records the history.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -38,6 +41,12 @@ conversation, and nothing said it was missing (P3).
   process is serving (`--take-over`). That is the one thing brnr knows
   about the history it has; it doesn't compare the replay with the
   transcript to guess what is missing (P4).
+- A transcript is an events file holding a record of the session beyond
+  its openings. One holding only `session-opened` records, left by a load
+  that failed, isn't one: the next load, a start's, a bridge's or an
+  editor's, records the history. brnr reads its own file for this when the
+  load is asked for, and deletes nothing; `brnr sessions` still lists the
+  file, which names the session's cwd and agent.
 - With a transcript, the replay is as before: neither recorded, raw or as
   events, nor shown, and what it says the session is now is kept. Loading
   the session again and again adds nothing to the transcript but each
@@ -120,7 +129,9 @@ conversation, and nothing said it was missing (P3).
   that what is missing is known to be missing, not silently gone.
 - Deleting a session's transcript makes its next load record the history
   again, except in a process that served the session before the delete:
-  that process remembers the transcript it started until it exits.
+  that process remembers the transcript it started until it exits. A load
+  that failed before the agent replayed anything leaves only its opening,
+  no transcript, so the next load records the history too.
 
 ## Considered
 
@@ -132,6 +143,13 @@ conversation, and nothing said it was missing (P3).
   would be a guess (P4).
 - Recording the raw replay only, without events: `log` reads events, so the
   history still wouldn't be in it.
+- Not creating the events file until the load succeeds (#191): the agent
+  replays before it answers, so the load's raw ACP and its replay would be
+  held in memory until then (P6), or written elsewhere and moved; and the
+  files failed loads have left already would still keep their history out.
+- Removing, or marking, the file a failed load leaves: removing it deletes
+  the raw record of the failed load (P5), and either way the files already
+  left stay as they are.
 
 ## Tests
 
@@ -142,6 +160,8 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_a_load_without_the_transcript_records_the_history`.
   - `adr_0057_a_load_of_an_empty_history_says_so`.
   - `adr_0057_a_bridges_load_finds_the_transcript_in_another_folder`.
+  - `adr_0057_a_load_after_a_failed_load_records_the_history`.
+  - `adr_0057_a_bridges_load_after_a_failed_load_records_the_history`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0057_an_editors_load_records_the_history_only_without_a_transcript`.
   - `adr_0057_an_editors_load_of_a_session_open_here_records_nothing_again`.
@@ -153,6 +173,9 @@ Run `cargo test --release adr_0057_`. Named claims and their assertions:
   - `adr_0057_overlapping_loads_closed_meanwhile_have_one_history`.
   - `adr_0057_a_bridges_load_of_a_session_served_here_records_nothing_again`.
   - `adr_0057_an_editors_load_of_a_session_served_here_records_nothing_again`.
+  - `adr_0057_an_editors_load_after_a_failed_load_records_the_history`.
+- [src/log.rs](../../src/log.rs)
+  - `adr_0057_only_openings_are_no_transcript`.
 
 That a session brnr has a transcript of keeps the replay out of it however
 often it loads, with a `history` event each time, is ADR 14's

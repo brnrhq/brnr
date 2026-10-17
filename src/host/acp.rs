@@ -721,14 +721,16 @@ impl Host {
     /// The editor's `session/load` of `session`, whose history the agent
     /// replays before it answers: recorded only if brnr has no transcript of
     /// the session, in any folder, as a headless start's and a bridge's are
-    /// (ADR 57). One not open here opens now, so that the replay is the
-    /// session's; one open here has its transcript already, from this
-    /// process, whether or not the logger has written it yet, unless the
-    /// process logs nothing, and so has one this process served before and
-    /// has closed since; one another process holds has that one's. A load
-    /// while the session's replay runs joins that replay, as which load an
-    /// update is for can't be told (P4): what either replays is taken as the
-    /// replay is, recorded or not, and one `history` event covers them all.
+    /// (ADR 57): an events file holding only openings, which a load that
+    /// failed leaves, is none ([`log::has_records`]). One not open here
+    /// opens now, so that the replay is the session's; one open here has its
+    /// transcript already, from this process, whether or not the logger has
+    /// written it yet, unless the process logs nothing, and so has one this
+    /// process served before and has closed since; one another process
+    /// holds has that one's. A load while the session's replay runs joins
+    /// that replay, as which load an update is for can't be told (P4): what
+    /// either replays is taken as the replay is, recorded or not, and one
+    /// `history` event covers them all.
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
         // One closed while a load of it is unanswered opens with its replay.
         let open = match self.find(session) {
@@ -2094,9 +2096,12 @@ impl Host {
     }
 
     /// Whether brnr has a transcript of `session`, in any folder, counting
-    /// one this process is writing that the disk may not have yet (ADR 57).
+    /// one this process is writing that the disk may not have yet; an events
+    /// file holding only openings, which a load that failed leaves, is none
+    /// (ADR 57).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
-        self.transcribed.contains(session) || !log::transcripts(session).is_empty()
+        self.transcribed.contains(session)
+            || log::transcripts(session).iter().any(|p| log::has_records(p))
     }
 
     /// `session`'s lock, for a session this process is to serve. One another

@@ -41,6 +41,10 @@ brnr's own conventions:
   served and closed moments before, its logger behind, where it recorded
   the agent's replay on top of the history again; so does the editor's
   load of one its process served and closed (ADR 57, #190).
+- A load after one that failed records the history the agent replays: the
+  events file a failed load leaves, holding only its openings, no longer
+  counts as brnr's transcript of the session, for `session resume`, a
+  bridge's resume or an editor's `session/load` (ADR 57, #191).
 
 ## [0.9.0] - 2026-10-16
 

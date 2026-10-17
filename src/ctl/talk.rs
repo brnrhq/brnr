@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, lock, paths, render, signals, spawn, sys};
+use crate::{config, lock, log, paths, render, signals, spawn, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
 
@@ -762,6 +762,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             Some(pid) => {
                 let (host, running) = settings::held(&hosts, &wanted, pid)?;
                 owner = Some((host, wanted.clone()));
+                transcript = true;
                 Some(running)
             }
             // A session brnr has no transcript of (one only the agent knows)
@@ -772,11 +773,16 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                 Ok(Found::Running(host, _)) => {
                     return Err(format!("{wanted} is running in process {}", host.id()));
                 }
-                Ok(Found::Inactive(past)) => Some(past),
+                // One holding only openings, which a load that failed
+                // leaves, isn't a transcript of it (ADR 57).
+                Ok(Found::Inactive(past)) => {
+                    let file = past["log"].as_str().map(Path::new);
+                    transcript = file.is_some_and(log::has_records);
+                    Some(past)
+                }
                 Err(_) => None,
             },
         };
-        transcript = found.is_some();
         if let Some(past) = found {
             a.resume = past["session_id"].as_str().map(str::to_owned);
             resume_cwd = past["cwd"].as_str().map(str::to_owned);

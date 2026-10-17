@@ -3818,6 +3818,38 @@ fn adr_0057_a_loads_history_is_counted_across_its_sessions_close() {
     let _ = editor.kill();
 }
 
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent refuses, replaying nothing: the session closes again, its events
+/// file holding only its opening, which isn't a transcript of it. The
+/// editor's next load records the history the agent replays (ADR 57, #191).
+#[test]
+fn adr_0057_an_editors_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("ed-load-refused").agent("LOAD_REFUSED", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    // The failed load's opening is written before the next load looks.
+    let projects = env.dir.join("home/projects");
+    let opened = || {
+        let folders = fs::read_dir(&projects).into_iter().flatten().flatten();
+        folders
+            .map(|f| f.path().join("old-1.jsonl"))
+            .any(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("session-opened")))
+    };
+    assert!(wait_for(Duration::from_secs(5), opened), "the failed load's opening isn't written");
+    let replay = load_in_editor(&env, &mut to_agent, &mut from_agent, 3, "old-1");
+    assert_eq!(replay, REPLAY[..3]);
+    let messages = logged(&env, "old-1", "user_message,agent_message");
+    let texts: Vec<(&Value, &Value)> =
+        messages.iter().map(|m| (&m["text"], &m["replayed"])).collect();
+    let once = [(&"old question".into(), &true.into()), (&"replayed history".into(), &true.into())];
+    assert_eq!(texts, once, "{messages:?}");
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    let _ = editor.kill();
+}
+
 /// A load that fails after its session's close leaves it closed, with no
 /// `history`, and nothing of its count stays: the next load's `history` is
 /// its own (ADR 57).

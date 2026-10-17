@@ -59,7 +59,7 @@ use std::env;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions};
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, BufRead, ErrorKind, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -932,6 +932,27 @@ pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
     found
 }
 
+/// Whether the events file at `path` holds a record of its session beyond
+/// its openings, which makes it a transcript of the session to a load (ADR
+/// 57): a load that failed leaves one holding only `session-opened`
+/// records. Read up to the first other record; a line brnr can't read is
+/// passed over (ADR 55). A symlink, or what isn't a regular file, isn't
+/// read, as the logger writes to neither (ADR 59).
+pub(crate) fn has_records(path: &Path) -> bool {
+    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path).ok();
+    let Some(file) = opened.filter(|f| f.metadata().is_ok_and(|m| m.is_file())) else {
+        return false;
+    };
+    let lines = io::BufReader::new(file).split(b'\n').map_while(Result::ok);
+    lines.filter_map(|line| as_record(&line)).any(|r| r["event"]["event"] != "session-opened")
+}
+
+/// A line of a transcript as a record, if it is one.
+pub(crate) fn as_record(line: &[u8]) -> Option<Value> {
+    serde_json::from_slice(line).ok().filter(Value::is_object)
+}
+
 /// Records `event` in each of `session`'s events files ([`transcripts`]),
 /// for a session no process has open: a record of no process's, its
 /// `host_id`, `host_pid` and `proxy_pid` null, with the pid of the agent
@@ -1665,5 +1686,33 @@ mod tests {
             assert_eq!(parse_rfc3339(given), None, "{given}");
             assert_eq!(utc(given), None, "{given}");
         }
+    }
+
+    /// An events file holding only openings, which a load that failed
+    /// leaves, isn't a transcript of its session; one with any other record
+    /// is, whatever is between them that brnr can't read (ADR 55, ADR 57).
+    #[test]
+    fn adr_0057_only_openings_are_no_transcript() {
+        let path = scratch("openings");
+        let opened = r#"{"ts":"t","session_id":"s","event":{"event":"session-opened"}}"#;
+        let other = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        let cases = [
+            ("", false),
+            (&format!("{opened}\n"), false),
+            (&format!("{opened}\n{opened}\nnot json\n[1]\n{{\"cut\":"), false),
+            (&format!("{opened}\nnot json\n{opened}\n{other}\n"), true),
+            (other, true),
+        ];
+        for (text, has) in cases {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(has_records(&path), has, "{text:?}");
+        }
+        let link = path.with_extension("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(!has_records(&link), "read through a symlink");
+        assert!(!has_records(&path.with_extension("none")));
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&path);
     }
 }

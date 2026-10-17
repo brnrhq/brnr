@@ -1878,6 +1878,43 @@ fn adr_0057_a_load_without_the_transcript_records_the_history() {
     assert_eq!(history[0]["recorded"], true);
 }
 
+/// A load that failed leaves an events file holding only its openings,
+/// which isn't a transcript of the session: the next load records the
+/// history the agent replays (ADR 57, #191).
+#[test]
+fn adr_0057_a_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let out = env.brnr(&resume_args("old-1", &[])).env_remove("LOAD_REFUSED").output().unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    let text = env.ok(&["event", "log", "old-1"]);
+    assert!(text.contains("(replayed) agent: replayed history"), "{text}");
+}
+
+/// The same for a bridge's loads in a running process: the first fails,
+/// the second records the history (ADR 57, ADR 63, #191).
+#[test]
+fn adr_0057_a_bridges_load_after_a_failed_load_records_the_history() {
+    let env = Env::new("c-bridge-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let err = env.fails(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    env.ok(&["session", "resume", "--pid", &pid, "old-1"]);
+    assert_eq!(env.calls_of("session/load").len(), 2);
+    assert_eq!(replayed(&env, "old-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "old-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+}
+
 /// A load whose agent replays nothing says so: no updates, none recorded.
 #[test]
 fn adr_0057_a_load_of_an_empty_history_says_so() {

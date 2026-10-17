@@ -592,7 +592,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
 /// The first record in a file that brnr can read (ADR 55).
 fn first_record(path: &Path) -> Option<Value> {
     let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
-    lines.map_while(Result::ok).find_map(|line| as_record(&line))
+    lines.map_while(Result::ok).find_map(|line| log::as_record(&line))
 }
 
 /// The last record in a file that brnr can read, read backwards so a long
@@ -622,21 +622,16 @@ fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Val
         tail = chunk;
         // Its lines, last first; the first is whole only at the file's start.
         while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = as_record(&tail[i + 1..]).filter(&wanted) {
+            if let Some(found) = log::as_record(&tail[i + 1..]).filter(&wanted) {
                 return Some(found);
             }
             tail.truncate(i);
         }
         if start == 0 {
-            return as_record(&tail).filter(&wanted);
+            return log::as_record(&tail).filter(&wanted);
         }
         end = start;
     }
-}
-
-/// A line of a transcript as a record, if it is one.
-fn as_record(line: &[u8]) -> Option<Value> {
-    serde_json::from_slice(line).ok().filter(Value::is_object)
 }
 
 fn agent_name(argv: &Value) -> String {
