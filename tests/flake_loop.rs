@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::thread::sleep;
 use std::time::Duration;
 
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/flake-loop.sh");
@@ -16,7 +17,7 @@ const GONE: Duration = Duration::from_secs(5);
 
 /// The script with one stressor beside one run of `sleep secs`, and the
 /// stressor's pid; the stressor is killed on drop if it is still there, and
-/// the directory of the runs' output removed.
+/// the directory of the runs' output removed. Its stderr is piped.
 struct Loop {
     child: Child,
     out: BufReader<ChildStdout>,
@@ -25,13 +26,28 @@ struct Loop {
 }
 
 impl Loop {
+    /// With a load limit the host's load can't reach, so that the tests don't
+    /// depend on it.
     fn start(name: &str, args: &[&str], secs: &str) -> Loop {
+        Loop::start_with(name, args, secs, None)
+    }
+
+    /// With the load read from a file in the directory, `load` in it, as
+    /// /proc/loadavg would have it.
+    fn start_with(name: &str, args: &[&str], secs: &str, load: Option<&str>) -> Loop {
         let dir = std::env::temp_dir().join(format!("brnr-t{}-{name}", std::process::id()));
-        let mut child = Command::new(SCRIPT)
-            .args(["-r", "1", "-p", "1", "-s", "1", "-o", dir.to_str().unwrap()])
+        let mut cmd = Command::new(SCRIPT);
+        if let Some(load) = load {
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("loadavg"), load).unwrap();
+            cmd.env("FLAKE_LOOP_LOADAVG", dir.join("loadavg"));
+        }
+        let mut child = cmd
+            .args(["-l", "1000000", "-r", "1", "-p", "1", "-s", "1", "-o", dir.to_str().unwrap()])
             .args(args)
             .args(["/bin/sleep", secs])
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let mut out = BufReader::new(child.stdout.take().unwrap());
@@ -45,6 +61,22 @@ impl Loop {
 
     fn stressor_stops(&self) -> bool {
         wait_for(GONE, || !alive(self.stressor))
+    }
+
+    /// Changes the load at once: a file the script reads half written would
+    /// be no load.
+    fn set_load(&self, load: &str) {
+        fs::write(self.dir.join("loadavg.new"), load).unwrap();
+        fs::rename(self.dir.join("loadavg.new"), self.dir.join("loadavg")).unwrap();
+    }
+
+    /// Ends the script with SIGTERM, and what it wrote to stderr.
+    fn stop(&mut self) -> String {
+        kill(self.child.id() as i32, libc::SIGTERM);
+        assert!(wait_exit(&mut self.child, GONE), "SIGTERM ends the script");
+        let mut err = String::new();
+        self.child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+        err
     }
 }
 
@@ -93,6 +125,32 @@ fn a_stressor_stops_at_its_time_limit() {
     assert!(run.child.try_wait().unwrap().is_none(), "the script still runs");
     kill(run.child.id() as i32, libc::SIGTERM);
     assert!(wait_exit(&mut run.child, GONE), "SIGTERM ends the script");
+}
+
+#[test]
+fn a_load_at_the_limit_stops_the_stressors() {
+    let mut run = Loop::start_with("load", &["-l", "4"], "30", Some("0.50 0.50 0.50 1/1 1\n"));
+    // The script looks at the load every second.
+    sleep(Duration::from_millis(2500));
+    assert!(alive(run.stressor), "a load below -l stopped the stressor");
+    run.set_load("4.00 0.50 0.50 1/1 1\n");
+    assert!(run.stressor_stops(), "a load at -l left the stressor");
+    assert!(run.child.try_wait().unwrap().is_none(), "the run goes on");
+    let err = run.stop();
+    let says = "the load average is 4.00, at or above -l 4: the stressors are stopped";
+    assert!(err.contains(says), "{err}");
+}
+
+#[test]
+fn an_unreadable_load_is_refused() {
+    let out = Command::new(SCRIPT)
+        .env("FLAKE_LOOP_LOADAVG", "/nonexistent/loadavg")
+        .args(["-r", "1", "-p", "1", "-s", "1", "/bin/sh"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("can't read the load average"), "{}", stderr(&out));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("stressors:"), "a stressor started");
 }
 
 #[test]
@@ -183,7 +241,7 @@ fn an_end_stops_what_a_run_left() {
 
 #[test]
 fn a_hunt_that_would_run_nothing_is_refused() {
-    for flag in ["-r", "-p", "-t"] {
+    for flag in ["-r", "-p", "-t", "-l"] {
         let out = Command::new(SCRIPT).args([flag, "0", "/bin/sh"]).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{flag} 0");
         assert!(stderr(&out).contains("from 1"), "{flag} 0: {}", stderr(&out));

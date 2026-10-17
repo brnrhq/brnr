@@ -56,7 +56,8 @@ pass before a pull request can merge. The integration tests (`tests/`) drive
 the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it. To make a flaky test
 fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
-stressors that stop with it however it ends (`tests/flake-loop.sh -h`).
+stressors that stop with it however it ends, or when the load average
+reaches its limit (`tests/flake-loop.sh -h`).
 
 `.github/workflows/coverage.yml` also runs the Rust unit and integration
 tests on Linux with `cargo llvm-cov`. Its job summary lists each source
