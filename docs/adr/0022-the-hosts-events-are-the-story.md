@@ -35,7 +35,8 @@ Amended by 69: every event, and every raw ACP record, has its position in
 its process, `seq`.
 
 Amended 2026-10-16 (#230): the `session-opened` of a session the process
-opened as a fork, in its events file and in the host log, has
+opened as a fork (`brnr session fork`'s, or an editor's `session/fork`
+through `brnr acp`), in its events file and in the host log, has
 `forked_from`, the session it was forked from (ADR 16). A session opened any
 other way has none: the process doesn't know whether it was a fork, and the
 first `session-opened` in the file says.
