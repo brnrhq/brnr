@@ -385,7 +385,9 @@ struct Host {
     closed_loads: HashMap<String, Replay>,
     /// The sessions this process has started a transcript of: one the
     /// logger, which writes behind, may not have on disk yet has one all
-    /// the same (ADR 57). One id for each session served, never trimmed.
+    /// the same (ADR 57). One a load opened is counted once the load
+    /// succeeds (`Replay::counts`). One id for each session served, never
+    /// trimmed.
     transcribed: HashSet<String>,
     /// Sessions closed here, until their records are written (ADR 48).
     letting_go: Vec<LettingGo>,

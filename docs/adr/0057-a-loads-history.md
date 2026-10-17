@@ -15,7 +15,8 @@ for the transcript in any folder too, and a session the process has served
 has its transcript there, written or not.
 Amended 2026-10-16 (#191): an events file holding only `session-opened`
 records, which a load that failed leaves, isn't a transcript of the
-session, so the next load records the history.
+session, so the next load records the history; and a process counts a
+session a load opened as served there only once the load succeeded.
 
 Amended by 63: `brnr start --resume` is `brnr session resume`;
 `brnr sessions` is `brnr session list` with an agent named, where a session
@@ -83,7 +84,10 @@ conversation, and nothing said it was missing (P3).
 - A session a process has served, and closed since, has its transcript in
   that process, for an editor's load and a bridge's alike, whether or not
   the logger, which writes behind (ADR 48), has written it yet: the process
-  remembers each session it has started a transcript of.
+  remembers each session it has started a transcript of. One a load
+  opened, it remembers only once the load succeeded: a load that failed
+  before the agent replayed left only the opening, and the next load, in
+  that process too, records the history.
 - The editor's loads of a session that overlap (one sent before the agent
   has answered the one before) all reach the agent, and share one replay,
   as which load an update is for can't be told (P4). Until the last of them

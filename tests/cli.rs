@@ -1898,8 +1898,9 @@ fn adr_0057_a_load_after_a_failed_load_records_the_history() {
     assert!(text.contains("(replayed) agent: replayed history"), "{text}");
 }
 
-/// The same for a bridge's loads in a running process: the first fails,
-/// the second records the history (ADR 57, ADR 63, #191).
+/// The same for a bridge's loads in one running process: the first fails,
+/// and the process doesn't count the transcript it opened as one, so the
+/// second records the history (ADR 57, ADR 63, #191).
 #[test]
 fn adr_0057_a_bridges_load_after_a_failed_load_records_the_history() {
     let env = Env::new("c-bridge-load-failed").agent("NO_RESUME", "1").agent("LOAD_REFUSED", "1");

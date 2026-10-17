@@ -145,6 +145,9 @@ pub(super) struct Replay {
     /// The session was opened for them: if none succeeds, and no resume has
     /// opened it meanwhile, it closes again.
     pub(super) opened: bool,
+    /// Their opening started the session's transcript, which counts as
+    /// brnr's (`Host::transcribed`) once one of them succeeds (ADR 57).
+    pub(super) counts: bool,
 }
 
 pub(super) struct Session {
@@ -805,6 +808,9 @@ impl Host {
         if let Some(replay) = self.closed_loads.remove(session)
             && replay.loaded
         {
+            if replay.counts {
+                self.transcribed.insert(session.to_owned());
+            }
             self.emit(history(session, &replay));
         }
     }
@@ -2087,7 +2093,8 @@ impl Host {
         self.sessions.len() - 1
     }
 
-    /// `session`'s transcript, started.
+    /// `session`'s transcript, started, and counted as brnr's at once, but
+    /// for a load's (see `begin_replay`).
     fn transcribe(&mut self, session: &str, cwd: &Path) {
         self.sink.open_session(session, cwd);
         if self.logging != Log::Off {
