@@ -1,5 +1,5 @@
-//! tests/flake-loop.sh leaves no stressor running, however it ends (#123).
-//! Each stressor is found by the pid the script prints, never by its name.
+//! tests/flake-loop.sh leaves nothing it started running, however it ends
+//! (#123). Each process is found by a pid it is told, never by its name.
 
 mod common;
 
@@ -109,4 +109,41 @@ fn a_run_takes_ctrl_c_as_cargo_test_leaves_it() {
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().next(), Some("runs=1 fails=1"));
     assert_eq!(log.unwrap(), "", "the run went on past its SIGINT");
+}
+
+#[test]
+fn sigterm_stops_what_a_run_started() {
+    let dir = std::env::temp_dir().join(format!("brnr-t{}-tree", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pid");
+    let mut child = Command::new(SCRIPT)
+        .args(["-r", "1", "-p", "1", "-s", "0", "-o", dir.to_str().unwrap()])
+        .args(["/bin/sh", "-c", "/bin/sleep 60 & echo $! >\"$1\"; wait", "sh"])
+        .arg(&file)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut pid = None;
+    wait_for(GONE, || {
+        pid = fs::read_to_string(&file).ok().and_then(|p| p.trim().parse::<i32>().ok());
+        pid.is_some()
+    });
+    let pid = pid.expect("the run started its sleep");
+    kill(child.id() as i32, libc::SIGTERM);
+    assert!(wait_exit(&mut child, GONE), "SIGTERM ends the script");
+    let stopped = wait_for(GONE, || !alive(pid));
+    if !stopped {
+        kill(pid, libc::SIGKILL);
+    }
+    let _ = fs::remove_dir_all(&dir);
+    assert!(stopped, "what a run started outlived the script's SIGTERM");
+}
+
+#[test]
+fn a_hunt_that_would_run_nothing_is_refused() {
+    for flag in ["-r", "-p", "-t"] {
+        let out = Command::new(SCRIPT).args([flag, "0", "/bin/sh"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{flag} 0");
+        assert!(stderr(&out).contains("from 1"), "{flag} 0: {}", stderr(&out));
+    }
 }

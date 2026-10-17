@@ -35,8 +35,10 @@ while getopts r:p:s:t:o:h opt; do
 done
 shift $((OPTIND - 1))
 if (($# == 0)); then usage >&2 && exit 2; fi
-if ! [[ "$rounds.$par.$nstress.$limit" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "flake-loop: -r, -p, -s and -t take whole numbers" >&2 && exit 2
+# 0 rounds or runs would pass having run nothing, and stressors with 0
+# seconds would stop at once: a hunt without load is -s 0.
+if ! [[ "$rounds.$par.$limit.$nstress" =~ ^([1-9][0-9]*\.){3}(0|[1-9][0-9]*)$ ]]; then
+    echo "flake-loop: -r, -p and -t take whole numbers from 1, -s from 0" >&2 && exit 2
 fi
 test=$1
 shift
@@ -53,11 +55,13 @@ out=${out:-$(mktemp -d "${tmp%/}/flake-loop.XXXXXX")}
 mkdir -p "$out"
 
 stress=() runs=()
-# Stops the stressors and the runs still going, on any exit; the signals are
-# trapped so that they exit through here too.
+# Stops the stressors, and the runs still going with what they started (each
+# leads its process group, below), on any exit; the signals are trapped so
+# that they exit through here too.
 cleanup() {
-    local pids=(${stress[@]+"${stress[@]}"} ${runs[@]+"${runs[@]}"})
-    if ((${#pids[@]})); then kill "${pids[@]}" 2>/dev/null || true; fi
+    if ((${#stress[@]})); then kill "${stress[@]}" 2>/dev/null || true; fi
+    local pid
+    for pid in ${runs[@]+"${runs[@]}"}; do kill -- "-$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -85,8 +89,8 @@ for ((r = 1; r <= rounds; r++)); do
     for ((p = 1; p <= par; p++)); do
         # A script's job starts with SIGINT and SIGQUIT ignored, and a test
         # that stops something with SIGINT would fail; under job control
-        # (set -m) it starts with them as cargo test leaves them. Off at once,
-        # so that bash prints no job notices.
+        # (set -m) it starts with them as cargo test leaves them, in a process
+        # group of its own. Off at once, so that bash prints no job notices.
         set -m
         "$bin" ${1+"$@"} </dev/null >"$out/$r.$p.log" 2>&1 &
         set +m
@@ -94,6 +98,7 @@ for ((r = 1; r <= rounds; r++)); do
     done
     for ((p = 1; p <= par; p++)); do
         if wait "${runs[p - 1]}"; then rm "$out/$r.$p.log"; else fails=$((fails + 1)); fi
+        unset 'runs[p - 1]' # waited for: its pid may be another's now
     done
     runs=()
 done
