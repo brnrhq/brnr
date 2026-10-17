@@ -154,6 +154,24 @@ fn an_unreadable_load_is_refused() {
 }
 
 #[test]
+fn a_load_at_the_limit_starts_no_stressor() {
+    let dir = std::env::temp_dir().join(format!("brnr-t{}-high", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("loadavg"), "4.00 0.50 0.50 1/1 1\n").unwrap();
+    let out = Command::new(SCRIPT)
+        .env("FLAKE_LOOP_LOADAVG", dir.join("loadavg"))
+        .args(["-l", "4", "-r", "1", "-p", "1", "-s", "1", "-o", dir.to_str().unwrap()])
+        .arg("/usr/bin/true")
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "runs=1 fails=0\n", "a stressor started");
+    let says = "the load average is 4.00, at or above -l 4: no stressors, the runs go on";
+    assert!(stderr(&out).contains(says), "{}", stderr(&out));
+}
+
+#[test]
 fn a_run_takes_ctrl_c_as_cargo_test_leaves_it() {
     // A run that SIGINTs itself dies of it, as under cargo test, unless the
     // script started it with SIGINT ignored: then it says "ignored".
@@ -246,4 +264,7 @@ fn a_hunt_that_would_run_nothing_is_refused() {
         assert_eq!(out.status.code(), Some(2), "{flag} 0");
         assert!(stderr(&out).contains("from 1"), "{flag} 0: {}", stderr(&out));
     }
+    // One past bash's largest integer would wrap around.
+    let out = Command::new(SCRIPT).args(["-l", "9223372036854775808", "/bin/sh"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
 }

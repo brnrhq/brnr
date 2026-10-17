@@ -43,9 +43,12 @@ shift $((OPTIND - 1))
 if (($# == 0)); then usage >&2 && exit 2; fi
 : "${maxload=$((2 * $(getconf _NPROCESSORS_ONLN)))}"
 # 0 rounds or runs would pass having run nothing, and stressors with 0
-# seconds or load would stop at once: a hunt without load is -s 0.
-if ! [[ "$rounds.$par.$limit.$maxload.$nstress" =~ ^([1-9][0-9]*\.){4}(0|[1-9][0-9]*)$ ]]; then
-    echo "flake-loop: -r, -p, -t and -l take whole numbers from 1, -s from 0" >&2 && exit 2
+# seconds or load would stop at once: a hunt without load is -s 0. Nine digits
+# at most, so that bash's arithmetic can't overflow them.
+n='([1-9][0-9]{0,8})'
+if ! [[ "$rounds.$par.$limit.$maxload.$nstress" =~ ^($n\.){4}(0|$n)$ ]]; then
+    echo "flake-loop: -r, -p, -t and -l take whole numbers from 1 to 999999999, -s from 0" >&2
+    exit 2
 fi
 
 # Prints the 1-minute load average, or what was read in its place.
@@ -62,9 +65,16 @@ load() {
     echo "$l"
 }
 number='^[0-9]+(\.[0-9]+)?$'
-# Stressors that the load can't stop aren't started.
-if ((nstress)) && l=$(load) && ! [[ $l =~ $number ]]; then
-    echo "flake-loop: can't read the load average (read: \"$l\")" >&2 && exit 2
+# Stressors that the load can't stop aren't started, nor any at a load
+# already at -l: the runs go on without them.
+if ((nstress)); then
+    l=$(load)
+    if ! [[ $l =~ $number ]]; then
+        echo "flake-loop: can't read the load average (read: \"$l\")" >&2 && exit 2
+    elif ((10#${l%%.*} >= maxload)); then
+        echo "flake-loop: the load average is $l, at or above -l $maxload: no stressors, the runs go on" >&2
+        nstress=0
+    fi
 fi
 test=$1
 shift
