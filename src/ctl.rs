@@ -1031,10 +1031,10 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
     let mut conn = talk::Conn::open(host)?;
     let names: Vec<&str> = events.iter().map(String::as_str).collect();
     conn.subscribe(&names, only_session.as_deref())?;
-    let mut out = io::stdout().lock();
     let options = render::Options { session: only_session.is_none(), time: true };
-    let show = |out: &mut io::StdoutLock, event: &Value| {
+    let show = |event: &Value| {
         let text = if json_out { Some(event.to_string()) } else { render::event(event, &options) };
+        let mut out = io::stdout().lock();
         match text {
             Some(text) => writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()),
             None => Ok(()),
@@ -1046,22 +1046,24 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
             Ok(None) => continue,
             Err(why) => match conn.missed() {
                 Some(note) => {
-                    let _ = show(&mut out, note);
+                    let _ = show(note);
                     return Ok(ExitCode::from(catch_up::MISSED));
                 }
                 None => return Err(why),
             },
         };
-        let name = event["event"].as_str().unwrap_or_default();
-        if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
-            && only != session
-        {
-            continue;
-        }
-        if shown.iter().any(|e| e == name) && show(&mut out, &event).is_err() {
-            return Ok(ExitCode::SUCCESS);
-        }
-        if ends.contains(&name) {
+        // Shown and let go of on a stack that takes it (ADR 26). Whether
+        // it ends the watch: the end, or stdout closed.
+        let ended = conn.deep(event, |_, event| {
+            let name = event["event"].as_str().unwrap_or_default();
+            if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
+                && only != session
+            {
+                return false;
+            }
+            (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name)
+        })?;
+        if ended {
             return Ok(ExitCode::SUCCESS);
         }
     }

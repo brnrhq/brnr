@@ -36,9 +36,11 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
   host holds is listed however deep it nests. The commands that read events
   (`prompt send --wait`, `event wait`, `event watch`, `event notify`, and
   what they catch up on from the transcript, ADR 69) read them the same
-  way, so an event nested past 128 isn't dropped. They hold it on the main
-  thread, though: one nested about a million deep overflows its stack
-  (#252).
+  way, so an event nested past 128 isn't dropped, and use and let go of
+  each event (and each answer of the host's they read) on a stack that
+  takes it, as the host does, so one as deep as the host holds is followed
+  too (#252). With no such stack to be had, they say so and exit non-zero
+  (P3).
 - For a line that isn't JSON at all: the host keeps the ids of agent
   requests it answered itself (permission requests cancelled, or answered
   from outside, ADR 4) and drops only the editor's late answers to those,
@@ -66,6 +68,8 @@ Run `cargo test --release adr_0026_`. Named claims and their assertions:
 
 - [src/host/fuzz.rs](../../src/host/fuzz.rs)
   - `adr_0026_the_stack_is_as_deep_as_what_the_host_holds`.
+- [src/json.rs](../../src/json.rs)
+  - `adr_0026_a_value_is_let_go_of_on_a_stack_that_takes_it`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0026_a_lone_surrogate_is_read`.
   - `adr_0026_deep_nesting_is_read`.

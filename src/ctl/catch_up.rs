@@ -117,7 +117,7 @@ impl Follow {
             let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             found.read(file, acp)?;
         }
-        let mut events = found.events;
+        let mut events = std::mem::take(&mut found.events);
         events.sort_by_key(|(seq, _)| *seq);
         // `exited` is in each session's file and the host log.
         events.dedup_by_key(|(seq, _)| *seq);
@@ -150,76 +150,84 @@ impl Found<'_> {
             if position(&line).is_some_and(|n| !self.missed(n)) {
                 continue;
             }
-            // As the host reads it (see json.rs), as the socket's events.
-            let record = json::on_stack(json::depth(&line), || json::parse::<Value>(&line));
-            let Some(Some(mut record)) = record else { continue };
-            if record["host_id"] != *f.host_id {
-                continue;
+            // As the host reads it (see json.rs), as the socket's events,
+            // and let go of on a stack that takes it (ADR 26).
+            let depth = json::depth(&line);
+            json::on_stack(depth, || self.record(&line, acp))
+                .ok_or_else(|| format!("no stack to be had for a record {depth} deep"))??;
+        }
+        Ok(())
+    }
+
+    /// One record of the process's, `line`: an event it missed is kept, and
+    /// (in the host log) a session's files are to read.
+    fn record(&mut self, line: &[u8], acp: bool) -> Result<(), String> {
+        let f = self.follow;
+        let Some(mut record) = json::parse::<Value>(line) else { return Ok(()) };
+        if record["host_id"] != *f.host_id {
+            return Ok(());
+        }
+        let event = &record["event"];
+        match event["event"].as_str() {
+            Some("session-opened") if event["session_id"].is_string() => {
+                if f.session.as_ref().is_some_and(|s| event["session_id"] != **s) {
+                    return Ok(());
+                }
+                let file = PathBuf::from(event["file"].as_str().unwrap_or_default());
+                let raw = event["acp_file"].as_str().map(PathBuf::from);
+                if acp && raw.is_none() {
+                    return Err("the process keeps no raw ACP (log = \"events\")".into());
+                }
+                for path in [Some(file), raw.filter(|_| acp)].into_iter().flatten() {
+                    if !self.files.contains(&path) {
+                        self.files.push(path);
+                    }
+                }
             }
-            let event = &record["event"];
-            match event["event"].as_str() {
-                Some("session-opened") if event["session_id"].is_string() => {
-                    if f.session.as_ref().is_some_and(|s| event["session_id"] != **s) {
-                        continue;
-                    }
-                    let file = PathBuf::from(event["file"].as_str().unwrap_or_default());
-                    let raw = event["acp_file"].as_str().map(PathBuf::from);
-                    if acp && raw.is_none() {
-                        return Err("the process keeps no raw ACP (log = \"events\")".into());
-                    }
-                    for path in [Some(file), raw.filter(|_| acp)].into_iter().flatten() {
-                        if !self.files.contains(&path) {
-                            self.files.push(path);
-                        }
-                    }
-                }
-                // A gap where what it missed was (ADR 6).
-                Some("records-skipped") => {
-                    let (first, last) = (event["first_seq"].as_u64(), event["last_seq"].as_u64());
-                    if let (Some(first), Some(last)) = (first, last)
-                        && last > f.last
-                        && self.until.is_none_or(|until| first <= until)
-                    {
-                        let at = match event["error"].as_str() {
-                            Some(error) => format!("a write failed: {error}"),
-                            None => "the disk was behind".to_owned(),
-                        };
-                        return Err(format!(
-                            "the transcript lacks events {first} to {last} ({at})"
-                        ));
-                    }
-                }
-                Some(name) => {
-                    let Some(seq) = event["seq"].as_u64().filter(|&n| self.missed(n)) else {
-                        continue;
+            // A gap where what it missed was (ADR 6).
+            Some("records-skipped") => {
+                let (first, last) = (event["first_seq"].as_u64(), event["last_seq"].as_u64());
+                if let (Some(first), Some(last)) = (first, last)
+                    && last > f.last
+                    && self.until.is_none_or(|until| first <= until)
+                {
+                    let at = match event["error"].as_str() {
+                        Some(error) => format!("a write failed: {error}"),
+                        None => "the disk was behind".to_owned(),
                     };
-                    if self.wanted(name, &event["session"]) {
-                        self.events.push((seq, record["event"].take()));
-                    }
+                    return Err(format!("the transcript lacks events {first} to {last} ({at})"));
                 }
-                // An ACP message, as `acp` events have it.
-                None if acp => {
-                    let Some(seq) = record["seq"].as_u64().filter(|&n| self.missed(n)) else {
-                        continue;
-                    };
-                    let key = if record.get("msg").is_some() { "msg" } else { "raw" };
-                    let Some(msg) = record.get_mut(key).map(Value::take) else { continue };
-                    let session = record["session_id"].take();
-                    if self.wanted("acp", &session) {
-                        let event = json!({
-                            "event": "acp",
-                            "dir": record["dir"],
-                            "session": session,
-                            "msg": msg,
-                            "ts": record["ts"],
-                            "host_id": record["host_id"],
-                            "seq": seq,
-                        });
-                        self.events.push((seq, event));
-                    }
-                }
-                None => {}
             }
+            Some(name) => {
+                let Some(seq) = event["seq"].as_u64().filter(|&n| self.missed(n)) else {
+                    return Ok(());
+                };
+                if self.wanted(name, &event["session"]) {
+                    self.events.push((seq, record["event"].take()));
+                }
+            }
+            // An ACP message, as `acp` events have it.
+            None if acp => {
+                let Some(seq) = record["seq"].as_u64().filter(|&n| self.missed(n)) else {
+                    return Ok(());
+                };
+                let key = if record.get("msg").is_some() { "msg" } else { "raw" };
+                let Some(msg) = record.get_mut(key).map(Value::take) else { return Ok(()) };
+                let session = record["session_id"].take();
+                if self.wanted("acp", &session) {
+                    let event = json!({
+                        "event": "acp",
+                        "dir": record["dir"],
+                        "session": session,
+                        "msg": msg,
+                        "ts": record["ts"],
+                        "host_id": record["host_id"],
+                        "seq": seq,
+                    });
+                    self.events.push((seq, event));
+                }
+            }
+            None => {}
         }
         Ok(())
     }
@@ -235,6 +243,14 @@ impl Found<'_> {
         let f = self.follow;
         f.events.iter().any(|e| e == name)
             && (session.is_null() || f.session.as_ref().is_none_or(|s| session == s.as_str()))
+    }
+}
+
+impl Drop for Found<'_> {
+    /// What it found before it failed may be deep: let go of on a stack that
+    /// takes it (ADR 26).
+    fn drop(&mut self) {
+        json::free(Value::Array(self.events.drain(..).map(|(_, e)| e).collect()));
     }
 }
 
