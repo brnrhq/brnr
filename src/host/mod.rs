@@ -1112,13 +1112,15 @@ impl Host {
     /// Exiting: the last events (`exited`) reach the peers, within
     /// PEER_FLUSH; then started bridges, their stdin closed, should exit,
     /// and those that haven't by BRIDGE_EXIT get SIGTERM. Bridges also see
-    /// EOF on their stdin once we exit.
+    /// EOF on their stdin once we exit. A signal meanwhile gives up on the
+    /// waits after it (`wait_out`).
     fn let_peers_go(&mut self) {
         self.flush_peers(PEER_FLUSH);
         let until = Instant::now() + BRIDGE_EXIT;
         while !self.bridge_pids.is_empty() {
             match self.rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(ev @ Ev::BridgeExited { .. }) => self.handle(ev),
+                Ok(Ev::Signal(_)) => self.given_up = true,
                 Ok(_) => {}
                 Err(_) => break,
             }
