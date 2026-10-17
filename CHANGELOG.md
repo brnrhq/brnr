@@ -47,6 +47,10 @@ brnr's own conventions:
   opens the session it forks. `adapters/check.py --brnr` checks a fork
   prompted and closed in one process, and its parent prompted after (ADR 16,
   ADR 39, #227).
+- A headless process no longer dies when `response_timeout` answers a
+  permission request nested deeper than its main thread's stack takes (a
+  million deep): the event loop's timers run on a stack that takes what the
+  host holds, as its events do (ADR 26, #189).
 - A bridge's load of a session (`session resume --pid`, an agent without
   `session/resume`) finds its transcript in any folder, and one the process
   served and closed moments before, its logger behind, where it recorded

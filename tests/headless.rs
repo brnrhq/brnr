@@ -4071,6 +4071,38 @@ fn adr_0026_deep_nesting_is_read() {
     assert_eq!(state(), "idle");
 }
 
+/// The response timeout answers a request a million deep (2 MB, the main
+/// thread's 8 MiB took 100000) on a stack that takes it, as an event is
+/// handled: its turn is cancelled, as a request with no `reject_once` has
+/// it (ADR 63), and the process lives on.
+#[test]
+fn adr_0026_a_deep_request_that_times_out_is_answered() {
+    let env = Env::new("deep-timeout");
+    env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
+    env.start(&[]);
+    let pid = env.host_pid();
+    env.ok(&["prompt", "send", "sess-1", "odd deep 1000000"]);
+    let answer = || {
+        let ours = |c: &Value| c["id"] == "perm-1" && c.get("method").is_none();
+        env.calls().into_iter().find(ours).map(|c| c["result"]["outcome"].clone())
+    };
+    // Read, and waiting for an answer, before the timeout.
+    let waiting = || {
+        let status: Value =
+            serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+        status["state"] == "waiting"
+    };
+    assert!(wait_for(Duration::from_secs(5), waiting), "never asked");
+    let done = || answer().is_some() || !alive(pid);
+    assert!(wait_for(Duration::from_secs(15), done), "unanswered");
+    assert!(alive(pid), "the process died");
+    assert_eq!(answer().unwrap(), json!({ "outcome": "cancelled" }));
+    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
+    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
+    assert!(env.ok(&["event", "log", "sess-1"]).contains("permission p1 cancelled, by timeout"));
+    env.stop();
+}
+
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
 /// held back: an answer to an id the host doesn't know goes to the agent.
 #[test]
