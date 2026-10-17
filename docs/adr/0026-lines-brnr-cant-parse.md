@@ -73,5 +73,6 @@ Run `cargo test --release adr_0026_`. Named claims and their assertions:
   - `adr_0026_a_deep_request_is_listed`.
   - `adr_0026_a_deep_request_is_followed`.
   - `adr_0026_a_deep_request_is_notified`.
+  - `adr_0026_a_deep_event_is_caught_up`.
   - `adr_0026_an_answer_the_host_cant_place_reaches_the_agent`.
   - `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`.
