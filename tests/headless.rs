@@ -525,14 +525,16 @@ fn adr_0010_failed_start_shows_the_agents_stderr() {
 
 /// A start that times out while the agent waits at a prompt of its own on
 /// stderr, no newline after it, ends its error with that prompt.
+/// (`BRNR_TEST_START_TIMER=stderr` holds the timeout until the prompt has
+/// come, so the agent can write it after the timeout, as a slow one would.)
 #[test]
 fn adr_0062_a_timed_out_start_shows_the_line_stderr_is_in() {
     let env = Env::new("errpart");
-    let agent = env.dir.join("agent.py");
-    let text = "#!/usr/bin/env python3\nimport os, sys\nos.write(2, b'login required: ')\nsys.stdin.read()\n";
-    script(&agent, text);
+    let agent = env.dir.join("agent.sh");
+    script(&agent, "#!/bin/sh\nsleep 2\nprintf 'login required: ' >&2\nexec cat >/dev/null\n");
     let out = (env.brnr(&["session", "new", "--prompt", "hi", "--", agent.to_str().unwrap()]))
         .env("BRNR_START_TIMEOUT", "1")
+        .env("BRNR_TEST_START_TIMER", "stderr")
         .output()
         .unwrap();
     assert!(!out.status.success());
