@@ -111,32 +111,74 @@ fn a_run_takes_ctrl_c_as_cargo_test_leaves_it() {
     assert_eq!(log.unwrap(), "", "the run went on past its SIGINT");
 }
 
+/// The script with one run of `sh -c <script> sh <file>`, which writes the
+/// pid of what it starts to file; on drop the script, and that pid if it is
+/// still there, are killed, and the directory removed.
+struct Tree {
+    child: Child,
+    dir: PathBuf,
+    pid: Option<i32>,
+}
+
+impl Tree {
+    fn start(name: &str, script: &str) -> Tree {
+        let dir = std::env::temp_dir().join(format!("brnr-t{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let child = Command::new(SCRIPT)
+            .args(["-r", "1", "-p", "1", "-s", "0", "-o", dir.to_str().unwrap()])
+            .args(["/bin/sh", "-c", script, "sh"])
+            .arg(dir.join("pid"))
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Tree { child, dir, pid: None }
+    }
+
+    /// The pid of what the run started, once it has written it.
+    fn started(&mut self) -> i32 {
+        let file = self.dir.join("pid");
+        wait_for(GONE, || {
+            self.pid = fs::read_to_string(&file).ok().and_then(|p| p.trim().parse().ok());
+            self.pid.is_some()
+        });
+        self.pid.expect("the run started its sleep")
+    }
+
+    fn started_stops(&self) -> bool {
+        wait_for(GONE, || !alive(self.pid.unwrap()))
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(pid) = self.pid.filter(|&pid| alive(pid)) {
+            kill(pid, libc::SIGKILL);
+        }
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[test]
 fn sigterm_stops_what_a_run_started() {
-    let dir = std::env::temp_dir().join(format!("brnr-t{}-tree", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("pid");
-    let mut child = Command::new(SCRIPT)
-        .args(["-r", "1", "-p", "1", "-s", "0", "-o", dir.to_str().unwrap()])
-        .args(["/bin/sh", "-c", "/bin/sleep 60 & echo $! >\"$1\"; wait", "sh"])
-        .arg(&file)
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut pid = None;
-    wait_for(GONE, || {
-        pid = fs::read_to_string(&file).ok().and_then(|p| p.trim().parse::<i32>().ok());
-        pid.is_some()
-    });
-    let pid = pid.expect("the run started its sleep");
-    kill(child.id() as i32, libc::SIGTERM);
-    assert!(wait_exit(&mut child, GONE), "SIGTERM ends the script");
-    let stopped = wait_for(GONE, || !alive(pid));
-    if !stopped {
-        kill(pid, libc::SIGKILL);
-    }
-    let _ = fs::remove_dir_all(&dir);
-    assert!(stopped, "what a run started outlived the script's SIGTERM");
+    let mut run = Tree::start("tree", "/bin/sleep 60 & echo $! >\"$1\"; wait");
+    run.started();
+    kill(run.child.id() as i32, libc::SIGTERM);
+    assert!(wait_exit(&mut run.child, GONE), "SIGTERM ends the script");
+    assert!(run.started_stops(), "what a run started outlived the script's SIGTERM");
+}
+
+#[test]
+fn an_end_stops_what_a_run_left() {
+    let mut run = Tree::start("left", "/bin/sleep 60 & echo $! >\"$1\"; exit 0");
+    run.started();
+    let mut out = String::new();
+    run.child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    assert!(wait_exit(&mut run.child, GONE), "the script ends");
+    assert!(run.child.wait().unwrap().success());
+    assert_eq!(out, "runs=1 fails=0\n");
+    assert!(run.started_stops(), "what a run left outlived the script");
 }
 
 #[test]

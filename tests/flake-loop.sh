@@ -98,7 +98,10 @@ for ((r = 1; r <= rounds; r++)); do
     done
     for ((p = 1; p <= par; p++)); do
         if wait "${runs[p - 1]}"; then rm "$out/$r.$p.log"; else fails=$((fails + 1)); fi
-        unset 'runs[p - 1]' # waited for: its pid may be another's now
+        # What the run left in its group goes too: the group's id isn't reused
+        # while it has a member. Then the run is dropped, as its pid may be.
+        kill -- "-${runs[p - 1]}" 2>/dev/null || true
+        unset 'runs[p - 1]'
     done
     runs=()
 done
