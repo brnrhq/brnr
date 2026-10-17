@@ -24,6 +24,19 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- The Claude adapter is built from claude-agent-acp 0.90.0
+  (`brnr-claude-adapter`) (ADR 39).
+
+### Fixed
+
+- A Claude fork can be prompted in the process that forked it, where its
+  first prompt failed with `Session not found`: claude-agent-acp 0.90.0
+  opens the session it forks. `adapters/check.py --brnr` checks a fork
+  prompted and closed in one process, and its parent prompted after (ADR 16,
+  ADR 39, #227).
+
 ## [0.9.0] - 2026-10-16
 
 ### Added
