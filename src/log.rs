@@ -17,7 +17,8 @@
 //!
 //! A session's events file starts with a `session-opened` event naming the
 //! host log and the raw file; the host log records a `session-opened` event
-//! naming both of each session's files. Closing a session closes its files
+//! naming both of each session's files. Both name the session a fork came
+//! from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
 //! files only for the sessions it has open; one opened again appends to
 //! them, starting with another `session-opened`.
@@ -123,7 +124,7 @@ pub(crate) struct Ids {
 }
 
 enum Cmd {
-    Open { session: String, cwd: PathBuf },
+    Open { session: String, cwd: PathBuf, forked_from: Option<String> },
     Close { session: String },
     Msg { session: Option<String>, ts: SystemTime, dir: Dir, bytes: Vec<u8>, seq: Option<u64> },
     Note { session: Option<String>, ts: SystemTime, event: String, seq: Option<u64> },
@@ -254,11 +255,14 @@ impl Lost {
 
 impl Sink {
     /// Starts `session`'s files (appending if they exist) under `cwd`'s
-    /// project folder. Records for a session not opened go to the host log.
-    pub(crate) fn open_session(&self, session: &str, cwd: &Path) {
+    /// project folder, naming the session it was forked from, if it was.
+    /// Records for a session not opened go to the host log.
+    pub(crate) fn open_session(&self, session: &str, cwd: &Path, forked_from: Option<&str>) {
         if let Some((tx, _)) = &self.0 {
             // Never skipped: it says where the session's records go.
-            let _ = tx.send(Cmd::Open { session: session.to_owned(), cwd: cwd.to_owned() });
+            let (session, cwd) = (session.to_owned(), cwd.to_owned());
+            let _ =
+                tx.send(Cmd::Open { session, cwd, forked_from: forked_from.map(str::to_owned) });
         }
     }
 
@@ -460,7 +464,7 @@ impl Writer {
     /// Writes what `cmd` has; false once there is nothing more to come.
     fn handle(&mut self, cmd: Cmd) -> bool {
         match cmd {
-            Cmd::Open { session, cwd } => self.open(session, &cwd),
+            Cmd::Open { session, cwd, forked_from } => self.open(session, &cwd, forked_from),
             Cmd::Close { session } => drop(self.sessions.remove(&session)),
             Cmd::Msg { session, ts, dir, bytes, seq } => {
                 let files = session.as_deref().and_then(|s| self.sessions.get(s));
@@ -507,7 +511,7 @@ impl Writer {
         true
     }
 
-    fn open(&mut self, session: String, cwd: &Path) {
+    fn open(&mut self, session: String, cwd: &Path, forked_from: Option<String>) {
         if self.sessions.contains_key(&session) {
             return;
         }
@@ -526,19 +530,27 @@ impl Writer {
             }
         }
         self.sessions.insert(session.clone(), Files { events, acp });
-        let event = json!({
+        let mut event = json!({
             "event": "session-opened",
             "cwd": cwd.to_string_lossy(),
             "host_log": self.host_path.to_string_lossy(),
             "acp_log": acp_path,
         });
+        // Only a fork's: opened any other way, the process doesn't know
+        // whether it was one, and the first of these in the file says.
+        if let Some(from) = &forked_from {
+            event["forked_from"] = json!(from);
+        }
         self.note(now, Some(&session), event);
-        let event = json!({
+        let mut event = json!({
             "event": "session-opened",
             "session_id": session,
             "file": path.to_string_lossy(),
             "acp_file": acp_path,
         });
+        if let Some(from) = forked_from {
+            event["forked_from"] = json!(from);
+        }
         self.note(now, None, event);
     }
 
@@ -1244,7 +1256,7 @@ mod tests {
         queue.bytes.store(ROOM_BYTES + 1, Relaxed);
         sink.note(Some("s"), json!({ "event": "b" }));
         // A session's opening is never skipped.
-        sink.open_session("t", Path::new("/"));
+        sink.open_session("t", Path::new("/"), None);
         queue.bytes.store(ROOM_BYTES, Relaxed);
         sink.note(Some("s"), json!({ "event": "after" }));
 

@@ -24,6 +24,13 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- `session list` and `session status` say which session a fork came from
+  (`forked_from`, a FORKED FROM column in the list), also once its process
+  has ended: the fork's transcript records it in its first record,
+  `session-opened` (ADR 16, ADR 22).
+
 ### Changed
 
 - The Claude adapter is built from claude-agent-acp 0.90.0

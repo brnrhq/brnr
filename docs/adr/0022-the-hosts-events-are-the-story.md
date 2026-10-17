@@ -34,6 +34,12 @@ and with `--purge` deletes both files.
 Amended by 69: every event, and every raw ACP record, has its position in
 its process, `seq`.
 
+Amended 2026-10-16 (#230): the `session-opened` of a session the process
+opened as a fork, in its events file and in the host log, has
+`forked_from`, the session it was forked from (ADR 16). A session opened any
+other way has none: the process doesn't know whether it was a fork, and the
+first `session-opened` in the file says.
+
 ## Context
 
 The transcript records raw ACP. A readable history needs the interpretation
