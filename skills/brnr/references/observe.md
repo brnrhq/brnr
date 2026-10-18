@@ -18,8 +18,8 @@ approval or an elicitation), `turn_seconds`, `owner` (`headless` or
 `editor`), `title`, `mode`, `model`, `tools` running, `plan`, `pending`
 approvals, `elicitations` waiting, `held` messages, `context`,
 `usage`, `last_turn` (`stop_reason`, `error`, `tokens`), `last_message`
-(cut at 4000 characters), `cwd`, `pid`,
-`stop_when_idle`. Use it to answer "what is it doing?", not to wait (use
+(cut at 4000 characters), `cwd`, `forked_from` (the session a fork came
+from, or null), `pid`, `stop_when_idle`. Use it to answer "what is it doing?", not to wait (use
 `event wait` for that).
 
 `event log` prints the session's events, one JSON object per line, and works on a

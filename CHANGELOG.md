@@ -34,6 +34,12 @@ brnr's own conventions:
   shows the last turn now, in text and `--json`, and a turn's text line ends
   with its counts: `turn ended: end_turn (control); tokens: 1.2k total, 1.0k
   input, 234 output` (ADR 71).
+- `session list` and `session status` say which session a fork came from
+  (`forked_from`, a FORKED FROM column in the list), also once its process
+  has ended: the fork's transcript records it in its first record,
+  `session-opened`. That is so for a fork `session fork` makes and for one
+  an editor makes through `brnr acp` (`session/fork`) (ADR 16, ADR 22,
+  #238).
 
 ### Changed
 
@@ -73,6 +79,11 @@ brnr's own conventions:
 - A load that replays and then fails, the editor's or a bridge's, records
   the last agent message the agent replayed, marked replayed, as the rest
   of the replay; it was dropped (ADR 57, #255).
+- A fork an editor makes through `brnr acp` (`session/fork`) is a session of
+  its process as the agent answers, in the cwd the request names: it was
+  listed, and its transcript started, only at its first prompt, under the
+  process's cwd, and its modes and config options weren't known until the
+  agent reported them again (ADR 16, ADR 22, #238).
 
 ## [0.9.0] - 2026-10-16
 

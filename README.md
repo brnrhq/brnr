@@ -388,7 +388,7 @@ anything else for it fails before it reaches the agent.
 ### Sessions and processes
 
 ```sh
-brnr session fork $s               # a copy of the session, in the same process
+brnr session fork $s               # a copy of the session, in the same process; status and list name its source
 brnr session new --pid 4466 --prompt "review the diff"   # a session of its own, in a running process
 brnr session resume --pid 4466 <id>                      # or one carried on there
 brnr session close $s              # cancel a running turn, then close the session
@@ -459,12 +459,13 @@ just to ask it (`session/list`, every page) and joins the two on the session
 id, so it includes sessions started outside brnr; an agent that can't list
 fails it. A folder is the same however it is spelled (a trailing slash, a
 symlink), and an `unreachable` session is a folder's if the agent lists it
-there or brnr has its transcript there. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE and CWD, in
+there or brnr has its transcript there. SESSION, TITLE, STATE, PID, AGENT, SOURCE, LAST ACTIVE, FORKED FROM and CWD, in
 text and `--json` alike, most recently active first: STATE is `idle`, `busy`
 or `waiting` for one open in a process, `unreachable` for one whose process
 holds it but doesn't answer, `inactive` for one no process has open; SOURCE
-says who knows it, `brnr`, `agent` or `both`; TITLE and LAST ACTIVE are the
-agent's where it gives them. LAST ACTIVE is in UTC, an agent's converted
+says who knows it, `brnr`, `agent` or `both`; FORKED FROM is the session a
+fork came from (`forked_from`), also once it has ended, as its transcript
+records it; TITLE and LAST ACTIVE are the agent's where it gives them. LAST ACTIVE is in UTC, an agent's converted
 from its offset to brnr's own form (`2026-10-11T06:00:00.000000Z` in
 `--json`, `2026-10-11 06:00:00Z` in text), and the order is by the time it
 names; one that isn't an RFC 3339 time is shown as the agent gave it, said

@@ -531,7 +531,8 @@ fn stop(args: &[String]) -> Result<(), String> {
 
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
-/// file are read: the first names the cwd, the last says when and in which
+/// file are read: the first names the cwd, and the session it was forked
+/// from if it opened as a fork (ADR 16), the last says when and in which
 /// process the session was last active, or, if it is a deletion's, a record
 /// of no process's (ADR 63), the last that names a process does. That
 /// process's log says which agent it ran.
@@ -578,6 +579,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         past.push(json!({
             "session_id": session,
             "cwd": first["event"]["cwd"],
+            "forked_from": first["event"]["forked_from"],
             // When a process last served it: a deletion isn't activity.
             "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
             "profile": info["profile"],
@@ -587,6 +589,19 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     }
     past.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
     past
+}
+
+/// The session an open session `s` (as its process reports it) was forked
+/// from: as the process says, or, where it doesn't know (the fork resumed
+/// since, here or in another process), as its transcript's first record
+/// says (ADR 16). Null for one that isn't a fork, or whose transcript isn't
+/// kept.
+fn forked_from(s: &Value) -> Value {
+    if s["forked_from"].is_string() {
+        return s["forked_from"].clone();
+    }
+    let first = s["log"].as_str().and_then(|log| first_record(Path::new(log)));
+    first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
 /// The first record in a file that brnr can read (ADR 55).
@@ -675,6 +690,7 @@ fn status(args: &[String]) -> Result<(), String> {
         // An editor's session served without its lock (ADR 50).
         "lock_error": x["lock_error"],
         "cwd": x["cwd"],
+        "forked_from": forked_from(x),
         "state": x["state"],
         "turn_seconds": x["turn_seconds"],
         "mode": x["mode"],
@@ -739,6 +755,9 @@ fn describe_status(x: &Value, arg: &str) -> String {
         ));
     }
     out.push_str(&format!("cwd {}\n", text(&x["cwd"])));
+    if let Some(from) = x["forked_from"].as_str() {
+        out.push_str(&format!("forked from {from}\n"));
+    }
     if x["stopping"] == true {
         out.push_str("stopping\n");
     } else if let Some(secs) = x["stop_when_idle"].as_u64() {

@@ -150,6 +150,9 @@ pub(super) struct Replay {
 pub(super) struct Session {
     pub(super) id: String,
     pub(super) cwd: PathBuf,
+    /// The session it was forked from, when it opened here as a fork
+    /// (ADR 16); not known for one opened any other way.
+    pub(super) forked_from: Option<String>,
     /// Prompts sent and not yet answered, in the order they were sent.
     /// Non-empty means a turn is running.
     pub(super) prompts: VecDeque<Prompt>,
@@ -295,6 +298,7 @@ impl Session {
             closing,
             id: _,
             cwd: _,
+            forked_from: _,
             prompts: _,
             interrupts: _,
             context: _,
@@ -343,12 +347,14 @@ impl Session {
 /// A request whose response the host acts on: one that creates or ends a
 /// session, the editor's `initialize`, or the editor's own steer.
 pub(super) enum Pending {
-    /// `session/new`. Its request is logged once the response says which
-    /// session it belongs to.
+    /// `session/new`, or a `session/fork` of `forked_from`, the editor's or
+    /// the host's. Its request is logged in the session's file once the
+    /// response says which session it opened.
     New {
         cwd: Option<String>,
         request: Option<Vec<u8>>,
         dir: Dir,
+        forked_from: Option<String>,
     },
     /// The editor's `session/load` (`load`) or `session/resume`.
     Attach {
@@ -563,8 +569,10 @@ impl Host {
                     let by = Requester::Editor { raw, key: id_key(&id) };
                     let request = ClientRequest { by, session: session.clone() };
                     self.client_requests.insert(key.clone(), request);
-                    if method == "session/new" {
-                        deferred = Some(key);
+                    match method.as_str() {
+                        "session/new" => (session, deferred) = (None, Some(key)),
+                        "session/fork" => deferred = Some(key),
+                        _ => {}
                     }
                 }
                 (Some(method), None) if method == "$/cancel_request" => {
@@ -597,11 +605,12 @@ impl Host {
         }
         line.push(b'\n');
         // A session/new goes in the host log now, so one the agent never
-        // answers is still on record, and in the session's file once the
-        // response names it. What is recorded keeps the MCP servers' secrets
-        // out (ADR 25 in docs/adr); the agent gets the line as it came, but
-        // for a request's id (ADR 61) and the named changes.
-        let session = if deferred.is_some() { None } else { session };
+        // answers is still on record, and a session/fork in its source's
+        // file, as `brnr session fork`'s does; either goes in the session's
+        // file too once the response names it. What is recorded keeps the
+        // MCP servers' secrets out (ADR 25 in docs/adr); the agent gets the
+        // line as it came, but for a request's id (ADR 61) and the named
+        // changes.
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
         if let Some(Pending::New { request, .. }) =
@@ -667,8 +676,11 @@ impl Host {
             ("initialize", _) => {
                 self.pending.insert(key.to_owned(), Pending::Initialize);
             }
-            ("session/new", _) => {
-                let pending = Pending::New { cwd, request: None, dir: Dir::EditorToAgent };
+            ("session/new" | "session/fork", _) => {
+                // A fork's source is the session it names (ADR 16).
+                let forked_from = session.clone().filter(|_| method == "session/fork");
+                let pending =
+                    Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from };
                 self.pending.insert(key.to_owned(), pending);
             }
             ("session/load" | "session/resume", Some(session)) => {
@@ -1037,10 +1049,10 @@ impl Host {
     /// Returns the session the response was about.
     fn session_changed(&mut self, pending: Pending, result: Option<&Value>) -> Option<String> {
         match pending {
-            Pending::New { cwd, request, dir } => {
+            Pending::New { cwd, request, dir, forked_from } => {
                 let session = result.and_then(new_session);
                 if let Some(session) = &session {
-                    let i = self.open_session(session, cwd.as_deref());
+                    let i = self.open_fork(session, cwd.as_deref(), forked_from.as_deref());
                     self.sessions[i].state.result(result.unwrap_or(&Value::Null));
                 }
                 if let Some(request) = request {
@@ -2053,6 +2065,17 @@ impl Host {
     /// Index of `session`, started (with its lock and log file) if this is
     /// the first we hear of it. Without a cwd, the host's own is used.
     pub(super) fn open_session(&mut self, session: &str, cwd: Option<&str>) -> usize {
+        self.open_fork(session, cwd, None)
+    }
+
+    /// As [`Self::open_session`], for a session forked from `forked_from`,
+    /// which its transcript's `session-opened` and its status name (ADR 16).
+    pub(super) fn open_fork(
+        &mut self,
+        session: &str,
+        cwd: Option<&str>,
+        forked_from: Option<&str>,
+    ) -> usize {
         if let Some(i) = self.find(session) {
             return i;
         }
@@ -2067,14 +2090,17 @@ impl Host {
                     json!({ "event": "session-shared", "session_id": session, "held_by": pid });
                 self.sink.note(None, event);
             }
-            Hold::Owner(_) => self.sink.open_session(session, &cwd),
+            Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
             // One the headless process won't serve gets no transcript.
-            Hold::Unlocked(_) if self.editor_attached() => self.sink.open_session(session, &cwd),
+            Hold::Unlocked(_) if self.editor_attached() => {
+                self.sink.open_session(session, &cwd, forked_from)
+            }
             Hold::Unlocked(_) => {}
         }
         self.sessions.push(Session {
             id: session.to_owned(),
             cwd,
+            forked_from: forked_from.map(str::to_owned),
             prompts: VecDeque::new(),
             held: VecDeque::new(),
             context: Vec::new(),

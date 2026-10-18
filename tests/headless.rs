@@ -3089,6 +3089,47 @@ fn adr_0020_editor_close_is_an_event() {
     assert!(env.ok(&["process", "list"]).contains("editor"));
 }
 
+/// A fork the editor makes (`session/fork`) opens as `brnr session fork`'s
+/// does: in its own cwd, `session list` and `session status` saying which
+/// session it came from, its transcript starting with a `session-opened`
+/// that says so and holding the request that made it (ADR 16, ADR 22).
+#[test]
+fn adr_0016_an_editors_fork_keeps_its_source() {
+    let env = Env::new("ed-fork");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    let cwd = env.dir.join("fork");
+    fs::create_dir(&cwd).unwrap();
+    let params = json!({ "sessionId": "sess-1", "cwd": cwd, "mcpServers": [] });
+    let fork = json!({ "jsonrpc": "2.0", "id": 3, "method": "session/fork", "params": params });
+    writeln!(to_agent, "{fork}").unwrap();
+    assert_eq!(response(&mut from_agent, 3)["result"]["sessionId"], "sess-2");
+
+    let rows: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let row = |id: &str| {
+        let found = rows.as_array().unwrap().iter().find(|r| r["session"] == id).cloned();
+        found.unwrap_or_else(|| panic!("no {id}: {rows}"))
+    };
+    let (fork, parent) = (row("sess-2"), row("sess-1"));
+    assert_eq!((&fork["forked_from"], &parent["forked_from"]), (&json!("sess-1"), &json!(null)));
+    assert_eq!(fork["cwd"], json!(cwd), "{fork}");
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-2", "--json"])).unwrap();
+    assert_eq!(status["forked_from"], "sess-1", "{status}");
+
+    // `log` answers once the logger has caught up (ADR 48).
+    let acp = env.ok(&["event", "log", "sess-2", "--events", "acp", "--json"]);
+    let mut acp = acp.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    let request = |e: &Value| e["dir"] == "editor->agent" && e["msg"]["method"] == "session/fork";
+    assert!(acp.any(|e| request(&e)), "no session/fork in sess-2's transcript");
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let mut files = folders.map(|f| f.path().join("sess-2.jsonl"));
+    let text = fs::read_to_string(files.find(|p| p.exists()).expect("no transcript")).unwrap();
+    let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(first["event"]["event"], "session-opened", "{first}");
+    assert_eq!(first["event"]["forked_from"], "sess-1", "{first}");
+    assert_eq!(first["event"]["cwd"], json!(cwd), "{first}");
+}
+
 /// The editor's `session/delete` of `session`, with `id`.
 fn editor_delete(id: u64, session: &str) -> String {
     let params = json!({ "sessionId": session });
