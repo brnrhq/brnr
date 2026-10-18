@@ -4289,7 +4289,7 @@ fn adr_0026_a_deep_request_is_notified() {
     let deep = "[".repeat(200);
     let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
     let out = env.dir.join("notified");
-    let script = format!("cat >> '{}'", out.display());
+    let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
     let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
     let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
     sleep(Duration::from_millis(300));
@@ -4300,7 +4300,7 @@ fn adr_0026_a_deep_request_is_notified() {
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't end");
 
     let out = env.dir.join("notified-stdin");
-    let script = format!("cat >> '{}'", out.display());
+    let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
     let request = format!(
         r#"{{"event":"permission_request","request":"p1","tool_call":{deep}{}}}"#,
         "]".repeat(200)
