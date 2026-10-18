@@ -4214,13 +4214,16 @@ fn adr_0026_a_deep_request_that_times_out_is_answered() {
         let ours = |c: &Value| c["id"] == "perm-1" && c.get("method").is_none();
         env.calls().into_iter().find(ours).map(|c| c["result"]["outcome"].clone())
     };
-    // Read, and waiting for an answer, before the timeout.
+    // Read, and waiting for an answer, before the timeout. A slow runner's
+    // process can be busy with the line past `status`'s 5 seconds: it isn't
+    // answering then, and is asked again. The timeout starts once the line
+    // is read, so the process answers that before it fires.
     let waiting = || {
-        let status: Value =
-            serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
-        status["state"] == "waiting"
+        let out = env.run(&["session", "status", "sess-1", "--json"]);
+        let status = || serde_json::from_slice::<Value>(&out.stdout).unwrap();
+        out.status.success() && status()["state"] == "waiting"
     };
-    assert!(wait_for(Duration::from_secs(5), waiting), "never asked");
+    assert!(wait_for(Duration::from_secs(15), waiting), "never asked");
     let done = || answer().is_some() || !alive(pid);
     assert!(wait_for(Duration::from_secs(15), done), "unanswered");
     assert!(alive(pid), "the process died");
