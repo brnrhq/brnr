@@ -169,6 +169,14 @@ mod tests {
         for update in adapter_updates() {
             assert!(read::<SessionUpdate>(&update).is_some(), "{update}");
         }
+        // Sent only to a client that asks for them, and stable since 1.11.
+        let asked = [
+            json!({ "sessionUpdate": "notice", "severity": "info", "title": "Note" }),
+            json!({ "sessionUpdate": "compaction_update", "compactionId": "c", "status": "completed" }),
+        ];
+        for update in asked {
+            assert!(read::<SessionUpdate>(&update).is_some(), "{update}");
+        }
         let info = read::<SessionUpdate>(
             &json!({ "sessionUpdate": "session_info_update", "title": null }),
         );
@@ -225,8 +233,6 @@ mod tests {
         // Kinds the adapters send only to a client that asks for them,
         // unstable or their own, and one from a newer schema.
         let unknown = [
-            json!({ "sessionUpdate": "notice", "severity": "info", "title": "Note" }),
-            json!({ "sessionUpdate": "compaction_update", "compactionId": "c", "status": "completed" }),
             json!({ "sessionUpdate": "plan_update",
                     "plan": { "type": "markdown", "planId": "p", "content": "# Plan" } }),
             json!({ "sessionUpdate": "subagent_spawned", "subagentSessionId": "s2", "name": "n",
