@@ -1153,6 +1153,50 @@ fn adr_0009_a_symlinked_config_is_checked_where_it_points() {
     assert_eq!(mode(&target), 0o644);
 }
 
+/// On macOS an access control list can let others in whatever the mode
+/// says (`chmod +a`): a config file or folder with one is refused, with the
+/// `chmod -N` that removes it, and brnr leaves it there (ADR 9.4).
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0009_a_config_with_an_acl_is_refused() {
+    let env = Env::new("s-config-acl");
+    let path = config(&env, "[profiles.default]\nlog = false\n", 0o600, 0o700);
+    let acl = |entry: &str, at: &Path| {
+        let ok = std::process::Command::new("chmod").args(["+a", entry]).arg(at).status().unwrap();
+        assert!(ok.success(), "chmod +a {entry} {}", at.display());
+    };
+    let has_acl = |at: &Path| {
+        let out = std::process::Command::new("ls").arg("-lde").arg(at).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().count() > 1
+    };
+    let folder = path.parent().unwrap().to_owned();
+    for (at, entry, says) in [
+        (
+            &path,
+            "everyone allow read",
+            "it has an access control list (ls -le), which can let others read or write it",
+        ),
+        (
+            &folder,
+            "everyone allow add_file",
+            "has an access control list (ls -le), which can let others change what is in it",
+        ),
+    ] {
+        acl(entry, at);
+        let err = env.fails(&new_args(&["--prompt", "hi"]));
+        assert!(err.contains(says), "{err}");
+        assert!(err.contains("so brnr won't read the config"), "{err}");
+        let name = at.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(err.contains("chmod -N ") && err.trim_end().ends_with(&name), "{err}");
+        assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
+        assert!(env.hosts().is_empty() && env.calls().is_empty());
+        let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();
+        assert!(ok.success());
+    }
+    env.start(&["--prompt", "hi"]);
+    env.stop();
+}
+
 /// No config file is no config, as before: defaults apply.
 #[test]
 fn adr_0009_a_missing_config_is_no_config() {

@@ -454,6 +454,14 @@ fn check_private(
             "{what} can be {can} by {who} (mode {mode:o}){secrets}, {refused}: chmod {fix} {shell}"
         ));
     }
+    // macOS: an ACL can let others in whatever the mode says.
+    if sys::has_acl(opened)? {
+        let can = if dir { "change what is in it" } else { "read or write it" };
+        problems.push(format!(
+            "{what} has an access control list (ls -le), which can let others {can} \
+             whatever its mode, {refused}: chmod -N {shell}"
+        ));
+    }
     Ok(())
 }
 

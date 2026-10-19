@@ -183,7 +183,12 @@ points (N1).
   - a file or folder that isn't the user's own;
   - a file or folder that the group or others can write;
   - a file that the group or others can read, whatever it holds;
-  - a file that isn't a regular file (a FIFO is refused, not waited on).
+  - a file that isn't a regular file (a FIFO is refused, not waited on);
+  - on macOS, a file or folder with an access control list (`ls -le`),
+    which can let others in whatever the mode says: `chmod -N` removes it.
+    Any ACL is refused, a `deny` one too, as one rule (N4). On Linux an
+    ACL's grants show in the mode's group bits, its mask, which are
+    checked.
 - A symlink is followed, as dotfile setups have them: what is checked is the
   file it resolves to, and that file's folder. The link's own folder, and
   the folders above, aren't checked.
@@ -305,6 +310,9 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_a_symlinked_config_is_checked_where_it_points`: a link to a
       private file is read; to one others can read, refused, naming that
       file.
+    - `adr_0009_a_config_with_an_acl_is_refused` (macOS): a config file,
+      and its folder, with an access control list are refused with the
+      `chmod -N` that removes it, and the ACL stays.
     - `adr_0009_a_missing_config_is_no_config`.
   - [tests/doctor.rs](../../tests/doctor.rs):
     `adr_0009_doctor_fails_a_config_others_can_reach`: the file and the
