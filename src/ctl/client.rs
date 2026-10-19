@@ -326,12 +326,19 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
 /// that is stopping writes what it has left before its socket goes.
 const STOPPING_WAIT: Duration = Duration::from_secs(10);
 
-/// Whether nobody listens on `socket` any more, within `wait`.
+/// Whether the process whose socket is `socket` has gone, within `wait`. A
+/// refusal alone isn't enough: on macOS a full backlog refuses too, so its
+/// metadata beside the socket says whose it is (`gone`); with none left,
+/// a refusal is.
 fn gone_within(socket: &Path, wait: Duration) -> bool {
+    let meta = socket.with_extension("json");
+    let pid = read_meta(&meta).and_then(|m| m["host_pid"].as_i64());
     let until = Instant::now() + wait;
     loop {
         match UnixStream::connect(socket) {
-            Err(e) if refused(&e) => return true,
+            Err(e) if refused(&e) && pid.is_none_or(|pid| gone(pid, socket, &meta, &e)) => {
+                return true;
+            }
             _ if Instant::now() >= until => return false,
             _ => std::thread::sleep(REFUSED_AGAIN),
         }
@@ -1084,6 +1091,25 @@ mod tests {
         assert_eq!(seqs, [11, 12, 13]);
         assert_eq!(conn.reconnects, 2);
         process.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A socket that refuses is gone only if its process is: on macOS a
+    /// full backlog refuses too, while the process (here, this one, whose
+    /// metadata is written after it started) lives and may write more.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn adr_0010_a_refusing_socket_whose_process_lives_isnt_gone() {
+        let dir = env::temp_dir().join(format!("brnr-backlog-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, meta) = (dir.join("h.sock"), dir.join("h.json"));
+        drop(UnixListener::bind(&socket).unwrap()); // Nobody listens: refused.
+        let ours = json!({ "host_pid": std::process::id(), "socket": socket.to_string_lossy() });
+        fs::write(&meta, ours.to_string()).unwrap();
+        assert!(!gone_within(&socket, Duration::from_millis(100)));
+        fs::remove_file(&meta).unwrap();
+        assert!(gone_within(&socket, Duration::from_millis(100)));
         let _ = fs::remove_dir_all(&dir);
     }
 
