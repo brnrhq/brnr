@@ -237,14 +237,14 @@ impl Host {
                     return self.fail_start(&err);
                 }
                 self.initialized(&result);
-                if let Err(err) = self.check_mcp_servers() {
+                let Some(start) = &self.start else { return }; // Failed, or abandoned.
+                let auth = start.auth.clone();
+                let checked =
+                    start.prompt.as_ref().map_or(Ok(()), |p| self.check_blocks(&p.blocks));
+                if let Err(err) = self.check_mcp_servers().and(checked) {
                     return self.fail_start(&err);
                 }
-                let checked = self.prompt.as_ref().map_or(Ok(()), |p| self.check_blocks(&p.blocks));
-                if let Err(err) = checked {
-                    return self.fail_start(&err);
-                }
-                match self.auth.clone() {
+                match auth {
                     Some(method) => self.authenticate(method),
                     None => self.open_first_session(),
                 }
@@ -258,9 +258,11 @@ impl Host {
                     },
                     Open::Resume(session) | Open::Load(session) => session,
                 };
-                if self.stop_requested {
-                    return; // The start already failed (timed out) or was stopped.
-                }
+                // The start already failed (timed out), or was stopped.
+                let Some(start) = self.start.as_mut().filter(|_| !self.stop_requested) else {
+                    return;
+                };
+                let flags = std::mem::take(&mut start.flags);
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
                 // asked for it; a new one's, as it opened. Without it, the
@@ -271,9 +273,7 @@ impl Host {
                 }
                 self.end_replay(i);
                 self.sessions[i].state.result(&result);
-                // The profile's are kept, for the sessions opened later.
-                let flags = std::mem::take(&mut self.settings.0);
-                match resolve_settings(&flags, &self.settings.1, &self.sessions[i].state) {
+                match resolve_settings(&flags, &self.defaults, &self.sessions[i].state) {
                     Ok(steps) => {
                         self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Start })
                     }
@@ -327,7 +327,9 @@ impl Host {
     fn open_first_session(&mut self) {
         let cwd = self.cwd.to_string_lossy().into_owned();
         let mcp = json!(self.mcp_servers);
-        let Some(session) = self.resume.clone() else {
+        let Some(start) = &self.start else { return }; // Failed, or abandoned.
+        let transcript = start.transcript;
+        let Some(session) = start.resume.clone() else {
             let params = json!({ "cwd": cwd, "mcpServers": mcp });
             let step = HostRequest::Start(StartStep::Open(Open::New));
             return self.host_request("session/new", params, step);
@@ -348,7 +350,7 @@ impl Host {
             // The agent replays the history: recorded unless the transcript
             // has it already (ADR 5.6).
             let i = self.open_session(&session, None);
-            self.begin_replay(i, !self.transcript);
+            self.begin_replay(i, !transcript);
             let step = HostRequest::Start(StartStep::Open(Open::Load(session)));
             self.host_request("session/load", params, step);
         } else {
@@ -506,16 +508,17 @@ impl Host {
             return; // The start already failed (timed out), or was stopped.
         }
         let session = self.sessions[i].id.clone();
-        let message = self.prompt.is_some().then(|| self.message_id());
+        let prompted = self.start.as_ref().is_some_and(|s| s.prompt.is_some());
+        let message = prompted.then(|| self.message_id());
         if !self.report_ready(&session, message.as_deref()) {
             return;
         }
-        self.start_deadline = None;
+        let prompt = self.start.take().and_then(|s| s.prompt);
         self.start_done = true;
         if self.foreground {
             self.say(format!("brnr: session {}", crate::render::clean(&session)));
         }
-        if let (Some(prompt), Some(id)) = (self.prompt.take(), message) {
+        if let (Some(prompt), Some(id)) = (prompt, message) {
             self.send_prompt(i, Held { id, text: prompt.text, blocks: prompt.blocks });
         }
     }
@@ -598,7 +601,7 @@ impl Host {
         self.end_replay(i);
         self.sessions[i].state.result(&result);
         // The process's profile's settings, under the bridge's (ADR 6.1).
-        match resolve_settings(&opening.settings, &self.settings.1, &self.sessions[i].state) {
+        match resolve_settings(&opening.settings, &self.defaults, &self.sessions[i].state) {
             Ok(steps) => {
                 self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Open(opening) })
             }

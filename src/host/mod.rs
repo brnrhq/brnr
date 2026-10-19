@@ -69,7 +69,7 @@ use crate::frame;
 use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
-use crate::request::{Prompt, Request, Role, Settings};
+use crate::request::{Request, Role, Settings};
 use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
@@ -83,7 +83,7 @@ use lines::{Lines, Long, Piece};
 use outbound::Outbound;
 use requests::Capabilities;
 use sessions::Sessions;
-use start::StartChannel;
+use start::Start;
 
 /// Where the editor link or the start channel is: a socket either way.
 const CHANNEL_FD: RawFd = 3;
@@ -268,6 +268,17 @@ struct Parts {
     bridges: Vec<Bridge>,
 }
 
+/// What a simulated host sends (see `Host::simulated`).
+#[cfg(any(test, feature = "internals"))]
+struct Ends {
+    /// Bytes for the agent's stdin.
+    agent: Receiver<Vec<u8>>,
+    /// Frames for the proxy: none for a headless host.
+    editor: Receiver<(u8, Vec<u8>)>,
+    /// Reports for the start channel: none for an editor's.
+    start: Receiver<Value>,
+}
+
 enum Ev {
     /// A frame from the proxy on the link; `None` once the link is gone.
     Link(Option<(u8, Vec<u8>)>),
@@ -330,8 +341,9 @@ struct Host {
     /// In the foreground, a failed start has been reported on stderr.
     startup_reported: bool,
     /// The start is over: it has committed (the session is open and set up,
-    /// and brnr session new has been told, see `finish_start`), or an editor
-    /// attached. Until then, the process stopping is the start failing.
+    /// and brnr session new has been told, see `finish_start`), or this is an
+    /// editor's process, which has none. Until then, the process stopping is
+    /// the start failing.
     start_done: bool,
     info: Value,
     host_id: String,
@@ -360,11 +372,8 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<JoinHandle<()>>,
-    /// brnr session new's start channel, until the start commits or fails.
-    start_channel: Option<StartChannel>,
-    /// When the start fails if it hasn't committed: the request's start
-    /// timeout.
-    start_deadline: Option<Instant>,
+    /// A headless start, until it commits or fails (see start.rs).
+    start: Option<Start>,
     log: Logger,
     sink: Sink,
     /// Detached: the thread taking what the process writes on stderr to the
@@ -393,20 +402,10 @@ struct Host {
     /// deeply the stack it is running on takes (see `deep`).
     deepest: usize,
     stack: usize,
-    /// Headless start: the prompt, sent once the start has committed.
-    prompt: Option<Prompt>,
-    /// Headless start: the login method to run before the session opens.
-    auth: Option<String>,
-    /// Headless start: resume this session instead of opening a new one.
-    resume: Option<String>,
-    /// Headless start: brnr has a transcript of the session resumed, so a
-    /// load's replay isn't recorded again (ADR 5.6).
-    transcript: bool,
-    /// Headless start: what its flags and its profile set, resolved once
-    /// the session is open and the agent has said which option is which.
-    /// The flags go with the first session; the profile's stay, for the
-    /// sessions a bridge opens (`new`, `resume`).
-    settings: (Settings, Settings),
+    /// What the profile sets, under the flags of each session the host
+    /// opens, the start's and a bridge's (`new`, `resume`), resolved once the
+    /// agent has said which option is which (ADR 6.1).
+    defaults: Settings,
     /// MCP servers for the sessions the host opens, as ACP has them.
     mcp_servers: Vec<Value>,
     /// Close a session idle this long (see `fire_idle_timers`).
@@ -567,14 +566,13 @@ impl Host {
         agent_pid: pid_t,
         rx: Receiver<Ev>,
     ) -> Host {
-        let (editor, headless) = match role {
+        let (editor, mut headless) = match role {
             Role::Editor(editor) => (Some(editor), None),
             Role::Headless(headless) => (None, Some(headless)),
         };
         let foreground = headless.as_ref().is_some_and(|h| h.foreground.is_some());
-        // An editor's process has no start deadline, and none of the rest.
-        let start_deadline = (headless.as_ref())
-            .and_then(|h| Instant::now().checked_add(Duration::from_secs(h.start_timeout)));
+        // An editor's process has no start.
+        let start = headless.as_deref_mut().map(Start::of);
         let h = headless.unwrap_or_default();
         let shown = h.foreground.as_ref();
         let show_events = shown.is_some_and(|f| !f.quiet);
@@ -593,7 +591,7 @@ impl Host {
         Host {
             foreground,
             startup_reported: false,
-            start_done: false,
+            start_done: editor.is_some(),
             info: Value::Null,
             host_id: String::new(),
             response_timeout: h.response_timeout.map(Duration::from_secs),
@@ -606,8 +604,7 @@ impl Host {
             editor: editor.is_some(),
             link: None,
             link_writer: None,
-            start_channel: None,
-            start_deadline,
+            start,
             sink: log.sink(),
             log,
             own_stderr: None,
@@ -622,11 +619,7 @@ impl Host {
             stderr_lines: Lines::new(PIECE, Long::Cut),
             deepest: 0,
             stack: json::SHALLOW,
-            prompt: h.prompt,
-            auth: h.auth,
-            resume: h.resume,
-            transcript: h.transcript,
-            settings: (h.settings, h.defaults),
+            defaults: h.defaults,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
             show_events,
@@ -765,7 +758,6 @@ impl Host {
         }
         death::test_panic_starting();
         if self.editor {
-            self.start_done = true;
             let ready =
                 json!({ "id": id, "host_pid": std::process::id(), "agent_pid": self.agent_pid });
             self.send_link(frame::READY, ready.to_string().as_bytes());
@@ -780,6 +772,23 @@ impl Host {
             ));
         }
         Ok(())
+    }
+
+    /// The host of `role`, as `start` makes it and `set_up` sets it up, but
+    /// with no agent, thread, log, socket or peer: what it writes to the
+    /// agent's stdin, the editor's link and the start channel is collected
+    /// on [`Ends`], for the fuzz harness (see fuzz.rs).
+    #[cfg(any(test, feature = "internals"))]
+    fn simulated(role: Role, strict: bool) -> (Host, Ends) {
+        let (_, rx) = mpsc::sync_channel(1);
+        // No agent to signal: a pid no process can have.
+        let mut host = Host::new(role, PathBuf::from("/"), strict, Log::Off, pid_t::MAX, rx);
+        let (agent_in, agent) = mpsc::channel();
+        host.agent_in = Some(agent_in);
+        let (link, editor) = mpsc::channel();
+        host.link = host.editor.then_some(link);
+        let start = host.collect_start();
+        (host, Ends { agent, editor, start })
     }
 
     /// A start that fails before the event loop runs: what it started goes,
@@ -865,7 +874,8 @@ impl Host {
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
             let closed_at = self.sessions.next_letting_go();
-            let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
+            let start_at = self.start.as_ref().and_then(|s| s.deadline);
+            let wake = [self.drain_until, stop_at, start_at, permission_at, idle_at]
                 .into_iter()
                 .chain([closed_at])
                 .flatten()
@@ -1400,9 +1410,10 @@ impl Host {
     /// than carry on where nobody knows about it (brnr session new gives up
     /// waiting a little later).
     fn fire_start_timer(&mut self, now: Instant) {
-        if self.start_deadline.is_some_and(|t| now >= t) {
-            self.start_deadline = None;
-            if !self.start_done && !self.stop_requested && !self.test_hold_start_timer(now) {
+        let Some(start) = &mut self.start else { return };
+        if start.deadline.is_some_and(|t| now >= t) {
+            start.deadline = None;
+            if !self.stop_requested && !self.test_hold_start_timer(now) {
                 self.fail_start("timed out waiting for the session");
             }
         }

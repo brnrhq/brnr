@@ -11,15 +11,13 @@
 //! (`$BRNR_HOME`, see paths.rs, ADR 3.9), held until the harness drops.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use super::Host;
-use super::start::StartChannel;
-use crate::config::{ClientCapability, EchoAs, Experimental, Feature, Log};
+use crate::config::{ClientCapability, EchoAs, Experimental, Feature};
 use crate::request::{Editor, Headless, Prompt, Role, Settings};
 
 /// How far the clock moves at each [`Harness::tick`]: past every timeout
@@ -80,22 +78,14 @@ impl Harness {
     }
 
     fn new(role: Role, strict: bool) -> Harness {
-        let (_, rx) = mpsc::sync_channel(1);
-        // No agent to signal: a pid no process can have.
-        let mut host = Host::new(role, PathBuf::from("/"), strict, Log::Off, libc::pid_t::MAX, rx);
-        let (agent_in, agent) = mpsc::channel();
-        host.agent_in = Some(agent_in);
-        let mut editor = None;
-        if host.editor {
-            let (link, rx) = mpsc::channel();
-            (host.link, host.start_done, editor) = (Some(link), true, Some(rx));
+        let (host, ends) = Host::simulated(role, strict);
+        Harness {
+            host,
+            agent: ends.agent,
+            editor: ends.editor,
+            start: ends.start,
+            now: Instant::now(),
         }
-        let editor = editor.unwrap_or_else(|| mpsc::channel().1);
-        let (tx, start) = mpsc::channel();
-        if !host.editor {
-            host.start_channel = Some(StartChannel::Collected(tx));
-        }
-        Harness { host, agent, editor, start, now: Instant::now() }
     }
 
     /// Bytes from the editor, as the link delivers them: lines may be split
@@ -172,6 +162,8 @@ impl Harness {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
     use crate::{frame, json};
 
