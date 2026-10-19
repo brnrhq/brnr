@@ -568,7 +568,7 @@ impl Host {
     }
 
     /// `Ok(None)`: the answer comes from the agent, later.
-    fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, String> {
+    pub(super) fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, String> {
         if let Some(err) = req.get("parse_error") {
             return Err(format!("bad request: {}", err.as_str().unwrap_or_default()));
         }

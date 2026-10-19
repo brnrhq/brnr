@@ -124,6 +124,16 @@ impl Harness {
         self.host.handle(super::Ev::AgentStderr(bytes.to_vec()));
     }
 
+    /// A bridge's `send`, `cancel`, `queue` or `status` (see control.rs),
+    /// from a peer that isn't there: the answer it would get. Other commands
+    /// start or stop processes, and aren't taken.
+    pub fn bridge(&mut self, req: &Value) -> Result<Value, String> {
+        if !matches!(req["cmd"].as_str(), Some("send" | "cancel" | "queue" | "status")) {
+            return Err("not a command the harness takes".into());
+        }
+        self.host.command(0, req).map(Option::unwrap_or_default)
+    }
+
     /// Time passes: unanswered permission requests and idle sessions time
     /// out.
     pub fn tick(&mut self) {
@@ -246,5 +256,41 @@ mod tests {
         assert_eq!(sent.start[0]["session"], "fuzz-start");
         assert!(h.host.start_done);
         assert!(sent.agent[0].windows(14).any(|w| w == b"session/prompt"));
+    }
+
+    /// The start's session, its prompt `brnr-4` running, with an agent that
+    /// steers.
+    fn turn_running() -> Harness {
+        let mut h = Harness::headless(false, None);
+        h.host.claimed.insert("fuzz-send".into(), super::super::acp::Hold::Owner(None));
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1,"_meta":{"steering":{"supported":true}}}}"#);
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-send","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-3","result":{}}"#);
+        h.sent();
+        h
+    }
+
+    #[test]
+    fn adr_0004_a_bridge_sends_through_the_sessions_turns() {
+        let mut h = turn_running();
+        let send = |text: &str, mode: &str| serde_json::json!({ "cmd": "send", "session": "fuzz-send", "text": text, "mode": mode });
+        assert_eq!(h.bridge(&send("later", "prompt")).unwrap()["status"], "held");
+        assert_eq!(h.bridge(&send("now", "steer")).unwrap()["status"], "steered");
+        let sent = h.sent().agent;
+        assert!(sent.len() == 1 && sent[0].windows(17).any(|w| w == b"_session/steering"));
+        // The turn's answer, then the steer's: only then does the held one go.
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-4","result":{"stopReason":"end_turn"}}"#);
+        assert!(h.sent().agent.is_empty(), "a prompt went while a steer was unanswered");
+        let status = h.bridge(&serde_json::json!({ "cmd": "status" })).unwrap();
+        assert_eq!(
+            (&status["sessions"][0]["state"], &status["sessions"][0]["held"]),
+            (&"idle".into(), &1.into())
+        );
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-5","result":{"outcome":"injected"}}"#);
+        let sent = h.sent().agent;
+        assert!(sent.len() == 1 && sent[0].windows(5).any(|w| w == b"later"));
+        let queue = serde_json::json!({ "cmd": "queue", "session": "fuzz-send", "drop": "m1" });
+        assert_eq!(h.bridge(&queue).err(), Some("no held message m1".into()));
+        assert!(h.bridge(&serde_json::json!({ "cmd": "stop" })).is_err());
     }
 }
