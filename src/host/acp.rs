@@ -738,8 +738,11 @@ impl Host {
         if loaded {
             self.end_replay(i);
         } else if opened {
-            // Its lock goes with it, and its files are closed.
-            self.sink.close_session(&self.sessions.remove(i).id);
+            // Its files are closed, and its lock goes once its replay is
+            // written, as a bridge's failed load's does (ADR 5.5).
+            let Session { id: session, hold, .. } = self.sessions.remove(i);
+            self.sink.close_session(&session);
+            self.let_go(session, hold, None);
         } else {
             self.drop_replay(i); // Loaded again, or resumed, and failed.
         }

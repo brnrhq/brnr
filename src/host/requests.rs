@@ -212,6 +212,10 @@ impl Host {
                     // Its lock goes once its replay is written, with the
                     // exit's records at the latest (ADR 5.5).
                     if let Some(i) = self.find(session) {
+                        // The last replayed message, still marked as
+                        // replayed (P3).
+                        self.flush_agent_message(i);
+                        self.sink.close_session(session); // A load's files.
                         let hold = self.sessions.remove(i).hold;
                         self.let_go(session.clone(), hold, None);
                     }
