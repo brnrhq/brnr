@@ -18,19 +18,12 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::acp::AgentRequest;
+use super::approvals::AgentRequest;
 use crate::schema::{
     self, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationContentValue, ElicitationMode, ElicitationPropertySchema,
     ElicitationSchema, ElicitationScope, MultiSelectItems,
 };
-
-/// What the host keeps of a URL elicitation it holds or has accepted,
-/// until the agent says its flow is complete.
-pub(super) struct UrlElicitation {
-    pub(super) session: Option<String>,
-    pub(super) handle: String,
-}
 
 /// A request as the events and `pending` describe it: `mode`, `message`,
 /// `scope` (`session`, `tool_call` or `request`) with the `tool_call` or
@@ -86,7 +79,7 @@ pub(super) fn request_event(req: &AgentRequest, owner: &str) -> Value {
     let mut event = json!({
         "event": "elicitation_request",
         "session": req.session,
-        "request": req.handle,
+        "request": req.held(),
         "owner": owner,
     });
     merge(&mut event, describe(req));
@@ -100,7 +93,7 @@ pub(super) fn resolved_event(req: &AgentRequest, result: &Value, by: &str) -> Va
     json!({
         "event": "elicitation_resolved",
         "session": req.session,
-        "request": req.handle,
+        "request": req.held(),
         "action": result["action"],
         "content": result["content"],
         "by": by,
@@ -110,7 +103,7 @@ pub(super) fn resolved_event(req: &AgentRequest, result: &Value, by: &str) -> Va
 /// The response for `action`: `accept` with `content` checked against the
 /// form's schema, `decline` or `cancel`. What can't be sent says why.
 pub(super) fn response(req: &AgentRequest, action: &str, content: &Value) -> Result<Value, String> {
-    let handle = req.handle.as_deref().unwrap_or("?");
+    let handle = req.held().unwrap_or("?");
     let action = match action {
         "decline" => ElicitationAction::Decline,
         "cancel" => ElicitationAction::Cancel,

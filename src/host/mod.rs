@@ -25,6 +25,7 @@
 //! back likewise (see flow.rs).
 
 mod acp;
+mod approvals;
 mod control;
 mod death;
 mod display;
@@ -36,10 +37,13 @@ mod flow;
 #[cfg(any(test, feature = "internals"))]
 pub(crate) mod fuzz;
 mod lines;
+mod outbound;
 mod requests;
+mod sessions;
 mod start;
 mod state;
 mod strict;
+mod turns;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
@@ -65,19 +69,21 @@ use crate::frame;
 use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
-use crate::request::{Prompt, Request, Role, Settings};
+use crate::request::{Request, Role, Settings};
 use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Replay, Session};
+use approvals::Approvals;
 use control::{Closer, Peer};
 pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use lines::{Lines, Long, Piece};
+use outbound::Outbound;
 use requests::Capabilities;
-use start::StartChannel;
+use sessions::Sessions;
+use start::Start;
 
 /// Where the editor link or the start channel is: a socket either way.
 const CHANNEL_FD: RawFd = 3;
@@ -262,6 +268,17 @@ struct Parts {
     bridges: Vec<Bridge>,
 }
 
+/// What a simulated host sends (see `Host::simulated`).
+#[cfg(any(test, feature = "internals"))]
+struct Ends {
+    /// Bytes for the agent's stdin.
+    agent: Receiver<Vec<u8>>,
+    /// Frames for the proxy: none for a headless host.
+    editor: Receiver<(u8, Vec<u8>)>,
+    /// Reports for the start channel: none for an editor's.
+    start: Receiver<Value>,
+}
+
 enum Ev {
     /// A frame from the proxy on the link; `None` once the link is gone.
     Link(Option<(u8, Vec<u8>)>),
@@ -324,8 +341,9 @@ struct Host {
     /// In the foreground, a failed start has been reported on stderr.
     startup_reported: bool,
     /// The start is over: it has committed (the session is open and set up,
-    /// and brnr session new has been told, see `finish_start`), or an editor
-    /// attached. Until then, the process stopping is the start failing.
+    /// and brnr session new has been told, see `finish_start`), or this is an
+    /// editor's process, which has none. Until then, the process stopping is
+    /// the start failing.
     start_done: bool,
     info: Value,
     host_id: String,
@@ -354,11 +372,8 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<JoinHandle<()>>,
-    /// brnr session new's start channel, until the start commits or fails.
-    start_channel: Option<StartChannel>,
-    /// When the start fails if it hasn't committed: the request's start
-    /// timeout.
-    start_deadline: Option<Instant>,
+    /// A headless start, until it commits or fails (see start.rs).
+    start: Option<Start>,
     log: Logger,
     sink: Sink,
     /// Detached: the thread taking what the process writes on stderr to the
@@ -370,40 +385,13 @@ struct Host {
     cwd: PathBuf,
 
     // ACP state; see acp.rs.
-    sessions: Vec<Session>,
-    /// Requests whose response creates or ends a session.
-    pending: HashMap<String, Pending>,
-    /// Sessions this process has taken (or failed to take) the lock of
-    /// before the agent opened them: a resume or a load not yet answered.
-    claimed: HashMap<String, Hold>,
-    /// The replays of editors' sessions closed while a load of them was
-    /// unanswered, until the last is (ADR 5.6): still counted, though not
-    /// recorded, and the session's again if a load succeeds.
-    closed_loads: HashMap<String, Replay>,
-    /// Sessions closed here, until their records are written (ADR 5.5).
-    letting_go: Vec<LettingGo>,
+    sessions: Sessions,
     /// Every unanswered request to the agent, by its id there, which is the
-    /// host's whoever asked (ADR 2.4): who asked, and the session it is about.
-    client_requests: HashMap<String, ClientRequest>,
-    /// Requests from the agent to its client that are unanswered.
-    agent_requests: Vec<AgentRequest>,
-    /// Agent requests the host answered itself while the editor may answer
-    /// them too (a cancel, an allow): its late answers are dropped (see
-    /// experimental.rs).
-    answered: HashMap<String, experimental::Answered>,
-    /// Sessions brnr closed under the editor (ADR 7.1) → the process that took
-    /// each over, if one did: the editor's requests for them are answered
-    /// here.
-    closed: HashMap<String, Option<u32>>,
-    /// Request id of every unanswered prompt → its session.
-    prompt_session: HashMap<String, String>,
-    /// The last of the host's ids, for requests to the agent and its echoes.
-    next_id: u64,
-    next_permission: u64,
-    next_elicitation: u64,
-    /// URL elicitations held or accepted, by the agent's `elicitationId`,
-    /// until the agent says each is complete (ADR 4.5).
-    url_elicitations: HashMap<String, elicitation::UrlElicitation>,
+    /// host's whoever asked (ADR 2.4): who asked, and what its answer gets.
+    outbound: Outbound,
+    /// Requests from the agent to its client that are unanswered, and the
+    /// late answers to drop of those the host answered (ADR 4.5).
+    approvals: Approvals,
     /// What the editor writes, as lines: one past `LINE_BYTES` goes to the
     /// agent unread (ADR 10.3).
     editor_lines: Lines,
@@ -414,20 +402,10 @@ struct Host {
     /// deeply the stack it is running on takes (see `deep`).
     deepest: usize,
     stack: usize,
-    /// Headless start: the prompt, sent once the start has committed.
-    prompt: Option<Prompt>,
-    /// Headless start: the login method to run before the session opens.
-    auth: Option<String>,
-    /// Headless start: resume this session instead of opening a new one.
-    resume: Option<String>,
-    /// Headless start: brnr has a transcript of the session resumed, so a
-    /// load's replay isn't recorded again (ADR 5.6).
-    transcript: bool,
-    /// Headless start: what its flags and its profile set, resolved once
-    /// the session is open and the agent has said which option is which.
-    /// The flags go with the first session; the profile's stay, for the
-    /// sessions a bridge opens (`new`, `resume`).
-    settings: (Settings, Settings),
+    /// What the profile sets, under the flags of each session the host
+    /// opens, the start's and a bridge's (`new`, `resume`), resolved once the
+    /// agent has said which option is which (ADR 6.1).
+    defaults: Settings,
     /// MCP servers for the sessions the host opens, as ACP has them.
     mcp_servers: Vec<Value>,
     /// Close a session idle this long (see `fire_idle_timers`).
@@ -588,14 +566,13 @@ impl Host {
         agent_pid: pid_t,
         rx: Receiver<Ev>,
     ) -> Host {
-        let (editor, headless) = match role {
+        let (editor, mut headless) = match role {
             Role::Editor(editor) => (Some(editor), None),
             Role::Headless(headless) => (None, Some(headless)),
         };
         let foreground = headless.as_ref().is_some_and(|h| h.foreground.is_some());
-        // An editor's process has no start deadline, and none of the rest.
-        let start_deadline = (headless.as_ref())
-            .and_then(|h| Instant::now().checked_add(Duration::from_secs(h.start_timeout)));
+        // An editor's process has no start.
+        let start = headless.as_deref_mut().map(Start::of);
         let h = headless.unwrap_or_default();
         let shown = h.foreground.as_ref();
         let show_events = shown.is_some_and(|f| !f.quiet);
@@ -614,7 +591,7 @@ impl Host {
         Host {
             foreground,
             startup_reported: false,
-            start_done: false,
+            start_done: editor.is_some(),
             info: Value::Null,
             host_id: String::new(),
             response_timeout: h.response_timeout.map(Duration::from_secs),
@@ -627,8 +604,7 @@ impl Host {
             editor: editor.is_some(),
             link: None,
             link_writer: None,
-            start_channel: None,
-            start_deadline,
+            start,
             sink: log.sink(),
             log,
             own_stderr: None,
@@ -636,29 +612,14 @@ impl Host {
             sock_path: PathBuf::new(),
             meta_path: PathBuf::new(),
             cwd,
-            sessions: Vec::new(),
-            pending: HashMap::new(),
-            claimed: HashMap::new(),
-            closed_loads: HashMap::new(),
-            letting_go: Vec::new(),
-            client_requests: HashMap::new(),
-            agent_requests: Vec::new(),
-            answered: HashMap::new(),
-            closed: HashMap::new(),
-            prompt_session: HashMap::new(),
-            next_id: 0,
-            next_permission: 0,
-            next_elicitation: 0,
-            url_elicitations: HashMap::new(),
+            sessions: Sessions::default(),
+            outbound: Outbound::default(),
+            approvals: Approvals::default(),
             editor_lines: Lines::new(LINE_BYTES, Long::Relay),
             stderr_lines: Lines::new(PIECE, Long::Cut),
             deepest: 0,
             stack: json::SHALLOW,
-            prompt: h.prompt,
-            auth: h.auth,
-            resume: h.resume,
-            transcript: h.transcript,
-            settings: (h.settings, h.defaults),
+            defaults: h.defaults,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
             show_events,
@@ -797,7 +758,6 @@ impl Host {
         }
         death::test_panic_starting();
         if self.editor {
-            self.start_done = true;
             let ready =
                 json!({ "id": id, "host_pid": std::process::id(), "agent_pid": self.agent_pid });
             self.send_link(frame::READY, ready.to_string().as_bytes());
@@ -812,6 +772,23 @@ impl Host {
             ));
         }
         Ok(())
+    }
+
+    /// The host of `role`, as `start` makes it and `set_up` sets it up, but
+    /// with no agent, thread, log, socket or peer: what it writes to the
+    /// agent's stdin, the editor's link and the start channel is collected
+    /// on [`Ends`], for the fuzz harness (see fuzz.rs).
+    #[cfg(any(test, feature = "internals"))]
+    fn simulated(role: Role, strict: bool) -> (Host, Ends) {
+        let (_, rx) = mpsc::sync_channel(1);
+        // No agent to signal: a pid no process can have.
+        let mut host = Host::new(role, PathBuf::from("/"), strict, Log::Off, pid_t::MAX, rx);
+        let (agent_in, agent) = mpsc::channel();
+        host.agent_in = Some(agent_in);
+        let (link, editor) = mpsc::channel();
+        host.link = host.editor.then_some(link);
+        let start = host.collect_start();
+        (host, Ends { agent, editor, start })
     }
 
     /// A start that fails before the event loop runs: what it started goes,
@@ -888,7 +865,7 @@ impl Host {
                 host.fire_stop_timer(now);
                 host.fire_permission_timers(now);
                 host.fire_idle_timers(now);
-                host.fire_letting_go(now);
+                host.sessions.fire_letting_go(now);
             };
             if self.deep(0, timers).is_none() {
                 timers(self);
@@ -896,8 +873,9 @@ impl Host {
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
-            let closed_at = self.next_letting_go();
-            let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
+            let closed_at = self.sessions.next_letting_go();
+            let start_at = self.start.as_ref().and_then(|s| s.deadline);
+            let wake = [self.drain_until, stop_at, start_at, permission_at, idle_at]
                 .into_iter()
                 .chain([closed_at])
                 .flatten()
@@ -952,9 +930,9 @@ impl Host {
     fn holds(&self) -> usize {
         let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
         let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
-        let requests = self.agent_requests.iter().map(AgentRequest::holds);
-        let sessions = self.sessions.iter().map(Session::holds);
-        methods.chain(requests).chain(sessions).fold(json::nesting([&self.info]), usize::max)
+        let sessions = std::iter::once(self.sessions.holds());
+        let requests = self.approvals.holds();
+        methods.chain(sessions).fold(json::nesting([&self.info]).max(requests), usize::max)
     }
 
     /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
@@ -988,7 +966,7 @@ impl Host {
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         self.wait_logged();
-        self.let_go_of_sessions();
+        self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
@@ -1060,7 +1038,7 @@ impl Host {
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         self.wait_logged();
-        self.let_go_of_sessions();
+        self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
@@ -1081,18 +1059,6 @@ impl Host {
             let _ = tx.send(());
         });
         let _ = rx.recv_timeout(LOG_FLUSH);
-    }
-
-    /// Exiting, once `wait_logged` is through: the sessions are let go of as
-    /// brnr stops listing the process (ADR 3.9), those closing here too.
-    fn let_go_of_sessions(&mut self) {
-        self.let_go_of_closed();
-        self.claimed.clear();
-        for s in &mut self.sessions {
-            if let Hold::Owner(lock) = &mut s.hold {
-                lock.take();
-            }
-        }
     }
 
     /// Exiting, last: waits for the logger to have written everything
@@ -1444,9 +1410,10 @@ impl Host {
     /// than carry on where nobody knows about it (brnr session new gives up
     /// waiting a little later).
     fn fire_start_timer(&mut self, now: Instant) {
-        if self.start_deadline.is_some_and(|t| now >= t) {
-            self.start_deadline = None;
-            if !self.start_done && !self.stop_requested && !self.test_hold_start_timer(now) {
+        let Some(start) = &mut self.start else { return };
+        if start.deadline.is_some_and(|t| now >= t) {
+            start.deadline = None;
+            if !self.stop_requested && !self.test_hold_start_timer(now) {
                 self.fail_start("timed out waiting for the session");
             }
         }
