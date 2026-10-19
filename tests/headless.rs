@@ -4389,7 +4389,15 @@ fn adr_0026_a_deep_event_is_caught_up() {
         // the transcript.
         if cut {
             env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
-            env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+            // A slow runner's process can be busy with the deep line past the
+            // 5 seconds a command gives it to answer, or past the wait's 10:
+            // it is asked again (#276). The request stays pending until it is
+            // answered, so a later wait sees it at once.
+            let asked = || {
+                let wait = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
+                env.run(&wait).status.success()
+            };
+            assert!(wait_for(Duration::from_secs(40), asked), "{depth}: never asked");
             env.ok(&["permission", "allow", "sess-1", "p1"]);
         }
         kill(watch.id() as i32, libc::SIGCONT);
