@@ -160,13 +160,17 @@ said in the pull request.
 
 ## Decisions
 
-[ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14, and P15
-in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)) every decision is
-measured against. A pull request that changes what brnr does
-either follows an ADR or adds one, as [docs/adr](docs/adr/README.md)
-describes; one that breaks a principle says which, and why. Before 1.0 there
-is no backwards compatibility: a change replaces what it changes, with no
-aliases or shims.
+[ADR 1](docs/adr/0001-principles.md) has what brnr must get right, its
+critical success factors and their order when two pull apart (security, then
+reliability, then faithfulness to ACP), and the principles that serve them
+(P1 to P14, and P15 in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)),
+which every decision is measured against. A pull request that changes what
+brnr does either follows an ADR or adds one, as [docs/adr](docs/adr/README.md)
+describes; one that gives up a factor or breaks a principle says which, and
+why. Before 1.0 there is no backwards compatibility: a change replaces what
+it changes, with no aliases or shims. The ADRs are drafts until then too: a
+decision is changed where it is written, and records can be rewritten,
+renumbered, merged or removed.
 
 From 1.0.0, what [ADR 64](docs/adr/0064-what-the-compatibility-promise-covers.md)
 covers is kept compatible within a major version: the commands and their

@@ -1,6 +1,6 @@
 # 29. Requests the agent answers
 
-Accepted (former decision 22); reviewed 2026-10-07. Implemented.
+Draft (former decision 22); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

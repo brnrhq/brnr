@@ -296,10 +296,11 @@ buffer, so an editor that stops reading one eventually holds up the other
 sessions.
 See [editor setup and deviations](../README.md#use-it-from-an-editor) and
 [ADR 2](adr/0002-the-editors-process.md). The editor's `initialize` reaches
-the agent with its client capabilities as sent, `fs` and `terminal`
-included, and the agent's `fs/*` and `terminal/*` requests go to the editor,
-which answers them; a headless process offers neither, and answers them
-with "method not found"
+the agent without its `fs` and `terminal` client capabilities, as ACP v2
+has neither, but those the profile's `client_capabilities` names; in strict
+mode both reach it. The agent's `fs/*` and `terminal/*` requests, where it
+was offered them, go to the editor, which answers them; a headless process
+offers neither, and answers them with "method not found"
 ([ADR 67](adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)).
 Experimental actions on an editor's session, experimental for all of 1.x,
 are documented there too; strict mode disables them.
@@ -326,7 +327,7 @@ doesn't load in an earlier one.
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `false`; `strict`: boolean (default false); `bridges`: table array. |
 | `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `response_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline, and neither has a default: an unattended run must set `response_timeout`, or a request nobody answers waits as long as the process runs. A response timeout answers with the `reject_once` option, else cancels the turn; an elicitation it answers `cancel`. |
-| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `elicitation`, `config`, `close`; `features`: array containing `shared_sessions` if enabled. Both default empty. `echo_as`: `"tool_call"` (default) or `"user_message_chunk"`, how a message or context sent through brnr is shown to the editor ([ADR 70](adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)). |
+| `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `elicitation`, `config`, `close`; `client_capabilities`: array of `fs`, `terminal`, the editor's capabilities that reach the agent outside strict mode ([ADR 67](adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)); `features`: array containing `shared_sessions` if enabled. All three default empty. `echo_as`: `"tool_call"` (default) or `"user_message_chunk"`, how a message or context sent through brnr is shown to the editor ([ADR 70](adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)). |
 | Bridge table | `command`: nonempty argv string array; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0031-mcp-servers.md). |
 

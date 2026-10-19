@@ -1,6 +1,6 @@
 # 64. What the compatibility promise covers
 
-Accepted 2026-10-14. Amends 1 (P9) and 35. Resolves #148. Nothing to
+Draft 2026-10-14. Amends 1 (P9) and 35. Resolves #148. Nothing to
 implement: the promise starts at 1.0.0, and until then P9 is as it was.
 
 Amended by 65: the session locks are in the state directory

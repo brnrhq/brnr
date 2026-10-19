@@ -1,6 +1,6 @@
 # 34. Same data in text and JSON; `--json` wherever a command prints data
 
-Accepted (former decisions 8, 42 and 44, and the usage part of 36); reviewed
+Draft (former decisions 8, 42 and 44, and the usage part of 36); reviewed
 2026-10-07. Implemented. Its running tools are the running turn's (#164):
 a tool call the agent left unfinished, in a turn that was cancelled or
 failed, isn't running once the turn has ended, so `status` no longer lists

@@ -1,6 +1,6 @@
 # 55. A transcript cut short
 
-Accepted 2026-10-08. Implemented. Amends 22: what reads a transcript reads
+Draft 2026-10-08. Implemented. Amends 22: what reads a transcript reads
 past a line it can't, and says so. Resolves #61.
 
 ## Context

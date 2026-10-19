@@ -1,6 +1,6 @@
 # 66. The library is private, and its facade mirrors the command line
 
-Accepted 2026-10-14. Implemented, but for the typed facade, which waits for
+Draft 2026-10-14. Implemented, but for the typed facade, which waits for
 #150: `brnr::run` is the library's one public item. Resolves #147.
 Amends 47: what the published crate's library offers, and that only that is
 covered by compatibility.

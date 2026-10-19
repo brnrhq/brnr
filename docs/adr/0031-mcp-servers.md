@@ -1,6 +1,6 @@
 # 31. MCP servers for headless sessions
 
-Accepted (former decision 13); reviewed 2026-10-07. Implemented.
+Draft (former decision 13); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

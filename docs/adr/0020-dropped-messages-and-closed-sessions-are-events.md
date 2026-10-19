@@ -1,6 +1,6 @@
 # 20. Dropped messages and closed sessions are events
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 Resolves review item 5.
 
 Amended by 63: the commands are grouped: `cancel` is `prompt cancel`,

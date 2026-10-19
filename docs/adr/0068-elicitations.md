@@ -1,6 +1,6 @@
 # 68. Elicitations are held and answered as approvals are
 
-Accepted 2026-10-14. Implemented. Amends 4, 21, 27, 33, 35, 36, 58 and 63.
+Draft 2026-10-14. Implemented. Amends 4, 21, 27, 33, 35, 36, 58 and 63.
 Resolves #195.
 
 ## Context

@@ -1,6 +1,6 @@
 # 45. Bug reports: `doctor --report`, and a link on a panic
 
-Accepted 2026-10-08. Implemented. Part of #23's answer to error reporting:
+Draft 2026-10-08. Implemented. Part of #23's answer to error reporting:
 reporting without telemetry (#24).
 
 Amended by 63: `brnr start` is `brnr session new` (and

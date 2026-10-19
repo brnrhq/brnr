@@ -9,6 +9,9 @@
 //!   back to it with its id as it wrote it (ADR 61). In a line, only the id
 //!   changes. The editor's `$/cancel_request` names its own requests, and
 //!   goes with their ids on the agent's side.
+//! - The editor's `initialize` loses the `fs` and `terminal` client
+//!   capabilities, as ACP v2 has neither, but those the profile names
+//!   (`client_capabilities`), and none in strict mode (ADR 67 in docs/adr).
 //! - An injected message goes to the agent as a `session/prompt`, never
 //!   while a prompt is running: until then it is held. With `--steer` it
 //!   goes into the running turn instead, as `_session/steering` (ADR 18 in
@@ -85,7 +88,7 @@ use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, PeerOp, history};
 use super::state::SessionState;
 use super::{Host, LOG_FLUSH, control, id_key, text_block};
-use crate::config::{EchoAs, Feature, Log};
+use crate::config::{ClientCapability, EchoAs, Feature, Log};
 use crate::lock::{self, Lock};
 use crate::log::{self, Dir};
 use crate::schema::{
@@ -671,10 +674,9 @@ impl Host {
     ) -> Option<Vec<u8>> {
         let cwd = msg.get("params").and_then(|p| p["cwd"].as_str()).map(str::to_owned);
         match (method, session) {
-            // Its client capabilities, `fs` and `terminal` too, reach the
-            // agent as the editor sent them (ADR 67 in docs/adr).
             ("initialize", _) => {
                 self.pending.insert(key.to_owned(), Pending::Initialize);
+                return self.drop_capabilities(msg);
             }
             ("session/new" | "session/fork", _) => {
                 // A fork's source is the session it names (ADR 16).
@@ -842,6 +844,26 @@ impl Host {
         let msg =
             json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": error } });
         self.write_editor(None, &msg);
+    }
+
+    /// Removes the editor's `fs` and `terminal` client capabilities from its
+    /// `initialize`, as ACP v2 does, but those the profile names
+    /// (`client_capabilities`), and none in strict mode: stable ACP v1 has
+    /// them (ADR 67 in docs/adr). The host log says what it dropped.
+    fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
+        if self.strict {
+            return None;
+        }
+        let caps = msg.get_mut("params")?.get_mut("clientCapabilities")?.as_object_mut()?;
+        let dropped: Map<String, Value> = (ClientCapability::ALL.into_iter())
+            .filter(|c| !self.client_capabilities.contains(c))
+            .filter_map(|c| Some((c.name().to_owned(), caps.shift_remove(c.name())?)))
+            .collect();
+        if dropped.is_empty() {
+            return None;
+        }
+        self.sink.note(None, json!({ "event": "capabilities-dropped", "dropped": dropped }));
+        Some(serde_json::to_vec(&msg).unwrap())
     }
 
     /// Tracks the editor's prompt as the start of a turn and appends any

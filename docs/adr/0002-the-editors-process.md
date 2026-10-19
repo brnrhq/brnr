@@ -1,6 +1,6 @@
 # 2. The editor's process: `brnr acp` relays, the host owns the agent
 
-Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
+Draft (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
 
 Amended by 61: the editor's requests reach the agent with an id of the
 host's, and their answers come back with the editor's; in a line only the
@@ -11,12 +11,6 @@ agent runs on, and brnr writes nothing more there of its own.
 
 Amended by 63: `brnr start --resume <session>` is
 `brnr session resume <session>`.
-
-Amended by 67: the editor's `initialize` reaches the agent with its `fs`
-and `terminal` capabilities, in strict mode and without, and the agent's
-`fs/*` and `terminal/*` requests go to the editor. There is no setting to
-drop them; the question comes back with ACP v2. A headless process offers
-neither.
 
 ## Context
 
@@ -52,9 +46,9 @@ editor notices nothing different (P1).
   it starts (P11, P14).
 - By default the editor's `initialize` loses the `fs` and `terminal` client
   capabilities, one of the few deliberate changes to the stream (P1). ACP v2
-  drops them (its `ClientCapabilities` has neither), they add nothing an
-  agent needs, and without them now no agent comes to rely on them. In strict
-  mode they pass through, as stable v1 has them (ADR 41).
+  drops them (its `ClientCapabilities` has neither), and without them now no
+  agent comes to rely on them. A profile passes those it names, and in
+  strict mode they pass through, as stable v1 has them (ADR 41, ADR 67).
 
 ## Caveats
 
@@ -80,7 +74,8 @@ What the editor sees differently, stated in the README:
   reason now, and the README gives it.
 - Passing `fs` and `terminal` through always: by P1's test the agent is
   affected, since it can't use the editor's buffers or terminal. Kept for
-  strict mode; the default follows v2.
+  strict mode and for a profile that names them; the default follows v2
+  (ADR 67).
 
 ## Tests
 

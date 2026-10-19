@@ -3409,6 +3409,14 @@ fn adr_0033_profile_layout_errors_say_where() {
             r#"profiles.default.editor.experimental: unknown action "fork" (actions: send, context, cancel, permission, elicitation, config, close)"#,
         ),
         (
+            "[profiles.default.editor]\nclient_capabilities = [\"fs\", \"clipboard\"]\n",
+            r#"profiles.default.editor.client_capabilities: unknown capability "clipboard" (capabilities: fs, terminal)"#,
+        ),
+        (
+            "[profiles.default]\nclient_capabilities = [\"fs\"]\n",
+            "profiles.default: client_capabilities is for brnr acp only; it goes under [profiles.default.editor]",
+        ),
+        (
             "[profiles.default.editor]\nfeatures = [\"sharing\"]\n",
             r#"profiles.default.editor.features: unknown feature "sharing" (features: shared_sessions)"#,
         ),

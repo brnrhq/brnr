@@ -1,6 +1,6 @@
 # 13. Sessions are the agent's ids, processes are pids
 
-Accepted (former decisions 37, 38 and 39); reviewed 2026-10-07. Implemented.
+Draft (former decisions 37, 38 and 39); reviewed 2026-10-07. Implemented.
 
 Amended by 63: `ps`, `stop` and `close` are `process list`, `process stop`
 and `session close`; `list` and `status` are `session list` and

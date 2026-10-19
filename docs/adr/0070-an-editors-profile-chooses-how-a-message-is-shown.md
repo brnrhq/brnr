@@ -1,6 +1,6 @@
 # 70. An editor's profile chooses how a message sent through brnr is shown to it
 
-Accepted 2026-10-15. Implemented. Amends 5 (a message or context is a tool
+Draft 2026-10-15. Implemented. Amends 5 (a message or context is a tool
 call unless the profile says otherwise) and 33 (the editor part has
 `echo_as`).
 

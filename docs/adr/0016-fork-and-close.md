@@ -1,6 +1,6 @@
 # 16. Fork and close
 
-Accepted (former decision 11); reviewed 2026-10-07. Implemented; on an
+Draft (former decision 11); reviewed 2026-10-07. Implemented; on an
 editor's session `close` is ADR 4's experimental action.
 
 Amended by 63: a new session in a running process is offered after all,

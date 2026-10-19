@@ -1,6 +1,6 @@
 # 26. Lines brnr can't parse
 
-Accepted 2026-10-07. Implemented. The editor is told in the session that
+Draft 2026-10-07. Implemented. The editor is told in the session that
 its late answer was dropped, and who answered first (ADR 4).
 Resolves review item 2.
 

@@ -1,6 +1,6 @@
 # 56. A turn ends once its steers are answered
 
-Accepted 2026-10-08. Implemented. Amends 17 (which messages a turn carried)
+Draft 2026-10-08. Implemented. Amends 17 (which messages a turn carried)
 and 18 (what `send --steer` does when the agent's answer comes late, and
 `send --interrupt` meanwhile).
 Resolves #63.

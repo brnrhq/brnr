@@ -1,6 +1,6 @@
 # 22. The host's events are the story, and transcripts are two files
 
-Accepted (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
+Draft (former decisions 1, 34 and 35); reviewed 2026-10-07. Implemented.
 Of the config options and the commands, `session_changed` has a JSON merge
 patch (RFC 7396) by id and name: an option's new value (`{"model":
 "opus"}`), a command added (`{"review": {…}}`), `null` for what is gone. An

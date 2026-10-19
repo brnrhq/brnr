@@ -1,6 +1,6 @@
 # 71. A turn's tokens are what the agent reported
 
-Accepted 2026-10-16. Implemented. Amends 21 (`--wait --json` has
+Draft 2026-10-16. Implemented. Amends 21 (`--wait --json` has
 `tokens`), 23 (`turn_ended` has `tokens`, and its line shows them), 34
 (`status` has `last_turn`) and 43 (a prompt answer's unstable `usage` is read
 as a `Value`). Resolves #228.

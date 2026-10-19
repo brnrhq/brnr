@@ -1,6 +1,6 @@
 # 39. Which adapter version is built, and how it shows
 
-Accepted (former decision 30); reviewed 2026-10-07. Implemented.
+Draft (former decision 30); reviewed 2026-10-07. Implemented.
 
 Amended by 63: `brnr status` is `brnr session status`.
 

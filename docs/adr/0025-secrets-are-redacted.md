@@ -1,6 +1,6 @@
 # 25. Secrets are redacted in what brnr records
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 Resolves review item 10.
 
 ## Context

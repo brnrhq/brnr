@@ -1,6 +1,6 @@
 # 4. Side-channel actions on an editor's session are experimental
 
-Accepted 2026-10-07. Implemented: each action is refused on an editor's
+Draft 2026-10-07. Implemented: each action is refused on an editor's
 session unless its profile enables it, and in strict mode, and each
 compensation in the table is sent. The `tool_call_update` for an approve or a
 deny sets only `status` (`in_progress`, `failed`), which the agent's own

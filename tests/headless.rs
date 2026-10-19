@@ -1027,29 +1027,65 @@ fn capable_editor(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<Chi
     (editor, to_agent, from_agent)
 }
 
-/// The editor's `fs` and `terminal` capabilities reach the agent as the
-/// editor sent them, in strict mode and without: brnr no longer drops them.
+/// The editor's `fs` and `terminal` capabilities don't reach the agent by
+/// default, as ACP v2 has neither, and the host log says which were
+/// dropped. In strict mode both pass, as stable ACP v1 has them, and so does
+/// each one the profile's `client_capabilities` names, as the editor sent
+/// it.
 #[test]
-fn adr_0067_the_editors_capabilities_reach_the_agent() {
+fn adr_0067_fs_and_terminal_reach_the_agent_in_strict_mode_or_when_named() {
     let sent: Value = serde_json::from_str(CAPABLE_INITIALIZE).unwrap();
-    for (name, strict) in [("ed-caps", false), ("ed-strict", true)] {
+    let sent = &sent["params"]["clientCapabilities"];
+    let named = |names: &str| format!("[profiles.default.editor]\nclient_capabilities = {names}\n");
+    let cases = [
+        ("ed-caps", vec![], None, vec![]),
+        ("ed-strict", vec!["--strict"], None, vec!["fs", "terminal"]),
+        ("ed-fs", vec![], Some(named(r#"["fs"]"#)), vec!["fs"]),
+        ("ed-both", vec![], Some(named(r#"["fs", "terminal"]"#)), vec!["fs", "terminal"]),
+    ];
+    for (name, args, config, passed) in cases {
         let env = Env::new(name);
-        let args: &[&str] = if strict { &["--strict"] } else { &[] };
-        let (mut editor, _to_agent, _from_agent) = capable_editor(&env, args);
-        assert_eq!(started_record(&env)["request"]["strict"], strict);
+        if let Some(config) = config {
+            env.write_config(&config);
+        }
+        let (mut editor, _to_agent, _from_agent) = capable_editor(&env, &args);
+        assert_eq!(started_record(&env)["request"]["strict"], !args.is_empty());
         let caps = &env.calls_of("initialize")[0]["params"]["clientCapabilities"];
-        assert_eq!(caps, &sent["params"]["clientCapabilities"], "{name}");
+        for cap in ["fs", "terminal"] {
+            let expected = if passed.contains(&cap) { &sent[cap] } else { &Value::Null };
+            assert_eq!(&caps[cap], expected, "{name}: {cap} in {caps}");
+        }
+        // The note comes before the session/new the host log records next.
+        let logged = || host_logs(&env).contains("session/new");
+        assert!(wait_for(Duration::from_secs(5), logged), "{name}: no session/new");
+        let note = (host_logs(&env).lines())
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].clone())
+            .find(|e| e["event"] == "capabilities-dropped");
+        let dropped: Vec<&str> =
+            ["fs", "terminal"].into_iter().filter(|c| !passed.contains(c)).collect();
+        match note {
+            Some(note) => {
+                let names: Vec<&str> =
+                    note["dropped"].as_object().unwrap().keys().map(String::as_str).collect();
+                assert_eq!(names, dropped, "{name}: {note}");
+                for cap in dropped {
+                    assert_eq!(note["dropped"][cap], sent[cap], "{name}: {note}");
+                }
+            }
+            None => assert!(dropped.is_empty(), "{name}: no capabilities-dropped note"),
+        }
         let _ = editor.kill();
         let _ = editor.wait();
     }
 }
 
-/// The agent's `fs/*` and `terminal/*` requests reach the editor as the
-/// agent wrote them, and the editor's answers, results and errors, reach the
-/// agent.
+/// With both named in the profile, the agent's `fs/*` and `terminal/*`
+/// requests reach the editor as the agent wrote them, and the editor's
+/// answers, results and errors, reach the agent.
 #[test]
 fn adr_0067_the_agents_file_and_terminal_requests_reach_the_editor() {
     let env = Env::new("ed-client");
+    env.write_config("[profiles.default.editor]\nclient_capabilities = [\"fs\", \"terminal\"]\n");
     let (_editor, mut to_agent, mut from_agent) = capable_editor(&env, &[]);
     writeln!(to_agent, "{}", editor_prompt(3, "client")).unwrap();
     // Without the capabilities the agent asks nothing and answers the prompt.
@@ -2993,6 +3029,7 @@ fn adr_0008_acp_hands_over_one_request() {
     env.write_config(
         "[profiles.default]\nstrict = true\nlog = \"events\"\n\n[profiles.default.headless]\nmode = \"plan\"\n\n\
          [profiles.default.editor]\nexperimental = [\"send\", \"permission\"]\n\
+         client_capabilities = [\"terminal\"]\n\
          echo_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n",
     );
     let (mut editor, _to_agent, _from_agent) = open_editor(&env);
@@ -3002,6 +3039,7 @@ fn adr_0008_acp_hands_over_one_request() {
     let part = &request["role"]["editor"];
     assert_eq!(part["proxy_pid"], editor.id(), "{request}");
     assert_eq!(part["experimental"], serde_json::json!(["send", "permission"]));
+    assert_eq!(part["client_capabilities"], serde_json::json!(["terminal"]));
     assert_eq!(part["features"], serde_json::json!(["shared_sessions"]));
     assert_eq!(part["echo_as"], "user_message_chunk");
     assert!(part["sigmask"].is_array());
@@ -3439,8 +3477,8 @@ fn adr_0002_an_editors_process_needs_its_signal_link() {
     let mut child = cmd.spawn().unwrap();
     drop(theirs);
     let editor = serde_json::json!({
-        "proxy_pid": std::process::id(), "sigmask": [], "experimental": [], "echo_as": "tool_call",
-        "features": [],
+        "proxy_pid": std::process::id(), "sigmask": [], "experimental": [],
+        "client_capabilities": [], "echo_as": "tool_call", "features": [],
     });
     let request = serde_json::json!({
         "profile": null, "agent": [AGENT], "cwd": env.dir, "strict": false, "log": "all",

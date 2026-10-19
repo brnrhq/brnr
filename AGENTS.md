@@ -14,16 +14,26 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 
 ## Decisions come first
 
-- [ADR 1](docs/adr/0001-principles.md) has the principles (P1 to P14, and
-  P15 in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)) every decision
-  is measured against; [docs/adr](docs/adr/README.md) has the
-  decisions. Read the ADRs a change touches before changing it. Modules say
-  which ADR they implement in their first doc line.
+- [ADR 1](docs/adr/0001-principles.md) has what brnr must get right, its
+  critical success factors (F1 to F5, N1 to N4) and their order when two
+  pull apart (security, then reliability, then faithfulness to ACP), and
+  the principles that serve them (P1 to P14, and P15 in
+  [ADR 44](docs/adr/0044-brnr-never-phones-home.md)), which every decision
+  is measured against; [docs/adr](docs/adr/README.md) has the decisions.
+  Read the ADRs a change touches before changing it. Modules say which ADR
+  they implement in their first doc line.
 - A change in what brnr does follows an ADR or adds one (the format is in
-  docs/adr/README.md). One that breaks a principle says which, and why.
-- In a design discussion, settle the principle at stake first, and show the
-  current sequence of events, traced from the code, as a numbered diagram
-  before asking questions about a flow. Recommend, citing principles.
+  docs/adr/README.md). One that gives up a factor or breaks a principle
+  says which, and why.
+- Until 1.0.0 the ADRs are drafts: change a decision where it is written,
+  rewriting, renumbering, merging or removing records, without adding
+  `Amended by` or `Superseded by` lines (those already there go as the
+  records are consolidated); a renumbered or removed record takes its
+  references (`ADR N`, `adr_NNNN_`) with it.
+- In a design discussion, settle the factor and the principle at stake
+  first, and show the current sequence of events, traced from the code, as
+  a numbered diagram before asking questions about a flow. Recommend,
+  citing factors and principles.
 - No backwards compatibility before 1.0: a rename or change replaces the old
   form, with no aliases or shims. Say so in the pull request, and in
   CHANGELOG.md's `[Unreleased]`, the next release's notes, under Changed or

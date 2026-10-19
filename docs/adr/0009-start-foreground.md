@@ -1,6 +1,6 @@
 # 9. `start --foreground`
 
-Accepted (former decision 45); reviewed 2026-10-07. Implemented.
+Draft (former decision 45); reviewed 2026-10-07. Implemented.
 Resolves review item 3 with ADR 6.
 
 Amended by 63: `start --foreground` is `session new --foreground` (and

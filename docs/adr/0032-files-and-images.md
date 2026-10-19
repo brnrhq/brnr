@@ -1,6 +1,6 @@
 # 32. Files and images in a message
 
-Accepted (former decision 15); reviewed 2026-10-07. Implemented.
+Draft (former decision 15); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

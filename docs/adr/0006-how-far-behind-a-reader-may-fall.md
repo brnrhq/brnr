@@ -1,6 +1,6 @@
 # 6. How far behind a reader may fall
 
-Accepted 2026-10-07, from former decision 25. Implemented. The logger's
+Draft 2026-10-07, from former decision 25. Implemented. The logger's
 queue is bounded too, and gives way as an observer does: past 64 MiB not yet
 written (a slow or stalled disk), records are skipped and counted, but never
 a session's opening, nor `exited` or `panic`, which say how the process

@@ -14,22 +14,34 @@ of to-resolve; the map at the end says where each went.
 
 - A file `NNNN-short-title.md`, the next number, titled `# N. What was
   decided`.
-- Under the title: when it was accepted, whether it is implemented (and if
-  only partly, what isn't), and what it replaces or resolves.
+- Under the title, a status line: `Draft` and the date (`Accepted` from
+  1.0.0), whether it is implemented (and if only partly, what isn't), and
+  what it replaces or resolves. When a record's implementation lands, its
+  status line says so.
 - Then `Context` (what made a decision necessary), `Decision`,
   `Consequences` where there are any worth saying, and `Considered` (the
   options not taken, and why).
-- A decision is changed by a new record. The old one gets a line under its
-  title, `Superseded by N` or `Amended by N: …`, and is otherwise left as it
-  was. When a record's implementation lands, its status line says so.
-- Under the title, the status line comes first, then the `Amended by` and
-  `Superseded by` lines, in the order of the records' numbers.
+
+## Changing one
+
+- Until 1.0.0 every record is a draft (P9). A decision is changed where it
+  is written: a record is rewritten, renumbered, merged into another or
+  removed, so that the records say what is decided now. No `Amended by` or
+  `Superseded by` lines are needed. A record renumbered or removed takes
+  its references with it: `ADR N` in the code and the docs, and `adr_NNNN_`
+  in test names. The pull request says what changed, and git keeps what
+  was.
+- At 1.0.0 the records are accepted, and their status lines say so. From
+  then a decision is changed by a new record. The old one gets a line under
+  its title, `Superseded by N` or `Amended by N: …`, and is otherwise left
+  as it was; the status line comes first, then those lines, in the order of
+  the records' numbers.
 
 ## Records
 
 | | Decision | Implemented |
 |---|---|---|
-| [1](0001-principles.md) | Principles | — |
+| [1](0001-principles.md) | Critical success factors and principles | — |
 | [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | yes |
 | [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | yes |
 | [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | yes |
@@ -95,7 +107,7 @@ of to-resolve; the map at the end says where each went.
 | [64](0064-what-the-compatibility-promise-covers.md) | What the compatibility promise covers from 1.0.0 (P9) | — |
 | [65](0065-session-locks-live-with-the-transcripts.md) | Session locks live with the transcripts; where things live is fixed for 1.x | yes |
 | [66](0066-the-library-is-private-and-its-facade-mirrors-the-cli.md) | The library is private, and its facade mirrors the command line | partly: the typed facade waits for #150 |
-| [67](0067-the-editors-file-system-and-terminal-reach-the-agent.md) | The editor's file system and terminal reach the agent, and side-channel actions stay experimental in 1.x | yes |
+| [67](0067-the-editors-file-system-and-terminal-reach-the-agent.md) | The editor's file system and terminal reach the agent in strict mode, or when its profile names them, and side-channel actions stay experimental in 1.x | yes |
 | [68](0068-elicitations.md) | Elicitations are held and answered as approvals are | yes |
 | [69](0069-a-peer-cut-off-catches-up.md) | A peer cut off catches up from the transcript | yes |
 | [70](0070-an-editors-profile-chooses-how-a-message-is-shown.md) | An editor's profile chooses how a message sent through brnr is shown to it | yes |
