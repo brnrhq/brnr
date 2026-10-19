@@ -751,7 +751,9 @@ impl Host {
         let mut report = self.info.clone();
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
-        report["pending"] = json!(self.pending_permissions().len());
+        // Counted, not described: a description copies each request's tool
+        // call, which can nest a million deep (ADR 2.5).
+        report["pending"] = json!(self.agent_requests.iter().filter(|r| r.is_permission()).count());
         report["elicitations"] =
             json!(self.agent_requests.iter().filter(|r| r.is_elicitation()).count());
         report["uptime_seconds"] = json!(self.started.elapsed().as_secs());

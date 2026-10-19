@@ -94,6 +94,18 @@ brnr's own conventions:
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
   agent reported them again (ADR 3.12, ADR 5.1, #238).
+- `brnr permission requests` lists a request nested deeper than 128,
+  where it failed with `recursion limit exceeded`: it reads the host's
+  answer as the host reads the agent's line (ADR 2.5, #239).
+- `brnr prompt send --wait`, `event wait`, `event watch` and `event notify`
+  (from the socket and `--stdin`) see a permission request nested deeper
+  than 128, which they dropped without a word: they read events as the
+  host reads the agent's line (ADR 2.5, #250).
+- Those commands, and `session new --wait`, follow an event nested about a
+  million deep, where they overflowed their stack and aborted (exit 134):
+  each event is used and let go of on a stack that takes it, as the host
+  does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
+  #252).
 
 ## [0.9.0] - 2026-10-16
 

@@ -9,7 +9,7 @@
 //! A deep value takes a deep stack, to parse and also to clone, show or drop
 //! afterwards. [`depth`] says how deep a line goes, [`nesting`] how deep
 //! values go, and [`on_stack`] runs code on a stack that takes values that
-//! deep.
+//! deep; [`holding`] runs code with a value, and lets go of it, on one.
 //!
 //! [`members`] finds a top-level member in the line itself, so that a
 //! request's id is changed there and the rest goes on byte for byte (ADR 2.4).
@@ -89,6 +89,26 @@ pub fn on_stack<R: Send>(depth: usize, f: impl FnOnce() -> R + Send) -> Option<R
         let thread = thread::Builder::new().stack_size(size).spawn_scoped(scope, f).ok()?;
         Some(thread.join().unwrap_or_else(|e| panic::resume_unwind(e)))
     })
+}
+
+/// Runs `f` with `value` on a stack that takes it (see [`on_stack`]), where
+/// `f` lets go of it too. `Err` says there is no such stack to be had; then
+/// `value` is kept until the process exits, rather than let go of here.
+pub(crate) fn holding<R: Send>(
+    value: Value,
+    f: impl FnOnce(Value) -> R + Send,
+) -> Result<R, String> {
+    let depth = nesting([&value]);
+    let mut value = Some(value);
+    let held = on_stack(depth, || f(value.take().unwrap()));
+    // Not taken: no stack to be had, to let go of it on either.
+    std::mem::forget(value);
+    held.ok_or_else(|| format!("no stack to be had for a message {depth} deep"))
+}
+
+/// Lets go of `value` on a stack that takes it, as [`holding`] does.
+pub(crate) fn free(value: Value) {
+    let _ = holding(value, drop);
 }
 
 /// The deepest nesting in `text`, calling `lone` with where each lone
@@ -312,5 +332,16 @@ mod tests {
             value.to_string()
         });
         assert_eq!(back.as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn adr_0002_a_value_is_let_go_of_on_a_stack_that_takes_it() {
+        // Deeper than a test thread's stack takes, to drop or show.
+        let n = 200_000;
+        let text = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        let value: Value = on_stack(n, || parse(text.as_bytes())).flatten().unwrap();
+        let shown = holding(value, |value| value.to_string());
+        assert_eq!(shown.as_deref(), Ok(text.as_str()));
+        free(on_stack(n, || parse(text.as_bytes())).flatten().unwrap());
     }
 }
