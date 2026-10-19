@@ -341,8 +341,12 @@ impl Spec {
             match arg.as_str() {
                 "--" => break,
                 a if help(a) => return true,
+                // `--` ends brnr's options even where a value was due
+                // (ADR 8.1).
                 a if self.takes_value(a) => {
-                    it.next();
+                    if it.next().is_none_or(|v| v == "--") {
+                        break;
+                    }
                 }
                 a if a.starts_with("--") => {}
                 _ if self.rest != Rest::Words || positionals < self.positionals.len() => {
@@ -550,5 +554,8 @@ mod tests {
         let status = spec("session", Some("status")).unwrap();
         assert!(status.asks_help(&words(&["--help"])));
         assert!(!spec("session", Some("new")).unwrap().asks_help(&words(&["--", "-h"])));
+        let new = spec("session", Some("new")).unwrap();
+        assert!(!new.asks_help(&words(&["--prompt", "-h"])));
+        assert!(!new.asks_help(&words(&["--cwd", "--", "-h"])));
     }
 }
