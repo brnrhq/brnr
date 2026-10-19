@@ -85,7 +85,8 @@ How words are read:
   without a verb, prints the group's commands. An unknown verb is said,
   with the group's usage; a command used wrongly shows its own usage. A
   verb's `--help` or `-h`, before any `--`, prints its usage; after `--` it
-  is the command's.
+  is the command's, and as a flag's value it is that value (`--prompt -h`
+  sends `-h`).
 - `prompt send`'s options go before its prompt: from the prompt's first
   word on, every word is the prompt's (`-h`, `--help`, `--wait`, `--json`
   too), sent as given. `-` (stdin) goes alone.
