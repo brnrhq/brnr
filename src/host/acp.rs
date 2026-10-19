@@ -85,6 +85,7 @@ use serde_json::{Map, Value, json};
 
 use super::elicitation::{self, UrlElicitation};
 use super::flow::LINE_BYTES;
+use super::lines::Piece;
 use super::requests::{HostRequest, PeerOp, history};
 use super::state::SessionState;
 use super::{Host, LOG_FLUSH, control, id_key, text_block};
@@ -460,40 +461,22 @@ pub(super) enum Choice {
 impl Host {
     // ---- editor → agent ------------------------------------------------
 
-    /// Splits what the editor writes into lines. One longer than
-    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 10.3).
-    pub(super) fn editor_bytes(&mut self, mut bytes: &[u8]) {
-        if self.editor_long {
-            let Some(i) = bytes.iter().position(|&b| b == b'\n') else {
-                return self.write_agent(bytes);
-            };
-            self.write_agent(&bytes[..=i]);
-            self.editor_long = false;
-            bytes = &bytes[i + 1..];
-        }
-        // Only the new bytes are looked through: a long line arrives in many
-        // reads.
-        let mut from = self.editor_buf.len();
-        self.editor_buf.extend_from_slice(bytes);
-        let mut start = 0;
-        while let Some(i) = self.editor_buf[from..].iter().position(|&b| b == b'\n') {
-            let end = from + i;
-            let line = start..end;
-            (start, from) = (end + 1, end + 1);
-            if start - line.start > LINE_BYTES {
-                self.too_long("editor");
-                let piece = self.editor_buf[line.start..start].to_vec();
-                self.write_agent(&piece);
-            } else {
-                self.editor_line(self.editor_buf[line].to_vec());
+    /// What the editor writes, as lines. One longer than `LINE_BYTES` isn't
+    /// read: it goes to the agent as it comes (ADR 10.3).
+    pub(super) fn editor_bytes(&mut self, bytes: &[u8]) {
+        for piece in self.editor_lines.push(bytes) {
+            match piece {
+                Piece::Line(mut line) => {
+                    line.pop(); // Its newline: the line is read without it.
+                    self.editor_line(line);
+                }
+                Piece::Part { bytes, first } => {
+                    if first {
+                        self.too_long("editor");
+                    }
+                    self.write_agent(&bytes);
+                }
             }
-        }
-        self.editor_buf.drain(..start);
-        if self.editor_buf.len() > LINE_BYTES {
-            self.too_long("editor");
-            self.editor_long = true;
-            let piece = take(&mut self.editor_buf);
-            self.write_agent(&piece);
         }
     }
 
@@ -506,13 +489,12 @@ impl Host {
         }));
     }
 
-    /// A piece of a line from the agent past `LINE_BYTES`, `end` if the line
-    /// ends with it: as `too_long` says.
-    pub(super) fn agent_piece(&mut self, bytes: Vec<u8>, end: bool) {
-        if !take(&mut self.agent_long) {
+    /// A part of a line from the agent past `LINE_BYTES`, `first` where it
+    /// passed it: as `too_long` says.
+    pub(super) fn agent_part(&mut self, bytes: Vec<u8>, first: bool) {
+        if first {
             self.too_long("agent");
         }
-        self.agent_long = !end;
         self.send_link_owned(frame::DATA, bytes);
     }
 
