@@ -30,6 +30,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::acp::{ClientRequest, Close, Replay, Requester, new_session};
+use super::sessions::Ending;
 use super::state::SessionState;
 use super::turns::Held;
 use super::{Host, id_key};
@@ -211,14 +212,7 @@ impl Host {
                 HostRequest::Open(Open::Load(session)) => {
                     // Its lock goes once its replay is written, with the
                     // exit's records at the latest (ADR 5.5).
-                    if let Some(i) = self.find(session) {
-                        // The last replayed message, still marked as
-                        // replayed (P3).
-                        self.flush_agent_message(i);
-                        self.sink.close_session(session); // A load's files.
-                        let hold = self.sessions.remove(i).hold;
-                        self.let_go(session.clone(), hold, None);
-                    }
+                    self.open_failed(session, None);
                     "session/load".to_owned()
                 }
                 HostRequest::Opening(..)
@@ -271,7 +265,7 @@ impl Host {
                 // asked for it; a new one's, as it opened. Without it, the
                 // session gets no work, and nobody is to find it (ADR 3.9).
                 if let Some(why) = self.sessions[i].not_owned() {
-                    self.sessions.remove(i);
+                    self.close_session(i, Ending::NotOwned, None);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
                 }
                 self.end_replay(i);
@@ -344,7 +338,7 @@ impl Host {
         if caps.resume || caps.load {
             // Taken before the agent hears of it: a session another process
             // holds is refused (ADR 3.9).
-            if let Err(err) = self.own(&session) {
+            if let Err(err) = self.sessions.own(&session) {
                 return self.fail_start(&err);
             }
         }
@@ -526,9 +520,7 @@ impl Host {
     }
 
     pub(super) fn fail_start(&mut self, error: &str) {
-        // Nobody is to know of a session it was opening: nothing was recorded
-        // under one still claimed, so its lock can go now (ADR 5.5).
-        self.claimed.clear();
+        self.sessions.unclaim_all();
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
@@ -575,28 +567,18 @@ impl Host {
         };
         if let Some(error) = msg.get("error") {
             let error = format!("{what} failed: {}", error_message(error));
-            let mut reply = json!({ "ok": false, "error": error });
+            let reply = json!({ "ok": false, "error": error });
             // Its lock, taken as it opened, goes, and the bridge is answered,
             // once what was recorded of it (a load's replay, ADR 5.6) is
             // written, as a close's are: whoever resumes it next appends
             // after that (ADR 5.5).
-            let hold = asked.as_ref().and_then(|session| match self.find(session) {
-                Some(i) => {
-                    // The last replayed message, still marked as replayed (P3).
-                    self.flush_agent_message(i);
-                    self.sink.close_session(session); // A load's files.
-                    Some(self.sessions.remove(i).hold)
-                }
-                None => self.claimed.remove(session),
-            });
-            let (Some(session), Some(hold)) = (asked, hold) else {
-                self.reply(opening.peer, opening.req_id, reply);
-                return self.stop_if_empty();
-            };
-            if let Some(req_id) = opening.req_id {
-                reply["req_id"] = req_id;
+            let mut answer = reply.clone();
+            if let Some(req_id) = opening.req_id.clone() {
+                answer["req_id"] = req_id;
             }
-            self.let_go(session, hold, Some((opening.peer, reply)));
+            if !asked.is_some_and(|s| self.open_failed(&s, Some((opening.peer, answer)))) {
+                self.reply(opening.peer, opening.req_id, reply);
+            }
             return self.stop_if_empty();
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
@@ -607,7 +589,7 @@ impl Host {
         };
         let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
         if let Some(why) = self.sessions[i].not_owned() {
-            self.sink.close_session(&self.sessions.remove(i).id);
+            self.close_session(i, Ending::NotOwned, None);
             let error = format!("the agent opened {session}, which {why}");
             return self.abandon_open(&session, opening.peer, opening.req_id, error);
         }
@@ -780,7 +762,7 @@ impl Host {
                 // Nothing to let go of once written (ADR 5.5): this process
                 // took no lock on it, and opened no transcript for it.
                 if let Some(why) = self.sessions[i].not_owned() {
-                    self.sink.close_session(&self.sessions.remove(i).id);
+                    self.close_session(i, Ending::NotOwned, None);
                     let error = format!("the agent forked into {session}, which {why}");
                     return Some(json!({ "ok": false, "error": error }));
                 }
@@ -803,7 +785,7 @@ impl Host {
                 }
                 // Once its records are written: whoever resumes it next
                 // appends after them (ADR 5.5).
-                self.close_session(i, by, Some((peer, reply)));
+                self.close_session(i, Ending::Closed(by), Some((peer, reply)));
                 self.stop_if_empty();
                 return None;
             }

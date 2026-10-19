@@ -177,7 +177,7 @@ impl Host {
         if !self.editor_attached() {
             return;
         }
-        self.closed.insert(session.to_owned(), taken_by);
+        self.sessions.close_under_editor(session, taken_by);
         let (title, text) = match taken_by {
             Some(pid) => (
                 format!("Session taken over by brnr (process {pid})"),
@@ -198,7 +198,7 @@ impl Host {
     /// The agent didn't close `session`, with `error`: it stays open, and
     /// the editor's requests for it go through again.
     pub(super) fn close_failed(&mut self, session: &str, error: &str) {
-        if self.closed.remove(session).is_some() {
+        if self.sessions.back_to_editor(session) {
             let text = format!("The agent didn't close it ({error}); it stays open here.");
             self.echo(session, "Close via brnr failed", &[text_block(&text)]);
         }
@@ -210,10 +210,10 @@ impl Host {
     /// again.
     pub(super) fn closed_error(&mut self, session: &str, method: &str) -> Option<String> {
         if matches!(method, "session/load" | "session/resume") {
-            self.closed.remove(session);
+            self.sessions.back_to_editor(session);
             return None;
         }
-        let taken_by = *self.closed.get(session)?;
+        let taken_by = self.sessions.closed_under_editor(session)?;
         let mut error = match taken_by {
             Some(pid) => format!("brnr: session {session} was taken over by brnr (process {pid})"),
             None => format!("brnr: session {session} was closed via brnr"),

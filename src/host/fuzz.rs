@@ -134,6 +134,20 @@ impl Harness {
         self.host.command(0, req).map(Option::unwrap_or_default)
     }
 
+    /// `session` is this process's before the agent opens it, as if its lock
+    /// had been taken (ADR 3.9), with no lock file: for the unit tests, which
+    /// have no state directory of their own.
+    #[cfg(test)]
+    pub(super) fn claim(&mut self, session: &str) {
+        self.host.sessions.claim(session, super::sessions::Hold::Owner(None));
+    }
+
+    /// The host, for the unit tests to look at what it holds.
+    #[cfg(test)]
+    pub(super) fn host(&mut self) -> &mut Host {
+        &mut self.host
+    }
+
     /// Time passes: unanswered permission requests and idle sessions time
     /// out.
     pub fn tick(&mut self) {
@@ -244,7 +258,7 @@ mod tests {
         h.sent();
         // No real session lock in this unit test. The fuzz targets use their
         // own state directory for the locks they exercise.
-        h.host.claimed.insert("fuzz-start".into(), super::super::acp::Hold::Owner(None));
+        h.claim("fuzz-start");
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1}}"#);
         h.sent();
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-start","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
@@ -262,7 +276,7 @@ mod tests {
     /// steers.
     fn turn_running() -> Harness {
         let mut h = Harness::headless(false, None);
-        h.host.claimed.insert("fuzz-send".into(), super::super::acp::Hold::Owner(None));
+        h.claim("fuzz-send");
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1,"_meta":{"steering":{"supported":true}}}}"#);
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-send","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-3","result":{}}"#);

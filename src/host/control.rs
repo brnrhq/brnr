@@ -761,7 +761,7 @@ impl Host {
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
-        report["closing"] = json!(self.closing());
+        report["closing"] = json!(self.sessions.closing());
         report["bridges"] = json!(
             self.peers
                 .values()
@@ -1065,7 +1065,7 @@ impl Host {
             return Ok(());
         }
         let session = req["session"].as_str().ok_or("missing session")?.to_owned();
-        if self.find(&session).is_some() || self.claimed.contains_key(&session) {
+        if self.sessions.knows(&session) {
             return Err(format!("{session} is already open in this process"));
         }
         if !caps.resume && !caps.load {
@@ -1075,7 +1075,7 @@ impl Host {
         }
         // Taken before the agent hears of it: a session another process
         // holds is refused (ADR 3.9).
-        self.own(&session)?;
+        self.sessions.own(&session)?;
         let params = json!({ "sessionId": session, "cwd": dir, "mcpServers": mcp });
         if caps.resume {
             let open = HostRequest::Opening(Open::Resume(session), opening);

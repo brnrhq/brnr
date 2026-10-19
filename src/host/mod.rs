@@ -37,6 +37,7 @@ mod flow;
 pub(crate) mod fuzz;
 mod lines;
 mod requests;
+mod sessions;
 mod start;
 mod state;
 mod strict;
@@ -71,13 +72,14 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Hold, LettingGo, Pending, Replay, Session};
+use acp::{AgentRequest, ClientRequest, Pending};
 use control::{Closer, Peer};
 pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use lines::{Lines, Long, Piece};
 use requests::Capabilities;
+use sessions::Sessions;
 use start::StartChannel;
 
 /// Where the editor link or the start channel is: a socket either way.
@@ -371,18 +373,9 @@ struct Host {
     cwd: PathBuf,
 
     // ACP state; see acp.rs.
-    sessions: Vec<Session>,
+    sessions: Sessions,
     /// Requests whose response creates or ends a session.
     pending: HashMap<String, Pending>,
-    /// Sessions this process has taken (or failed to take) the lock of
-    /// before the agent opened them: a resume or a load not yet answered.
-    claimed: HashMap<String, Hold>,
-    /// The replays of editors' sessions closed while a load of them was
-    /// unanswered, until the last is (ADR 5.6): still counted, though not
-    /// recorded, and the session's again if a load succeeds.
-    closed_loads: HashMap<String, Replay>,
-    /// Sessions closed here, until their records are written (ADR 5.5).
-    letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
     /// host's whoever asked (ADR 2.4): who asked, and the session it is about.
     client_requests: HashMap<String, ClientRequest>,
@@ -392,10 +385,6 @@ struct Host {
     /// them too (a cancel, an allow): its late answers are dropped (see
     /// experimental.rs).
     answered: HashMap<String, experimental::Answered>,
-    /// Sessions brnr closed under the editor (ADR 7.1) → the process that took
-    /// each over, if one did: the editor's requests for them are answered
-    /// here.
-    closed: HashMap<String, Option<u32>>,
     /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
     next_permission: u64,
@@ -635,15 +624,11 @@ impl Host {
             sock_path: PathBuf::new(),
             meta_path: PathBuf::new(),
             cwd,
-            sessions: Vec::new(),
+            sessions: Sessions::default(),
             pending: HashMap::new(),
-            claimed: HashMap::new(),
-            closed_loads: HashMap::new(),
-            letting_go: Vec::new(),
             client_requests: HashMap::new(),
             agent_requests: Vec::new(),
             answered: HashMap::new(),
-            closed: HashMap::new(),
             next_id: 0,
             next_permission: 0,
             next_elicitation: 0,
@@ -886,7 +871,7 @@ impl Host {
                 host.fire_stop_timer(now);
                 host.fire_permission_timers(now);
                 host.fire_idle_timers(now);
-                host.fire_letting_go(now);
+                host.sessions.fire_letting_go(now);
             };
             if self.deep(0, timers).is_none() {
                 timers(self);
@@ -894,7 +879,7 @@ impl Host {
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
-            let closed_at = self.next_letting_go();
+            let closed_at = self.sessions.next_letting_go();
             let wake = [self.drain_until, stop_at, self.start_deadline, permission_at, idle_at]
                 .into_iter()
                 .chain([closed_at])
@@ -951,7 +936,7 @@ impl Host {
         let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
         let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
         let requests = self.agent_requests.iter().map(AgentRequest::holds);
-        let sessions = self.sessions.iter().map(Session::holds);
+        let sessions = std::iter::once(self.sessions.holds());
         methods.chain(requests).chain(sessions).fold(json::nesting([&self.info]), usize::max)
     }
 
@@ -986,7 +971,7 @@ impl Host {
         }
         self.emit_to_sessions(json!({ "event": "exited", "status": status }));
         self.wait_logged();
-        self.let_go_of_sessions();
+        self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
@@ -1058,7 +1043,7 @@ impl Host {
         let status = describe_status(self.status);
         self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
         self.wait_logged();
-        self.let_go_of_sessions();
+        self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
         self.let_peers_go();
@@ -1079,18 +1064,6 @@ impl Host {
             let _ = tx.send(());
         });
         let _ = rx.recv_timeout(LOG_FLUSH);
-    }
-
-    /// Exiting, once `wait_logged` is through: the sessions are let go of as
-    /// brnr stops listing the process (ADR 3.9), those closing here too.
-    fn let_go_of_sessions(&mut self) {
-        self.let_go_of_closed();
-        self.claimed.clear();
-        for s in &mut self.sessions {
-            if let Hold::Owner(lock) = &mut s.hold {
-                lock.take();
-            }
-        }
     }
 
     /// Exiting, last: waits for the logger to have written everything

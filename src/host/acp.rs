@@ -58,7 +58,7 @@
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3.9); with
 //!   `shared_sessions` in the profile (ADR 3.10) it goes through, and the
-//!   session is served shared (see `Hold`).
+//!   session is served shared (see `Hold`, sessions.rs).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
 //! deleted the session, the host records a `session_deleted` (ADR 8.1).
@@ -77,7 +77,6 @@
 use std::fs;
 use std::mem::take;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
@@ -85,12 +84,13 @@ use serde_json::{Map, Value, json};
 use super::elicitation::{self, UrlElicitation};
 use super::flow::LINE_BYTES;
 use super::lines::Piece;
-use super::requests::{HostRequest, PeerOp, history};
+use super::requests::{HostRequest, PeerOp};
+use super::sessions::{Ending, Hold};
 use super::state::SessionState;
 use super::turns::{self, Activity, Do, Held, Turns};
-use super::{Host, LOG_FLUSH, control, id_key, text_block};
+use super::{Host, id_key, text_block};
 use crate::config::{ClientCapability, EchoAs, Feature, Log};
-use crate::lock::{self, Lock};
+use crate::lock;
 use crate::log::{self, Dir};
 use crate::schema::{
     self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
@@ -107,7 +107,7 @@ pub(super) struct Replay {
     /// The updates the agent has replayed.
     pub(super) updates: u64,
     /// Of those, the ones recorded: all if `record`, but those that came
-    /// while the session was closed (`Host::closed_loads`).
+    /// while the session was closed (see sessions.rs).
     pub(super) recorded_updates: u64,
     /// The ids of the tool calls running before it, while their turn runs:
     /// the others, the history's, aren't running now.
@@ -159,77 +159,6 @@ pub(super) struct Session {
     pub(super) opening: bool,
 }
 
-/// How a process holds a session it serves (ADR 3.9).
-pub(super) enum Hold {
-    /// Its lock: the process is the session's owner, and keeps its
-    /// transcript. `None` once it has let go, as the process exits.
-    Owner(Option<Lock>),
-    /// The lock couldn't be taken (why, naming its path), so whether another
-    /// process holds it can't be known. A headless process never serves such
-    /// a session (P4: the client refuses); an editor's passes it through and
-    /// keeps its transcript all the same (P1, P4: the proxy passes on what it
-    /// can't be sure of), and `status` says it isn't locked (ADR 3.9).
-    Unlocked(String),
-    /// Process `pid` held the lock when the editor loaded the session here
-    /// (`shared_sessions`, ADR 3.10): that one keeps the transcript, and this
-    /// one records the session in its host log only.
-    Shared(u32),
-}
-
-/// A session closed here, whose lock goes, and whose close is answered,
-/// once the logger has written its records, `session_closed` last, or at
-/// `until`, whichever comes first: a process that resumes it next appends
-/// after them (ADR 5.5). The event loop never waits for it (P1).
-pub(super) struct LettingGo {
-    session: String,
-    until: Instant,
-    /// Taken by whichever comes first: the logger's thread or the event
-    /// loop's timer. This process opening the session again takes back only
-    /// its lock: the close is still answered once it is written.
-    held: Arc<Mutex<Option<Release>>>,
-}
-
-/// What goes as a closed session is let go of: its lock, then the answers
-/// to the close, each a line for its peer.
-struct Release {
-    lock: Option<Lock>,
-    answers: Vec<(control::Queue, String)>,
-}
-
-impl LettingGo {
-    fn take(&self) -> Option<Release> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-
-    fn done(&self) -> bool {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).is_none()
-    }
-
-    /// The session's lock, if it is still this process's.
-    fn reclaim(&self) -> Option<Lock> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.lock.take()
-    }
-
-    fn locked(&self) -> bool {
-        self.held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|r| r.lock.is_some())
-    }
-}
-
-impl Release {
-    /// Lets go of the lock, if the session isn't open here again, then
-    /// answers, so whoever hears it finds the session free.
-    fn go(self) {
-        drop(self.lock);
-        for (queue, line) in self.answers {
-            queue.post(line);
-        }
-    }
-}
-
 pub(super) enum Close {
     /// `session/close` goes once the turn it cancelled has ended, and
     /// `peer` hears when the agent has closed it.
@@ -242,6 +171,34 @@ pub(super) enum Close {
 }
 
 impl Session {
+    /// `session`, as it opens, held as `hold`, with the replay a load of it
+    /// still has, if any (see sessions.rs).
+    pub(super) fn new(
+        session: &str,
+        cwd: PathBuf,
+        forked_from: Option<&str>,
+        hold: Hold,
+        replay: Option<Replay>,
+    ) -> Session {
+        Session {
+            id: session.to_owned(),
+            cwd,
+            forked_from: forked_from.map(str::to_owned),
+            turns: Turns::new(session),
+            agent_text: String::new(),
+            agent_text_kind: "agent_message",
+            agent_message_id: None,
+            state: SessionState::default(),
+            replay,
+            idle_since: None,
+            idle_done: false,
+            last_active: SystemTime::now(),
+            hold,
+            closing: None,
+            opening: false,
+        }
+    }
+
     /// How deeply what it keeps of what the host read nests (see
     /// `Host::holds`). Every field is named, so that one added is thought
     /// about here.
@@ -651,16 +608,16 @@ impl Host {
     /// refused, saying how to release it (ADR 3.9), unless the profile shares
     /// sessions (`shared_sessions`, ADR 3.10).
     fn attach(&mut self, session: &str) -> Result<(), String> {
-        if self.find(session).is_some() || self.claimed.contains_key(session) {
+        if self.sessions.knows(session) {
             return Ok(()); // Ours already.
         }
-        let hold = self.take_lock(session);
+        let hold = self.sessions.take_lock(session, &self.sink);
         if let Hold::Shared(pid) = hold
             && !self.features.contains(&Feature::SharedSessions)
         {
             return Err(held_elsewhere(session, pid));
         }
-        self.claimed.insert(session.to_owned(), hold);
+        self.sessions.claim(session, hold);
         Ok(())
     }
 
@@ -682,7 +639,7 @@ impl Host {
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
         // One closed while a load of it is unanswered opens with its replay.
         let open = match self.find(session) {
-            None if self.closed_loads.contains_key(session) => {
+            None if self.sessions.closed_load(session).is_some() => {
                 Some(self.open_session(session, cwd))
             }
             open => open,
@@ -738,29 +695,9 @@ impl Host {
         if loaded {
             self.end_replay(i);
         } else if opened {
-            // Its files are closed, and its lock goes once its replay is
-            // written, as a bridge's failed load's does (ADR 5.5).
-            let Session { id: session, hold, .. } = self.sessions.remove(i);
-            self.sink.close_session(&session);
-            self.let_go(session, hold, None);
+            self.close_session(i, Ending::LoadFailed, None);
         } else {
             self.drop_replay(i); // Loaded again, or resumed, and failed.
-        }
-    }
-
-    /// A load of `session`, closed meanwhile, failed. Its replay goes with
-    /// the last of its loads; if one of them succeeded before the close,
-    /// its `history` says so, with the session closed (ADR 5.6).
-    fn closed_load_failed(&mut self, session: &str) {
-        let Some(replay) = self.closed_loads.get_mut(session) else { return };
-        replay.unanswered = replay.unanswered.saturating_sub(1);
-        if replay.unanswered > 0 {
-            return;
-        }
-        if let Some(replay) = self.closed_loads.remove(session)
-            && replay.loaded
-        {
-            self.emit(history(session, &replay));
         }
     }
 
@@ -890,7 +827,7 @@ impl Host {
                     }
                     replay.recorded_updates += u64::from(update);
                 } else if let Some(replay) =
-                    session.as_deref().and_then(|s| self.closed_loads.get_mut(s))
+                    session.as_deref().and_then(|s| self.sessions.closed_load(s))
                 {
                     // Its session closed while it was loading: counted, with
                     // no files to record it in (ADR 5.6).
@@ -991,7 +928,7 @@ impl Host {
                         replay.opened = false;
                     }
                 } else {
-                    self.claimed.remove(&session); // Its lock goes (see `attach`).
+                    self.sessions.unclaim(&session); // Its lock goes (see `attach`).
                 }
                 Some(session)
             }
@@ -999,7 +936,7 @@ impl Host {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
-                    self.close_session(i, "editor", None);
+                    self.close_session(i, Ending::Closed("editor"), None);
                 }
                 Some(session)
             }
@@ -1401,97 +1338,6 @@ impl Host {
         );
     }
 
-    /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
-    /// what it still holds is dropped, then `session_closed` (ADR 5.2). Its
-    /// lock goes, and the peer in `answer` is answered with its reply, once
-    /// that is written, LOG_FLUSH at most (see `LettingGo`).
-    pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
-        self.flush_agent_message(i);
-        self.drop_all(i, "close");
-        let Session { id: session, hold, replay, .. } = self.sessions.remove(i);
-        self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
-        // A load of it still to be answered may open it again (ADR 5.6).
-        if let Some(replay) = replay.filter(|r| r.unanswered > 0 && self.editor_attached()) {
-            self.closed_loads.insert(session.clone(), replay);
-        }
-        // After its last record, so nothing of it is lost (ADR 5.1).
-        self.sink.close_session(&session);
-        self.let_go(session, hold, answer);
-    }
-
-    /// Lets go of `session`, gone from `sessions`, and answers the peer in
-    /// `answer` with its reply, once the logger has written what this
-    /// process recorded of it, LOG_FLUSH at most (see `LettingGo`): a close's
-    /// records, or a failed open's (a load's replay, ADR 5.6), come before
-    /// the next process's (ADR 5.5).
-    pub(super) fn let_go(&mut self, session: String, hold: Hold, answer: Option<(u64, Value)>) {
-        let lock = match hold {
-            Hold::Owner(lock) => lock,
-            Hold::Shared(_) | Hold::Unlocked(_) => None,
-        };
-        let answers =
-            answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
-        let release = Release { lock, answers: answers.into_iter().collect() };
-        let held = Arc::new(Mutex::new(Some(release)));
-        let written = held.clone();
-        self.sink.when_written(move |_| {
-            // Taken out first, so the lock isn't held while it goes.
-            let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
-            if let Some(release) = release {
-                release.go();
-            }
-        });
-        let until = Instant::now() + LOG_FLUSH;
-        self.letting_go.push(LettingGo { session, until, held });
-    }
-
-    /// Closed sessions whose time to be written is up are let go of as they
-    /// are; past that, records of theirs can come after a resume's (ADR 5.5).
-    pub(super) fn fire_letting_go(&mut self, now: Instant) {
-        self.letting_go.retain(|l| {
-            if now < l.until {
-                return !l.done();
-            }
-            if let Some(release) = l.take() {
-                release.go();
-            }
-            false
-        });
-    }
-
-    /// When the next closed session is let go of, for the event loop.
-    pub(super) fn next_letting_go(&self) -> Option<Instant> {
-        self.letting_go.iter().map(|l| l.until).min()
-    }
-
-    /// Exiting, once the logger has had its time: every closed session is
-    /// let go of, and its close answered.
-    pub(super) fn let_go_of_closed(&mut self) {
-        for release in take(&mut self.letting_go).iter().filter_map(LettingGo::take) {
-            release.go();
-        }
-    }
-
-    /// `session`'s lock, if it closed here and isn't let go of yet: opened
-    /// here again, it is this process's still, and its records come after
-    /// the close's from the same logger. The close is answered as before,
-    /// once its records are written (ADR 5.5).
-    fn reclaim(&mut self, session: &str) -> Option<Lock> {
-        self.letting_go.iter().filter(|l| l.session == session).find_map(LettingGo::reclaim)
-    }
-
-    /// Whether `session` closed here and its lock is still this process's.
-    fn letting_go_of(&self, session: &str) -> bool {
-        self.letting_go.iter().any(|l| l.session == session && l.locked())
-    }
-
-    /// The sessions closed here whose locks are still this process's, until
-    /// their records are written: `status` says so, so that brnr can tell
-    /// one closing from one opening (ADR 5.5).
-    pub(super) fn closing(&self) -> Vec<&str> {
-        self.letting_go.iter().filter(|l| l.locked()).map(|l| l.session.as_str()).collect()
-    }
-
     /// The agent has deleted `session`, as the editor asked: a
     /// `session_deleted`, and brnr's transcript stays (ADR 8.1). One open here
     /// is gone from the agent, so it closes, as if the editor had closed it.
@@ -1502,9 +1348,9 @@ impl Host {
         let event = json!({ "event": "session_deleted", "session": session, "by": "editor" });
         let event = self.emit(event);
         match self.find(session) {
-            Some(i) => self.close_session(i, "editor", None),
+            Some(i) => self.close_session(i, Ending::Closed("editor"), None),
             // Closed here, and not let go of yet: still this process's to write.
-            None if self.letting_go_of(session) || lock::holder(session).is_none() => {
+            None if self.sessions.letting_go_of(session) || lock::holder(session).is_none() => {
                 self.sink.append(session, event);
             }
             None => {}
@@ -1839,66 +1685,6 @@ impl Host {
 
     // ---- sessions ------------------------------------------------------
 
-    pub(super) fn find(&self, session: &str) -> Option<usize> {
-        self.sessions.iter().position(|s| s.id == session)
-    }
-
-    /// Index of `session`, started (with its lock and log file) if this is
-    /// the first we hear of it. Without a cwd, the host's own is used.
-    pub(super) fn open_session(&mut self, session: &str, cwd: Option<&str>) -> usize {
-        self.open_fork(session, cwd, None)
-    }
-
-    /// As [`Self::open_session`], for a session forked from `forked_from`,
-    /// which its transcript's `session-opened` and its status name (ADR 3.12).
-    pub(super) fn open_fork(
-        &mut self,
-        session: &str,
-        cwd: Option<&str>,
-        forked_from: Option<&str>,
-    ) -> usize {
-        if let Some(i) = self.find(session) {
-            return i;
-        }
-        let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| self.cwd.clone());
-        let hold = match self.claimed.remove(session) {
-            Some(hold) => hold,
-            None => self.take_lock(session),
-        };
-        match hold {
-            Hold::Shared(pid) => {
-                let event =
-                    json!({ "event": "session-shared", "session_id": session, "held_by": pid });
-                self.sink.note(None, event);
-            }
-            Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
-            // One the headless process won't serve gets no transcript.
-            Hold::Unlocked(_) if self.editor_attached() => {
-                self.sink.open_session(session, &cwd, forked_from)
-            }
-            Hold::Unlocked(_) => {}
-        }
-        self.sessions.push(Session {
-            id: session.to_owned(),
-            cwd,
-            forked_from: forked_from.map(str::to_owned),
-            turns: Turns::new(session),
-            agent_text: String::new(),
-            agent_text_kind: "agent_message",
-            agent_message_id: None,
-            state: SessionState::default(),
-            // One a load still to be answered had, closed under it (ADR 5.6).
-            replay: self.closed_loads.remove(session),
-            idle_since: None,
-            idle_done: false,
-            last_active: SystemTime::now(),
-            hold,
-            closing: None,
-            opening: false,
-        });
-        self.sessions.len() - 1
-    }
-
     /// Whether brnr has a transcript of `session`, in any folder, counting
     /// what this process has recorded of it that the disk may not have yet;
     /// an events file holding only openings, which a load that failed
@@ -1906,39 +1692,6 @@ impl Host {
     pub(super) fn has_transcript(&self, session: &str) -> bool {
         self.sink.recorded(session)
             || transcript::of_session(session).iter().any(|p| transcript::has_records(p))
-    }
-
-    /// `session`'s lock, for a session this process is to serve. One another
-    /// process holds is shared, as `attach` lets it be; one that can't be
-    /// locked is `Unlocked`, and the host log says why. Whoever opened it
-    /// decides what becomes of either (ADR 3.9).
-    fn take_lock(&mut self, session: &str) -> Hold {
-        if let Some(lock) = self.reclaim(session) {
-            return Hold::Owner(Some(lock));
-        }
-        match lock::take(session) {
-            Ok(lock) => Hold::Owner(Some(lock)),
-            Err(lock::Error::Held(pid)) => Hold::Shared(pid),
-            Err(lock::Error::Io(error)) => {
-                let event =
-                    json!({ "event": "lock-failed", "session_id": session, "error": error });
-                self.sink.note(None, event);
-                Hold::Unlocked(error)
-            }
-        }
-    }
-
-    /// Takes the lock of `session`, which a headless start resumes, before
-    /// the agent is asked for it: one another process holds, or one that
-    /// can't be locked, can't be served here (ADR 3.9).
-    pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
-        let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
-        let lock = lock.map_err(|err| match err {
-            lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
-            lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
-        })?;
-        self.claimed.insert(session.to_owned(), Hold::Owner(Some(lock)));
-        Ok(())
     }
 }
 
