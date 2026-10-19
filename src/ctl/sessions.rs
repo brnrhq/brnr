@@ -17,12 +17,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use crate::{config, json, lock, log, paths, signals, spawn, sys};
+use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::client::{Host, discover};
-use super::{
-    USAGE, agent_name, first_record, forked_from, inactive_sessions, print_json, print_table, when,
-};
+use super::{USAGE, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -204,12 +202,8 @@ fn same_dir(dir: &str) -> PathBuf {
 /// file `inactive_sessions` reads, in whichever spelling of `dir` it was
 /// opened with.
 fn transcript_in(id: &str, dir: &Path) -> bool {
-    let Some(file) = paths::session_log(Path::new("/"), id).file_name().map(PathBuf::from) else {
-        return false;
-    };
-    let projects = fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
-    projects.flatten().map(|p| p.path().join(&file)).any(|log| {
-        first_record(&log)
+    transcript::of_session(id).iter().any(|log| {
+        transcript::first(log)
             .and_then(|first| first["event"]["cwd"].as_str().map(same_dir))
             .is_some_and(|recorded| recorded == dir)
     })

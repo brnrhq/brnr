@@ -47,6 +47,7 @@ mod schema;
 mod signals;
 mod spawn;
 mod sys;
+mod transcript;
 
 /// `brnr <args>` as a function: the command line, `args` being the words
 /// after `brnr`, run to its exit status. `acp` is what an editor runs as its

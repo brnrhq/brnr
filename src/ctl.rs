@@ -28,8 +28,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
-use std::fs;
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -37,7 +36,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::host::{EVENTS, QUIET};
-use crate::{json, lock, log, paths, render};
+use crate::{json, lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -508,14 +507,6 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         .iter()
         .flat_map(|h| h.sessions().iter().filter_map(|s| s["log"].as_str().map(PathBuf::from)))
         .collect();
-    let projects = paths::state_dir().join("projects");
-    let files = fs::read_dir(&projects)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(|p| paths::is_events_log(p));
 
     // A session whose lock is held is running, whether its process answers
     // or not.
@@ -523,8 +514,12 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session).collect();
     let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
-    for file in files {
-        let (Some(first), Some(last)) = (first_record(&file), last_record(&file)) else { continue };
+    for file in transcript::events_files() {
+        let (Some(first), Some(last)) =
+            (transcript::first(&file), transcript::last(&file, |_| true))
+        else {
+            continue;
+        };
         let Some(session) = last["session_id"].as_str() else { continue };
         if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
@@ -533,13 +528,13 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         // process's (ADR 8.1).
         let served = match last["host_id"].is_string() {
             true => Some(last.clone()),
-            false => last_record_where(&file, |r| r["host_id"].is_string()),
+            false => transcript::last(&file, |r| r["host_id"].is_string()),
         };
         let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
         let host_id = host_id.unwrap_or_default().to_owned();
         let start = started
             .entry(host_id.clone())
-            .or_insert_with(|| first_record(&paths::host_log(&host_id)).unwrap_or_default());
+            .or_insert_with(|| transcript::first(&paths::host_log(&host_id)).unwrap_or_default());
         let info = &start["event"]["info"];
         past.push(json!({
             "session_id": session,
@@ -565,53 +560,8 @@ fn forked_from(s: &Value) -> Value {
     if s["forked_from"].is_string() {
         return s["forked_from"].clone();
     }
-    let first = s["log"].as_str().and_then(|log| first_record(Path::new(log)));
+    let first = s["log"].as_str().and_then(|log| transcript::first(Path::new(log)));
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
-}
-
-/// The first record in a file that brnr can read (ADR 5.1).
-fn first_record(path: &Path) -> Option<Value> {
-    let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
-    lines.map_while(Result::ok).find_map(|line| log::as_record(&line))
-}
-
-/// The last record in a file that brnr can read, read backwards so a long
-/// transcript costs no more than its last records. A line brnr can't read
-/// is passed over (ADR 5.1): one a process that died mid-write cut short,
-/// at the end or, once another process has taken the file, before what it
-/// wrote. A line cut short is never read as a record: an object ends only
-/// at its last byte.
-fn last_record(path: &Path) -> Option<Value> {
-    last_record_where(path, |_| true)
-}
-
-/// The last record in a file that brnr can read and `wanted` takes, read
-/// backwards as [`last_record`] reads.
-fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
-    use std::io::{Seek, SeekFrom};
-    let mut file = fs::File::open(path).ok()?;
-    let mut end = file.metadata().ok()?.len();
-    // From `end` to the start of the lines already tried.
-    let mut tail: Vec<u8> = Vec::new();
-    loop {
-        let start = end.saturating_sub(64 * 1024);
-        let mut chunk = vec![0; (end - start) as usize];
-        file.seek(SeekFrom::Start(start)).ok()?;
-        file.read_exact(&mut chunk).ok()?;
-        chunk.extend_from_slice(&tail);
-        tail = chunk;
-        // Its lines, last first; the first is whole only at the file's start.
-        while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = log::as_record(&tail[i + 1..]).filter(&wanted) {
-                return Some(found);
-            }
-            tail.truncate(i);
-        }
-        if start == 0 {
-            return log::as_record(&tail).filter(&wanted);
-        }
-        end = start;
-    }
 }
 
 fn agent_name(argv: &Value) -> String {
@@ -1106,35 +1056,5 @@ mod tests {
         // Waiting for an elicitation only (ADR 4.5).
         let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
         assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
-    }
-
-    /// What `session list` and `session resume` take from a transcript, whatever
-    /// its end (ADR 5.1): ending in a newline or not; cut short; a whole line
-    /// that isn't a record, last or before the last; empty; nothing readable.
-    #[test]
-    fn adr_0005_the_first_and_last_records_are_ones_brnr_can_read() {
-        let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));
-        let cases: [(&str, Option<i64>, Option<i64>); 9] = [
-            ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"part\n{\"n\":3}\n", Some(1), Some(3)),
-            ("{\"ts\":\"part\n{\"n\":1}\n", Some(1), Some(1)),
-            ("{\"n\":1}\n42\n", Some(1), Some(1)),
-            ("", None, None),
-            ("{\"ts\":\"partial", None, None),
-        ];
-        let n = |r: Option<Value>| r.and_then(|r| r["n"].as_i64());
-        for (text, first, last) in cases {
-            fs::write(&path, text).unwrap();
-            assert_eq!((n(first_record(&path)), n(last_record(&path))), (first, last), "{text:?}");
-        }
-        // Past the 64 KiB a read backwards takes at a time.
-        let long = format!(r#"{{"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
-        let junk = "y".repeat(70_000);
-        fs::write(&path, format!("{{\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut")).unwrap();
-        assert_eq!(n(last_record(&path)), Some(3));
-        let _ = fs::remove_file(path);
     }
 }

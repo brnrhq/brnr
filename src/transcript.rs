@@ -1,0 +1,652 @@
+//! Reading transcripts (ADR 5.1 in docs/adr), as log.rs writes them: where
+//! they are, a record as brnr reads it, the first and last records of a
+//! file, and a record as the event `event watch` would have shown.
+//!
+//! A session's events file is `projects/<folder>/<name>.jsonl` under the
+//! state directory, its raw ACP `<name>.acp.jsonl` beside it, and a host
+//! log `hosts/<run id>.jsonl` (paths.rs). A transcript is read only where
+//! the logger could have written it (ADR 9.3): a symlinked project folder
+//! isn't looked in, as `log::purge` doesn't, and a symlink, or what isn't a
+//! regular file, isn't read ([`open`]). What is written through one is
+//! refused anyway; read, it would be whatever the link points at.
+//!
+//! A record is a line that is a JSON object: `{"ts","host_id","host_pid",
+//! "proxy_pid","agent_pid"[,"session_id"],…}`, then `"event":{…}` for a
+//! host event, or `["seq",]"dir"` and `"msg"` (`"raw"` for a line that
+//! wasn't JSON) for an ACP message. It is read as the host reads ACP
+//! (ADR 2.5): a lone surrogate is U+FFFD, and there is no depth limit, so a
+//! record nested past 128 is read, and let go of, on a stack that takes it
+//! (json.rs). A line that isn't a record is passed over: cut short by a
+//! process that died mid-write, at a file's end or before what another
+//! process wrote, or broken otherwise. A line cut short is never taken for
+//! a record: an object ends only at its last byte.
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, ErrorKind};
+use std::mem::{replace, take};
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+
+use serde_json::{Map, Value};
+
+use crate::{json, paths, render};
+
+/// How much of a file a read backwards takes at a time.
+const CHUNK: u64 = 64 * 1024;
+
+/// Every session's events file under the state directory.
+pub(crate) fn events_files() -> Vec<PathBuf> {
+    events_files_in(&paths::state_dir())
+}
+
+fn events_files_in(root: &Path) -> Vec<PathBuf> {
+    let entries = folders(root).into_iter().flat_map(|f| fs::read_dir(f).into_iter().flatten());
+    let files = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file()));
+    files.map(|e| e.path()).filter(|p| paths::is_events_log(p)).collect()
+}
+
+/// `session`'s events files under the state directory: in each project
+/// folder, the one named for its id (ADR 9.2), where there is one. A session
+/// resumed in another folder has one in each.
+pub(crate) fn of_session(session: &str) -> Vec<PathBuf> {
+    of_session_in(&paths::state_dir(), session)
+}
+
+fn of_session_in(root: &Path, session: &str) -> Vec<PathBuf> {
+    let name = format!("{}.jsonl", paths::file_name(session));
+    let files = folders(root).into_iter().map(|folder| folder.join(&name));
+    files.filter(|path| fs::symlink_metadata(path).is_ok_and(|m| m.is_file())).collect()
+}
+
+/// The project folders under `root`, a state directory, in order; not one
+/// that is a symlink.
+fn folders(root: &Path) -> Vec<PathBuf> {
+    let entries = fs::read_dir(root.join("projects")).into_iter().flatten().flatten();
+    let dirs = entries.filter(|e| e.file_type().is_ok_and(|t| t.is_dir()));
+    let mut found: Vec<PathBuf> = dirs.map(|e| e.path()).collect();
+    found.sort();
+    found
+}
+
+/// Opens the transcript at `path` to read it: not through a symlink, and
+/// only a regular file (a FIFO put there is refused, not waited on).
+pub(crate) fn open(path: &Path) -> io::Result<File> {
+    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path);
+    // A symlink is ELOOP; what it is is looked at only for the message.
+    let link = || fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let file = opened.map_err(|e| match e.raw_os_error() {
+        Some(libc::ELOOP) if link() => io::Error::new(e.kind(), "is a symlink"),
+        _ => e,
+    })?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(ErrorKind::InvalidInput, "is not a regular file"));
+    }
+    Ok(file)
+}
+
+/// `line` as a record, if it is one. Run it on a stack that takes
+/// `json::depth(line)`.
+pub(crate) fn record(line: &[u8]) -> Option<Value> {
+    json::parse::<Value>(line).filter(Value::is_object)
+}
+
+/// `line` as a record, if it is one, without its members, and its event's,
+/// that nest deeper than any stack takes: what a transcript is (its session,
+/// cwd and process, and when) comes from the rest. Read, and let go of, on a
+/// stack that takes it; none if there is no such stack to be had.
+pub(crate) fn head(line: &[u8]) -> Option<Value> {
+    json::on_stack(json::depth(line), || {
+        let mut record = record(line)?;
+        let fits = |most: usize| move |_: &String, v: &mut Value| json::nesting([&*v]) <= most;
+        if let Some(event) = record.get_mut("event").and_then(Value::as_object_mut) {
+            event.retain(fits(json::SHALLOW - 2));
+        }
+        record.as_object_mut()?.retain(fits(json::SHALLOW - 1));
+        Some(record)
+    })?
+}
+
+/// `record` as the event `event watch` would have shown (ADR 5.1): a host
+/// event as the host emitted it (see host/control.rs, `emit`), or an ACP
+/// message as an `acp` event, with its position where the record has one
+/// (ADR 10.2: the copy of a `session/new` in a session's raw file has none).
+/// None for a record that is neither. Run it on a stack that takes `record`.
+pub(crate) fn event(mut record: Value) -> Option<Value> {
+    if record["event"]["event"].is_string() {
+        return Some(record["event"].take());
+    }
+    let key = if record.get("msg").is_some() { "msg" } else { "raw" };
+    let msg = record.get_mut(key)?.take();
+    // Moved, not copied: a message can nest as deep as the stack it is on.
+    let mut event = Map::new();
+    event.insert("event".into(), "acp".into());
+    event.insert("dir".into(), record["dir"].take());
+    event.insert("session".into(), record["session_id"].take());
+    event.insert("msg".into(), msg);
+    event.insert("ts".into(), record["ts"].take());
+    event.insert("host_id".into(), record["host_id"].take());
+    if record["seq"].is_u64() {
+        event.insert("seq".into(), record["seq"].take());
+    }
+    Some(Value::Object(event))
+}
+
+/// A record's position, read without reading all of it, for a line too
+/// long to parse for nothing: an event's `seq` is its last key, so at the
+/// record's end; an ACP message's comes before the message. None for a
+/// record without one (a note of the logger's).
+pub(crate) fn position(line: &[u8]) -> Option<u64> {
+    const KEY: &[u8] = b"\"seq\":";
+    let digits = |at: &[u8]| -> Option<u64> {
+        let end = at.iter().position(|b| !b.is_ascii_digit()).unwrap_or(at.len());
+        std::str::from_utf8(&at[..end]).ok()?.parse().ok()
+    };
+    let last = |within: &[u8]| -> Option<u64> {
+        let at = within.windows(KEY.len()).rposition(|w| w == KEY)?;
+        digits(&within[at + KEY.len()..])
+    };
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    // What the record is follows its head (times, ids, pids and the session,
+    // none with a quote unescaped in it), in its first KiB unless the
+    // session's id is long, when the record is read whole.
+    let head = &line[..line.len().min(1024)];
+    let find = |key: &[u8]| head.windows(key.len()).position(|w| w == key);
+    match (find(b"\"event\":"), find(b"\"dir\":")) {
+        // `…,"event":{…,"seq":12}}`: an event's, ending the record.
+        (Some(event), dir) if dir.is_none_or(|d| event < d) => {
+            last(&line[line.len().saturating_sub(32)..]).filter(|_| line.ends_with(b"}}"))
+        }
+        // `…,"session_id":…,"seq":12,"dir":…`: an ACP message's, before it.
+        (_, Some(dir)) => last(&head[..dir]),
+        _ => None,
+    }
+}
+
+/// The first record in the file at `path` that brnr can read, as [`head`]
+/// reads it.
+pub(crate) fn first(path: &Path) -> Option<Value> {
+    let lines = BufReader::new(open(path).ok()?).split(b'\n');
+    lines.map_while(Result::ok).find_map(|line| head(&line))
+}
+
+/// The last record in the file at `path` that brnr can read and `wanted`
+/// takes, as [`head`] reads it. Read backwards, so a long transcript costs
+/// no more than its last records.
+pub(crate) fn last(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
+    Backwards::new(path, u64::MAX)?.find_map(|(_, line)| head(&line).filter(&wanted))
+}
+
+/// The lines in the last `bytes` of the file at `path`, in order, but one
+/// that starts before them (cut off) and empty ones; the last may be cut
+/// short. None if it can't be read.
+pub(crate) fn tail(path: &Path, bytes: u64) -> Option<Vec<Vec<u8>>> {
+    let lines = Backwards::new(path, bytes)?;
+    let from = lines.from;
+    let kept = lines.take_while(|(at, _)| *at > from || from == 0);
+    let mut kept: Vec<Vec<u8>> = kept.map(|(_, line)| line).filter(|l| !l.is_empty()).collect();
+    kept.reverse();
+    Some(kept)
+}
+
+/// Whether the events file at `path` holds a record of its session beyond
+/// its openings, which makes it a transcript of the session to a load (ADR
+/// 5.6): a load that failed leaves one holding only `session-opened`
+/// records. Read up to the first other record.
+pub(crate) fn has_records(path: &Path) -> bool {
+    let Ok(file) = open(path) else { return false };
+    let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
+    lines.filter_map(|line| head(&line)).any(|r| r["event"]["event"] != "session-opened")
+}
+
+/// The lines of a file, last first, each with where it starts, read
+/// backwards a [`CHUNK`] at a time: first whatever follows its last newline
+/// (empty, or a line cut short), and the first line of what is read last.
+struct Backwards {
+    file: File,
+    /// Where what is read starts: no further back than this.
+    from: u64,
+    /// Where `rest` starts.
+    start: u64,
+    /// From `start` to the start of the lines already given.
+    rest: Vec<u8>,
+    done: bool,
+}
+
+impl Backwards {
+    /// The lines in the last `bytes` of the file at `path`.
+    fn new(path: &Path, bytes: u64) -> Option<Backwards> {
+        let file = open(path).ok()?;
+        let start = file.metadata().ok()?.len();
+        Some(Backwards {
+            file,
+            from: start.saturating_sub(bytes),
+            start,
+            rest: Vec::new(),
+            done: false,
+        })
+    }
+}
+
+impl Iterator for Backwards {
+    type Item = (u64, Vec<u8>);
+
+    fn next(&mut self) -> Option<(u64, Vec<u8>)> {
+        loop {
+            if let Some(i) = self.rest.iter().rposition(|&b| b == b'\n') {
+                let line = self.rest.split_off(i + 1);
+                self.rest.truncate(i);
+                return Some((self.start + i as u64 + 1, line));
+            }
+            if self.start == self.from {
+                return (!replace(&mut self.done, true)).then(|| (self.from, take(&mut self.rest)));
+            }
+            let at = self.start.saturating_sub(CHUNK).max(self.from);
+            let mut chunk = vec![0; (self.start - at) as usize];
+            self.file.read_exact_at(&mut chunk, at).ok()?;
+            chunk.extend_from_slice(&self.rest);
+            (self.rest, self.start) = (chunk, at);
+        }
+    }
+}
+
+/// A session's two files, read as they grow, as `event log` shows them: its
+/// events, and its raw ACP when `acp` events are chosen, merged in time
+/// order (ADR 5.1).
+pub(crate) struct Reader {
+    events: Tail,
+    acp: Option<Tail>,
+    /// When the last record read from the events file was written.
+    last: String,
+    /// ACP written after it, held for one read (see `read`).
+    held: Vec<(String, Value)>,
+}
+
+impl Reader {
+    /// The events file at `events`, and the raw ACP at `acp`.
+    pub(crate) fn open(events: &Path, acp: Option<&Path>) -> Result<Reader, String> {
+        let acp = acp.map(Tail::open).transpose()?;
+        Ok(Reader { events: Tail::open(events)?, acp, last: String::new(), held: Vec::new() })
+    }
+
+    /// What was written since the last read, in time order: each record as
+    /// the event `event watch` would have shown ([`event`]). `all` for
+    /// everything read, of a transcript that won't grow. Each event may nest
+    /// as deep as a record can: show and let go of it on a stack that takes
+    /// it (`json::holding`).
+    ///
+    /// One writer writes both files, each in time order, and the events file
+    /// is read first: ACP up to the last event read is all there, but ACP
+    /// past it may follow an event written since. That ACP is held, and goes
+    /// with the next read, once the events file has been read again.
+    pub(crate) fn read(&mut self, all: bool) -> Result<Vec<Value>, String> {
+        let events = self.events.read()?;
+        if let Some((ts, _)) = events.last() {
+            self.last.clone_from(ts);
+        }
+        let mut acp = take(&mut self.held);
+        if let Some(tail) = &mut self.acp {
+            let read = match tail.read() {
+                Ok(read) => read,
+                Err(e) => return Err(free([events, acp], e)),
+            };
+            let (now, later): (Vec<_>, _) =
+                read.into_iter().partition(|(ts, _)| all || *ts <= self.last);
+            acp.extend(now);
+            self.held = later;
+        }
+        // Both in time order: merged, events first at the same time.
+        let mut merged = Vec::with_capacity(events.len() + acp.len());
+        let (mut events, mut acp) = (events.into_iter().peekable(), acp.into_iter().peekable());
+        loop {
+            let next = match (events.peek(), acp.peek()) {
+                (Some((e, _)), Some((a, _))) if a < e => acp.next(),
+                (Some(_), _) => events.next(),
+                (None, _) => acp.next(),
+            };
+            let Some((_, event)) = next else { return Ok(merged) };
+            merged.push(event);
+        }
+    }
+
+    /// Lets go of the ACP held for the next read: it is from before.
+    pub(crate) fn forget_held(&mut self) {
+        free([take(&mut self.held)], ());
+    }
+
+    /// Says which of its files end partway through a record, for a
+    /// transcript that won't grow.
+    pub(crate) fn cut_short(&self) {
+        self.events.cut_short();
+        if let Some(acp) = &self.acp {
+            acp.cut_short();
+        }
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.forget_held();
+    }
+}
+
+/// Lets go of `read` on a stack that takes it (ADR 2.5): `then`.
+fn free<T, const N: usize>(read: [Vec<(String, Value)>; N], then: T) -> T {
+    json::free(Value::Array(read.into_iter().flatten().map(|(_, e)| e).collect()));
+    then
+}
+
+/// One file of a transcript, read as it grows.
+struct Tail {
+    path: PathBuf,
+    file: BufReader<File>,
+    /// A line still being written.
+    partial: Vec<u8>,
+    /// How many lines were read whole.
+    lines: usize,
+}
+
+impl Tail {
+    fn open(path: &Path) -> Result<Tail, String> {
+        let file = open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Tail {
+            path: path.to_owned(),
+            file: BufReader::new(file),
+            partial: Vec::new(),
+            lines: 0,
+        })
+    }
+
+    /// The records appended since the last read as events ([`event`]), with
+    /// when each was written. A line that isn't one is passed over, and said
+    /// (ADR 5.1).
+    fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
+        let mut read = Vec::new();
+        loop {
+            let n = self.file.read_until(b'\n', &mut self.partial);
+            let n = match n {
+                Ok(n) => n,
+                Err(e) => return Err(free([read], e.to_string())),
+            };
+            if n == 0 || !self.partial.ends_with(b"\n") {
+                return Ok(read);
+            }
+            self.lines += 1;
+            let line = take(&mut self.partial);
+            let depth = json::depth(&line);
+            let one = json::on_stack(depth, || {
+                let record = record(&line)?;
+                let ts = record["ts"].as_str().unwrap_or_default().to_owned();
+                Some((ts, event(record)?))
+            });
+            match one {
+                Some(Some(one)) => read.push(one),
+                Some(None) => say(&format!(
+                    "brnr: {}:{} isn't a record brnr can read, not shown",
+                    self.path.display(),
+                    self.lines
+                )),
+                None => {
+                    let e = format!("no stack to be had for a record {depth} deep");
+                    return Err(free([read], e));
+                }
+            }
+        }
+    }
+
+    /// Says so if the file ends partway through a line: once nothing more
+    /// will be written, it is a record cut short (ADR 5.1).
+    fn cut_short(&self) {
+        if !self.partial.is_empty() {
+            let (path, n) = (self.path.display(), self.partial.len());
+            say(&format!("brnr: {path} ends partway through a record ({n} bytes), not shown"));
+        }
+    }
+}
+
+/// `text` on stderr, as the commands say what they couldn't do.
+fn say(text: &str) {
+    eprintln!("{}", render::clean(text));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// A directory of this test's own, empty.
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("brnr-transcript-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An array nested `depth` deep.
+    fn deep(depth: usize) -> String {
+        format!("{}{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    /// A transcript is read only where the logger could have written it
+    /// (ADR 9.3): not in a symlinked project folder, nor through a symlink,
+    /// nor what isn't a regular file.
+    #[test]
+    fn adr_0009_a_transcript_is_read_only_where_it_could_be_written() {
+        let (home, outside) = (scratch("walk"), scratch("walk-outside"));
+        let projects = home.join("projects");
+        let record = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        fs::write(outside.join("s.jsonl"), format!("{record}\n")).unwrap();
+        for folder in ["-a", "-b"] {
+            fs::create_dir_all(projects.join(folder)).unwrap();
+        }
+        for file in ["-a/s.jsonl", "-a/s.acp.jsonl", "-b/t.jsonl"] {
+            fs::write(projects.join(file), format!("{record}\n")).unwrap();
+        }
+        symlink(&outside, projects.join("-linked")).unwrap();
+        let link = projects.join("-b/s.jsonl");
+        symlink(outside.join("s.jsonl"), &link).unwrap();
+        let fifo = projects.join("-b/u.jsonl");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+
+        let mut files = events_files_in(&home);
+        files.sort();
+        assert_eq!(files, [projects.join("-a/s.jsonl"), projects.join("-b/t.jsonl")]);
+        assert_eq!(of_session_in(&home, "s"), [projects.join("-a/s.jsonl")]);
+        assert_eq!(of_session_in(&home, "u"), Vec::<PathBuf>::new());
+        assert_eq!(open(&link).unwrap_err().to_string(), "is a symlink");
+        assert!(first(&link).is_none() && last(&link, |_| true).is_none(), "read through it");
+        assert!(tail(&link, CHUNK).is_none() && !has_records(&link), "read through it");
+        for what in [&fifo, &projects] {
+            assert_eq!(open(what).unwrap_err().to_string(), "is not a regular file");
+        }
+        assert!(first(&projects.join("-a/s.jsonl")).is_some());
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    /// What `session list`, `session resume` and `doctor` take from a
+    /// transcript, whatever its end (ADR 5.1): ending in a newline or not;
+    /// cut short; a whole line that isn't a record, last or before the
+    /// last; empty; nothing readable.
+    #[test]
+    fn adr_0005_the_first_and_last_records_are_ones_brnr_can_read() {
+        let path = scratch("records").join("s.jsonl");
+        let cases: [(&str, Option<i64>, Option<i64>); 9] = [
+            ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
+            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"part\n{\"n\":3}\n", Some(1), Some(3)),
+            ("{\"ts\":\"part\n{\"n\":1}\n", Some(1), Some(1)),
+            ("{\"n\":1}\n42\n", Some(1), Some(1)),
+            ("", None, None),
+            ("{\"ts\":\"partial", None, None),
+        ];
+        let n = |r: Option<Value>| r.and_then(|r| r["n"].as_i64());
+        for (text, first_n, last_n) in cases {
+            fs::write(&path, text).unwrap();
+            let found = (n(first(&path)), n(last(&path, |_| true)));
+            assert_eq!(found, (first_n, last_n), "{text:?}");
+        }
+        // Past the 64 KiB a read backwards takes at a time.
+        let long = format!(r#"{{"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
+        let junk = "y".repeat(70_000);
+        fs::write(&path, format!("{{\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut")).unwrap();
+        assert_eq!(n(last(&path, |_| true)), Some(3));
+        assert_eq!(n(last(&path, |r| r["n"] == 1)), Some(1));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A record nested past 128 is one brnr can read (ADR 2.5): first, last,
+    /// or beyond the openings. It is read for what a transcript is without
+    /// what nests that deep, so that any stack holds what is kept.
+    #[test]
+    fn adr_0002_a_deep_record_is_read() {
+        let path = scratch("deep").join("s.jsonl");
+        let opened = r#"{"ts":"1","session_id":"s","event":{"event":"session-opened","cwd":"/w"}}"#;
+        for depth in [200, 10_000] {
+            let request = format!(
+                r#"{{"ts":"2","host_id":"h","session_id":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
+                deep(depth)
+            );
+            fs::write(&path, format!("{opened}\n{request}\n")).unwrap();
+            let read = last(&path, |_| true).unwrap();
+            let want = json!({ "ts": "2", "host_id": "h", "session_id": "s",
+                "event": { "event": "permission_request", "request": "p1" } });
+            assert_eq!(read, want, "{depth}");
+            assert!(has_records(&path), "{depth}");
+            fs::write(&path, format!("{request}\n{opened}\n")).unwrap();
+            assert_eq!(first(&path).unwrap()["event"]["request"], "p1", "{depth}");
+            let line = request.as_bytes();
+            let whole = json::on_stack(depth, || record(line).map(|r| json::nesting([&r])));
+            assert_eq!(whole, Some(Some(depth + 2)), "{depth}");
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// `doctor` reads the end of a host log: the lines in its last bytes,
+    /// but one they cut, and empty ones; the last one even if cut short.
+    #[test]
+    fn adr_0005_the_end_of_a_file_is_its_last_lines() {
+        let path = scratch("tail").join("h.jsonl");
+        fs::write(&path, "a\nbb\n\nccc\ndd").unwrap();
+        let lines = |bytes| tail(&path, bytes).unwrap();
+        for bytes in [12, 100] {
+            assert_eq!(lines(bytes), [&b"a"[..], b"bb", b"ccc", b"dd"]);
+        }
+        assert_eq!(lines(7), [&b"ccc"[..], b"dd"]);
+        assert_eq!(lines(6), [b"dd"]);
+        assert_eq!(lines(0), Vec::<Vec<u8>>::new());
+        assert!(tail(&path.with_extension("none"), 1).is_none());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A record is the event `event watch` showed (ADR 5.1): a host event as
+    /// it was emitted; an ACP message as an `acp` event, its keys in that
+    /// order, with its position only where the record has one (ADR 10.2);
+    /// a line that wasn't JSON as its text.
+    #[test]
+    fn adr_0005_a_record_is_the_event_watch_showed() {
+        let host = json!({ "ts": "t", "host_id": "h", "session_id": "s",
+            "event": { "event": "agent_message", "text": "hi", "seq": 3 } });
+        assert_eq!(event(host), Some(json!({ "event": "agent_message", "text": "hi", "seq": 3 })));
+        let acp = json!({ "ts": "t", "host_id": "h", "host_pid": 1, "session_id": "s", "seq": 4,
+            "dir": "agent->editor", "msg": { "id": 1 } });
+        let want = r#"{"event":"acp","dir":"agent->editor","session":"s","msg":{"id":1},"ts":"t","host_id":"h","seq":4}"#;
+        assert_eq!(event(acp).unwrap().to_string(), want);
+        // The copy of a `session/new` in a session's raw file.
+        let copy = json!({ "ts": "t", "host_id": "h", "session_id": "s", "dir": "editor->agent",
+            "msg": { "method": "session/new" } });
+        assert_eq!(event(copy).unwrap().get("seq"), None);
+        let raw = json!({ "ts": "t", "host_id": "h", "dir": "agent-stderr", "raw": "oops" });
+        let raw = event(raw).unwrap();
+        assert_eq!((&raw["msg"], &raw["session"]), (&json!("oops"), &Value::Null));
+        assert_eq!(event(json!({ "ts": "t", "host_id": "h", "event": {} })), None);
+        assert_eq!(event(json!([1])), None);
+    }
+
+    /// `event log` reads a session's two files as they grow, merged in time
+    /// order: ACP past the last event read is held for the next read, a
+    /// line that isn't a record is passed over, one still being written is
+    /// read once it ends, and one nested past 128 is read (ADR 2.5, 5.1).
+    #[test]
+    fn adr_0005_a_sessions_files_are_read_merged_as_they_grow() {
+        let dir = scratch("reader");
+        let (events, acp) = (dir.join("s.jsonl"), dir.join("s.acp.jsonl"));
+        let host = |ts: &str, name: &str, more: &str| {
+            format!(r#"{{"ts":"{ts}","host_id":"h","event":{{"event":"{name}"{more}}}}}"#)
+        };
+        let msg = |ts: &str| {
+            format!(r#"{{"ts":"{ts}","host_id":"h","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#)
+        };
+        let append = |path: &Path, text: &str| {
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
+            io::Write::write_all(&mut file, text.as_bytes()).unwrap();
+        };
+        let names = |read: Vec<Value>| -> Vec<String> {
+            let name = |e: &Value| e["msg"].as_str().or(e["event"].as_str()).unwrap().to_owned();
+            read.iter().map(name).collect()
+        };
+        fs::write(
+            &events,
+            format!("{}\nnot a record\n{}\n", host("1", "a", ""), host("3", "b", "")),
+        )
+        .unwrap();
+        fs::write(&acp, format!("{}\n{}\n", msg("2"), msg("4"))).unwrap();
+        let mut reader = Reader::open(&events, Some(&acp)).unwrap();
+        assert_eq!(names(reader.read(false).unwrap()), ["a", "2", "b"]);
+        append(&events, &host("5", "c", ""));
+        assert_eq!(names(reader.read(false).unwrap()), ["4"]);
+        let request = host("6", "permission_request", &format!(r#","tool_call":{}"#, deep(200)));
+        append(&events, &format!("\n{request}\n"));
+        append(&acp, &format!("{}\n", msg("7")));
+        let read = reader.read(true).unwrap();
+        assert_eq!(read[1]["tool_call"].to_string(), deep(200));
+        assert_eq!(names(read), ["c", "permission_request", "7"]);
+        let missing = Reader::open(&dir.join("none.jsonl"), None).err().unwrap();
+        assert!(
+            missing.starts_with(&format!("{}: ", dir.join("none.jsonl").display())),
+            "{missing}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adr_0010_a_records_position_is_read_from_its_end_or_head() {
+        let event = br#"{"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
+        assert_eq!(position(event), Some(12));
+        let acp = br#"{"ts":"t","host_id":"h","session_id":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
+        assert_eq!(position(acp), Some(13));
+        let note = br#"{"ts":"t","host_id":"h","event":{"event":"records-skipped","count":1}}"#;
+        assert_eq!(position(note), None);
+        let raw = br#"{"ts":"t","host_id":"h","dir":"agent-stderr","msg":"x"}"#;
+        assert_eq!(position(raw), None);
+    }
+
+    /// An events file holding only openings, which a load that failed
+    /// leaves, isn't a transcript of its session; one with any other record
+    /// is, whatever is between them that brnr can't read (ADR 5.1, ADR 5.6).
+    #[test]
+    fn adr_0005_only_openings_are_no_transcript() {
+        let path = scratch("openings").join("s.jsonl");
+        let opened = r#"{"ts":"t","session_id":"s","event":{"event":"session-opened"}}"#;
+        let other = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        let cases = [
+            ("", false),
+            (&format!("{opened}\n"), false),
+            (&format!("{opened}\n{opened}\nnot json\n[1]\n{{\"cut\":"), false),
+            (&format!("{opened}\nnot json\n{opened}\n{other}\n"), true),
+            (other, true),
+        ];
+        for (text, has) in cases {
+            fs::write(&path, text).unwrap();
+            assert_eq!(has_records(&path), has, "{text:?}");
+        }
+        assert!(!has_records(&path.with_extension("none")));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+}

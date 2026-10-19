@@ -4,7 +4,7 @@
 //! ACP; `log = false` is no logger at all. Records are written by a
 //! background thread so logging can never slow down or break forwarding;
 //! [`Sink::when_written`] says when what was recorded is written, for
-//! `brnr event log` (ADR 5.5).
+//! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.
 //!
 //! Every record starts with the fields that join files together:
 //! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,
@@ -62,7 +62,7 @@ use std::env;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions};
-use std::io::{self, BufRead, ErrorKind, Write};
+use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -75,7 +75,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::{paths, sys};
+use crate::{paths, sys, transcript};
 
 /// What may be queued for the logger before records are skipped.
 const LOG_BYTES: usize = 64 << 20;
@@ -298,8 +298,8 @@ impl Sink {
 
     /// Whether a record of `session` beyond its openings has gone to the
     /// logger for its events file, from this process, ever: what makes the
-    /// file a transcript ([`has_records`], ADR 5.6), whether or not the
-    /// logger, which writes behind (ADR 5.5), has written it yet. A record
+    /// file a transcript (`transcript::has_records`, ADR 5.6), whether or
+    /// not the logger, which writes behind (ADR 5.5), has written it yet. A record
     /// skipped isn't counted, as it is never written. Never, when not
     /// logging.
     pub(crate) fn recorded(&self, session: &str) -> bool {
@@ -355,8 +355,8 @@ impl Sink {
     }
 
     /// An event for `session`, which this process doesn't have open, into
-    /// each of its events files ([`transcripts`]): an editor's deletion of a
-    /// session it hasn't opened here (ADR 8.1). Never skipped.
+    /// each of its events files (`transcript::of_session`): an editor's
+    /// deletion of a session it hasn't opened here (ADR 8.1). Never skipped.
     pub(crate) fn append(&self, session: &str, event: Value) {
         self.record(Some(session), false, true, None, |ts| Cmd::Append {
             session: session.to_owned(),
@@ -530,7 +530,7 @@ impl Writer {
             }
             Cmd::Append { session, ts, event } => {
                 let record = self.head.record(ts, Some(&session), &event_body(event));
-                for path in transcripts(&session) {
+                for path in transcript::of_session(&session) {
                     let put = self.open_file(ts, &path).and_then(|mut out| out.put(&record));
                     if let Err(err) = put {
                         self.failed(ts, &session, &path, &err);
@@ -975,49 +975,10 @@ fn at(path: &Path, err: io::Error) -> io::Error {
     }
 }
 
-/// `session`'s events files under the state directory: in each project
-/// folder, the one named for its id (ADR 9.2), where there is one. A session
-/// resumed in another folder has one in each. A symlinked folder isn't
-/// looked in, as [`purge`] doesn't: what is written there is refused anyway
-/// (ADR 9.3).
-pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
-    let name = format!("{}.jsonl", paths::file_name(session));
-    let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
-    let mut found: Vec<PathBuf> = folders
-        .flatten()
-        .filter(|folder| folder.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|folder| folder.path().join(&name))
-        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()))
-        .collect();
-    found.sort();
-    found
-}
-
-/// Whether the events file at `path` holds a record of its session beyond
-/// its openings, which makes it a transcript of the session to a load (ADR
-/// 57): a load that failed leaves one holding only `session-opened`
-/// records. Read up to the first other record; a line brnr can't read is
-/// passed over (ADR 5.1). A symlink, or what isn't a regular file, isn't
-/// read, as the logger writes to neither (ADR 9.3).
-pub(crate) fn has_records(path: &Path) -> bool {
-    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
-    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path).ok();
-    let Some(file) = opened.filter(|f| f.metadata().is_ok_and(|m| m.is_file())) else {
-        return false;
-    };
-    let lines = io::BufReader::new(file).split(b'\n').map_while(Result::ok);
-    lines.filter_map(|line| as_record(&line)).any(|r| r["event"]["event"] != "session-opened")
-}
-
-/// A line of a transcript as a record, if it is one.
-pub(crate) fn as_record(line: &[u8]) -> Option<Value> {
-    serde_json::from_slice(line).ok().filter(Value::is_object)
-}
-
-/// Records `event` in each of `session`'s events files ([`transcripts`]),
-/// for a session no process has open: a record of no process's, its
-/// `host_id`, `host_pid` and `proxy_pid` null, with the pid of the agent
-/// `brnr session delete` started (ADR 8.1). Written as the logger writes:
+/// Records `event` in each of `session`'s events files
+/// (`transcript::of_session`), for a session no process has open: a record
+/// of no process's, its `host_id`, `host_pid` and `proxy_pid` null, with
+/// the pid of the agent `brnr session delete` started (ADR 8.1). Written as the logger writes:
 /// private, never through a symlink (ADR 9.3), on a line of its own (ADR
 /// 55). The files written to, what couldn't be written to and why, each
 /// file tried whatever the one before did, and what was made private, with
@@ -1035,7 +996,7 @@ pub(crate) fn record_in_transcripts(
     .into_bytes();
     record.extend_from_slice(&event_body(event));
     let (mut written, mut failed, mut made) = (Vec::new(), Vec::new(), Made::new());
-    for path in transcripts(session) {
+    for path in transcript::of_session(session) {
         let put = open_append(&path).and_then(|(mut out, opened)| {
             made.extend(opened);
             out.put(&record)
@@ -1774,33 +1735,5 @@ mod tests {
         let counted = ["noted", "raw", "skipped", "closed", "not-open"].map(|s| sink.recorded(s));
         assert_eq!(counted, [true, false, false, false, false]);
         assert!(!Sink(None).recorded("noted"), "counted without a logger");
-    }
-
-    /// An events file holding only openings, which a load that failed
-    /// leaves, isn't a transcript of its session; one with any other record
-    /// is, whatever is between them that brnr can't read (ADR 5.1, ADR 5.6).
-    #[test]
-    fn adr_0005_only_openings_are_no_transcript() {
-        let path = scratch("openings");
-        let opened = r#"{"ts":"t","session_id":"s","event":{"event":"session-opened"}}"#;
-        let other = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
-        let cases = [
-            ("", false),
-            (&format!("{opened}\n"), false),
-            (&format!("{opened}\n{opened}\nnot json\n[1]\n{{\"cut\":"), false),
-            (&format!("{opened}\nnot json\n{opened}\n{other}\n"), true),
-            (other, true),
-        ];
-        for (text, has) in cases {
-            std::fs::write(&path, text).unwrap();
-            assert_eq!(has_records(&path), has, "{text:?}");
-        }
-        let link = path.with_extension("link");
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(!has_records(&link), "read through a symlink");
-        assert!(!has_records(&path.with_extension("none")));
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_file(&path);
     }
 }

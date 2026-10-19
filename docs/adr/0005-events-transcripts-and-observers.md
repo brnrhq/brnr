@@ -648,8 +648,11 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_closing_sessions_closes_their_files`;
   [src/log.rs](../../src/log.rs):
   `adr_0005_a_closed_session_has_its_records_and_then_no_file`;
-  [src/ctl.rs](../../src/ctl.rs):
-  `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`.
+  [src/transcript.rs](../../src/transcript.rs):
+  `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
+  `adr_0005_the_end_of_a_file_is_its_last_lines`,
+  `adr_0005_a_record_is_the_event_watch_showed`,
+  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
   `adr_0005_editor_close_is_an_event`;
@@ -709,8 +712,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_an_editors_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_bridges_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`;
+  [src/transcript.rs](../../src/transcript.rs):
+  `adr_0005_only_openings_are_no_transcript`;
   [src/log.rs](../../src/log.rs):
-  `adr_0005_only_openings_are_no_transcript`,
   `adr_0005_a_record_beyond_the_opening_counts_at_once`. That a session
   brnr has a transcript of keeps the replay out of it however often it
   loads, with a `history` event each time, is ADR 3.11's

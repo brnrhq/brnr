@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, json, lock, log, paths, render, signals, spawn, sys};
+use crate::{config, json, lock, paths, render, signals, spawn, sys, transcript};
 
 use super::client::{Conn, Host, discover, session_in};
 use super::{
@@ -459,7 +459,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                 // leaves, isn't a transcript of it (ADR 5.6).
                 Ok(Found::Inactive(past)) => {
                     let file = past["log"].as_str().map(Path::new);
-                    transcript = file.is_some_and(log::has_records);
+                    transcript = file.is_some_and(transcript::has_records);
                     Some(past)
                 }
                 Err(_) => None,

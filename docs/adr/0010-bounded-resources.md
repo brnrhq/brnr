@@ -489,7 +489,7 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
   - [src/ctl/notify.rs](../../src/ctl/notify.rs):
     `adr_0010_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
-  - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs):
+  - [src/transcript.rs](../../src/transcript.rs):
     `adr_0010_a_records_position_is_read_from_its_end_or_head`.
   - [src/log.rs](../../src/log.rs):
     `adr_0010_what_the_transcript_lost_is_said_by_position`.
