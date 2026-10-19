@@ -29,8 +29,9 @@ use serde_json::{Value, json};
 use crate::schema::ErrorCode;
 use crate::{lock, log};
 
+use super::client::discover;
 use super::sessions::{Asked, named_agent};
-use super::{Found, USAGE, closing, closing_in, discover, find_session, print_json, running_in};
+use super::{Found, USAGE, closing, closing_in, find_session, print_json, running_in};
 
 pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut purge, mut profile, mut json_out) = (None, false, None, false);

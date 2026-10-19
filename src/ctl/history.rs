@@ -28,7 +28,8 @@ use serde_json::{Value, json};
 use crate::host::alive;
 use crate::{paths, render};
 
-use super::{Found, USAGE, call, closing_in, default_events, discover, events_arg, find_session};
+use super::client::discover;
+use super::{Found, USAGE, closing_in, default_events, events_arg, find_session};
 
 const POLL: Duration = Duration::from_millis(200);
 
@@ -146,19 +147,19 @@ fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), Stri
     if let Some(host) = closing_in(&hosts, arg) {
         // Answered once what it recorded before is written: the close's
         // records, and the lock gone with them.
-        if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
+        if let Err(e) = host.call(&json!({ "cmd": "logged" })) {
             errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
         }
         hosts = discover()?;
     }
     match find_session(&hosts, arg)? {
         Found::Running(host, id) => {
-            let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
+            let s = host.session(&id);
             let path = s
                 .and_then(|s| s["log"].as_str())
                 .ok_or("this process keeps no transcript (log = false)")?;
             let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
-            if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
+            if let Err(e) = host.call(&json!({ "cmd": "logged" })) {
                 errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
             }
             Ok((PathBuf::from(path), acp, host.meta["host_pid"].as_i64()))

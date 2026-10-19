@@ -479,13 +479,14 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_notify_cut_off_catches_up_once_its_command_is_done`.
   - [tests/security.rs](../../tests/security.rs):
     `adr_0010_was_cut_off_says_where_never_what`.
-  - [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  - [src/ctl/client.rs](../../src/ctl/client.rs):
     `adr_0010_a_cut_off_while_catching_up_is_tried_again_then_given_up`,
-    `adr_0010_event_wait_cut_off_looking_says_what_it_missed`,
     `adr_0010_a_live_process_that_cant_be_caught_up_with_says_until_where`,
     `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`,
-    `adr_0010_a_start_channel_cut_off_catches_up_or_says_what_it_missed`,
     `adr_0010_an_event_live_while_subscribing_again_comes_once`.
+  - [src/ctl/talk.rs](../../src/ctl/talk.rs):
+    `adr_0010_event_wait_cut_off_looking_says_what_it_missed`,
+    `adr_0010_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
   - [src/ctl/notify.rs](../../src/ctl/notify.rs):
     `adr_0010_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
   - [src/ctl/catch_up.rs](../../src/ctl/catch_up.rs):

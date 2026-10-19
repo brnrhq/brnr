@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::render;
 
-use super::{USAGE, call, discover, print_json, running_session};
+use super::{USAGE, discover, print_json, running_session};
 
 pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
     let mut positional = Vec::new();
@@ -23,7 +23,7 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
     let [arg, request] = positional[..] else { return Err(USAGE.to_owned()) };
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let response = call(host, &json!({ "cmd": "pending" }))?;
+    let response = host.call(&json!({ "cmd": "pending" }))?;
     let p: &Value = response["pending"]
         .as_array()
         .into_iter()

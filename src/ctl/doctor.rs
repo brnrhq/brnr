@@ -48,7 +48,8 @@ use serde_json::{Value, json};
 use crate::host::check_bridge;
 use crate::{bug, config, lock, log, paths, signals, spawn, sys};
 
-use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, text, when};
+use super::client::{Host, Probe, gone, probe, read_meta};
+use super::{USAGE, last_record, text, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;

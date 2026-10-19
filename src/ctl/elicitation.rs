@@ -15,10 +15,8 @@ use serde_json::{Map, Value, json};
 
 use crate::render;
 
-use super::{
-    Host, USAGE, call, discover, print_json, print_table, process, read_stdin, request,
-    running_session, text,
-};
+use super::client::Host;
+use super::{USAGE, discover, print_json, print_table, process, read_stdin, running_session, text};
 
 /// Where an elicitation is: a session in a process, or a process alone for
 /// one outside any session.
@@ -63,7 +61,7 @@ fn parse<'a>(
 
 /// The elicitation `request` waiting at `target`, in full.
 fn find(target: &Target, request: &str) -> Result<Value, String> {
-    let response = call(target.host, &json!({ "cmd": "pending" }))?;
+    let response = target.host.call(&json!({ "cmd": "pending" }))?;
     let found =
         response["elicitations"].as_array().into_iter().flatten().find(|e| {
             e["request"] == request && e["session"].as_str() == target.session.as_deref()
@@ -110,8 +108,7 @@ pub(super) fn requests(args: &[String]) -> Result<(), String> {
     };
     let mut rows = Vec::new();
     for host in chosen {
-        let response = request(host, &json!({ "cmd": "pending" }))
-            .map_err(|e| format!("process {}: {e}", host.id()))?;
+        let response = host.call(&json!({ "cmd": "pending" }))?;
         for e in response["elicitations"].as_array().into_iter().flatten() {
             if only.as_deref().is_some_and(|id| e["session"] != id) {
                 continue;
@@ -274,7 +271,7 @@ pub(super) fn answer(args: &[String], action: &str) -> Result<(), String> {
         "action": action,
         "content": content,
     });
-    let response = call(target.host, &req)?;
+    let response = target.host.call(&req)?;
     let result = &response["result"];
     if json_out {
         return print_json(&json!({

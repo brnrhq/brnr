@@ -19,9 +19,9 @@ use serde_json::{Value, json};
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
 use crate::{config, json, lock, log, paths, signals, spawn, sys};
 
+use super::client::{Host, discover};
 use super::{
-    Host, USAGE, agent_name, discover, first_record, forked_from, inactive_sessions, print_json,
-    print_table, when,
+    USAGE, agent_name, first_record, forked_from, inactive_sessions, print_json, print_table, when,
 };
 
 /// How long an agent started to be asked has to start and answer.

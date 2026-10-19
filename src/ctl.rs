@@ -30,14 +30,13 @@ use std::env;
 use std::fmt::Display;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::host::{EVENTS, QUIET, alive};
+use crate::host::{EVENTS, QUIET};
 use crate::{json, lock, log, paths, render};
 
 /// `println!` and `print!` for what the commands print: through
@@ -56,6 +55,7 @@ macro_rules! errln {
 }
 
 mod catch_up;
+mod client;
 mod delete;
 mod doctor;
 mod elicitation;
@@ -66,6 +66,8 @@ mod settings;
 mod show;
 mod skill;
 mod talk;
+
+use client::{Conn, Host, discover};
 
 /// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
@@ -309,43 +311,6 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
     format!("usage:\n{}\n(brnr --help for every command)", lines.join("\n"))
 }
 
-/// A running brnr process: its metadata file and, if it answered, its live
-/// status.
-struct Host {
-    meta: Value,
-    status: Option<Value>,
-}
-
-impl Host {
-    fn info(&self) -> &Value {
-        self.status.as_ref().unwrap_or(&self.meta)
-    }
-
-    /// Its pid, which names its socket and metadata.
-    fn id(&self) -> &str {
-        self.meta["id"].as_str().unwrap_or("?")
-    }
-
-    fn sessions(&self) -> &[Value] {
-        self.status.as_ref().and_then(|s| s["sessions"].as_array()).map_or(&[], Vec::as_slice)
-    }
-
-    /// Whether it has closed `session` and holds its lock still, until its
-    /// records are written (ADR 5.5).
-    fn closing(&self, session: &str) -> bool {
-        let closing = self.status.as_ref().and_then(|s| s["closing"].as_array());
-        closing.is_some_and(|c| c.iter().any(|s| s == session))
-    }
-
-    /// The sessions whose locks it holds, as `locks` has them: what it
-    /// serves, asked of nobody.
-    fn held(&self, locks: &[lock::Entry]) -> Vec<String> {
-        let pid = self.id().parse().ok();
-        let held = locks.iter().filter(|e| e.pid.is_some() && e.pid == pid);
-        held.filter_map(|e| e.session.clone()).collect()
-    }
-}
-
 // ---- naming sessions and processes ---------------------------------------
 
 /// What a `<session>` argument names.
@@ -389,7 +354,7 @@ fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
 /// The session with id `arg`, running or not: in the process holding its
 /// lock, or one that serves it shared, without the lock (ADR 3.9).
 fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
-    let serves = |host: &Host| host.sessions().iter().any(|s| s["session_id"] == arg);
+    let serves = |host: &Host| host.session(arg).is_some();
     if let Some(pid) = lock::holder(arg) {
         return match hosts.iter().find(|h| h.id() == pid.to_string()) {
             Some(host) if serves(host) => Ok(Found::Running(host, arg.to_owned())),
@@ -517,7 +482,7 @@ fn stop(args: &[String]) -> Result<(), String> {
     let (pid, json_out) = one_arg(args)?;
     let hosts = discover()?;
     let host = process(&hosts, &pid)?;
-    let response = call(host, &json!({ "cmd": "stop" }))?;
+    let response = host.call(&json!({ "cmd": "stop" }))?;
     if json_out {
         // Its pid as `process list` has it, as `prompt cancel` names its session.
         let pid = host.id().parse::<u64>().ok();
@@ -661,7 +626,7 @@ fn status(args: &[String]) -> Result<(), String> {
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, &arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
-    let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
+    let x = host.session(&id).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session_id"] == id.as_str() && s["shared"] == true;
@@ -878,61 +843,49 @@ fn pending(args: &[String]) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    let mut answers = Vec::new();
-    for host in chosen {
-        let line = exchange(host, &json!({ "cmd": "pending" }), ANSWER_WAIT)
-            .map_err(|e| format!("process {}: {e}", host.id()))?;
-        answers.push((host.id(), line));
-    }
     // A request nests as deep as the agent made it: read as the host reads
-    // the agent's line, and listed and let go on a stack that takes it
+    // the agent's line, and listed and let go of on a stack that takes it
     // (ADR 2.5).
-    let depth = answers.iter().map(|(_, line)| json::depth(line.as_bytes())).max().unwrap_or(0);
-    json::on_stack(depth, || list_pending(&answers, only.as_deref(), json_out))
-        .unwrap_or_else(|| Err(format!("no stack to be had for an answer {depth} deep")))
+    let mut rows = Vec::new();
+    for host in chosen {
+        rows.extend(host.pending(|pending| {
+            pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
+        })?);
+    }
+    json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
 }
 
-/// The permission requests in each process's `answers` (of session `only`,
-/// if given), as a table or `--json`.
-fn list_pending(
-    answers: &[(&str, String)],
-    only: Option<&str>,
-    json_out: bool,
-) -> Result<(), String> {
-    let mut rows = Vec::new();
-    for (id, line) in answers {
-        let response: Value = json::parse(line.as_bytes())
-            .ok_or_else(|| format!("process {id}: its answer isn't JSON"))?;
-        for p in response["pending"].as_array().into_iter().flatten() {
-            if only.is_some_and(|id| p["session"] != id) {
-                continue;
-            }
-            let options: Vec<Value> = p["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
-                .collect();
-            rows.push(json!({
-                "session": p["session"],
-                "request": p["request"],
-                "owner": p["owner"],
-                "kind": p["kind"],
-                "title": p["title"],
-                "options": options,
-            }));
-        }
-    }
+/// A permission request as `permission requests` lists it.
+fn pending_row(p: &Value) -> Value {
+    let options: Vec<Value> = p["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
+        .collect();
+    json!({
+        "session": p["session"],
+        "request": p["request"],
+        "owner": p["owner"],
+        "kind": p["kind"],
+        "title": p["title"],
+        "options": options,
+    })
+}
+
+/// The permission requests' `rows`, as a table or `--json`.
+fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(rows);
     }
+    let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
         outln!("nothing waiting");
         return Ok(());
     }
     let mut table =
         vec![["SESSION", "REQUEST", "OWNER", "KIND", "TITLE", "OPTIONS"].map(String::from)];
-    for r in &rows {
+    for r in rows {
         let options: Vec<String> = r["options"]
             .as_array()
             .into_iter()
@@ -980,7 +933,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
         "always": always,
         "option": option,
     });
-    let response = call(host, &req)?;
+    let response = host.call(&req)?;
     let outcome = &response["outcome"];
     if json_out {
         return print_json(
@@ -1028,7 +981,7 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
             events.push(end.to_string());
         }
     }
-    let mut conn = talk::Conn::open(host)?;
+    let mut conn = Conn::open(host)?;
     let names: Vec<&str> = events.iter().map(String::as_str).collect();
     conn.subscribe(&names, only_session.as_deref())?;
     let options = render::Options { session: only_session.is_none(), time: true };
@@ -1101,194 +1054,6 @@ fn default_events() -> Vec<String> {
 }
 
 // ---- plumbing ------------------------------------------------------------
-
-/// Every process with a metadata file, asking each for its live status.
-/// Files left by a process that is gone are removed, even when its pid is
-/// another process's now (see `gone`). The runtime directory must be
-/// private, as the processes themselves require: anyone who could write to
-/// it could list a process of their own, and be sent what brnr sends.
-fn discover() -> Result<Vec<Host>, String> {
-    let dir = paths::runtime_dir();
-    match paths::check_private(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("{}: {e}", dir.display())),
-    }
-    let Ok(entries) = fs::read_dir(&dir) else { return Ok(Vec::new()) };
-    let mut hosts = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let Some(meta) = read_meta(&path) else { continue };
-        let mut host = Host { meta, status: None };
-        match probe(&path, &host) {
-            Probe::Answered(status) => host.status = Some(status),
-            Probe::Silent(_) => {}
-            Probe::Gone => {
-                let _ = fs::remove_file(&path);
-                let _ = fs::remove_file(path.with_extension("sock"));
-                continue;
-            }
-        }
-        hosts.push(host);
-    }
-    hosts.sort_by(|a, b| a.meta["started"].as_str().cmp(&b.meta["started"].as_str()));
-    Ok(hosts)
-}
-
-/// What a process whose metadata is at `path` turned out to be, asked for
-/// its status.
-enum Probe {
-    /// Running and answering: its status.
-    Answered(Value),
-    /// Running but not answering (ADR 3.9): why.
-    Silent(String),
-    /// Gone, whatever process has its pid now.
-    Gone,
-}
-
-/// Asks the process whose metadata is at `path` for its status, and says
-/// what it is.
-fn probe(path: &Path, host: &Host) -> Probe {
-    let pid = host.meta["host_pid"].as_i64().unwrap_or(0);
-    let socket = path.with_extension("sock");
-    match request(host, &json!({ "cmd": "status" })) {
-        Ok(status) => Probe::Answered(status),
-        Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
-        // Running, but accepting nothing: its backlog is full (`made`).
-        Err(e) if refused(&e) => Probe::Silent("not answering".into()),
-        Err(e) => Probe::Silent(e.to_string()),
-    }
-}
-
-/// How long a refused connection waits to be tried again: a process that
-/// is starting binds its socket a moment before it listens on it.
-const REFUSED_AGAIN: Duration = Duration::from_millis(20);
-
-/// Whether the brnr process with `pid` that made `file` in the runtime
-/// directory (its metadata, or its socket) is gone, a connection to its
-/// `socket` having failed with `err`.
-///
-/// A brnr process binds its socket and listens on it before it writes
-/// anything else there, and listens until it removes it as it ends. While
-/// it lives, connecting succeeds, whether it answers or not (SIGSTOPped
-/// too: the kernel queues the connection). A socket nobody listens on
-/// refuses, as one that isn't there does: the process that made it is
-/// gone, even when another process has its pid now (a reboot, or pids
-/// wrapping around). A pid that isn't the user's isn't brnr's (`alive`).
-fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> bool {
-    if !alive(pid) {
-        return true;
-    }
-    if !refused(err) {
-        return false;
-    }
-    std::thread::sleep(REFUSED_AGAIN);
-    match UnixStream::connect(socket) {
-        Err(e) if refused(&e) => !made(pid, file),
-        _ => false,
-    }
-}
-
-/// Whether a connection failed because nobody listens: refused, or no
-/// socket there.
-fn refused(err: &io::Error) -> bool {
-    matches!(err.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
-}
-
-/// Whether the process with `pid` now may be the one that made `file`,
-/// though its socket refuses: macOS also refuses a connection to a socket
-/// whose backlog is full, as a stopped process's fills up with every
-/// `brnr session list` that waited on it. One that started after `file` was
-/// written is another process. What can't be told counts as "may be":
-/// nothing is removed on a guess (P4).
-#[cfg(target_vendor = "apple")]
-fn made(pid: i64, file: &Path) -> bool {
-    use std::time::UNIX_EPOCH;
-    let Ok(written) = fs::metadata(file).and_then(|m| m.modified()) else { return true };
-    // SAFETY: proc_bsdinfo is plain data, for which all zeros is a valid
-    // value.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let buffer = (&raw mut info).cast();
-    // SAFETY: buffer points at info, and size is its size, as proc_pidinfo
-    // fills it.
-    let got =
-        unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, buffer, size) };
-    if got != size {
-        return true;
-    }
-    let started = UNIX_EPOCH
-        + Duration::from_secs(info.pbi_start_tvsec)
-        + Duration::from_micros(info.pbi_start_tvusec);
-    started <= written
-}
-
-/// Linux refuses a connection only when nobody listens: a full backlog
-/// makes it wait.
-#[cfg(not(target_vendor = "apple"))]
-fn made(_pid: i64, _file: &Path) -> bool {
-    false
-}
-
-/// A process's metadata file, if it is one: the socket it names must be the
-/// one next to it in the runtime directory.
-fn read_meta(path: &Path) -> Option<Value> {
-    let meta: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    let socket = meta["socket"].as_str().map(Path::new);
-    (socket == Some(&path.with_extension("sock"))).then_some(meta)
-}
-
-fn connect(host: &Host) -> io::Result<UnixStream> {
-    let socket = host.meta["socket"].as_str().ok_or(io::Error::other("no socket in metadata"))?;
-    UnixStream::connect(PathBuf::from(socket))
-}
-
-/// How long a request waits for its answer, unless it says otherwise.
-const ANSWER_WAIT: Duration = Duration::from_secs(5);
-
-fn request(host: &Host, req: &Value) -> io::Result<Value> {
-    request_timeout(host, req, ANSWER_WAIT)
-}
-
-/// A request and its answer, waiting up to `timeout` for it.
-fn request_timeout(host: &Host, req: &Value, timeout: Duration) -> io::Result<Value> {
-    serde_json::from_str(&exchange(host, req, timeout)?).map_err(io::Error::other)
-}
-
-/// A request and the line that answers it, waiting up to `timeout` for it.
-fn exchange(host: &Host, req: &Value, timeout: Duration) -> io::Result<String> {
-    let mut conn = connect(host)?;
-    conn.set_read_timeout(Some(timeout))?;
-    writeln!(conn, "{req}")?;
-    let mut line = String::new();
-    BufReader::new(conn).read_line(&mut line).map_err(|e| match e.kind() {
-        ErrorKind::WouldBlock | ErrorKind::TimedOut => io::Error::other("not answering"),
-        _ => e,
-    })?;
-    Ok(line)
-}
-
-/// A request whose failure is the command's failure.
-fn call(host: &Host, req: &Value) -> Result<Value, String> {
-    let response = request(host, req).map_err(|e| format!("process {}: {e}", host.id()))?;
-    if response["ok"].as_bool() != Some(true) {
-        return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
-    }
-    Ok(response)
-}
-
-/// A response as `--json` prints it: what it says, without `ok` and
-/// `req_id`.
-fn response_json(mut response: Value) -> Value {
-    if let Some(map) = response.as_object_mut() {
-        map.shift_remove("ok");
-        map.shift_remove("req_id");
-    }
-    response
-}
 
 fn print_json(value: &Value) -> Result<(), String> {
     outln!("{}", serde_json::to_string_pretty(value).unwrap());

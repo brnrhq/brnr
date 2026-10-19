@@ -3,17 +3,13 @@
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use super::client::Host;
 use super::{
-    Host, USAGE, closing, discover, one_arg, print_json, print_table, request_timeout,
-    response_json, running_in, running_session, text,
+    USAGE, closing, discover, one_arg, print_json, print_table, running_in, running_session, text,
 };
-
-/// The agent may take a while to switch model or fork a session.
-const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// `<session>`, the other arguments, and whether `--json` was given.
 fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> {
@@ -35,22 +31,8 @@ fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> 
 fn session_status(arg: &str) -> Result<(Host, Value), String> {
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
-    let status = host
-        .sessions()
-        .iter()
-        .find(|s| s["session_id"] == id.as_str())
-        .cloned()
-        .ok_or("the process is not answering")?;
-    Ok((Host { meta: host.meta.clone(), status: host.status.clone() }, status))
-}
-
-fn agent_call(host: &Host, req: &Value) -> Result<Value, String> {
-    let response = request_timeout(host, req, AGENT_TIMEOUT)
-        .map_err(|e| format!("process {}: {e}", host.id()))?;
-    if response["ok"].as_bool() != Some(true) {
-        return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
-    }
-    Ok(response)
+    let status = host.session(&id).cloned().ok_or("the process is not answering")?;
+    Ok((host.clone(), status))
 }
 
 fn s(v: &Value) -> &str {
@@ -241,7 +223,7 @@ pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
         "thought_level": thought_level,
         "options": options,
     });
-    let response = agent_call(&host, &req)?;
+    let response = host.call_agent(&req)?;
     if json_out {
         print_json(&json!({ "session": id, "set": response["set"] }))?;
         return Ok(ExitCode::SUCCESS);
@@ -304,7 +286,7 @@ pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
     }
     let hosts = discover()?;
     let (host, from) = running_session(&hosts, &arg)?;
-    let response = agent_call(host, &json!({ "cmd": "fork", "session": from }))?;
+    let response = host.call_agent(&json!({ "cmd": "fork", "session": from }))?;
     let session = text(&response["session"]);
     if json_out {
         print_json(&json!({ "session": session, "from": from }))?;
@@ -318,9 +300,9 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     let (arg, json_out) = one_arg(args)?;
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, &arg)?;
-    let response = agent_call(host, &json!({ "cmd": "close", "session": id }))?;
+    let response = host.call_agent(&json!({ "cmd": "close", "session": id }))?;
     if json_out {
-        print_json(&response_json(response))?;
+        print_json(&response)?;
         return Ok(ExitCode::SUCCESS);
     }
     outln!("closed {id}");
@@ -342,7 +324,7 @@ pub(super) fn held<'a>(
     let Some(status) = &host.status else {
         return Err(format!("{running}, which is not answering"));
     };
-    let Some(s) = host.sessions().iter().find(|s| s["session_id"] == session) else {
+    let Some(s) = host.session(session) else {
         if host.closing(session) {
             return Err(closing(session, pid));
         }
@@ -366,7 +348,7 @@ pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), Stri
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");
     let req = json!({ "cmd": "close", "session": session, "take_over": to });
-    agent_call(owner, &req).map_err(|e| {
+    owner.call_agent(&req).map_err(|e| {
         if owner.info()["owner"] == "editor" {
             format!("{running}, an editor's: {e}")
         } else {

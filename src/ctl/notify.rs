@@ -62,8 +62,8 @@ use serde_json::Value;
 use crate::{host, json, render, signals, sys};
 
 use super::catch_up::MISSED;
-use super::talk::Conn;
-use super::{USAGE, discover, events_arg, session_or_pid};
+use super::client::{Conn, discover};
+use super::{USAGE, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] =
     &["permission_request", "elicitation_request", "turn_ended", "exited"];
@@ -615,7 +615,7 @@ mod tests {
     /// hung up, then what it missed (ADR 10.2).
     #[test]
     fn adr_0010_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed() {
-        let (conn, process) = crate::ctl::talk::cut_off_at("status");
+        let (conn, process) = crate::ctl::client::cut_off_at("status");
         let mut events = Events::on(conn, "1", None, DEFAULT_EVENTS).unwrap();
         let (rest, _, cut) = events.source.rest();
         assert_eq!((rest.len(), &rest[0]["seq"], cut), (1, &Value::from(11), true));
