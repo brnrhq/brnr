@@ -27,7 +27,9 @@ the goal. Faithful means one thing in each role (P12): with an editor
 attached, brnr is invisible, and what passes between editor and agent passes
 unchanged (P1); headless, brnr is a correct ACP client, and behaves the same
 with every agent (P2). In strict mode, only ACP's stable parts are there
-(ADR 2.1). Principles: P1, P2, P12.
+(ADR 2.1). brnr doesn't compensate for an agent that doesn't follow ACP
+or JSON-RPC: what the agent does wrong shows, as it would without brnr.
+Principles: P1, P2, P12.
 
 #### F2. Conventions ahead of the spec
 

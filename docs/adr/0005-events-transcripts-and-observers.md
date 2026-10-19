@@ -128,10 +128,12 @@ there (#61).
 
 - Turning the raw file off saves most of the space, and leaves secrets
   (ADR 9.1) nothing to be redacted from but the host log.
-- The raw file keeps replay possible: the agent's `session/update`s to the
-  editor are what a replay to an editor that resumes a session without
-  history (ACP v2 has no `session/load`) would resend. Whether brnr offers
-  that is undecided; it would be an experimental editor action (ADR 7.1).
+- brnr doesn't replay a session to an editor. An editor that resumes a
+  session with `session/resume`, which replays nothing (and ACP v2 has no
+  `session/load`), shows what the agent gives it. Resending the agent's
+  old `session/update`s from the raw file would make up for what the agent
+  doesn't do (F1), and is beyond what a focused tool does (F5, N4). The raw
+  file is for checking the interpretation.
 - A process that forks and closes session after session keeps the files
   of each session it has open.
 - A session killed mid-write is listed, logged and resumed as of its last

@@ -431,12 +431,21 @@ model or forking can take a while.
 **Why.** These are the agent's to do (P2), and some take a while; the host
 serves its other sessions and peers meanwhile.
 
-**Consequences.** The host itself never gives up on these. A bridge whose
-request the agent never answers (or answers in a line brnr can't read,
-ADR 2.5) waits as long as it keeps waiting, and so does the
-`session/close` of a `--take-over` (ADR 3.9) once `brnr` has stopped
-waiting. Whether the host should answer such requests with an error after
-a time of its own (P3) is still open.
+The host has no timeout of its own for them, and never answers one in
+the agent's place. A request the agent never answers (or answers in a line
+brnr can't read, ADR 2.5) stays waiting: only the caller gives up, `brnr`
+after its 120 seconds, saying so (P3), and a bridge when it chooses to.
+
+**Consequences.** A bridge whose request the agent never answers waits as
+long as it keeps waiting, and so does the `session/close` of a
+`--take-over` (ADR 3.9) once `brnr` has stopped waiting.
+
+**Considered.**
+
+- The host answering such a request with an error after a time of its
+  own: an agent that never answers doesn't follow ACP and JSON-RPC, and
+  it isn't brnr's to compensate for that (F1). What the agent does wrong
+  shows, as it would without brnr.
 
 ## 4.7 Authentication
 
