@@ -35,6 +35,7 @@ mod flow;
 // not in a build without the feature, such as users'.
 #[cfg(any(test, feature = "internals"))]
 pub(crate) mod fuzz;
+mod lines;
 mod requests;
 mod start;
 mod state;
@@ -43,7 +44,7 @@ mod strict;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::io::{self, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
 use std::mem::{take, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
@@ -74,6 +75,7 @@ use control::{Closer, Peer};
 pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
+use lines::{Lines, Long, Piece};
 use requests::Capabilities;
 use start::StartChannel;
 
@@ -266,14 +268,9 @@ enum Ev {
     /// A frame from the proxy on the signal link, which nothing holds back;
     /// `None` once it is gone.
     SignalLink(Option<(u8, Vec<u8>)>),
-    /// One line of agent stdout, with its `\n` unless it was the last bytes.
-    AgentLine(Vec<u8>),
-    /// A piece of a line of agent stdout past `LINE_BYTES`, as it came;
-    /// `end` if the line ends with it (ADR 10.3).
-    AgentPiece {
-        bytes: Vec<u8>,
-        end: bool,
-    },
+    /// A line of agent stdout, or a part of one past `LINE_BYTES`, as it
+    /// came (ADR 10.3).
+    AgentStdout(Piece),
     AgentStdoutEof,
     /// Agent stderr, as one read returned it: up to `PIECE` bytes, not
     /// necessarily a line (ADR 2.6).
@@ -407,17 +404,12 @@ struct Host {
     /// URL elicitations held or accepted, by the agent's `elicitationId`,
     /// until the agent says each is complete (ADR 4.5).
     url_elicitations: HashMap<String, elicitation::UrlElicitation>,
-    /// Bytes from the editor after the last complete line.
-    editor_buf: Vec<u8>,
-    /// A line past `LINE_BYTES` is going through unread, from the editor or
-    /// from the agent, until its newline (ADR 10.3).
-    editor_long: bool,
-    agent_long: bool,
-    /// The line of the agent's stderr still coming, for the host log and
-    /// the tail (ADR 3.6): what came of it is sent on already (ADR 2.6).
-    stderr_line: Vec<u8>,
-    /// The last piece of the agent's stderr the log has didn't end its line.
-    stderr_mid_line: bool,
+    /// What the editor writes, as lines: one past `LINE_BYTES` goes to the
+    /// agent unread (ADR 10.3).
+    editor_lines: Lines,
+    /// The agent's stderr as lines, for the host log and the tail (ADR 3.6):
+    /// what came of it is sent on already (ADR 2.6).
+    stderr_lines: Lines,
     /// How deeply what the host holds may nest (see `holds`), and how
     /// deeply the stack it is running on takes (see `deep`).
     deepest: usize,
@@ -658,11 +650,8 @@ impl Host {
             next_permission: 0,
             next_elicitation: 0,
             url_elicitations: HashMap::new(),
-            editor_buf: Vec::new(),
-            editor_long: false,
-            agent_long: false,
-            stderr_line: Vec::new(),
-            stderr_mid_line: false,
+            editor_lines: Lines::new(LINE_BYTES, Long::Relay),
+            stderr_lines: Lines::new(PIECE, Long::Cut),
             deepest: 0,
             stack: json::SHALLOW,
             prompt: h.prompt,
@@ -979,7 +968,7 @@ impl Host {
     fn finish(mut self, died: Option<&str>) -> ExitCode {
         // The agent's last bytes on stderr, sent on already, if they ended no
         // line: in the host log and the tail too, before `exited`.
-        self.stderr_piece();
+        self.stderr_ended();
         if let Some(reason) = died {
             return self.died(reason);
         }
@@ -1205,13 +1194,12 @@ impl Host {
             },
             // The proxy has gone: whichever link says so first.
             Ev::Link(None) | Ev::SignalLink(None) => self.link_gone(),
-            Ev::AgentLine(line) => {
-                self.agent_line(&line);
-                self.from_agent.done(line.len());
-            }
-            Ev::AgentPiece { bytes, end } => {
-                let n = bytes.len();
-                self.agent_piece(bytes, end);
+            Ev::AgentStdout(piece) => {
+                let n = piece.len();
+                match piece {
+                    Piece::Line(line) => self.agent_line(&line),
+                    Piece::Part { bytes, first } => self.agent_part(bytes, first),
+                }
                 self.from_agent.done(n);
             }
             Ev::AgentStdoutEof => self.agent_stdout_ended(),
@@ -1220,10 +1208,12 @@ impl Host {
                 // stderr as lines holds it up (ADR 2.6).
                 self.send_link(frame::STDERR, &bytes);
                 self.from_agent.done(bytes.len());
-                self.stderr_lines(&bytes);
+                for piece in self.stderr_lines.push(&bytes) {
+                    self.stderr_record(piece);
+                }
             }
             Ev::AgentStderrEof => {
-                self.stderr_piece();
+                self.stderr_ended();
                 self.stderr_open = false;
             }
             Ev::AgentExited => {
@@ -1270,61 +1260,34 @@ impl Host {
         }
     }
 
-    /// The agent's stderr, sent on already, as lines for the host log and
-    /// the tail: each line is recorded once it ends, a longer one than
-    /// `PIECE` in pieces of that (ADR 10.3).
-    fn stderr_lines(&mut self, mut bytes: &[u8]) {
-        while !bytes.is_empty() {
-            let room = PIECE - self.stderr_line.len();
-            let (n, end) = match bytes[..bytes.len().min(room)].iter().position(|&b| b == b'\n') {
-                Some(i) => (i + 1, true),
-                None => (bytes.len().min(room), false),
-            };
-            self.stderr_line.extend_from_slice(&bytes[..n]);
-            bytes = &bytes[n..];
-            if end || self.stderr_line.len() == PIECE {
-                self.stderr_piece();
-            }
-        }
-    }
-
-    /// The line of stderr so far, whole or not, into the host log and the
-    /// tail. A piece that fills up before its line ends leaves a character
-    /// it would cut to the next piece (ADR 10.3).
-    fn stderr_piece(&mut self) {
-        if self.stderr_line.is_empty() {
-            return;
-        }
-        let cut = self.stderr_line.len() == PIECE && !self.stderr_line.ends_with(b"\n");
-        let next = if cut {
-            self.stderr_line.split_off(PIECE - unfinished(&self.stderr_line))
-        } else {
-            Vec::new()
-        };
-        let piece = std::mem::replace(&mut self.stderr_line, next);
-        // The newline of a line that filled the last piece only ends it.
-        let skip = self.stderr_mid_line && piece == b"\n";
-        // The rest of a long line, whose start is kept already (ADR 10.3).
-        let rest = std::mem::replace(&mut self.stderr_mid_line, !piece.ends_with(b"\n"));
-        if skip {
-            return;
-        }
-        self.sink.msg(None, Dir::AgentStderr, &piece, None);
-        if self.start_done || rest {
+    /// A line of the agent's stderr, sent on already, into the host log, or
+    /// a part of 64 KiB of a longer one (ADR 10.3); and into the tail, the
+    /// start of each line (ADR 3.6).
+    fn stderr_record(&mut self, piece: Piece) {
+        let (bytes, starts) = piece.into_bytes();
+        self.sink.msg(None, Dir::AgentStderr, &bytes, None);
+        if self.start_done || !starts {
             return;
         }
         if self.stderr_tail.len() == STDERR_TAIL {
             self.stderr_tail.pop_front();
         }
-        self.stderr_tail.push_back(tail_line(&piece));
+        self.stderr_tail.push_back(tail_line(&bytes));
+    }
+
+    /// The agent's stderr has ended, or the host exits: the line it was in
+    /// the middle of is recorded too (ADR 2.6).
+    fn stderr_ended(&mut self) {
+        if let Some(piece) = self.stderr_lines.finish() {
+            self.stderr_record(piece);
+        }
     }
 
     /// `error`, ending with the agent's last lines on stderr if it wrote any,
     /// the one it is in the middle of too: a prompt that waits for an answer
     /// ends none ("login required: ").
     pub(super) fn with_stderr(&self, error: &str) -> String {
-        let partial = (!self.stderr_mid_line && !self.stderr_line.is_empty())
-            .then(|| tail_line(&self.stderr_line));
+        let partial = self.stderr_lines.partial().map(tail_line);
         let skip = usize::from(partial.is_some() && self.stderr_tail.len() == STDERR_TAIL);
         let lines: String = (self.stderr_tail.iter().skip(skip))
             .chain(&partial)
@@ -1351,10 +1314,12 @@ impl Host {
     }
 
     fn editor_eof(&mut self) {
-        let rest = take(&mut self.editor_buf);
-        if !rest.is_empty() {
-            self.record_editor_rest(&rest);
-            self.write_agent(&rest);
+        if let Some(rest) = self.editor_lines.finish() {
+            // Relayed, a long line has all gone on already: this is a line.
+            if let Piece::Line(line) = &rest {
+                self.record_editor_rest(line);
+            }
+            self.write_agent(&rest.into_bytes().0);
         }
         self.sink.note(None, json!({ "event": "editor-closed-stdin" }));
         self.agent_in = None;
@@ -1611,7 +1576,7 @@ fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
 /// which drops our end so the agent gets EPIPE like it would directly. Past
 /// the cap of what is on its way to the editor (or the event loop) it waits,
 /// and the agent blocks writing, as it would to the editor directly. A line
-/// past `LINE_BYTES` goes on in pieces as they come (ADR 10.3).
+/// past `LINE_BYTES` goes on in parts as they come (ADR 10.3, see lines.rs).
 fn read_agent_stdout(
     mut out: ChildStdout,
     stop: PipeReader,
@@ -1623,9 +1588,12 @@ fn read_agent_stdout(
         libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
     ];
     let mut buf = vec![0; 64 * 1024];
-    let mut line = Vec::new();
-    // Inside a line past LINE_BYTES.
-    let mut long = false;
+    let mut lines = Lines::new(LINE_BYTES, Long::Relay);
+    // Counted once it is whole, or as a part of a long one goes (see flow.rs).
+    let send = |piece: Piece| {
+        from_agent.add(piece.len());
+        tx.send(Ev::AgentStdout(piece)).is_ok()
+    };
     loop {
         from_agent.room(None);
         // SAFETY: fds is an array of two valid pollfds, and the count says so.
@@ -1647,32 +1615,12 @@ fn read_agent_stdout(
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
-        let mut read = &buf[..n];
-        while !read.is_empty() {
-            let end = read.iter().position(|&b| b == b'\n');
-            let (now, rest) = read.split_at(end.map_or(read.len(), |i| i + 1));
-            line.extend_from_slice(now);
-            read = rest;
-            let sent = if long || line.len() > LINE_BYTES {
-                long = end.is_none();
-                from_agent.add(line.len());
-                tx.send(Ev::AgentPiece { bytes: take(&mut line), end: end.is_some() }).is_ok()
-            } else if end.is_some() {
-                from_agent.add(line.len());
-                tx.send(Ev::AgentLine(take(&mut line))).is_ok()
-            } else {
-                continue;
-            };
-            if !sent {
-                return;
-            }
+        if !lines.push(&buf[..n]).into_iter().all(send) {
+            return;
         }
     }
-    from_agent.add(line.len());
-    if long {
-        let _ = tx.send(Ev::AgentPiece { bytes: line, end: true });
-    } else if !line.is_empty() {
-        let _ = tx.send(Ev::AgentLine(line));
+    if let Some(piece) = lines.finish() {
+        send(piece);
     }
     let _ = tx.send(Ev::AgentStdoutEof);
 }
@@ -1709,61 +1657,51 @@ fn read_agent_stderr(mut err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backl
 /// process's own (control.rs, death.rs), until EOF or until `note` says to
 /// stop: each line decoded lossily, so bytes that aren't UTF-8 don't end the
 /// reading (and a bridge's next write with SIGPIPE), and a line longer than
-/// `PIECE` in pieces of that, as the agent's is (ADR 10.3). A character a
-/// piece's end would cut starts the next piece instead, and a note's text,
-/// decoded, is at most a piece too.
-fn read_stderr(input: impl Read, mut note: impl FnMut(String) -> bool) {
-    let mut reader = BufReader::new(input);
-    let mut line = Vec::new();
-    // Whether the last piece filled up before its line ended.
-    let mut cut = false;
-    loop {
-        let room = (PIECE - line.len()) as u64;
-        let more = matches!((&mut reader).take(room).read_until(b'\n', &mut line), Ok(n) if n > 0);
-        // The newline of a line that filled the last piece only ends it.
-        let skip = cut && line == b"\n";
-        cut = line.len() == PIECE && !line.ends_with(b"\n");
-        let next = if cut { line.split_off(line.len() - unfinished(&line)) } else { Vec::new() };
-        if !skip && !line.is_empty() {
-            let text = match line.strip_suffix(b"\n") {
-                Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
-                None => &line,
-            };
-            // Each byte that isn't UTF-8 becomes U+FFFD, 3 bytes: a note is
-            // still at most a piece, the rest of the text in the next ones.
-            let text = String::from_utf8_lossy(text);
-            let mut rest = &text[..];
-            loop {
-                let mut end = rest.len().min(PIECE);
-                while !rest.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let (piece, after) = rest.split_at(end);
-                if !note(piece.into()) {
-                    return;
-                }
-                rest = after;
-                if rest.is_empty() {
-                    break;
-                }
+/// `PIECE` cut into parts of that, as the agent's is (ADR 10.3, see
+/// lines.rs). A note's text, decoded, is at most a piece too.
+fn read_stderr(mut input: impl Read, mut note: impl FnMut(String) -> bool) {
+    let mut lines = Lines::new(PIECE, Long::Cut);
+    let mut buf = vec![0; PIECE];
+    // Whether to go on.
+    let mut say = |line: Piece| {
+        let (line, _) = line.into_bytes();
+        let text = match line.strip_suffix(b"\n") {
+            Some(text) => text.strip_suffix(b"\r").unwrap_or(text),
+            None => &line,
+        };
+        // Each byte that isn't UTF-8 becomes U+FFFD, 3 bytes: a note is still
+        // at most a piece, the rest of the text in the next ones.
+        let text = String::from_utf8_lossy(text);
+        let mut rest = &text[..];
+        loop {
+            let mut end = rest.len().min(PIECE);
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (piece, after) = rest.split_at(end);
+            if !note(piece.into()) {
+                return false;
+            }
+            rest = after;
+            if rest.is_empty() {
+                return true;
             }
         }
-        if !more {
+    };
+    loop {
+        let n = match input.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        if !lines.push(&buf[..n]).into_iter().all(&mut say) {
             return;
         }
-        line = next;
     }
-}
-
-/// How many bytes at the end of `bytes` start a UTF-8 character they don't
-/// finish: at most 3.
-fn unfinished(bytes: &[u8]) -> usize {
-    let tail = &bytes[bytes.len().saturating_sub(3)..];
-    let starts = |i: &usize| {
-        std::str::from_utf8(&tail[*i..])
-            .is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none())
-    };
-    (0..tail.len()).find(starts).map_or(0, |i| tail.len() - i)
+    if let Some(piece) = lines.finish() {
+        say(piece);
+    }
 }
 
 // ---- process plumbing --------------------------------------------------
@@ -1845,7 +1783,7 @@ fn tail_line(bytes: &[u8]) -> String {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     let mut end = line.len().min(STDERR_LINE);
     if end < line.len() {
-        end -= unfinished(&line[..end]);
+        end -= lines::unfinished(&line[..end]);
     }
     String::from_utf8_lossy(&line[..end]).into_owned()
 }
@@ -1875,12 +1813,6 @@ mod tests {
 
     #[test]
     fn adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left() {
-        assert_eq!(unfinished("\u{e9}".as_bytes()), 0);
-        assert_eq!(
-            (unfinished(b"x\xc3"), unfinished(b"\xe2\x82"), unfinished(b"\xf0\x9f\x98")),
-            (1, 2, 3)
-        );
-        assert_eq!(unfinished(b"\x82\x82\x82"), 0, "no character starts there");
         // The stream ends in the middle of a character a piece cut: what is
         // left of it is a note too.
         let mut bytes = vec![b'x'; PIECE - 1];

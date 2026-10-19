@@ -195,7 +195,7 @@ impl Host {
     /// however slowly the agent starts. Whether it is held; held, the
     /// deadline moves 10 ms on, so the event loop sleeps rather than spins.
     pub(super) fn test_hold_start_timer(&mut self, now: Instant) -> bool {
-        let wrote = !self.stderr_tail.is_empty() || !self.stderr_line.is_empty();
+        let wrote = !self.stderr_tail.is_empty() || self.stderr_lines.partial().is_some();
         let held = !wrote && TEST_START_TIMER_UNTIL.is_some_and(|until| now < until);
         if held {
             self.start_deadline = Some(now + Duration::from_millis(10));
