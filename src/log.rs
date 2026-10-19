@@ -1,10 +1,10 @@
-//! Transcripts (ADR 22 in docs/adr): two JSONL files per ACP session, its
+//! Transcripts (ADR 5.1 in docs/adr): two JSONL files per ACP session, its
 //! events and its raw ACP, plus one per host for what belongs to no session
 //! (see paths.rs for where they go). `log = "events"` leaves out the raw
 //! ACP; `log = false` is no logger at all. Records are written by a
 //! background thread so logging can never slow down or break forwarding;
 //! [`Sink::when_written`] says when what was recorded is written, for
-//! `brnr event log` (ADR 48).
+//! `brnr event log` (ADR 5.5).
 //!
 //! Every record starts with the fields that join files together:
 //! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,
@@ -24,19 +24,19 @@
 //! them, starting with another `session-opened`.
 //!
 //! What a record goes into, from the state directory down, is the user's own
-//! and private before anything is written to it (P13, ADR 59): a file or
+//! and private before anything is written to it (P13, ADR 9.3): a file or
 //! directory others can reach is made private, and noted in the host log as
 //! `made-private` (on stderr by `brnr session delete`, which has no host
 //! log); a symlink, or one that isn't the user's, is refused.
 //!
-//! What is queued for the logger is bounded (ADR 6 in docs/adr), in bytes,
+//! What is queued for the logger is bounded (ADR 10.1 in docs/adr), in bytes,
 //! counted from when a record is queued until the logger has written it.
 //! Past `LOG_BYTES` (a disk that is slow, or has stopped) records are
 //! skipped rather than queued, and counted; the host never waits for the
 //! logger (P1, P6). Never skipped, however full the queue: a session's
 //! opening, which says where its records go, and `exited` and `panic`,
 //! which say how the process ended, so that `brnr doctor` can tell an exit
-//! from a death (ADR 11). Once the queue is down to half `LOG_BYTES`, the
+//! from a death (ADR 3.7). Once the queue is down to half `LOG_BYTES`, the
 //! gap is over, and a note says so where the records would have been (P3):
 //! in the host log, and in the events file of each session that lost
 //! records,
@@ -52,7 +52,7 @@
 //! lost it once that file takes a record again (the raw file's, in its
 //! events file). What is queued is never dropped: the host, exiting, waits
 //! for it all to be written however long the disk takes, unless a signal
-//! gives up on it, and then says on stderr how much wasn't (ADR 48). For
+//! gives up on it, and then says on stderr how much wasn't (ADR 5.5). For
 //! the tests, `BRNR_TEST_LOG_STALL` names a file: while it exists, the
 //! logger writes nothing, as if the disk had stopped.
 
@@ -88,7 +88,7 @@ const ROOM_BYTES: usize = LOG_BYTES / 2;
 const REDACTED: &str = "<redacted>";
 
 /// Requests whose params carry MCP servers: `env` and `headers` with
-/// tokens in them (ADR 25 in docs/adr).
+/// tokens in them (ADR 9.1 in docs/adr).
 const OPENING: &[&str] = &["session/new", "session/load", "session/resume", "session/fork"];
 
 #[derive(Clone, Copy)]
@@ -99,7 +99,7 @@ pub(crate) enum Dir {
     /// an answer it gave as the client.
     ControlToAgent,
     /// An injected message shown to the editor, as a completed tool call (see
-    /// ADR 5 in docs/adr).
+    /// ADR 7.2 in docs/adr).
     ControlToEditor,
     /// An agent response meant for the host, which the editor never sees.
     AgentToControl,
@@ -220,7 +220,7 @@ struct Lost {
     /// When the first and the last of them were made.
     since: SystemTime,
     until: SystemTime,
-    /// The first and the last position (`seq`, ADR 69) among them, of those
+    /// The first and the last position (`seq`, ADR 10.2) among them, of those
     /// that had one: an event's or an ACP message's.
     seqs: Option<(u64, u64)>,
     /// Why a file didn't take them, the first time; none if they were
@@ -259,7 +259,7 @@ impl Lost {
             "since": rfc3339(self.since),
             "until": rfc3339(self.until),
         });
-        // What a peer catching up from the transcript can't find (ADR 69).
+        // What a peer catching up from the transcript can't find (ADR 10.2).
         if let Some((first, last)) = self.seqs {
             note["first_seq"] = json!(first);
             note["last_seq"] = json!(last);
@@ -298,8 +298,8 @@ impl Sink {
 
     /// Whether a record of `session` beyond its openings has gone to the
     /// logger for its events file, from this process, ever: what makes the
-    /// file a transcript ([`has_records`], ADR 57), whether or not the
-    /// logger, which writes behind (ADR 48), has written it yet. A record
+    /// file a transcript ([`has_records`], ADR 5.6), whether or not the
+    /// logger, which writes behind (ADR 5.5), has written it yet. A record
     /// skipped isn't counted, as it is never written. Never, when not
     /// logging.
     pub(crate) fn recorded(&self, session: &str) -> bool {
@@ -308,7 +308,7 @@ impl Sink {
 
     /// Calls `then` once everything recorded before it is written, with the
     /// note of a gap that ends there (at once when not logging), and whether
-    /// a file has lost records it hasn't noted yet, a full disk's (ADR 69).
+    /// a file has lost records it hasn't noted yet, a full disk's (ADR 10.2).
     /// Never skipped, and never waited for: `then` runs on the logger's
     /// thread.
     pub(crate) fn when_written(&self, then: impl FnOnce(bool) + Send + 'static) {
@@ -320,7 +320,7 @@ impl Sink {
 
     /// An ACP message: into the session's raw file (none with `log =
     /// "events"`), or the host log; with its position, `seq`, if it has one
-    /// (ADR 69).
+    /// (ADR 10.2).
     pub(crate) fn msg(&self, session: Option<&str>, dir: Dir, bytes: &[u8], seq: Option<u64>) {
         self.record(session, true, false, seq, |ts| Cmd::Msg {
             session: session.map(str::to_owned),
@@ -336,7 +336,7 @@ impl Sink {
     /// ACP it came from (see json.rs).
     pub(crate) fn note(&self, session: Option<&str>, event: Value) {
         // How the process ended is never skipped: it is what tells an exit
-        // from a death (`brnr doctor`, ADR 11).
+        // from a death (`brnr doctor`, ADR 3.7).
         let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
         let seq = event["seq"].as_u64();
         let queued = self.record(session, false, keep, seq, |ts| Cmd::Note {
@@ -356,7 +356,7 @@ impl Sink {
 
     /// An event for `session`, which this process doesn't have open, into
     /// each of its events files ([`transcripts`]): an editor's deletion of a
-    /// session it hasn't opened here (ADR 63). Never skipped.
+    /// session it hasn't opened here (ADR 8.1). Never skipped.
     pub(crate) fn append(&self, session: &str, event: Value) {
         self.record(Some(session), false, true, None, |ts| Cmd::Append {
             session: session.to_owned(),
@@ -612,7 +612,7 @@ impl Writer {
     }
 
     /// Notes in the host log each path that was made private, with the mode
-    /// it had: others could have read what was there before (ADR 59).
+    /// it had: others could have read what was there before (ADR 9.3).
     fn made_private(&mut self, ts: SystemTime, made: Made) {
         for (path, mode) in made {
             let path = path.to_string_lossy();
@@ -808,7 +808,7 @@ fn embed(out: &mut Vec<u8>, line: &[u8]) {
 
 /// What brnr records of an ACP message, if not the line as it came: in a
 /// request that opens a session, the values of its MCP servers' `env` and
-/// `headers` are `"<redacted>"` (ADR 25 in docs/adr). The keys and the
+/// `headers` are `"<redacted>"` (ADR 9.1 in docs/adr). The keys and the
 /// structure stay. Run it on a stack that takes the message.
 pub(crate) fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
     let method = msg.get("method")?.as_str()?;
@@ -848,7 +848,7 @@ pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
 }
 
 /// A record of a host log or transcript with what [`redacted`] and
-/// `Request::recorded` redact redacted (ADR 25 in docs/adr), as brnr
+/// `Request::recorded` redact redacted (ADR 9.1 in docs/adr), as brnr
 /// records it now: for one an older brnr wrote, shown again.
 pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
@@ -868,10 +868,10 @@ pub(crate) type Made = Vec<(PathBuf, u32)>;
 
 /// Opens `path`, under the state directory, for appending, so a session's
 /// file grows across hosts that serve it. Transcripts hold prompts and tool
-/// output, so what it writes to is private to the user (ADR 59; see
+/// output, so what it writes to is private to the user (ADR 9.3; see
 /// [`open_private`]). A file that ends partway through a line (a process
 /// that died mid-write) is left as it is, and the next record starts on a
-/// line of its own (ADR 55).
+/// line of its own (ADR 5.1).
 fn open_append(path: &Path) -> io::Result<(Out, Made)> {
     let (file, made) = open_private(&paths::state_dir(), path)?;
     let mut last = *b"\n";
@@ -883,7 +883,7 @@ fn open_append(path: &Path) -> io::Result<(Out, Made)> {
 }
 
 /// Opens `path` under `root` for appending, private to the user before
-/// anything is written (ADR 59): `root`, each directory below it and the
+/// anything is written (ADR 9.3): `root`, each directory below it and the
 /// file are opened without following a symlink, each from the one before,
 /// and created 0700 or 0600 if missing. Each is checked through what was
 /// opened, so what is checked is what is written to: one that isn't a
@@ -912,7 +912,7 @@ fn open_private(root: &Path, path: &Path) -> io::Result<(File, Made)> {
         here.push(name);
         let name = CString::new(name.as_bytes()).map_err(|e| at(&here, e.into()))?;
         if names.peek().is_none() {
-            // Read too, for its last byte (ADR 55). Not blocked by a FIFO
+            // Read too, for its last byte (ADR 5.1). Not blocked by a FIFO
             // put there; a regular file ignores O_NONBLOCK.
             let flags = libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_NONBLOCK;
             let file = sys::openat(dir.as_fd(), &name, flags | libc::O_NOFOLLOW, 0o600);
@@ -976,10 +976,10 @@ fn at(path: &Path, err: io::Error) -> io::Error {
 }
 
 /// `session`'s events files under the state directory: in each project
-/// folder, the one named for its id (ADR 53), where there is one. A session
+/// folder, the one named for its id (ADR 9.2), where there is one. A session
 /// resumed in another folder has one in each. A symlinked folder isn't
 /// looked in, as [`purge`] doesn't: what is written there is refused anyway
-/// (ADR 59).
+/// (ADR 9.3).
 pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
     let name = format!("{}.jsonl", paths::file_name(session));
     let folders = std::fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
@@ -997,8 +997,8 @@ pub(crate) fn transcripts(session: &str) -> Vec<PathBuf> {
 /// its openings, which makes it a transcript of the session to a load (ADR
 /// 57): a load that failed leaves one holding only `session-opened`
 /// records. Read up to the first other record; a line brnr can't read is
-/// passed over (ADR 55). A symlink, or what isn't a regular file, isn't
-/// read, as the logger writes to neither (ADR 59).
+/// passed over (ADR 5.1). A symlink, or what isn't a regular file, isn't
+/// read, as the logger writes to neither (ADR 9.3).
 pub(crate) fn has_records(path: &Path) -> bool {
     let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
     let opened = OpenOptions::new().read(true).custom_flags(flags).open(path).ok();
@@ -1017,8 +1017,8 @@ pub(crate) fn as_record(line: &[u8]) -> Option<Value> {
 /// Records `event` in each of `session`'s events files ([`transcripts`]),
 /// for a session no process has open: a record of no process's, its
 /// `host_id`, `host_pid` and `proxy_pid` null, with the pid of the agent
-/// `brnr session delete` started (ADR 63). Written as the logger writes:
-/// private, never through a symlink (ADR 59), on a line of its own (ADR
+/// `brnr session delete` started (ADR 8.1). Written as the logger writes:
+/// private, never through a symlink (ADR 9.3), on a line of its own (ADR
 /// 55). The files written to, what couldn't be written to and why, each
 /// file tried whatever the one before did, and what was made private, with
 /// the mode it had: there is no host log to note it in.
@@ -1049,9 +1049,9 @@ pub(crate) fn record_in_transcripts(
     (written, failed, made)
 }
 
-/// Deletes `session`'s transcripts (ADR 63): in each project folder under
+/// Deletes `session`'s transcripts (ADR 8.1): in each project folder under
 /// the state directory, its events file and its raw ACP, named for its id
-/// (ADR 53), and nothing else: not the host logs, which are shared, nor
+/// (ADR 9.2), and nothing else: not the host logs, which are shared, nor
 /// another session's files. The state directory, `projects` and each folder
 /// are opened without following a symlink, each from the one before, and
 /// the names removed from what was opened (`unlinkat`), so nothing outside
@@ -1101,7 +1101,7 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
             }
         };
         for file in &names {
-            // An escaped name has no NUL (ADR 53).
+            // An escaped name has no NUL (ADR 9.2).
             let c_file = CString::new(file.as_str()).expect("an escaped name");
             match sys::unlinkat(dir.as_fd(), &c_file, 0) {
                 Ok(()) => deleted.push(path.join(file)),
@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0011_how_the_process_ended_is_never_skipped() {
+    fn adr_0003_how_the_process_ended_is_never_skipped() {
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let sink = Sink(Some((tx, queue.clone())));
@@ -1313,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0006_past_the_cap_records_are_skipped_and_noted_before_the_next() {
+    fn adr_0010_past_the_cap_records_are_skipped_and_noted_before_the_next() {
         let (tx, rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let sink = Sink(Some((tx, queue.clone())));
@@ -1350,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0006_a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records() {
+    fn adr_0010_a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records() {
         let (host, s, t) = (scratch("gap-host"), scratch("gap-s"), scratch("gap-t"));
         let mut writer = Writer {
             head: head(),
@@ -1383,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0022_a_closed_session_has_its_records_and_then_no_file() {
+    fn adr_0005_a_closed_session_has_its_records_and_then_no_file() {
         let (host, s) = (scratch("close-host"), scratch("close-s"));
         let mut writer = Writer {
             head: head(),
@@ -1417,7 +1417,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0006_a_failed_write_is_noted_once_the_file_takes_records_again() {
+    fn adr_0010_a_failed_write_is_noted_once_the_file_takes_records_again() {
         let path = scratch("failed");
         let head = head();
         // Open for reading only: no write goes in, as on a full disk.
@@ -1447,10 +1447,10 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A gap says which positions it lost (ADR 69), and `when_written` whether
+    /// A gap says which positions it lost (ADR 10.2), and `when_written` whether
     /// a file has lost records it hasn't noted yet, for a peer catching up.
     #[test]
-    fn adr_0069_what_the_transcript_lost_is_said_by_position() {
+    fn adr_0010_what_the_transcript_lost_is_said_by_position() {
         let ts = SystemTime::now();
         let mut lost = Lost::one(ts, false, Some(9));
         lost.add(&Lost::one(ts, true, Some(5)));
@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0059_new_and_private_paths_are_opened_as_they_are() {
+    fn adr_0009_new_and_private_paths_are_opened_as_they_are() {
         let (home, dir) = scratch_home("new");
         let path = home.join("projects/-w/s.jsonl");
         let (mut file, made) = open_private(&home, &path).unwrap();
@@ -1534,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0059_what_others_can_reach_is_made_private_before_a_write() {
+    fn adr_0009_what_others_can_reach_is_made_private_before_a_write() {
         // Beneath private parents, and beneath parents anyone can search.
         for (name, parents) in [("open-file", 0o700), ("open-dirs", 0o755)] {
             let (home, dir) = scratch_home(name);
@@ -1559,7 +1559,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0059_a_symlink_is_never_followed() {
+    fn adr_0009_a_symlink_is_never_followed() {
         let (home, dir) = scratch_home("symlink");
         let path = home.join("projects/-w/s.jsonl");
         let victim = dir.join("victim");
@@ -1589,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0059_only_the_users_own_directories_and_files_are_written_to() {
+    fn adr_0009_only_the_users_own_directories_and_files_are_written_to() {
         let (home, dir) = scratch_home("refused");
         let path = home.join("projects/-w/s.jsonl");
         let refused = |why: &str| {
@@ -1621,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0025_secrets_are_redacted_keys_and_structure_stay() {
+    fn adr_0009_secrets_are_redacted_keys_and_structure_stay() {
         let env = json!([{ "name": "TOKEN", "value": "t" }]);
         let stdio = json!({ "name": "gh", "command": "gh", "args": [], "env": env });
         let headers = json!([{ "name": "Authorization", "value": "a" }]);
@@ -1652,7 +1652,7 @@ mod tests {
     /// and however many digits its fraction has, and written in UTC as brnr
     /// writes its own: to the microsecond, the rest cut, as `rfc3339` cuts.
     #[test]
-    fn adr_0063_a_time_is_read_with_its_offset_and_written_in_utc() {
+    fn adr_0008_a_time_is_read_with_its_offset_and_written_in_utc() {
         let cases = [
             ("2026-10-11T08:00:00+02:00", "2026-10-11T06:00:00.000000Z"),
             ("2026-10-11T08:00:00-05:30", "2026-10-11T13:30:00.000000Z"),
@@ -1698,7 +1698,7 @@ mod tests {
     /// part, a value out of its range, a leap second (which a `SystemTime`
     /// can't hold), or a time outside the years rfc3339 writes, once in UTC.
     #[test]
-    fn adr_0063_what_isnt_an_rfc3339_time_isnt_read() {
+    fn adr_0008_what_isnt_an_rfc3339_time_isnt_read() {
         let cases = [
             "",
             "yesterday",
@@ -1752,9 +1752,9 @@ mod tests {
     /// What the host has queued for a session's events file beyond its
     /// opening, while it is open, counts it recorded, as it will on disk:
     /// not its raw ACP, nor a record skipped, nor one for a session not
-    /// open, which goes elsewhere (ADR 57, #247).
+    /// open, which goes elsewhere (ADR 5.6, #247).
     #[test]
-    fn adr_0057_a_record_beyond_the_opening_counts_at_once() {
+    fn adr_0005_a_record_beyond_the_opening_counts_at_once() {
         let (tx, _rx) = mpsc::channel();
         let queue = Arc::new(Queue::default());
         let sink = Sink(Some((tx, queue.clone())));
@@ -1778,9 +1778,9 @@ mod tests {
 
     /// An events file holding only openings, which a load that failed
     /// leaves, isn't a transcript of its session; one with any other record
-    /// is, whatever is between them that brnr can't read (ADR 55, ADR 57).
+    /// is, whatever is between them that brnr can't read (ADR 5.1, ADR 5.6).
     #[test]
-    fn adr_0057_only_openings_are_no_transcript() {
+    fn adr_0005_only_openings_are_no_transcript() {
         let path = scratch("openings");
         let opened = r#"{"ts":"t","session_id":"s","event":{"event":"session-opened"}}"#;
         let other = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;

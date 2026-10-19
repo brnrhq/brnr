@@ -33,63 +33,67 @@ brnr's own conventions:
   the answer has no `usage` object. brnr adds nothing up. `session status`
   shows the last turn now, in text and `--json`, and a turn's text line ends
   with its counts: `turn ended: end_turn (control); tokens: 1.2k total, 1.0k
-  input, 234 output` (ADR 71).
+  input, 234 output` (ADR 4.4).
 - `session list` and `session status` say which session a fork came from
   (`forked_from`, a FORKED FROM column in the list), also once its process
   has ended: the fork's transcript records it in its first record,
   `session-opened`. That is so for a fork `session fork` makes and for one
-  an editor makes through `brnr acp` (`session/fork`) (ADR 16, ADR 22,
+  an editor makes through `brnr acp` (`session/fork`) (ADR 3.12, ADR 5.1,
   #238).
 
 ### Changed
 
+- The decision records are 11 topic records, each decision a numbered
+  section, cited as `ADR T.k` (`ADR 3.9`: ownership is a per-session lock).
+  Entries of releases before this one cite the former numbers, 1 to 71;
+  [docs/adr/README.md](docs/adr/README.md) maps each to its section now.
 - **Breaking:** `brnr acp` drops the editor's `fs` and `terminal` client
   capabilities from its `initialize` again by default, as ACP v2 has
   neither, and notes `capabilities-dropped` in the host log. A profile
   passes them by name, `client_capabilities = ["fs", "terminal"]` in its
   editor part, and strict mode passes both, as stable ACP v1 has them
-  (ADR 67, #272).
+  (ADR 2.7, #272).
 - The Claude adapter is built from claude-agent-acp 0.90.0
-  (`brnr-claude-adapter`) (ADR 39).
+  (`brnr-claude-adapter`) (ADR 11.3).
 
 ### Fixed
 
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork
-  prompted and closed in one process, and its parent prompted after (ADR 16,
-  ADR 39, #227).
+  prompted and closed in one process, and its parent prompted after (ADR 3.12,
+  ADR 11.3, #227).
 - A process whose disk stalls as it exits can be ended with a signal
   (Ctrl-C, `kill`), and says on stderr how much of its records it didn't
   write; until then it waits for the disk, as before. A panic lets go of
-  the process's sessions before it waits, as an exit does (ADR 48, #165).
+  the process's sessions before it waits, as an exit does (ADR 5.5, #165).
 - A headless process no longer dies when `response_timeout` answers a
   permission request nested deeper than its main thread's stack takes (a
   million deep): the event loop's timers run on a stack that takes what the
-  host holds, as its events do (ADR 26, #189).
+  host holds, as its events do (ADR 2.5, #189).
 - A bridge's load of a session (`session resume --pid`, an agent without
   `session/resume`) finds its transcript in any folder, and one the process
   served and closed moments before, its logger behind, where it recorded
   the agent's replay on top of the history again; so does the editor's
-  load of one its process served and closed (ADR 57, #190).
+  load of one its process served and closed (ADR 5.6, #190).
 - A load after one that failed records the history the agent replays: the
   events file a failed load leaves, holding only its openings, no longer
   counts as brnr's transcript of the session, for `session resume`, a
-  bridge's resume or an editor's `session/load` (ADR 57, #191).
+  bridge's resume or an editor's `session/load` (ADR 5.6, #191).
 - A process counts a session as having a transcript once it has recorded
   something of it beyond its opening, as the disk does: a load there after
   one that replayed and then failed, its logger behind, no longer records
   the history again, and one after a session closed with all its records
-  skipped by a slow disk records it, as another process's would (ADR 57,
+  skipped by a slow disk records it, as another process's would (ADR 5.6,
   #247).
 - A load that replays and then fails, the editor's or a bridge's, records
   the last agent message the agent replayed, marked replayed, as the rest
-  of the replay; it was dropped (ADR 57, #255).
+  of the replay; it was dropped (ADR 5.6, #255).
 - A fork an editor makes through `brnr acp` (`session/fork`) is a session of
   its process as the agent answers, in the cwd the request names: it was
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
-  agent reported them again (ADR 16, ADR 22, #238).
+  agent reported them again (ADR 3.12, ADR 5.1, #238).
 
 ## [0.9.0] - 2026-10-16
 

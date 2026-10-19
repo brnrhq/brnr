@@ -12,8 +12,8 @@
 //! watch`.
 //! It reads the session's events file; with `acp` events chosen, the raw
 //! ACP file beside it too, each message an `acp` event, merged in time
-//! order (ADR 22 in docs/adr). A running session's, once its process has
-//! written what it recorded until then (ADR 48).
+//! order (ADR 5.1 in docs/adr). A running session's, once its process has
+//! written what it recorded until then (ADR 5.5).
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -52,7 +52,7 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    // A gap in the transcript (`records-skipped`, ADR 6) is always told: it
+    // A gap in the transcript (`records-skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
     let wanted = |e: &Value| {
         e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
@@ -103,7 +103,7 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
         );
     }
     // A line cut short at the end is still being written while its process
-    // runs; once it has gone, it is a record cut short (ADR 55).
+    // runs; once it has gone, it is a record cut short (ADR 5.1).
     let has_gone = || !host_pid.is_some_and(alive);
     if !follow {
         if has_gone() {
@@ -137,10 +137,10 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
 /// one is. A running session's process is asked to have written what it
 /// recorded until now first: a thread of its own writes it, and what was
 /// just seen happen (a turn `session new --wait` reported) may not be there
-/// yet (ADR 48).
+/// yet (ADR 5.5).
 ///
 /// One closing in its process is read once that process has written its
-/// records, `session_closed` last, and let go of it (ADR 48).
+/// records, `session_closed` last, and let go of it (ADR 5.5).
 fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
     let mut hosts = discover()?;
     if let Some(host) = closing_in(&hosts, arg) {
@@ -243,7 +243,7 @@ impl Tail {
     }
 
     /// The records appended since the last read, with when each was
-    /// written. A line that isn't one is passed over, and said (ADR 55).
+    /// written. A line that isn't one is passed over, and said (ADR 5.1).
     fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
         let mut records = Vec::new();
         loop {
@@ -264,7 +264,7 @@ impl Tail {
     }
 
     /// Says so if the file ends partway through a line: once nothing more
-    /// will be written, it is a record cut short (ADR 55).
+    /// will be written, it is a record cut short (ADR 5.1).
     fn cut_short(&self) {
         if !self.partial.is_empty() {
             let (path, n) = (self.path.display(), self.partial.len());
@@ -283,7 +283,7 @@ fn record(line: &[u8]) -> Option<(String, Value)> {
         return Some((ts, record["event"].take()));
     }
     let msg = record.get("msg").or(record.get("raw"))?;
-    // As the process sent it, with its position (ADR 69).
+    // As the process sent it, with its position (ADR 10.2).
     let mut event = json!({
         "event": "acp",
         "dir": record["dir"],

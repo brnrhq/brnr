@@ -17,15 +17,15 @@
 //! watch` shows them, and are cut at 32 KiB; the event on stdin has them whole.
 //!
 //! `--events` is read as for `event watch`, but its default (and `default`)
-//! is `permission_request`, `elicitation_request` (ADR 68), `turn_ended`,
+//! is `permission_request`, `elicitation_request` (ADR 4.5), `turn_ended`,
 //! `exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
 //! own, and no event is read while one runs: one that takes too long makes
 //! notify fall behind, and the process cuts it off as it does any peer that
-//! does (ADR 6 in docs/adr). On the socket, cut off, notify lets the command
-//! finish, then catches up from the transcript and goes on (ADR 69); unable
+//! does (ADR 10.1 in docs/adr). On the socket, cut off, notify lets the command
+//! finish, then catches up from the transcript and goes on (ADR 10.2); unable
 //! to, it says what it missed and exits 3. Its connection ended otherwise
 //! (the process killed), or stopped by a signal (HUP, INT, QUIT or TERM),
 //! notify stops the command it is running (SIGTERM to its group, SIGKILL
@@ -33,7 +33,7 @@
 //! notifications come, and exits non-zero.
 //!
 //! With `--stdin` it reads the events from its stdin, one per line, instead of
-//! connecting: a started bridge's transport (ADR 35 and 36 in docs/adr). As a
+//! connecting: a started bridge's transport (ADRs 5.7 and 5.8 in docs/adr). As a
 //! bridge in a profile it is
 //! `command = ["brnr", "event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
 //! is the one the process gives it. The bridge's `events`, if the profile
@@ -41,7 +41,7 @@
 //! for the environment and the end. Its stdin ending before `exited` is being
 //! cut off; the process cuts off a bridge that falls behind with SIGTERM, and a
 //! started bridge's stderr is in the host log (`bridge-stderr`): a started
-//! bridge doesn't catch up (ADR 69). On the socket, the connection closing
+//! bridge doesn't catch up (ADR 10.2). On the socket, the connection closing
 //! before `exited` is being cut off, which notify also looks for while a
 //! command runs, and asks the process about.
 
@@ -142,7 +142,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
             let _ = ask.send(Ask::Next);
             match next(&rx) {
                 Ok((e, socket)) => {
-                    // Caught up, on a new connection (ADR 69).
+                    // Caught up, on a new connection (ADR 10.2).
                     if socket.is_some() {
                         hangup = socket;
                     }
@@ -199,7 +199,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     // What the process sent before it hung up says whether
                     // that was the end; else the process says whether it
                     // cut notify off, which catches up once the command is
-                    // done (ADR 69).
+                    // done (ADR 10.2).
                     Ok(Msg::Rest(rest, why, cut)) => {
                         draining = false;
                         let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
@@ -245,7 +245,7 @@ fn cut_off(why: &str, stopped: Option<&str>) -> String {
 /// What reaches notify's loop.
 enum Msg {
     /// The next event, as asked for, and the connection, if it is a new one
-    /// (caught up, ADR 69).
+    /// (caught up, ADR 10.2).
     Event(Value, Option<UnixStream>),
     /// No more events, as asked for the next: why.
     End(Stop),
@@ -261,7 +261,7 @@ enum Msg {
 enum Stop {
     /// The connection or stdin ended.
     Ended(String),
-    /// Cut off, it couldn't catch up: what it missed (ADR 69).
+    /// Cut off, it couldn't catch up: what it missed (ADR 10.2).
     Missed(Value),
 }
 
@@ -360,7 +360,7 @@ struct Events {
 
 enum Source {
     Socket(Box<Conn>),
-    /// A started bridge's (ADR 35 in docs/adr).
+    /// A started bridge's (ADR 5.7 in docs/adr).
     Stdin(Stdin),
 }
 
@@ -398,7 +398,7 @@ impl Events {
         conn.subscribe(wanted, only.as_deref())?;
         // Titles the agent gave before we subscribed. Cut off before it
         // answered, and unable to catch up, notify goes on with none: what
-        // it read meanwhile comes first, then what it missed (ADR 69).
+        // it read meanwhile comes first, then what it missed (ADR 10.2).
         let status = match conn.call(serde_json::json!({ "cmd": "status" })) {
             Ok(status) => status,
             Err(_) if conn.missed().is_some() => Value::Null,
@@ -453,7 +453,7 @@ impl Source {
     }
 
     /// What is left before the process hung up, why it did, and whether it
-    /// cut notify off (ADR 69).
+    /// cut notify off (ADR 10.2).
     fn rest(&mut self) -> (Vec<Value>, String, bool) {
         match self {
             Source::Socket(conn) => conn.rest(),
@@ -578,9 +578,9 @@ mod tests {
 
     /// Cut off before the process answered its `status`, and unable to catch
     /// up, notify goes on: the event it read meanwhile, left once the process
-    /// hung up, then what it missed (ADR 69).
+    /// hung up, then what it missed (ADR 10.2).
     #[test]
-    fn adr_0069_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed() {
+    fn adr_0010_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed() {
         let (conn, process) = crate::ctl::talk::cut_off_at("status");
         let mut events = Events::on(conn, "1", None, DEFAULT_EVENTS).unwrap();
         let (rest, _, cut) = events.source.rest();

@@ -1,7 +1,7 @@
 //! Events as text, the one way brnr shows a session: `brnr event watch`,
 //! `brnr event log` and a session in the foreground all use it. Also a tool
 //! call in full (input, paths, diffs), for `brnr permission show`, and a
-//! form's fields, for `brnr elicitation show` (ADR 68).
+//! form's fields, for `brnr elicitation show` (ADR 4.5).
 //!
 //! What the agent sends reaches a terminal only through [`clean`], so its
 //! text can't move the cursor, rewrite the line or talk to the terminal
@@ -86,7 +86,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 options.join(" ")
             )
         }
-        // Allowed, rejected or cancelled (ADR 63), with the option and its
+        // Allowed, rejected or cancelled (ADR 8.1), with the option and its
         // kind; an editor's answer of a kind brnr doesn't know, answered.
         "permission_resolved" => {
             let (request, by) = (s(&e["request"]), s(&e["by"]));
@@ -102,7 +102,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 }
             }
         }
-        // The agent asking for input (ADR 68): a form's fields, or a URL,
+        // The agent asking for input (ADR 4.5): a form's fields, or a URL,
         // shown but never opened.
         "elicitation_request" => {
             let editor = if e["owner"] == "editor" { " (in the editor)" } else { "" };
@@ -155,14 +155,14 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
         }
         "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
         "session_closed" => format!("session closed ({})", s(&e["by"])),
-        // A load the agent answered after the session's close (ADR 57).
+        // A load the agent answered after the session's close (ADR 5.6).
         "session_reopened" => {
             format!("session reopened ({}): its load was answered after its close", s(&e["by"]))
         }
-        // The agent's copy deleted; brnr's transcript stays (ADR 63).
+        // The agent's copy deleted; brnr's transcript stays (ADR 8.1).
         "session_deleted" => format!("session deleted ({})", s(&e["by"])),
         // What a load replayed, and whether it is in the transcript as
-        // replayed events or was there already (ADR 57).
+        // replayed events or was there already (ADR 5.6).
         "history" => {
             let updates = e["updates"].as_u64().unwrap_or(0);
             // Fewer recorded when its session closed while it was loading.
@@ -180,13 +180,13 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             };
             format!("history: {updates} updates replayed by the agent{loads}, {how}")
         }
-        // A line too long to read: passed on unread, or dropped (ADR 51).
+        // A line too long to read: passed on unread, or dropped (ADR 10.3).
         "line_too_long" => {
             let what = if e["relayed"] == true { "passed on unread" } else { "dropped" };
             format!("a line from the {} over {} bytes, {what}", s(&e["from"]), e["limit"])
         }
         // A gap in the transcript: records a slow disk made brnr skip, or a
-        // full one failed to take (ADR 6).
+        // full one failed to take (ADR 10.1).
         "records-skipped" => {
             let at = |v: &Value| v.as_str().and_then(|t| t.get(11..19)).unwrap_or("?").to_owned();
             let mut what = format!(
@@ -202,7 +202,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             what
         }
         // A peer the process cut off for falling behind, and the last event
-        // queued for it (ADR 69).
+        // queued for it (ADR 10.2).
         "peer_cut_off" => {
             format!(
                 "{} cut off, behind: sent nothing after event {}",
@@ -210,7 +210,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 e["last_queued"]
             )
         }
-        // What a command cut off couldn't catch up on, and why (ADR 69).
+        // What a command cut off couldn't catch up on, and why (ADR 10.2).
         "events-missed" => {
             let until = match e["until"].as_u64() {
                 Some(until) => format!(" up to {until}"),
@@ -218,7 +218,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             };
             format!("cut off: events after {}{until} missed: {}", e["after"], s(&e["error"]))
         }
-        // With a reason when brnr itself died (a panic, ADR 11).
+        // With a reason when brnr itself died (a panic, ADR 3.7).
         "exited" => match e["reason"].as_str() {
             Some(reason) => format!("{}; {reason}", exited(&e["status"])),
             None => exited(&e["status"]),
@@ -233,17 +233,17 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
         prefix.push_str("  ");
     }
     if o.session {
-        // The whole id, to paste into the next command (ADR 13).
+        // The whole id, to paste into the next command (ADR 3.2).
         prefix.push_str(&format!("{:<8}  ", e["session"].as_str().unwrap_or("-")));
     }
     let indent = " ".repeat(prefix.len());
-    // History a load replayed (ADR 57).
+    // History a load replayed (ADR 5.6).
     let what = if e["replayed"] == true { format!("(replayed) {what}") } else { what };
     let what = clean(what.trim_end());
     Some(format!("{prefix}{}", what.replace('\n', &format!("\n{indent}"))))
 }
 
-/// How the agent ended, as an `exited` event's `status` has it (ADR 11):
+/// How the agent ended, as an `exited` event's `status` has it (ADR 3.7):
 /// `agent exited with code 1`, `agent killed by SIGTERM`, or `agent exited
 /// (status unknown)` for a status brnr didn't get.
 pub(crate) fn exited(status: &Value) -> String {
@@ -335,7 +335,7 @@ pub(crate) fn turn(e: &Value, what: &str) -> String {
     }
 }
 
-/// The tokens the agent said a turn used (ADR 71), as `; tokens: 1.2k
+/// The tokens the agent said a turn used (ADR 4.4), as `; tokens: 1.2k
 /// total, 1.0k input, 234 output, …`: each count it gave, and nothing for
 /// one it didn't, as the cost in [`usage`]; nothing at all when it gave
 /// none.
@@ -432,7 +432,7 @@ fn tool_call_text(tool: &Value) -> String {
 }
 
 /// A form's fields, an elicitation's `requestedSchema` as the agent sent
-/// it, one a line, for `brnr elicitation show` (ADR 68): each field's name,
+/// it, one a line, for `brnr elicitation show` (ADR 4.5): each field's name,
 /// type and whether it is required, its title and description, its bounds,
 /// and the values it takes.
 pub(crate) fn form(schema: &Value) -> String {
@@ -680,9 +680,9 @@ mod tests {
         assert_eq!(shown, "agent: hi\\u001b]0;title\\u0007");
     }
 
-    /// What `--events` can choose is shown in text too (ADR 23 in docs/adr).
+    /// What `--events` can choose is shown in text too (ADR 5.3 in docs/adr).
     #[test]
-    fn adr_0023_every_event_has_a_line() {
+    fn adr_0005_every_event_has_a_line() {
         for name in crate::host::EVENTS {
             let e = serde_json::json!({ "event": name });
             assert!(event(&e, &Options { session: false, time: false }).is_some(), "{name}");
@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0023_lines_of_the_quiet_and_new_events() {
+    fn adr_0005_lines_of_the_quiet_and_new_events() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let progress = json!({ "event": "tool_progress", "title": "Run", "status": "in_progress" });
@@ -725,10 +725,10 @@ mod tests {
     }
 
     /// What JSON has as a value, text says in words: an error's message, not
-    /// its JSON string; an exit status as a code, a signal or unknown (ADR 11);
-    /// the session's whole id, to paste into the next command (ADR 13).
+    /// its JSON string; an exit status as a code, a signal or unknown (ADR 3.7);
+    /// the session's whole id, to paste into the next command (ADR 3.2).
     #[test]
-    fn adr_0034_text_shows_values_not_json() {
+    fn adr_0008_text_shows_values_not_json() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let failed =
@@ -749,10 +749,10 @@ mod tests {
         assert_eq!(line, format!("{id}  session closed (idle)"));
     }
 
-    /// A turn's tokens (ADR 71): each count the agent gave, none it
+    /// A turn's tokens (ADR 4.4): each count the agent gave, none it
     /// didn't, and nothing when there are none, as the cost of `usage`.
     #[test]
-    fn adr_0071_text_shows_the_counts_the_agent_gave() {
+    fn adr_0004_text_shows_the_counts_the_agent_gave() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let tokens = json!({ "total": 1_234_000, "input": 999, "output": null, "cached_write": 0 });
@@ -769,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0068_elicitation_events_have_lines() {
+    fn adr_0004_elicitation_events_have_lines() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let schema = json!({ "properties": { "name": {}, "color": {} } });
@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0063_a_deletion_is_shown_with_who_deleted() {
+    fn adr_0008_a_deletion_is_shown_with_who_deleted() {
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let deleted = serde_json::json!({ "event": "session_deleted", "by": "editor" });
         assert_eq!(shown(deleted), "session deleted (editor)");

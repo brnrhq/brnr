@@ -1,20 +1,20 @@
-//! Actions on an editor's session through the side channel (ADR 4 in
+//! Actions on an editor's session through the side channel (ADR 7.1 in
 //! docs/adr): each is refused unless the editor's part of the profile
-//! enables it by name, and in strict mode whatever it enables (ADR 41).
+//! enables it by name, and in strict mode whatever it enables (ADR 2.1).
 //! Observing is always allowed. What an action leaves the editor behind on
 //! is made up for here, in the editor's own channel:
 //!
 //! - `send` goes only while no prompt runs: the editor controls its turns,
 //!   so nothing is held, steered or interrupts. It is echoed
-//!   (`echo_message` in acp.rs, ADR 5, 70), and so is `context` as it joins
+//!   (`echo_message` in acp.rs, ADR 7.2), and so is `context` as it joins
 //!   the editor's prompt.
 //! - `cancel`, `permission` and `elicitation`: a permission request or an
 //!   elicitation the host answers is withdrawn from the editor with
 //!   `$/cancel_request`, and for an allow or a reject its tool call is
-//!   updated (ADR 68 for elicitations). If the editor answers anyway, its
+//!   updated (ADR 4.5 for elicitations). If the editor answers anyway, its
 //!   answer is dropped, so the agent never gets two, and the editor is told
 //!   in the session.
-//! - `config`: the agent answers a change only to whoever asked (ADR 28),
+//! - `config`: the agent answers a change only to whoever asked (ADR 6.2),
 //!   so the editor is sent the `current_mode_update` or
 //!   `config_option_update` here.
 //! - `close`, and `session resume --take-over` of an editor's session: the
@@ -23,7 +23,7 @@
 //!
 //! brnr's notes to the editor take the echo's form, a completed tool call,
 //! whatever the profile's `echo_as` says: they are brnr's words, and a
-//! `user_message_chunk` would make them the user's (ADR 70).
+//! `user_message_chunk` would make them the user's (ADR 7.2).
 
 use serde_json::{Map, Value, json};
 

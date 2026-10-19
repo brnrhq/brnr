@@ -6,19 +6,19 @@
 //!   that are gone. Gone is what a process's socket says (see
 //!   `gone` in ctl.rs): one nobody listens on was left by a process that is
 //!   gone, even when its pid is another process's now;
-//! - session locks, in the state directory (ADR 65): that each session can
-//!   be locked (ADR 50), `sessions/` being a private directory with nothing
+//! - session locks, in the state directory (ADR 3.9): that each session can
+//!   be locked (ADR 3.9), `sessions/` being a private directory with nothing
 //!   but files where lock files go, and none left by a process that is gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
 //! - the config file: it parses, every key is in its part of a profile
-//!   (ADR 33), and every profile's settings, cwd, agent and bridges are
+//!   (ADR 6.1), and every profile's settings, cwd, agent and bridges are
 //!   valid;
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running processes: each answers; of one that doesn't, the sessions it
-//!   holds the locks of (ADR 3);
+//!   holds the locks of (ADR 3.9);
 //! - host logs: those of processes that died without recording it (no
-//!   `exited`, and not running), the cases ADR 11 can't record, with when
+//!   `exited`, and not running), the cases ADR 3.7 can't record, with when
 //!   each last wrote and the sessions it had open. Info, not a warning:
 //!   they are a record, and nothing is to be repaired.
 //!
@@ -29,9 +29,9 @@
 //! message}`.
 //!
 //! `--report` prints, instead of the checks, a bug report to read and then
-//! paste into an issue (ADR 45): brnr's version, the OS, the adapters, the
+//! paste into an issue (ADR 11.5): brnr's version, the OS, the adapters, the
 //! checks that aren't ok, and the end of the most relevant host logs, with
-//! secrets redacted as brnr records them (ADR 25) and the home directory as
+//! secrets redacted as brnr records them (ADR 9.1) and the home directory as
 //! `~`. As Markdown, or with `--json` as one object with the same data.
 
 use std::collections::HashMap;
@@ -260,8 +260,8 @@ fn left_behind(r: &mut Report, what: &str, names: &[String], remove: impl FnOnce
     }
 }
 
-/// The session locks, in the state directory (ADR 65). What keeps sessions
-/// from being locked (ADR 50): a `sessions/` that isn't a private directory,
+/// The session locks, in the state directory (ADR 3.9). What keeps sessions
+/// from being locked (ADR 3.9): a `sessions/` that isn't a private directory,
 /// or something other than a file where a session's lock file goes. A
 /// headless start of such a session fails, and an editor's process serves it
 /// without the lock. Said only when there is something to say, and never
@@ -614,7 +614,7 @@ const DIED_SHOWN: usize = 3;
 const LOG_TAIL: u64 = 64 * 1024;
 
 /// Host logs (`~/.brnr/hosts/<run id>.jsonl`) of processes that died
-/// without recording it, the cases ADR 11 couldn't record: the log has no
+/// without recording it, the cases ADR 3.7 couldn't record: the log has no
 /// `exited`, and no process running has its run id. For each, when its last
 /// record was written and the sessions it had open. Only the ends of files
 /// are read: of each host log, and of each session's events file for the
@@ -668,7 +668,7 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
         if n == 1 { "" } else { "es" },
         latest.join(", ")
     );
-    // Nothing to repair: what is left is a record (ADR 11).
+    // Nothing to repair: what is left is a record (ADR 3.7).
     r.line(Level::Info, what, msg);
 }
 
@@ -725,7 +725,7 @@ fn open_sessions() -> HashMap<String, Vec<String>> {
             continue;
         };
         // One the agent deleted, through an editor's process, is closed too
-        // (ADR 63).
+        // (ADR 8.1).
         if !matches!(last["event"]["event"].as_str(), Some("session_closed" | "session_deleted")) {
             open.entry(run.to_owned()).or_default().push(session.to_owned());
         }
@@ -752,7 +752,7 @@ struct HostLog {
     lines: Vec<String>,
 }
 
-/// `brnr doctor --report` (ADR 45): what to paste into an issue, printed
+/// `brnr doctor --report` (ADR 11.5): what to paste into an issue, printed
 /// for the user to read first.
 fn bug_report(r: &Report, hosts: Option<&[Running]>) {
     let (adapters, checks): (Vec<&Value>, Vec<&Value>) =
@@ -814,7 +814,7 @@ fn bug_report(r: &Report, hosts: Option<&[Running]>) {
 }
 
 /// The host logs a report shows: the latest, and the latest of a process
-/// that panicked or died without recording it (ADR 11), if that is another.
+/// that panicked or died without recording it (ADR 3.7), if that is another.
 fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     let running: Option<Vec<&str>> =
         hosts.map(|h| h.iter().filter_map(|(host, _)| host.meta["host_id"].as_str()).collect());

@@ -89,7 +89,7 @@ that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
 The library's modules are private, and its one public item is `brnr::run`
-(ADR 66). The integration tests and fuzz targets, crates of their own, reach
+(ADR 8.5). The integration tests and fuzz targets, crates of their own, reach
 what they need through `brnr::internals`, a hidden module behind the
 `internals` feature: the dev-dependency of the crate on itself in
 `Cargo.toml` turns it on for `cargo test`, and `fuzz/Cargo.toml` for the
@@ -163,8 +163,9 @@ said in the pull request.
 [ADR 1](docs/adr/0001-principles.md) has what brnr must get right, its
 critical success factors and their order when two pull apart (security, then
 reliability, then faithfulness to ACP), and the principles that serve them
-(P1 to P14, and P15 in [ADR 44](docs/adr/0044-brnr-never-phones-home.md)),
-which every decision is measured against. A pull request that changes what
+(P1 to P15), which every decision is measured against. Each topic in
+[docs/adr](docs/adr/README.md) holds its decisions as sections, cited as
+`ADR T.k`. A pull request that changes what
 brnr does either follows an ADR or adds one, as [docs/adr](docs/adr/README.md)
 describes; one that gives up a factor or breaks a principle says which, and
 why. Before 1.0 there is no backwards compatibility: a change replaces what
@@ -172,7 +173,7 @@ it changes, with no aliases or shims. The ADRs are drafts until then too: a
 decision is changed where it is written, and records can be rewritten,
 renumbered, merged or removed.
 
-From 1.0.0, what [ADR 64](docs/adr/0064-what-the-compatibility-promise-covers.md)
+From 1.0.0, what [ADR 8.4](docs/adr/0008-the-command-line-and-compatibility.md#84-what-the-compatibility-promise-covers)
 covers is kept compatible within a major version: the commands and their
 flags and arguments, `--json` structures, exit codes, events, the protocol
 of a started bridge, transcripts, where files are under `$BRNR_HOME`,
@@ -190,7 +191,7 @@ then the old form is deprecated, and keeps working.
 - Against `main`, which changes only through pull requests.
 - Commits say what is now true, in a sentence (`event notify, cut off, stops
   its command and says so`), with the why in the body. The ADR a commit
-  implements goes in brackets: `(ADR 36)`.
+  implements goes in brackets: `(ADR 5.8)`.
 - The README, the skill (`skills/brnr/`) and the ADRs change with the code
   they describe. Their examples, and the site's, run as tests
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
@@ -202,7 +203,7 @@ then the old form is deprecated, and keeps working.
   Security): what is now true, in a sentence, with its ADR. A breaking change
   goes under Changed or Removed, starts with **Breaking:**, and says what to
   do instead; from 1.0.0 only in a major release, and a form deprecated
-  before then goes under Deprecated, with what to use instead (ADR 64).
+  before then goes under Deprecated, with what to use instead (ADR 8.4).
   That section is the next release's notes.
 - Releases are the maintainers' (`release.sh`, in the README).
 

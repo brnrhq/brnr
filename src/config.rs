@@ -1,5 +1,5 @@
 //! Profiles from `config.toml` (see paths.rs for where it lives). A profile
-//! has three parts (ADR 33 in docs/adr): at the top what every process of
+//! has three parts (ADR 6.1 in docs/adr): at the top what every process of
 //! the profile uses, under `headless` what only `brnr session new` and
 //! `resume` use, and under `editor` what only `brnr acp` uses.
 //!
@@ -7,7 +7,7 @@
 //! [profiles.work]                     # every process of the profile
 //! agent = ["brnr-claude-adapter"]     # used when no agent is given after --
 //! log = "all"                         # transcripts under ~/.brnr; "events", or false
-//! strict = false                      # stable ACP only (ADR 41)
+//! strict = false                      # stable ACP only (ADR 2.1)
 //!
 //! [[profiles.work.bridges]]
 //! command = ["~/bin/slack-bridge", "--channel", "#agents"]
@@ -20,9 +20,9 @@
 //! thought_level = "high"              #   set before the first prompt
 //! options = { effort = "high" }
 //! response_timeout = 600              # seconds until an unanswered approval is rejected,
-//!                                     #   or an elicitation cancelled (ADR 68)
+//!                                     #   or an elicitation cancelled (ADR 4.5)
 //! stop_when_idle = 600                # close a session idle this many seconds
-//! auth = "api-key"                    # the agent's login method, run first (ADR 30)
+//! auth = "api-key"                    # the agent's login method, run first (ADR 4.7)
 //!
 //! [[profiles.work.headless.mcp_servers]]
 //! name = "github"
@@ -31,10 +31,10 @@
 //! env = { GITHUB_TOKEN = "…" }
 //!
 //! [profiles.work.editor]              # brnr acp
-//! experimental = ["send", "permission"] # actions on the editor's session (ADR 4)
-//! client_capabilities = ["fs"]        # the editor's, passed to the agent: "fs", "terminal" (ADR 67)
-//! echo_as = "tool_call"               # or "user_message_chunk" (ADR 70)
-//! features = ["shared_sessions"]      # process management (ADR 42)
+//! experimental = ["send", "permission"] # actions on the editor's session (ADR 7.1)
+//! client_capabilities = ["fs"]        # the editor's, passed to the agent: "fs", "terminal" (ADR 2.7)
+//! echo_as = "tool_call"               # or "user_message_chunk" (ADR 7.2)
+//! features = ["shared_sessions"]      # process management (ADR 3.10)
 //! ```
 //!
 //! Without `--profile`, the `default` profile applies if there is one. A key
@@ -74,7 +74,7 @@ pub(crate) struct Profile {
     pub(crate) editor: Editor,
 }
 
-/// What only `brnr session new` and `resume` use (ADR 12, 27, 28, 30, 31,
+/// What only `brnr session new` and `resume` use (ADRs 3.8, 4.5, 6.2, 4.7 and 6.3,
 /// 63).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,7 +92,7 @@ pub(crate) struct Headless {
     pub(crate) mcp_servers: Vec<McpServer>,
 }
 
-/// What only `brnr acp` uses (ADR 4, 42, 67, 70).
+/// What only `brnr acp` uses (ADRs 7.1, 3.10, 2.7 and 7.2).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Editor {
@@ -106,7 +106,7 @@ pub(crate) struct Editor {
     pub(crate) features: BTreeSet<Feature>,
 }
 
-/// What the host records (ADR 22): `"all"`, `"events"` (no raw ACP) or
+/// What the host records (ADR 5.1): `"all"`, `"events"` (no raw ACP) or
 /// `false` (nothing).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Log {
@@ -154,7 +154,7 @@ impl<'de> Deserialize<'de> for Log {
 }
 
 /// An action on an editor's session through the side channel, enabled by
-/// name (ADR 4).
+/// name (ADR 7.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Experimental {
@@ -192,7 +192,7 @@ impl Experimental {
 }
 
 /// A client capability of the editor's that ACP v2 drops, and `brnr acp`
-/// drops too unless the profile names it, or in strict mode (ADR 67).
+/// drops too unless the profile names it, or in strict mode (ADR 2.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ClientCapability {
@@ -214,7 +214,7 @@ impl ClientCapability {
 }
 
 /// The `session/update` a message sent to an editor's session through the
-/// side channel is shown to it as (ADR 5, 70).
+/// side channel is shown to it as (ADR 7.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EchoAs {
@@ -237,7 +237,7 @@ impl EchoAs {
     }
 }
 
-/// A process-management behaviour, off unless named (ADR 42).
+/// A process-management behaviour, off unless named (ADR 3.10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Feature {

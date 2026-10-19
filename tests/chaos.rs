@@ -1,4 +1,4 @@
-//! Seeded failures and SIGKILL at live protocol boundaries (ADRs 3, 7, 11, 35).
+//! Seeded failures and SIGKILL at live protocol boundaries (ADRs 3.9, 3.4, 3.7 and 5.7).
 //! Each signal targets a pid obtained from this fixture, never a process-name match.
 
 mod common;
@@ -94,14 +94,14 @@ fn recovered(env: &Env, unrecorded: bool) {
     let listed: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
-    // independently of doctor removing the stale lock file (ADR 3).
+    // independently of doctor removing the stale lock file (ADR 3.9).
     env.resume("sess-1", &[]);
     assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     env.stop();
 }
 
 #[test]
-fn adr_0007_seeded_setup_failure_never_commits_a_prompt() {
+fn adr_0003_seeded_setup_failure_never_commits_a_prompt() {
     for seed in SEEDS {
         for kind in ["crash", "hang", "flood"] {
             let env = fixture(&format!("chaos-setup-{kind}-{seed}"), kind, seed)
@@ -139,7 +139,7 @@ fn adr_0007_seeded_setup_failure_never_commits_a_prompt() {
 }
 
 #[test]
-fn adr_0011_seeded_agent_crash_records_death_and_releases_session() {
+fn adr_0003_seeded_agent_crash_records_death_and_releases_session() {
     for seed in SEEDS {
         let env = fixture(&format!("chaos-crash-{seed}"), "crash", seed).agent("STUBBORN", "child");
         env.start(&[]);
@@ -174,7 +174,7 @@ fn adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session() {
 }
 
 #[test]
-fn adr_0011_killed_proxy_mid_fault_stops_host_and_agent() {
+fn adr_0003_killed_proxy_mid_fault_stops_host_and_agent() {
     for seed in SEEDS {
         for kind in ["hang", "flood"] {
             let env = fixture(&format!("chaos-proxy-{kind}-{seed}"), kind, seed)
@@ -221,7 +221,7 @@ fn adr_0011_killed_proxy_mid_fault_stops_host_and_agent() {
 }
 
 #[test]
-fn adr_0035_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
+fn adr_0005_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
     for seed in SEEDS {
         let env = fixture(&format!("chaos-bridge-{seed}"), "hang", seed);
         let path = env.dir.join("bridge.pid");

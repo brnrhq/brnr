@@ -1,0 +1,735 @@
+# 5. Events, transcripts and observers
+
+Draft 2026-10-19. Implemented. Factor: F3, F5 (ADR 1). Brings together
+former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36 (docs/adr/README.md maps
+them).
+
+What a brnr process says about its sessions, and what it keeps: the events
+the host emits, the transcripts it writes, and what observes them, `event
+log`, `event watch`, `event notify` and bridges. ACP has none of these;
+they are what brnr adds beyond it (F3). They behave as a Unix utility's
+output should: an event chosen is shown, in text and JSON alike, and
+nothing goes without a word (F5).
+
+## 5.1 The host's events are the story, and transcripts are two files
+
+Events:
+
+- Every event the host emits to bridges (`user_message`,
+  `agent_message`, `tool_call`, `permission_request`, `turn_ended`, …;
+  `EVENTS` in src/host/control.rs) is also a record in the session's
+  events file. `event log`, `event watch` and the foreground (ADR 3.5)
+  render the same events, and a transcript read back is the stream a
+  bridge saw live (P5).
+- `exited`, the one event that belongs to the process, is written into
+  every session's events file too, so `event log` keeps to one session's
+  files.
+- `session_changed` records what changed, not the whole list again. Of
+  the config options and the commands it has a JSON merge patch
+  (RFC 7396) by id and name: an option's new value (`{"model": "opus"}`),
+  a command added (`{"review": {…}}`), `null` for what is gone. An answer
+  to `set_config_option` that changes a value makes one too, as an agent
+  needn't send an update for it.
+- The `session-opened` record of a session the process opened as a fork
+  (`session fork`'s, or an editor's `session/fork` through `brnr acp`),
+  in its events file and in the host log, has `forked_from`, the session
+  it was forked from (ADR 3.12). A session opened any other way has none:
+  the process doesn't know whether it was a fork, and the first
+  `session-opened` in the file says.
+- `session delete` writes `session_deleted` into the session's events
+  file itself, a record of no process's (`host_id` null), and with
+  `--purge` deletes both files (ADR 8.1).
+- Every record carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid`
+  for joining. Every event, and every raw ACP record, has `seq`, its
+  position in its process (ADR 10.2).
+
+Files:
+
+- Each session has two files, keyed by project folder like the agents'
+  own: `~/.brnr/projects/<folder>/<session id>.jsonl`, its events, and
+  `<session id>.acp.jsonl` beside it, the raw ACP. `<folder>` is the cwd
+  with every non-alphanumeric character replaced by `-` (as in
+  `~/.claude/projects`). The session id in the names is escaped, one name
+  per id, so distinct sessions never share a transcript (ADR 9.2).
+- Each process also has a host log, `~/.brnr/hosts/<run id>.jsonl`, for
+  what belongs to no session (ACP before a session exists, the agent's
+  stderr).
+- The events file is always written: `event log`, `session list` and
+  `session resume` read it. The raw file is written by default; a
+  profile's `log = "events"` leaves it out, and `log = false` writes
+  neither (ADR 6.1).
+- A transcript is written only where only the user can read it: what
+  others can reach is made private first, and a symlink is refused
+  (ADR 9.3, P13).
+- A process holds a session's two files only while it serves the session.
+  A close closes them once its last record, `session_closed`, is written;
+  a session opened again appends to them, after another `session-opened`.
+- Records the logger skips behind a slow disk (ADR 10.1) leave a gap that
+  a `records-skipped` record counts, in the session's events file and the
+  host log. So do records a write fails to put in a file: the note goes in
+  the file that lost them once it takes records again (for the raw file,
+  in its events file).
+- A load of a session brnr has no transcript of records the replay
+  (ADR 5.6).
+
+Reading:
+
+- `event log` reads a record as the event `event watch` would have shown.
+  With `acp` chosen it reads the raw file too, merged in order, each ACP
+  message an `acp` event, and says so when there is none. `--events` and
+  `--json` mean the same as for `event watch` (ADR 5.3), and `event log
+  --json` is what a watcher got live. It shows a `records-skipped` gap
+  whatever `--events` chose. A transcript written before events existed
+  has none, and `event log` says so.
+- `event log` of a running session first waits for what its process has
+  recorded (ADR 5.5).
+- What a transcript is for `session list`, `session resume` and `doctor`
+  comes from the first and last records brnr can read in it. A line that
+  isn't a JSON object, cut short or not, is passed over. The last record
+  is read backwards, so a long transcript costs no more than its last
+  records. A line cut short is never taken for a record: a JSON object
+  ends only at its last byte. So, for a transcript:
+  - ending in a newline, as written: its last line is the last record;
+  - ending partway through a line: its last whole record;
+  - with a whole line that isn't a record, last or anywhere: the line is
+    passed over;
+  - empty, or with no line brnr can read: no session, as nothing says
+    which, where or when (`event log` says `no session`).
+- `event log` shows every record it can read, and says on stderr each
+  line it can't (`brnr: <file>:<line> isn't a record brnr can read, not
+  shown`). Once the transcript won't grow (its process has gone), it also
+  says when the file ends partway through a line (`brnr: <file> ends
+  partway through a record (<n> bytes), not shown`). Of a running
+  session, what follows the last newline is a line still being written,
+  and isn't mentioned. The exit status is still 0: the transcript asked
+  for is shown (P3).
+- A process that opens a transcript to append to it, and finds it ending
+  partway through a line, starts its first record on a line of its own.
+  The line cut short stays as it was.
+- Nothing that reads a transcript writes to it: brnr never repairs,
+  truncates or rewrites one (P3).
+
+**Why.** The raw ACP needs the host's interpretation to read as a history
+(agent messages assembled, permission requests paired with their answers,
+a turn's end named), and the CLI can't know the host's names for things
+(permission handles like `p1`, message ids). Recording the events the host
+already emits gives one story, live and read back (P5). The raw file is
+what checks that interpretation. On the maintainer's machine in October
+2026, 44 session files held 31 MB: 74% raw ACP, almost all of it the
+agent's `session/update`s; `session_changed` was 5.5 MB in 176 records,
+each repeating whole lists, hence the patch. A process killed mid-write
+(SIGKILL, a power cut, a full disk) leaves its last line cut short, and
+the logger ends a line its own failed write cut short before it writes
+again, so a broken line can be anywhere in a file. Reading past it keeps
+the session listed, logged and resumed, as every record before the cut is
+there (#61).
+
+**Consequences.**
+
+- Turning the raw file off saves most of the space, and leaves secrets
+  (ADR 9.1) nothing to be redacted from but the host log.
+- The raw file keeps replay possible: the agent's `session/update`s to the
+  editor are what a replay to an editor that resumes a session without
+  history (ACP v2 has no `session/load`) would resend. Whether brnr offers
+  that is undecided; it would be an experimental editor action (ADR 7.1).
+- A process that forks and closes session after session keeps the files
+  of each session it has open.
+- A session killed mid-write is listed, logged and resumed as of its last
+  whole record. The bytes of the cut record stay in the file, and
+  `event log` points at them. A file whose lines are all cut short or
+  broken is not a session; its bytes are still there to read.
+
+**Considered.**
+
+- One file with raw ACP and events together.
+- Events only, raw ACP on request: a quarter of the space, but checking
+  the interpretation, and any replay, would need it turned on in advance.
+- Raw ACP only, the events derived when read: a second interpretation in
+  the CLI, without the host's names.
+- `event log` also reading the host log for the session's time span: two
+  files to merge and to follow, and the host log has ACP and stderr that
+  aren't the session's.
+- Keeping a record dump for `event log`, with `--events` over the records:
+  `--raw` would have kept two meanings, one for `event log` and another
+  for `event watch`.
+- Host-wide events copied into every session's file: the case that
+  prompted it, `owner_changed`, went with ADR 3.1; `exited` is what
+  remains.
+- Truncating a file to its last newline when it is read or reopened:
+  repairs it, but destroys what was there, and a reader would write.
+- Failing `event log` on a line it can't read: the records around it are
+  what the user asked for, and stay readable.
+- Taking the session's id from the file name when no record can be read:
+  the name is an escaped id (ADR 9.2), not the id, and there would be no
+  cwd, agent or profile to resume it with.
+
+## 5.2 Dropped messages and closed sessions are events
+
+- `message_dropped {session, message, text, by}`, `by` one of `cancel`,
+  `queue` (`queue drop`, `queue clear`), `close`, `exit` and `steer` (a
+  steer the agent neither took nor sent back, ADR 4.2): every way a
+  message brnr accepted can go unsent (P3). Unanswered steers are dropped
+  with held messages by `prompt cancel`, a close and the exit. `exited`
+  has no list of messages not delivered (P5, P9).
+- `context_dropped {session, text, by}`, `by` one of `queue` (`queue clear
+  --context`), `close` and `exit`: context held for a next prompt that
+  won't come, one event per item (context has no message id, ADR 4.1).
+  Context held when its session closes (`stop_when_idle` included) or the
+  process exits is dropped so. `prompt cancel` keeps context: it is for
+  the next prompt, whenever that comes.
+- `session_closed {session, by}`, `by` one of `close` (`session close`,
+  `session resume --take-over`), `idle` (`stop_when_idle`, ADR 3.8) and
+  `editor` (the editor's own `session/close`). Messages and context still
+  held in the session are dropped first. A process exiting is `exited`,
+  which is in every session's file already, and isn't also
+  `session_closed`.
+- `prompt send --wait` and `session new --wait` whose message is dropped
+  exit 1, saying `m3 was dropped (cancel)` on stderr and
+  `dropped: "cancel"` in `--json`. `event wait` ends as ADR 8.3 says;
+  `event watch` and `event notify` on a session end when it closes.
+- All three are in `EVENTS` and the README's list for bridges, and in the
+  default events of `event watch`, `event log` and bridges (ADR 5.3).
+  `event notify`'s default is its own (ADR 5.8).
+
+**Why.** A message brnr accepted and never sent, or a session that closed,
+must be said where observers look (P3). Without these events a
+`prompt send --wait` for a dropped message waited until the process
+exited, and `event watch`, `event notify` and `event wait` on a closed
+session waited for the whole process.
+
+**Considered.**
+
+- `turn_ended` with a `dropped` stop reason: misleading, since no turn ran.
+- Only the response to the command that dropped them saying so.
+- A distinct exit status for "never ran": one more code for scripts to
+  learn; the difference is in stderr and `--json`.
+- An `undelivered` list in `exited`: two kinds of record for one thing.
+
+## 5.3 Choosing events, and what text shows
+
+- `--events` alone chooses, for `event watch`, `event log` and `event
+  notify` alike: event names, `all`, and `default`. An event chosen is
+  shown, in text and JSON alike (P5). Unknown names fail in the CLI,
+  before connecting, with the same message everywhere.
+- Without `--events`, `event watch` and `event log` show every event but
+  the quiet ones, `acp`, `agent_thought`, `usage` and `tool_progress`
+  (`QUIET`), in text, JSON and the foreground alike. `default` names that
+  set, so `--events default,agent_thought` adds thoughts. There is no
+  `--raw` and no `--thoughts`.
+- Whatever `--events` chose, `event log` also shows a gap in the
+  transcript (`records-skipped`, ADR 5.1), which isn't an event.
+- Bridges and the host's `subscribe` have their own default: every event
+  but `acp`. `event notify`'s `default` is its own (ADR 5.8).
+- Tool calls: `tool_call` when a call starts (`started: true`) and when it
+  ends (`completed` or `failed`), shown as `tool: … (kind)`,
+  `tool done: …`, `tool failed: …`; `tool_progress` for each change of
+  status in between (`in_progress`), quiet, shown as
+  `tool: … in_progress` when chosen. Progress that doesn't change the
+  status (streamed output) is not an event. A `tool_call` again with the
+  id of a call that is running is that call, not a second one (#164): it
+  updates it, as a `tool_call_update` would, with no second start.
+- `usage` (one per `usage_update` the agent sends; `session status` has
+  the latest) is quiet. It has the context window and the cost, not
+  tokens in and out, and its line, when chosen, is
+  `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
+- `turn_ended` has `tokens`, the tokens the agent reported for the turn
+  (ADR 4.4), and its line shows each count given: `turn ended: end_turn
+  (control); tokens: 1.2k total, 1.0k input, 234 output`.
+- `session_changed` is shown for everything it reports: title, mode,
+  config (`config: model=opus`) and commands (`commands: +review
+  -compact`, those added or changed and those gone, as ADR 5.1's patch has
+  them).
+
+**Why.** One raw line per streamed chunk is not readable. A flag with two
+meanings (`--raw` for `log` and for `watch`), and a second way to choose
+an event that is already chosen (`--thoughts`), are two answers to one
+question. Text that leaves out events JSON has breaks P5: `--events usage`
+printed nothing in text while `--json` had them.
+
+**Considered.**
+
+- `event watch` showing everything by default, `acp` included: the
+  firehose should be one flag away, not the default.
+- A text line for every tool status change: noise.
+- No event for status changes between start and end: bridges would lose
+  `in_progress`.
+- Text quietly leaving out events that JSON has: what `--events` chose
+  wouldn't be what was shown.
+
+## 5.4 `event log --last <n>`
+
+`--last <n>` counts messages sent to the agent (`user_message` events),
+and shows from the n-th last one on. `--last 0` shows nothing (with
+`--follow`, only what comes next).
+
+**Why.** What is wanted is the latest exchanges, and a turn still running
+is the one most likely wanted.
+
+**Considered.**
+
+- Counting turns (`turn_ended`): it leaves out a turn still running.
+
+## 5.5 The log of a running session waits for its transcript
+
+- A request, `logged`, is answered once the process's logger has written
+  everything the process recorded before it was asked, with the note of a
+  gap of skipped records (ADR 10.1) that ends there. It says `lost` when a
+  file has lost records it hasn't noted yet (ADR 10.2). The answer comes
+  from the logger's thread; the event loop doesn't wait for it (P1). With
+  `log = false` it is answered at once.
+- `event log` of a running session sends it first, and reads the files
+  once it is answered: what `session new --wait`, `prompt send --wait` or
+  `event wait` has reported is in what it shows. A process that doesn't
+  answer within 5 s (a stalled disk) is shown as far as it has written,
+  and `event log` says so on its stderr (P3). `--follow` waits the same
+  way before its first read.
+- A process that exits waits, before brnr stops listing it and it lets
+  go of its sessions, until its logger has written what it
+  recorded, `exited` last, for 2 s at most. Once it is gone, `event log`,
+  `session list` and `session resume` read its sessions' transcripts
+  whole, and a resume doesn't start appending to one before its `exited`.
+  A panic lets go of the process's sessions as an exit does, before it
+  waits.
+- Then, unlisted and holding no session, it waits for the rest without a
+  time limit, as for the display's reader in the foreground (ADR 3.5),
+  and exits once it is written. A signal to it (Ctrl-C, `kill`) gives up
+  on it: the process says on its stderr how much it didn't write
+  (`brnr: process 4466: 1234 bytes of records not written: the disk
+  didn't take them`), and exits as it would have.
+- A process that closes a session (`session close`, `session resume
+  --take-over`, its idle time running out, the editor) holds its lock,
+  and answers the close, until its logger has written what it recorded of
+  the session, `session_closed` last, for 2 s at most, as on exit. So a
+  resume in another process appends after it, and a load there finds its
+  transcript (ADR 5.6). The event loop doesn't wait for it (P1). Past 2 s
+  (a stalled disk) the session is let go of all the same, and its last
+  records can come after the next process's, as they can after an exit.
+  Opened in the same process again meanwhile, it keeps its lock there,
+  and the close is still answered once its records are written.
+- A session whose open the agent fails, after the process recorded
+  something of it, is held the same way until that is written: a load's
+  replay (ADR 5.6), or the close's records, when the open took back the
+  lock of a session closing there. A bridge's open (`session resume
+  --pid`) is answered with its error once they are; a start that fails
+  lets go of the session with its exit's records, at the latest. A fork
+  into a session the process couldn't lock has nothing to let go of: it
+  took no lock, and opened no transcript.
+- Until then the process's `status` lists the session in `closing`, so
+  that brnr can tell it from one the process is opening. `event log` of it
+  sends `logged` to that process and reads the transcript once it is
+  answered, `session_closed` in it, as for a running session.
+  `session resume` and `session delete` of it fail, saying it is closing
+  in that process and free once its records are written, 2 s at most.
+- What a process killed with SIGKILL hadn't written is lost: `session
+  list` can lack the session, and `session resume` of it without an agent
+  fails with `no agent: give one after -- or set agent in the profile`
+  (ADR 3.11). That can't be helped without writing on the session's own
+  thread.
+
+**Why.** A process's records are written by a thread of their own
+(src/log.rs), so the session never waits for the disk (P1, ADR 10.1).
+Read as the files were, a transcript could lack what a command had just
+seen: `session new --wait` printed the turn's reply, and `event log` right
+after didn't have the turn, or failed because the events file wasn't there
+yet, and nothing said so (P3). On CI's Linux runners about 1 in 15 such
+waits returned before the turn was written. A process that exited also
+stopped being listed, and let go of its sessions, before `exited` was
+written.
+
+**Consequences.**
+
+- `event log` of a running session costs a round trip to its process, and
+  up to 5 s when the disk is stalled.
+- Tests that read a transcript, or kill a process whose transcript they
+  need, wait for it the same way, by running `brnr event log`.
+- A headless process whose disk stalls stays after it stopped being
+  listed, holding no session and no agent, only its queue (64 MiB at
+  most, ADR 10.1), until the disk takes it or a signal ends it (`kill`).
+  Ended so, its host log can lack `exited`, and `brnr doctor` lists it as
+  a death nothing recorded (ADR 3.7).
+
+**Considered.**
+
+- Answering `session new --wait` and `prompt send --wait` only once their
+  turn is written: every waiting command would wait for the disk, and a
+  stalled one would stall them, which ADR 10.1 rules out for observers.
+- Writing records on the event loop: the session would wait for the disk
+  (P1, ADR 10.1).
+- Waiting in the tests only (for a record to appear in the file): every
+  user's script that runs `event log` after `--wait` would have the same
+  race.
+- A time limit on exit (10 s, 30 s): a headless process would drop
+  records with nobody told, its stderr unwatched and its host log, the
+  record, on the stalled disk (P3), to free a process that by then holds
+  nothing. A limit the user can't see is a guess (P4); the user's signal
+  is the explicit choice.
+
+## 5.6 A load's history is recorded once
+
+- `session resume` tells the process whether brnr has a transcript of the
+  session: one brnr's index lists as `inactive`, or one another process
+  is serving (`--take-over`). That is the one thing brnr knows about the
+  history it has; it doesn't compare the replay with the transcript to
+  guess what is missing (P4).
+- A transcript is an events file holding a record of the session beyond
+  its openings. One holding only `session-opened` records, as a failed
+  load leaves, isn't one: the next load, a start's, a bridge's or an
+  editor's, records the history. brnr reads its own file for this when the
+  load is asked for, and deletes nothing; `session list` still lists the
+  file, which names the session's cwd and agent.
+- With a transcript, the replay is neither recorded, raw or as events, nor
+  shown; what it says the session is now (title, mode, config options,
+  commands) is kept. Loading the session again and again adds nothing to
+  the transcript but each load's `history` event.
+- Without one, the replay is taken in as live updates would be: recorded
+  in the raw file, and made into events (`agent_message`, `tool_call`,
+  `session_changed`, …), each with `"replayed": true`. The user's
+  messages, which live are the prompts brnr sent, come only from the
+  replay here, as `user_message` events with `replayed` and without `by`
+  or a message id. Text shows them as `(replayed) user: …`. A tool call
+  the history left unfinished isn't counted as running (`session status`).
+  The next load finds the transcript, and doesn't record the history
+  again.
+- Either way, once the agent answers the load, a `history` event says how
+  many `updates` the agent replayed and whether they were `recorded`:
+  `history: 3 updates replayed by the agent, recorded`, or `…, not
+  recorded: brnr's transcript has the session`. Its `loads` is 1, but for
+  an editor's loads that overlap (below). `recorded` says whether the
+  replay was taken into the transcript at all; `recorded_updates`, always
+  there, how many of the `updates` are in it: all of them when
+  `recorded`, none when not, but for a session closed while its load was
+  unanswered (below), where text says `history: 4 updates replayed by the
+  agent, 3 recorded`.
+- `session/resume` replays nothing, and makes no `history` event.
+- An editor's `session/load` through `brnr acp` follows the same rule: its
+  replay is recorded only when brnr has no transcript of the session, in
+  any folder, and a `history` event says either way. The editor gets the
+  replay as the agent sent it (ADR 3.1): only what brnr records and emits
+  follows the rule.
+- A bridge's load (`session resume --pid`, ADR 8.1) follows it too, and
+  looks in any folder, whatever the cwd it is resumed in.
+- A session a process has served, open or closed since, has its
+  transcript in that process, for an editor's load and a bridge's alike,
+  whether or not the logger, which writes behind (ADR 5.5), has written it
+  yet, unless the process logs nothing (`log = false`). The process
+  remembers each session it has handed the logger a record of beyond its
+  openings, for its events file, as the disk has it once that is written.
+  So loading it again there records nothing of the replay again.
+- A load that failed after the agent replayed so leaves a transcript of
+  what it recorded, which is all the replay, the agent message it ended
+  with too (P3). One that failed before the agent replayed, or a session
+  closed with all its records, its close's too, skipped by a disk too slow
+  for them (ADR 10.1), leaves only openings, and the next load, in that
+  process too, records the history.
+- The editor's loads of a session that overlap (one sent before the agent
+  has answered the one before) all reach the agent, and share one replay,
+  as which load an update is for can't be told (P4). Until the last of
+  them is answered, every update either replays is taken as the replay
+  is: recorded and marked `replayed`, or not, as the first load found the
+  transcript. Then one `history` event says how many `updates` they
+  replayed between them, whether they were `recorded`, and how many
+  `loads` it covers: `history: 10 updates replayed by the agent in 2
+  loads, recorded`. A recorded replay can so hold the history once per
+  load, each copy marked; nothing is left out (P3). A load that fails
+  counts as answered. If none of them succeeds, there is no `history`
+  event, as for a single load that fails, and a session they opened
+  closes again, unless a `session/resume` of it succeeded meanwhile.
+- The editor's `session/close` of a session whose load is unanswered
+  closes it once the agent answers the close, with its `session_closed`,
+  as any close does. If the agent then answers the load with success, its
+  last answer wins: the session is open in the editor's process again,
+  and a `session_reopened`, `by` `editor`, says so (`session reopened
+  (editor): its load was answered after its close`). brnr takes the
+  agent's last answer as how the session is, and doesn't guess otherwise
+  (P4).
+- The load's replay is kept through the close: what the agent replays
+  meanwhile is counted, and goes to the host log, as the session's files
+  are closed. Once the load succeeds, the replay goes on in the reopened
+  session, and its `history`, after the `session_reopened`, has all the
+  `updates` and, in `recorded_updates`, those the transcript has. A load
+  that fails after the close leaves the session closed, with no
+  `history`, as any failed load. Of loads that overlap, one that
+  succeeded before the close has its `history` once the last is answered,
+  with the session still closed, in the host log. A load of the session
+  sent after the close, while one before it is unanswered, joins that
+  replay, as overlapping loads do.
+
+**Why.** An agent without `session/resume` resumes a session with
+`session/load`, replaying its history as `session/update`s before it
+answers. Leaving the whole replay out assumes brnr's transcript has the
+history. That fails for a session brnr has never seen (`session list` with
+an agent named lists the agent's own, and `session resume` takes any of
+them, ADR 3.11), and for one whose transcript is gone: `event log` then
+has the load's request and answer, none of the conversation, and nothing
+says it is missing (P3, #60).
+
+**Consequences.**
+
+- The transcript of a session first loaded by brnr starts with its
+  history, as the agent replayed it. Those records are as new as the
+  load, and carry this process's ids.
+- brnr's transcript is complete only for what happened through brnr:
+  turns taken in the agent's own client, or while a profile had `log =
+  false` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
+  it, and a load of a session brnr has a transcript of doesn't add them.
+  The `history` event's `recorded: false` says that the replay was left
+  out, so that what is missing is known to be missing.
+- Deleting a session's transcript makes its next load record the history
+  again, except in a process that served the session before the delete:
+  that process remembers what it recorded of the session until it exits.
+- A record the logger was handed and the disk then failed to take (a full
+  disk) still counts in its process, which can't tell: until it exits, a
+  load there records nothing of the history, where another process's
+  would. The failed write is noted in the file (P3).
+
+**Considered.**
+
+- Always recording the replay, marked: every load of a session would add
+  its whole history to the transcript again.
+- Recording only what the transcript lacks, matching the replay against
+  it: ACP's message ids are optional, and brnr's own records of a turn (an
+  injected message's echo, a steer) aren't what an agent replays. A match
+  would be a guess (P4).
+- Recording the raw replay only, without events: `event log` reads events,
+  so the history still wouldn't be in it.
+- Not creating the events file until the load succeeds (#191): the agent
+  replays before it answers, so the load's raw ACP and its replay would be
+  held in memory until then (P6), or written elsewhere and moved; and the
+  files failed loads have left already would still keep their history
+  out.
+- Removing, or marking, the file a failed load leaves: removing it deletes
+  the raw record of the failed load (P5), and either way the files already
+  left stay as they are.
+
+## 5.7 Bridges
+
+- A bridge is any process that speaks brnr's JSON-lines protocol.
+  Requests (`command` in src/host/control.rs): `status`, `send`,
+  `cancel`, `queue` (with `show`), `subscribe`, `pending` (answered with
+  `pending` and `elicitations`, ADR 4.5), `allow` and `reject`
+  `{session, request, always?, option?}`, `elicitation` `{session,
+  request, action, content?}` (ADR 4.5), `set_config` (taking `mode`,
+  `model`, `thought_level` and `options`, ADR 6.2), `new` and `resume` (a
+  session in the running process, as `session new --pid` and `session
+  resume --pid`), `fork`, `close`, `stop`, `logged` (ADR 5.5) and
+  `was_cut_off` (ADR 10.2). Those about a session name it by its exact id.
+  Events: as ADR 5.1, 5.2 and 5.3 list them, each naming its session;
+  `exited` is the process's.
+- A request line that isn't valid UTF-8 is answered with an error, and the
+  bridge stays (#15).
+- A started bridge's stderr goes to the host log (`bridge-stderr`), a line
+  at a time, decoded lossily: a line that isn't valid UTF-8 doesn't stop
+  the reading, which would leave the bridge's next write to die of SIGPIPE
+  (#160). A line longer than 64 KiB goes in pieces of that size, as the
+  agent's stderr does (ADR 10.3).
+- Two transports: a connection to the process's control socket
+  (`$BRNR_DIR/<pid>.sock`, which only the user can open, P13), or a child
+  the process starts from the profile's `bridges`, whose stdout carries
+  its requests and whose stdin carries events.
+- A started bridge is subscribed from birth (every event but `acp`, or the
+  bridge's `events` in the profile), so it sees everything from the
+  process's start. Its environment has `BRNR_PID` and `BRNR_SOCKET`: a
+  process's sessions come and go, and it has none when its bridges start.
+- A started bridge ends when its process exits. Its stdout closing only
+  means it has no more requests; it keeps getting events. When the brnr
+  process stops, the bridge gets the last events (`exited`), its stdin
+  closes (it should exit then), and one still running 2 s later
+  (`BRIDGE_EXIT`) gets SIGTERM: time for a bridge to act on `exited`, as
+  `event notify` does.
+- A bridge has to keep reading: one 16 MiB behind is cut off (ADR 10.1).
+- On an editor's session, a bridge's actions are experimental, as the
+  CLI's are (ADR 7.1). `stop` isn't one: stopping the process is process
+  management, never experimental and not refused in strict mode.
+- From 1.0.0 the compatibility promise covers the protocol as a started
+  bridge speaks it, on its stdin and stdout. The control socket is
+  private, in the runtime directory, and not an interface: a client that
+  connects to it directly has no promise (ADR 8.4).
+
+**Why.** A bridge connects brnr's sessions to something else: Slack, push
+notifications, a phone (F3). What another tool can do stays out of brnr
+(F5), so brnr gives a protocol, not integrations. A bridge that only
+listens must keep getting events: one that ran `exec cat > file`, and so
+closed its stdout, was dropped in 4 ms.
+
+**Considered.**
+
+- A started bridge ending when its stdout closes: one that only listens
+  would have to keep its stdout open.
+- Started bridges getting no events on stdin until they subscribe: a
+  change to the protocol, and they would miss the process's start.
+
+## 5.8 `event notify`
+
+- `brnr event notify (<session> | --pid <pid>) [--events …] -- <command>
+  [args...]` runs the command once per event. The default events are
+  `permission_request`, `elicitation_request`, `turn_ended` and `exited`;
+  `--events` works as for `event watch` (ADR 5.3), where `default` means
+  these four.
+- The event is in the command's environment (`BRNR_EVENT`, `BRNR_TEXT`,
+  `BRNR_TITLE`, `BRNR_MESSAGE` with the session's last agent message,
+  `BRNR_SESSION_ID`, `BRNR_REQUEST`, a permission request's or an
+  elicitation's handle, `BRNR_PID`) and, whole, as JSON on its stdin.
+  Nothing goes on its command line, so the agent's text can't become
+  arguments (P8). The text, title and message are escaped as `event
+  watch` shows them and cut at 32 KiB, so the command always starts.
+- Commands run one at a time, in order, each waited for, in a process
+  group of its own, with their stdout sent to stderr (as a bridge,
+  `event notify`'s stdout is read by the process as requests). No event
+  is read while one runs, so a command that hangs makes `event notify`
+  fall behind, and the process cuts it off like any slow peer (ADR 10.1):
+  a started bridge gets SIGTERM, a connection is closed. It exits when the
+  process does, and on a session also when that session closes
+  (`session_closed`).
+- On the socket, cut off while its command runs, it lets the command
+  finish, then catches up from the transcript and runs the command for
+  each event it missed; one that can't catch up says what it missed and
+  exits 3 (ADR 10.2).
+- Cut off as a started bridge (SIGTERM, or its stdin ending before
+  `exited`), its connection ending before `exited` otherwise (the process
+  killed), or stopped by SIGHUP, SIGINT or SIGQUIT, `event notify` stops
+  the command it is running (SIGTERM to its process group, then SIGKILL
+  once it has exited, or 2 s later). It says on its stderr that it was
+  cut off and that no more notifications come (`brnr: cut off (SIGTERM);
+  stopped sh (turn_ended); no more notifications`), and exits non-zero
+  (P3); `--stdin` cut off exits 1. A started bridge's stderr is in the
+  host log (`bridge-stderr`). On the socket it watches for the connection
+  closing while a command runs, and reads what was sent before it closed,
+  no more than the socket held, to tell the process's end (`exited` among
+  it) from being cut off.
+- `brnr event notify --stdin [--events …] -- <command>` reads its events
+  from its stdin, a started bridge's transport (ADR 5.7), instead of
+  connecting. That is how it runs as a bridge: `command = ["brnr",
+  "event", "notify", "--stdin", "--", …]` in the profile, with no `sh -c`
+  and no `$BRNR_PID`, and one subscription. A started bridge isn't caught
+  up when cut off; one that must not miss events runs `brnr event notify
+  <session> -- …` on the socket instead (ADR 10.2).
+
+**Why.** Notifications are what most people want from a bridge: a message
+when an approval is waiting or a turn has ended. One command that runs any
+command serves every service, and keeps them out of brnr (F5). Run as
+`sh -c 'exec brnr event notify --pid "$BRNR_PID" -- …'`, it subscribed
+on the socket and never read its own stdin, where the process writes the
+same events from birth: after 16 MiB the process cut it off, and the
+notifications stopped without a word (P3).
+
+**Considered.**
+
+- Shipping scripts for a few services: one command that runs any command
+  covers them all.
+- Running commands concurrently: it would reorder notifications.
+- `event notify` draining its stdin while subscribed on the socket: two
+  subscriptions for one bridge.
+- `event notify` reading stdin when it detects it's a bridge: a guess
+  (P4); the flag says it.
+- Never reading events from stdin, so that `event notify` behaves the same
+  as a bridge and by hand: with an explicit `--stdin` the difference is
+  asked for, not hidden, and it is the only option with one subscription
+  per bridge.
+- The process writing to a started bridge's stdin only once it
+  subscribes: ADR 5.7.
+
+## Tests
+
+Run `cargo test --release adr_0005_`. Named claims, by section:
+
+- 5.1: [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_transcripts_are_two_files`,
+  `adr_0005_log_events_leaves_out_the_raw_acp`,
+  `adr_0005_a_transcript_cut_short_is_still_its_sessions`;
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_log_shows_the_conversation`,
+  `adr_0005_log_merges_the_raw_acp_in_time`,
+  `adr_0005_log_reads_an_inactive_session`,
+  `adr_0005_log_follows_until_the_host_exits`,
+  `adr_0005_log_follows_the_raw_acp_too`,
+  `adr_0005_session_changed_says_what_changed`,
+  `adr_0005_closing_sessions_closes_their_files`;
+  [src/log.rs](../../src/log.rs):
+  `adr_0005_a_closed_session_has_its_records_and_then_no_file`;
+  [src/ctl.rs](../../src/ctl.rs):
+  `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`.
+- 5.2: [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_held_messages_are_reported_on_exit`,
+  `adr_0005_editor_close_is_an_event`;
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_send_wait_on_a_dropped_message`,
+  `adr_0005_queue_lists_and_drops`,
+  `adr_0005_close_ends_what_follows_the_session`,
+  `adr_0005_idle_close_is_an_event`,
+  `adr_0005_dropped_context_is_an_event`.
+- 5.3: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_every_event_chosen_is_shown_in_text`,
+  `adr_0005_log_shows_only_the_events_asked_for`,
+  `adr_0005_thoughts_are_shown_when_asked`,
+  `adr_0005_watch_is_readable_by_default`,
+  `adr_0005_a_tool_call_again_updates_the_one_running`;
+  [src/render.rs](../../src/render.rs):
+  `adr_0005_every_event_has_a_line`,
+  `adr_0005_lines_of_the_quiet_and_new_events`.
+- 5.4: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_last_counts_user_messages_including_an_unfinished_turn`.
+- 5.5: [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_an_exit_is_written_before_the_process_goes`,
+  `adr_0005_a_signal_gives_up_on_a_stalled_disk_at_exit`,
+  `adr_0005_a_foreground_exit_given_up_on_says_what_it_didnt_write`,
+  `adr_0005_a_panic_lets_go_of_its_sessions_before_it_waits`,
+  `adr_0005_a_close_is_written_before_the_session_is_resumed`,
+  `adr_0005_a_take_over_is_written_before_the_session_is_resumed`,
+  `adr_0005_a_last_session_closed_is_written_before_it_is_resumed`,
+  `adr_0005_a_take_over_finds_the_transcript_it_continues`,
+  `adr_0005_a_close_waits_for_a_stalled_disk_2_s_at_most`,
+  `adr_0005_a_close_resumed_in_its_process_is_answered_once_written`,
+  `adr_0005_a_closing_session_is_read_once_written_and_said_to_be_closing`,
+  `adr_0005_a_failed_load_is_written_before_the_session_is_resumed`,
+  `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`;
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_log_shows_what_the_process_has_recorded`.
+- 5.6: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_a_first_load_records_the_replayed_history`,
+  `adr_0005_a_load_without_the_transcript_records_the_history`,
+  `adr_0005_a_load_of_an_empty_history_says_so`,
+  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`,
+  `adr_0005_a_load_after_a_failed_load_records_the_history`,
+  `adr_0005_a_bridges_load_after_a_failed_load_records_the_history`;
+  [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_an_editors_load_records_the_history_only_without_a_transcript`,
+  `adr_0005_an_editors_load_of_a_session_open_here_records_nothing_again`,
+  `adr_0005_overlapping_loads_in_an_editor_have_one_history`,
+  `adr_0005_a_failed_load_leaves_a_resumed_session_open`,
+  `adr_0005_a_load_answered_after_its_close_reopens_the_session`,
+  `adr_0005_a_loads_history_is_counted_across_its_sessions_close`,
+  `adr_0005_a_load_that_fails_after_its_sessions_close_has_no_history`,
+  `adr_0005_overlapping_loads_closed_meanwhile_have_one_history`,
+  `adr_0005_a_bridges_load_of_a_session_served_here_records_nothing_again`,
+  `adr_0005_an_editors_load_of_a_session_served_here_records_nothing_again`,
+  `adr_0005_an_editors_load_after_a_failed_load_records_the_history`,
+  `adr_0005_a_load_that_replays_and_fails_counts_its_replay`,
+  `adr_0005_an_editors_failed_load_records_its_last_replayed_message`,
+  `adr_0005_a_bridges_failed_load_records_its_last_replayed_message`,
+  `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`;
+  [src/log.rs](../../src/log.rs):
+  `adr_0005_only_openings_are_no_transcript`,
+  `adr_0005_a_record_beyond_the_opening_counts_at_once`. That a session
+  brnr has a transcript of keeps the replay out of it however often it
+  loads, with a `history` event each time, is ADR 3.11's
+  `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`
+  ([tests/cli.rs](../../tests/cli.rs)).
+- 5.7: [tests/security.rs](../../tests/security.rs):
+  `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`;
+  [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_bad_request_line_is_answered`,
+  `adr_0005_a_bridge_whose_stderr_isnt_utf8_carries_on`;
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_a_bridge_that_closes_its_stdout_gets_events`;
+  [tests/chaos.rs](../../tests/chaos.rs):
+  `adr_0005_killed_bridge_mid_turn_leaves_owner_and_lock_intact`.
+- 5.8: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_notify_runs_a_command_per_event`,
+  `adr_0005_notify_reads_events_as_watch_does`,
+  `adr_0005_notify_works_as_a_bridge`,
+  `adr_0005_notify_reads_stdin_as_a_bridge`,
+  `adr_0005_notify_stdin_ends_with_its_input`,
+  `adr_0005_notify_fails_when_cut_off`,
+  `adr_0005_notify_cut_off_as_a_bridge_stops_its_command`,
+  `adr_0005_notify_stopped_stops_its_command`,
+  `adr_0005_notify_cuts_what_the_environment_cant_hold`.

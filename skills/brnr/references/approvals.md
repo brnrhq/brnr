@@ -103,7 +103,7 @@ editor.
 
 ## Elicitations: the agent asking for input
 
-An agent can also ask the user for input (ADR 68): a form (`mode: "form"`,
+An agent can also ask the user for input (ADR 4.5): a form (`mode: "form"`,
 its fields in `schema`), or a URL to open (`mode: "url"`), such as an MCP
 server's login. The turn waits for it as for an approval, and the same rule
 holds: the answer is the user's. brnr never opens a URL; neither do you.

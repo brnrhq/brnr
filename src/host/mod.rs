@@ -101,21 +101,21 @@ const LOG_FLUSH: Duration = Duration::from_secs(2);
 const BRIDGE_EXIT: Duration = Duration::from_secs(2);
 
 /// Events the reader threads may have queued for the event loop before
-/// they wait for it (ADR 6). The agent's output and the editor's input are
+/// they wait for it (ADR 10.1). The agent's output and the editor's input are
 /// held to a number of bytes as well (see flow.rs).
 const EVENTS_QUEUED: usize = 1024;
 
-/// The agent's last lines on stderr, for a failed start (ADR 10), and how
+/// The agent's last lines on stderr, for a failed start (ADR 3.6), and how
 /// much of each is kept.
 const STDERR_TAIL: usize = 20;
 const STDERR_LINE: usize = 2000;
 
 /// The most of the agent's stderr read at once, and of a line of it the host
 /// log takes as one record: a longer line is recorded in pieces of this
-/// (ADR 51), as a started bridge's and the process's own are (see
+/// (ADR 10.3), as a started bridge's and the process's own are (see
 /// `read_stderr`). Nobody reads stderr as lines but people, and the host log;
 /// what is read goes on to the editor or the terminal at once, newline or not
-/// (ADR 62).
+/// (ADR 2.6).
 const PIECE: usize = 64 << 10;
 
 /// `brnr process stop`: stdin is closed once what is queued for it is written,
@@ -182,7 +182,7 @@ pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
         }
         // A panic before the agent was spawned (later ones are the host's
         // to record, see `died_starting`): there is no log yet, and nobody
-        // knows of the process but whoever started it (ADR 11).
+        // knows of the process but whoever started it (ADR 3.7).
         Err(_) => {
             let id = std::process::id();
             for file in [format!("{id}.sock"), format!("{id}.json")] {
@@ -269,14 +269,14 @@ enum Ev {
     /// One line of agent stdout, with its `\n` unless it was the last bytes.
     AgentLine(Vec<u8>),
     /// A piece of a line of agent stdout past `LINE_BYTES`, as it came;
-    /// `end` if the line ends with it (ADR 51).
+    /// `end` if the line ends with it (ADR 10.3).
     AgentPiece {
         bytes: Vec<u8>,
         end: bool,
     },
     AgentStdoutEof,
     /// Agent stderr, as one read returned it: up to `PIECE` bytes, not
-    /// necessarily a line (ADR 62).
+    /// necessarily a line (ADR 2.6).
     AgentStderr(Vec<u8>),
     AgentStderrEof,
     /// The agent has terminated; it has not been reaped yet.
@@ -333,7 +333,7 @@ struct Host {
     info: Value,
     host_id: String,
     /// How long an unanswered permission request waits before it is
-    /// rejected, and an elicitation before it is cancelled (ADR 68).
+    /// rejected, and an elicitation before it is cancelled (ADR 4.5).
     response_timeout: Option<Duration>,
     agent_pid: pid_t,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
@@ -345,7 +345,7 @@ struct Host {
     /// stdout and stderr aren't read (see flow.rs).
     to_agent: Backlog,
     from_agent: Backlog,
-    /// The agent's last lines on stderr (ADR 10).
+    /// The agent's last lines on stderr (ADR 3.6).
     stderr_tail: VecDeque<String>,
     /// Dropping this makes the stdout reader close the agent's stdout.
     stop_stdout: Option<PipeWriter>,
@@ -380,13 +380,13 @@ struct Host {
     /// before the agent opened them: a resume or a load not yet answered.
     claimed: HashMap<String, Hold>,
     /// The replays of editors' sessions closed while a load of them was
-    /// unanswered, until the last is (ADR 57): still counted, though not
+    /// unanswered, until the last is (ADR 5.6): still counted, though not
     /// recorded, and the session's again if a load succeeds.
     closed_loads: HashMap<String, Replay>,
-    /// Sessions closed here, until their records are written (ADR 48).
+    /// Sessions closed here, until their records are written (ADR 5.5).
     letting_go: Vec<LettingGo>,
     /// Every unanswered request to the agent, by its id there, which is the
-    /// host's whoever asked (ADR 61): who asked, and the session it is about.
+    /// host's whoever asked (ADR 2.4): who asked, and the session it is about.
     client_requests: HashMap<String, ClientRequest>,
     /// Requests from the agent to its client that are unanswered.
     agent_requests: Vec<AgentRequest>,
@@ -394,7 +394,7 @@ struct Host {
     /// them too (a cancel, an allow): its late answers are dropped (see
     /// experimental.rs).
     answered: HashMap<String, experimental::Answered>,
-    /// Sessions brnr closed under the editor (ADR 4) → the process that took
+    /// Sessions brnr closed under the editor (ADR 7.1) → the process that took
     /// each over, if one did: the editor's requests for them are answered
     /// here.
     closed: HashMap<String, Option<u32>>,
@@ -405,16 +405,16 @@ struct Host {
     next_permission: u64,
     next_elicitation: u64,
     /// URL elicitations held or accepted, by the agent's `elicitationId`,
-    /// until the agent says each is complete (ADR 68).
+    /// until the agent says each is complete (ADR 4.5).
     url_elicitations: HashMap<String, elicitation::UrlElicitation>,
     /// Bytes from the editor after the last complete line.
     editor_buf: Vec<u8>,
     /// A line past `LINE_BYTES` is going through unread, from the editor or
-    /// from the agent, until its newline (ADR 51).
+    /// from the agent, until its newline (ADR 10.3).
     editor_long: bool,
     agent_long: bool,
     /// The line of the agent's stderr still coming, for the host log and
-    /// the tail (ADR 10): what came of it is sent on already (ADR 62).
+    /// the tail (ADR 3.6): what came of it is sent on already (ADR 2.6).
     stderr_line: Vec<u8>,
     /// The last piece of the agent's stderr the log has didn't end its line.
     stderr_mid_line: bool,
@@ -429,7 +429,7 @@ struct Host {
     /// Headless start: resume this session instead of opening a new one.
     resume: Option<String>,
     /// Headless start: brnr has a transcript of the session resumed, so a
-    /// load's replay isn't recorded again (ADR 57).
+    /// load's replay isn't recorded again (ADR 5.6).
     transcript: bool,
     /// Headless start: what its flags and its profile set, resolved once
     /// the session is open and the agent has said which option is which.
@@ -455,13 +455,13 @@ struct Host {
     // What the request carries for what enforces it.
     /// Stable ACP to the letter (see strict.rs).
     strict: bool,
-    /// What to record (ADR 22): `false` turns the logger off; `events`
+    /// What to record (ADR 5.1): `false` turns the logger off; `events`
     /// leaves out the sessions' raw ACP.
     logging: Log,
-    /// An editor's process: the actions on its session it allows (ADR 4),
-    /// its client capabilities that reach the agent (ADR 67), how a message
-    /// sent through them is shown to it (ADR 70), and the
-    /// process-management behaviours it turns on (ADR 42).
+    /// An editor's process: the actions on its session it allows (ADR 7.1),
+    /// its client capabilities that reach the agent (ADR 2.7), how a message
+    /// sent through them is shown to it (ADR 7.2), and the
+    /// process-management behaviours it turns on (ADR 3.10).
     experimental: BTreeSet<Experimental>,
     client_capabilities: BTreeSet<ClientCapability>,
     echo_as: EchoAs,
@@ -471,10 +471,10 @@ struct Host {
     peers: HashMap<u64, Peer>,
     bridge_pids: Vec<pid_t>,
     /// The position of the last event emitted or ACP message recorded: each
-    /// gets the next, its `seq` (ADR 69).
+    /// gets the next, its `seq` (ADR 10.2).
     seq: u64,
     /// The last peers cut off, by label, and the last event queued for
-    /// each, for a peer to ask whether it was (ADR 69).
+    /// each, for a peer to ask whether it was (ADR 10.2).
     cut_offs: VecDeque<(String, u64)>,
     /// `peer_cut_off` events still to emit, once the event that cut the
     /// peer off has reached every other peer.
@@ -560,7 +560,7 @@ impl Host {
         // From here there is an agent, and a host to hold it and what the
         // rest of the start makes, as it is made (see `set_up`): whatever
         // ends the start early, an error or a panic, finds them there, kills
-        // the agent with them (P14) and records how it ended (ADR 11).
+        // the agent with them (P14) and records how it ended (ADR 3.7).
         let (tx, rx) = mpsc::sync_channel(EVENTS_QUEUED);
         let new = Host::new(role, cwd, strict, logging, agent_pid, rx);
         let mut host = Host { host_id, sock_path, meta_path, ..new };
@@ -746,10 +746,10 @@ impl Host {
             "started": log::rfc3339(started),
         });
         write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
-        // Every process records what it was asked to do (ADR 8).
+        // Every process records what it was asked to do (ADR 3.3).
         let info = self.info.clone();
         self.sink.note(None, json!({ "event": "started", "info": info, "request": recorded }));
-        // A detached process's stderr is /dev/null until here (ADR 11).
+        // A detached process's stderr is /dev/null until here (ADR 3.7).
         if !self.foreground && self.log.host_log().is_some() {
             self.own_stderr = death::capture_stderr(self.sink.clone());
         }
@@ -827,7 +827,7 @@ impl Host {
 
     /// A start that fails before the event loop runs: what it started goes,
     /// and its host log records the end, as `finish` does, so a log without
-    /// `exited` is a process that died (ADR 11). Returns `error` and `code`.
+    /// `exited` is a process that died (ADR 3.7). Returns `error` and `code`.
     fn abandon(mut self, error: String, code: u8) -> (String, u8) {
         self.kill_all();
         let _ = fs::remove_file(&self.sock_path);
@@ -838,7 +838,7 @@ impl Host {
         (error, code)
     }
 
-    /// A panic as the start is under way, before the event loop (ADR 11):
+    /// A panic as the start is under way, before the event loop (ADR 3.7):
     /// recorded as `died` records one, as far as what the start has made
     /// allows (no sessions yet; the log, the display and bridges once they
     /// are there), and the agent killed with its process group (P14).
@@ -886,7 +886,7 @@ impl Host {
             let now = Instant::now();
             if self.drain_until.is_some_and(|t| now >= t) {
                 // The agent's last output, held back for the editor, is
-                // still to come, at the editor's pace (ADR 6).
+                // still to come, at the editor's pace (ADR 10.1).
                 if !self.from_agent.full() {
                     break;
                 }
@@ -1007,7 +1007,7 @@ impl Host {
             self.say(format!("brnr: agent exited: {status}"));
         }
         self.close_display();
-        // Let the writer deliver what's queued, at the editor's pace (ADR 6);
+        // Let the writer deliver what's queued, at the editor's pace (ADR 10.1);
         // a proxy that has gone fails the write.
         self.link = None;
         if let Some(writer) = self.link_writer.take() {
@@ -1029,7 +1029,7 @@ impl Host {
         }
     }
 
-    /// A panic (ADR 11): told wherever it still can be, and the agent goes,
+    /// A panic (ADR 3.7): told wherever it still can be, and the agent goes,
     /// as it does when its owner goes (P14).
     fn died(mut self, reason: &str) -> ExitCode {
         self.record_panic(reason);
@@ -1059,7 +1059,7 @@ impl Host {
     /// process, not its sessions.
     fn wind_up(&mut self, reason: &str) {
         // Held messages that never became a prompt, as on a normal exit
-        // (ADR 20); a second panic here mustn't cost the `exited` below.
+        // (ADR 5.2); a second panic here mustn't cost the `exited` below.
         let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for i in 0..self.sessions.len() {
                 self.drop_all(i, "exit");
@@ -1095,7 +1095,7 @@ impl Host {
     }
 
     /// Exiting, once `wait_logged` is through: the sessions are let go of as
-    /// brnr stops listing the process (ADR 3), those closing here too.
+    /// brnr stops listing the process (ADR 3.9), those closing here too.
     fn let_go_of_sessions(&mut self) {
         self.let_go_of_closed();
         self.claimed.clear();
@@ -1108,7 +1108,7 @@ impl Host {
 
     /// Exiting, last: waits for the logger to have written everything
     /// recorded, however long the disk takes, as for the display's reader
-    /// (ADR 48). A signal gives up on it, and stderr, the display closed,
+    /// (ADR 5.5). A signal gives up on it, and stderr, the display closed,
     /// says how much wasn't written; the logger is left to the exit.
     fn end_log(&mut self) {
         let log = std::mem::replace(&mut self.log, Logger::disabled());
@@ -1217,7 +1217,7 @@ impl Host {
             Ev::AgentStdoutEof => self.agent_stdout_ended(),
             Ev::AgentStderr(bytes) => {
                 // On at once, then into lines for the log: nothing that keeps
-                // stderr as lines holds it up (ADR 62).
+                // stderr as lines holds it up (ADR 2.6).
                 self.send_link(frame::STDERR, &bytes);
                 self.from_agent.done(bytes.len());
                 self.stderr_lines(&bytes);
@@ -1228,7 +1228,7 @@ impl Host {
             }
             Ev::AgentExited => {
                 // Whatever the agent left running goes too, including after
-                // a spontaneous exit or a crash during setup (ADR 11, P14).
+                // a spontaneous exit or a crash during setup (ADR 3.7, P14).
                 // Before reaping, its pid (and group id) can't be reused.
                 self.kill_group(libc::SIGKILL);
                 // Reaped here, on the thread that sends signals, so a signal
@@ -1272,7 +1272,7 @@ impl Host {
 
     /// The agent's stderr, sent on already, as lines for the host log and
     /// the tail: each line is recorded once it ends, a longer one than
-    /// `PIECE` in pieces of that (ADR 51).
+    /// `PIECE` in pieces of that (ADR 10.3).
     fn stderr_lines(&mut self, mut bytes: &[u8]) {
         while !bytes.is_empty() {
             let room = PIECE - self.stderr_line.len();
@@ -1290,7 +1290,7 @@ impl Host {
 
     /// The line of stderr so far, whole or not, into the host log and the
     /// tail. A piece that fills up before its line ends leaves a character
-    /// it would cut to the next piece (ADR 51).
+    /// it would cut to the next piece (ADR 10.3).
     fn stderr_piece(&mut self) {
         if self.stderr_line.is_empty() {
             return;
@@ -1304,7 +1304,7 @@ impl Host {
         let piece = std::mem::replace(&mut self.stderr_line, next);
         // The newline of a line that filled the last piece only ends it.
         let skip = self.stderr_mid_line && piece == b"\n";
-        // The rest of a long line, whose start is kept already (ADR 51).
+        // The rest of a long line, whose start is kept already (ADR 10.3).
         let rest = std::mem::replace(&mut self.stderr_mid_line, !piece.ends_with(b"\n"));
         if skip {
             return;
@@ -1363,7 +1363,7 @@ impl Host {
     /// The agent's stdout has ended: the agent closed it or exited, or the
     /// editor stopped reading it (`editor_stopped_reading`). So does the
     /// editor's, after what came before, while the agent may run on and
-    /// write on stderr, as with the agent run directly (P1, ADR 62). brnr
+    /// write on stderr, as with the agent run directly (P1, ADR 2.6). brnr
     /// writes nothing more there of its own either (`write_editor`).
     fn agent_stdout_ended(&mut self) {
         self.stdout_open = false;
@@ -1397,7 +1397,7 @@ impl Host {
     }
 
     /// As `send_link`, with no copy made of `payload`: a piece of a long
-    /// line can be 32 MiB (ADR 51).
+    /// line can be 32 MiB (ADR 10.3).
     fn send_link_owned(&mut self, kind: u8, payload: Vec<u8>) {
         let Some(link) = &self.link else { return };
         self.from_agent.add(payload.len());
@@ -1611,7 +1611,7 @@ fn read_signal_link(link: UnixStream, tx: SyncSender<Ev>) {
 /// which drops our end so the agent gets EPIPE like it would directly. Past
 /// the cap of what is on its way to the editor (or the event loop) it waits,
 /// and the agent blocks writing, as it would to the editor directly. A line
-/// past `LINE_BYTES` goes on in pieces as they come (ADR 51).
+/// past `LINE_BYTES` goes on in pieces as they come (ADR 10.3).
 fn read_agent_stdout(
     mut out: ChildStdout,
     stop: PipeReader,
@@ -1678,8 +1678,8 @@ fn read_agent_stdout(
 }
 
 /// The agent's stderr, as it comes: what each read returns goes on at once,
-/// newline or not, held back as its stdout is (ADR 62). In the foreground
-/// (`shown`) it also goes to stderr, unchanged (ADR 10): written from here,
+/// newline or not, held back as its stdout is (ADR 2.6). In the foreground
+/// (`shown`) it also goes to stderr, unchanged (ADR 3.6): written from here,
 /// the agent blocks on a terminal that does.
 fn read_agent_stderr(mut err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backlog, shown: bool) {
     let mut terminal = shown.then(|| sys::stdio(2));
@@ -1709,7 +1709,7 @@ fn read_agent_stderr(mut err: ChildStderr, tx: SyncSender<Ev>, from_agent: Backl
 /// process's own (control.rs, death.rs), until EOF or until `note` says to
 /// stop: each line decoded lossily, so bytes that aren't UTF-8 don't end the
 /// reading (and a bridge's next write with SIGPIPE), and a line longer than
-/// `PIECE` in pieces of that, as the agent's is (ADR 51). A character a
+/// `PIECE` in pieces of that, as the agent's is (ADR 10.3). A character a
 /// piece's end would cut starts the next piece instead, and a note's text,
 /// decoded, is at most a piece too.
 fn read_stderr(input: impl Read, mut note: impl FnMut(String) -> bool) {
@@ -1839,7 +1839,7 @@ pub(crate) fn alive(pid: i64) -> bool {
 }
 
 /// A line of stderr as the tail keeps it: without its line ending, and
-/// `STDERR_LINE` bytes of it at most, cut between characters (ADR 51).
+/// `STDERR_LINE` bytes of it at most, cut between characters (ADR 10.3).
 fn tail_line(bytes: &[u8]) -> String {
     let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
@@ -1874,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0051_stderr_read_as_lines_ends_with_what_a_piece_left() {
+    fn adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left() {
         assert_eq!(unfinished("\u{e9}".as_bytes()), 0);
         assert_eq!(
             (unfinished(b"x\xc3"), unfinished(b"\xe2\x82"), unfinished(b"\xf0\x9f\x98")),
@@ -1892,7 +1892,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0051_a_stderr_note_is_at_most_a_piece_once_decoded() {
+    fn adr_0010_a_stderr_note_is_at_most_a_piece_once_decoded() {
         // Each byte becomes U+FFFD, 3 bytes of text: notes cut at characters.
         let said = stderr_notes(&vec![0xff; PIECE]);
         let lens: Vec<usize> = said.iter().map(String::len).collect();
@@ -1903,7 +1903,7 @@ mod tests {
     /// A tail's line is cut between characters, not in one: the character
     /// `STDERR_LINE` falls in is left out, not shown as U+FFFD.
     #[test]
-    fn adr_0051_a_tails_line_is_cut_between_characters() {
+    fn adr_0010_a_tails_line_is_cut_between_characters() {
         let mut line = vec![b'x'; STDERR_LINE - 1];
         line.extend_from_slice("\u{e9}\u{e9}\n".as_bytes());
         let tail = tail_line(&line);

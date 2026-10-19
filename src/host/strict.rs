@@ -1,11 +1,11 @@
-//! Strict mode (ADR 41 in docs/adr): stable ACP to the letter, chosen per
+//! Strict mode (ADR 2.1 in docs/adr): stable ACP to the letter, chosen per
 //! process (`strict = true` in a profile, `--strict` on `acp`, `session new`
 //! and `session resume`).
 //!
 //! By default brnr also speaks the conventions current agents and editors
 //! implement alike, ahead of the spec. Strict mode doesn't: what needs one
 //! is refused, saying why, and so is every experimental action on an
-//! editor's session (ADR 4), whatever the profile enables. The editor's
+//! editor's session (ADR 7.1), whatever the profile enables. The editor's
 //! `fs` and `terminal` capabilities pass through (see acp.rs). The only
 //! `_meta` brnr acts on is steering's, so in strict mode none is.
 //!
@@ -21,15 +21,15 @@ use crate::config::Experimental;
 use crate::schema;
 
 /// What brnr does beyond stable ACP, which strict mode doesn't. A
-/// convention is added to brnr by adding it here, and to ADR 41's list.
+/// convention is added to brnr by adding it here, and to ADR 2.1's list.
 #[derive(Clone, Copy)]
 pub(super) enum Beyond {
     /// `prompt send --steer`: `_session/steering`, an extension, advertised as
-    /// `_meta.steering.supported` in `initialize` (ADR 18).
+    /// `_meta.steering.supported` in `initialize` (ADR 4.2).
     Steering,
-    /// `brnr session fork`: `session/fork`, unstable in ACP v1 (ADR 16).
+    /// `brnr session fork`: `session/fork`, unstable in ACP v1 (ADR 3.12).
     Fork,
-    /// An action on an editor's session through the side channel (ADR 4).
+    /// An action on an editor's session through the side channel (ADR 7.1).
     Experimental(Experimental),
 }
 

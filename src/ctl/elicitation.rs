@@ -1,4 +1,4 @@
-//! `brnr elicitation` (ADR 68 in docs/adr): the agent's requests for input
+//! `brnr elicitation` (ADR 4.5 in docs/adr): the agent's requests for input
 //! (`elicitation/create`), a form or a URL, listed, shown and answered with
 //! ACP's own actions, `accept`, `decline` and `cancel`.
 //!
@@ -92,7 +92,7 @@ pub(super) fn requests(args: &[String]) -> Result<(), String> {
     }
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
-        // As `permission requests` (ADR 27): one that doesn't answer is
+        // As `permission requests` (ADR 4.5): one that doesn't answer is
         // passed over, and said to be.
         None => {
             for host in hosts.iter().filter(|h| h.status.is_none()) {
@@ -202,7 +202,7 @@ pub(super) fn show(args: &[String]) -> Result<(), String> {
         }
     };
     if let Some(secs) = e["timeout_seconds"].as_u64() {
-        // As the timeout answers (ADR 68): `cancel`, never `decline`.
+        // As the timeout answers (ADR 4.5): `cancel`, never `decline`.
         outln!("cancelled in {secs}s if nobody answers");
     }
     let rest = format!("brnr elicitation decline {arg} {request} or cancel {arg} {request}");

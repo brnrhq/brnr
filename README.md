@@ -37,13 +37,13 @@ editor ──stdio── brnr acp ──socketpairs── brnr process ──pip
 - **The other commands** (`brnr prompt send`, `brnr event watch`, …) talk to
   a session through its process, over a Unix socket that only you can open.
   Most are a group, what they act on, and a verb: `brnr <group> --help` lists
-  a group's ([ADR 63](docs/adr/0063-commands-are-grouped-by-what-they-act-on.md)).
+  a group's ([ADR 8.1](docs/adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
 
 macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).
 
 brnr never phones home: it makes no network requests of its own and sends
-no telemetry ([ADR 44](docs/adr/0044-brnr-never-phones-home.md)). Who can
+no telemetry ([P15](docs/adr/0001-principles.md)). Who can
 reach a session, and what keeps others out, is in the
 [threat model](docs/threat-model.md).
 
@@ -78,7 +78,7 @@ cargo install brnr --locked
 
 The crate is the binary. Its library isn't an API to build on: its one
 public item is `brnr::run`, the command line as a function
-([ADR 66](docs/adr/0066-the-library-is-private-and-its-facade-mirrors-the-cli.md)).
+([ADR 8.5](docs/adr/0008-the-command-line-and-compatibility.md#85-the-library-is-private-and-its-facade-mirrors-the-command-line)).
 
 Or from source, below.
 
@@ -99,7 +99,7 @@ checks reproducibility within one toolchain and runner, not across Rust or
 OS versions. After publishing and updating the tap, a fresh macOS runner
 installs the formula, runs its `brew test`, checks its version against the
 tag, and runs `brnr doctor`
-([ADR 52](docs/adr/0052-reproducible-builds-and-sbom.md)).
+([ADR 11.7](docs/adr/0011-building-releasing-and-support.md#117-reproducible-builds-and-an-sbom)).
 
 More at
 [brnrhq.github.io/brnr](https://brnrhq.github.io/brnr/).
@@ -133,7 +133,7 @@ agent's stderr, stdin's EOF, its stdout closing and the exit status through
 unchanged. It changes the stream in three ways: every request reaches the
 agent with an id of brnr's, and its answer comes back to the editor with the
 editor's own id, so that the editor's requests and brnr's are never confused
-(ADR 61); and, each below, a session another brnr process serves can't be
+(ADR 2.4); and, each below, a session another brnr process serves can't be
 loaded, and the experimental actions a profile enables act on the editor's
 session. By default the editor's `fs` and `terminal` capabilities don't
 reach the agent, as ACP v2 has neither: the agent reads and writes the files
@@ -141,7 +141,7 @@ on disk and runs commands itself, and doesn't see the editor's unsaved
 buffers. A profile passes them by name (`client_capabilities = ["fs",
 "terminal"]`), and strict mode passes both, as stable ACP v1 has them; a
 headless session offers neither
-([ADR 67](docs/adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)). When the editor goes away, so does the agent;
+([ADR 2.7](docs/adr/0002-acp-faithfully.md#27-the-editors-file-system-and-terminal-reach-the-agent-in-strict-mode-or-when-its-profile-names-them)). When the editor goes away, so does the agent;
 `brnr session resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
 
@@ -175,7 +175,7 @@ A message or context is a tool call because not every editor renders a user
 message that arrives outside a turn. For an editor that does, `echo_as =
 "user_message_chunk"` in the editor part shows it as the user's message
 instead, one `user_message_chunk` per content block
-([ADR 70](docs/adr/0070-an-editors-profile-chooses-how-a-message-is-shown.md)).
+([ADR 7.2](docs/adr/0007-experimental-actions-on-an-editors-session.md#72-how-a-message-sent-through-brnr-is-shown-to-the-editor)).
 brnr's own notes ("Allowed via brnr" and the rest) stay tool calls.
 
 `session fork` is never available in an editor's process, and in strict mode
@@ -203,7 +203,7 @@ action on a session: it stops an editor's process as it does any other.
   ends when the agent closes it, even if the agent runs on, and stderr comes as
   it is written, newline or not. From when stdout ends, brnr's own notes to the
   editor (a message sent from outside, a refusal) aren't shown; the host log
-  says which ([ADR 62](docs/adr/0062-stdout-ends-and-stderr-comes-as-written.md)).
+  says which ([ADR 2.6](docs/adr/0002-acp-faithfully.md#26-the-editors-stdout-ends-when-the-agents-does-and-its-stderr-comes-as-written)).
 - Both streams come through one connection, in order, with 16 MiB in flight
   rather than a pipe's 64 KiB: an editor that stops reading one of them holds
   up the other too, once that much is waiting. The editor's stderr is also
@@ -213,7 +213,7 @@ action on a session: it stops an editor's process as it does any other.
 - None of the compensations above has been tried against real editors yet
   (Zed, IntelliJ's AIR plugin): how each shows them is still to be seen.
   Each action stays experimental through 1.x, and leaves it only by an ADR
-  that brings what was seen in real editors; ADR 67 lists the checks.
+  that brings what was seen in real editors; ADR 2.7 lists the checks.
 
 ## Talk to it from outside
 
@@ -553,7 +553,7 @@ gave none that is a count (a JSON integer that fits a `u64`; not `1e3`), and
 `tokens` itself `null` when the answer has no `usage` object. brnr adds
 nothing up and doesn't say what they cover: whether subagents or earlier model
 calls are in them is the agent's to say. `session status` has the last turn's,
-in `last_turn` (ADR 71).
+in `last_turn` (ADR 4.4).
 
 `--events` chooses, for `event watch`, `event log` and `event notify` alike:
 names, `all`, and `default` (`--events default,agent_thought` adds thoughts).
@@ -678,7 +678,7 @@ in the profile), such as codex-acp's `api-key`.
 An agent can run other agents through brnr: start headless workers, send
 them work, wait for their turns, read their logs and bring their approvals
 to you. brnr ships a skill that teaches it how
-([skills/brnr](skills/brnr/SKILL.md), [ADR 46](docs/adr/0046-a-skill-for-agents-that-use-brnr.md)):
+([skills/brnr](skills/brnr/SKILL.md), [ADR 8.6](docs/adr/0008-the-command-line-and-compatibility.md#86-a-skill-for-agents-that-use-brnr)):
 exact ids, waiting rather than polling, never approving what you didn't
 delegate, and cleaning up what it starts.
 
@@ -705,7 +705,7 @@ refuses says why.
 Either way, brnr speaks ACP version 1. A `brnr session new` (or `brnr session list` with an agent)
 whose agent answers `initialize` with another version, or one brnr can't
 read, fails with that, before anything else is sent, and the agent is
-stopped ([ADR 54](docs/adr/0054-acp-version-1.md)). An editor's process
+stopped ([ADR 2.2](docs/adr/0002-acp-faithfully.md#22-brnr-speaks-acp-version-1)). An editor's process
 passes the editor's `initialize` and the agent's answer through: the version
 they agree on is theirs.
 
@@ -806,7 +806,7 @@ is a `peer_cut_off` event to the others. Where the transcript can't have
 it all (`log = false`, `log = "events"` for `acp`, records skipped), or
 when cut off 4 times in a row while catching up, the command says what it
 missed, an `events-missed` note (`after`, `until`, `error`), and exits 3.
-Started bridges are cut off as before (ADR 69).
+Started bridges are cut off as before (ADR 10.2).
 
 However long the lines: the session's pipes hold back past 16 MiB queued,
 and brnr reads a line of up to 32 MiB, held beside that while it waits for
@@ -828,8 +828,8 @@ Like the agents' own transcripts, keyed by project folder:
 ```
 
 This layout, how `~/.brnr` and the runtime directory are found, and how a cwd
-and a session id become names (below) are fixed for 1.x (ADR 65); what the
-host logs and the locks contain isn't (ADR 64).
+and a session id become names (below) are fixed for 1.x (ADR 3.9); what the
+host logs and the locks contain isn't (ADR 8.4).
 
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
 by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
@@ -873,7 +873,7 @@ The values of MCP servers' `env` and `headers` are recorded as
 gets them as given.
 
 Transcripts hold prompts and tool output, so brnr writes them only where only
-you can read them (ADR 59): `~/.brnr` (or `$BRNR_HOME`), each directory below
+you can read them (ADR 9.3): `~/.brnr` (or `$BRNR_HOME`), each directory below
 it and the file must be yours, with no group or other access, before a record
 goes in, whether brnr made them or found them there. It creates them 0700 and
 0600; one restored, copied or chmod'ed so that others can reach it is made
@@ -969,7 +969,7 @@ the panic, and in the foreground by the process itself.
 ## Releasing
 
 Generating release notes requires Git 2.13 or newer, so a final release's
-comparison can exclude release candidates (ADR 40).
+comparison can exclude release candidates (ADR 11.4).
 
 ```sh
 ./release.sh minor     # or patch, major, 1.2.3: checks main, opens the release pull request
@@ -983,14 +983,14 @@ A release's notes are its section of [CHANGELOG.md](CHANGELOG.md), in
 pull requests add to under `[Unreleased]`. `./release.sh minor` names that
 section for the version on the release branch and moves its compare links,
 `./release.sh tag` won't tag a version without one, and the release workflow
-publishes it as the GitHub release's notes, or fails (ADR 40).
+publishes it as the GitHub release's notes, or fails (ADR 11.4).
 
 A release candidate, `X.Y.Z-rc.N`, is a GitHub pre-release and is on
 crates.io (`cargo install brnr --version X.Y.Z-rc.N --locked`), but the
 Homebrew formulae stay at the last release. `X.Y.Z`'s section of
 CHANGELOG.md takes in its release candidates' sections, and its pull request
 lists the commits since the last release, so its notes say everything since.
-A version must come after the current one (ADR 40).
+A version must come after the current one (ADR 11.4).
 
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.

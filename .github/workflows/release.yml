@@ -9,11 +9,11 @@
 # an adapter when that changes, not on every brnr release. The tap is pushed
 # to with a deploy key whose private half is the HOMEBREW_TAP_DEPLOY_KEY
 # secret. Once the Homebrew smoke test passes, the crates job publishes the
-# crate to crates.io (ADR 47) with trusted publishing: crates.io trusts this
+# crate to crates.io (ADR 11.6) with trusted publishing: crates.io trusts this
 # workflow in the crates-io environment, and the job trades GitHub's OIDC
 # token for a short-lived crates.io token. No token is stored.
 #
-# A release candidate's tag (vX.Y.Z-rc.N, ADR 40) makes a GitHub pre-release
+# A release candidate's tag (vX.Y.Z-rc.N, ADR 11.4) makes a GitHub pre-release
 # and is published to crates.io, but leaves the formulae alone, so `brew
 # upgrade` stays on releases; the Homebrew smoke test, which installs from
 # the tap, is skipped with them.

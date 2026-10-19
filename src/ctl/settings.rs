@@ -68,7 +68,7 @@ enum Wanted {
 /// its name and description), and the v1 modes where the agent has them
 /// (`option` null), as the agent gave them; `--mode`, `--model`,
 /// `--thought-level` and `--option <o>` narrow it to those, found as
-/// `config set` finds them (ADR 63).
+/// `config set` finds them (ADR 8.1).
 pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut json_out, mut wanted) = (None, false, Vec::new());
     let mut it = args.iter();
@@ -201,7 +201,7 @@ fn choices(option: &Value) -> Vec<Value> {
 
 /// `config set`: `--mode`, `--model` and `--thought-level` find their option
 /// by category, `--option <o>=<v>` by id, resolved by the process as a
-/// start's settings are (ADR 58, ADR 63) and sent one at a time.
+/// start's settings are (ADR 6.1, ADR 8.1) and sent one at a time.
 pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut json_out, mut pairs) = (None, false, Vec::new());
     let mut by_category: [(&str, Option<String>); 3] =
@@ -254,7 +254,7 @@ pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// `<option>=<value>` pairs, given with `flag`, by option; the same option
-/// twice with two values fails (ADR 58).
+/// twice with two values fails (ADR 6.1).
 pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, String>, String> {
     let mut options = BTreeMap::new();
     for pair in pairs {
@@ -359,9 +359,9 @@ pub(super) fn held<'a>(
 
 /// `session resume --take-over`: `owner`, which holds `session`'s lock, closes
 /// it as `brnr session close` does, cancelling a running turn, and so lets go
-/// of it (ADR 3) for process `to` to resume. An editor's process does only if
+/// of it (ADR 3.9) for process `to` to resume. An editor's process does only if
 /// its profile enables the experimental `close`, and tells the editor where the
-/// session went (ADR 4).
+/// session went (ADR 7.1).
 pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), String> {
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");

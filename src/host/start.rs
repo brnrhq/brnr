@@ -1,4 +1,4 @@
-//! The start channel (ADR 7 in docs/adr): brnr session new's (or `resume`'s)
+//! The start channel (ADR 3.4 in docs/adr): brnr session new's (or `resume`'s)
 //! end of a socketpair, at fd 3.
 //!
 //! Whatever fails before the start commits is reported on it, `{ok: false,
@@ -16,7 +16,7 @@
 //! to the events brnr session new follows its turn by, before the prompt goes,
 //! so it misses none of them. The report names it as a peer, with the last
 //! event before it, as a subscription's answer does, to catch up from should
-//! it be cut off (ADR 69).
+//! it be cut off (ADR 10.2).
 //!
 //! brnr session new never writes on it; the host reads it on a thread for EOF.
 //! brnr session new gone before the commit means nobody knows of the session:
@@ -113,7 +113,7 @@ impl Host {
         if let Some(message) = message {
             ready["message"] = json!(message);
         }
-        // Where its events start, as a subscription's answer says (ADR 69).
+        // Where its events start, as a subscription's answer says (ADR 10.2).
         ready["peer"] = json!(START_PEER);
         ready["host_id"] = json!(self.host_id);
         ready["seq"] = json!(self.seq);

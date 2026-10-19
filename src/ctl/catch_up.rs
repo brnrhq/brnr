@@ -1,4 +1,4 @@
-//! Catching up (ADR 69): a command the process cut off for falling behind
+//! Catching up (ADR 10.2): a command the process cut off for falling behind
 //! reads what it missed from the transcript, then goes on live.
 //!
 //! Every event has a position, its `seq`: one more than the last event's or
@@ -12,7 +12,7 @@
 //! A process that has gone is asked of its host log instead (`peer-dropped`),
 //! and its transcript is read to its end. Where the transcript can't have
 //! all of it (no transcript, no raw ACP, records not written), the command
-//! says what it missed, as an `events-missed` note shaped as ADR 6's
+//! says what it missed, as an `events-missed` note shaped as ADR 10.1's
 //! `records-skipped`, and exits [`MISSED`].
 
 use std::fs::File;
@@ -171,7 +171,7 @@ impl Found<'_> {
                         }
                     }
                 }
-                // A gap where what it missed was (ADR 6).
+                // A gap where what it missed was (ADR 10.1).
                 Some("records-skipped") => {
                     let (first, last) = (event["first_seq"].as_u64(), event["last_seq"].as_u64());
                     if let (Some(first), Some(last)) = (first, last)
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adr_0069_a_records_position_is_read_from_its_end_or_head() {
+    fn adr_0010_a_records_position_is_read_from_its_end_or_head() {
         let event = br#"{"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
         assert_eq!(position(event), Some(12));
         let acp = br#"{"ts":"t","host_id":"h","session_id":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;

@@ -6,23 +6,23 @@
 //!
 //! - Every request to the agent has an id of the host's (`brnr-<n>`), the
 //!   editor's too, and the answer is for whoever sent it: the editor's goes
-//!   back to it with its id as it wrote it (ADR 61). In a line, only the id
+//!   back to it with its id as it wrote it (ADR 2.4). In a line, only the id
 //!   changes. The editor's `$/cancel_request` names its own requests, and
 //!   goes with their ids on the agent's side.
 //! - The editor's `initialize` loses the `fs` and `terminal` client
 //!   capabilities, as ACP v2 has neither, but those the profile names
-//!   (`client_capabilities`), and none in strict mode (ADR 67 in docs/adr).
+//!   (`client_capabilities`), and none in strict mode (ADR 2.7 in docs/adr).
 //! - An injected message goes to the agent as a `session/prompt`, never
 //!   while a prompt is running: until then it is held. With `--steer` it
-//!   goes into the running turn instead, as `_session/steering` (ADR 18 in
+//!   goes into the running turn instead, as `_session/steering` (ADR 4.2 in
 //!   docs/adr). The responses are kept from the editor, and the editor is
 //!   shown the text as it is sent, as a completed tool call or, if its
-//!   profile says so, as `user_message_chunk`s (`echo_message`, ADR 70). On
-//!   an editor's session it is the experimental `send` (ADR 4), refused
+//!   profile says so, as `user_message_chunk`s (`echo_message`, ADR 7.2). On
+//!   an editor's session it is the experimental `send` (ADR 7.1), refused
 //!   while a prompt runs.
 //! - Held context is appended to the next `session/prompt`, whoever sends
 //!   it.
-//! - What the side channel does to an editor's session (ADR 4, see
+//! - What the side channel does to an editor's session (ADR 7.1, see
 //!   experimental.rs): a permission request or an elicitation the host
 //!   answered in the editor's place is withdrawn from it
 //!   (`$/cancel_request`), and its late answer dropped; brnr's notes to it
@@ -30,16 +30,16 @@
 //!   requests answered by the host.
 //! - With no editor attached, the host answers what the agent asks of its
 //!   client. Permission requests wait for an allow or reject from a bridge
-//!   or the CLI, by the option's kind (ADR 63), until `response_timeout`
+//!   or the CLI, by the option's kind (ADR 8.1), until `response_timeout`
 //!   rejects them once, or cancels their turn; how much the agent asks is
-//!   the agent's mode (`--mode`, see ADR 27 in docs/adr). Elicitations
+//!   the agent's mode (`--mode`, see ADR 4.5 in docs/adr). Elicitations
 //!   (`elicitation/create`, a form or a URL for the user) wait the same
 //!   way for an accept, decline or cancel, until the same timeout cancels
-//!   them (ADR 68, see elicitation.rs). Anything else gets "method not
+//!   them (ADR 4.5, see elicitation.rs). Anything else gets "method not
 //!   found": `fs` and `terminal` too, which a headless process doesn't
-//!   offer (ADR 67 in docs/adr).
+//!   offer (ADR 2.7 in docs/adr).
 //! - While a `session/load`, headless or the editor's, replays a session's
-//!   history (ADR 57): if brnr has a transcript of the session, the replayed
+//!   history (ADR 5.6): if brnr has a transcript of the session, the replayed
 //!   updates are neither recorded nor turned into events, as the transcript
 //!   has them already, but what they say the session is now (its title,
 //!   mode, config options and commands) is kept. A session open in the
@@ -56,23 +56,23 @@
 //!   transcript has.
 //! - The editor's `session/load` or `session/resume` of a session another
 //!   process holds is answered by the host with an error, naming the process
-//!   and how to release it, and never reaches the agent (ADR 3); with
-//!   `shared_sessions` in the profile (ADR 42) it goes through, and the
+//!   and how to release it, and never reaches the agent (ADR 3.9); with
+//!   `shared_sessions` in the profile (ADR 3.10) it goes through, and the
 //!   session is served shared (see `Hold`).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
-//! deleted the session, the host records a `session_deleted` (ADR 63).
+//! deleted the session, the host records a `session_deleted` (ADR 8.1).
 //!
 //! The editor's own steers (`_session/steering`) pass through untouched but
 //! for their ids, as every request does; once the agent has taken one into
 //! the turn, it is a `user_message` by the editor.
 //!
 //! Lines are read as json.rs reads them: any JSON text, a lone surrogate as
-//! U+FFFD. One that isn't JSON at all passes through untracked (ADR 26 in
+//! U+FFFD. One that isn't JSON at all passes through untracked (ADR 2.5 in
 //! docs/adr): an editor's answer to an id the host doesn't know goes on to
 //! the agent, but for its late answers to requests the host answered itself.
 //! What the host acts on in a line is read with ACP's schema types, and
-//! what they don't take as far as the host can (ADR 43, see schema.rs).
+//! what they don't take as far as the host can (ADR 2.3, see schema.rs).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -104,7 +104,7 @@ pub(super) struct Prompt {
     id: String,
     injected: bool,
     /// The `m<n>` ids of the messages its turn carries: the one the host sent
-    /// as the prompt, if it did, and those steered into it (ADR 17).
+    /// as the prompt, if it did, and those steered into it (ADR 4.1).
     messages: Vec<String>,
 }
 
@@ -126,7 +126,7 @@ impl Held {
     }
 }
 
-/// A `session/load`'s replay of history, while it lasts (ADR 57).
+/// A `session/load`'s replay of history, while it lasts (ADR 5.6).
 pub(super) struct Replay {
     /// Recorded and made into events: brnr has no transcript of the session.
     pub(super) record: bool,
@@ -154,7 +154,7 @@ pub(super) struct Session {
     pub(super) id: String,
     pub(super) cwd: PathBuf,
     /// The session it was forked from, when it opened here as a fork
-    /// (ADR 16); not known for one opened any other way.
+    /// (ADR 3.12); not known for one opened any other way.
     pub(super) forked_from: Option<String>,
     /// Prompts sent and not yet answered, in the order they were sent.
     /// Non-empty means a turn is running.
@@ -170,7 +170,7 @@ pub(super) struct Session {
     pub(super) steering: VecDeque<Held>,
     /// The `turn_ended` of a turn that ended while steers into it were
     /// unanswered: which messages it carried isn't known until the agent
-    /// has answered them all (or they are dropped), so it waits (ADR 56).
+    /// has answered them all (or they are dropped), so it waits (ADR 4.1).
     pub(super) ended: Option<Value>,
     /// Context to append to the next prompt.
     pub(super) context: Vec<String>,
@@ -194,7 +194,7 @@ pub(super) struct Session {
     /// How the last turn ended: `{stop_reason, error, tokens}`, as
     /// `turn_ended`.
     pub(super) last_turn: Option<Value>,
-    /// How this process holds it (ADR 3).
+    /// How this process holds it (ADR 3.9).
     pub(super) hold: Hold,
     /// A close asked for, until the agent has closed it: meanwhile the
     /// session takes no more requests (see `close`).
@@ -205,7 +205,7 @@ pub(super) struct Session {
     pub(super) opening: bool,
 }
 
-/// How a process holds a session it serves (ADR 3).
+/// How a process holds a session it serves (ADR 3.9).
 pub(super) enum Hold {
     /// Its lock: the process is the session's owner, and keeps its
     /// transcript. `None` once it has let go, as the process exits.
@@ -214,10 +214,10 @@ pub(super) enum Hold {
     /// process holds it can't be known. A headless process never serves such
     /// a session (P4: the client refuses); an editor's passes it through and
     /// keeps its transcript all the same (P1, P4: the proxy passes on what it
-    /// can't be sure of), and `status` says it isn't locked (ADR 50).
+    /// can't be sure of), and `status` says it isn't locked (ADR 3.9).
     Unlocked(String),
     /// Process `pid` held the lock when the editor loaded the session here
-    /// (`shared_sessions`, ADR 42): that one keeps the transcript, and this
+    /// (`shared_sessions`, ADR 3.10): that one keeps the transcript, and this
     /// one records the session in its host log only.
     Shared(u32),
 }
@@ -225,7 +225,7 @@ pub(super) enum Hold {
 /// A session closed here, whose lock goes, and whose close is answered,
 /// once the logger has written its records, `session_closed` last, or at
 /// `until`, whichever comes first: a process that resumes it next appends
-/// after them (ADR 48). The event loop never waits for it (P1).
+/// after them (ADR 5.5). The event loop never waits for it (P1).
 pub(super) struct LettingGo {
     session: String,
     until: Instant,
@@ -329,7 +329,7 @@ impl Session {
     }
 
     /// Why this process isn't the session's owner, if it isn't, to follow
-    /// "which": a headless process doesn't serve such a session (ADR 50).
+    /// "which": a headless process doesn't serve such a session (ADR 3.9).
     pub(super) fn not_owned(&self) -> Option<String> {
         match &self.hold {
             Hold::Owner(_) => None,
@@ -368,7 +368,7 @@ pub(super) enum Pending {
     Close {
         session: String,
     },
-    /// The editor's `session/delete`, passed through as it is (ADR 63).
+    /// The editor's `session/delete`, passed through as it is (ADR 8.1).
     Delete {
         session: String,
     },
@@ -384,7 +384,7 @@ pub(super) enum Pending {
 
 /// A request to the agent it hasn't answered: who asked, so who its answer
 /// is for, and the session it is about. Its id on the agent's side is the
-/// host's own, whoever asked (ADR 61).
+/// host's own, whoever asked (ADR 2.4).
 pub(super) struct ClientRequest {
     pub(super) by: Requester,
     pub(super) session: Option<String>,
@@ -415,12 +415,12 @@ pub(super) struct AgentRequest {
 }
 
 impl AgentRequest {
-    /// A `session/request_permission` (ADR 27).
+    /// A `session/request_permission` (ADR 4.5).
     pub(super) fn is_permission(&self) -> bool {
         self.method == "session/request_permission"
     }
 
-    /// An `elicitation/create` (ADR 68).
+    /// An `elicitation/create` (ADR 4.5).
     pub(super) fn is_elicitation(&self) -> bool {
         self.method == "elicitation/create"
     }
@@ -449,7 +449,7 @@ impl AgentRequest {
     }
 }
 
-/// How a permission request is answered from outside (ADR 63): `allow` or
+/// How a permission request is answered from outside (ADR 8.1): `allow` or
 /// `reject`, once or, with `always`, always.
 #[derive(Clone, Copy)]
 pub(super) enum Choice {
@@ -461,7 +461,7 @@ impl Host {
     // ---- editor → agent ------------------------------------------------
 
     /// Splits what the editor writes into lines. One longer than
-    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 51).
+    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 10.3).
     pub(super) fn editor_bytes(&mut self, mut bytes: &[u8]) {
         if self.editor_long {
             let Some(i) = bytes.iter().position(|&b| b == b'\n') else {
@@ -497,7 +497,7 @@ impl Host {
         }
     }
 
-    /// A line past `LINE_BYTES` from `from` (ADR 51): with an editor it goes
+    /// A line past `LINE_BYTES` from `from` (ADR 10.3): with an editor it goes
     /// on unread, headless (from the agent) it is dropped.
     fn too_long(&mut self, from: &str) {
         let relayed = from == "editor" || self.link.is_some();
@@ -553,7 +553,7 @@ impl Host {
                     }
                     // It goes with an id of the host's, which nobody else's
                     // can be: the editor's as it wrote it comes back on the
-                    // answer (ADR 61). Only the id changes in the line.
+                    // answer (ADR 2.4). Only the id changes in the line.
                     let wire = self.wire_id();
                     let key = id_key(&wire);
                     let spans = json::members(&line, "id");
@@ -600,7 +600,7 @@ impl Host {
                     }
                     // Otherwise it answers a request the host couldn't read,
                     // or none: it goes on, and the agent ignores an answer to
-                    // something it never asked (ADR 26 in docs/adr).
+                    // something it never asked (ADR 2.5 in docs/adr).
                 }
                 _ => {}
             }
@@ -611,8 +611,8 @@ impl Host {
         // answers is still on record, and a session/fork in its source's
         // file, as `brnr session fork`'s does; either goes in the session's
         // file too once the response names it. What is recorded keeps the
-        // MCP servers' secrets out (ADR 25 in docs/adr); the agent gets the
-        // line as it came, but for a request's id (ADR 61) and the named
+        // MCP servers' secrets out (ADR 9.1 in docs/adr); the agent gets the
+        // line as it came, but for a request's id (ADR 2.4) and the named
         // changes.
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
@@ -630,7 +630,7 @@ impl Host {
     /// id the host gave a request on the agent's side, which the editor
     /// never had, isn't one of its own to cancel: nothing goes, and the host
     /// log says so. Any other goes as it came (`None`): the id of a request
-    /// the host couldn't read (ADR 26), or of none.
+    /// the host couldn't read (ADR 2.5), or of none.
     fn editor_cancel(&mut self, msg: &Map<String, Value>) -> Option<Vec<Value>> {
         let named = msg.get("params")?.get("requestId")?;
         let key = id_key(named);
@@ -679,7 +679,7 @@ impl Host {
                 return self.drop_capabilities(msg);
             }
             ("session/new" | "session/fork", _) => {
-                // A fork's source is the session it names (ADR 16).
+                // A fork's source is the session it names (ADR 3.12).
                 let forked_from = session.clone().filter(|_| method == "session/fork");
                 let pending =
                     Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from };
@@ -717,8 +717,8 @@ impl Host {
 
     /// The editor's `session/load` or `session/resume` of `session`: its lock
     /// is taken before the agent hears of it. One another process holds is
-    /// refused, saying how to release it (ADR 3), unless the profile shares
-    /// sessions (`shared_sessions`, ADR 42).
+    /// refused, saying how to release it (ADR 3.9), unless the profile shares
+    /// sessions (`shared_sessions`, ADR 3.10).
     fn attach(&mut self, session: &str) -> Result<(), String> {
         if self.find(session).is_some() || self.claimed.contains_key(session) {
             return Ok(()); // Ours already.
@@ -736,7 +736,7 @@ impl Host {
     /// The editor's `session/load` of `session`, whose history the agent
     /// replays before it answers: recorded only if brnr has no transcript of
     /// the session, in any folder, as a headless start's and a bridge's are
-    /// (ADR 57): an events file holding only openings, which a load that
+    /// (ADR 5.6): an events file holding only openings, which a load that
     /// failed leaves, is none ([`log::has_records`]). One not open here
     /// opens now, so that the replay is the session's; one open here has its
     /// transcript already, from this process, whether or not the logger has
@@ -775,7 +775,7 @@ impl Host {
     /// The agent's answer to one of the editor's loads of `session`, a
     /// failure too. The replay ends with the last of the loads it covers:
     /// with its `history` event if any of them succeeded; if none did, a
-    /// session opened for them closes again (ADR 57).
+    /// session opened for them closes again (ADR 5.6).
     fn load_answered(&mut self, session: &str, cwd: Option<&str>, result: Option<&Value>) {
         let i = match (self.find(session), result) {
             (Some(i), _) => i,
@@ -816,7 +816,7 @@ impl Host {
 
     /// A load of `session`, closed meanwhile, failed. Its replay goes with
     /// the last of its loads; if one of them succeeded before the close,
-    /// its `history` says so, with the session closed (ADR 57).
+    /// its `history` says so, with the session closed (ADR 5.6).
     fn closed_load_failed(&mut self, session: &str) {
         let Some(replay) = self.closed_loads.get_mut(session) else { return };
         replay.unanswered = replay.unanswered.saturating_sub(1);
@@ -849,7 +849,7 @@ impl Host {
     /// Removes the editor's `fs` and `terminal` client capabilities from its
     /// `initialize`, as ACP v2 does, but those the profile names
     /// (`client_capabilities`), and none in strict mode: stable ACP v1 has
-    /// them (ADR 67 in docs/adr). The host log says what it dropped.
+    /// them (ADR 2.7 in docs/adr). The host log says what it dropped.
     fn drop_capabilities(&mut self, msg: &mut Map<String, Value>) -> Option<Vec<u8>> {
         if self.strict {
             return None;
@@ -957,7 +957,7 @@ impl Host {
                     replay.updates += u64::from(update);
                     if !replay.record {
                         // History the transcript has already. An editor
-                        // still gets it, as the agent sent it (ADR 2).
+                        // still gets it, as the agent sent it (ADR 3.1).
                         if update {
                             self.replayed_state(i, &msg["params"]["update"]);
                         }
@@ -968,7 +968,7 @@ impl Host {
                     session.as_deref().and_then(|s| self.closed_loads.get_mut(s))
                 {
                     // Its session closed while it was loading: counted, with
-                    // no files to record it in (ADR 57).
+                    // no files to record it in (ADR 5.6).
                     replay.updates += u64::from(update);
                 }
                 if update && let Some(session) = &session {
@@ -1001,7 +1001,7 @@ impl Host {
                     s.turn_started = None;
                     // Its tool calls end with it, however it ended: one the
                     // agent left unfinished, cancelled or failed, isn't
-                    // running now (ADR 34). Nor are those a replay found.
+                    // running now (ADR 8.2). Nor are those a replay found.
                     s.state.tools.clear();
                     if let Some(replay) = &mut s.replay {
                         replay.tools.clear();
@@ -1013,9 +1013,9 @@ impl Host {
             session = Some(sid.clone());
             turn = Some((sid, injected, messages));
         }
-        // Whose answer it is (ADR 61): the editor's goes to it with its id as
+        // Whose answer it is (ADR 2.4): the editor's goes to it with its id as
         // it wrote it, and nothing else in the line changed. One to an id the
-        // host never sent (a request in a line it couldn't read, ADR 26) goes
+        // host never sent (a request in a line it couldn't read, ADR 2.5) goes
         // on as it came.
         let (ours, forward) = match request.map(|r| r.by) {
             Some(Requester::Editor { raw, .. }) => {
@@ -1079,7 +1079,7 @@ impl Host {
                 }
                 if let Some(request) = request {
                     // A copy, in the session's file, of what the host log has with its
-                    // position: none here (ADR 69).
+                    // position: none here (ADR 10.2).
                     self.sink.msg(session.as_deref(), dir, &request, None);
                 }
                 session
@@ -1160,7 +1160,7 @@ impl Host {
     }
 
     /// Keeps a URL elicitation's id, so the agent's `elicitation/complete`
-    /// for it can be told to whom it belonged (ADR 68). Up to
+    /// for it can be told to whom it belonged (ADR 4.5). Up to
     /// [`URL_ELICITATIONS`]: past that, an agent that never completes them
     /// would have the host keep them without limit, and the completion of
     /// one not kept is told without its handle.
@@ -1174,7 +1174,7 @@ impl Host {
         }
     }
 
-    /// The agent's `elicitation/complete`: a URL's flow is done (ADR 68),
+    /// The agent's `elicitation/complete`: a URL's flow is done (ADR 4.5),
     /// as `elicitation_completed`. It names the elicitation, not a session;
     /// the session is the request's, if brnr kept it.
     fn elicitation_complete(&mut self, msg: &Map<String, Value>) -> Option<Value> {
@@ -1226,7 +1226,7 @@ impl Host {
                 self.emit(event);
             }
             // Held as a permission request is, until someone answers it
-            // or the same timeout cancels it (ADR 68).
+            // or the same timeout cancels it (ADR 4.5).
             "elicitation/create" => {
                 req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
                 let event = elicitation::request_event(&req, "headless");
@@ -1241,7 +1241,7 @@ impl Host {
     }
 
     /// Answers permission request `handle` with the option of one kind
-    /// (ADR 63): `allow_once`, `allow_always` with `always`, `reject_once`
+    /// (ADR 8.1): `allow_once`, `allow_always` with `always`, `reject_once`
     /// or `reject_always`. No other kind stands in for it, and a reject is
     /// never `cancelled`: without that kind, or with two options of it, it
     /// fails, listing the options (P4). `option` names the option instead:
@@ -1325,7 +1325,7 @@ impl Host {
 
     /// Answers elicitation `handle` with `action`, ACP's `accept` (its
     /// `content` checked against the form's schema first, see
-    /// elicitation.rs), `decline` or `cancel`, by `by` (ADR 68). Nothing is
+    /// elicitation.rs), `decline` or `cancel`, by `by` (ADR 4.5). Nothing is
     /// sent for content that doesn't fit (P4). On an editor's session,
     /// where this is the experimental `elicitation` (see experimental.rs),
     /// the request is then withdrawn from the editor.
@@ -1364,7 +1364,7 @@ impl Host {
 
     /// ACP: a client that cancels a turn answers that session's pending
     /// permission requests with `cancelled`, `by` `cancel` or `timeout`. Its
-    /// pending elicitations are answered `cancel` the same way (ADR 68):
+    /// pending elicitations are answered `cancel` the same way (ADR 4.5):
     /// the turn they were asked in is gone. If the editor is showing one,
     /// it is withdrawn, and its late answer dropped (see experimental.rs).
     fn cancel_requests(&mut self, session: &str, by: &str) {
@@ -1413,7 +1413,7 @@ impl Host {
             SessionUpdate::AgentMessageChunk(chunk) => ("agent_message", chunk),
             SessionUpdate::AgentThoughtChunk(chunk) => ("agent_thought", chunk),
             // Live, a user's message is the prompt's; replayed, only the
-            // agent has it (ADR 57).
+            // agent has it (ADR 5.6).
             SessionUpdate::UserMessageChunk(chunk) if self.sessions[i].replay.is_some() => {
                 ("user_message", chunk)
             }
@@ -1482,8 +1482,8 @@ impl Host {
     }
 
     /// Context session `i` held for its next prompt, which won't come: each
-    /// is a `context_dropped` event, `by` `close`, `exit` or `queue` (ADR 20;
-    /// context has no message id, ADR 17). Returns the texts.
+    /// is a `context_dropped` event, `by` `close`, `exit` or `queue` (ADR 5.2;
+    /// context has no message id, ADR 4.1). Returns the texts.
     pub(super) fn drop_context(&mut self, i: usize, by: &str) -> Vec<String> {
         let context = take(&mut self.sessions[i].context);
         let session = self.sessions[i].id.clone();
@@ -1521,7 +1521,7 @@ impl Host {
 
     /// Messages taken from session `i`'s held ones, never to be sent: each is
     /// a `message_dropped` event, `by` `cancel`, `queue`, `close` or `exit`
-    /// (ADR 20), or `steer` for a steer the agent refused. Returns them as
+    /// (ADR 5.2), or `steer` for a steer the agent refused. Returns them as
     /// `{message, text}`, for a response.
     pub(super) fn dropped(&mut self, i: usize, held: Vec<Held>, by: &str) -> Vec<Value> {
         let session = self.sessions[i].id.clone();
@@ -1542,7 +1542,7 @@ impl Host {
     /// Closes session `i`, `by` `close` (`brnr session close`, `--take-over`)
     /// or `idle`: a running turn is cancelled first, its pending approvals
     /// answered `cancelled`, and `session/close` goes once it has ended
-    /// (ADR 16). `peer` hears when the agent has closed it (peer 0: nobody).
+    /// (ADR 3.12). `peer` hears when the agent has closed it (peer 0: nobody).
     pub(super) fn close(&mut self, i: usize, peer: u64, req_id: Option<Value>, by: &'static str) {
         // Dropped now: held until the agent answers, they would go out as the
         // running turn ends.
@@ -1572,7 +1572,7 @@ impl Host {
     }
 
     /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
-    /// what it still holds is dropped, then `session_closed` (ADR 20). Its
+    /// what it still holds is dropped, then `session_closed` (ADR 5.2). Its
     /// lock goes, and the peer in `answer` is answered with its reply, once
     /// that is written, LOG_FLUSH at most (see `LettingGo`).
     pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
@@ -1580,11 +1580,11 @@ impl Host {
         self.drop_all(i, "close");
         let Session { id: session, hold, replay, .. } = self.sessions.remove(i);
         self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
-        // A load of it still to be answered may open it again (ADR 57).
+        // A load of it still to be answered may open it again (ADR 5.6).
         if let Some(replay) = replay.filter(|r| r.unanswered > 0 && self.editor_attached()) {
             self.closed_loads.insert(session.clone(), replay);
         }
-        // After its last record, so nothing of it is lost (ADR 22).
+        // After its last record, so nothing of it is lost (ADR 5.1).
         self.sink.close_session(&session);
         self.let_go(session, hold, answer);
     }
@@ -1592,8 +1592,8 @@ impl Host {
     /// Lets go of `session`, gone from `sessions`, and answers the peer in
     /// `answer` with its reply, once the logger has written what this
     /// process recorded of it, LOG_FLUSH at most (see `LettingGo`): a close's
-    /// records, or a failed open's (a load's replay, ADR 57), come before
-    /// the next process's (ADR 48).
+    /// records, or a failed open's (a load's replay, ADR 5.6), come before
+    /// the next process's (ADR 5.5).
     pub(super) fn let_go(&mut self, session: String, hold: Hold, answer: Option<(u64, Value)>) {
         let lock = match hold {
             Hold::Owner(lock) => lock,
@@ -1616,7 +1616,7 @@ impl Host {
     }
 
     /// Closed sessions whose time to be written is up are let go of as they
-    /// are; past that, records of theirs can come after a resume's (ADR 48).
+    /// are; past that, records of theirs can come after a resume's (ADR 5.5).
     pub(super) fn fire_letting_go(&mut self, now: Instant) {
         self.letting_go.retain(|l| {
             if now < l.until {
@@ -1645,7 +1645,7 @@ impl Host {
     /// `session`'s lock, if it closed here and isn't let go of yet: opened
     /// here again, it is this process's still, and its records come after
     /// the close's from the same logger. The close is answered as before,
-    /// once its records are written (ADR 48).
+    /// once its records are written (ADR 5.5).
     fn reclaim(&mut self, session: &str) -> Option<Lock> {
         self.letting_go.iter().filter(|l| l.session == session).find_map(LettingGo::reclaim)
     }
@@ -1657,13 +1657,13 @@ impl Host {
 
     /// The sessions closed here whose locks are still this process's, until
     /// their records are written: `status` says so, so that brnr can tell
-    /// one closing from one opening (ADR 48).
+    /// one closing from one opening (ADR 5.5).
     pub(super) fn closing(&self) -> Vec<&str> {
         self.letting_go.iter().filter(|l| l.locked()).map(|l| l.session.as_str()).collect()
     }
 
     /// The agent has deleted `session`, as the editor asked: a
-    /// `session_deleted`, and brnr's transcript stays (ADR 63). One open here
+    /// `session_deleted`, and brnr's transcript stays (ADR 8.1). One open here
     /// is gone from the agent, so it closes, as if the editor had closed it.
     /// One no process has open has the event appended to its transcripts
     /// too; one another process holds has it in the host log only, as that
@@ -1758,7 +1758,7 @@ impl Host {
     }
 
     /// A new id for a request to the agent, `brnr-<n>`: the host gives every
-    /// request its own, the editor's too, so no two can be confused (ADR 61).
+    /// request its own, the editor's too, so no two can be confused (ADR 2.4).
     pub(super) fn wire_id(&mut self) -> Value {
         self.next_id += 1;
         Value::String(format!("brnr-{}", self.next_id))
@@ -1921,12 +1921,12 @@ impl Host {
     }
 
     /// Answers permission requests nobody answered within
-    /// `response_timeout` with their `reject_once` option (ADR 63). One
+    /// `response_timeout` with their `reject_once` option (ADR 8.1). One
     /// without one (or with two: which, brnr can't say) has its turn
     /// cancelled, which answers it and every request pending in its session
     /// `cancelled`, as ACP requires. Never `reject_always`, which nobody
     /// chose, and never an allow. An elicitation nobody answered is
-    /// answered `cancel`, which ACP has for no choice made (ADR 68): never
+    /// answered `cancel`, which ACP has for no choice made (ADR 4.5): never
     /// `decline`, which is the user's no, nor `accept`.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
         if self.editor_attached() {
@@ -1996,7 +1996,7 @@ impl Host {
     }
 
     /// Shows the editor an injected message, titled `title`, in the form its
-    /// profile's `echo_as` names (ADR 70): by default a completed tool call
+    /// profile's `echo_as` names (ADR 7.2): by default a completed tool call
     /// (`echo`), or one `user_message_chunk` per block, untitled, for an
     /// editor that renders those out of turn.
     pub(super) fn echo_message(&mut self, session: &str, title: &str, blocks: &[Value]) {
@@ -2015,7 +2015,7 @@ impl Host {
     /// Shows the editor brnr's text as a completed tool call: the one update
     /// an editor renders as a block of its own wherever the turn is. A
     /// `user_message_chunk` out of turn is not rendered by every editor (see
-    /// ADR 5 in docs/adr). brnr's notes to the editor take this form whatever
+    /// ADR 7.2 in docs/adr). brnr's notes to the editor take this form whatever
     /// `echo_as` says, as they are brnr's words, not the user's (see
     /// experimental.rs).
     pub(super) fn echo(&mut self, session: &str, title: &str, blocks: &[Value]) {
@@ -2057,8 +2057,8 @@ impl Host {
     }
 
     /// A line of brnr's own on the editor's stdout, which is the agent's
-    /// (ADR 2): none once the agent's stdout has ended, after which the
-    /// editor has seen it end (ADR 62). The host log says what wasn't sent
+    /// (ADR 3.1): none once the agent's stdout has ended, after which the
+    /// editor has seen it end (ADR 2.6). The host log says what wasn't sent
     /// (P3).
     fn write_editor(&mut self, session: Option<&str>, msg: &Value) {
         if !self.stdout_open {
@@ -2091,7 +2091,7 @@ impl Host {
     }
 
     /// As [`Self::open_session`], for a session forked from `forked_from`,
-    /// which its transcript's `session-opened` and its status name (ADR 16).
+    /// which its transcript's `session-opened` and its status name (ADR 3.12).
     pub(super) fn open_fork(
         &mut self,
         session: &str,
@@ -2134,7 +2134,7 @@ impl Host {
             agent_message_id: None,
             state: SessionState::default(),
             turn_started: None,
-            // One a load still to be answered had, closed under it (ADR 57).
+            // One a load still to be answered had, closed under it (ADR 5.6).
             replay: self.closed_loads.remove(session),
             idle_since: None,
             idle_done: false,
@@ -2150,7 +2150,7 @@ impl Host {
     /// Whether brnr has a transcript of `session`, in any folder, counting
     /// what this process has recorded of it that the disk may not have yet;
     /// an events file holding only openings, which a load that failed
-    /// leaves, is none (ADR 57).
+    /// leaves, is none (ADR 5.6).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
         self.sink.recorded(session) || log::transcripts(session).iter().any(|p| log::has_records(p))
     }
@@ -2158,7 +2158,7 @@ impl Host {
     /// `session`'s lock, for a session this process is to serve. One another
     /// process holds is shared, as `attach` lets it be; one that can't be
     /// locked is `Unlocked`, and the host log says why. Whoever opened it
-    /// decides what becomes of either (ADR 3, ADR 50).
+    /// decides what becomes of either (ADR 3.9).
     fn take_lock(&mut self, session: &str) -> Hold {
         if let Some(lock) = self.reclaim(session) {
             return Hold::Owner(Some(lock));
@@ -2177,7 +2177,7 @@ impl Host {
 
     /// Takes the lock of `session`, which a headless start resumes, before
     /// the agent is asked for it: one another process holds, or one that
-    /// can't be locked, can't be served here (ADR 3, ADR 50).
+    /// can't be locked, can't be served here (ADR 3.9).
     pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
         let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
         let lock = lock.map_err(|err| match err {
@@ -2191,7 +2191,7 @@ impl Host {
 
 /// What the editor is told of a session process `pid` holds: how to
 /// release it. One started with another runtime directory is reached
-/// through that (ADR 65), where its metadata is, read only if the
+/// through that (ADR 3.9), where its metadata is, read only if the
 /// directory is private, as this one's must be; the directory is said
 /// whether an editor holds the session or not.
 fn held_elsewhere(session: &str, pid: u32) -> String {
@@ -2240,8 +2240,8 @@ pub(super) fn prompt_text(blocks: Option<&Value>) -> String {
     parts.join("\n")
 }
 
-/// The tokens a `session/prompt` answer says its turn used (ADR 71): its
-/// `usage`, unstable ACP and so read as a `Value` (ADR 43), as `{total,
+/// The tokens a `session/prompt` answer says its turn used (ADR 4.4): its
+/// `usage`, unstable ACP and so read as a `Value` (ADR 2.3), as `{total,
 /// input, output, thought, cached_read, cached_write}`. Each is the agent's
 /// count, or null where it gave none that is a count (a `u64`); all of it is
 /// null with no `usage` object. Nothing is worked out from the rest (P4).

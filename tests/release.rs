@@ -1,7 +1,7 @@
 //! A release's notes are its section of CHANGELOG.md (Keep a Changelog
 //! 1.1.0), which `release.sh changelog` prints for the release workflow,
 //! `release.sh tag` checks for and `release.sh <bump>` names, and a release
-//! takes in its release candidates' (ADR 40).
+//! takes in its release candidates' (ADR 11.4).
 
 mod common;
 
@@ -96,7 +96,7 @@ also wrapped.
 ";
 
 #[test]
-fn adr_0040_a_releases_notes_are_its_changelog_section() {
+fn adr_0011_a_releases_notes_are_its_changelog_section() {
     let env = scratch("notes", CHANGELOG);
     let out = changelog(&env.dir, &["1.1.0"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -112,7 +112,7 @@ fn adr_0040_a_releases_notes_are_its_changelog_section() {
 }
 
 #[test]
-fn adr_0040_a_version_without_a_section_has_no_notes() {
+fn adr_0011_a_version_without_a_section_has_no_notes() {
     let empty = CHANGELOG.replace("### Added\n\n- Something new.\n\n## [1.1.0]", "## [1.1.0]");
     let env = scratch("no-notes", &empty);
     // 1.1 isn't 1.1.0, nor 1.1.00 a prefix of it, and an empty section is none.
@@ -129,7 +129,7 @@ fn adr_0040_a_version_without_a_section_has_no_notes() {
 }
 
 #[test]
-fn adr_0040_a_release_names_unreleased_and_moves_its_links() {
+fn adr_0011_a_release_names_unreleased_and_moves_its_links() {
     let env = scratch("named", CHANGELOG);
     let out = changelog(&env.dir, &["--named", "1.2.0", "2026-02-03"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -156,7 +156,7 @@ fn adr_0040_a_release_names_unreleased_and_moves_its_links() {
 /// The version Cargo.toml has, on main or a release branch, has its notes,
 /// so a release pull request without them fails before it is tagged.
 #[test]
-fn adr_0040_the_version_being_built_has_its_notes() {
+fn adr_0011_the_version_being_built_has_its_notes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = changelog(root, &[env!("CARGO_PKG_VERSION")]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -181,7 +181,7 @@ fn adr_0040_the_version_being_built_has_its_notes() {
 }
 
 #[test]
-fn adr_0040_a_version_comes_after_cargo_tomls() {
+fn adr_0011_a_version_comes_after_cargo_tomls() {
     let env = scratch("next", CHANGELOG);
     let next = |current: &str, wanted: &str| {
         cargo_toml(&env.dir, current);
@@ -241,7 +241,7 @@ fn adr_0040_a_version_comes_after_cargo_tomls() {
 }
 
 #[test]
-fn adr_0040_a_release_takes_in_its_release_candidates() {
+fn adr_0011_a_release_takes_in_its_release_candidates() {
     let text = "# Changelog
 
 ## [Unreleased]
@@ -341,7 +341,7 @@ fn adr_0040_a_release_takes_in_its_release_candidates() {
 }
 
 #[test]
-fn adr_0040_a_releases_commits_start_from_the_last_release() {
+fn adr_0011_a_releases_commits_start_from_the_last_release() {
     let env = scratch("commits", "");
     let dir = &env.dir;
     fs::create_dir(dir.join("adapters")).unwrap();

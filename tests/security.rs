@@ -1,7 +1,7 @@
 //! The claims of docs/threat-model.md that no other test checks: who can
 //! reach a process and its files (P13), what the agent's text can't do
-//! (P8), how approvals and elicitations end unanswered (ADR 27, 63, 68), what
-//! is recorded of secrets (ADR 25), and what `brnr acp` passes unchanged
+//! (P8), how approvals and elicitations end unanswered (ADRs 4.5 and 8.1), what
+//! is recorded of secrets (ADR 9.1), and what `brnr acp` passes unchanged
 //! (P1). Against the fake agent (fake_agent.py), each test in its own
 //! directories.
 
@@ -69,7 +69,7 @@ fn what_brnr_makes_is_private_whatever_the_umask() {
     assert_eq!(mode(&run.join(format!("{}.sock", env.pid()))), 0o600);
     assert_eq!(mode(&env.dir.join("home/sessions")), 0o700);
     assert_eq!(mode(&env.dir.join("home/sessions/sess-1.lock")), 0o600);
-    // The transcripts are the logger thread's to write (ADR 48).
+    // The transcripts are the logger thread's to write (ADR 5.5).
     env.ok(&["event", "log", "sess-1"]);
     let home = tree(&env.dir.join("home"));
     assert!(home.len() >= 7, "{home:?}");
@@ -165,7 +165,7 @@ fn lock_failed(env: &Env) -> bool {
 
 /// The session locks' directory is held to the runtime directory's terms,
 /// and a lock that is a symlink is never followed. Both a resume and a new
-/// headless session are refused when their lock can't be taken (ADR 50),
+/// headless session are refused when their lock can't be taken (ADR 3.9),
 /// and the host log says why the new session failed.
 #[test]
 fn adr_0003_session_locks_are_private_and_never_followed() {
@@ -274,7 +274,7 @@ fn the_process_listens_on_no_network() {
     env.stop();
 }
 
-// ---- transcripts (P13, ADR 59) ----------------------------------------
+// ---- transcripts (P13, ADR 9.3) ----------------------------------------
 
 /// Session `old-1`'s project folder, once a process has served it and gone.
 fn served_once(env: &Env) -> PathBuf {
@@ -300,7 +300,7 @@ fn made_private(env: &Env) -> Vec<(PathBuf, String)> {
 /// beneath private parents or parents anyone can search, and the host log
 /// says what was; what was private already is left as it was.
 #[test]
-fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() {
+fn adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written() {
     for (name, parents) in [("s-reopen", 0o700), ("s-reopen-open", 0o755)] {
         let env = Env::new(name);
         let project = served_once(&env);
@@ -311,7 +311,7 @@ fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() 
         chmod(&events, 0o644);
         chmod(&raw, 0o644);
         env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
-        env.ok(&["event", "log", "old-1"]); // Once the transcript is written (ADR 48).
+        env.ok(&["event", "log", "old-1"]); // Once the transcript is written (ADR 5.5).
         assert!(fs::read_to_string(&events).unwrap().contains("private-token"), "{name}");
         for path in tree(&home) {
             let want = if path.is_dir() { 0o700 } else { 0o600 };
@@ -330,7 +330,7 @@ fn adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written() 
 /// without it, and the host log says why. A state directory that is one is
 /// refused before an agent's session starts.
 #[test]
-fn adr_0059_a_symlinked_transcript_is_never_followed() {
+fn adr_0009_a_symlinked_transcript_is_never_followed() {
     let env = Env::new("s-loglink");
     let project = served_once(&env);
     let victim = env.dir.join("victim");
@@ -371,10 +371,10 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     let env = Env::new("s-climb").agent("SESSION_ID", id);
     env.start(&["--prompt", "hello"]);
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
-    // As P8 has it (ADR 53): anything but lowercase ASCII letters, digits,
+    // As P8 has it (ADR 9.2): anything but lowercase ASCII letters, digits,
     // `-` and `_` is escaped, byte by byte.
     let file = "%2e%2e%2f%2e%2e%2f%2e%2e%2f%1b%5b2%4a%2fescape";
-    // The transcript is the logger thread's to write (ADR 48).
+    // The transcript is the logger thread's to write (ADR 5.5).
     env.ok(&["event", "log", id]);
     let project = fs::read_dir(env.dir.join("home/projects")).unwrap().next().unwrap().unwrap();
     assert!(project.path().join(format!("{file}.jsonl")).is_file(), "{:?}", tree(&project.path()));
@@ -392,9 +392,9 @@ fn a_session_id_cant_climb_out_of_its_folder() {
 /// each project folder under the state directory: not another session's,
 /// not the host logs, nothing a symlink in it points at (a project folder,
 /// or a file named like the transcript), and nothing an id that climbs
-/// could name (ADR 63).
+/// could name (ADR 8.1).
 #[test]
-fn adr_0063_purge_deletes_only_that_sessions_files() {
+fn adr_0008_purge_deletes_only_that_sessions_files() {
     let env = Env::new("s-purge");
     env.start(&["--wait", "--prompt", "reply first"]);
     env.stop();
@@ -432,7 +432,7 @@ fn adr_0063_purge_deletes_only_that_sessions_files() {
     assert!(folder.join("sess-2.jsonl").is_file());
 }
 
-// ---- approvals (ADR 27) ------------------------------------------------
+// ---- approvals (ADR 4.5) ------------------------------------------------
 
 /// What the agent was answered to permission request `request`, if it was.
 fn outcome(env: &Env, request: &str) -> Option<Value> {
@@ -445,7 +445,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 /// Without `response_timeout` a request waits for an answer for as long as
 /// it takes: nothing answers it for the user.
 #[test]
-fn adr_0027_an_unanswered_request_waits() {
+fn adr_0004_an_unanswered_request_waits() {
     let env = Env::new("s-waits");
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "perm execute"]);
@@ -463,7 +463,7 @@ fn adr_0027_an_unanswered_request_waits() {
 /// A timeout never allows: a request that offers nothing to reject with has
 /// its turn cancelled, and is answered `cancelled`.
 #[test]
-fn adr_0027_a_timeout_never_allows() {
+fn adr_0004_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
     env.write_config("[profiles.default.headless]\nresponse_timeout = 1\n");
     env.start(&[]);
@@ -480,7 +480,7 @@ fn adr_0027_a_timeout_never_allows() {
 /// `reject_always`, which nobody chose. `permission show` says which it
 /// will be, before it is.
 #[test]
-fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
+fn adr_0008_timeout_rejects_once_else_cancels_the_turn() {
     // Long enough for `permission show` to be asked before it fires.
     let timeout = "[profiles.default.headless]\nresponse_timeout = 3\n";
     let predicts = |env: &Env, how: &str| {
@@ -545,12 +545,12 @@ fn adr_0063_timeout_rejects_once_else_cancels_the_turn() {
     }
 }
 
-/// The response timeout covers elicitations too (ADR 68), and answers one
+/// The response timeout covers elicitations too (ADR 4.5), and answers one
 /// nobody did `cancel`: never `decline`, which is the user's no, nor
 /// `accept`. Its turn is not cancelled. `elicitation show` says so before it
 /// happens.
 #[test]
-fn adr_0068_a_timeout_cancels_never_accepts() {
+fn adr_0004_a_timeout_cancels_never_accepts() {
     let env = Env::new("s-eltimeout");
     env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
     env.start(&[]);
@@ -576,7 +576,7 @@ fn adr_0068_a_timeout_cancels_never_accepts() {
 
 /// A request is answered only as the request of its own session.
 #[test]
-fn adr_0027_a_request_is_answered_only_in_its_session() {
+fn adr_0004_a_request_is_answered_only_in_its_session() {
     let env = Env::new("s-othersession");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
@@ -590,12 +590,12 @@ fn adr_0027_a_request_is_answered_only_in_its_session() {
     env.stop();
 }
 
-// ---- secrets (ADR 25) --------------------------------------------------
+// ---- secrets (ADR 9.1) --------------------------------------------------
 
 /// The MCP servers' secrets of a resumed session, by `session/resume` or
 /// `session/load`, reach the agent, and nothing brnr records or shows.
 #[test]
-fn adr_0025_a_resumed_sessions_secrets_are_redacted() {
+fn adr_0009_a_resumed_sessions_secrets_are_redacted() {
     for (name, method, agent) in
         [("s-resume", "session/resume", None), ("s-load", "session/load", Some("NO_RESUME"))]
     {
@@ -629,12 +629,12 @@ env = { GITHUB_TOKEN = "resume-secret" }
     }
 }
 
-// ---- bridges (ADR 35) --------------------------------------------------
+// ---- bridges (ADR 5.7) --------------------------------------------------
 
 /// A started bridge gets the events, but not the raw ACP unless it asks for
 /// it by name; asked for, the MCP servers' secrets in it are redacted.
 #[test]
-fn adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks() {
+fn adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks() {
     let env = Env::new("s-bridge");
     let (events, acp) = (env.dir.join("events"), env.dir.join("acp"));
     env.write_config(&format!(
@@ -670,9 +670,9 @@ env = {{ GITHUB_TOKEN = "bridge-secret" }}
 /// answer has no event in it, for that peer or any other. What a watcher
 /// cut off catches up on, it reads from the transcript as the user, and only
 /// the events it subscribed to: one that didn't ask for `acp` gets no raw
-/// ACP, though the transcript has it (ADR 69).
+/// ACP, though the transcript has it (ADR 10.2).
 #[test]
-fn adr_0069_was_cut_off_says_where_never_what() {
+fn adr_0010_was_cut_off_says_where_never_what() {
     let env = Env::new("s-cutoff");
     env.start(&[]);
     let mut watch = env
@@ -752,10 +752,10 @@ fn lines_until(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Vec<String> 
 /// An editor's lines reach the agent byte for byte, whatever their spacing,
 /// key order and escapes, MCP secrets in them included, and with lines that
 /// aren't JSON among them, but for a request's id, which is the host's
-/// (ADR 61); the agent's reach the editor the same way, its answers with the
+/// (ADR 2.4); the agent's reach the editor the same way, its answers with the
 /// editor's ids. Only what brnr records has the secrets redacted.
 #[test]
-fn adr_0002_acp_passes_bytes_unchanged() {
+fn adr_0003_acp_passes_bytes_unchanged() {
     let env = Env::new("s-bytes");
     let raw = env.dir.join("raw");
     let mut editor = env
@@ -829,10 +829,10 @@ fn adr_0002_acp_passes_bytes_unchanged() {
 }
 
 /// A prompt's answer reaches the editor as the agent wrote it, its unstable
-/// `usage` included, byte for byte but for the id (ADR 61), while brnr's
-/// `turn_ended` has the counts it read in it (ADR 71).
+/// `usage` included, byte for byte but for the id (ADR 2.4), while brnr's
+/// `turn_ended` has the counts it read in it (ADR 4.4).
 #[test]
-fn adr_0071_the_editor_gets_the_answers_usage_as_the_agent_sent_it() {
+fn adr_0004_the_editor_gets_the_answers_usage_as_the_agent_sent_it() {
     let usage = r#"{ "outputTokens":2,"inputTokens" :10, "totalTokens": 12,"_meta":{"n":2.50,"e":"cafE9"}}"#
         .replace("E9", &escaped("00e9"));
     let env = Env::new("s-tokens").agent("PROMPT_USAGE", &usage);
@@ -877,7 +877,7 @@ fn adr_0071_the_editor_gets_the_answers_usage_as_the_agent_sent_it() {
 /// The agent's stderr comes out of `brnr acp`'s stderr as it was written,
 /// and `brnr acp` exits as the agent did.
 #[test]
-fn adr_0002_acp_passes_stderr_and_the_exit_status() {
+fn adr_0003_acp_passes_stderr_and_the_exit_status() {
     let text = "agent: \x1b[1mbold\x1b[0m caf\u{e9}";
     let env = Env::new("s-stderr").agent("STDERR", text).agent("EXIT", "3");
     let out = env.run_with_stdin(&["acp", "--", AGENT], b"");
@@ -973,7 +973,7 @@ fn ends(stream: &Receiver<Option<Vec<u8>>>) {
 /// An agent that closes its stdout and runs on: the editor sees its stdout
 /// end then, not when the agent exits, and the agent's stderr after it.
 #[test]
-fn adr_0062_the_editors_stdout_ends_with_the_agents() {
+fn adr_0002_the_editors_stdout_ends_with_the_agents() {
     let env = Env::new("s-out-eof");
     let agent = "os.close(1)\ngate(1)\nos.write(2, b'after stdout')\nsys.exit(5)\n";
     let mut editor = Editor::new(&env, agent);
@@ -989,7 +989,7 @@ fn adr_0062_the_editors_stdout_ends_with_the_agents() {
 /// is written, a line or not, and its last bytes once, whole, before the
 /// exit status.
 #[test]
-fn adr_0062_stderr_comes_as_it_is_written() {
+fn adr_0002_stderr_comes_as_it_is_written() {
     let env = Env::new("s-err-part");
     let agent = "os.write(2, b'login required: ')\ngate(1)\nos.write(2, b'ok')\nsys.exit(3)\n";
     let mut editor = Editor::new(&env, agent);
@@ -1006,7 +1006,7 @@ fn adr_0062_stderr_comes_as_it_is_written() {
 /// stderr has closed, and ends while the agent runs on. The editor's stderr,
 /// `brnr acp`'s own as well, ends as it exits.
 #[test]
-fn adr_0062_stdout_and_stderr_end_on_their_own() {
+fn adr_0002_stdout_and_stderr_end_on_their_own() {
     let env = Env::new("s-lifetimes");
     let agent = "os.write(2, b'a')\nos.close(2)\nos.write(1, b'line\\n')\ngate(1)\n\
                  os.close(1)\ngate(2)\nsys.exit(4)\n";

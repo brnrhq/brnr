@@ -1,8 +1,8 @@
-//! Elicitations (ADR 68 in docs/adr): the agent's `elicitation/create`, a
+//! Elicitations (ADR 4.5 in docs/adr): the agent's `elicitation/create`, a
 //! form or a URL for the user, held as a permission request is held and
 //! answered with ACP's own actions, `accept`, `decline` or `cancel`.
 //!
-//! What brnr reads of a request it reads with the schema's types (ADR 43),
+//! What brnr reads of a request it reads with the schema's types (ADR 2.3),
 //! and as far as it can when they don't take it (P4): the mode, the message,
 //! the scope (a session, a tool call in it, or a request outside any), a
 //! form's `requestedSchema` and a URL mode's `url` and `elicitationId`.
