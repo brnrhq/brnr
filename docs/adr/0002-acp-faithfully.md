@@ -231,12 +231,15 @@ the other's request (GHSA-84pw-hh9c-w2m8).
   requests` and `show`, and `elicitation requests` and `show`, list and
   show a request the host holds however deep it nests (#239).
   The commands that read events (`prompt send --wait`, `event wait`,
-  `event watch`, `event notify`, and what they catch up on from the
-  transcript, ADR 10.2) don't drop an event nested past 128 (#250), and
-  use and let go of each event, and each answer of the host's they read,
-  on a stack that takes it, as the host does, so one as deep as the host
-  holds is followed too (#252). With no such stack to be had, they say so
-  and exit non-zero (P3).
+  `event watch`, `event notify`, what they catch up on from the
+  transcript, ADR 10.2, and `event log`) don't drop an event nested past
+  128 (#250), and use and let go of each event, and each answer of the
+  host's they read, on a stack that takes it, as the host does, so one as
+  deep as the host holds is followed too (#252). With no such stack to be
+  had, they say so and exit non-zero (P3). What a transcript is, for
+  `session list`, `session resume` and `doctor` (ADR 5.1), is read from a
+  record that deep too, leaving out what nests past 128, which none of
+  them looks at.
 - A line past 32 MiB isn't read either: with an editor it goes on as it
   comes; headless it is dropped, and a `line_too_long` event says so
   (ADR 10.3).
@@ -504,7 +507,10 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_a_deep_request_is_shown`,
   `adr_0002_a_deep_request_is_followed`,
   `adr_0002_a_deep_request_is_notified`,
-  `adr_0002_a_deep_event_is_caught_up`.
+  `adr_0002_a_deep_event_is_caught_up`,
+  `adr_0002_a_deep_request_is_logged`;
+  [src/transcript.rs](../../src/transcript.rs):
+  `adr_0002_a_deep_record_is_read`.
 - 2.6: [tests/security.rs](../../tests/security.rs):
   `adr_0002_the_editors_stdout_ends_with_the_agents`,
   `adr_0002_stderr_comes_as_it_is_written`,

@@ -110,6 +110,12 @@ brnr's own conventions:
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
+- `brnr event log` shows a record nested deeper than 128, such as a deep
+  `permission_request`, as `event watch` showed it live, where it said the
+  line `isn't a record brnr can read, not shown`. `session list`, `session
+  resume` and `doctor` read such a record too, where they passed over it
+  for the one before: a session whose last record nests that deep is
+  listed as last active then (ADR 2.5, ADR 5.1).
 
 ## [0.9.0] - 2026-10-16
 
