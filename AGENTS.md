@@ -19,8 +19,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   pull apart (security, then reliability, then faithfulness to ACP), and
   the principles that serve them (P1 to P14, and P15 in
   [ADR 44](docs/adr/0044-brnr-never-phones-home.md)), which every decision
-  is measured against; [docs/adr](docs/adr/README.md) has the decisions. Read the ADRs a change touches before changing it. Modules say
-  which ADR they implement in their first doc line.
+  is measured against; [docs/adr](docs/adr/README.md) has the decisions.
+  Read the ADRs a change touches before changing it. Modules say which ADR
+  they implement in their first doc line.
 - A change in what brnr does follows an ADR or adds one (the format is in
   docs/adr/README.md). One that gives up a factor or breaks a principle
   says which, and why.
