@@ -37,6 +37,7 @@ mod flow;
 #[cfg(any(test, feature = "internals"))]
 pub(crate) mod fuzz;
 mod lines;
+mod outbound;
 mod requests;
 mod sessions;
 mod start;
@@ -73,13 +74,13 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{ClientRequest, Pending};
 use approvals::Approvals;
 use control::{Closer, Peer};
 pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use lines::{Lines, Long, Piece};
+use outbound::Outbound;
 use requests::Capabilities;
 use sessions::Sessions;
 use start::StartChannel;
@@ -376,16 +377,12 @@ struct Host {
 
     // ACP state; see acp.rs.
     sessions: Sessions,
-    /// Requests whose response creates or ends a session.
-    pending: HashMap<String, Pending>,
     /// Every unanswered request to the agent, by its id there, which is the
-    /// host's whoever asked (ADR 2.4): who asked, and the session it is about.
-    client_requests: HashMap<String, ClientRequest>,
+    /// host's whoever asked (ADR 2.4): who asked, and what its answer gets.
+    outbound: Outbound,
     /// Requests from the agent to its client that are unanswered, and the
     /// late answers to drop of those the host answered (ADR 4.5).
     approvals: Approvals,
-    /// The last of the host's ids, for requests to the agent and its echoes.
-    next_id: u64,
     /// What the editor writes, as lines: one past `LINE_BYTES` goes to the
     /// agent unread (ADR 10.3).
     editor_lines: Lines,
@@ -619,10 +616,8 @@ impl Host {
             meta_path: PathBuf::new(),
             cwd,
             sessions: Sessions::default(),
-            pending: HashMap::new(),
-            client_requests: HashMap::new(),
+            outbound: Outbound::default(),
             approvals: Approvals::default(),
-            next_id: 0,
             editor_lines: Lines::new(LINE_BYTES, Long::Relay),
             stderr_lines: Lines::new(PIECE, Long::Cut),
             deepest: 0,

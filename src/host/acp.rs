@@ -84,6 +84,7 @@ use serde_json::{Map, Value, json};
 use super::approvals::{AgentRequest, Client, EditorAnswer, Resolved, Timeout};
 use super::flow::LINE_BYTES;
 use super::lines::Piece;
+use super::outbound::{Asked, By, Note, Opens, Then};
 use super::requests::{HostRequest, PeerOp};
 use super::sessions::{Ending, Hold};
 use super::state::SessionState;
@@ -245,62 +246,6 @@ impl Session {
     }
 }
 
-/// A request whose response the host acts on: one that creates or ends a
-/// session, the editor's `initialize`, or the editor's own steer.
-pub(super) enum Pending {
-    /// `session/new`, or a `session/fork` of `forked_from`, the editor's or
-    /// the host's. Its request is logged in the session's file once the
-    /// response says which session it opened.
-    New {
-        cwd: Option<String>,
-        request: Option<Vec<u8>>,
-        dir: Dir,
-        forked_from: Option<String>,
-    },
-    /// The editor's `session/load` (`load`) or `session/resume`.
-    Attach {
-        session: String,
-        cwd: Option<String>,
-        load: bool,
-    },
-    Close {
-        session: String,
-    },
-    /// The editor's `session/delete`, passed through as it is (ADR 8.1).
-    Delete {
-        session: String,
-    },
-    /// The editor's `initialize`: the host notes what the agent can do.
-    Initialize,
-    /// The editor's `_session/steering`, passed through as it is: its text
-    /// is a `user_message` once the agent has taken it into the turn.
-    Steering {
-        session: String,
-        text: String,
-    },
-}
-
-/// A request to the agent it hasn't answered: who asked, so who its answer
-/// is for, and the session it is about. Its id on the agent's side is the
-/// host's own, whoever asked (ADR 2.4).
-pub(super) struct ClientRequest {
-    pub(super) by: Requester,
-    pub(super) session: Option<String>,
-    /// A `session/prompt`: its answer ends a turn of `session`.
-    pub(super) turn: bool,
-}
-
-pub(super) enum Requester {
-    /// The editor, with its id: as it wrote it (`raw`), which its answer goes
-    /// back with, and as a key, for its `$/cancel_request`.
-    Editor { raw: Vec<u8>, key: String },
-    /// The host, as the agent's client or for a bridge.
-    Host(HostRequest),
-    /// A message the host sent as a prompt: its answer is the host's alone,
-    /// and ends the turn (see turns.rs).
-    Prompt,
-}
-
 impl Host {
     // ---- editor → agent ------------------------------------------------
 
@@ -358,7 +303,7 @@ impl Host {
 
     fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
         let mut session = None;
-        let mut deferred = None;
+        let mut asking = None;
         let mut recorded = None;
         if let Some(Value::Object(mut msg)) = msg {
             session = param_session(&msg);
@@ -379,7 +324,7 @@ impl Host {
                     // It goes with an id of the host's, which nobody else's
                     // can be: the editor's as it wrote it comes back on the
                     // answer (ADR 2.4). Only the id changes in the line.
-                    let wire = self.wire_id();
+                    let wire = self.outbound.next_id();
                     let key = id_key(&wire);
                     let spans = json::members(&line, "id");
                     let raw = match spans.last() {
@@ -387,21 +332,20 @@ impl Host {
                         None => serde_json::to_vec(&id).unwrap(),
                     };
                     msg.insert("id".to_owned(), wire.clone());
-                    line = match self.editor_request(&method, &key, &mut msg, &session) {
+                    let (rewritten, then) = self.editor_request(&method, &key, &mut msg, &session);
+                    line = match rewritten {
                         Some(rewritten) => rewritten,
                         None if !spans.is_empty() => {
                             json::replace(&line, &spans, &serde_json::to_vec(&wire).unwrap())
                         }
                         None => serde_json::to_vec(&msg).unwrap(),
                     };
-                    let by = Requester::Editor { raw, key: id_key(&id) };
-                    let turn = method == "session/prompt" && session.is_some();
-                    let request = ClientRequest { by, session: session.clone(), turn };
-                    self.client_requests.insert(key.clone(), request);
-                    match method.as_str() {
-                        "session/new" => (session, deferred) = (None, Some(key)),
-                        "session/fork" => deferred = Some(key),
-                        _ => {}
+                    let by = By::Editor { raw, key: id_key(&id) };
+                    let params = msg.get("params").unwrap_or(&Value::Null);
+                    let opens = Opens::of(&method, params, Dir::EditorToAgent);
+                    asking = Some((wire, Asked { by, session: session.clone(), opens, then }));
+                    if method == "session/new" {
+                        session = None;
                     }
                 }
                 (Some(method), None) if method == "$/cancel_request" => {
@@ -442,10 +386,11 @@ impl Host {
         // changes.
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
-        if let Some(Pending::New { request, .. }) =
-            deferred.and_then(|key| self.pending.get_mut(&key))
-        {
-            *request = Some(recorded.to_vec());
+        if let Some((wire, mut asked)) = asking {
+            if let Some(opens) = &mut asked.opens {
+                opens.request = Some(recorded.to_vec());
+            }
+            self.outbound.insert(&wire, asked);
         }
         self.write_agent(&line);
     }
@@ -460,22 +405,18 @@ impl Host {
     fn editor_cancel(&mut self, msg: &Map<String, Value>) -> Option<Vec<Value>> {
         let named = msg.get("params")?.get("requestId")?;
         let key = id_key(named);
-        let mut wires: Vec<&String> = (self.client_requests.iter())
-            .filter(|(_, r)| matches!(&r.by, Requester::Editor { key: k, .. } if *k == key))
-            .map(|(wire, _)| wire)
-            .collect();
+        let wires = self.outbound.editors(&key);
         if wires.is_empty() {
-            if !self.client_requests.contains_key(&key) {
+            if !self.outbound.waiting(&key) {
                 return None;
             }
             let event = json!({ "event": "editor-cancel-dropped", "request_id": named });
             self.sink.note(None, event);
             return Some(Vec::new());
         }
-        wires.sort();
         let cancels = wires.into_iter().map(|wire| {
             let mut cancel = Value::Object(msg.clone());
-            cancel["params"]["requestId"] = serde_json::from_str(wire).unwrap();
+            cancel["params"]["requestId"] = serde_json::from_str(&wire).unwrap();
             cancel
         });
         Some(cancels.collect())
@@ -489,35 +430,26 @@ impl Host {
         self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));
     }
 
-    /// Notes requests that change session state. Returns the message
-    /// re-encoded if the host changed it.
+    /// Notes requests that change session state: what their answer gets,
+    /// and the message re-encoded if the host changed it.
     fn editor_request(
         &mut self,
         method: &str,
         key: &str,
         msg: &mut Map<String, Value>,
         session: &Option<String>,
-    ) -> Option<Vec<u8>> {
+    ) -> (Option<Vec<u8>>, Then) {
         let cwd = msg.get("params").and_then(|p| p["cwd"].as_str()).map(str::to_owned);
-        match (method, session) {
+        let note = match (method, session) {
             ("initialize", _) => {
-                self.pending.insert(key.to_owned(), Pending::Initialize);
-                return self.drop_capabilities(msg);
-            }
-            ("session/new" | "session/fork", _) => {
-                // A fork's source is the session it names (ADR 3.12).
-                let forked_from = session.clone().filter(|_| method == "session/fork");
-                let pending =
-                    Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from };
-                self.pending.insert(key.to_owned(), pending);
+                return (self.drop_capabilities(msg), Then::Note(Note::Initialize));
             }
             ("session/load" | "session/resume", Some(session)) => {
                 let load = method == "session/load";
                 if load {
                     self.editor_load(session, cwd.as_deref());
                 }
-                let attach = Pending::Attach { session: session.clone(), cwd, load };
-                self.pending.insert(key.to_owned(), attach);
+                Note::Attach { session: session.clone(), cwd, load }
             }
             ("session/close", Some(session)) => {
                 // Dropped now: held until the agent answers, they would go out as
@@ -525,20 +457,20 @@ impl Host {
                 if let Some(i) = self.find(session) {
                     self.drop_all(i, "close");
                 }
-                self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
+                Note::Close { session: session.clone() }
             }
-            ("session/delete", Some(session)) => {
-                self.pending.insert(key.to_owned(), Pending::Delete { session: session.clone() });
+            ("session/delete", Some(session)) => Note::Delete { session: session.clone() },
+            ("session/prompt", Some(session)) => {
+                let rewritten = self.editor_prompt(session, key, msg);
+                return (rewritten, Then::Turn(session.clone()));
             }
-            ("session/prompt", Some(session)) => return self.editor_prompt(session, key, msg),
             ("_session/steering", Some(session)) => {
                 let text = turns::prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
-                let steering = Pending::Steering { session: session.clone(), text };
-                self.pending.insert(key.to_owned(), steering);
+                Note::Steering { session: session.clone(), text }
             }
-            _ => {}
-        }
-        None
+            _ => return (None, Then::Relay),
+        };
+        (None, Then::Note(note))
     }
 
     /// The editor's `session/load` or `session/resume` of `session`: its lock
@@ -783,79 +715,99 @@ impl Host {
         }
     }
 
+    /// The agent answered request `key`: whatever asked gets it, and what
+    /// it was asked for follows from it (see outbound.rs).
     fn agent_response(&mut self, key: &str, msg: &Map<String, Value>, line: &[u8]) {
-        let request = self.client_requests.remove(key);
-        let mut session = request.as_ref().and_then(|r| r.session.clone());
-        if let Some(pending) = self.pending.remove(key) {
-            session = self.session_changed(pending, msg.get("result")).or(session);
-        }
-        let turn = request.as_ref().filter(|r| r.turn).and_then(|r| r.session.clone());
-        if let Some(sid) = &turn {
-            session = Some(sid.clone());
-        }
-        // Whose answer it is (ADR 2.4): the editor's goes to it with its id as
-        // it wrote it, and nothing else in the line changed. One to an id the
-        // host never sent (a request in a line it couldn't read, ADR 2.5) goes
-        // on as it came.
-        let (ours, forward) = match request.map(|r| r.by) {
-            Some(Requester::Editor { raw, .. }) => {
-                (None, Some(json::replace(line, &json::members(line, "id"), &raw)))
-            }
-            Some(Requester::Host(request)) => (Some(request), None),
-            Some(Requester::Prompt) => (None, None),
-            None => (None, Some(line.to_vec())),
+        // One to an id the host never sent (a request in a line it couldn't
+        // read, ADR 2.5), or answered already, goes on as it came.
+        let Some(Asked { by, mut session, opens, then }) = self.outbound.answered(key) else {
+            self.record(None, Dir::AgentToEditor, line);
+            return self.send_link(frame::DATA, line);
         };
-        let dir = if forward.is_some() { Dir::AgentToEditor } else { Dir::AgentToControl };
-        self.record(session.as_deref(), dir, line);
-        if let Some(line) = forward {
-            self.send_link(frame::DATA, &line);
+        let result = msg.get("result");
+        if let Some(opens) = opens {
+            session = self.opened(opens, result).or(session);
         }
-        if let Some(request) = ours {
-            self.host_request_done(request, msg);
-        }
-        if let Some(sid) = turn {
-            let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
-            let tokens = turn_tokens(msg.get("result"));
-            let ended =
-                json!({ "stop_reason": stop_reason, "error": msg.get("error"), "tokens": tokens });
-            let Some(i) = self.find(&sid) else {
-                self.emit(turns::turn_ended(&sid, key, None, ended));
-                return;
-            };
-            self.flush_agent_message(i);
-            let todo = self.sessions[i].turns.answered(key, ended);
-            let s = &mut self.sessions[i];
-            if s.turns.activity() != Activity::Busy {
-                // Its tool calls end with it, however it ended: one the agent
-                // left unfinished, cancelled or failed, isn't running now
-                // (ADR 8.2). Nor are those a replay found.
-                s.state.tools.clear();
-                if let Some(replay) = &mut s.replay {
-                    replay.tools.clear();
-                }
+        match then {
+            Then::Relay => self.relay(by, session.as_deref(), line),
+            Then::Note(note) => {
+                let session = self.noted(note, result).or(session);
+                self.relay(by, session.as_deref(), line);
             }
-            self.act(i, todo);
-            self.close_after_turn(i);
+            Then::Turn(session) => {
+                self.relay(by, Some(&session), line);
+                self.turn_answered(&session, key, msg);
+            }
+            Then::Host(request) => {
+                self.relay(by, session.as_deref(), line);
+                self.host_request_done(request, msg);
+            }
         }
     }
 
-    /// Returns the session the response was about.
-    fn session_changed(&mut self, pending: Pending, result: Option<&Value>) -> Option<String> {
-        match pending {
-            Pending::New { cwd, request, dir, forked_from } => {
-                let session = result.and_then(new_session);
-                if let Some(session) = &session {
-                    let i = self.open_fork(session, cwd.as_deref(), forked_from.as_deref());
-                    self.sessions[i].state.result(result.unwrap_or(&Value::Null));
-                }
-                if let Some(request) = request {
-                    // A copy, in the session's file, of what the host log has with its
-                    // position: none here (ADR 10.2).
-                    self.sink.msg(session.as_deref(), dir, &request, None);
-                }
-                session
+    /// An answer, recorded in `session`'s files, for whoever asked
+    /// (ADR 2.4): the editor's goes to it with its id as it wrote it, and
+    /// nothing else in the line changed; the host's is its alone.
+    fn relay(&mut self, by: By, session: Option<&str>, line: &[u8]) {
+        match by {
+            By::Editor { raw, .. } => {
+                self.record(session, Dir::AgentToEditor, line);
+                self.send_link(frame::DATA, &json::replace(line, &json::members(line, "id"), &raw));
             }
-            Pending::Attach { session, cwd, load } => {
+            By::Host => self.record(session, Dir::AgentToControl, line),
+        }
+    }
+
+    /// The answer to a `session/prompt` of `session`, the editor's or the
+    /// host's, `key`: its turn ends (see turns.rs).
+    fn turn_answered(&mut self, session: &str, key: &str, msg: &Map<String, Value>) {
+        let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
+        let tokens = turn_tokens(msg.get("result"));
+        let ended =
+            json!({ "stop_reason": stop_reason, "error": msg.get("error"), "tokens": tokens });
+        let Some(i) = self.find(session) else {
+            self.emit(turns::turn_ended(session, key, None, ended));
+            return;
+        };
+        self.flush_agent_message(i);
+        let todo = self.sessions[i].turns.answered(key, ended);
+        let s = &mut self.sessions[i];
+        if s.turns.activity() != Activity::Busy {
+            // Its tool calls end with it, however it ended: one the agent
+            // left unfinished, cancelled or failed, isn't running now
+            // (ADR 8.2). Nor are those a replay found.
+            s.state.tools.clear();
+            if let Some(replay) = &mut s.replay {
+                replay.tools.clear();
+            }
+        }
+        self.act(i, todo);
+        self.close_after_turn(i);
+    }
+
+    /// The answer to a `session/new` or `session/fork`, `result` if it
+    /// succeeded: the session it names opens, and has the request in its
+    /// file. Returns the session.
+    fn opened(&mut self, opens: Opens, result: Option<&Value>) -> Option<String> {
+        let Opens { cwd, request, dir, forked_from } = opens;
+        let session = result.and_then(new_session);
+        if let Some(session) = &session {
+            let i = self.open_fork(session, cwd.as_deref(), forked_from.as_deref());
+            self.sessions[i].state.result(result.unwrap_or(&Value::Null));
+        }
+        if let Some(request) = request {
+            // A copy, in the session's file, of what the host log has with its
+            // position: none here (ADR 10.2).
+            self.sink.msg(session.as_deref(), dir, &request, None);
+        }
+        session
+    }
+
+    /// What the answer to one of the editor's requests changes, `result` if
+    /// it succeeded. Returns the session it was about.
+    fn noted(&mut self, note: Note, result: Option<&Value>) -> Option<String> {
+        match note {
+            Note::Attach { session, cwd, load } => {
                 if load {
                     self.load_answered(&session, cwd.as_deref(), result);
                 } else if let Some(result) = result {
@@ -870,7 +822,7 @@ impl Host {
                 }
                 Some(session)
             }
-            Pending::Close { session } => {
+            Note::Close { session } => {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
@@ -878,19 +830,19 @@ impl Host {
                 }
                 Some(session)
             }
-            Pending::Delete { session } => {
+            Note::Delete { session } => {
                 if result.is_some() {
                     self.deleted(&session);
                 }
                 Some(session)
             }
-            Pending::Initialize => {
+            Note::Initialize => {
                 if let Some(result) = result {
                     self.initialized(result);
                 }
                 None
             }
-            Pending::Steering { session, text } => {
+            Note::Steering { session, text } => {
                 if result.is_some_and(|r| r["outcome"] == "injected") {
                     self.editor_steered(&session, text);
                 }
@@ -1104,7 +1056,7 @@ impl Host {
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
     /// process stops with its last session, one a bridge is opening
-    /// counting (`opening_in_flight`). Idle time counts from the
+    /// counting (`Outbound::opening`). Idle time counts from the
     /// commit too, so a session started without a prompt doesn't run
     /// forever; one with a prompt is busy from then.
     pub(super) fn fire_idle_timers(&mut self, now: Instant) {
@@ -1131,7 +1083,7 @@ impl Host {
         let session = self.sessions[i].id.clone();
         self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
         // A session a bridge is opening keeps the process going.
-        if self.sessions.len() == 1 && !self.opening_in_flight() {
+        if self.sessions.len() == 1 && !self.outbound.opening() {
             self.begin_stop();
         } else if self.caps.close {
             // As `brnr session close` would, with nobody to answer (peer 0).
@@ -1163,13 +1115,6 @@ impl Host {
                 Some(t) => t.checked_add(limit), // None: never.
             })
             .min()
-    }
-
-    /// A new id for a request to the agent, `brnr-<n>`: the host gives every
-    /// request its own, the editor's too, so no two can be confused (ADR 2.4).
-    pub(super) fn wire_id(&mut self) -> Value {
-        self.next_id += 1;
-        Value::String(format!("brnr-{}", self.next_id))
     }
 
     /// A new `m<n>` message id.
@@ -1216,19 +1161,19 @@ impl Host {
     /// Message `held` as session `i`'s next `session/prompt`, held context
     /// appended (see turns.rs): the editor is shown it as it goes.
     pub(super) fn send_prompt(&mut self, i: usize, held: Held) {
-        let id = self.wire_id();
+        let id = self.outbound.next_id();
         let key = id_key(&id);
         let session = self.sessions[i].id.clone();
-        let (blocks, sent) = self.sessions[i].turns.start(key.clone(), held);
+        let (blocks, sent) = self.sessions[i].turns.start(key, held);
         let msg = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "session/prompt",
             "params": { "sessionId": session, "prompt": blocks },
         });
-        let request =
-            ClientRequest { by: Requester::Prompt, session: Some(session.clone()), turn: true };
-        self.client_requests.insert(key, request);
+        let then = Then::Turn(session.clone());
+        let asked = Asked { by: By::Host, session: Some(session.clone()), opens: None, then };
+        self.outbound.insert(&id, asked);
         self.act(i, vec![sent]);
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
@@ -1342,14 +1287,14 @@ impl Host {
         if !self.editor_attached() {
             return;
         }
-        self.next_id += 1;
+        let echo = self.outbound.echo_id();
         let content: Vec<Value> =
             blocks.iter().map(|b| json!({ "type": "content", "content": b })).collect();
         self.update_editor(
             session,
             json!({
                 "sessionUpdate": "tool_call",
-                "toolCallId": format!("brnr-echo-{}", self.next_id),
+                "toolCallId": echo,
                 "title": title,
                 "kind": "other",
                 "status": "completed",
