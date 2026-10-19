@@ -263,13 +263,13 @@ fn misplaced_keys_fail() {
 
     write(
         &env.dir.join("none.toml"),
-        "[profiles.ok]\nagent = [\"true\"]\nstrict = true\n\n[profiles.ok.editor]\nexperimental = [\"send\", \"permission\"]\necho_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n",
+        "[profiles.ok]\nagent = [\"true\"]\nstrict = true\n\n[profiles.ok.editor]\nexperimental = [\"send\", \"permission\"]\nclient_capabilities = [\"fs\"]\necho_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n",
         0o600,
     );
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "{text}");
     assert!(
-        text.contains("ok    profile ok: agent true, 0 bridges, strict, experimental send permission, features shared_sessions, echo_as user_message_chunk"),
+        text.contains("ok    profile ok: agent true, 0 bridges, strict, experimental send permission, client_capabilities fs, features shared_sessions, echo_as user_message_chunk"),
         "{text}"
     );
 

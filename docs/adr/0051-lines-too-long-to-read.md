@@ -18,9 +18,6 @@ any length was held whole; a piece of the agent's stderr ends between
 characters, a line of exactly 64 KiB is one record, not one and an empty
 one, and a failed start's tail cuts a line between characters.
 
-Amended by 67: no `initialize` is stripped of `fs` and `terminal`, so a
-long one loses nothing either.
-
 ## Context
 
 ADR 6 caps what is on its way through the host at 16 MiB, counted in bytes,
@@ -100,7 +97,7 @@ What is bounded, and what isn't (the issue's audit):
 - An editor's line over 32 MiB goes to the agent as it is: a prompt that
   long isn't counted as a turn, a `session/load` that long isn't checked
   against the session's lock (ADR 3), nor an `initialize` that long
-  stripped of `fs` and `terminal` (ADR 2). Editors don't send those that
+  stripped of `fs` and `terminal` (ADR 67). Editors don't send those that
   long; refusing them would mean reading them.
 - The host's memory doesn't grow with the length of a line. A 128 MiB
   line to an editor that stopped reading leaves the host at about 54 MB:

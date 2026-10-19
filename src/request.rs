@@ -21,7 +21,7 @@ use libc::c_int;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{Bridge, EchoAs, Experimental, Feature, Log, Profile};
+use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log, Profile};
 use crate::{host, log, paths, spawn};
 
 #[derive(Serialize, Deserialize)]
@@ -59,6 +59,9 @@ pub(crate) struct Editor {
     pub(crate) sigmask: Vec<c_int>,
     /// Actions on the editor's session it allows (ADR 4).
     pub(crate) experimental: BTreeSet<Experimental>,
+    /// The editor's `fs` and `terminal` capabilities that reach the agent
+    /// outside strict mode (ADR 67).
+    pub(crate) client_capabilities: BTreeSet<ClientCapability>,
     /// How a message sent to its session through the side channel is shown
     /// to it (ADR 70).
     pub(crate) echo_as: EchoAs,

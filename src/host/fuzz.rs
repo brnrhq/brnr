@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use super::Host;
 use super::start::StartChannel;
-use crate::config::{EchoAs, Experimental, Feature, Log};
+use crate::config::{ClientCapability, EchoAs, Experimental, Feature, Log};
 use crate::request::{Editor, Headless, Prompt, Role, Settings};
 
 /// How far the clock moves at each [`Harness::tick`]: past every timeout
@@ -55,6 +55,7 @@ impl Harness {
             proxy_pid: 0,
             sigmask: Vec::new(),
             experimental: Experimental::ALL.into_iter().collect(),
+            client_capabilities: ClientCapability::ALL.into_iter().collect(),
             echo_as: EchoAs::ToolCall,
             features,
         };

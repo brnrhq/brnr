@@ -12,10 +12,6 @@ them, existing ones included (P13).
 Amended by 64: from 1.0.0, P9's compatibility within a major version is of
 what ADR 64 lists as covered, and of nothing else.
 
-Amended by 67: the editor's `fs` and `terminal` capabilities aren't
-dropped: that is no longer one of P1's conventions, nor one of the named
-changes to the editor's stream.
-
 What brnr must get right, its critical success factors, and the rules the
 other decisions are measured against, its principles, which serve the
 factors. The principles were drawn out of the former decision log when every
@@ -136,8 +132,9 @@ kept apart:
 - The protocol itself. By default brnr speaks stable ACP plus the conventions
   current agents and editors implement alike, ahead of the spec
   (`_session/steering`, `session/fork` while it is unstable, dropping `fs`
-  and `terminal` as ACP v2 does). Strict mode, chosen per process, is stable
-  ACP to the letter and nothing else (ADR 41).
+  and `terminal` as ACP v2 does, but those a profile names). Strict mode,
+  chosen per process, is stable ACP to the letter and nothing else
+  (ADR 41).
 - Actions brnr adds to an editor's session through the side channel:
   experimental, each enabled by name (ADR 4).
 - brnr's own process management, such as which sessions a process may serve:
@@ -154,7 +151,8 @@ stderr, stdin EOF and the exit status pass through unchanged. What brnr does
 through the side channel aims to keep the editor's view in step with the
 agent's state; where that can't be done, the gap is a caveat, stated in the
 README. The deliberate changes to the stream are few, and each is named: by
-default the editor's `fs` and `terminal` capabilities are dropped (ADR 2); an
+default the editor's `fs` and `terminal` capabilities are dropped, unless
+the profile names them (ADR 67); an
 editor's load of a session another process owns is refused unless a feature
 flag allows it (ADR 3); and the experimental actions, where enabled, add to
 and answer for the editor's session (ADR 4, ADR 26).

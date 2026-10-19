@@ -6,10 +6,6 @@ Amended by 63: `send --steer` is `prompt send --steer`, `brnr fork` is
 `session fork`, `--strict` on `start` is on `session new` and
 `session resume`, and `brnr stop` is `process stop`.
 
-Amended by 67: dropping the editor's `fs` and `terminal` capabilities isn't
-one of the conventions any more; they reach the agent in strict mode and
-without.
-
 ## Context
 
 brnr follows ACP faithfully (P1). To the letter, that would leave out what
@@ -33,8 +29,8 @@ stable in both. Extension methods start with `_` (`_session/steering`).
     adapters): `send --steer` (ADR 18).
   - `session/fork`, unstable in ACP v1 (both adapters): `brnr fork`
     (ADR 16).
-  - Dropping the editor's `fs` and `terminal` capabilities, as ACP v2 does
-    (ADR 2).
+  - Dropping the editor's `fs` and `terminal` capabilities, as ACP v2 does,
+    but those the profile names (ADR 67).
 
   A convention is added to brnr by adding it to this list.
 - Strict mode, per process (`strict = true` in a profile, `--strict` on `acp`

@@ -43,6 +43,12 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** `brnr acp` drops the editor's `fs` and `terminal` client
+  capabilities from its `initialize` again by default, as ACP v2 has
+  neither, and notes `capabilities-dropped` in the host log. A profile
+  passes them by name, `client_capabilities = ["fs", "terminal"]` in its
+  editor part, and strict mode passes both, as stable ACP v1 has them
+  (ADR 67, #272).
 - The Claude adapter is built from claude-agent-acp 0.90.0
   (`brnr-claude-adapter`) (ADR 39).
 

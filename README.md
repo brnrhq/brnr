@@ -135,9 +135,12 @@ agent with an id of brnr's, and its answer comes back to the editor with the
 editor's own id, so that the editor's requests and brnr's are never confused
 (ADR 61); and, each below, a session another brnr process serves can't be
 loaded, and the experimental actions a profile enables act on the editor's
-session. The editor's `fs` and `terminal` capabilities reach the agent, so
-the agent can read the editor's unsaved buffers and run commands in its
-terminals, as it could directly; a headless session offers it neither
+session. By default the editor's `fs` and `terminal` capabilities don't
+reach the agent, as ACP v2 has neither: the agent reads and writes the files
+on disk and runs commands itself, and doesn't see the editor's unsaved
+buffers. A profile passes them by name (`client_capabilities = ["fs",
+"terminal"]`), and strict mode passes both, as stable ACP v1 has them; a
+headless session offers neither
 ([ADR 67](docs/adr/0067-the-editors-file-system-and-terminal-reach-the-agent.md)). When the editor goes away, so does the agent;
 `brnr session resume <session>` carries on with one of its sessions headless
 (a turn still running is lost).
@@ -746,6 +749,7 @@ env = { GITHUB_TOKEN = "…" }
 
 [profiles.work.editor]              # brnr acp
 experimental = ["send", "permission"] # actions on the editor's session
+client_capabilities = ["fs"]        # the editor's that reach the agent: "fs", "terminal"
 echo_as = "tool_call"               # or "user_message_chunk": how a message is shown
 features = ["shared_sessions"]      # process management
 ```
