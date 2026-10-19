@@ -14,15 +14,15 @@
 //!
 //!   Session locks go with the transcripts, `sessions/<session id>.lock`
 //!   there (see lock.rs): two processes that write one transcript, however
-//!   each found its runtime directory, contend for one lock (ADR 65).
+//!   each found its runtime directory, contend for one lock (ADR 3.9).
 //!
-//!   A session id in a file name is escaped (`file_name`, ADR 53): one name
+//!   A session id in a file name is escaped (`file_name`, ADR 9.2): one name
 //!   per id, so two sessions never share a transcript or a lock.
 //! - Config: `$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`,
 //!   else `~/.config/brnr/config.toml`.
 //!
 //! How each is found, `file_name` and `project_key` are fixed for 1.x
-//! (ADR 65).
+//! (ADR 3.9).
 
 use std::env;
 use std::fs::{self, DirBuilder};
@@ -91,7 +91,7 @@ pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
 }
 
 /// Where the session locks are (see lock.rs): with the transcripts, so
-/// that processes that share them share the locks too (ADR 65).
+/// that processes that share them share the locks too (ADR 3.9).
 pub(crate) fn session_locks() -> PathBuf {
     state_dir().join("sessions")
 }
@@ -100,7 +100,7 @@ pub(crate) fn session_lock(session: &str) -> PathBuf {
     session_locks().join(format!("{}.lock", file_name(session)))
 }
 
-/// A session id as a file name (ADR 53): lowercase ASCII letters, digits,
+/// A session id as a file name (ADR 9.2): lowercase ASCII letters, digits,
 /// `-` and `_` stay, and every other byte of its UTF-8 is `%` and two
 /// lowercase hex digits; the empty id is `%`. The agent's text is untrusted
 /// (P8): the name has no `/`, no `.` (so it is never `.` or `..`, nor named
@@ -139,7 +139,7 @@ pub(crate) fn project_key(cwd: &Path) -> String {
 
 /// `BRNR_DIR=<dir>` as a shell reads it, `dir` one word whatever is in it:
 /// the assignment that reaches a process started with runtime directory
-/// `dir`, in a command shown to be run (ADR 65).
+/// `dir`, in a command shown to be run (ADR 3.9).
 pub(crate) fn brnr_dir_is(dir: &Path) -> String {
     format!("BRNR_DIR={}", shell_word(&dir.to_string_lossy()))
 }
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adr_0065_brnr_dir_is_one_shell_word() {
+    fn adr_0003_brnr_dir_is_one_shell_word() {
         let is = |dir: &str| brnr_dir_is(Path::new(dir));
         assert_eq!(is("/run/user/1000/brnr"), "BRNR_DIR=/run/user/1000/brnr");
         assert_eq!(is("/tmp/my run"), "BRNR_DIR='/tmp/my run'");
@@ -225,7 +225,7 @@ mod tests {
     ];
 
     #[test]
-    fn adr_0053_distinct_ids_get_distinct_names() {
+    fn adr_0009_distinct_ids_get_distinct_names() {
         let dir = session_log(Path::new("/w"), "s").parent().unwrap().to_owned();
         let mut seen = std::collections::HashMap::new();
         for id in COLLIDING {

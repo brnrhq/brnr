@@ -12,7 +12,7 @@
 //! (`STDOUT_CLOSED`), which a directly run agent gets at once, however far
 //! behind it is reading its stdin. The host reads it on a thread of its own
 //! and never stops reading it, even while it holds the link back for the
-//! agent's stdin (ADR 6).
+//! agent's stdin (ADR 10.1).
 
 use std::io::{self, ErrorKind, Read, Write};
 
@@ -30,7 +30,7 @@ pub(crate) const EXIT: u8 = b'X';
 pub(crate) const SIGNAL: u8 = b'S';
 /// On the link, after the last `DATA` frame in its direction: proxy → host,
 /// the proxy's stdin reached EOF; host → proxy, the agent's stdout did, and
-/// the proxy's stdout ends (ADR 62).
+/// the proxy's stdout ends (ADR 2.6).
 pub(crate) const EOF: u8 = b'Z';
 /// proxy → host, on the signal link: writing to the proxy's stdout failed.
 pub(crate) const STDOUT_CLOSED: u8 = b'C';
@@ -40,7 +40,7 @@ const UP_FRONT: usize = 64 << 10;
 
 /// Fails, writing nothing, for a payload too long for the length field. A
 /// payload of more than 64 KiB is written as it is, after the head, not
-/// copied: the line the host relays can be 32 MiB (ADR 51).
+/// copied: the line the host relays can be 32 MiB (ADR 10.3).
 pub fn write(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "frame payload over 4 GiB"))?;

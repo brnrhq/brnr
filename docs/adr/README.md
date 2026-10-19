@@ -1,150 +1,95 @@
 # Architecture decision records
 
-What brnr decided, why, and what else was considered: one record per
-decision, measured against the principles in ADR 1.
-
-They replace the former decision log (`docs/decisions.md`) and the questions
-the code review of `brnr acp` and `brnr start` left open
-(`docs/to-resolve.md`), after every entry of both was reviewed in October
-2026. Both files are in git history up to commit 5b585a3. In the records,
-"former decision N" is an entry of that log and "review item N" a question
-of to-resolve; the map at the end says where each went.
+What brnr decided, why, and what else was considered, measured against the
+critical success factors and the principles in ADR 1. One record per topic;
+each decision is a numbered section of it, cited as `ADR T.k` (ADR 3.9 is
+topic 3's ninth decision).
 
 ## Writing one
 
-- A file `NNNN-short-title.md`, the next number, titled `# N. What was
-  decided`.
-- Under the title, a status line: `Draft` and the date (`Accepted` from
-  1.0.0), whether it is implemented (and if only partly, what isn't), and
-  what it replaces or resolves. When a record's implementation lands, its
-  status line says so.
-- Then `Context` (what made a decision necessary), `Decision`,
-  `Consequences` where there are any worth saying, and `Considered` (the
-  options not taken, and why).
+- A decision goes in the topic it belongs to, as the next section,
+  `## T.k What is decided`, a sentence that says what is true. A new topic
+  is a new file, `NNNN-short-title.md`, the next number, titled
+  `# N. Topic`.
+- Under a topic's title, a status line: `Draft` and the date (`Accepted`
+  from 1.0.0), whether its decisions are implemented (and if only partly,
+  which aren't), and the factors it serves. When a decision's
+  implementation lands, the status line says so.
+- A section states the decision as it stands, and the issues it resolves,
+  then `**Why.**` (what made it necessary, citing factors and principles),
+  `**Consequences.**` where any are worth saying, and `**Considered.**`
+  (the options not taken, and why).
+- A topic ends with its `## Tests`.
 
 ## Changing one
 
 - Until 1.0.0 every record is a draft (P9). A decision is changed where it
   is written: a record is rewritten, renumbered, merged into another or
   removed, so that the records say what is decided now. No `Amended by` or
-  `Superseded by` lines are needed. A record renumbered or removed takes
-  its references with it: `ADR N` in the code and the docs, and `adr_NNNN_`
-  in test names. The pull request says what changed, and git keeps what
-  was.
+  `Superseded by` lines are needed. A decision renumbered or removed takes
+  its references with it: `ADR T.k` in the code and the docs, and
+  `adr_NNNN_` in test names. The pull request says what changed, and git
+  keeps what was.
 - At 1.0.0 the records are accepted, and their status lines say so. From
-  then a decision is changed by a new record. The old one gets a line under
-  its title, `Superseded by N` or `Amended by N: …`, and is otherwise left
-  as it was; the status line comes first, then those lines, in the order of
-  the records' numbers.
+  then a decision is changed by a new section in its topic, the next
+  `T.k`. The old section gets a line under its heading, `Superseded by T.m`
+  or `Amended by T.m: …`, in the order of the sections' numbers, and is
+  otherwise left as it was.
 
 ## Records
 
-| | Decision | Implemented |
-|---|---|---|
-| [1](0001-principles.md) | Critical success factors and principles | — |
-| [2](0002-the-editors-process.md) | The editor's process: `brnr acp` relays, the host owns the agent | yes |
-| [3](0003-ownership-is-a-per-session-lock.md) | Ownership is a per-session lock | yes |
-| [4](0004-side-channel-actions-on-an-editors-session-are-experimental.md) | Side-channel actions on an editor's session are experimental | yes |
-| [5](0005-injected-messages-are-shown-as-a-tool-call.md) | Injected messages are shown to the editor as a tool call | yes |
-| [6](0006-how-far-behind-a-reader-may-fall.md) | How far behind a reader may fall | yes |
-| [7](0007-a-start-is-atomic.md) | A start is atomic and commits at ready | yes |
-| [8](0008-one-resolved-start-request.md) | A process is started with one resolved request | yes |
-| [9](0009-start-foreground.md) | `start --foreground` | yes |
-| [10](0010-the-agents-stderr.md) | The agent's stderr | yes |
-| [11](0011-a-process-death-is-recorded.md) | A process's own death is recorded | yes |
-| [12](0012-stopping-when-idle.md) | Stopping when idle | yes |
-| [13](0013-sessions-are-ids-processes-are-pids.md) | Sessions are the agent's ids, processes are pids | yes |
-| [14](0014-resuming.md) | Resuming | yes |
-| [15](0015-list-and-sessions.md) | `list` and `sessions`, and one row shape (superseded by 63) | yes |
-| [16](0016-fork-and-close.md) | Fork and close | yes |
-| [17](0017-message-ids-and-turns.md) | Message ids and turns | yes |
-| [18](0018-what-send-does.md) | What `send` does | yes |
-| [19](0019-what-cancel-does-with-held-messages.md) | What `cancel` does with held messages | yes |
-| [20](0020-dropped-messages-and-closed-sessions-are-events.md) | Dropped messages and closed sessions are events | yes |
-| [21](0021-waiting-and-exit-status.md) | Waiting, and exit status | yes |
-| [22](0022-the-hosts-events-are-the-story.md) | The host's events are the story, and transcripts are two files | yes |
-| [23](0023-choosing-events.md) | Choosing events, and what text shows | yes |
-| [24](0024-log-last.md) | `log --last <n>` | yes |
-| [25](0025-secrets-are-redacted.md) | Secrets are redacted in what brnr records | yes |
-| [26](0026-lines-brnr-cant-parse.md) | Lines brnr can't parse | yes |
-| [27](0027-approvals.md) | Approvals: the agent's mode is the policy | yes |
-| [28](0028-mode-model-and-config.md) | Mode, model and config options | yes |
-| [29](0029-requests-the-agent-answers.md) | Requests the agent answers | yes |
-| [30](0030-authentication.md) | Authentication | yes |
-| [31](0031-mcp-servers.md) | MCP servers for headless sessions | yes |
-| [32](0032-files-and-images.md) | Files and images in a message | yes |
-| [33](0033-profiles.md) | Profiles: shared, headless and editor parts | yes |
-| [34](0034-same-data-in-text-and-json.md) | Same data in text and JSON; `--json` wherever a command prints data | yes |
-| [35](0035-bridges.md) | Bridges | yes |
-| [36](0036-notify.md) | `notify` | yes |
-| [37](0037-adapters-through-homebrew.md) | Adapters through Homebrew: compiled on the user's machine, one formula each | yes |
-| [38](0038-adapter-names-and-lookup.md) | The adapters' names, and finding them next to brnr | yes |
-| [39](0039-adapter-versions.md) | Which adapter version is built, and how it shows | yes |
-| [40](0040-release-sh.md) | `release.sh` | yes |
-| [41](0041-strict-mode.md) | Strict mode | yes |
-| [42](0042-feature-flags.md) | Feature flags for process management | yes |
-| [43](0043-acp-schema-types.md) | ACP types from the official schema crate | yes |
-| [44](0044-brnr-never-phones-home.md) | brnr never phones home (P15) | — |
-| [45](0045-bug-reports.md) | Bug reports: `doctor --report`, and a link on a panic | yes |
-| [46](0046-a-skill-for-agents-that-use-brnr.md) | A skill for agents that use brnr | yes |
-| [47](0047-brnr-on-crates-io.md) | brnr on crates.io, published by the release workflow | yes |
-| [48](0048-log-waits-for-the-transcript.md) | `log` of a running session waits for its transcript | yes |
-| [49](0049-the-line-that-takes-a-peer-past-the-limit.md) | The line that takes a peer past the limit doesn't count toward it | yes |
-| [50](0050-a-session-that-cant-be-locked.md) | A session that can't be locked isn't served headless | yes |
-| [51](0051-lines-too-long-to-read.md) | Lines too long to read | yes |
-| [52](0052-reproducible-builds-and-sbom.md) | Release builds are checked for reproducibility and carry an SBOM | yes |
-| [53](0053-one-file-name-per-session-id.md) | One file name per session id | yes |
-| [54](0054-acp-version-1.md) | brnr speaks ACP version 1, and a start in another fails | yes |
-| [55](0055-a-transcript-cut-short.md) | A transcript cut short | yes |
-| [56](0056-a-turn-ends-once-its-steers-are-answered.md) | A turn ends once its steers are answered | yes |
-| [57](0057-a-loads-history.md) | A load's history is recorded once, and a `history` event says so | yes |
-| [58](0058-a-starts-flags-win-over-its-profile.md) | A start's flags win over its profile, setting by setting | yes |
-| [59](0059-transcripts-are-written-only-where-only-you-can-read.md) | Transcripts are written only where only you can read them | yes |
-| [60](0060-a-message-bigger-than-a-peers-queue.md) | A message bigger than a peer's queue reaches every peer that keeps up | yes |
-| [61](0061-request-ids-are-the-hosts.md) | Every request to the agent has an id of the host's | yes |
-| [62](0062-stdout-ends-and-stderr-comes-as-written.md) | The editor's stdout ends when the agent's does, and its stderr comes as written | yes |
-| [63](0063-commands-are-grouped-by-what-they-act-on.md) | Commands are grouped by what they act on, with ACP's verbs | yes |
-| [64](0064-what-the-compatibility-promise-covers.md) | What the compatibility promise covers from 1.0.0 (P9) | — |
-| [65](0065-session-locks-live-with-the-transcripts.md) | Session locks live with the transcripts; where things live is fixed for 1.x | yes |
-| [66](0066-the-library-is-private-and-its-facade-mirrors-the-cli.md) | The library is private, and its facade mirrors the command line | partly: the typed facade waits for #150 |
-| [67](0067-the-editors-file-system-and-terminal-reach-the-agent.md) | The editor's file system and terminal reach the agent in strict mode, or when its profile names them, and side-channel actions stay experimental in 1.x | yes |
-| [68](0068-elicitations.md) | Elicitations are held and answered as approvals are | yes |
-| [69](0069-a-peer-cut-off-catches-up.md) | A peer cut off catches up from the transcript | yes |
-| [70](0070-an-editors-profile-chooses-how-a-message-is-shown.md) | An editor's profile chooses how a message sent through brnr is shown to it | yes |
-| [71](0071-a-turns-tokens-are-what-the-agent-reported.md) | A turn's tokens are what the agent reported | yes |
+| | Topic | Decisions | Implemented |
+|---|---|---|---|
+| [1](0001-principles.md) | Critical success factors and principles | P1 to P15, F1 to F5, N1 to N4 | — |
+| [2](0002-acp-faithfully.md) | ACP, faithfully | 2.1 Strict mode, and the conventions brnr follows by default; 2.2 brnr speaks ACP version 1; 2.3 ACP's types come from the official schema crate; 2.4 Every request to the agent has an id of the host's; 2.5 Lines brnr can't parse; 2.6 The editor's stdout ends when the agent's does, and its stderr comes as written; 2.7 The editor's file system and terminal reach the agent in strict mode, or when its profile names them | yes |
+| [3](0003-processes-sessions-and-ownership.md) | Processes, sessions and ownership | 3.1 The editor's process: `brnr acp` relays, the host owns the agent; 3.2 Sessions are the agent's ids, processes are pids; 3.3 A process is started with one resolved request; 3.4 A start is atomic and commits at ready; 3.5 A headless session in the foreground; 3.6 The agent's stderr; 3.7 A process's own death is recorded; 3.8 Stopping when idle; 3.9 Ownership is a per-session lock; 3.10 Feature flags for process management; 3.11 Resuming; 3.12 Fork and close | yes |
+| [4](0004-turns-messages-and-requests.md) | Turns, messages and the agent's requests | 4.1 Message ids, and when a turn ends; 4.2 What sending a message does; 4.3 What cancelling does with held messages; 4.4 A turn's tokens are what the agent reported; 4.5 Approvals and elicitations: the agent's mode is the policy; 4.6 Requests the agent answers; 4.7 Authentication | yes |
+| [5](0005-events-transcripts-and-observers.md) | Events, transcripts and observers | 5.1 The host's events are the story, and transcripts are two files; 5.2 Dropped messages and closed sessions are events; 5.3 Choosing events, and what text shows; 5.4 `event log --last <n>`; 5.5 The log of a running session waits for its transcript; 5.6 A load's history is recorded once; 5.7 Bridges; 5.8 `event notify` | yes |
+| [6](0006-settings-and-profiles.md) | Settings and profiles | 6.1 Profiles, and a start's flags over them; 6.2 Mode, model and config options; 6.3 MCP servers for headless sessions; 6.4 Files and images in a message | yes |
+| [7](0007-experimental-actions-on-an-editors-session.md) | Experimental actions on an editor's session | 7.1 Side-channel actions on an editor's session are experimental, for all of 1.x; 7.2 How a message sent through brnr is shown to the editor | yes; 7.1's real-editor checks aren't run yet |
+| [8](0008-the-command-line-and-compatibility.md) | The command line and compatibility | 8.1 Commands are grouped by what they act on, with ACP's verbs; 8.2 Same data in text and JSON; 8.3 Waiting, and exit status; 8.4 What the compatibility promise covers; 8.5 The library is private, and its facade mirrors the command line; 8.6 A skill for agents that use brnr | partly: 8.5's typed facade waits for #150; 8.4 applies from 1.0.0 |
+| [9](0009-security-and-privacy.md) | Security and privacy | 9.1 Secrets are redacted in what brnr records; 9.2 One file name per session id; 9.3 Transcripts are written only where only you can read them | yes |
+| [10](0010-bounded-resources.md) | Bounded resources | 10.1 How far behind a reader may fall; 10.2 A peer cut off catches up from the transcript; 10.3 Lines too long to read | yes |
+| [11](0011-building-releasing-and-support.md) | Building, releasing and support | 11.1 Adapters through Homebrew; 11.2 The adapters' names, and finding them next to brnr; 11.3 Which adapter version is built; 11.4 `release.sh`; 11.5 Bug reports; 11.6 brnr on crates.io; 11.7 Reproducible builds and an SBOM | yes |
 
-## Where the former entries went
+## Where the former records went
 
-Former decisions: 1 → 22; 2 → 23; 3 → 17; 4 → replaced by 7; 5 → 21;
-6 → 19; 7 → 27; 8 → 34; 9 → 28 and 4; 10 → 14 and 3; 11 → 16 and 4;
-12 → 27; 13 → 31; 14 → 12; 15 → 32; 16 → 30; 17 → 36; 18 → 23; 19 → 23;
-20 → 24; 21 → 21 and 7; 22 → 29; 23 → 36; 24 → replaced by 18;
-25 → 6 and 35; 26 → 37; 27 → 38; 28 → 38; 29 → 37; 30 → 39; 31 → 40;
-32 → 2; 33 → 1 (P9); 34 → 22 and 23; 35 → 22; 36 → 14, 15 and 34;
-37 → 13 and 35; 38 → 13; 39 → 13; 40 → 2; 41 → 12 and 7; 42 → 34;
-43 → 15; 44 → 34 and 21; 45 → 9, 8 and 27; 46 → 15; 47 → 27; 48 → 5.
+Until 2026-10-19 each decision was a record of its own, numbered 1 to 71;
+the released CHANGELOG entries, issues and commits cite those numbers. Each
+former record, and the section it is now (old→new):
 
-Review items: 1 → 6; 2 → 26; 3 → 9 and 6; 4 → 35 and 36; 5 → 20;
-6 → 4 and 28; 7 → 7; 8 → 3; 9 → 10; 10 → 25; "to investigate" → 11.
+1→1, 2→3.1, 3→3.9, 4→7.1, 5→7.2, 6→10.1, 7→3.4, 8→3.3, 9→3.5, 10→3.6,
+11→3.7, 12→3.8, 13→3.2, 14→3.11, 15→8.1, 16→3.12, 17→4.1, 18→4.2, 19→4.3,
+20→5.2, 21→8.3, 22→5.1, 23→5.3, 24→5.4, 25→9.1, 26→2.5, 27→4.5, 28→6.2,
+29→4.6, 30→4.7, 31→6.3, 32→6.4, 33→6.1, 34→8.2, 35→5.7, 36→5.8, 37→11.1,
+38→11.2, 39→11.3, 40→11.4, 41→2.1, 42→3.10, 43→2.3, 44→P15, 45→11.5, 46→8.6,
+47→11.6, 48→5.5, 49→10.1, 50→3.9, 51→10.3, 52→11.7, 53→9.2, 54→2.2, 55→5.1,
+56→4.1, 57→5.6, 58→6.1, 59→9.3, 60→10.1, 61→2.4, 62→2.6, 63→8.1, 64→8.4,
+65→3.9, 66→8.5, 67→2.7, 68→4.5, 69→10.2, 70→7.2, 71→4.4.
+
+Before them, the decision log (`docs/decisions.md`) and the questions the
+code review left open (`docs/to-resolve.md`) are in git history up to
+commit 5b585a3.
 
 ## Tests that name their claims
 
-Runtime regression tests use `adr_NNNN_<claim>` names. Each record's Tests
-section links the assertions; `cargo test --release adr_0007_` runs one
-record's claims. A test can establish a specific claim without proving every
-sentence in a decision, especially real-editor rendering, external releases,
-and operational guarantees. The names state the scope of the evidence.
+Runtime regression tests use `adr_NNNN_<claim>` names, `NNNN` the topic.
+Each topic's Tests section links the assertions, by section; `cargo test
+--release adr_0007_` runs one topic's claims. A test can establish a
+specific claim without proving every sentence in a decision, especially
+real-editor rendering, external releases, and operational guarantees. The
+names state the scope of the evidence.
 
 CI first runs the suite, then `.github/scripts/adr-tests.py` lists the tests
 registered by Cargo (including unit and integration tests). It prints every
-ADR, its claim tests, and decisions without Rust tests. An implemented record
-without a registered test or an explicit `Test exemption:` explanation fails
-CI, as does an ignored claim test or a test naming a nonexistent ADR. Exemptions state the external
-check or the remaining gap; they are not counted as test coverage. ADR 1's
-principles and ADR 44's are reported too, without pretending that a
-passing finite suite proves universal design principles.
+topic, its claim tests, and topics without Rust tests. An implemented topic
+without a registered test or an explicit `Test exemption:` line fails CI, as
+does an ignored claim test or a test naming a nonexistent topic. A topic
+with tests has no `Test exemption:` line; a decision in it that no Rust
+test covers says so (`Not covered by a Rust test: …`), with the external
+check or the remaining gap. ADR 1's principles are reported too, without pretending
+that a passing finite suite proves universal design principles.
 
-When changing a claim, update its test and its record's Tests section. Add a
-new record's tests using its number; don't satisfy the inventory with a test
-that merely searches source code or repeats the ADR text. Adding tests to an
-exempted record requires replacing its exemption with test links.
+When changing a claim, update its test and its topic's Tests section. Name a
+new decision's tests by its topic's number; don't satisfy the inventory with
+a test that merely searches source code or repeats the ADR text.

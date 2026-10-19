@@ -1,4 +1,4 @@
-//! Reading ACP lines as RFC 8259 has them (ADR 26 in docs/adr).
+//! Reading ACP lines as RFC 8259 has them (ADR 2.5 in docs/adr).
 //!
 //! serde_json refuses two kinds of text RFC 8259's grammar allows: a string
 //! with a lone surrogate escape (`"\ud83d"`, what `JSON.stringify` makes of a
@@ -12,7 +12,7 @@
 //! deep; [`holding`] runs code with a value, and lets go of it, on one.
 //!
 //! [`members`] finds a top-level member in the line itself, so that a
-//! request's id is changed there and the rest goes on byte for byte (ADR 61).
+//! request's id is changed there and the rest goes on byte for byte (ADR 2.4).
 
 use std::ops::Range;
 use std::panic;
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0061_an_id_is_found_where_it_is_and_nowhere_else() {
+    fn adr_0002_an_id_is_found_where_it_is_and_nowhere_else() {
         let ids = |text: &str| -> Vec<String> {
             let found = members(text.as_bytes(), "id");
             found.into_iter().map(|r| text[r].to_owned()).collect()
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0026_a_value_is_let_go_of_on_a_stack_that_takes_it() {
+    fn adr_0002_a_value_is_let_go_of_on_a_stack_that_takes_it() {
         // Deeper than a test thread's stack takes, to drop or show.
         let n = 200_000;
         let text = format!("{}1{}", "[".repeat(n), "]".repeat(n));

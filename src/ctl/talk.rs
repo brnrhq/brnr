@@ -7,10 +7,10 @@
 //! (or for the next turn, an approval, or its process's exit). Exit status:
 //! 0 when the turn ended normally (`end_turn`), 1 if it failed or stopped
 //! for another reason or its message was dropped (or, waiting for a turn or
-//! an approval, the session closed first), 124 on `--timeout` (see ADR 21 in
+//! an approval, the session closed first), 124 on `--timeout` (see ADR 8.3 in
 //! docs/adr).
 //!
-//! `prompt send` (ADR 18 in docs/adr):
+//! `prompt send` (ADR 4.2 in docs/adr):
 //! - default: a prompt and a turn of its own, sent now if no turn is
 //!   running, else held and sent when the running one ends, in the order
 //!   sent. brnr never sends a prompt while one runs.
@@ -58,9 +58,9 @@ const TIMED_OUT: u8 = 124;
 /// requests: responses are matched by `req_id`, and events that arrive in
 /// between are kept for `next_event`. Cut off by the process for falling
 /// behind, it catches up from the transcript and goes on live on a new
-/// connection (ADR 69, see catch_up.rs). What it reads may nest as deep as
+/// connection (ADR 10.2, see catch_up.rs). What it reads may nest as deep as
 /// the agent made it: [`Conn::deep`] uses it and lets go of it on a stack
-/// that takes it (ADR 26).
+/// that takes it (ADR 2.5).
 pub(super) struct Conn {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -139,7 +139,7 @@ impl Conn {
         self.follow = Follow::new(socket, ready, events, Some(session));
     }
 
-    /// What it missed and couldn't catch up on, once it has given up (ADR 69).
+    /// What it missed and couldn't catch up on, once it has given up (ADR 10.2).
     pub(super) fn missed(&self) -> Option<&Value> {
         self.missed.as_ref()
     }
@@ -250,7 +250,7 @@ impl Conn {
 
     /// What is left to read before the connection ends, without catching
     /// up, why it ended, and whether the process cut it off: for `event
-    /// notify`, which looks while its command runs (ADR 69).
+    /// notify`, which looks while its command runs (ADR 10.2).
     pub(super) fn rest(&mut self) -> (Vec<Value>, String, bool) {
         let mut rest: Vec<Value> = self.events.drain(..).collect();
         let why = loop {
@@ -287,7 +287,7 @@ impl Conn {
     /// The connection has ended (`why`) before the end the command waits
     /// for: if the process cut it off, what it missed, read from the
     /// transcript, is queued, followed by what comes live on a new
-    /// subscription (ADR 69). `Err(why)` if it wasn't cut off; or, with
+    /// subscription (ADR 10.2). `Err(why)` if it wasn't cut off; or, with
     /// `missed` saying what it missed, if it can't catch up. A new
     /// subscription that fails, or doesn't say where it starts, is one more
     /// cut-off: there is no position to catch up to, so it is tried again.
@@ -301,7 +301,7 @@ impl Conn {
                 UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
             let mut conn = match fresh {
                 Ok(conn) => conn,
-                // Gone: its transcript is whole (ADR 48), and is read to its end.
+                // Gone: its transcript is whole (ADR 5.5), and is read to its end.
                 Err(_) if cut.is_some() || f.cut_off_before_it_went() => break (None, None),
                 Err(_) => return Err(why),
             };
@@ -406,7 +406,7 @@ impl Conn {
             Ok(_) if !line.ends_with('\n') => Err("the process closed the connection".into()),
             Ok(_) => {
                 // As the host reads it (see json.rs): an event carries what
-                // the agent sent as deep as it nested it (ADR 26).
+                // the agent sent as deep as it nested it (ADR 2.5).
                 let line = line.as_bytes();
                 let depth = json::depth(line);
                 let msg = json::on_stack(depth, || json::parse::<Value>(line));
@@ -471,7 +471,7 @@ pub(super) fn wait_for_message(
             }
             Err(why) => return conn.ended(why),
         };
-        // Used and let go of on a stack that takes it (ADR 26).
+        // Used and let go of on a stack that takes it (ADR 2.5).
         let ended = conn.deep(e, |_, e| -> Result<Option<ExitCode>, String> {
             let ours = e["session"] == session;
             match e["event"].as_str().unwrap_or_default() {
@@ -641,9 +641,9 @@ fn base64(data: &[u8]) -> String {
 
 // ---- session new and resume ---------------------------------------------
 
-// A start, `session new` or `session resume`, is atomic (ADR 7 in
+// A start, `session new` or `session resume`, is atomic (ADR 3.4 in
 // docs/adr). Everything it needs is read and resolved before the process is
-// launched, and handed to it in one request on its stdin (ADR 8). The
+// launched, and handed to it in one request on its stdin (ADR 3.3). The
 // process reports on the start channel, a socketpair at its fd 3: the start
 // commits at its ready report, after which the process sends the prompt
 // itself. Until then, the command going away (or giving up) stops it, and
@@ -784,7 +784,7 @@ pub(super) fn new(args: &[String]) -> Result<ExitCode, String> {
     start(parse_start(args, false)?)
 }
 
-/// `brnr session resume`: a process, and the session it resumes (ADR 14).
+/// `brnr session resume`: a process, and the session it resumes (ADR 3.11).
 pub(super) fn resume(args: &[String]) -> Result<ExitCode, String> {
     start(parse_start(args, true)?)
 }
@@ -808,11 +808,11 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let hosts = if a.resume.is_some() { discover()? } else { Vec::new() };
     // --take-over: the process holding the session, and the session. It
     // closes the session once the process to resume it has started, so it
-    // can say which (ADR 3, ADR 4).
+    // can say which (ADR 3.9, ADR 7.1).
     let mut owner = None;
     let mut transcript = false;
     if let Some(wanted) = a.resume.clone() {
-        // Closing in its process: free once its records are written (ADR 48).
+        // Closing in its process: free once its records are written (ADR 5.5).
         if let Some(host) = closing_in(&hosts, &wanted) {
             return Err(closing(&wanted, host.id()));
         }
@@ -839,7 +839,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                     return Err(format!("{wanted} is running in process {}", host.id()));
                 }
                 // One holding only openings, which a load that failed
-                // leaves, isn't a transcript of it (ADR 57).
+                // leaves, isn't a transcript of it (ADR 5.6).
                 Ok(Found::Inactive(past)) => {
                     let file = past["log"].as_str().map(Path::new);
                     transcript = file.is_some_and(log::has_records);
@@ -988,7 +988,7 @@ fn started(
     timeout: Option<u64>,
 ) -> Result<ExitCode, String> {
     let session = text(&ready["session"]);
-    // The prompt's id, as `send` gives it (ADR 17); null without one.
+    // The prompt's id, as `send` gives it (ADR 4.1); null without one.
     let about = json!({ "session": session, "pid": ready["pid"], "message": ready["message"] });
     if !wait {
         if json {
@@ -1005,11 +1005,11 @@ fn started(
     wait_for_message(conn, &session, &session, &message, deadline(timeout), json_out)
 }
 
-/// `session new --pid` and `session resume --pid` (ADR 63): a session opened
+/// `session new --pid` and `session resume --pid` (ADR 8.1): a session opened
 /// in process `pid`, which is running, with the socket's `new` or `resume`.
 /// The process answers once the session is open and its settings are set,
 /// and only then sends the prompt: the answer is the commit, as a start's
-/// ready report is (ADR 7). The start timeout goes with the request, and is
+/// ready report is (ADR 3.4). The start timeout goes with the request, and is
 /// the process's: past it, the process closes the session again and says
 /// so. Gone before it (Ctrl-C), the command closes its connection, and the
 /// process does the same.
@@ -1089,7 +1089,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         conn.subscribe(TURN_EVENTS, None)?;
     }
     // The process abandons the opening when its timeout passes, and says
-    // so; this is for a process stuck too badly to (ADR 7).
+    // so; this is for a process stuck too badly to (ADR 3.4).
     let until =
         Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
     let ready = match conn.call_until(req, until)? {
@@ -1101,9 +1101,9 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
 }
 
 /// Why `host` would refuse to resume a session, as its status says: a
-/// process starting or stopping, an editor's (ADR 4), `stop_when_idle` with
-/// an agent that can't close sessions (ADR 12), or an agent with neither
-/// `session/resume` nor `session/load` (ADR 14). The process checks the same
+/// process starting or stopping, an editor's (ADR 7.1), `stop_when_idle` with
+/// an agent that can't close sessions (ADR 3.8), or an agent with neither
+/// `session/resume` nor `session/load` (ADR 3.11). The process checks the same
 /// itself.
 fn refused_in(host: &Host) -> Result<(), String> {
     let Some(status) = &host.status else {
@@ -1336,10 +1336,10 @@ fn wait_on(
     let idle_now = json!({ "event": "idle", "session": session });
     // How the last turn ended, as `shallow_turn` has it: a wait for `idle`
     // that ends on an idle or a closed session exits as if it had waited
-    // for that turn (see ADR 21 in docs/adr).
+    // for that turn (see ADR 8.3 in docs/adr).
     let mut last_turn = Value::Null;
     // What the process answers, and each event, is used and let go of on a
-    // stack that takes it (ADR 26).
+    // stack that takes it (ADR 2.5).
     match what {
         "permission" => {
             let pending = match conn.call(json!({ "cmd": "pending" })) {
@@ -1473,7 +1473,7 @@ fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
 }
 
 /// Of a turn (`turn_ended`, or status's `last_turn`), what `turn_status`
-/// reads: nothing the agent nested, so it is held on any stack (ADR 26).
+/// reads: nothing the agent nested, so it is held on any stack (ADR 2.5).
 fn shallow_turn(turn: &Value) -> Value {
     if !turn.is_object() {
         return Value::Null;
@@ -1636,7 +1636,7 @@ fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, String> 
 /// A connection to a process, for a test, that the process cuts off,
 /// unanswered, at its first `cmd` request, after one event more (at 11),
 /// and that can't be caught up with: the process says it cut it off, and
-/// that it has records it couldn't write (ADR 69).
+/// that it has records it couldn't write (ADR 10.2).
 #[cfg(test)]
 pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, thread::JoinHandle<()>) {
     use std::os::unix::net::UnixListener;
@@ -1688,7 +1688,7 @@ mod tests {
     /// once it is cut off more than `TRIES` times in a row with nothing read
     /// live in between, and says what it missed.
     #[test]
-    fn adr_0069_a_cut_off_while_catching_up_is_tried_again_then_given_up() {
+    fn adr_0010_a_cut_off_while_catching_up_is_tried_again_then_given_up() {
         let dir = env::temp_dir().join(format!("brnr-tries-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -1756,7 +1756,7 @@ mod tests {
     /// next line, it catches up after 12, so it gets each event once, in
     /// order (11 to 13, all in the transcript).
     #[test]
-    fn adr_0069_an_event_live_while_subscribing_again_comes_once() {
+    fn adr_0010_an_event_live_while_subscribing_again_comes_once() {
         let dir = env::temp_dir().join(format!("brnr-once-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -1829,7 +1829,7 @@ mod tests {
     /// (`last_queued`, 30), or null with the error saying why if it said no
     /// position.
     #[test]
-    fn adr_0069_a_new_subscription_that_fails_is_one_more_cut_off() {
+    fn adr_0010_a_new_subscription_that_fails_is_one_more_cut_off() {
         // A process that says it cut the peer off (`last_queued`) and fails
         // each new subscription (no `seq`, or an error), then, after
         // `serves` connections, goes or (`stays`) only stops answering.
@@ -1928,7 +1928,7 @@ mod tests {
     /// (`pending`, or `status` for `idle`), and unable to catch up, says what
     /// it missed and exits 3, as cut off while it waits does.
     #[test]
-    fn adr_0069_event_wait_cut_off_looking_says_what_it_missed() {
+    fn adr_0010_event_wait_cut_off_looking_says_what_it_missed() {
         for (what, cmd) in
             [("permission", "pending"), ("elicitation", "pending"), ("idle", "status")]
         {
@@ -1945,7 +1945,7 @@ mod tests {
     /// couldn't write) has the note say up to where: where the command
     /// subscribed again (at 20); null is for a process that has gone.
     #[test]
-    fn adr_0069_a_live_process_that_cant_be_caught_up_with_says_until_where() {
+    fn adr_0010_a_live_process_that_cant_be_caught_up_with_says_until_where() {
         let (mut conn, process) = cut_off_at("status");
         conn.subscribe(&["turn_ended"], None).unwrap();
         assert!(conn.call(json!({ "cmd": "status" })).is_err());
@@ -1967,7 +1967,7 @@ mod tests {
     /// can't catch up (records not written), it says what it missed and
     /// exits 3.
     #[test]
-    fn adr_0069_a_start_channel_cut_off_catches_up_or_says_what_it_missed() {
+    fn adr_0010_a_start_channel_cut_off_catches_up_or_says_what_it_missed() {
         let dir = env::temp_dir().join(format!("brnr-start-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();

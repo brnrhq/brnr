@@ -16,7 +16,7 @@
 //!
 //! brnr is a command-line tool, and this crate is its binary's library: its
 //! modules are private, and its public API is a facade that mirrors the
-//! command line (ADR 66 in docs/adr). Today that is [`run`], the command
+//! command line (ADR 8.5 in docs/adr). Today that is [`run`], the command
 //! line as a function; a typed facade, one module per command group and one
 //! function per verb, follows once `--json`'s shapes are settled (#150).
 //! From 1.0.0 the facade is covered by the compatibility promise. Nothing
@@ -68,7 +68,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             bug::install("acp");
             proxy::main(args)
         }
-        // The host's panics are its own to record (ADR 11).
+        // The host's panics are its own to record (ADR 3.7).
         Some(cmd) if cmd == "host" => host::main(args),
         first => {
             let rest: Vec<String> =
@@ -82,7 +82,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 /// What the crate's own integration tests (tests/) and fuzz targets (fuzz/)
 /// reach, with the `internals` feature on: re-exports of internals, which
 /// are not part of the public API and not covered by the compatibility
-/// promise (ADR 66). They can change or go in any release.
+/// promise (ADR 8.5). They can change or go in any release.
 #[cfg(feature = "internals")]
 #[doc(hidden)]
 pub mod internals {

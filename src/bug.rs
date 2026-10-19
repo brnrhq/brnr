@@ -1,4 +1,4 @@
-//! What brnr says for a bug report (ADR 45 in docs/adr): the OS it runs on,
+//! What brnr says for a bug report (ADR 11.5 in docs/adr): the OS it runs on,
 //! and, on a panic, a link to a pre-filled "new issue" form. Nothing is
 //! sent: the link is printed, and opening it is the user's choice.
 //!

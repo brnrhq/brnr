@@ -52,7 +52,7 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         .collect();
     outln!("options: {}", options.join(", "));
     if let Some(secs) = p["timeout_seconds"].as_u64() {
-        // As the timeout answers (ADR 63): the one reject_once option, else
+        // As the timeout answers (ADR 8.1): the one reject_once option, else
         // the turn is cancelled.
         let once = p["options"].as_array().into_iter().flatten();
         let once = once.filter(|o| o["kind"] == "reject_once").count();

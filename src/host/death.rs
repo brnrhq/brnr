@@ -1,8 +1,8 @@
-//! A process's own death is recorded (ADR 11 in docs/adr).
+//! A process's own death is recorded (ADR 3.7 in docs/adr).
 //!
 //! A detached process has no terminal: what it writes on stderr goes to its
 //! host log (`host-stderr`), through a pipe on fd 2 that a thread reads, a
-//! line or a piece of 64 KiB at a time (ADR 51).
+//! line or a piece of 64 KiB at a time (ADR 10.3).
 //!
 //! A panic, on any of its threads, ends the process. The hook shows it on
 //! stderr as Rust does, then only takes note of it and wakes the event loop:
@@ -23,7 +23,7 @@
 //! is told on fd 3, as of any start that fails, and the process exits 101.
 //!
 //! In the foreground, the hook also prints the link to report the panic
-//! (ADR 45), as the CLI does: there, stderr is the user's terminal or a
+//! (ADR 11.5), as the CLI does: there, stderr is the user's terminal or a
 //! supervisor's journal. Detached, stderr is the host log, and the link is
 //! for whoever is told of the panic: `brnr session new` or `brnr acp`, for a
 //! start that fails with it.
@@ -55,9 +55,9 @@ static PANICKED: OnceLock<String> = OnceLock::new();
 /// The event loop's channel, to wake it.
 static WAKE: OnceLock<SyncSender<Ev>> = OnceLock::new();
 
-/// The process runs in the foreground (ADR 9), started by this command: its
+/// The process runs in the foreground (ADR 3.5), started by this command: its
 /// stderr is where its user looks, so a panic's report link goes there too
-/// (ADR 45).
+/// (ADR 11.5).
 static FOREGROUND: OnceLock<&str> = OnceLock::new();
 
 /// `BRNR_TEST_PANIC` was set (see [`test_panic`]), and set to `start` (see
@@ -130,7 +130,7 @@ pub(super) fn test_panic_starting() {
 }
 
 /// Points fd 2 at a pipe whose lines go to the host log, as `host-stderr`,
-/// a piece of 64 KiB at most each, as a bridge's do (ADR 51). Returns the
+/// a piece of 64 KiB at most each, as a bridge's do (ADR 10.3). Returns the
 /// thread reading it, for [`release_stderr`].
 pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
     let (reader, writer) = io::pipe().ok()?;

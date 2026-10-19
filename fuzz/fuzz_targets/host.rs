@@ -16,7 +16,7 @@
 //! A headless host has no editor: `E`, `e` and `Z` do nothing there.
 //!
 //! A line that isn't a JSON object goes to the other side as it came
-//! (ADR 26).
+//! (ADR 2.5).
 
 #![no_main]
 
@@ -37,7 +37,7 @@ fn object(line: &[u8]) -> bool {
 fuzz_target!(|data: &[u8]| {
     static DIR: Once = Once::new();
     DIR.call_once(|| {
-        // Session locks go here, in the state directory (ADR 65), not where
+        // Session locks go here, in the state directory (ADR 3.9), not where
         // real sessions are; the runtime directory too.
         let dir = std::env::temp_dir().join(format!("brnr-fuzz-{}", std::process::id()));
         // SAFETY: done first, before the host makes any thread; nothing else

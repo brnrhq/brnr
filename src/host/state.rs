@@ -3,7 +3,7 @@
 //! session: title, mode, config options, plan, usage, running tool calls.
 //! `brnr session status` shows it, and the host turns changes into events.
 //!
-//! A `session_changed` says what changed (ADR 22 in docs/adr): the title or
+//! A `session_changed` says what changed (ADR 5.1 in docs/adr): the title or
 //! the mode, or of the config options and the commands, a JSON merge patch
 //! (RFC 7396) over them by id and name: `{"model": "opus"}` for an option's
 //! value, `{"review": {…}}` for a command added, `null` for what is gone.
@@ -92,7 +92,7 @@ impl SessionState {
         changed
     }
 
-    /// The mode, as `config set --mode` sets it (ADR 63): the config option
+    /// The mode, as `config set --mode` sets it (ADR 8.1): the config option
     /// of category `mode`, or with none the v1 modes' current one.
     pub(super) fn current_mode(&self) -> Option<&str> {
         match (self.option("mode"), &self.modes) {
@@ -109,7 +109,7 @@ impl SessionState {
     }
 
     /// The config option of ACP's `category` (`mode`, `model`, …): by
-    /// category only, an option's id being the agent's own (ADR 28).
+    /// category only, an option's id being the agent's own (ADR 6.2).
     pub(super) fn option(&self, category: &str) -> Option<&Value> {
         self.config.as_ref()?.as_array()?.iter().find(|o| o["category"] == category)
     }
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0028_a_config_value_is_sent_as_its_option_type_has_it() {
+    fn adr_0006_a_config_value_is_sent_as_its_option_type_has_it() {
         let state = SessionState {
             config: Some(json!([
                 { "id": "model", "type": "select", "currentValue": "small", "options": [] },

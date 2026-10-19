@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR 52: compare independent release builds of HEAD, not a cached binary.
+# ADR 11.7: compare independent release builds of HEAD, not a cached binary.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"

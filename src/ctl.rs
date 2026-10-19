@@ -1,6 +1,6 @@
 //! The control commands: start headless sessions and talk to running ones
 //! over their processes' control sockets. Most are `brnr <group> <verb>`,
-//! grouped by what they act on (ADR 63). `brnr --help` lists them; the
+//! grouped by what they act on (ADR 8.1). `brnr --help` lists them; the
 //! modules have the details:
 //!
 //! - talk.rs: `session new`, `session resume`, `prompt send`, `prompt cancel`,
@@ -19,7 +19,7 @@
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
 //! act on a session need it running and say so when it isn't. Which process
-//! serves a session is what the session's lock says (ADR 3, see lock.rs),
+//! serves a session is what the session's lock says (ADR 3.9, see lock.rs),
 //! whether that process answers or not.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
@@ -67,7 +67,7 @@ mod show;
 mod skill;
 mod talk;
 
-/// The command groups (ADR 63): `brnr <group> <verb>`, a group being what
+/// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
 const GROUPS: &[&str] =
     &["process", "session", "prompt", "queue", "permission", "elicitation", "config", "event"];
@@ -331,7 +331,7 @@ impl Host {
     }
 
     /// Whether it has closed `session` and holds its lock still, until its
-    /// records are written (ADR 48).
+    /// records are written (ADR 5.5).
     fn closing(&self, session: &str) -> bool {
         let closing = self.status.as_ref().and_then(|s| s["closing"].as_array());
         closing.is_some_and(|c| c.iter().any(|s| s == session))
@@ -357,7 +357,7 @@ enum Found<'a> {
 }
 
 /// What is said of `session`, closed in process `pid`, whose lock it holds
-/// until its records are written (ADR 48).
+/// until its records are written (ADR 5.5).
 fn closing(session: &str, pid: impl Display) -> String {
     format!(
         "{session} is closing in process {pid}; it's free once its records are written (2 s at most)"
@@ -367,7 +367,7 @@ fn closing(session: &str, pid: impl Display) -> String {
 /// "`session` is running in process `pid`", then `hint`; for a process
 /// started with another runtime directory, which the commands run here
 /// can't reach, that directory instead, and that `BRNR_DIR` set to it
-/// reaches the process (ADR 65).
+/// reaches the process (ADR 3.9).
 fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
     match lock::holder_dir(session) {
         Some(dir) => format!(
@@ -387,7 +387,7 @@ fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
 }
 
 /// The session with id `arg`, running or not: in the process holding its
-/// lock, or one that serves it shared, without the lock (ADR 3).
+/// lock, or one that serves it shared, without the lock (ADR 3.9).
 fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
     let serves = |host: &Host| host.sessions().iter().any(|s| s["session_id"] == arg);
     if let Some(pid) = lock::holder(arg) {
@@ -532,9 +532,9 @@ fn stop(args: &[String]) -> Result<(), String> {
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first. Only the first and last record of each events
 /// file are read: the first names the cwd, and the session it was forked
-/// from if it opened as a fork (ADR 16), the last says when and in which
+/// from if it opened as a fork (ADR 3.12), the last says when and in which
 /// process the session was last active, or, if it is a deletion's, a record
-/// of no process's (ADR 63), the last that names a process does. That
+/// of no process's (ADR 8.1), the last that names a process does. That
 /// process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // A transcript is identified by its file (cwd folder + session id); a
@@ -565,7 +565,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
             continue;
         }
         // The process that last served it: a deletion's record is no
-        // process's (ADR 63).
+        // process's (ADR 8.1).
         let served = match last["host_id"].is_string() {
             true => Some(last.clone()),
             false => last_record_where(&file, |r| r["host_id"].is_string()),
@@ -594,7 +594,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
 /// The session an open session `s` (as its process reports it) was forked
 /// from: as the process says, or, where it doesn't know (the fork resumed
 /// since, here or in another process), as its transcript's first record
-/// says (ADR 16). Null for one that isn't a fork, or whose transcript isn't
+/// says (ADR 3.12). Null for one that isn't a fork, or whose transcript isn't
 /// kept.
 fn forked_from(s: &Value) -> Value {
     if s["forked_from"].is_string() {
@@ -604,7 +604,7 @@ fn forked_from(s: &Value) -> Value {
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
-/// The first record in a file that brnr can read (ADR 55).
+/// The first record in a file that brnr can read (ADR 5.1).
 fn first_record(path: &Path) -> Option<Value> {
     let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
     lines.map_while(Result::ok).find_map(|line| log::as_record(&line))
@@ -612,7 +612,7 @@ fn first_record(path: &Path) -> Option<Value> {
 
 /// The last record in a file that brnr can read, read backwards so a long
 /// transcript costs no more than its last records. A line brnr can't read
-/// is passed over (ADR 55): one a process that died mid-write cut short,
+/// is passed over (ADR 5.1): one a process that died mid-write cut short,
 /// at the end or, once another process has taken the file, before what it
 /// wrote. A line cut short is never read as a record: an object ends only
 /// at its last byte.
@@ -662,7 +662,7 @@ fn status(args: &[String]) -> Result<(), String> {
     let (host, id) = running_session(&hosts, &arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
-    // Processes serving it without its lock, `shared_sessions` (ADR 3): what
+    // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session_id"] == id.as_str() && s["shared"] == true;
     let shared_by: Vec<u64> = hosts
@@ -687,7 +687,7 @@ fn status(args: &[String]) -> Result<(), String> {
         "owner": st["owner"],
         "held_by": lock::holder(&id),
         "shared_by": shared_by,
-        // An editor's session served without its lock (ADR 50).
+        // An editor's session served without its lock (ADR 3.9).
         "lock_error": x["lock_error"],
         "cwd": x["cwd"],
         "forked_from": forked_from(x),
@@ -703,7 +703,7 @@ fn status(args: &[String]) -> Result<(), String> {
         "context": x["context"],
         "usage": x["usage"],
         // How the last turn ended, and the tokens the agent said it used
-        // (ADR 71).
+        // (ADR 4.4).
         "last_turn": x["last_turn"],
         "last_message": x["last_message"],
         "last_active": x["last_active"],
@@ -771,7 +771,7 @@ fn describe_status(x: &Value, arg: &str) -> String {
         out.push_str(&format!("{}\n", settings.join(", ")));
     }
     // The state as JSON has it: `busy` is working, `waiting` is a turn
-    // waiting for an approval or for input (ADR 68); how long when the
+    // waiting for an approval or for input (ADR 4.5); how long when the
     // turn's start is known.
     let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
     let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
@@ -862,7 +862,7 @@ fn pending(args: &[String]) -> Result<(), String> {
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
         // Those that answered `discover`: one that didn't is passed over, as
-        // process list and session list do (ADR 3), not waited for again,
+        // process list and session list do (ADR 3.9), not waited for again,
         // and said to be (P3).
         None => {
             for host in hosts.iter().filter(|h| h.status.is_none()) {
@@ -886,7 +886,7 @@ fn pending(args: &[String]) -> Result<(), String> {
     }
     // A request nests as deep as the agent made it: read as the host reads
     // the agent's line, and listed and let go on a stack that takes it
-    // (ADR 26).
+    // (ADR 2.5).
     let depth = answers.iter().map(|(_, line)| json::depth(line.as_bytes())).max().unwrap_or(0);
     json::on_stack(depth, || list_pending(&answers, only.as_deref(), json_out))
         .unwrap_or_else(|| Err(format!("no stack to be had for an answer {depth} deep")))
@@ -954,7 +954,7 @@ fn list_pending(
 
 /// `permission allow` and `reject` (`cmd`): the request's option of one
 /// kind, or the one `--option` names; the host picks it, and says why it
-/// can't (ADR 63).
+/// can't (ADR 8.1).
 fn answer(args: &[String], cmd: &str) -> Result<(), String> {
     let mut positional = Vec::new();
     let mut option = None;
@@ -1052,7 +1052,7 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
                 None => return Err(why),
             },
         };
-        // Shown and let go of on a stack that takes it (ADR 26). Whether
+        // Shown and let go of on a stack that takes it (ADR 2.5). Whether
         // it ends the watch: the end, or stdout closed.
         let ended = conn.deep(event, |_, event| {
             let name = event["event"].as_str().unwrap_or_default();
@@ -1143,7 +1143,7 @@ fn discover() -> Result<Vec<Host>, String> {
 enum Probe {
     /// Running and answering: its status.
     Answered(Value),
-    /// Running but not answering (ADR 3): why.
+    /// Running but not answering (ADR 3.9): why.
     Silent(String),
     /// Gone, whatever process has its pid now.
     Gone,
@@ -1324,10 +1324,10 @@ mod tests {
     use super::*;
 
     /// `session status` says the state its JSON has: idle, busy (working, and
-    /// for how long when it knows) or waiting for an approval (ADR 34), or for
-    /// input (ADR 68).
+    /// for how long when it knows) or waiting for an approval (ADR 8.2), or for
+    /// input (ADR 4.5).
     #[test]
-    fn adr_0034_status_says_the_sessions_state() {
+    fn adr_0008_status_says_the_sessions_state() {
         let state = |state: &str, secs: Value| {
             let x = json!({ "session": "s", "state": state, "turn_seconds": secs });
             let text = describe_status(&x, "s");
@@ -1338,16 +1338,16 @@ mod tests {
         assert_eq!(state("busy", Value::Null), "working");
         assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
         assert_eq!(state("waiting", Value::Null), "waiting for an approval");
-        // Waiting for an elicitation only (ADR 68).
+        // Waiting for an elicitation only (ADR 4.5).
         let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
         assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
     }
 
     /// What `session list` and `session resume` take from a transcript, whatever
-    /// its end (ADR 55): ending in a newline or not; cut short; a whole line
+    /// its end (ADR 5.1): ending in a newline or not; cut short; a whole line
     /// that isn't a record, last or before the last; empty; nothing readable.
     #[test]
-    fn adr_0055_the_first_and_last_records_are_ones_brnr_can_read() {
+    fn adr_0005_the_first_and_last_records_are_ones_brnr_can_read() {
         let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));
         let cases: [(&str, Option<i64>, Option<i64>); 9] = [
             ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),

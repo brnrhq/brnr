@@ -48,7 +48,7 @@ const HOST_SIGNAL_LINK_FD: c_int = 4;
 #[derive(Default)]
 struct Options {
     profile: Option<String>,
-    /// `--strict`: stable ACP to the letter (ADR 41), as `strict = true` in
+    /// `--strict`: stable ACP to the letter (ADR 2.1), as `strict = true` in
     /// the profile.
     strict: bool,
 }
@@ -194,7 +194,7 @@ fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
                 }
             }
             // The agent's stdout has ended: ours does, for the editor to
-            // see EOF now rather than when we exit (ADR 62).
+            // see EOF now rather than when we exit (ADR 2.6).
             frame::EOF => {
                 stdout_open = false;
                 if let Err(err) = sys::end_stdout() {

@@ -1,17 +1,17 @@
 //! Requests the host sends the agent as its client:
 //!
 //! - opening the session of a headless start: `initialize` (whose answer
-//!   must choose ACP version 1, ADR 54), `authenticate`
-//!   if the start names a login method (ADR 30), then `session/new`,
+//!   must choose ACP version 1, ADR 2.2), `authenticate`
+//!   if the start names a login method (ADR 4.7), then `session/new`,
 //!   `session/resume` or `session/load` (a resumed session's lock taken
-//!   first, ADR 3), then the settings the start asked for, its flags over
-//!   its profile's (ADR 58); then the start commits (see start.rs), and the
+//!   first, ADR 3.9), then the settings the start asked for, its flags over
+//!   its profile's (ADR 6.1); then the start commits (see start.rs), and the
 //!   prompt goes;
 //! - what bridges ask of the agent through the host: settings (`config set`,
-//!   resolved as a start's are, ADR 63), fork or close a session. The bridge
+//!   resolved as a start's are, ADR 8.1), fork or close a session. The bridge
 //!   gets its answer when the agent's arrives;
 //! - a session a bridge opens in the running process (`new`, `resume`:
-//!   `session new --pid`, `session resume --pid`, ADR 63), opened, set up and
+//!   `session new --pid`, `session resume --pid`, ADR 8.1), opened, set up and
 //!   committed as a start's is. The commit is the bridge's answer, queued for
 //!   it while it is still connected, and then the prompt goes. Whatever fails
 //!   after the agent opened the session (a setting, the bridge's timeout
@@ -120,20 +120,20 @@ pub(super) enum SetupOf {
     Open(Box<Opening>),
 }
 
-/// A session a bridge opens in this process (`new`, `resume`, ADR 63): who
+/// A session a bridge opens in this process (`new`, `resume`, ADR 8.1): who
 /// asked, and what it commits with.
 pub(super) struct Opening {
     pub(super) peer: u64,
     pub(super) req_id: Option<Value>,
     /// Where the session runs.
     pub(super) cwd: PathBuf,
-    /// Its flags, over the process's profile's as a start's are (ADR 58).
+    /// Its flags, over the process's profile's as a start's are (ADR 6.1).
     pub(super) settings: Settings,
     /// Sent once it commits.
     pub(super) prompt: Option<Prompt>,
     /// The command's timeout: past it the opening is abandoned rather than
     /// committed, before the command, which waits a little longer, gives
-    /// up (ADR 7).
+    /// up (ADR 3.4).
     pub(super) deadline: Option<Instant>,
 }
 
@@ -149,10 +149,10 @@ pub(super) enum PeerOp {
 impl Host {
     /// Started with no editor (`brnr session new` or `resume`): the host
     /// opens the session itself. It offers no `fs` or `terminal`: with no
-    /// editor, nothing would serve them (ADR 67 in docs/adr).
+    /// editor, nothing would serve them (ADR 2.7 in docs/adr).
     pub(super) fn begin_headless_start(&mut self) {
-        // Elicitation in both modes (ADR 68): a form, or a URL the user
-        // opens; as the schema has them, an object per mode (ADR 43).
+        // Elicitation in both modes (ADR 4.5): a form, or a URL the user
+        // opens; as the schema has them, an object per mode (ADR 2.3).
         let elicitation = ElicitationCapabilities::new()
             .form(ElicitationFormCapabilities::new())
             .url(ElicitationUrlCapabilities::new());
@@ -174,11 +174,11 @@ impl Host {
         line.push(b'\n');
         let request = ClientRequest { by: Requester::Host(kind), session: session.clone() };
         self.client_requests.insert(key.clone(), request);
-        // Without the MCP servers' secrets (ADR 25 in docs/adr).
+        // Without the MCP servers' secrets (ADR 9.1 in docs/adr).
         let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());
         self.record(session.as_deref(), Dir::ControlToAgent, &recorded);
         if matches!(method, "session/new" | "session/fork") {
-            // A fork's source is the session it names (ADR 16).
+            // A fork's source is the session it names (ADR 3.12).
             let forked_from = session.filter(|_| method == "session/fork");
             let (request, dir) = (Some(recorded), Dir::ControlToAgent);
             let pending = super::acp::Pending::New { cwd, request, dir, forked_from };
@@ -208,7 +208,7 @@ impl Host {
                 HostRequest::Open(Open::Resume(_)) => "session/resume".to_owned(),
                 HostRequest::Open(Open::Load(session)) => {
                     // Its lock goes once its replay is written, with the
-                    // exit's records at the latest (ADR 48).
+                    // exit's records at the latest (ADR 5.5).
                     if let Some(i) = self.find(session) {
                         let hold = self.sessions.remove(i).hold;
                         self.let_go(session.clone(), hold, None);
@@ -231,7 +231,7 @@ impl Host {
         match request {
             HostRequest::Initialize => {
                 // An answer in a version brnr doesn't speak isn't read any
-                // further, and nothing more is sent (ADR 54).
+                // further, and nothing more is sent (ADR 2.2).
                 if let Err(err) = schema::check_protocol_version(&result) {
                     return self.fail_start(&err);
                 }
@@ -263,7 +263,7 @@ impl Host {
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
                 // asked for it; a new one's, as it opened. Without it, the
-                // session gets no work, and nobody is to find it (ADR 50).
+                // session gets no work, and nobody is to find it (ADR 3.9).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sessions.remove(i);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
@@ -337,7 +337,7 @@ impl Host {
         let caps = self.caps;
         if caps.resume || caps.load {
             // Taken before the agent hears of it: a session another process
-            // holds is refused (ADR 3).
+            // holds is refused (ADR 3.9).
             if let Err(err) = self.own(&session) {
                 return self.fail_start(&err);
             }
@@ -346,7 +346,7 @@ impl Host {
             self.host_request("session/resume", params, HostRequest::Open(Open::Resume(session)));
         } else if caps.load {
             // The agent replays the history: recorded unless the transcript
-            // has it already (ADR 57).
+            // has it already (ADR 5.6).
             let i = self.open_session(&session, None);
             self.begin_replay(i, !self.transcript);
             self.host_request("session/load", params, HostRequest::Open(Open::Load(session)));
@@ -356,7 +356,7 @@ impl Host {
     }
 
     /// A load of session `i` is to replay its history, `record`ed if brnr
-    /// has no transcript of it (ADR 57).
+    /// has no transcript of it (ADR 5.6).
     pub(super) fn begin_replay(&mut self, i: usize, record: bool) {
         // A message still coming isn't the history's.
         self.flush_agent_message(i);
@@ -375,7 +375,7 @@ impl Host {
     }
 
     /// Session `i`'s replay, ended, whether its loads succeeded or not: a
-    /// tool call the history left unfinished isn't running now (ADR 34).
+    /// tool call the history left unfinished isn't running now (ADR 8.2).
     pub(super) fn drop_replay(&mut self, i: usize) -> Option<Replay> {
         let replay = self.sessions[i].replay.take()?;
         if replay.record {
@@ -386,7 +386,7 @@ impl Host {
 
     /// The end of a load's replay, when the agent answers it: the history
     /// event says how many updates it replayed, and whether they were
-    /// recorded (ADR 57).
+    /// recorded (ADR 5.6).
     pub(super) fn end_replay(&mut self, i: usize) {
         // The last replayed message, while it is still marked as replayed.
         self.flush_agent_message(i);
@@ -467,7 +467,7 @@ impl Host {
             // A config option's answer has them all (a mode or model too);
             // what it changed is a `session_changed`.
             self.apply_result(i, &result);
-            // The agent answers only the requester (ADR 28): an editor is
+            // The agent answers only the requester (ADR 6.2): an editor is
             // told here (see experimental.rs).
             match &step {
                 SetupStep::Mode(mode) => self.mode_set(&setup.session, mode),
@@ -497,7 +497,7 @@ impl Host {
         }
     }
 
-    /// The commit (ADR 7): brnr session new hears of the session before the
+    /// The commit (ADR 3.4): brnr session new hears of the session before the
     /// agent gets any work, and if the report can't be written to it, nobody
     /// knows this session exists. Then the prompt goes.
     fn finish_start(&mut self, i: usize) {
@@ -521,7 +521,7 @@ impl Host {
 
     pub(super) fn fail_start(&mut self, error: &str) {
         // Nobody is to know of a session it was opening: nothing was recorded
-        // under one still claimed, so its lock can go now (ADR 48).
+        // under one still claimed, so its lock can go now (ADR 5.5).
         self.claimed.clear();
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
@@ -531,7 +531,7 @@ impl Host {
     /// Reports `error` to brnr session new if it is still waiting, and in the
     /// foreground on stderr: a step after the session opened (its mode, a
     /// config option) fails the start as much as opening it does. It ends
-    /// with the agent's last lines on stderr (ADR 10).
+    /// with the agent's last lines on stderr (ADR 3.6).
     pub(super) fn startup_failed(&mut self, error: &str) {
         let error = self.with_stderr(error);
         if self.foreground && !self.start_done && !self.startup_reported {
@@ -543,7 +543,7 @@ impl Host {
 
     /// The agent needs a login, which a headless host can't do: say how.
     fn auth_hint(&self) -> String {
-        // By id too: that is what --auth takes (ADR 30).
+        // By id too: that is what --auth takes (ADR 4.7).
         let methods: Vec<String> =
             self.auth_methods.iter().map(|m| format!("{} `{}`", m.name(), m.id())).collect();
         let offered =
@@ -557,8 +557,8 @@ impl Host {
 
     // ---- for bridges ---------------------------------------------------
 
-    /// The agent's answer to a bridge's `new` or `resume` (ADR 63): the
-    /// session opens as a start's does, locked (ADR 3, ADR 50), and then its
+    /// The agent's answer to a bridge's `new` or `resume` (ADR 8.1): the
+    /// session opens as a start's does, locked (ADR 3.9), and then its
     /// settings are set. Until it commits it takes no requests (see
     /// `Session::opening`).
     fn peer_opened(&mut self, open: Open, opening: Box<Opening>, msg: &Map<String, Value>) {
@@ -571,9 +571,9 @@ impl Host {
             let error = format!("{what} failed: {}", error_message(error));
             let mut reply = json!({ "ok": false, "error": error });
             // Its lock, taken as it opened, goes, and the bridge is answered,
-            // once what was recorded of it (a load's replay, ADR 57) is
+            // once what was recorded of it (a load's replay, ADR 5.6) is
             // written, as a close's are: whoever resumes it next appends
-            // after that (ADR 48).
+            // after that (ADR 5.5).
             let hold = asked.as_ref().and_then(|session| match self.find(session) {
                 Some(i) => {
                     // The last replayed message, still marked as replayed (P3).
@@ -608,7 +608,7 @@ impl Host {
         self.sessions[i].opening = true;
         self.end_replay(i);
         self.sessions[i].state.result(&result);
-        // The process's profile's settings, under the bridge's (ADR 58).
+        // The process's profile's settings, under the bridge's (ADR 6.1).
         match resolve_settings(&opening.settings, &self.settings.1, &self.sessions[i].state) {
             Ok(steps) => {
                 self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Open(opening) })
@@ -618,7 +618,7 @@ impl Host {
     }
 
     /// The commit of a bridge's `new` or `resume`, as a start's ready report
-    /// is (ADR 7): the bridge is answered with the session and the message
+    /// is (ADR 3.4): the bridge is answered with the session and the message
     /// its prompt will be, and then the prompt goes. A bridge gone before its
     /// answer is queued (it gave up, or was stopped) is nobody to tell of the
     /// session, which is closed again; one that goes after leaves it running,
@@ -645,7 +645,7 @@ impl Host {
 
     /// Why a bridge's `new` or `resume` can't go on to commit: the process
     /// is stopping, so the session would end unused with it, or the
-    /// command's timeout has passed (ADR 7).
+    /// command's timeout has passed (ADR 3.4).
     fn open_refused(&self, opening: &Opening) -> Option<String> {
         if self.stop_requested || self.agent_in.is_none() {
             return Some("the process is stopping".into());
@@ -770,8 +770,8 @@ impl Host {
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
-                // one that can't be locked, can't be served here (ADR 3, ADR 50).
-                // Nothing to let go of once written (ADR 48): this process
+                // one that can't be locked, can't be served here (ADR 3.9).
+                // Nothing to let go of once written (ADR 5.5): this process
                 // took no lock on it, and opened no transcript for it.
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.sink.close_session(&self.sessions.remove(i).id);
@@ -796,7 +796,7 @@ impl Host {
                     reply["req_id"] = req_id;
                 }
                 // Once its records are written: whoever resumes it next
-                // appends after them (ADR 48).
+                // appends after them (ADR 5.5).
                 self.close_session(i, by, Some((peer, reply)));
                 self.stop_if_empty();
                 return None;
@@ -808,7 +808,7 @@ impl Host {
 /// What the agent can do, as it said in `initialize`: for status, and for
 /// brnr to check up front. What is stable ACP is read as the schema has it;
 /// `fork` is unstable, and `steering` a convention advertised in `_meta`
-/// (ADR 41), so both are read from the result as it came.
+/// (ADR 2.1), so both are read from the result as it came.
 #[derive(Clone, Copy, Default, Serialize)]
 pub(super) struct Capabilities {
     pub(super) resume: bool,
@@ -843,19 +843,19 @@ impl Capabilities {
 }
 
 /// The settings of a start or of `config set`, resolved against session
-/// `state`'s config options into what is sent, in order (ADR 58, ADR 63):
+/// `state`'s config options into what is sent, in order (ADR 6.1, ADR 8.1):
 /// `flags` over `profile`, setting by setting, `profile` being empty for
 /// `config set`.
 ///
 /// `mode`, `model` and `thought_level` find their option by category
-/// (ADR 28), so `--model` and an option set by the model option's id are
+/// (ADR 6.2), so `--model` and an option set by the model option's id are
 /// one setting; `options` are by id. A mode is `session/set_mode` only for
 /// an agent with v1 modes and no mode option. Two values for one setting
 /// from one source fail (P4); a mode, model or thought level the agent has
 /// no option for, a v1 mode it doesn't list, or a value its option's type
 /// doesn't take fails before any is sent (P7). An option by id the agent
 /// hasn't advertised is sent, its value as a value id, for the agent to
-/// take or refuse (ADR 28). The mode goes first, then the model, the
+/// take or refuse (ADR 6.2). The mode goes first, then the model, the
 /// thought level, and the other options by id.
 pub(super) fn resolve_settings(
     flags: &Settings,
@@ -899,7 +899,7 @@ pub(super) fn resolve_settings(
     let by_id =
         options.into_iter().map(|(id, value)| SetupStep::Option { id, value, category: None });
     steps.extend(by_id);
-    // A value its option's type doesn't take (ADR 28) fails before any of
+    // A value its option's type doesn't take (ADR 6.2) fails before any of
     // them is sent.
     for step in &steps {
         if let SetupStep::Option { id, value, .. } = step {
@@ -965,7 +965,7 @@ fn is_auth_error(error: &Value) -> bool {
     })
 }
 
-/// The `history` event of `session`'s `replay`, ended (ADR 57).
+/// The `history` event of `session`'s `replay`, ended (ADR 5.6).
 pub(super) fn history(session: &str, replay: &Replay) -> Value {
     json!({
         "event": "history",
@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0028_a_start_refuses_a_boolean_it_cant_send_before_sending_any() {
+    fn adr_0006_a_start_refuses_a_boolean_it_cant_send_before_sending_any() {
         let state = SessionState {
             config: Some(json!([
                 { "id": "model", "category": "model", "type": "select", "currentValue": "small" },

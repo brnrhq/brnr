@@ -1,6 +1,6 @@
-//! Session locks (ADR 3 in docs/adr). A process holds an exclusive `flock` on
+//! Session locks (ADR 3.9 in docs/adr). A process holds an exclusive `flock` on
 //! `sessions/<id>.lock` in the state directory, beside the transcripts it
-//! guards (ADR 65), for each session it serves, with its pid, the session's
+//! guards (ADR 3.9), for each session it serves, with its pid, the session's
 //! id and its runtime directory written inside: taking a session is taking
 //! its lock. The kernel lets go of it when the process ends, however it
 //! ends, so nothing has to be cleaned up; a process that closes a session
@@ -49,7 +49,7 @@ pub(crate) enum Error {
     /// Another process holds it: its pid.
     Held(u32),
     /// It can't be taken: why, naming the path. Neither held nor free, and
-    /// never taken for either (ADR 3).
+    /// never taken for either (ADR 3.9).
     Io(String),
 }
 
@@ -65,7 +65,7 @@ pub(crate) struct Entry {
 impl Entry {
     /// Whether its holder's runtime directory is another than this
     /// process's: a process whose socket and metadata the commands run here
-    /// don't see (ADR 65).
+    /// don't see (ADR 3.9).
     pub(crate) fn elsewhere(&self) -> bool {
         let here = paths::runtime_dir();
         self.pid.is_some() && self.dir.as_deref().is_some_and(|dir| !same_dir(dir, &here))
@@ -122,7 +122,7 @@ pub(crate) fn holder(session: &str) -> Option<u32> {
 
 /// The runtime directory of the process holding `session`'s lock, when it
 /// isn't this process's: the commands run here can't reach that process,
-/// and `BRNR_DIR` set to it can (ADR 65).
+/// and `BRNR_DIR` set to it can (ADR 3.9).
 pub(crate) fn holder_dir(session: &str) -> Option<PathBuf> {
     look(paths::session_lock(session)).filter(Entry::elsewhere)?.dir
 }
@@ -138,7 +138,7 @@ pub(crate) fn all() -> Vec<Entry> {
 }
 
 /// What is where a lock file goes but isn't a file (a directory, a
-/// symlink): its session can't be locked (ADR 50). Each, and what it is.
+/// symlink): its session can't be locked (ADR 3.9). Each, and what it is.
 pub(crate) fn unusable() -> Vec<(PathBuf, &'static str)> {
     let Ok(dir) = fs::read_dir(paths::session_locks()) else { return Vec::new() };
     let what = |kind: fs::FileType| match () {

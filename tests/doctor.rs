@@ -68,7 +68,7 @@ fn readable_transcripts_are_made_private() {
     mkdir(&home, 0o755);
     mkdir(&home.join("projects"), 0o755);
     mkdir(&project, 0o755);
-    // A session's events and its raw ACP (ADR 22).
+    // A session's events and its raw ACP (ADR 5.1).
     write(&project.join("s.jsonl"), "{}\n", 0o644);
     write(&project.join("s.acp.jsonl"), "{}\n", 0o644);
 
@@ -163,9 +163,9 @@ fn stale_session_locks_are_removed() {
 /// A directory or a symlink where a session's lock file goes keeps the
 /// session from being locked: a failure, not a lock left by a process that
 /// is gone, and --fix leaves it to the user. Nor is it locked with sessions/
-/// itself open to others (ADR 50).
+/// itself open to others (ADR 3.9).
 #[test]
-fn adr_0050_what_keeps_a_session_from_being_locked_fails() {
+fn adr_0003_what_keeps_a_session_from_being_locked_fails() {
     let env = Env::new("dr-nolock");
     let sessions = env.dir.join("home/sessions");
     mkdir(&sessions.join("sess-1.lock"), 0o700);
@@ -273,7 +273,7 @@ fn misplaced_keys_fail() {
         "{text}"
     );
 
-    // The headless `config` is `options` now (ADR 63), with no alias.
+    // The headless `config` is `options` now (ADR 8.1), with no alias.
     write(
         &env.dir.join("none.toml"),
         "[profiles.old.headless]\nconfig = { effort = \"high\" }\n",
@@ -398,7 +398,7 @@ fn kill_unrecorded(info: &Value) {
 }
 
 /// A process killed without a word (SIGKILL) leaves a host log without
-/// `exited` (ADR 11): doctor says so, with the sessions it had open, and
+/// `exited` (ADR 3.7): doctor says so, with the sessions it had open, and
 /// --fix leaves the record. One that stopped recorded it.
 #[test]
 fn a_death_without_a_record_is_reported() {
@@ -453,7 +453,7 @@ fn a_failed_start_is_no_death() {
 }
 
 #[test]
-fn adr_0039_adapter_versions() {
+fn adr_0011_adapter_versions() {
     let env = Env::new("dr-versions");
     let bin = env.dir.join("bin");
     mkdir(&bin, 0o755);
@@ -500,13 +500,13 @@ fn adr_0039_adapter_versions() {
     assert!(line("claude-agent-acp").starts_with("--"), "{text}");
 }
 
-/// `doctor --report` (ADR 45): the version, the OS, the adapters, the checks
+/// `doctor --report` (ADR 11.5): the version, the OS, the adapters, the checks
 /// that aren't ok, and the end of the latest host log and of the latest of a
 /// process that panicked or died without recording it, with secrets
 /// redacted, even where an older brnr didn't, and the home directory as `~`.
 /// `--json` has the same data.
 #[test]
-fn adr_0045_the_report_is_what_to_paste() {
+fn adr_0011_the_report_is_what_to_paste() {
     let env = Env::new("dr-report");
     let secret = "s3cret-token-value";
     env.write_config(&format!(
@@ -584,7 +584,7 @@ fn adr_0045_the_report_is_what_to_paste() {
 /// A process killed without a word is the one the report shows, besides
 /// the latest.
 #[test]
-fn adr_0045_the_report_shows_a_death_without_a_record() {
+fn adr_0011_the_report_shows_a_death_without_a_record() {
     let env = Env::new("dr-rdied");
     env.start(&[]);
     let killed = env.hosts().remove(0);

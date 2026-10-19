@@ -18,7 +18,7 @@ With --brnr, <dir> has brnr in it too, and brnr is checked with them, in a
 scratch home: brnr doctor finds each next to it and reads its version, and
 brnr session list lists the Claude adapter's sessions (initialize and
 session/list through brnr's ACP client). Then a fork's lifecycle in one brnr
-process (ADR 16), through the Claude adapter with fake_claude.py as its
+process (ADR 3.12), through the Claude adapter with fake_claude.py as its
 Claude Code: a session started with a prompt, forked, the fork prompted and
 closed, and the session prompted again; each prompt answered "ok".
 
@@ -206,7 +206,7 @@ if with_brnr:
         print(f"ok   brnr session list -- brnr-claude-adapter: {len(listed)} sessions")
 
     # A fork prompted and closed in the process that forked it, and its parent
-    # prompted after (ADR 16), with fake_claude.py as Claude Code.
+    # prompted after (ADR 3.12), with fake_claude.py as Claude Code.
     fenv = dict(
         benv,
         CLAUDE_CODE_EXECUTABLE=os.path.join(here, "fake_claude.py"),

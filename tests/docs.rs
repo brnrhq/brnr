@@ -57,7 +57,7 @@ enum Before {
     Slow,
     /// An approval waiting, `p1`.
     Approval,
-    /// An elicitation waiting, `e1`: the fake agent's form (ADR 68).
+    /// An elicitation waiting, `e1`: the fake agent's form (ADR 4.5).
     Elicitation,
     /// A session that ran a turn and was closed.
     Ended,
@@ -348,7 +348,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKERS: usize = 6;
 
 #[test]
-fn adr_0046_every_example_is_run_or_skipped_and_runs() {
+fn adr_0008_every_example_is_run_or_skipped_and_runs() {
     let (lines, _) = documents();
     let mut problems = Vec::new();
     let mut used = vec![false; EXAMPLES.len()];
@@ -398,7 +398,7 @@ fn adr_0046_every_example_is_run_or_skipped_and_runs() {
 }
 
 #[test]
-fn adr_0046_every_toml_block_loads() {
+fn adr_0008_every_toml_block_loads() {
     let (_, blocks) = documents();
     assert!(!blocks.is_empty());
     let mut problems = Vec::new();

@@ -1,5 +1,5 @@
-//! An ACP line as json.rs reads it (ADR 26), and the parts of it brnr reads
-//! as the schema's types (ADR 43), on the stack json.rs gives it.
+//! An ACP line as json.rs reads it (ADR 2.5), and the parts of it brnr reads
+//! as the schema's types (ADR 2.3), on the stack json.rs gives it.
 
 #![no_main]
 

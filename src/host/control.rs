@@ -13,9 +13,9 @@
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
 //!   is in its transcript, which a logger thread writes (`brnr event log`,
-//!   ADR 48); `lost` if a file has lost records it hasn't noted yet (ADR 69)
+//!   ADR 5.5); `lost` if a file has lost records it hasn't noted yet (ADR 10.2)
 //! - `send` `{session, text?, blocks?, mode?: prompt|steer|interrupt|context,
-//!   replace?}` (ADR 18 in docs/adr): the response's `status` is
+//!   replace?}` (ADR 4.2 in docs/adr): the response's `status` is
 //!   `delivered`, `held` (until the running turn ends), `steered` (into it)
 //!   or `interrupting`, and it has the message's id (`m<n>`), which the
 //!   `user_message` of its turn carries, and the `turn_ended` in `messages`
@@ -29,35 +29,35 @@
 //!   (started bridges are subscribed from the start). The answer names the
 //!   connection (`peer`), the process (`host_id`) and the last event before
 //!   it (`seq`): every event has a position, its `seq`, one more than the
-//!   last event's or ACP message's of the process (ADR 69)
+//!   last event's or ACP message's of the process (ADR 10.2)
 //! - `was_cut_off` `{peer}`: whether the process cut that connection off,
 //!   and the last event it queued for it (`last_queued`), so that a peer
-//!   that has reconnected can catch up from the transcript (ADR 69). It
+//!   that has reconnected can catch up from the transcript (ADR 10.2). It
 //!   says only where; the events are in the transcript
 //! - `pending`: permission requests waiting for an answer, in full, and
-//!   beside them `elicitations`, the agent's requests for input (ADR 68)
+//!   beside them `elicitations`, the agent's requests for input (ADR 4.5)
 //! - `allow` / `reject` `{session, request, always?, option?}`: with the
 //!   option of kind `allow_once` (`allow_always` with `always`), or
-//!   `reject_once` (`reject_always`), or the option named (ADR 63)
+//!   `reject_once` (`reject_always`), or the option named (ADR 8.1)
 //! - `elicitation` `{session, request, action: accept|decline|cancel,
-//!   content?}` (ADR 68): answers an elicitation with ACP's action, an
+//!   content?}` (ADR 4.5): answers an elicitation with ACP's action, an
 //!   accept's `content` (an object of the form's fields) checked against its
 //!   schema first; `session` is null for one scoped to a request outside any
 //!   session
 //! - `set_config` `{session, mode?, model?, thought_level?, options?: {id:
-//!   value}}` (`config set`, ADR 63): resolved as a start's settings are
-//!   (ADR 58), sent one at a time, and answered once the agent has set them
+//!   value}}` (`config set`, ADR 8.1): resolved as a start's settings are
+//!   (ADR 6.1), sent one at a time, and answered once the agent has set them
 //!   all (`set`, what was sent) or refused one
 //! - `fork` `{session}`: never in an editor's process
 //! - `new` `{cwd?, mode?, model?, thought_level?, options?, text?, blocks?,
 //!   timeout?}` and `resume` `{session, …}` (`session new --pid`, `session
-//!   resume --pid`, ADR 63): a session opened in this process
+//!   resume --pid`, ADR 8.1): a session opened in this process
 //!   (`session/new`, or `session/resume` or `session/load`), in `cwd` (the
 //!   process's by default), with the process's MCP servers, then its
 //!   settings, over the profile's as a start's are, then the prompt `text`
 //!   and `blocks` if any. Answered `{session, pid, message}` once it is set
 //!   up, before the prompt goes: the commit, as a start's ready report is
-//!   (ADR 7). One that fails after the agent opened it is closed again, and
+//!   (ADR 3.4). One that fails after the agent opened it is closed again, and
 //!   the answer says so: a setting, `timeout` seconds passing, the process
 //!   stopping. Never in an editor's process, nor with `stop_when_idle` when
 //!   the agent can't close sessions, as `fork`
@@ -71,7 +71,7 @@
 //! On an editor's session every command that acts on it (`send`, `cancel`,
 //! `queue clear --context`, `allow`, `reject`, `elicitation`, `set_config`
 //! and `close`) is experimental: refused unless the editor's profile enables
-//! it (ADR 4, see experimental.rs). Bridges observe it freely.
+//! it (ADR 7.1, see experimental.rs). Bridges observe it freely.
 //!
 //! Events (`{"event": …, "ts", "host_id", …}`): see [`EVENTS`]. Subscribing
 //! without a list gets every event except `acp`, which is busy (one per
@@ -88,10 +88,10 @@
 //! fast) doesn't look like a peer that stopped reading, and the line that
 //! takes a peer past it doesn't count, nor (up to [`ASIDE_BYTES`] of them)
 //! lines longer than the whole queue, so one long message doesn't either,
-//! even when it comes twice, as its ACP message and its event (ADR 49, 60).
+//! even when it comes twice, as its ACP message and its event (ADR 10.1).
 //! A peer cut off is noted in the host log (`peer-dropped`), kept among the
 //! last [`CUT_OFFS`] for `was_cut_off`, and told to the other peers, as a
-//! `peer_cut_off` event (ADR 69).
+//! `peer_cut_off` event (ADR 10.2).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -158,11 +158,11 @@ pub(crate) const QUIET: &[&str] = &["acp", "agent_thought", "usage", "tool_progr
 const QUEUE_BYTES: usize = 16 << 20;
 
 /// Bytes of lines a peer past [`QUEUE_BYTES`] may have queued that don't
-/// count toward it (ADR 60): two of the longest lines the host reads
-/// (ADR 51), a message's ACP line and its event.
+/// count toward it (ADR 10.1): two of the longest lines the host reads
+/// (ADR 10.3), a message's ACP line and its event.
 const ASIDE_BYTES: usize = 64 << 20;
 
-/// How many cut-offs the process keeps for `was_cut_off` (ADR 69): a peer
+/// How many cut-offs the process keeps for `was_cut_off` (ADR 10.2): a peer
 /// reconnecting after this many more were cut off is told it wasn't.
 const CUT_OFFS: usize = 64;
 
@@ -204,10 +204,10 @@ impl Queue {
     /// aside. Until then a peer takes the next line however big it is (a
     /// long agent message, a status), and that line doesn't make the line
     /// after it (the `turn_ended` after a turn's long `agent_message`) find
-    /// a peer that keeps up behind (ADR 49). Nor does a line longer than the
+    /// a peer that keeps up behind (ADR 10.1). Nor does a line longer than the
     /// limit that comes while it is past it (the `agent_message` right after
     /// its ACP message, to a peer that asked for `acp`), up to
-    /// [`ASIDE_BYTES`] set aside (ADR 60). At most the limit, the lines set
+    /// [`ASIDE_BYTES`] set aside (ADR 10.1). At most the limit, the lines set
     /// aside (the first however long) and one more are queued.
     fn push(&self, line: String) -> Queued {
         let len = line.len() + 1;
@@ -370,7 +370,7 @@ impl Host {
         thread::spawn(move || read_requests(stdout, peer, &t));
         let stderr = child.stderr.take().unwrap();
         let (t, l) = (tx.clone(), label.clone());
-        // Into the host log as lines, a piece of 64 KiB at most (ADR 51).
+        // Into the host log as lines, a piece of 64 KiB at most (ADR 10.3).
         thread::spawn(move || {
             super::read_stderr(stderr, |line| {
                 t.send(Ev::BridgeStderr { label: l.clone(), line }).is_ok()
@@ -395,7 +395,7 @@ impl Host {
 
     /// Logs an ACP message and shows it to peers subscribed to `acp`, at
     /// the next position, whether a peer wants it or not: one that is cut
-    /// off finds it in the transcript there (ADR 69).
+    /// off finds it in the transcript there (ADR 10.2).
     pub(super) fn record(&mut self, session: Option<&str>, dir: Dir, bytes: &[u8]) {
         self.seq += 1;
         let seq = self.seq;
@@ -426,7 +426,7 @@ impl Host {
     /// Sends `event` to every subscribed peer that wants it, and (but for
     /// `acp`, which is the raw transcript already) records it in the
     /// transcript, where `brnr event log` reads it back, at the next
-    /// position (ADR 69). Returns it as sent.
+    /// position (ADR 10.2). Returns it as sent.
     pub(super) fn emit(&mut self, event: Value) -> Value {
         self.seq += 1;
         self.emit_at(self.seq, event)
@@ -437,7 +437,7 @@ impl Host {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
         let name = event["event"].as_str().unwrap_or_default().to_owned();
-        // History a load replays, which brnr had no transcript of (ADR 57).
+        // History a load replays, which brnr had no transcript of (ADR 5.6).
         if let Some(i) = event["session"].as_str().and_then(|s| self.find(s))
             && self.sessions[i].replay.as_ref().is_some_and(|r| r.record)
         {
@@ -455,7 +455,7 @@ impl Host {
                 && let Some(display) = &self.display
             {
                 // On the display's thread, which never holds the host up
-                // (ADR 9).
+                // (ADR 3.5).
                 display.event(|| {
                     if self.json_events {
                         Some(render::clean(&line).into_owned())
@@ -502,7 +502,7 @@ impl Host {
     /// Cuts off a peer that stopped reading. It was sent nothing after the
     /// last event so far, which is kept among the last cut-offs and told to
     /// the other peers once the line that cut it off has reached them, so
-    /// that each sees events in order (ADR 69).
+    /// that each sees events in order (ADR 10.2).
     fn drop_peer(&mut self, peer: u64) {
         let Some(p) = self.peers.remove(&peer) else { return };
         let last = self.seq;
@@ -546,7 +546,7 @@ impl Host {
     }
 
     /// The `peer_cut_off` events of the peers cut off since, each after the
-    /// line that cut it off (ADR 69).
+    /// line that cut it off (ADR 10.2).
     fn tell_cut_offs(&mut self) {
         while let Some(event) = self.untold.pop_front() {
             self.emit(event);
@@ -554,7 +554,7 @@ impl Host {
     }
 
     /// `was_cut_off`: whether the peer named `peer` was cut off, and the last
-    /// event queued for it then (ADR 69). A position, never an event: what
+    /// event queued for it then (ADR 10.2). A position, never an event: what
     /// it missed is in the transcript, which the asker reads as itself.
     fn was_cut_off(&self, req: &Value) -> Result<Value, String> {
         let peer = req["peer"].as_str().ok_or("missing peer")?;
@@ -613,8 +613,8 @@ impl Host {
 
     /// `logged`: answered from the logger's thread once it has written what
     /// the process recorded before it was asked, so that what a peer has
-    /// seen happen is in the transcript (ADR 48), with `lost` if a file has
-    /// lost records it hasn't noted yet (ADR 69). The event loop doesn't
+    /// seen happen is in the transcript (ADR 5.5), with `lost` if a file has
+    /// lost records it hasn't noted yet (ADR 10.2). The event loop doesn't
     /// wait for it (P1); a peer gone meanwhile isn't answered.
     fn when_logged(&mut self, peer: u64, req_id: Option<Value>) {
         let Some(queue) = self.peer_queue(peer) else { return };
@@ -648,7 +648,7 @@ impl Host {
         let names = events.unwrap_or_else(|| {
             EVENTS.iter().filter(|e| **e != "acp").map(|e| e.to_string()).collect()
         });
-        // Where it starts, to catch up from if it is cut off (ADR 69).
+        // Where it starts, to catch up from if it is cut off (ADR 10.2).
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
         Ok(json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "seq": seq }))
     }
@@ -674,7 +674,7 @@ impl Host {
     fn pending_permissions(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
         // Whether `brnr permission allow` would be taken, and if not, why
-        // (ADR 4).
+        // (ADR 7.1).
         let why_not = self.check_experimental(Experimental::Permission).err();
         self.agent_requests
             .iter()
@@ -696,7 +696,7 @@ impl Host {
             .collect()
     }
 
-    /// `elicitation` (ADR 68): answers elicitation `request` of `session`
+    /// `elicitation` (ADR 4.5): answers elicitation `request` of `session`
     /// (null for one scoped to a request outside any) with `action`, and an
     /// accept's `content`, checked against the form's schema before anything
     /// is sent.
@@ -724,7 +724,7 @@ impl Host {
     }
 
     /// The elicitations waiting, each in full (see elicitation.rs), with
-    /// whether `brnr elicitation accept` would be taken (ADR 4) and when the
+    /// whether `brnr elicitation accept` would be taken (ADR 7.1) and when the
     /// timeout cancels it.
     fn pending_elicitations(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
@@ -752,7 +752,7 @@ impl Host {
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
         // Counted, not described: a description copies each request's tool
-        // call, which can nest a million deep (ADR 26).
+        // call, which can nest a million deep (ADR 2.5).
         report["pending"] = json!(self.agent_requests.iter().filter(|r| r.is_permission()).count());
         report["elicitations"] =
             json!(self.agent_requests.iter().filter(|r| r.is_elicitation()).count());
@@ -782,7 +782,7 @@ impl Host {
                     (_, false) => "busy",
                     _ => "idle",
                 };
-                // Its transcript: events, and raw ACP (ADR 22).
+                // Its transcript: events, and raw ACP (ADR 5.1).
                 let events = paths::session_log(&s.cwd, &s.id);
                 let acp = paths::acp_log(&events);
                 let fields = json!({
@@ -813,7 +813,7 @@ impl Host {
         report
     }
 
-    /// `send` (ADR 18): a prompt of its own, held while a turn runs; steered
+    /// `send` (ADR 4.2): a prompt of its own, held while a turn runs; steered
     /// into the running turn; interrupting it; or context for the next
     /// prompt. A second prompt never goes while one runs.
     fn send(&mut self, req: &Value) -> Result<Value, String> {
@@ -854,7 +854,7 @@ impl Host {
             return Ok(json!({ "ok": true, "status": "held", "session": session }));
         }
         if !self.start_done {
-            // The start commits before the agent gets any work (ADR 7).
+            // The start commits before the agent gets any work (ADR 3.4).
             return Err("the session is still starting".into());
         }
         let s = &self.sessions[i];
@@ -881,7 +881,7 @@ impl Host {
                 "steered"
             }
             // With no turn running but steers unanswered, the last turn's
-            // `turn_ended` waits for them, and so does what is held (ADR 56):
+            // `turn_ended` waits for them, and so does what is held (ADR 4.1):
             // held, ahead of the rest, with no turn to cancel.
             "interrupt" if busy || waiting => {
                 let s = &mut self.sessions[i];
@@ -1027,7 +1027,7 @@ impl Host {
             }
             "fork" => {
                 // A forked session would be a headless one in a process that
-                // ends with the editor, which ACP can't tell of it (ADR 4).
+                // ends with the editor, which ACP can't tell of it (ADR 7.1).
                 if self.editor_attached() {
                     return Err("the editor owns this process; fork sessions there".into());
                 }
@@ -1036,7 +1036,7 @@ impl Host {
                     return Err("the agent can't fork sessions".into());
                 }
                 // A second session could never close when idle, and the
-                // process would never stop (ADR 12).
+                // process would never stop (ADR 3.8).
                 if self.stop_when_idle.is_some() && !caps.close {
                     return Err("the agent can't close sessions: with stop_when_idle, a forked \
                                 session would never close"
@@ -1061,8 +1061,8 @@ impl Host {
     }
 
     /// `new` and `resume` (`session new --pid`, `session resume --pid`,
-    /// ADR 63): a session opened in this process with `session/new`, or
-    /// `session/resume` or `session/load` (ADR 14), its settings set, and its
+    /// ADR 8.1): a session opened in this process with `session/new`, or
+    /// `session/resume` or `session/load` (ADR 3.11), its settings set, and its
     /// prompt sent, committed as one as a start is (see requests.rs). Refused
     /// where `fork` is but in strict mode: these are stable ACP.
     fn open(&mut self, peer: u64, req: &Value) -> Result<(), String> {
@@ -1070,7 +1070,7 @@ impl Host {
             return Err("the agent is no longer accepting input".into());
         }
         // A session opened here would be a headless one in a process that
-        // ends with the editor, which ACP can't tell of it (ADR 4).
+        // ends with the editor, which ACP can't tell of it (ADR 7.1).
         if self.editor_attached() {
             return Err("the editor owns this process; open sessions there".into());
         }
@@ -1079,7 +1079,7 @@ impl Host {
         }
         let caps = self.caps;
         // A second session could never close when idle, and the process
-        // would never stop (ADR 12).
+        // would never stop (ADR 3.8).
         if self.stop_when_idle.is_some() && !caps.close {
             return Err("the agent can't close sessions: with stop_when_idle, a second session \
                         would never close"
@@ -1100,7 +1100,7 @@ impl Host {
         self.check_blocks(&blocks)?;
         let prompt =
             (!text.trim().is_empty() || !blocks.is_empty()).then(|| Prompt { text, blocks });
-        // The command's: past it, the opening is abandoned (ADR 7).
+        // The command's: past it, the opening is abandoned (ADR 3.4).
         let deadline = match &req["timeout"] {
             Value::Null => None,
             secs => {
@@ -1127,7 +1127,7 @@ impl Host {
             );
         }
         // Taken before the agent hears of it: a session another process
-        // holds is refused (ADR 3).
+        // holds is refused (ADR 3.9).
         self.own(&session)?;
         let params = json!({ "sessionId": session, "cwd": dir, "mcpServers": mcp });
         if caps.resume {
@@ -1137,7 +1137,7 @@ impl Host {
             // The agent replays the history: recorded unless brnr has a
             // transcript of the session, in any folder, as for the editor's
             // load; one holding only openings, left by a load that failed,
-            // isn't one (ADR 57).
+            // isn't one (ADR 5.6).
             let record = !self.has_transcript(&session);
             let i = self.open_session(&session, Some(&dir));
             self.sessions[i].opening = true;
@@ -1198,7 +1198,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0060_a_message_and_its_acp_line_fit_at_once() {
+    fn adr_0010_a_message_and_its_acp_line_fit_at_once() {
         let (queue, _rx, _) = Queue::new();
         let big = 20_000_000;
         // Its ACP line, the turn's answer, its event, the turn's end.
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0060_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit() {
+    fn adr_0010_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit() {
         let (queue, _rx, _) = Queue::new();
         assert_eq!(taken(&queue, &[1 << 20; 40]), 18, "the limit, the line past it, one more");
 

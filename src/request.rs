@@ -1,4 +1,4 @@
-//! The one request a brnr process is started with (ADR 8 in docs/adr).
+//! The one request a brnr process is started with (ADR 3.3 in docs/adr).
 //!
 //! Whoever starts a process, `brnr session new` (or `resume`) or `brnr acp`,
 //! resolves everything first: the profile, the agent and the bridges'
@@ -8,7 +8,7 @@
 //! it. The process reads its stdin to EOF before doing anything else, and
 //! refuses to start on a request cut short; it reads no config and takes no
 //! flags. Its fd 3 carries the editor link (`acp`) or the start channel
-//! (`session new` and `resume`, ADR 7); an editor's process has the proxy's
+//! (`session new` and `resume`, ADR 3.4); an editor's process has the proxy's
 //! signal link on fd 4 as well (see frame.rs), and doesn't start without it.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,9 +33,9 @@ pub(crate) struct Request {
     /// spawn.rs), a profile's with `~` expanded.
     pub(crate) agent: Vec<String>,
     pub(crate) cwd: PathBuf,
-    /// Stable ACP to the letter (ADR 41).
+    /// Stable ACP to the letter (ADR 2.1).
     pub(crate) strict: bool,
-    /// What to record (ADR 22).
+    /// What to record (ADR 5.1).
     pub(crate) log: Log,
     /// The profile's, each command as it is run, found as the agent's is.
     pub(crate) bridges: Vec<Bridge>,
@@ -57,15 +57,15 @@ pub(crate) struct Editor {
     pub(crate) proxy_pid: u32,
     /// The editor's signal mask, which the agent gets.
     pub(crate) sigmask: Vec<c_int>,
-    /// Actions on the editor's session it allows (ADR 4).
+    /// Actions on the editor's session it allows (ADR 7.1).
     pub(crate) experimental: BTreeSet<Experimental>,
     /// The editor's `fs` and `terminal` capabilities that reach the agent
-    /// outside strict mode (ADR 67).
+    /// outside strict mode (ADR 2.7).
     pub(crate) client_capabilities: BTreeSet<ClientCapability>,
     /// How a message sent to its session through the side channel is shown
-    /// to it (ADR 70).
+    /// to it (ADR 7.2).
     pub(crate) echo_as: EchoAs,
-    /// Process-management behaviours it turns on (ADR 42).
+    /// Process-management behaviours it turns on (ADR 3.10).
     pub(crate) features: BTreeSet<Feature>,
 }
 
@@ -77,17 +77,17 @@ pub(crate) struct Headless {
     /// Resume this session instead of opening a new one.
     pub(crate) resume: Option<String>,
     /// brnr has a transcript of the session resumed: what a `session/load`
-    /// replays is in it already, and isn't recorded again (ADR 57).
+    /// replays is in it already, and isn't recorded again (ADR 5.6).
     pub(crate) transcript: bool,
     /// What the start's flags set (`--mode`, `--model`, `--thought-level`,
     /// `--option`), and what the profile does (`mode`, `model`,
     /// `thought_level`, `options`): the flags win, setting by setting, once
-    /// the agent has said which option is which (ADR 58).
+    /// the agent has said which option is which (ADR 6.1).
     pub(crate) settings: Settings,
     pub(crate) defaults: Settings,
     /// As ACP has them.
     pub(crate) mcp_servers: Vec<Value>,
-    /// The login method to run after `initialize` (ADR 30).
+    /// The login method to run after `initialize` (ADR 4.7).
     pub(crate) auth: Option<String>,
     /// Sent once the start has committed.
     pub(crate) prompt: Option<Prompt>,
@@ -104,8 +104,8 @@ pub(crate) struct Headless {
 }
 
 /// The mode, the model and the thought level (the config options of those
-/// categories, ADR 28) and config options by id: what one source sets, a
-/// start's flags or its profile, or `config set` (ADR 58, ADR 63).
+/// categories, ADR 6.2) and config options by id: what one source sets, a
+/// start's flags or its profile, or `config set` (ADR 6.1, ADR 8.1).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
@@ -157,7 +157,7 @@ impl Request {
         };
         next_to_brnr(program);
         // A bridge's command, `~` expanded, is found the same way, here:
-        // the process runs what it is given (ADR 8, ADR 38).
+        // the process runs what it is given (ADR 3.3, ADR 11.2).
         let mut bridges = profile.bridges.clone();
         for bridge in &mut bridges {
             host::check_bridge(bridge)?;
@@ -189,7 +189,7 @@ impl Request {
     }
 
     /// The request as the host log's `started` record holds it: the values
-    /// of the MCP servers' `env` and `headers` redacted (ADR 25).
+    /// of the MCP servers' `env` and `headers` redacted (ADR 9.1).
     pub(crate) fn recorded(&self) -> Value {
         let mut request = serde_json::to_value(self).unwrap_or_default();
         if let Some(servers) = request.pointer_mut("/role/headless/mcp_servers") {

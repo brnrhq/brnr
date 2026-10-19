@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 pub const AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
 
-/// How the link a panic prints starts (ADR 45).
+/// How the link a panic prints starts (ADR 11.5).
 pub const ISSUE_LINK: &str = "https://github.com/brnrhq/brnr/issues/new?template=bug.yml&title=";
 
 pub struct Env {

@@ -25,7 +25,7 @@ pub(crate) fn host_command() -> io::Result<Command> {
 /// adapters `brnr-claude-adapter` and `brnr-codex-adapter`, or `brnr` for a
 /// bridge. Found there even when that directory isn't on the editor's PATH.
 /// Looked for by whoever starts a process, `brnr session new` or `brnr acp`,
-/// which ran by the path the user gave (ADR 8, ADR 38).
+/// which ran by the path the user gave (ADR 3.3, ADR 11.2).
 ///
 /// "Next to brnr" is the running binary's directory, and the directory of
 /// the path brnr was started by if that differs: started through a symlink

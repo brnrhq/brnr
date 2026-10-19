@@ -2,13 +2,13 @@
 //! (fuzz/ in the repository) and tests: lines from the editor and the agent
 //! go through the host's own handling (see acp.rs), and what it writes to
 //! each side is collected instead of sent. Headless start reports are
-//! collected too, so the start commits before its prompt goes (ADR 7).
+//! collected too, so the start commits before its prompt goes (ADR 3.4).
 //!
 //! There is no agent, no link, no log and no peer: nothing is spawned or
 //! signalled (the stop timer, the one thing that signals the agent, never
 //! fires here). What the host does to the filesystem it still does: an
 //! editor's `session/load` takes the session's lock in the state directory
-//! (`$BRNR_HOME`, see paths.rs, ADR 65), held until the harness drops.
+//! (`$BRNR_HOME`, see paths.rs, ADR 3.9), held until the harness drops.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0062_brnrs_own_lines_end_with_the_agents_stdout() {
+    fn adr_0002_brnrs_own_lines_end_with_the_agents_stdout() {
         let mut h = Harness::editor(false, false);
         let update = serde_json::json!({ "sessionUpdate": "agent_message_chunk" });
         h.host.update_editor("sess-1", update.clone());
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0062_stderr_goes_on_before_its_line_ends() {
+    fn adr_0002_stderr_goes_on_before_its_line_ends() {
         let mut h = Harness::headless(false, None);
         let (link, editor) = mpsc::channel();
         h.host.link = Some(link);
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0026_the_stack_is_as_deep_as_what_the_host_holds() {
+    fn adr_0002_the_stack_is_as_deep_as_what_the_host_holds() {
         let mut h = Harness::editor(false, false);
         let deep = format!("{}{}", "[".repeat(20000), "]".repeat(20000));
         // Passed on, and nothing kept of it: the next event takes no stack

@@ -1,4 +1,4 @@
-//! The foreground's display (ADR 9 in docs/adr): the session's events on
+//! The foreground's display (ADR 3.5 in docs/adr): the session's events on
 //! stdout and brnr's own messages on stderr, written on a thread of its own,
 //! so a terminal or a pipe that is slow, paused or closed never holds up the
 //! host.
@@ -9,7 +9,7 @@
 //! a peer. brnr's own messages are never skipped. stdout closing (`brnr
 //! session new --foreground … | head -1`) ends the display, with a note in
 //! the host log; the session carries on. The agent's stderr doesn't come this
-//! way: its reader writes it to stderr as it comes (ADR 10).
+//! way: its reader writes it to stderr as it comes (ADR 3.6).
 
 use std::collections::VecDeque;
 use std::mem::take;

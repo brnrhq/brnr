@@ -1,10 +1,10 @@
-//! ACP's types, from the official schema crate (ADR 43 in docs/adr).
+//! ACP's types, from the official schema crate (ADR 2.3 in docs/adr).
 //!
 //! brnr forwards each ACP message as it came and interprets a copy, read as
-//! json.rs reads a line (ADR 26). What it acts on in the copy is read with
+//! json.rs reads a line (ADR 2.5). What it acts on in the copy is read with
 //! `agent-client-protocol-schema`'s types: [`read`] takes a part of the
 //! copy as the type its method gives it, a session update, a capability, a
-//! permission option, an elicitation and its form's schema (ADR 68). A
+//! permission option, an elicitation and its form's schema (ADR 4.5). A
 //! part the types don't take stays `serde_json::Value`, read as far as brnr
 //! can (P4), and is forwarded untouched all the same:
 //!
@@ -15,7 +15,7 @@
 //!   whatever else they carry or leave out;
 //! - extension methods and `_meta` (`_session/steering` and how agents
 //!   advertise it), and what isn't stable ACP (`session/fork`, the `fork`
-//!   session capability, a prompt answer's `usage`, ADR 71);
+//!   session capability, a prompt answer's `usage`, ADR 4.4);
 //! - session update kinds the schema doesn't have (an adapter's own, an
 //!   unstable or a newer one), or a known kind without what the schema
 //!   requires of it: such an update is passed on unread;
@@ -28,7 +28,7 @@
 //!   what it records), so the editor's key order and unknown fields stay.
 //!
 //! The crate is built without its unstable features, so its types and its
-//! methods are stable ACP: what strict mode holds to (ADR 41, see
+//! methods are stable ACP: what strict mode holds to (ADR 2.1, see
 //! [`stable`]).
 
 use agent_client_protocol_schema::v1::{
@@ -82,13 +82,13 @@ pub fn error_message(error: &Value) -> String {
 }
 
 /// The ACP version brnr speaks as a client, the one its `initialize` asks
-/// for (ADR 54).
+/// for (ADR 2.2).
 pub(crate) const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
 
 /// Whether the agent's answer to brnr's `initialize` chose the version brnr
 /// speaks. An agent that doesn't speak the version asked for answers with
 /// one it does; a client that doesn't speak that one closes the connection
-/// and says so (ACP's initialization), rather than go on (ADR 54).
+/// and says so (ACP's initialization), rather than go on (ADR 2.2).
 pub(crate) fn check_protocol_version(result: &Value) -> Result<(), String> {
     let chosen = &result["protocolVersion"];
     match read::<ProtocolVersion>(chosen) {
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0043_what_the_adapters_send_is_read_as_the_schemas_types() {
+    fn adr_0002_what_the_adapters_send_is_read_as_the_schemas_types() {
         for update in adapter_updates() {
             assert!(read::<SessionUpdate>(&update).is_some(), "{update}");
         }
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0043_a_deep_part_reads_on_the_stack_json_rs_gives_it() {
+    fn adr_0002_a_deep_part_reads_on_the_stack_json_rs_gives_it() {
         let n = 20_000;
         let input = format!("{}1{}", r#"{"a":"#.repeat(n), "}".repeat(n));
         let line = format!(
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn adr_0043_what_the_types_dont_take_is_left_to_value() {
+    fn adr_0002_what_the_types_dont_take_is_left_to_value() {
         // Kinds the adapters send only to a client that asks for them,
         // unstable or their own, and one from a newer schema.
         let unknown = [
@@ -244,8 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn adr_0043_stable_is_what_the_schema_has_without_its_unstable_features() {
-        // ADR 41: in v1, list, resume, close and delete are stable, fork
+    fn adr_0002_stable_is_what_the_schema_has_without_its_unstable_features() {
+        // ADR 2.1: in v1, list, resume, close and delete are stable, fork
         // isn't; `$/cancel_request` is; extension methods never are.
         for method in [
             "initialize",

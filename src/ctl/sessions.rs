@@ -1,4 +1,4 @@
-//! `session list` (ADR 63, superseding 15): brnr's sessions and an agent's,
+//! `session list` (ADR 8.1, superseding 15): brnr's sessions and an agent's,
 //! as one list joined on the session id, and the agent started just to be
 //! asked.
 
@@ -80,7 +80,7 @@ pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
     if let Some(cwd) = &cwd {
         // The cwd's, however a row spells it (a trailing slash, a symlink).
         // One open in a process is the cwd's whatever its recorded cwd if the
-        // agent lists it here, a session's lock being one per id (ADR 53);
+        // agent lists it here, a session's lock being one per id (ADR 9.2);
         // an unreachable one's cwd is unknown (its process doesn't say), so it
         // is the cwd's if the agent lists it or brnr has its transcript here.
         let ids: HashSet<String> = listed.iter().map(|x| x.session_id.to_string()).collect();
@@ -231,7 +231,7 @@ fn states(list: &str) -> Result<Vec<&'static str>, String> {
 
 /// The sessions brnr knows, a row each: those open in its processes (in
 /// each that answers, as it says; in one that doesn't, those it holds the
-/// locks of, `unreachable`, ADR 3), then those it has transcripts of that
+/// locks of, `unreachable`, ADR 3.9), then those it has transcripts of that
 /// none has open, `inactive`.
 fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
     let locks = lock::all();
@@ -266,7 +266,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             }));
         }
     }
-    // Held by a process started with another runtime directory (ADR 65):
+    // Held by a process started with another runtime directory (ADR 3.9):
     // running, where the commands run here don't reach, so neither inactive
     // nor a process's listed here; its agent and cwd aren't known here.
     for held in locks.iter().filter(|e| e.elsewhere()) {
@@ -355,7 +355,7 @@ pub(super) struct Asked {
 
 impl Asked {
     /// Starts `agent` and initializes it, saying what it can do. A version
-    /// of ACP other than brnr's fails, with nothing more asked (ADR 54).
+    /// of ACP other than brnr's fails, with nothing more asked (ADR 2.2).
     pub(super) fn start(agent: &[String]) -> Result<(Asked, AgentCapabilities), String> {
         let mut program = paths::expand(&agent[0]).into_os_string();
         if let Some(bundled) = spawn::bundled(&program) {

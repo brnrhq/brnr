@@ -17,19 +17,19 @@ says what is in scope for a report; the principles cited are
 - **Approvals.** A permission request is the agent asking before it acts. An
   answer given by the wrong party, or given when nobody answered, is an
   action the user didn't take.
-- **Elicitations.** The agent asking the user for input (ADR 68): a form's
+- **Elicitations.** The agent asking the user for input (ADR 4.5): a form's
   values, or a URL to open, such as an MCP server's login. An accept given by
   the wrong party, or for nobody, is input the user didn't give; a URL the
   agent sends is its text, and opening it is the user's to do.
 - **Prompts and code in transcripts.** `~/.brnr` keeps every session's events
-  and raw ACP (ADR 22): prompts, the agent's replies, tool calls with their
+  and raw ACP (ADR 5.1): prompts, the agent's replies, tool calls with their
   input and output, diffs of the user's code, and, in an editor's session,
   what the editor answered the agent's file and terminal requests with,
   where the profile or strict mode passes them: files as its buffers have
-  them, unsaved changes included, and commands' output (ADR 67).
+  them, unsaved changes included, and commands' output (ADR 2.7).
 - **Secrets.** The values of a profile's or an editor's MCP servers' `env`
   and `headers` (tokens, `Authorization`), which go to the agent in the
-  requests that open a session (ADR 25).
+  requests that open a session (ADR 9.1).
 
 ## Actors
 
@@ -38,7 +38,7 @@ says what is in scope for a report; the principles cited are
 | Other local users | nothing | outside: kept out of the runtime directory, sockets, transcripts and session locks by file modes (P13) |
 | Root | everything | outside brnr's reach; can do anything as any user |
 | Processes running as the same user | everything the user can do | **inside** the boundary (P13): see below |
-| The editor | its session, and serving the agent's file and terminal requests (`fs/*`, `terminal/*`) | inside; it runs `brnr acp`, and its bytes pass unchanged (P1); what it reads, writes and runs for the agent is its own to allow (ADR 67) |
+| The editor | its session, and serving the agent's file and terminal requests (`fs/*`, `terminal/*`) | inside; it runs `brnr acp`, and its bytes pass unchanged (P1); what it reads, writes and runs for the agent is its own to allow (ADR 2.7) |
 | The agent (the adapter and what it runs) | the user's machine, as far as its own permission prompts go | inside as a process; its *text* is untrusted (P8) |
 | Bridges and `event notify` commands | everything a socket client can do | inside: run as the user from the user's config; what they forward leaves the machine (P13) |
 | A malicious adapter or npm package | as the agent | inside once run: brnr can't contain it |
@@ -51,8 +51,8 @@ or `ptrace` the agent. brnr has nothing to tell such a process from the user
 at a terminal, and doesn't pretend to; SECURITY.md lists "anyone who can
 already run code as the user" as out of scope. What brnr does keep apart
 within the user is protocol, not access: actions on an editor's session are
-experimental and refused unless enabled by name (ADR 4), and strict mode has
-none of them (ADR 41). Those protect the editor's view from surprises, not
+experimental and refused unless enabled by name (ADR 7.1), and strict mode has
+none of them (ADR 2.1). Those protect the editor's view from surprises, not
 the user from their own processes.
 
 ## Trust boundaries
@@ -97,58 +97,58 @@ written for this document.
 |---|---|---|
 | The runtime directory is created 0700 and the process refuses one that isn't a directory owned by the user with no group or other bits, or is a symlink; it then writes nothing there and starts no agent. | `paths::ensure_private`, `paths::check_private` (src/paths.rs), from `Host::start` (src/host/mod.rs) | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_runtime_dir_of_another_users_is_refused`; `headless.rs`: `runtime_dir_symlink_is_refused` |
 | Every command that reads the runtime directory refuses one others can use, or a symlink, before it trusts anything there: no request, approval included, is sent through it. | `discover` (src/ctl.rs) | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_symlinked_runtime_dir_is_refused_by_every_command`, `no_approval_goes_through_a_dir_others_can_use`; `headless.rs`: `shared_runtime_dir_is_refused` |
-| The control socket is 0600, the directory 0700, the session locks' directory (`sessions/` in the state directory, ADR 65) 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
+| The control socket is 0600, the directory 0700, the session locks' directory (`sessions/` in the state directory, ADR 3.9) 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
 | Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl.rs) | `headless.rs`: `metadata_names_its_own_socket` |
-| Session locks, in the state directory beside the transcripts they guard (ADR 65), are held to the runtime directory's terms (private, or refused) and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused, as is a session opened in a running process (`session new --pid`, `resume --pid`), which the agent then closes again (ADR 50, ADR 63). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_opened`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0050_a_new_session_that_cant_be_locked_isnt_started`, `adr_0050_a_resume_that_cant_be_locked_isnt_started`, `adr_0050_a_fork_that_cant_be_owned_is_refused`, `adr_0063_pid_session_that_cant_be_locked_is_closed` |
-| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); ADR 44 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
+| Session locks, in the state directory beside the transcripts they guard (ADR 3.9), are held to the runtime directory's terms (private, or refused) and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused, as is a session opened in a running process (`session new --pid`, `resume --pid`), which the agent then closes again (ADR 3.9, ADR 8.1). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_opened`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0003_a_new_session_that_cant_be_locked_isnt_started`, `adr_0003_a_resume_that_cant_be_locked_isnt_started`, `adr_0003_a_fork_that_cant_be_owned_is_refused`, `adr_0008_pid_session_that_cant_be_locked_is_closed` |
+| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); P15 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
 | `doctor` fails a runtime directory others can use, and `--fix` tightens it but never through a symlink. | `runtime_dir`, `private_problem`, `fixable` (src/ctl/doctor.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed` |
 
 ### B2: transcripts are private
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| What brnr creates under `~/.brnr` is 0700 (directories) and 0600 (files), whatever the umask. | `open_private` (src/log.rs) | `headless.rs`: `transcripts_are_private`; `security.rs`: `what_brnr_makes_is_private_whatever_the_umask`; src/log.rs: `adr_0059_new_and_private_paths_are_opened_as_they_are` |
-| Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits, however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `made-private` with the mode it had (`brnr session delete`, which records `session_deleted` with no host log, says so on stderr, ADR 63). There is no override (ADR 59). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private`; `record_in_transcripts` (src/log.rs), `delete` (src/ctl/delete.rs) | `security.rs`: `adr_0059_a_transcript_others_can_read_is_made_private_before_it_is_written`; `cli.rs`: `adr_0063_delete_records_in_each_transcript_it_can`; src/log.rs: `adr_0059_what_others_can_reach_is_made_private_before_a_write` |
-| A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, or has another hard link, is refused. Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session-log-failed` in the host log, or, for `brnr session delete`, said on stderr, and the command fails; a symlinked project folder isn't looked in for a session's transcripts (ADR 63). | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat` (src/sys.rs); `transcripts` (src/log.rs) | `security.rs`: `adr_0059_a_symlinked_transcript_is_never_followed`; src/log.rs: `adr_0059_a_symlink_is_never_followed`, `adr_0059_only_the_users_own_directories_and_files_are_written_to`; `cli.rs`: `adr_0063_delete_records_in_each_transcript_it_can` |
-| `session delete --purge` deletes only the session's own files: in each project folder under the state directory, its events file and raw ACP, named for its id escaped (ADR 53), so an id can't name another session's file or climb out. The state directory, `projects` and each folder are opened without following a symlink, each from the one before, and the names removed from what was opened (`unlinkat`): a symlinked folder isn't looked in, and a symlink named like the transcript is removed, not what it points at. The host logs stay (ADR 63). | `purge` (src/log.rs); `sys::openat`, `sys::unlinkat` (src/sys.rs); `paths::file_name` (src/paths.rs) | `security.rs`: `adr_0063_purge_deletes_only_that_sessions_files`; `cli.rs`: `adr_0063_delete_purge` |
+| What brnr creates under `~/.brnr` is 0700 (directories) and 0600 (files), whatever the umask. | `open_private` (src/log.rs) | `headless.rs`: `transcripts_are_private`; `security.rs`: `what_brnr_makes_is_private_whatever_the_umask`; src/log.rs: `adr_0009_new_and_private_paths_are_opened_as_they_are` |
+| Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits, however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `made-private` with the mode it had (`brnr session delete`, which records `session_deleted` with no host log, says so on stderr, ADR 8.1). There is no override (ADR 9.3). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private`; `record_in_transcripts` (src/log.rs), `delete` (src/ctl/delete.rs) | `security.rs`: `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`; `cli.rs`: `adr_0008_delete_records_in_each_transcript_it_can`; src/log.rs: `adr_0009_what_others_can_reach_is_made_private_before_a_write` |
+| A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, or has another hard link, is refused. Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session-log-failed` in the host log, or, for `brnr session delete`, said on stderr, and the command fails; a symlinked project folder isn't looked in for a session's transcripts (ADR 8.1). | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat` (src/sys.rs); `transcripts` (src/log.rs) | `security.rs`: `adr_0009_a_symlinked_transcript_is_never_followed`; src/log.rs: `adr_0009_a_symlink_is_never_followed`, `adr_0009_only_the_users_own_directories_and_files_are_written_to`; `cli.rs`: `adr_0008_delete_records_in_each_transcript_it_can` |
+| `session delete --purge` deletes only the session's own files: in each project folder under the state directory, its events file and raw ACP, named for its id escaped (ADR 9.2), so an id can't name another session's file or climb out. The state directory, `projects` and each folder are opened without following a symlink, each from the one before, and the names removed from what was opened (`unlinkat`): a symlinked folder isn't looked in, and a symlink named like the transcript is removed, not what it points at. The host logs stay (ADR 8.1). | `purge` (src/log.rs); `sys::openat`, `sys::unlinkat` (src/sys.rs); `paths::file_name` (src/paths.rs) | `security.rs`: `adr_0008_purge_deletes_only_that_sessions_files`; `cli.rs`: `adr_0008_delete_purge` |
 | `doctor` warns of transcripts others can read, and `--fix` makes them private. | `transcripts` (src/ctl/doctor.rs) | `doctor.rs`: `readable_transcripts_are_made_private` |
 
 ### B3: `brnr acp` passes bytes unchanged but for the named changes
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too, but for a request's id (below); the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it; `json::members`, `json::replace` (src/json.rs) change an id in place | `security.rs`: `adr_0002_acp_passes_bytes_unchanged` |
-| Every request to the agent has an id of the host's, the editor's too, so no editor id can be taken for another requester's, and an answer goes only to whoever sent the request: the editor's with its id as it wrote it. The editor's `$/cancel_request` reaches only its own requests (ADR 61). | `wire_id`, `editor_message`, `agent_response`, `editor_cancel` (src/host/acp.rs); `host_request` (src/host/requests.rs) | `headless.rs`: `adr_0061_an_editors_prompt_ends_only_with_its_own_answer`, `adr_0061_an_editors_request_with_a_host_requests_id_is_the_editors`, `adr_0061_ids_come_back_as_the_editor_wrote_them`, `adr_0061_the_editors_cancel_request_is_for_its_own_request`; src/json.rs: `adr_0061_an_id_is_found_where_it_is_and_nowhere_else` |
-| The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0002_acp_passes_stderr_and_the_exit_status` |
-| The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 62). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0062_the_editors_stdout_ends_with_the_agents`, `adr_0062_stderr_comes_as_it_is_written`, `adr_0062_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0062_brnrs_own_lines_end_with_the_agents_stdout` |
-| The editor's `fs` and `terminal` capabilities don't reach the agent by default, a named change, and the host log says so; those the profile's `client_capabilities` names do, and in strict mode both, as the editor sent them. Where they do, the agent's `fs/*` and `terminal/*` requests reach the editor as the agent wrote them, and the editor's answers, results and errors, reach the agent: the editor serves them, as it would directly, and brnr neither approves nor answers them in an editor's session (ADR 67). | `drop_capabilities`, `editor_request`, `agent_request`, `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0067_fs_and_terminal_reach_the_agent_in_strict_mode_or_when_named`, `adr_0067_the_agents_file_and_terminal_requests_reach_the_editor` |
-| The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3, ADR 42). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0042_shared_sessions_let_an_editor_load_a_held_session` |
-| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 4). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0004_experimental_actions_are_refused_without_opt_in`, `adr_0041_strict_mode_has_no_experimental_actions`, `adr_0004_approve_answers_in_the_editors_place`, `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`, `adr_0068_an_editors_elicitation_is_seen_and_reaches_the_editor` |
+| The editor's lines reach the agent byte for byte, whatever their spacing, key order and escapes, MCP secrets included, lines that aren't JSON too, but for a request's id (below); the agent's reach the editor the same way. | `editor_message`, `agent_message` (src/host/acp.rs): a line is re-encoded only where the host changes it; `json::members`, `json::replace` (src/json.rs) change an id in place | `security.rs`: `adr_0003_acp_passes_bytes_unchanged` |
+| Every request to the agent has an id of the host's, the editor's too, so no editor id can be taken for another requester's, and an answer goes only to whoever sent the request: the editor's with its id as it wrote it. The editor's `$/cancel_request` reaches only its own requests (ADR 2.4). | `wire_id`, `editor_message`, `agent_response`, `editor_cancel` (src/host/acp.rs); `host_request` (src/host/requests.rs) | `headless.rs`: `adr_0002_an_editors_prompt_ends_only_with_its_own_answer`, `adr_0002_an_editors_request_with_a_host_requests_id_is_the_editors`, `adr_0002_ids_come_back_as_the_editor_wrote_them`, `adr_0002_the_editors_cancel_request_is_for_its_own_request`; src/json.rs: `adr_0002_an_id_is_found_where_it_is_and_nowhere_else` |
+| The agent's stderr comes out of `brnr acp`'s, and `brnr acp` exits as the agent did. | src/proxy.rs | `security.rs`: `adr_0003_acp_passes_stderr_and_the_exit_status` |
+| The agent's stdout ends on the editor's when it ends, while the agent runs on, and brnr writes nothing there after it; its stderr comes out as it is written, newline or not, every byte once (ADR 2.6). | `agent_stdout_ended`, `read_agent_stderr` (src/host/mod.rs); `write_editor` (src/host/acp.rs); `run` (src/proxy.rs); `end_stdout` (src/sys.rs) | `security.rs`: `adr_0002_the_editors_stdout_ends_with_the_agents`, `adr_0002_stderr_comes_as_it_is_written`, `adr_0002_stdout_and_stderr_end_on_their_own`; src/host/fuzz.rs: `adr_0002_brnrs_own_lines_end_with_the_agents_stdout` |
+| The editor's `fs` and `terminal` capabilities don't reach the agent by default, a named change, and the host log says so; those the profile's `client_capabilities` names do, and in strict mode both, as the editor sent them. Where they do, the agent's `fs/*` and `terminal/*` requests reach the editor as the agent wrote them, and the editor's answers, results and errors, reach the agent: the editor serves them, as it would directly, and brnr neither approves nor answers them in an editor's session (ADR 2.7). | `drop_capabilities`, `editor_request`, `agent_request`, `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0002_fs_and_terminal_reach_the_agent_in_strict_mode_or_when_named`, `adr_0002_the_agents_file_and_terminal_requests_reach_the_editor` |
+| The editor's load of a session another process owns is refused unless `shared_sessions` allows it (ADR 3.9, ADR 3.10). | `attach` (src/host/acp.rs) | `headless.rs`: `adr_0003_an_editors_load_of_a_held_session_is_refused`, `adr_0003_shared_sessions_let_an_editor_load_a_held_session` |
+| Actions on an editor's session from outside are refused unless the profile enables each by name, and in strict mode always (ADR 7.1). | `check_experimental`, `check_editor_send` (src/host/experimental.rs); `check_strict` (src/host/strict.rs) | `headless.rs`: `adr_0007_experimental_actions_are_refused_without_opt_in`, `adr_0002_strict_mode_has_no_experimental_actions`, `adr_0007_approve_answers_in_the_editors_place`, `adr_0002_a_late_answer_to_a_cancelled_request_is_dropped`, `adr_0004_an_editors_elicitation_is_seen_and_reaches_the_editor` |
 
 ### B4: the agent's text, and its approvals
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| A session id becomes a file name only escaped: it can't leave the project folder or the locks' directory, and distinct ids never share a transcript or a lock (P8, ADR 53). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files`, `adr_0053_distinct_ids_get_distinct_names`; `headless.rs`: `adr_0053_distinct_ids_never_share_a_transcript`, `adr_0053_distinct_ids_never_share_a_lock` |
-| The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0027_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
-| The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0036_notify_runs_a_command_per_event`; `headless.rs`: `adr_0008_prompt_is_not_on_the_command_line` |
-| Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0027_an_unanswered_request_waits` |
-| A headless process offers the agent no `fs` or `terminal` (one started headless, forked in it, or taken over from an editor), and answers a request for them "method not found": brnr reads, writes and runs nothing for the agent (ADR 67). | `begin_headless_start` (src/host/requests.rs); `answer_as_client` (src/host/acp.rs) | `headless.rs`: `adr_0067_headless_sessions_offer_neither` |
-| `response_timeout` (or `--response-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 63). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0063_timeout_rejects_once_else_cancels_the_turn`, `adr_0027_a_timeout_never_allows` |
-| Headless, an elicitation waits until someone answers it, and `response_timeout` answers it only `cancel`: never `accept`, nor `decline`, the user's no (ADR 68). | `answer_as_client`, `fire_permission_timers`, `resolve_elicitation` (src/host/acp.rs) | `security.rs`: `adr_0068_a_timeout_cancels_never_accepts`; `cli.rs`: `adr_0068_requests_and_show_list_an_elicitation` |
-| An accept sends only what fits the form: fields it names, the required ones, values of their type, within their bounds and choices, checked in the host for the CLI and bridges alike; one that doesn't fit sends nothing. An elicitation is answered only in its own session, or outside any by its process (ADR 68). | `response`, `check` (src/host/elicitation.rs); `elicitation` (src/host/control.rs) | `cli.rs`: `adr_0068_accept_checks_fields_against_the_schema`, `adr_0068_a_request_scoped_elicitation_is_answered_by_pid`; src/host/elicitation.rs: `what_doesnt_fit_names_the_field` |
-| An elicitation's URL is shown escaped, never opened or run: brnr has no code that opens one (P8, ADR 68). | `render::clean`; `show` (src/ctl/elicitation.rs) | `cli.rs`: `adr_0068_requests_and_show_list_an_elicitation`; src/render.rs: `adr_0068_elicitation_events_have_lines` |
-| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 63). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0027_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0063_allow_and_reject_pick_by_kind`, `adr_0063_a_missing_or_doubled_kind_fails`, `adr_0063_option_must_be_on_the_verbs_side` |
+| A session id becomes a file name only escaped: it can't leave the project folder or the locks' directory, and distinct ids never share a transcript or a lock (P8, ADR 9.2). | `file_name`, `session_log`, `session_lock` (src/paths.rs) | `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/paths.rs: `a_sessions_two_files`, `adr_0009_distinct_ids_get_distinct_names`; `headless.rs`: `adr_0009_distinct_ids_never_share_a_transcript`, `adr_0009_distinct_ids_never_share_a_lock` |
+| The agent's text is shown with control characters and bidi overrides escaped, and `permission show` warns of a command dressed up as another. | `render::clean` (src/render.rs) | `cli.rs`: `adr_0004_show_escapes_a_spoofed_command`; `security.rs`: `a_session_id_cant_climb_out_of_its_folder`; src/render.rs: `control_characters_are_escaped` |
+| The agent's text never reaches a command line: `event notify` passes it in the environment and on stdin, and the host's start request goes on a pipe. | src/ctl/notify.rs (`BRNR_TEXT`, …); `Request::send` (src/request.rs) | `cli.rs`: `adr_0005_notify_runs_a_command_per_event`; `headless.rs`: `adr_0003_prompt_is_not_on_the_command_line` |
+| Headless, a permission request waits until someone answers it: brnr never answers for the user. | `answer_as_client` (src/host/acp.rs) | `security.rs`: `adr_0004_an_unanswered_request_waits` |
+| A headless process offers the agent no `fs` or `terminal` (one started headless, forked in it, or taken over from an editor), and answers a request for them "method not found": brnr reads, writes and runs nothing for the agent (ADR 2.7). | `begin_headless_start` (src/host/requests.rs); `answer_as_client` (src/host/acp.rs) | `headless.rs`: `adr_0002_headless_sessions_offer_neither` |
+| `response_timeout` (or `--response-timeout`) only rejects once: the `reject_once` option, else the turn is cancelled (`session/cancel`, the request answered `cancelled`); never an allow, nor `reject_always` (ADR 8.1). | `fire_permission_timers`, `resolve_permission` (src/host/acp.rs) | `security.rs`: `adr_0008_timeout_rejects_once_else_cancels_the_turn`, `adr_0004_a_timeout_never_allows` |
+| Headless, an elicitation waits until someone answers it, and `response_timeout` answers it only `cancel`: never `accept`, nor `decline`, the user's no (ADR 4.5). | `answer_as_client`, `fire_permission_timers`, `resolve_elicitation` (src/host/acp.rs) | `security.rs`: `adr_0004_a_timeout_cancels_never_accepts`; `cli.rs`: `adr_0004_requests_and_show_list_an_elicitation` |
+| An accept sends only what fits the form: fields it names, the required ones, values of their type, within their bounds and choices, checked in the host for the CLI and bridges alike; one that doesn't fit sends nothing. An elicitation is answered only in its own session, or outside any by its process (ADR 4.5). | `response`, `check` (src/host/elicitation.rs); `elicitation` (src/host/control.rs) | `cli.rs`: `adr_0004_accept_checks_fields_against_the_schema`, `adr_0004_a_request_scoped_elicitation_is_answered_by_pid`; src/host/elicitation.rs: `what_doesnt_fit_names_the_field` |
+| An elicitation's URL is shown escaped, never opened or run: brnr has no code that opens one (P8, ADR 4.5). | `render::clean`; `show` (src/ctl/elicitation.rs) | `cli.rs`: `adr_0004_requests_and_show_list_an_elicitation`; src/render.rs: `adr_0004_elicitation_events_have_lines` |
+| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing (ADR 8.1). | `answer` (src/host/control.rs), `resolve_permission` | `security.rs`: `adr_0004_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0008_allow_and_reject_pick_by_kind`, `adr_0008_a_missing_or_doubled_kind_fails`, `adr_0008_option_must_be_on_the_verbs_side` |
 
 ### B5: bridges and `event notify` commands
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| A started bridge runs the profile's command as the user, with `BRNR_PID` and `BRNR_SOCKET`; it can do anything a socket client can (ADR 35). | `start_bridge` (src/host/control.rs) | `cli.rs`: `adr_0036_notify_works_as_a_bridge`, `adr_0035_a_bridge_that_closes_its_stdout_gets_events` |
-| A bridge gets every event but `acp` unless it asks for it by name, so the raw ACP isn't forwarded by default. | `Peer::wants` (src/host/control.rs) | `security.rs`: `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks` |
-| A reader that falls behind is cut off and told, and never holds the session up (ADR 6). | `send_to`, `drop_peer` (src/host/control.rs) | `headless.rs`: `adr_0006_slow_watcher_is_disconnected`; `cli.rs`: `adr_0036_notify_cut_off_as_a_bridge_stops_its_command` |
-| Asking whether a peer was cut off (`was_cut_off`) gives a position, never an event, for that peer or another, and takes nothing away from it: the record stays for its owner. What a command cut off catches up on, it reads from the transcript itself, as the user (B2), and only the events it subscribed to, as live: a peer that didn't ask for `acp` gets no raw ACP. A peer learns nothing it couldn't by subscribing (ADR 69). | `was_cut_off` (src/host/control.rs); `Follow::read`, `Found::wanted` (src/ctl/catch_up.rs) | `security.rs`: `adr_0069_was_cut_off_says_where_never_what` |
+| A started bridge runs the profile's command as the user, with `BRNR_PID` and `BRNR_SOCKET`; it can do anything a socket client can (ADR 5.7). | `start_bridge` (src/host/control.rs) | `cli.rs`: `adr_0005_notify_works_as_a_bridge`, `adr_0005_a_bridge_that_closes_its_stdout_gets_events` |
+| A bridge gets every event but `acp` unless it asks for it by name, so the raw ACP isn't forwarded by default. | `Peer::wants` (src/host/control.rs) | `security.rs`: `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks` |
+| A reader that falls behind is cut off and told, and never holds the session up (ADR 10.1). | `send_to`, `drop_peer` (src/host/control.rs) | `headless.rs`: `adr_0010_slow_watcher_is_disconnected`; `cli.rs`: `adr_0005_notify_cut_off_as_a_bridge_stops_its_command` |
+| Asking whether a peer was cut off (`was_cut_off`) gives a position, never an event, for that peer or another, and takes nothing away from it: the record stays for its owner. What a command cut off catches up on, it reads from the transcript itself, as the user (B2), and only the events it subscribed to, as live: a peer that didn't ask for `acp` gets no raw ACP. A peer learns nothing it couldn't by subscribing (ADR 10.2). | `was_cut_off` (src/host/control.rs); `Follow::read`, `Found::wanted` (src/ctl/catch_up.rs) | `security.rs`: `adr_0010_was_cut_off_says_where_never_what` |
 
 What a bridge sends beyond the machine, and to whom, is the bridge's: brnr
 can't see past its stdin. That is the reach P13 says a bridge adds.
@@ -157,9 +157,9 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0025_a_profiles_mcp_secrets_are_redacted`, `adr_0025_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted`, `adr_0002_acp_passes_bytes_unchanged`, `adr_0035_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0025_secrets_are_redacted_keys_and_structure_stay` |
-| `doctor --report`, made to be pasted into an issue, redacts what ADR 25 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 45). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0045_the_report_is_what_to_paste` |
-| `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0025_a_resumed_sessions_secrets_are_redacted` |
+| The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0009_a_profiles_mcp_secrets_are_redacted`, `adr_0009_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted`, `adr_0003_acp_passes_bytes_unchanged`, `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0009_secrets_are_redacted_keys_and_structure_stay` |
+| `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste` |
+| `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted` |
 
 ### The adapters and the release
 
@@ -168,7 +168,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | The adapters are built from pinned npm versions with a frozen lockfile, without optional dependencies (the agents themselves aren't bundled). | `adapters/package.json`, `adapters/bun.lock`, `bun install --frozen-lockfile --omit=optional` in `adapters/build.sh` | CI builds them and runs `adapters/check.py` |
 | The workflows pin actions by commit and are checked by zizmor; crates by `cargo deny`. | `.github/workflows/`, `deny.toml` | CI |
 | Release binaries rebuild identically within the same toolchain and OS, in separate directories at different times. | `.github/scripts/reproducible.sh`, a prerequisite of publication | `reproducible.yml`, on Linux and macOS |
-| The release inventories brnr's locked Rust dependencies; the public Homebrew install is checked after the tap update, which a release candidate doesn't make (ADR 40). This does not establish that dependencies are safe. | `release.yml`: CycloneDX SBOM and `homebrew-smoke` job (ADR 52) | SBOM generation must succeed without changing `Cargo.lock`; a fresh macOS runner checks the installed version and runs doctor |
+| The release inventories brnr's locked Rust dependencies; the public Homebrew install is checked after the tap update, which a release candidate doesn't make (ADR 11.4). This does not establish that dependencies are safe. | `release.yml`: CycloneDX SBOM and `homebrew-smoke` job (ADR 11.7) | SBOM generation must succeed without changing `Cargo.lock`; a fresh macOS runner checks the installed version and runs doctor |
 
 ## Gaps
 
@@ -197,7 +197,7 @@ What brnr doesn't enforce, or doesn't test, today.
   (`no_approval_goes_through_a_dir_others_can_use`), but the running process
   goes on serving its socket, which its own mode still guards.
 - **What others read before a repair.** A transcript others could reach is
-  made private when a process opens it again (ADR 59), not before: what was
+  made private when a process opens it again (ADR 9.3), not before: what was
   in it until then may have been read, which the host log's `made-private`
   says. One no process opens again stays as it is until `doctor --fix`.
 - **Another user's file in the state directory is tested only as `/`.**
@@ -215,12 +215,12 @@ What brnr doesn't enforce, or doesn't test, today.
   passes it through; `session status` reports `lock_error`, and the host log
   records `lock-failed`. A headless resume is refused while the editor's process
   reports serving it, but a second process could acquire its lock if that
-  process doesn't answer and the lock failure was transient (ADR 50).
+  process doesn't answer and the lock failure was transient (ADR 3.9).
 - **Redaction is by field, not by value.** brnr redacts the MCP servers'
-  `env` and `headers` in the requests that open a session (ADR 25). A secret
+  `env` and `headers` in the requests that open a session (ADR 9.1). A secret
   elsewhere is recorded as it is: in an MCP server's `args` or `url`, in the
   agent's command line, or repeated by the agent itself in its messages, tool
-  calls, errors or stderr (ADR 10 puts the agent's stderr in the host log),
+  calls, errors or stderr (ADR 3.6 puts the agent's stderr in the host log),
   and it then reaches bridges with those events.
 - **The editor's file and terminal answers are recorded as they are.** In
   an editor's session the raw ACP has what the editor read for the agent
@@ -228,24 +228,24 @@ What brnr doesn't enforce, or doesn't test, today.
   the output of the commands it ran: redaction is by field (above), and
   none of these is redacted. This is accepted, not open: brnr doesn't
   redact file or terminal data, as it records the rest of the session as it
-  passed (ADR 22), and the transcripts are only the user's to read (P13,
-  ADR 59). The editor decides what it serves; brnr doesn't filter or gate
-  those requests (ADR 67).
+  passed (ADR 5.1), and the transcripts are only the user's to read (P13,
+  ADR 9.3). The editor decides what it serves; brnr doesn't filter or gate
+  those requests (ADR 2.7).
 - **Approvals are the agent's own asks.** brnr answers the permission
   requests the agent makes; it doesn't sandbox the agent. A malicious
   adapter or npm package, or an agent in a permissive mode, acts without
   asking, and nothing in brnr can stop it.
 - **`response_timeout` is headless only.** An editor's session waits for
   the editor; with `permission` (or `elicitation`) enabled, any of the user's
-  processes may answer it (ADR 4, ADR 68).
+  processes may answer it (ADR 7.1, ADR 4.5).
 - **An elicitation's `pattern` and `format` aren't checked.** brnr has no
   regex engine; a value that doesn't match them is sent, and the agent (or
-  the MCP server behind it) checks them itself (ADR 68).
+  the MCP server behind it) checks them itself (ADR 4.5).
 - **A headless turn waits on an elicitation.** The agent asked and brnr
   doesn't answer for the user, so an unattended run with no
-  `response_timeout` waits for as long as nobody answers (ADR 68).
+  `response_timeout` waits for as long as nobody answers (ADR 4.5).
 - **A state directory shared by two machines.** Session locks are in the
-  state directory (ADR 65), so two machines sharing it (a network home
+  state directory (ADR 3.9), so two machines sharing it (a network home
   directory) contend for one lock only where the file system carries `flock`
   between them, and a holder's pid is looked for on this machine: a lock
   another machine's process holds looks like no process's, and a resume
@@ -261,22 +261,22 @@ What brnr doesn't enforce, or doesn't test, today.
   pipes: an editor that stops reading one eventually holds up the agent's
   writes to the other, and an editor closing its stderr gives the agent no
   EPIPE. The editor's stderr ends when `brnr acp` exits, not when the
-  agent's does (ADR 62), which `adr_0062_stdout_and_stderr_end_on_their_own`
+  agent's does (ADR 2.6), which `adr_0002_stdout_and_stderr_end_on_their_own`
   checks; the rest isn't tested.
 - **Requests in lines the host can't read keep the editor's id.** A
   request the host doesn't read (not JSON, past 32 MiB, or what the editor
   wrote after its last newline) reaches the agent untracked, with the
   editor's id. If the editor gave it an id the host has given a request
   still waiting, which it was never told, the answer is taken for that
-  request's (ADR 61). Not tested.
+  request's (ADR 2.4). Not tested.
 - **The agent's ids are passed to the editor as they are.** An agent that
   reuses an id after the host answered a request with it (on
   `brnr prompt cancel`, `brnr permission allow` or `brnr elicitation
   accept`) can have the editor's
-  late answer to the first taken as its answer to the second (ADR 61). Not
+  late answer to the first taken as its answer to the second (ADR 2.4). Not
   tested; no agent known reuses ids.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
-  next to the `brnr` executable first (ADR 38); that directory is trusted as
+  next to the `brnr` executable first (ADR 11.2); that directory is trusted as
   `PATH` is.
 - **The adapters' dependencies.** Pinned and locked, but brnr doesn't review
   them: a compromised version of an adapter's package, pinned in a release,

@@ -1,4 +1,4 @@
-//! `brnr skill`: the skill for agents that use brnr (ADR 46 in docs/adr),
+//! `brnr skill`: the skill for agents that use brnr (ADR 8.6 in docs/adr),
 //! embedded at build time from `skills/brnr/`, so it is always the one for
 //! this brnr.
 //!

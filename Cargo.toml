@@ -11,12 +11,12 @@ homepage = "https://brnrhq.github.io/brnr/"
 readme = "README.md"
 keywords = ["acp", "agent", "claude", "codex", "editor"]
 categories = ["command-line-utilities", "development-tools"]
-# What `cargo publish` uploads (ADR 47): the source and what it embeds, and
+# What `cargo publish` uploads (ADR 11.6): the source and what it embeds, and
 # the license and NOTICE, which Apache-2.0 asks a redistribution to carry.
 include = ["/src/", "/skills/", "/README.md", "/LICENSE", "/NOTICE"]
 
 [dependencies]
-# ACP's types (ADR 43 in docs/adr), without schemars and without the
+# ACP's types (ADR 2.3 in docs/adr), without schemars and without the
 # unstable features: its methods and types are what strict mode calls stable.
 agent-client-protocol-schema = { version = "1.10.2", default-features = false }
 libc = "0.2.189"
@@ -28,7 +28,7 @@ toml = "1.1.6"
 
 [features]
 # `brnr::internals`: what the crate's own tests and fuzz targets reach
-# (ADR 66). Off for everyone else: it isn't part of the public API.
+# (ADR 8.5). Off for everyone else: it isn't part of the public API.
 internals = []
 
 # The integration tests are a crate of their own, so they reach `internals`

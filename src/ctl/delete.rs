@@ -1,10 +1,10 @@
-//! `session delete` (ADR 63): `session/delete`, asked of an agent started
+//! `session delete` (ADR 8.1): `session/delete`, asked of an agent started
 //! just for that, as `session list` asks for `session/list` (no process of
 //! brnr's, see sessions.rs), and with `--purge` brnr's transcript of the
 //! session deleted too.
 //!
 //! The agent is the one brnr recorded for the session, as a resume finds it
-//! (ADR 14), or `--profile` and `-- <agent>`, named for a session brnr has
+//! (ADR 3.11), or `--profile` and `-- <agent>`, named for a session brnr has
 //! no transcript of. A session open in a process is refused: it is closed
 //! first. Its lock is held while the agent deletes it, so that no process
 //! opens it meanwhile.
@@ -52,14 +52,14 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     }
     let id = session.ok_or(USAGE)?;
     // One open in a process started with another runtime directory is
-    // closed from there (ADR 65).
+    // closed from there (ADR 3.9).
     let open = |pid: &str| match lock::holder_dir(&id) {
         Some(_) => running_in(&id, pid, ""),
         None => format!("{id} is open in process {pid}: close it first (brnr session close {id})"),
     };
     let hosts = discover()?;
     if let Some(pid) = lock::holder(&id) {
-        // Closing there: free once its records are written (ADR 48).
+        // Closing there: free once its records are written (ADR 5.5).
         return Err(match closing_in(&hosts, &id) {
             Some(_) => closing(&id, pid),
             None => open(&pid.to_string()),
@@ -140,7 +140,7 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
             "host_id": null,
         });
         let (recorded, failed, made) = log::record_in_transcripts(&id, agent_pid, &event);
-        // As the host log's `made-private` would (ADR 59): the command has none.
+        // As the host log's `made-private` would (ADR 9.3): the command has none.
         for (path, mode) in made {
             errln!("brnr: made-private: {} (its mode was {mode:o})", path.display());
         }
