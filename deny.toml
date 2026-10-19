@@ -17,7 +17,8 @@ ignore = []
 
 [licenses]
 # Licenses compatible with distributing brnr under Apache-2.0.
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+# Zlib: foldhash, serde_json's hasher under preserve_order.
+allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 
 [bans]
 multiple-versions = "warn"

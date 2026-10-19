@@ -9,10 +9,11 @@ or an explicit exemption. `vet` is a required check on `main`; CI uses
 ## Remaining work
 
 After three local review batches for [#29](https://github.com/brnrhq/brnr/issues/29),
-the locked graph has 102 third-party versions: 43 fully audited, 1
-partially audited (libc, a reviewed 0.2.189 to 0.2.190 delta on an
-exemption) and 58 exempted, up from 25 audited and 77 exempted before the
-first batch. These counts cover Cargo's
+and the deltas of Dependabot's bumps, the locked graph has 103 third-party
+versions: 44 fully audited, 5 partially audited (libc,
+`agent-client-protocol-schema`, `serde_json`, `toml` and `toml_parser`:
+reviewed deltas on exemptions) and 54 exempted, up from 25 audited and 77
+exempted before the first batch. These counts cover Cargo's
 full dependency graph, including optional and platform-specific crates,
 not just the dependencies compiled on Linux and macOS.
 
@@ -26,10 +27,10 @@ and the smallest reviewable changes from audited versions.
 
 ## Local evidence
 
-`audits.toml` records 14 source-delta reviews against versions covered by
-the configured upstream importers, one (libc) against an exemption, and
-full source reviews of the small `darling_macro` and `jiff-tzdb-platform`
-wrappers and of `itoa` and `zmij`. The records describe what
+`audits.toml` records 17 source-delta reviews against versions covered by
+the configured upstream importers, five against exemptions, and full
+source reviews of the small `darling_macro` and `jiff-tzdb-platform`
+wrappers and of `itoa`, `zmij` and `foldhash`. The records describe what
 was checked, including unsafe pointer and FFI boundaries where affected. They identify
 automated source reviews explicitly; they do not assert human review or
 prove the absence of vulnerabilities. Each dependency needs its own
@@ -43,6 +44,15 @@ The third batch reviews all of `itoa` 1.0.18 and `zmij` 1.0.23, the integer
 and float formatters under `serde_json`, including the dedicated review of
 `itoa`'s unsafe indexing and division arithmetic that the second batch left
 open.
+
+#266 (Dependabot) reviews the deltas to `agent-client-protocol-schema`
+1.11.0, `serde_json` 1.0.154, `toml` 1.1.8 and its `toml_parser`,
+`toml_datetime`, `toml_writer` and `serde_spanned`, and all of `foldhash`
+0.2.0, which `serde_json`'s `preserve_order` now brings. With `std` on, as
+in brnr, `serde_json`'s maps keep std's `RandomState`; foldhash is built but
+not used, and its seed (addresses and the time, not the OS's randomness)
+would be only minimally HashDoS-resistant. The `toml` 1.1.8 delta leaves the
+stack overflow below as it was.
 
 `toml` 1.1.6 was also read in full, and stays exempted: with default
 features, a valid document can abort the process with a stack overflow.
