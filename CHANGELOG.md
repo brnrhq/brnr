@@ -65,6 +65,9 @@ brnr's own conventions:
 
 ### Fixed
 
+- A flag's value is never taken as a request for help: `brnr session new
+  --prompt -h` sends `-h` as the prompt, where it printed the usage, as
+  `prompt send` already did (ADR 8.1).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork

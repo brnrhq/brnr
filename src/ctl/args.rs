@@ -330,14 +330,12 @@ impl Spec {
         }
     }
 
-    /// Whether `args` ask for the verb's usage: `-h` or `--help` before any
-    /// `--`, after which they are the agent's or the command's (ADR 8.1); for
-    /// `prompt send`, also before its prompt, as an option, not a value.
+    /// Whether `args` ask for the verb's usage: `-h` or `--help` as an
+    /// option, not a flag's value, before any `--`, after which they are the
+    /// agent's or the command's (ADR 8.1); for `prompt send`, also before its
+    /// prompt.
     pub(super) fn asks_help(&self, args: &[String]) -> bool {
         let help = |a: &str| a == "-h" || a == "--help";
-        if self.rest != Rest::Words {
-            return args.iter().take_while(|a| *a != "--").any(|a| help(a));
-        }
         let (mut it, mut positionals) = (args.iter(), 0);
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -347,7 +345,9 @@ impl Spec {
                     it.next();
                 }
                 a if a.starts_with("--") => {}
-                _ if positionals < self.positionals.len() => positionals += 1,
+                _ if self.rest != Rest::Words || positionals < self.positionals.len() => {
+                    positionals += 1;
+                }
                 _ => break,
             }
         }
@@ -452,9 +452,7 @@ mod tests {
                         assert_eq!(a.positional, positionals, "{at} {args:?}");
                         assert_eq!(a.value(flag), Some(value), "{at} {args:?}");
                         assert_eq!((a.json, &a.rest), (false, &None), "{at} {args:?}");
-                        if spec.rest == Rest::Words {
-                            assert!(!spec.asks_help(&args), "{at} {args:?}");
-                        }
+                        assert!(!spec.asks_help(&args), "{at} {args:?}");
                     }
                 }
                 let alone = [positionals.clone(), vec![flag.to_owned()]].concat();
