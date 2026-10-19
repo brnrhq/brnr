@@ -107,7 +107,7 @@ of to-resolve; the map at the end says where each went.
 | [64](0064-what-the-compatibility-promise-covers.md) | What the compatibility promise covers from 1.0.0 (P9) | — |
 | [65](0065-session-locks-live-with-the-transcripts.md) | Session locks live with the transcripts; where things live is fixed for 1.x | yes |
 | [66](0066-the-library-is-private-and-its-facade-mirrors-the-cli.md) | The library is private, and its facade mirrors the command line | partly: the typed facade waits for #150 |
-| [67](0067-the-editors-file-system-and-terminal-reach-the-agent.md) | The editor's file system and terminal reach the agent, and side-channel actions stay experimental in 1.x | yes |
+| [67](0067-the-editors-file-system-and-terminal-reach-the-agent.md) | The editor's file system and terminal reach the agent in strict mode, or when its profile names them, and side-channel actions stay experimental in 1.x | yes |
 | [68](0068-elicitations.md) | Elicitations are held and answered as approvals are | yes |
 | [69](0069-a-peer-cut-off-catches-up.md) | A peer cut off catches up from the transcript | yes |
 | [70](0070-an-editors-profile-chooses-how-a-message-is-shown.md) | An editor's profile chooses how a message sent through brnr is shown to it | yes |

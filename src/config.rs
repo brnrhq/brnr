@@ -32,6 +32,7 @@
 //!
 //! [profiles.work.editor]              # brnr acp
 //! experimental = ["send", "permission"] # actions on the editor's session (ADR 4)
+//! client_capabilities = ["fs"]        # the editor's, passed to the agent: "fs", "terminal" (ADR 67)
 //! echo_as = "tool_call"               # or "user_message_chunk" (ADR 70)
 //! features = ["shared_sessions"]      # process management (ADR 42)
 //! ```
@@ -91,12 +92,14 @@ pub(crate) struct Headless {
     pub(crate) mcp_servers: Vec<McpServer>,
 }
 
-/// What only `brnr acp` uses (ADR 4, 42, 70).
+/// What only `brnr acp` uses (ADR 4, 42, 67, 70).
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Editor {
     #[serde(default)]
     pub(crate) experimental: BTreeSet<Experimental>,
+    #[serde(default)]
+    pub(crate) client_capabilities: BTreeSet<ClientCapability>,
     #[serde(default)]
     pub(crate) echo_as: EchoAs,
     #[serde(default)]
@@ -184,6 +187,28 @@ impl Experimental {
             Experimental::Elicitation => "elicitation",
             Experimental::Config => "config",
             Experimental::Close => "close",
+        }
+    }
+}
+
+/// A client capability of the editor's that ACP v2 drops, and `brnr acp`
+/// drops too unless the profile names it, or in strict mode (ADR 67).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ClientCapability {
+    Fs,
+    Terminal,
+}
+
+impl ClientCapability {
+    pub(crate) const ALL: [ClientCapability; 2] =
+        [ClientCapability::Fs, ClientCapability::Terminal];
+
+    /// Its name, as the editor's `initialize` and the profile have it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            ClientCapability::Fs => "fs",
+            ClientCapability::Terminal => "terminal",
         }
     }
 }
@@ -354,7 +379,7 @@ const HEADLESS_KEYS: &[&str] = &[
     "auth",
     "mcp_servers",
 ];
-const EDITOR_KEYS: &[&str] = &["experimental", "echo_as", "features"];
+const EDITOR_KEYS: &[&str] = &["experimental", "client_capabilities", "echo_as", "features"];
 
 impl Part {
     fn of(key: &str) -> Option<Part> {
@@ -455,7 +480,13 @@ fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<Stri
             }
             "experimental" => {
                 let names: Vec<&str> = Experimental::ALL.iter().map(|e| e.name()).collect();
-                check_names(&format!("{here}.experimental"), "action", &names, value, problems);
+                let at = format!("{here}.experimental");
+                check_names(&at, ("action", "actions"), &names, value, problems);
+            }
+            "client_capabilities" => {
+                let names: Vec<&str> = ClientCapability::ALL.iter().map(|c| c.name()).collect();
+                let at = format!("{here}.client_capabilities");
+                check_names(&at, ("capability", "capabilities"), &names, value, problems);
             }
             "echo_as" => {
                 if !EchoAs::ALL.iter().any(|e| value.as_str() == Some(e.name())) {
@@ -467,7 +498,8 @@ fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<Stri
             }
             "features" => {
                 let names: Vec<&str> = Feature::ALL.iter().map(|f| f.name()).collect();
-                check_names(&format!("{here}.features"), "feature", &names, value, problems);
+                let at = format!("{here}.features");
+                check_names(&at, ("feature", "features"), &names, value, problems);
             }
             _ => {}
         }
@@ -478,14 +510,14 @@ fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<Stri
 /// strings is left to the typed parse.
 fn check_names(
     at: &str,
-    what: &str,
+    (what, whats): (&str, &str),
     known: &[&str],
     value: &toml::Value,
     problems: &mut Vec<String>,
 ) {
     for name in value.as_array().into_iter().flatten().filter_map(toml::Value::as_str) {
         if !known.contains(&name) {
-            problems.push(format!("{at}: unknown {what} {name:?} ({what}s: {})", known.join(", ")));
+            problems.push(format!("{at}: unknown {what} {name:?} ({whats}: {})", known.join(", ")));
         }
     }
 }

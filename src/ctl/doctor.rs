@@ -475,8 +475,15 @@ fn describe_profile(profile: &config::Profile) -> String {
         out.push_str(", strict");
     }
     let experimental: Vec<&str> = profile.editor.experimental.iter().map(|e| e.name()).collect();
+    let capabilities: Vec<&str> =
+        profile.editor.client_capabilities.iter().map(|c| c.name()).collect();
     let features: Vec<&str> = profile.editor.features.iter().map(|f| f.name()).collect();
-    for (what, names) in [("experimental", experimental), ("features", features)] {
+    let named = [
+        ("experimental", experimental),
+        ("client_capabilities", capabilities),
+        ("features", features),
+    ];
+    for (what, names) in named {
         if !names.is_empty() {
             out.push_str(&format!(", {what} {}", names.join(" ")));
         }
