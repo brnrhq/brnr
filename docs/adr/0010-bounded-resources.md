@@ -206,11 +206,13 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   it has said that it cut the peer off: its socket refuses the next
   connection.
 - A process that is stopping still accepts until its socket goes, and hangs
-  up on what it is asked (#275). One that hangs up on step 1 is waited for,
-  up to 10 s: once its socket refuses and its pid is gone or is another
-  process's (on macOS a full backlog refuses too), it has gone, and it is
-  caught up with as above if its host log has the peer's `peer-dropped`.
-  Otherwise the command fails, as it does for a peer that wasn't cut off.
+  up on what it is asked (#275). One that hangs up on step 1, or whose
+  socket refuses, is waited for, up to 10 s, until it has gone: its socket
+  refuses and its pid, which names the socket, has exited. A refusal alone
+  isn't enough: a process removes its socket before its last records are
+  written, and on macOS a full backlog refuses too. Gone, it is caught up
+  with as above if its host log has the peer's `peer-dropped`. Otherwise the
+  command fails, as it does for a peer that wasn't cut off.
 - These commands catch up: `event watch`, `prompt send --wait`, `session
   new --wait` and `session resume --wait` (on the start channel, or with
   `--pid`), `event wait`, and `event notify` on the socket.

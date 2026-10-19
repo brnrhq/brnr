@@ -326,19 +326,17 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
 /// that is stopping writes what it has left before its socket goes.
 const STOPPING_WAIT: Duration = Duration::from_secs(10);
 
-/// Whether the process whose socket is `socket` has gone, within `wait`. A
-/// refusal alone isn't enough: on macOS a full backlog refuses too, so its
-/// metadata beside the socket says whose it is (`gone`); with none left,
-/// a refusal is.
+/// Whether the process whose socket is `socket` has gone, within `wait`:
+/// nobody listens on it, and the process, whose pid names it, has exited.
+/// A refusal alone isn't enough: a process removes its socket before its
+/// last records are written (ADR 5.5), and on macOS a full backlog refuses
+/// too. A pid that is another process's now is waited for to the end.
 fn gone_within(socket: &Path, wait: Duration) -> bool {
-    let meta = socket.with_extension("json");
-    let pid = read_meta(&meta).and_then(|m| m["host_pid"].as_i64());
+    let pid = socket.file_stem().and_then(|s| s.to_str()?.parse::<i64>().ok());
     let until = Instant::now() + wait;
     loop {
         match UnixStream::connect(socket) {
-            Err(e) if refused(&e) && pid.is_none_or(|pid| gone(pid, socket, &meta, &e)) => {
-                return true;
-            }
+            Err(e) if refused(&e) && pid.is_none_or(|pid| !alive(pid)) => return true,
             _ if Instant::now() >= until => return false,
             _ => std::thread::sleep(REFUSED_AGAIN),
         }
@@ -553,6 +551,17 @@ impl Conn {
     /// connection off before it answered.
     pub(super) fn call_until(
         &mut self,
+        req: Value,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Value>, String> {
+        self.answer_until(req, deadline)?.map(unwrapped).transpose()
+    }
+
+    /// The answer to `req` as the process gave it, error or not; `Err` only
+    /// if it can't be had (the connection failed), `Ok(None)` when `deadline`
+    /// passes.
+    fn answer_until(
+        &mut self,
         mut req: Value,
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, String> {
@@ -573,7 +582,7 @@ impl Conn {
                 Err(why) => return Err(why),
             };
             if msg["req_id"] == id.as_str() {
-                return unwrapped(msg).map(Some);
+                return Ok(Some(msg));
             }
             if msg.get("event").is_some() {
                 self.events.push_back(msg);
@@ -619,13 +628,18 @@ impl Conn {
             Some(f) => {
                 match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
                 {
-                    Ok(mut conn) => match conn.was_cut_off(&f.peer) {
-                        Ok(cut) => cut.is_some(),
-                        // Stopping (#275): its host log says, once it has gone.
-                        Err(_) => {
-                            gone_within(&f.socket, STOPPING_WAIT) && f.cut_off_before_it_went()
+                    Ok(mut conn) => {
+                        let asked = conn.was_cut_off(&f.peer);
+                        drop(conn);
+                        match asked {
+                            Ok(cut) => cut.is_some(),
+                            // Stopping (#275): its host log says, once it has
+                            // gone.
+                            Err(_) => {
+                                gone_within(&f.socket, STOPPING_WAIT) && f.cut_off_before_it_went()
+                            }
                         }
-                    },
+                    }
                     Err(_) => f.cut_off_before_it_went(),
                 }
             }
@@ -638,10 +652,13 @@ impl Conn {
 
     /// Asks the process whether it cut `peer` off: if it did, the last
     /// position then (`last_queued`), if it says; none if it didn't, or
-    /// doesn't answer.
+    /// answers with an error. `Err` if it doesn't answer: it hung up, as one
+    /// that is stopping does (#275).
     fn was_cut_off(&mut self, peer: &str) -> Result<Option<Option<u64>>, String> {
-        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer }))?;
-        Ok((asked["cut_off"] == true).then(|| asked["last_queued"].as_u64()))
+        let req = json!({ "cmd": "was_cut_off", "peer": peer });
+        let asked = self.answer_until(req, None)?.ok_or("the process closed the connection")?;
+        let cut = asked["ok"] == true && asked["cut_off"] == true;
+        Ok(cut.then(|| asked["last_queued"].as_u64()))
     }
 
     /// The connection has ended (`why`) before the end the command waits
@@ -662,7 +679,13 @@ impl Conn {
             let mut conn = match fresh {
                 Ok(conn) => conn,
                 // Gone: its transcript is whole (ADR 5.5), and is read to its end.
-                Err(_) if cut.is_some() || f.cut_off_before_it_went() => break (None, None),
+                Err(_) if cut.is_some() || f.cut_off_before_it_went() => {
+                    // Its socket goes before its last records are written.
+                    if gone_within(&f.socket, STOPPING_WAIT) {
+                        break (None, None);
+                    }
+                    return Err(why);
+                }
                 Err(_) => return Err(why),
             };
             if cut.is_none() {
@@ -1094,22 +1117,21 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A socket that refuses is gone only if its process is: on macOS a
-    /// full backlog refuses too, while the process (here, this one, whose
-    /// metadata is written after it started) lives and may write more.
-    #[cfg(target_os = "macos")]
+    /// A socket that refuses is gone only once its process, whose pid names
+    /// it, has exited: one that has removed its socket may still be writing
+    /// its last records, and on macOS a full backlog refuses too.
     #[test]
     fn adr_0010_a_refusing_socket_whose_process_lives_isnt_gone() {
-        let dir = env::temp_dir().join(format!("brnr-backlog-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("brnr-gone-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let (socket, meta) = (dir.join("h.sock"), dir.join("h.json"));
-        drop(UnixListener::bind(&socket).unwrap()); // Nobody listens: refused.
-        let ours = json!({ "host_pid": std::process::id(), "socket": socket.to_string_lossy() });
-        fs::write(&meta, ours.to_string()).unwrap();
-        assert!(!gone_within(&socket, Duration::from_millis(100)));
-        fs::remove_file(&meta).unwrap();
-        assert!(gone_within(&socket, Duration::from_millis(100)));
+        let mut done = std::process::Command::new("true").spawn().unwrap();
+        done.wait().unwrap();
+        for (pid, gone) in [(std::process::id(), false), (done.id(), true)] {
+            let socket = dir.join(format!("{pid}.sock"));
+            drop(UnixListener::bind(&socket).unwrap()); // Nobody listens: refused.
+            assert_eq!(gone_within(&socket, Duration::from_millis(100)), gone, "{pid}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
