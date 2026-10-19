@@ -207,12 +207,12 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   connection.
 - A process that is stopping still accepts until its socket goes, and hangs
   up on what it is asked (#275). One that hangs up on step 1, or whose
-  socket refuses, is waited for, up to 10 s, until it has gone: its socket
-  refuses and its pid, which names the socket, has exited. A refusal alone
-  isn't enough: a process removes its socket before its last records are
-  written, and on macOS a full backlog refuses too. Gone, it is caught up
-  with as above if its host log has the peer's `peer-dropped`. Otherwise the
-  command fails, as it does for a peer that wasn't cut off.
+  socket refuses, is waited for, up to 10 s, until it has gone: its pid,
+  which names the socket, has exited, or is a zombie nothing has reaped yet.
+  Its socket isn't asked: a process removes it before its last records are
+  written, and a full backlog refuses on macOS and blocks on Linux. Gone, it
+  is caught up with as above if its host log has the peer's `peer-dropped`.
+  Otherwise the command fails, as it does for a peer that wasn't cut off.
 - These commands catch up: `event watch`, `prompt send --wait`, `session
   new --wait` and `session resume --wait` (on the start channel, or with
   `--pid`), `event wait`, and `event notify` on the socket.
@@ -492,7 +492,7 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_live_process_that_cant_be_caught_up_with_says_until_where`,
     `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`,
     `adr_0010_a_peer_cut_off_by_a_stopping_process_catches_up`,
-    `adr_0010_a_refusing_socket_whose_process_lives_isnt_gone`,
+    `adr_0010_a_process_has_gone_once_it_has_exited`,
     `adr_0010_an_event_live_while_subscribing_again_comes_once`.
   - [src/ctl/talk.rs](../../src/ctl/talk.rs):
     `adr_0010_event_wait_cut_off_looking_says_what_it_missed`,

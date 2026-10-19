@@ -19,6 +19,40 @@ pub(crate) fn kill(pid: pid_t, sig: c_int) -> bool {
     unsafe { libc::kill(pid, sig) == 0 }
 }
 
+/// Whether `pid` has exited: it is gone, isn't the user's, or is a zombie
+/// its parent hasn't reaped yet, which `kill(pid, 0)` can't tell from a
+/// live process (a host is reparented, and nothing may reap it soon).
+#[cfg(target_os = "macos")]
+pub(crate) fn exited(pid: pid_t) -> bool {
+    if !kill(pid, 0) {
+        return true;
+    }
+    // SAFETY: proc_bsdinfo is plain data, for which all zeros is a valid
+    // value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = size_of::<libc::proc_bsdinfo>() as c_int;
+    // SAFETY: the buffer is `info`, and `size` is its size, as proc_pidinfo
+    // fills it.
+    let got =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    // One of the user's that can't be looked at has no task left.
+    got != size || info.pbi_status == libc::SZOMB
+}
+
+/// Whether `pid` has exited: it is gone, isn't the user's, or is a zombie
+/// its parent hasn't reaped yet, which `kill(pid, 0)` can't tell from a
+/// live process (a host is reparented, and nothing may reap it soon).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn exited(pid: pid_t) -> bool {
+    if !kill(pid, 0) {
+        return true;
+    }
+    // `pid (comm) S …`: the state follows the last `)`, as comm may hold one.
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return true };
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next());
+    matches!(state, Some('Z' | 'X'))
+}
+
 /// The user brnr runs as.
 pub(crate) fn uid() -> u32 {
     // SAFETY: getuid(2) takes nothing and can't fail.
