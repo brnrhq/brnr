@@ -1,6 +1,6 @@
 # 11. A process's own death is recorded
 
-Accepted 2026-10-07. Implemented; the cause of the deaths below is still to
+Draft 2026-10-07. Implemented; the cause of the deaths below is still to
 be found. What can't be recorded: a panic on the logger's own thread, and an
 abort (a stack overflow), which runs no hook. A start that fails as it opens
 the start channel (ADR 7) or its bridges records `exited` too, and so does

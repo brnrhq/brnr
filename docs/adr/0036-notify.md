@@ -1,6 +1,6 @@
 # 36. `notify`
 
-Accepted (former decisions 17 and 23); reviewed 2026-10-07. Implemented.
+Draft (former decisions 17 and 23); reviewed 2026-10-07. Implemented.
 Resolves review item 4 with ADR 35.
 
 Amended by 63: `brnr notify` is `brnr event notify`, with the same flags,

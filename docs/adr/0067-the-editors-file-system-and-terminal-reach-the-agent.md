@@ -1,6 +1,6 @@
 # 67. The editor's file system and terminal reach the agent, and side-channel actions stay experimental in 1.x
 
-Accepted 2026-10-14. Implemented. The real-editor checks below are not done
+Draft 2026-10-14. Implemented. The real-editor checks below are not done
 yet: every cell of the matrix is untested. Amends 1 (P1's conventions and
 named changes no longer include dropping `fs` and `terminal`), 2 (the
 editor's `initialize` keeps them), 4 (its actions stay experimental for all

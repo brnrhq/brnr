@@ -1,6 +1,6 @@
 # 35. Bridges
 
-Accepted (from former decisions 25 and 37); reviewed 2026-10-07.
+Draft (from former decisions 25 and 37); reviewed 2026-10-07.
 Implemented.
 Resolves review item 4 with ADR 36.
 

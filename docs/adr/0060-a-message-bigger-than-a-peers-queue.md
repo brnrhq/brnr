@@ -1,6 +1,6 @@
 # 60. A message bigger than a peer's queue reaches every peer that keeps up
 
-Accepted 2026-10-09. Implemented. Amends ADR 6 and 49 (when a peer is
+Draft 2026-10-09. Implemented. Amends ADR 6 and 49 (when a peer is
 behind) and 51 (each peer's queue, in what is bounded). Resolves #82.
 
 Amended by 69: a burst past 64 MiB still cuts a peer off, which then

@@ -1,6 +1,6 @@
 # 65. Session locks live with the transcripts, and where things live is fixed for 1.x
 
-Accepted 2026-10-14. Implemented. Amends 3 and 64; resolves #155, and the
+Draft 2026-10-14. Implemented. Amends 3 and 64; resolves #155, and the
 part of #70 that is where sessions are found.
 
 ## Context

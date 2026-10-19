@@ -1,6 +1,6 @@
 # 62. The editor's stdout ends when the agent's does, and its stderr comes as written
 
-Accepted 2026-10-09. Implemented. Amends 2 (the editor's stdout ends with
+Draft 2026-10-09. Implemented. Amends 2 (the editor's stdout ends with
 the agent's, and brnr writes nothing more there), 10 (the agent's stderr
 goes on as it is read) and 51 (stderr's 64 KiB pieces are the host log's
 records, not what the editor waits for).

@@ -1,6 +1,6 @@
 # 24. `log --last <n>`
 
-Accepted (former decision 20); reviewed 2026-10-07. Implemented.
+Draft (former decision 20); reviewed 2026-10-07. Implemented.
 
 ## Decision
 

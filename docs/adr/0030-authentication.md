@@ -1,6 +1,6 @@
 # 30. Authentication
 
-Accepted (former decision 16); reviewed 2026-10-07. Implemented.
+Draft (former decision 16); reviewed 2026-10-07. Implemented.
 
 ## Context
 

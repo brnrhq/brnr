@@ -1,6 +1,6 @@
 # 37. Adapters through Homebrew: compiled on the user's machine, one formula each
 
-Accepted (former decisions 26 and 29); reviewed 2026-10-07. Implemented.
+Draft (former decisions 26 and 29); reviewed 2026-10-07. Implemented.
 
 ## Context
 

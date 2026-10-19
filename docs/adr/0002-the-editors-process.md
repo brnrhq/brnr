@@ -1,6 +1,6 @@
 # 2. The editor's process: `brnr acp` relays, the host owns the agent
 
-Accepted (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
+Draft (former decisions 32 and 40); reviewed 2026-10-07. Implemented.
 
 Amended by 61: the editor's requests reach the agent with an id of the
 host's, and their answers come back with the editor's; in a line only the

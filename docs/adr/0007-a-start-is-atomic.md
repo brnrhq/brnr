@@ -1,6 +1,6 @@
 # 7. A start is atomic and commits at ready
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 Amended by 63: `brnr start` is `brnr session new`, and `start --resume`
 `brnr session resume`; each is a start as described here. With `--pid`, in
 a running process, the commit is the process's answer on the control

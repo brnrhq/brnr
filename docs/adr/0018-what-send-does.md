@@ -1,6 +1,6 @@
 # 18. What `send` does
 
-Accepted 2026-10-07. Implemented. On an editor's session `send` is ADR 4's
+Draft 2026-10-07. Implemented. On an editor's session `send` is ADR 4's
 experimental action: refused while a turn runs, and never held, steered or
 interrupting. Replaces former decision 24. Amended by 56: a steer the agent
 answers after its turn ended is in that turn, or dropped, and until it is

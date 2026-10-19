@@ -1,6 +1,6 @@
 # 48. `log` of a running session waits for its transcript
 
-Accepted 2026-10-08. Implemented. Amends ADR 22 (what `log` shows of a
+Draft 2026-10-08. Implemented. Amends ADR 22 (what `log` shows of a
 running session) and ADR 35 (a request, `logged`).
 Amended 2026-10-12 (#161): a session closed in a process is let go of,
 and its close answered, once its records are written, as on exit, for 2 s

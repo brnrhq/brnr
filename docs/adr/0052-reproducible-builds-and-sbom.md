@@ -1,6 +1,6 @@
 # 52. Release builds are checked for reproducibility and carry an SBOM
 
-Accepted 2026-10-08. Implemented.
+Draft 2026-10-08. Implemented.
 Amends 40 and 47: checks before publication and after the tap update.
 Amended 2026-10-11: the smoke test runs the formula's own test too, which
 0.8.0 broke without the release failing.

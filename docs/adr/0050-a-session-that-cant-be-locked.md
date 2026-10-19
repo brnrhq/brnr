@@ -1,6 +1,6 @@
 # 50. A session that can't be locked isn't served headless
 
-Accepted 2026-10-08. Implemented. Amends 3; resolves #57.
+Draft 2026-10-08. Implemented. Amends 3; resolves #57.
 
 Amended by 63: `brnr start` and `start --resume` are `brnr session new`
 and `session resume`, `fork` is `session fork`, and `status` is

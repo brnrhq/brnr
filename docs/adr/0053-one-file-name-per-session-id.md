@@ -1,6 +1,6 @@
 # 53. One file name per session id
 
-Accepted 2026-10-08. Implemented. Amends 1 (P8), 3 and 22; resolves #59.
+Draft 2026-10-08. Implemented. Amends 1 (P8), 3 and 22; resolves #59.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 44. brnr never phones home
 
-Accepted 2026-10-08. Amends ADR 1: adds P15. Nothing to implement: it holds
+Draft 2026-10-08. Amends ADR 1: adds P15. Nothing to implement: it holds
 of brnr as it is (see Context).
 
 ## Context

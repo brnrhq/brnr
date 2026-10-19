@@ -1,6 +1,6 @@
 # 41. Strict mode
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 
 Amended by 63: `send --steer` is `prompt send --steer`, `brnr fork` is
 `session fork`, `--strict` on `start` is on `session new` and

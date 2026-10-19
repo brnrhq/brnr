@@ -1,6 +1,6 @@
 # 17. Message ids and turns
 
-Accepted (former decision 3); reviewed 2026-10-07. Implemented, with
+Draft (former decision 3); reviewed 2026-10-07. Implemented, with
 steering (ADR 18). Amended by 56: a turn's `turn_ended` waits for the
 answers to the steers into it.
 

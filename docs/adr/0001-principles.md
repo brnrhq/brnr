@@ -1,6 +1,6 @@
-# 1. Principles
+# 1. Critical success factors and principles
 
-Accepted 2026-10-07.
+Draft 2026-10-07.
 
 Amended by 44: adds P15, brnr never phones home.
 
@@ -16,16 +16,109 @@ Amended by 67: the editor's `fs` and `terminal` capabilities aren't
 dropped: that is no longer one of P1's conventions, nor one of the named
 changes to the editor's stream.
 
-The rules the other decisions are measured against. They were drawn out of
-the former decision log when every entry was reviewed (October 2026), and
-sharpened where earlier decisions pulled against them. Decisions cite them as
-P1 to P14; one that breaks a principle says so, and why.
+What brnr must get right, its critical success factors, and the rules the
+other decisions are measured against, its principles, which serve the
+factors. The principles were drawn out of the former decision log when every
+entry was reviewed (October 2026), and sharpened where earlier decisions
+pulled against them. The factors were set over them after the architectural
+review of October 2026, which found decisions that traded one principle for
+another with nothing to rank them. Decisions cite the factor at stake, then
+the principles (P1 to P14, and P15 in ADR 44); one that gives up a factor or
+breaks a principle says which, and why.
 
 brnr plays two roles (P12): with an editor attached it is a proxy between the
 editor and the agent; headless, it is the agent's ACP client. Several
 principles apply differently to the two.
 
-## P1. Follow ACP faithfully
+## Critical success factors
+
+### What brnr is for
+
+#### F1. ACP, faithfully
+
+ACP is the protocol brnr implements; doing it faithfully and correctly is
+the goal. Faithful means one thing in each role (P12): with an editor
+attached, brnr is invisible, and what passes between editor and agent passes
+unchanged (P1); headless, brnr is a correct ACP client, and behaves the same
+with every agent (P2). In strict mode, only ACP's stable parts are there
+(ADR 41). Principles: P1, P2, P12.
+
+#### F2. Conventions ahead of the spec
+
+brnr also follows conventions before ACP makes them stable, so that it stays
+useful while the protocol moves: a pragmatic implementation is often more
+useful than a strict one. The test is P1's: agents and editors implement the
+convention alike. One adapter's behaviour is not a convention (P2). Strict
+mode leaves them out. Principles: P1, P2.
+
+#### F3. What ACP leaves out
+
+brnr is useful for what ACP doesn't specify: headless sessions, session
+locks, watchers, transcripts, bridges, notifications. These are outside
+ACP's scope, and they are the value brnr adds. The limit is P1's test: what
+brnr adds can't change what a party that follows ACP sees, so it needs no
+flag. Its defaults protect the user, and feature flags change them
+(ADR 42). Principles: P1, P10, P11, P12.
+
+#### F4. Actions on an editor's session, opted into
+
+Some useful features act on an editor's session, as messages sent through
+the side channel do, and need compensating behaviour that is not faithful
+to ACP. brnr has them, each enabled by name as experimental (ADR 4, ADR 67).
+They are kept apart from F3's feature flags: those change brnr's own process
+management, not what the editor sees. Principles: P1, P12.
+
+#### F5. A focused command line
+
+brnr is a Unix command-line utility: a focused set of operations, each doing
+one thing, that composes with other tools through arguments, standard
+streams, exit statuses and JSON. Scripts and agents can rely on it: nothing
+is lost silently (P3), it never guesses (P4), text and JSON carry the same
+data (P5), a request that can't be met fails (P7), and from 1.0.0 what
+ADR 64 covers stays compatible (P9). What another tool can do (a bridge, a
+`notify` command, `jq`) stays out of brnr. Principles: P3, P4, P5, P7, P9.
+
+### How brnr must run
+
+#### N1. Security
+
+Security comes first. brnr has few crates, each audited by a person or
+listed as an exemption until one is (`cargo vet`); an audit is a person's
+claim to have read the code. The agent's text is untrusted (P8); only the
+user can reach brnr's files and sockets (P13), and that includes what brnr
+reads as well as what it writes; brnr calls no one (P15). The threat model
+(docs/threat-model.md) says what enforces each claim, and its gaps.
+Principles: P8, P13, P15.
+
+#### N2. Reliability
+
+brnr runs where reliability is required. Its processes respect the system
+they run on: memory, threads, files and processes stay bounded whatever a
+peer, the agent or the editor sends (P6); a start is atomic (P10); no
+process is left without an owner (P14); a failure is reported and cleaned
+up, and doesn't take down more than it must. Principles: P6, P10, P14.
+
+#### N3. Performance
+
+brnr is light: one small process per agent, that adds little latency
+between editor and agent and little load to the machine. Principles: P6.
+
+#### N4. Simplicity
+
+brnr has few concepts, each with one owner in the code, as a focused
+utility should (F5). A layer of its own is thin, named and visible (P2). A
+change that adds a concept says why an existing one doesn't do.
+Principles: P2, P9.
+
+### When they pull apart
+
+Security (N1) first, then reliability (N2), then faithfulness to ACP (F1).
+The other factors give way to these three. A record that gives up one factor
+for another says which, and why.
+
+## Principles
+
+### P1. Follow ACP faithfully
 
 brnr does what ACP specifies, as it specifies it. The test for anything it
 does beyond that: can a client or an agent that follows the protocol be
@@ -58,7 +151,7 @@ editor's load of a session another process owns is refused unless a feature
 flag allows it (ADR 3); and the experimental actions, where enabled, add to
 and answer for the editor's session (ADR 4, ADR 26).
 
-## P2. ACP as ACP has it
+### P2. ACP as ACP has it
 
 Sessions, modes, config options, approvals and login are the agent's. brnr
 adds a layer of its own only where ACP has nothing (message ids, held
@@ -68,14 +161,14 @@ alike can be followed (P1); one adapter's undocumented behaviour can't be
 relied on, even where ACP has nothing: to brnr the adapter is the agent, and
 adapters differ (what a prompt sent mid-turn means, ADR 18).
 
-## P3. Nothing is lost silently
+### P3. Nothing is lost silently
 
 Whatever brnr drops, refuses, cuts off or ends is told to whoever relied on
 it, in their own channel: an event for bridges and watchers, an error and an
 exit status for the CLI, a `session/update` for the editor (P1). The host log
 is the record, not the telling.
 
-## P4. brnr never picks or guesses
+### P4. brnr never picks or guesses
 
 An argument means one thing: exact ids, no prefixes, never "the only one".
 Defaults are fixed rules, documented, that don't depend on what happens to be
@@ -83,7 +176,7 @@ running. When brnr can't be sure (a process that doesn't answer, a line it
 can't parse), it refuses in the client role and passes the thing through
 untouched in the proxy role, and says so.
 
-## P5. One interpretation, one stream
+### P5. One interpretation, one stream
 
 The host interprets ACP once, into events. Everything brnr shows is made of
 them: `watch`, `log`, `status`, the foreground, bridges, `notify`, live or
@@ -93,7 +186,7 @@ the default in both. Beside the events, brnr keeps the raw ACP by default
 (ADR 22), so the interpretation can be checked against what was said; values
 brnr knows are secrets are recorded redacted (ADR 25).
 
-## P6. Memory stays bounded
+### P6. Memory stays bounded
 
 When a reader falls behind, who gives way depends on what it is. Observers
 (bridges, watchers, the foreground display) are cut off or skip, and are told
@@ -101,12 +194,12 @@ When a reader falls behind, who gives way depends on what it is. Observers
 the agent's stdin and stdout) get backpressure, as a direct pipe would give
 them (P1): nothing buffered past a cap, and no timeout of brnr's own (ADR 6).
 
-## P7. An explicit request that can't be met fails
+### P7. An explicit request that can't be met fails
 
 With the reason, up front where it can be known (at start, against the
 agent's capabilities); never quietly ignored or approximated.
 
-## P8. The agent's text is untrusted
+### P8. The agent's text is untrusted
 
 It never reaches a command line or a path unsanitized: values go in the
 environment (ADR 36), and session ids become file names (transcripts, and
@@ -117,18 +210,20 @@ never share one. Wherever brnr shows
 it, control characters and bidi overrides are escaped (`render::clean`); JSON
 carries it as sent.
 
-## P9. No backwards compatibility before 1.0
+### P9. No backwards compatibility before 1.0
 
 Until 1.0.0 a change of name, flag, format or behaviour is made outright: no
 aliases for old names, no shims for old formats. Release notes say what
-changed. From 1.0.0 on, compatibility is kept within a major version.
+changed. The records are drafts until then too: a decision is rewritten,
+renumbered, merged or removed where it is written (docs/adr/README.md).
+From 1.0.0 on, compatibility is kept within a major version.
 
-## P10. A start is atomic
+### P10. A start is atomic
 
 Whoever starts a brnr process hands it everything at launch, and the start
 commits at the ready report (ADR 7, ADR 8).
 
-## P11. One owner per session
+### P11. One owner per session
 
 A session's owner is the editor, or headless (later perhaps a web client).
 Ownership changes only by closing the session under one owner and resuming
@@ -137,7 +232,7 @@ as a side effect. A feature flag can let an editor's process serve a session
 another process owns (ADR 42); the agent then splits the conversation, and
 the process holding the session's lock stays its owner of record.
 
-## P12. Two roles
+### P12. Two roles
 
 With an editor attached, brnr is a proxy: thin and transparent (P1). The
 side channel is for observing and for notifying other services; any action
@@ -145,7 +240,7 @@ through it on the editor's session is experimental and enabled one by one
 (ADR 4). Headless, brnr is the ACP client, and its CLI is a contract that
 behaves the same with every agent (P2).
 
-## P13. Only you
+### P13. Only you
 
 A runtime directory and sockets only the user can open, transcripts only the
 user can read; brnr refuses a runtime directory others can use, and listens
@@ -156,7 +251,7 @@ before anything is written, and a symlink, or what isn't the user's, is
 refused (ADR 59). Reach beyond the machine is what a bridge the user
 configures adds.
 
-## P14. No orphans
+### P14. No orphans
 
 Every agent process has an owner that knows it exists: the editor, or a
 headless start that was told its session. When the owner goes before that,

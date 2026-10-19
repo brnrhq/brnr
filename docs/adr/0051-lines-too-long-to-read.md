@@ -1,6 +1,6 @@
 # 51. Lines too long to read
 
-Accepted 2026-10-08. Implemented. Amends 6 (what a reader holds beside the
+Draft 2026-10-08. Implemented. Amends 6 (what a reader holds beside the
 cap), 10 (the agent's stderr goes on in pieces) and 26 (a line too long to
 read). Resolves #58.
 

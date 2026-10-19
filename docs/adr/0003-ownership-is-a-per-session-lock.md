@@ -1,6 +1,6 @@
 # 3. Ownership is a per-session lock
 
-Accepted 2026-10-07. Implemented. `--take-over` from an editor's process is
+Draft 2026-10-07. Implemented. `--take-over` from an editor's process is
 the experimental `close` (ADR 4): `start` launches the process that is to
 resume the session first, so the owner can tell the editor which one has it.
 Replaces the "refused if a running host already serves the session" check of

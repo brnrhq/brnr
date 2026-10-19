@@ -1,6 +1,6 @@
 # 69. A peer cut off catches up from the transcript
 
-Accepted 2026-10-14. Implemented. Amends 6 (a peer cut off, and what a gap
+Draft 2026-10-14. Implemented. Amends 6 (a peer cut off, and what a gap
 says), 21 (exit status), 22 (what a record carries), 36 (`notify` cut off),
 48 (`logged`) and 60 (the burst past 64 MiB). Resolves #117.
 

@@ -1,6 +1,6 @@
 # 10. The agent's stderr
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 Resolves review item 9.
 
 Amended by 51: a line longer than 64 KiB goes on in pieces of that, every

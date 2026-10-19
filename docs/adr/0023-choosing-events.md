@@ -1,6 +1,6 @@
 # 23. Choosing events, and what text shows
 
-Accepted (former decisions 2, 18, 19 and 34); reviewed 2026-10-07.
+Draft (former decisions 2, 18, 19 and 34); reviewed 2026-10-07.
 Implemented. `usage` has the context window and the cost, not tokens in and
 out, so its line is `usage: 12.3k of 200.0k tokens, cost 0.42 USD`.
 Whatever `--events` chose, `log` also shows a gap in the transcript

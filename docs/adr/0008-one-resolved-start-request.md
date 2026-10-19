@@ -1,6 +1,6 @@
 # 8. A process is started with one resolved request
 
-Accepted 2026-10-07. Implemented.
+Draft 2026-10-07. Implemented.
 Amends former decision 45.
 
 ## Context

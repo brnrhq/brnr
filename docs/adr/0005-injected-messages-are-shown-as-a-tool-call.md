@@ -1,6 +1,6 @@
 # 5. Injected messages are shown to the editor as a tool call
 
-Accepted (former decision 48); reviewed 2026-10-07. Implemented, and the
+Draft (former decision 48); reviewed 2026-10-07. Implemented, and the
 form of ADR 4's notes to the editor: an approval answered elsewhere ("Approved
 via brnr", "Denied via brnr"), the editor's late answer to one, a session
 closed or taken over, a close that failed. Applies where ADR 4's actions are

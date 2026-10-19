@@ -1,6 +1,6 @@
 # 43. ACP types from the official schema crate
 
-Accepted 2026-10-07. Implemented with `agent-client-protocol-schema`
+Draft 2026-10-07. Implemented with `agent-client-protocol-schema`
 1.10.2, without schemars and without its unstable features (src/schema.rs).
 Read with its types: session updates, the capabilities and login methods in
 `initialize`'s answer, the session `session/new` or `session/fork` opened,
