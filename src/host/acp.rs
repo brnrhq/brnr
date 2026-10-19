@@ -15,7 +15,7 @@
 //! - An injected message goes to the agent as a `session/prompt`, never
 //!   while a prompt is running: until then it is held. With `--steer` it
 //!   goes into the running turn instead, as `_session/steering` (ADR 4.2 in
-//!   docs/adr). The responses are kept from the editor, and the editor is
+//!   docs/adr; turns.rs has the order). The responses are kept from the editor, and the editor is
 //!   shown the text as it is sent, as a completed tool call or, if its
 //!   profile says so, as `user_message_chunk`s (`echo_message`, ADR 7.2). On
 //!   an editor's session it is the experimental `send` (ADR 7.1), refused
@@ -58,7 +58,7 @@
 //!   process holds is answered by the host with an error, naming the process
 //!   and how to release it, and never reaches the agent (ADR 3.9); with
 //!   `shared_sessions` in the profile (ADR 3.10) it goes through, and the
-//!   session is served shared (see `Hold`).
+//!   session is served shared (see `Hold`, sessions.rs).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
 //! deleted the session, the host records a `session_deleted` (ADR 8.1).
@@ -74,57 +74,27 @@
 //! What the host acts on in a line is read with ACP's schema types, and
 //! what they don't take as far as the host can (ADR 2.3, see schema.rs).
 
-use std::collections::VecDeque;
 use std::fs;
 use std::mem::take;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
-use super::elicitation::{self, UrlElicitation};
+use super::approvals::{AgentRequest, Client, EditorAnswer, Resolved, Timeout};
 use super::flow::LINE_BYTES;
-use super::requests::{HostRequest, PeerOp, history};
+use super::lines::Piece;
+use super::outbound::{Asked, By, Note, Opens, Then};
+use super::requests::{HostRequest, PeerOp};
+use super::sessions::{Ending, Hold};
 use super::state::SessionState;
-use super::{Host, LOG_FLUSH, control, id_key, text_block};
+use super::turns::{self, Activity, Do, Held, Turns};
+use super::{Host, id_key, text_block};
 use crate::config::{ClientCapability, EchoAs, Feature, Log};
-use crate::lock::{self, Lock};
+use crate::lock;
 use crate::log::{self, Dir};
-use crate::schema::{
-    self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
-};
+use crate::schema::{self, ContentBlock, MessageId, NewSessionResponse, SessionUpdate};
 use crate::{frame, json, paths, transcript};
-
-/// The most URL elicitations the host keeps waiting for their completion.
-const URL_ELICITATIONS: usize = 1024;
-
-/// A `session/prompt` the agent hasn't answered yet.
-pub(super) struct Prompt {
-    id: String,
-    injected: bool,
-    /// The `m<n>` ids of the messages its turn carries: the one the host sent
-    /// as the prompt, if it did, and those steered into it (ADR 4.1).
-    messages: Vec<String>,
-}
-
-/// A message accepted by the host and not yet sent as a prompt.
-#[derive(Clone)]
-pub(super) struct Held {
-    /// `m<n>`: how `send --wait` finds the turn that answers it.
-    pub(super) id: String,
-    pub(super) text: String,
-    /// Content blocks besides the text (`resource_link`, `image`).
-    pub(super) blocks: Vec<Value>,
-}
-
-impl Held {
-    /// As ACP content: the text, then the other blocks.
-    fn content(&self) -> Vec<Value> {
-        let text = (!self.text.is_empty()).then(|| text_block(&self.text));
-        text.into_iter().chain(self.blocks.iter().cloned()).collect()
-    }
-}
 
 /// A `session/load`'s replay of history, while it lasts (ADR 5.6).
 pub(super) struct Replay {
@@ -133,7 +103,7 @@ pub(super) struct Replay {
     /// The updates the agent has replayed.
     pub(super) updates: u64,
     /// Of those, the ones recorded: all if `record`, but those that came
-    /// while the session was closed (`Host::closed_loads`).
+    /// while the session was closed (see sessions.rs).
     pub(super) recorded_updates: u64,
     /// The ids of the tool calls running before it, while their turn runs:
     /// the others, the history's, aren't running now.
@@ -156,24 +126,9 @@ pub(super) struct Session {
     /// The session it was forked from, when it opened here as a fork
     /// (ADR 3.12); not known for one opened any other way.
     pub(super) forked_from: Option<String>,
-    /// Prompts sent and not yet answered, in the order they were sent.
-    /// Non-empty means a turn is running.
-    pub(super) prompts: VecDeque<Prompt>,
-    /// Injected messages waiting for the session to go idle.
-    pub(super) held: VecDeque<Held>,
-    /// How many of `held`, from the front, are interrupts (or steers the
-    /// agent turned back): a new one goes after them, so they keep the order
-    /// they were sent in.
-    pub(super) interrupts: usize,
-    /// Messages steered into the running turn whose steer the agent hasn't
-    /// answered, in the order sent. Nothing held goes while there are any.
-    pub(super) steering: VecDeque<Held>,
-    /// The `turn_ended` of a turn that ended while steers into it were
-    /// unanswered: which messages it carried isn't known until the agent
-    /// has answered them all (or they are dropped), so it waits (ADR 4.1).
-    pub(super) ended: Option<Value>,
-    /// Context to append to the next prompt.
-    pub(super) context: Vec<String>,
+    /// Its turns, and the messages and context held for them (see
+    /// turns.rs).
+    pub(super) turns: Turns,
     /// The agent message (or thought) so far, for the `agent_message` and
     /// `agent_thought` events.
     agent_text: String,
@@ -181,8 +136,6 @@ pub(super) struct Session {
     agent_message_id: Option<MessageId>,
     /// What the agent has said about the session (see state.rs).
     pub(super) state: SessionState,
-    /// When the running turn started.
-    pub(super) turn_started: Option<Instant>,
     /// `session/load` is replaying history (see the module docs).
     pub(super) replay: Option<Replay>,
     /// Since when nothing has been running, held or waiting for an answer
@@ -191,9 +144,6 @@ pub(super) struct Session {
     idle_done: bool,
     /// When it last had an event, or opened.
     pub(super) last_active: SystemTime,
-    /// How the last turn ended: `{stop_reason, error, tokens}`, as
-    /// `turn_ended`.
-    pub(super) last_turn: Option<Value>,
     /// How this process holds it (ADR 3.9).
     pub(super) hold: Hold,
     /// A close asked for, until the agent has closed it: meanwhile the
@@ -203,77 +153,6 @@ pub(super) struct Session {
     /// (see requests.rs): it takes no requests, and its idle time doesn't
     /// count.
     pub(super) opening: bool,
-}
-
-/// How a process holds a session it serves (ADR 3.9).
-pub(super) enum Hold {
-    /// Its lock: the process is the session's owner, and keeps its
-    /// transcript. `None` once it has let go, as the process exits.
-    Owner(Option<Lock>),
-    /// The lock couldn't be taken (why, naming its path), so whether another
-    /// process holds it can't be known. A headless process never serves such
-    /// a session (P4: the client refuses); an editor's passes it through and
-    /// keeps its transcript all the same (P1, P4: the proxy passes on what it
-    /// can't be sure of), and `status` says it isn't locked (ADR 3.9).
-    Unlocked(String),
-    /// Process `pid` held the lock when the editor loaded the session here
-    /// (`shared_sessions`, ADR 3.10): that one keeps the transcript, and this
-    /// one records the session in its host log only.
-    Shared(u32),
-}
-
-/// A session closed here, whose lock goes, and whose close is answered,
-/// once the logger has written its records, `session_closed` last, or at
-/// `until`, whichever comes first: a process that resumes it next appends
-/// after them (ADR 5.5). The event loop never waits for it (P1).
-pub(super) struct LettingGo {
-    session: String,
-    until: Instant,
-    /// Taken by whichever comes first: the logger's thread or the event
-    /// loop's timer. This process opening the session again takes back only
-    /// its lock: the close is still answered once it is written.
-    held: Arc<Mutex<Option<Release>>>,
-}
-
-/// What goes as a closed session is let go of: its lock, then the answers
-/// to the close, each a line for its peer.
-struct Release {
-    lock: Option<Lock>,
-    answers: Vec<(control::Queue, String)>,
-}
-
-impl LettingGo {
-    fn take(&self) -> Option<Release> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).take()
-    }
-
-    fn done(&self) -> bool {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).is_none()
-    }
-
-    /// The session's lock, if it is still this process's.
-    fn reclaim(&self) -> Option<Lock> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.lock.take()
-    }
-
-    fn locked(&self) -> bool {
-        self.held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|r| r.lock.is_some())
-    }
-}
-
-impl Release {
-    /// Lets go of the lock, if the session isn't open here again, then
-    /// answers, so whoever hears it finds the session free.
-    fn go(self) {
-        drop(self.lock);
-        for (queue, line) in self.answers {
-            queue.post(line);
-        }
-    }
 }
 
 pub(super) enum Close {
@@ -288,27 +167,48 @@ pub(super) enum Close {
 }
 
 impl Session {
+    /// `session`, as it opens, held as `hold`, with the replay a load of it
+    /// still has, if any (see sessions.rs).
+    pub(super) fn new(
+        session: &str,
+        cwd: PathBuf,
+        forked_from: Option<&str>,
+        hold: Hold,
+        replay: Option<Replay>,
+    ) -> Session {
+        Session {
+            id: session.to_owned(),
+            cwd,
+            forked_from: forked_from.map(str::to_owned),
+            turns: Turns::new(session),
+            agent_text: String::new(),
+            agent_text_kind: "agent_message",
+            agent_message_id: None,
+            state: SessionState::default(),
+            replay,
+            idle_since: None,
+            idle_done: false,
+            last_active: SystemTime::now(),
+            hold,
+            closing: None,
+            opening: false,
+        }
+    }
+
     /// How deeply what it keeps of what the host read nests (see
     /// `Host::holds`). Every field is named, so that one added is thought
     /// about here.
     pub(super) fn holds(&self) -> usize {
         let Session {
-            held,
-            steering,
-            ended,
-            last_turn,
+            turns,
             state,
             closing,
             id: _,
             cwd: _,
             forked_from: _,
-            prompts: _,
-            interrupts: _,
-            context: _,
             agent_text: _,
             agent_text_kind: _,
             agent_message_id: _,
-            turn_started: _,
             replay: _,
             idle_since: _,
             idle_done: _,
@@ -316,12 +216,11 @@ impl Session {
             hold: _,
             opening: _,
         } = self;
-        let blocks = held.iter().chain(steering).flat_map(|h| &h.blocks);
         let req_id = match closing {
             Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
             Some(Close::Sent) | None => None,
         };
-        json::nesting(blocks.chain(ended).chain(last_turn).chain(req_id)).max(state.holds())
+        json::nesting(req_id).max(turns.holds()).max(state.holds())
     }
 
     pub(super) fn shared(&self) -> bool {
@@ -347,153 +246,25 @@ impl Session {
     }
 }
 
-/// A request whose response the host acts on: one that creates or ends a
-/// session, the editor's `initialize`, or the editor's own steer.
-pub(super) enum Pending {
-    /// `session/new`, or a `session/fork` of `forked_from`, the editor's or
-    /// the host's. Its request is logged in the session's file once the
-    /// response says which session it opened.
-    New {
-        cwd: Option<String>,
-        request: Option<Vec<u8>>,
-        dir: Dir,
-        forked_from: Option<String>,
-    },
-    /// The editor's `session/load` (`load`) or `session/resume`.
-    Attach {
-        session: String,
-        cwd: Option<String>,
-        load: bool,
-    },
-    Close {
-        session: String,
-    },
-    /// The editor's `session/delete`, passed through as it is (ADR 8.1).
-    Delete {
-        session: String,
-    },
-    /// The editor's `initialize`: the host notes what the agent can do.
-    Initialize,
-    /// The editor's `_session/steering`, passed through as it is: its text
-    /// is a `user_message` once the agent has taken it into the turn.
-    Steering {
-        session: String,
-        text: String,
-    },
-}
-
-/// A request to the agent it hasn't answered: who asked, so who its answer
-/// is for, and the session it is about. Its id on the agent's side is the
-/// host's own, whoever asked (ADR 2.4).
-pub(super) struct ClientRequest {
-    pub(super) by: Requester,
-    pub(super) session: Option<String>,
-}
-
-pub(super) enum Requester {
-    /// The editor, with its id: as it wrote it (`raw`), which its answer goes
-    /// back with, and as a key, for its `$/cancel_request`.
-    Editor { raw: Vec<u8>, key: String },
-    /// The host, as the agent's client or for a bridge.
-    Host(HostRequest),
-    /// A message the host sent as a prompt: its answer ends the turn.
-    Prompt,
-}
-
-/// A request from the agent to its client.
-pub(super) struct AgentRequest {
-    pub(super) key: String,
-    pub(super) id: Value,
-    method: String,
-    pub(super) session: Option<String>,
-    pub(super) params: Value,
-    /// `p<n>` for a permission request, `e<n>` for an elicitation: what
-    /// bridges and brnr call it. None for a request brnr doesn't hold.
-    pub(super) handle: Option<String>,
-    /// When `response_timeout` answers it.
-    pub(super) deadline: Option<Instant>,
-}
-
-impl AgentRequest {
-    /// A `session/request_permission` (ADR 4.5).
-    pub(super) fn is_permission(&self) -> bool {
-        self.method == "session/request_permission"
-    }
-
-    /// An `elicitation/create` (ADR 4.5).
-    pub(super) fn is_elicitation(&self) -> bool {
-        self.method == "elicitation/create"
-    }
-
-    /// Its handle, if brnr holds it.
-    pub(super) fn held(&self) -> Option<&str> {
-        self.handle.as_deref()
-    }
-
-    /// The title brnr tells the editor by (see experimental.rs): the tool
-    /// call's, or the elicitation's message.
-    pub(super) fn title(&self) -> String {
-        let title = if self.is_elicitation() {
-            self.params["message"].as_str()
-        } else {
-            self.params["toolCall"]["title"].as_str()
-        };
-        title.unwrap_or("the request").to_owned()
-    }
-
-    /// How deeply what it keeps of the request nests (see `Host::holds`).
-    pub(super) fn holds(&self) -> usize {
-        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
-            self;
-        json::nesting([id, params])
-    }
-}
-
-/// How a permission request is answered from outside (ADR 8.1): `allow` or
-/// `reject`, once or, with `always`, always.
-#[derive(Clone, Copy)]
-pub(super) enum Choice {
-    Allow,
-    Reject,
-}
-
 impl Host {
     // ---- editor → agent ------------------------------------------------
 
-    /// Splits what the editor writes into lines. One longer than
-    /// `LINE_BYTES` isn't read: it goes to the agent as it comes (ADR 10.3).
-    pub(super) fn editor_bytes(&mut self, mut bytes: &[u8]) {
-        if self.editor_long {
-            let Some(i) = bytes.iter().position(|&b| b == b'\n') else {
-                return self.write_agent(bytes);
-            };
-            self.write_agent(&bytes[..=i]);
-            self.editor_long = false;
-            bytes = &bytes[i + 1..];
-        }
-        // Only the new bytes are looked through: a long line arrives in many
-        // reads.
-        let mut from = self.editor_buf.len();
-        self.editor_buf.extend_from_slice(bytes);
-        let mut start = 0;
-        while let Some(i) = self.editor_buf[from..].iter().position(|&b| b == b'\n') {
-            let end = from + i;
-            let line = start..end;
-            (start, from) = (end + 1, end + 1);
-            if start - line.start > LINE_BYTES {
-                self.too_long("editor");
-                let piece = self.editor_buf[line.start..start].to_vec();
-                self.write_agent(&piece);
-            } else {
-                self.editor_line(self.editor_buf[line].to_vec());
+    /// What the editor writes, as lines. One longer than `LINE_BYTES` isn't
+    /// read: it goes to the agent as it comes (ADR 10.3).
+    pub(super) fn editor_bytes(&mut self, bytes: &[u8]) {
+        for piece in self.editor_lines.push(bytes) {
+            match piece {
+                Piece::Line(mut line) => {
+                    line.pop(); // Its newline: the line is read without it.
+                    self.editor_line(line);
+                }
+                Piece::Part { bytes, first } => {
+                    if first {
+                        self.too_long("editor");
+                    }
+                    self.write_agent(&bytes);
+                }
             }
-        }
-        self.editor_buf.drain(..start);
-        if self.editor_buf.len() > LINE_BYTES {
-            self.too_long("editor");
-            self.editor_long = true;
-            let piece = take(&mut self.editor_buf);
-            self.write_agent(&piece);
         }
     }
 
@@ -506,13 +277,12 @@ impl Host {
         }));
     }
 
-    /// A piece of a line from the agent past `LINE_BYTES`, `end` if the line
-    /// ends with it: as `too_long` says.
-    pub(super) fn agent_piece(&mut self, bytes: Vec<u8>, end: bool) {
-        if !take(&mut self.agent_long) {
+    /// A part of a line from the agent past `LINE_BYTES`, `first` where it
+    /// passed it: as `too_long` says.
+    pub(super) fn agent_part(&mut self, bytes: Vec<u8>, first: bool) {
+        if first {
             self.too_long("agent");
         }
-        self.agent_long = !end;
         self.send_link_owned(frame::DATA, bytes);
     }
 
@@ -533,7 +303,7 @@ impl Host {
 
     fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
         let mut session = None;
-        let mut deferred = None;
+        let mut asking = None;
         let mut recorded = None;
         if let Some(Value::Object(mut msg)) = msg {
             session = param_session(&msg);
@@ -554,7 +324,7 @@ impl Host {
                     // It goes with an id of the host's, which nobody else's
                     // can be: the editor's as it wrote it comes back on the
                     // answer (ADR 2.4). Only the id changes in the line.
-                    let wire = self.wire_id();
+                    let wire = self.outbound.next_id();
                     let key = id_key(&wire);
                     let spans = json::members(&line, "id");
                     let raw = match spans.last() {
@@ -562,20 +332,20 @@ impl Host {
                         None => serde_json::to_vec(&id).unwrap(),
                     };
                     msg.insert("id".to_owned(), wire.clone());
-                    line = match self.editor_request(&method, &key, &mut msg, &session) {
+                    let (rewritten, then) = self.editor_request(&method, &key, &mut msg, &session);
+                    line = match rewritten {
                         Some(rewritten) => rewritten,
                         None if !spans.is_empty() => {
                             json::replace(&line, &spans, &serde_json::to_vec(&wire).unwrap())
                         }
                         None => serde_json::to_vec(&msg).unwrap(),
                     };
-                    let by = Requester::Editor { raw, key: id_key(&id) };
-                    let request = ClientRequest { by, session: session.clone() };
-                    self.client_requests.insert(key.clone(), request);
-                    match method.as_str() {
-                        "session/new" => (session, deferred) = (None, Some(key)),
-                        "session/fork" => deferred = Some(key),
-                        _ => {}
+                    let by = By::Editor { raw, key: id_key(&id) };
+                    let params = msg.get("params").unwrap_or(&Value::Null);
+                    let opens = Opens::of(&method, params, Dir::EditorToAgent);
+                    asking = Some((wire, Asked { by, session: session.clone(), opens, then }));
+                    if method == "session/new" {
+                        session = None;
                     }
                 }
                 (Some(method), None) if method == "$/cancel_request" => {
@@ -589,19 +359,19 @@ impl Host {
                         return;
                     }
                 }
-                (None, Some(id)) => {
-                    let key = id_key(&id);
-                    if self.agent_requests.iter().any(|r| r.key == key) {
-                        session = self.agent_request_answered(&key, &msg, "editor");
-                    } else if self.late_answer(&key, &id, &msg) {
-                        // Answered by the host already (a cancel, an allow
-                        // or reject): the agent must not get a second answer.
-                        return;
+                (None, Some(id)) => match self.approvals.editor_answer(&id_key(&id), &msg) {
+                    EditorAnswer::Resolved(resolved) => {
+                        session = resolved.req.session.clone();
+                        self.resolved(*resolved);
                     }
-                    // Otherwise it answers a request the host couldn't read,
-                    // or none: it goes on, and the agent ignores an answer to
+                    // Answered by the host already (a cancel, an allow or
+                    // reject): the agent must not get a second answer.
+                    EditorAnswer::Late(answered) => return self.late_answer(&id, answered, &msg),
+                    // It answers a request the host couldn't read, or none:
+                    // it goes on, and the agent ignores an answer to
                     // something it never asked (ADR 2.5 in docs/adr).
-                }
+                    EditorAnswer::Unknown => {}
+                },
                 _ => {}
             }
             recorded = log::redacted(&msg);
@@ -616,10 +386,11 @@ impl Host {
         // changes.
         let recorded = recorded.as_deref().unwrap_or(&line);
         self.record(session.as_deref(), Dir::EditorToAgent, recorded);
-        if let Some(Pending::New { request, .. }) =
-            deferred.and_then(|key| self.pending.get_mut(&key))
-        {
-            *request = Some(recorded.to_vec());
+        if let Some((wire, mut asked)) = asking {
+            if let Some(opens) = &mut asked.opens {
+                opens.request = Some(recorded.to_vec());
+            }
+            self.outbound.insert(&wire, asked);
         }
         self.write_agent(&line);
     }
@@ -634,22 +405,18 @@ impl Host {
     fn editor_cancel(&mut self, msg: &Map<String, Value>) -> Option<Vec<Value>> {
         let named = msg.get("params")?.get("requestId")?;
         let key = id_key(named);
-        let mut wires: Vec<&String> = (self.client_requests.iter())
-            .filter(|(_, r)| matches!(&r.by, Requester::Editor { key: k, .. } if *k == key))
-            .map(|(wire, _)| wire)
-            .collect();
+        let wires = self.outbound.editors(&key);
         if wires.is_empty() {
-            if !self.client_requests.contains_key(&key) {
+            if !self.outbound.waiting(&key) {
                 return None;
             }
             let event = json!({ "event": "editor-cancel-dropped", "request_id": named });
             self.sink.note(None, event);
             return Some(Vec::new());
         }
-        wires.sort();
         let cancels = wires.into_iter().map(|wire| {
             let mut cancel = Value::Object(msg.clone());
-            cancel["params"]["requestId"] = serde_json::from_str(wire).unwrap();
+            cancel["params"]["requestId"] = serde_json::from_str(&wire).unwrap();
             cancel
         });
         Some(cancels.collect())
@@ -663,35 +430,26 @@ impl Host {
         self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));
     }
 
-    /// Notes requests that change session state. Returns the message
-    /// re-encoded if the host changed it.
+    /// Notes requests that change session state: what their answer gets,
+    /// and the message re-encoded if the host changed it.
     fn editor_request(
         &mut self,
         method: &str,
         key: &str,
         msg: &mut Map<String, Value>,
         session: &Option<String>,
-    ) -> Option<Vec<u8>> {
+    ) -> (Option<Vec<u8>>, Then) {
         let cwd = msg.get("params").and_then(|p| p["cwd"].as_str()).map(str::to_owned);
-        match (method, session) {
+        let note = match (method, session) {
             ("initialize", _) => {
-                self.pending.insert(key.to_owned(), Pending::Initialize);
-                return self.drop_capabilities(msg);
-            }
-            ("session/new" | "session/fork", _) => {
-                // A fork's source is the session it names (ADR 3.12).
-                let forked_from = session.clone().filter(|_| method == "session/fork");
-                let pending =
-                    Pending::New { cwd, request: None, dir: Dir::EditorToAgent, forked_from };
-                self.pending.insert(key.to_owned(), pending);
+                return (self.drop_capabilities(msg), Then::Note(Note::Initialize));
             }
             ("session/load" | "session/resume", Some(session)) => {
                 let load = method == "session/load";
                 if load {
                     self.editor_load(session, cwd.as_deref());
                 }
-                let attach = Pending::Attach { session: session.clone(), cwd, load };
-                self.pending.insert(key.to_owned(), attach);
+                Note::Attach { session: session.clone(), cwd, load }
             }
             ("session/close", Some(session)) => {
                 // Dropped now: held until the agent answers, they would go out as
@@ -699,20 +457,20 @@ impl Host {
                 if let Some(i) = self.find(session) {
                     self.drop_all(i, "close");
                 }
-                self.pending.insert(key.to_owned(), Pending::Close { session: session.clone() });
+                Note::Close { session: session.clone() }
             }
-            ("session/delete", Some(session)) => {
-                self.pending.insert(key.to_owned(), Pending::Delete { session: session.clone() });
+            ("session/delete", Some(session)) => Note::Delete { session: session.clone() },
+            ("session/prompt", Some(session)) => {
+                let rewritten = self.editor_prompt(session, key, msg);
+                return (rewritten, Then::Turn(session.clone()));
             }
-            ("session/prompt", Some(session)) => return self.editor_prompt(session, key, msg),
             ("_session/steering", Some(session)) => {
-                let text = prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
-                let steering = Pending::Steering { session: session.clone(), text };
-                self.pending.insert(key.to_owned(), steering);
+                let text = turns::prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
+                Note::Steering { session: session.clone(), text }
             }
-            _ => {}
-        }
-        None
+            _ => return (None, Then::Relay),
+        };
+        (None, Then::Note(note))
     }
 
     /// The editor's `session/load` or `session/resume` of `session`: its lock
@@ -720,16 +478,16 @@ impl Host {
     /// refused, saying how to release it (ADR 3.9), unless the profile shares
     /// sessions (`shared_sessions`, ADR 3.10).
     fn attach(&mut self, session: &str) -> Result<(), String> {
-        if self.find(session).is_some() || self.claimed.contains_key(session) {
+        if self.sessions.knows(session) {
             return Ok(()); // Ours already.
         }
-        let hold = self.take_lock(session);
+        let hold = self.sessions.take_lock(session, &self.sink);
         if let Hold::Shared(pid) = hold
             && !self.features.contains(&Feature::SharedSessions)
         {
             return Err(held_elsewhere(session, pid));
         }
-        self.claimed.insert(session.to_owned(), hold);
+        self.sessions.claim(session, hold);
         Ok(())
     }
 
@@ -751,7 +509,7 @@ impl Host {
     fn editor_load(&mut self, session: &str, cwd: Option<&str>) {
         // One closed while a load of it is unanswered opens with its replay.
         let open = match self.find(session) {
-            None if self.closed_loads.contains_key(session) => {
+            None if self.sessions.closed_load(session).is_some() => {
                 Some(self.open_session(session, cwd))
             }
             open => open,
@@ -807,26 +565,9 @@ impl Host {
         if loaded {
             self.end_replay(i);
         } else if opened {
-            // Its lock goes with it, and its files are closed.
-            self.sink.close_session(&self.sessions.remove(i).id);
+            self.close_session(i, Ending::LoadFailed, None);
         } else {
             self.drop_replay(i); // Loaded again, or resumed, and failed.
-        }
-    }
-
-    /// A load of `session`, closed meanwhile, failed. Its replay goes with
-    /// the last of its loads; if one of them succeeded before the close,
-    /// its `history` says so, with the session closed (ADR 5.6).
-    fn closed_load_failed(&mut self, session: &str) {
-        let Some(replay) = self.closed_loads.get_mut(session) else { return };
-        replay.unanswered = replay.unanswered.saturating_sub(1);
-        if replay.unanswered > 0 {
-            return;
-        }
-        if let Some(replay) = self.closed_loads.remove(session)
-            && replay.loaded
-        {
-            self.emit(history(session, &replay));
         }
     }
 
@@ -875,18 +616,10 @@ impl Host {
         msg: &mut Map<String, Value>,
     ) -> Option<Vec<u8>> {
         let i = self.open_session(session, None);
-        self.start_turn(i, Prompt { id: key.to_owned(), injected: false, messages: Vec::new() });
-        self.prompt_session.insert(key.to_owned(), session.to_owned());
         let rewritten = self.attach_context(i, session, msg);
-        let text = prompt_text(msg.get("params").and_then(|p| p.get("prompt")));
-        self.flush_agent_message(i);
-        self.emit(json!({
-            "event": "user_message",
-            "session": session,
-            "by": "editor",
-            "prompt": key,
-            "text": text,
-        }));
+        let prompt = msg.get("params").and_then(|p| p.get("prompt"));
+        let sent = self.sessions[i].turns.editor_prompt(key, prompt);
+        self.act(i, vec![sent]);
         rewritten
     }
 
@@ -897,15 +630,14 @@ impl Host {
         session: &str,
         msg: &mut Map<String, Value>,
     ) -> Option<Vec<u8>> {
-        let context = take(&mut self.sessions[i].context);
+        let Some(Value::Array(blocks)) = msg.get_mut("params").and_then(|p| p.get_mut("prompt"))
+        else {
+            return None;
+        };
+        let context = self.sessions[i].turns.take_context();
         if context.is_empty() {
             return None;
         }
-        let Some(Value::Array(blocks)) = msg.get_mut("params").and_then(|p| p.get_mut("prompt"))
-        else {
-            self.sessions[i].context = context;
-            return None;
-        };
         let attached: Vec<Value> = context.iter().map(|t| text_block(t)).collect();
         blocks.extend(attached.iter().cloned());
         let event =
@@ -965,7 +697,7 @@ impl Host {
                     }
                     replay.recorded_updates += u64::from(update);
                 } else if let Some(replay) =
-                    session.as_deref().and_then(|s| self.closed_loads.get_mut(s))
+                    session.as_deref().and_then(|s| self.sessions.closed_load(s))
                 {
                     // Its session closed while it was loading: counted, with
                     // no files to record it in (ADR 5.6).
@@ -983,108 +715,99 @@ impl Host {
         }
     }
 
+    /// The agent answered request `key`: whatever asked gets it, and what
+    /// it was asked for follows from it (see outbound.rs).
     fn agent_response(&mut self, key: &str, msg: &Map<String, Value>, line: &[u8]) {
-        let request = self.client_requests.remove(key);
-        let mut session = request.as_ref().and_then(|r| r.session.clone());
-        if let Some(pending) = self.pending.remove(key) {
-            session = self.session_changed(pending, msg.get("result")).or(session);
-        }
-        let mut turn = None;
-        if let Some(sid) = self.prompt_session.remove(key) {
-            let mut prompt = None;
-            if let Some(i) = self.find(&sid) {
-                let s = &mut self.sessions[i];
-                if let Some(pos) = s.prompts.iter().position(|p| p.id == key) {
-                    prompt = s.prompts.remove(pos);
-                }
-                if s.prompts.is_empty() {
-                    s.turn_started = None;
-                    // Its tool calls end with it, however it ended: one the
-                    // agent left unfinished, cancelled or failed, isn't
-                    // running now (ADR 8.2). Nor are those a replay found.
-                    s.state.tools.clear();
-                    if let Some(replay) = &mut s.replay {
-                        replay.tools.clear();
-                    }
-                }
-            }
-            let injected = prompt.as_ref().is_some_and(|p| p.injected);
-            let messages = prompt.map(|p| p.messages).unwrap_or_default();
-            session = Some(sid.clone());
-            turn = Some((sid, injected, messages));
-        }
-        // Whose answer it is (ADR 2.4): the editor's goes to it with its id as
-        // it wrote it, and nothing else in the line changed. One to an id the
-        // host never sent (a request in a line it couldn't read, ADR 2.5) goes
-        // on as it came.
-        let (ours, forward) = match request.map(|r| r.by) {
-            Some(Requester::Editor { raw, .. }) => {
-                (None, Some(json::replace(line, &json::members(line, "id"), &raw)))
-            }
-            Some(Requester::Host(request)) => (Some(request), None),
-            Some(Requester::Prompt) => (None, None),
-            None => (None, Some(line.to_vec())),
+        // One to an id the host never sent (a request in a line it couldn't
+        // read, ADR 2.5), or answered already, goes on as it came.
+        let Some(Asked { by, mut session, opens, then }) = self.outbound.answered(key) else {
+            self.record(None, Dir::AgentToEditor, line);
+            return self.send_link(frame::DATA, line);
         };
-        let dir = if forward.is_some() { Dir::AgentToEditor } else { Dir::AgentToControl };
-        self.record(session.as_deref(), dir, line);
-        if let Some(line) = forward {
-            self.send_link(frame::DATA, &line);
+        let result = msg.get("result");
+        if let Some(opens) = opens {
+            session = self.opened(opens, result).or(session);
         }
-        if let Some(request) = ours {
-            self.host_request_done(request, msg);
-        }
-        if let Some((sid, injected, messages)) = turn {
-            let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
-            let tokens = turn_tokens(msg.get("result"));
-            if let Some(i) = self.find(&sid) {
-                self.flush_agent_message(i);
-                self.sessions[i].last_turn = Some(json!({
-                    "stop_reason": stop_reason,
-                    "error": msg.get("error"),
-                    "tokens": tokens,
-                }));
+        match then {
+            Then::Relay => self.relay(by, session.as_deref(), line),
+            Then::Note(note) => {
+                let session = self.noted(note, result).or(session);
+                self.relay(by, session.as_deref(), line);
             }
-            let event = json!({
-                "event": "turn_ended",
-                "session": sid,
-                "by": if injected { "control" } else { "editor" },
-                "prompt": key,
-                "messages": messages,
-                "stop_reason": stop_reason,
-                "error": msg.get("error"),
-                "tokens": tokens,
-            });
-            // Waits for the steers into the turn, if the agent hasn't
-            // answered them all (see `Session::ended`).
-            match self.find(&sid) {
-                Some(i) if !self.sessions[i].steering.is_empty() => {
-                    self.sessions[i].ended = Some(event);
-                }
-                _ => {
-                    self.emit(event);
-                }
+            Then::Turn(session) => {
+                self.relay(by, Some(&session), line);
+                self.turn_answered(&session, key, msg);
             }
-            self.next_turn(&sid);
+            Then::Host(request) => {
+                self.relay(by, session.as_deref(), line);
+                self.host_request_done(request, msg);
+            }
         }
     }
 
-    /// Returns the session the response was about.
-    fn session_changed(&mut self, pending: Pending, result: Option<&Value>) -> Option<String> {
-        match pending {
-            Pending::New { cwd, request, dir, forked_from } => {
-                let session = result.and_then(new_session);
-                if let Some(session) = &session {
-                    let i = self.open_fork(session, cwd.as_deref(), forked_from.as_deref());
-                    self.sessions[i].state.result(result.unwrap_or(&Value::Null));
-                }
-                if let Some(request) = request {
-                    // A copy, in the session's file, of what the host log has with its
-                    // position: none here (ADR 10.2).
-                    self.sink.msg(session.as_deref(), dir, &request, None);
-                }
-                session
+    /// An answer, recorded in `session`'s files, for whoever asked
+    /// (ADR 2.4): the editor's goes to it with its id as it wrote it, and
+    /// nothing else in the line changed; the host's is its alone.
+    fn relay(&mut self, by: By, session: Option<&str>, line: &[u8]) {
+        match by {
+            By::Editor { raw, .. } => {
+                self.record(session, Dir::AgentToEditor, line);
+                self.send_link(frame::DATA, &json::replace(line, &json::members(line, "id"), &raw));
             }
-            Pending::Attach { session, cwd, load } => {
+            By::Host => self.record(session, Dir::AgentToControl, line),
+        }
+    }
+
+    /// The answer to a `session/prompt` of `session`, the editor's or the
+    /// host's, `key`: its turn ends (see turns.rs).
+    fn turn_answered(&mut self, session: &str, key: &str, msg: &Map<String, Value>) {
+        let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
+        let tokens = turn_tokens(msg.get("result"));
+        let ended =
+            json!({ "stop_reason": stop_reason, "error": msg.get("error"), "tokens": tokens });
+        let Some(i) = self.find(session) else {
+            self.emit(turns::turn_ended(session, key, None, ended));
+            return;
+        };
+        self.flush_agent_message(i);
+        let todo = self.sessions[i].turns.answered(key, ended);
+        let s = &mut self.sessions[i];
+        if s.turns.activity() != Activity::Busy {
+            // Its tool calls end with it, however it ended: one the agent
+            // left unfinished, cancelled or failed, isn't running now
+            // (ADR 8.2). Nor are those a replay found.
+            s.state.tools.clear();
+            if let Some(replay) = &mut s.replay {
+                replay.tools.clear();
+            }
+        }
+        self.act(i, todo);
+        self.close_after_turn(i);
+    }
+
+    /// The answer to a `session/new` or `session/fork`, `result` if it
+    /// succeeded: the session it names opens, and has the request in its
+    /// file. Returns the session.
+    fn opened(&mut self, opens: Opens, result: Option<&Value>) -> Option<String> {
+        let Opens { cwd, request, dir, forked_from } = opens;
+        let session = result.and_then(new_session);
+        if let Some(session) = &session {
+            let i = self.open_fork(session, cwd.as_deref(), forked_from.as_deref());
+            self.sessions[i].state.result(result.unwrap_or(&Value::Null));
+        }
+        if let Some(request) = request {
+            // A copy, in the session's file, of what the host log has with its
+            // position: none here (ADR 10.2).
+            self.sink.msg(session.as_deref(), dir, &request, None);
+        }
+        session
+    }
+
+    /// What the answer to one of the editor's requests changes, `result` if
+    /// it succeeded. Returns the session it was about.
+    fn noted(&mut self, note: Note, result: Option<&Value>) -> Option<String> {
+        match note {
+            Note::Attach { session, cwd, load } => {
                 if load {
                     self.load_answered(&session, cwd.as_deref(), result);
                 } else if let Some(result) = result {
@@ -1095,31 +818,31 @@ impl Host {
                         replay.opened = false;
                     }
                 } else {
-                    self.claimed.remove(&session); // Its lock goes (see `attach`).
+                    self.sessions.unclaim(&session); // Its lock goes (see `attach`).
                 }
                 Some(session)
             }
-            Pending::Close { session } => {
+            Note::Close { session } => {
                 if result.is_some()
                     && let Some(i) = self.find(&session)
                 {
-                    self.close_session(i, "editor", None);
+                    self.close_session(i, Ending::Closed("editor"), None);
                 }
                 Some(session)
             }
-            Pending::Delete { session } => {
+            Note::Delete { session } => {
                 if result.is_some() {
                     self.deleted(&session);
                 }
                 Some(session)
             }
-            Pending::Initialize => {
+            Note::Initialize => {
                 if let Some(result) = result {
                     self.initialized(result);
                 }
                 None
             }
-            Pending::Steering { session, text } => {
+            Note::Steering { session, text } => {
                 if result.is_some_and(|r| r["outcome"] == "injected") {
                     self.editor_steered(&session, text);
                 }
@@ -1131,46 +854,23 @@ impl Host {
     fn agent_request(&mut self, method: String, id: Value, msg: &Map<String, Value>, line: &[u8]) {
         let session = param_session(msg);
         self.record(session.as_deref(), Dir::AgentToEditor, line);
-        let mut req = AgentRequest {
-            key: id_key(&id),
-            id,
-            method,
-            session,
-            params: msg.get("params").cloned().unwrap_or(Value::Null),
-            handle: None,
-            deadline: None,
+        let unsupported = format!("{method} is not supported without an editor");
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        let req = AgentRequest::new(id, method, session, params);
+        let event = if self.editor_attached() {
+            self.send_link(frame::DATA, line);
+            self.approvals.ask(req, None, "editor")
+        } else if req.kind().is_some() {
+            // Held until someone answers it, or `response_timeout` does
+            // (ADR 4.5): none, never, for a timeout too far off to say.
+            let deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
+            self.approvals.ask(req, deadline, "headless")
+        } else {
+            let error = json!({ "code": -32601, "message": unsupported });
+            return self.respond(&req, json!({ "error": error }));
         };
-        if req.is_permission() {
-            self.next_permission += 1;
-            req.handle = Some(format!("p{}", self.next_permission));
-        } else if req.is_elicitation() {
-            self.next_elicitation += 1;
-            req.handle = Some(format!("e{}", self.next_elicitation));
-            self.remember_url(&req);
-        }
-        if !self.editor_attached() {
-            return self.answer_as_client(req);
-        }
-        self.send_link(frame::DATA, line);
-        let event = request_event(&req, "editor");
-        self.agent_requests.push(req);
         if let Some(event) = event {
             self.emit(event);
-        }
-    }
-
-    /// Keeps a URL elicitation's id, so the agent's `elicitation/complete`
-    /// for it can be told to whom it belonged (ADR 4.5). Up to
-    /// [`URL_ELICITATIONS`]: past that, an agent that never completes them
-    /// would have the host keep them without limit, and the completion of
-    /// one not kept is told without its handle.
-    fn remember_url(&mut self, req: &AgentRequest) {
-        if self.url_elicitations.len() >= URL_ELICITATIONS {
-            return;
-        }
-        if let (Some(id), Some(handle)) = (elicitation::elicitation_id(req), req.held()) {
-            let held = UrlElicitation { session: req.session.clone(), handle: handle.to_owned() };
-            self.url_elicitations.insert(id, held);
         }
     }
 
@@ -1179,10 +879,7 @@ impl Host {
     /// the session is the request's, if brnr kept it.
     fn elicitation_complete(&mut self, msg: &Map<String, Value>) -> Option<Value> {
         let id = msg.get("params")?.get("elicitationId")?.as_str()?;
-        let (session, handle) = match self.url_elicitations.remove(id) {
-            Some(held) => (held.session, Some(held.handle)),
-            None => (None, None),
-        };
+        let (session, handle) = self.approvals.complete(id);
         Some(json!({
             "event": "elicitation_completed",
             "session": session,
@@ -1191,202 +888,28 @@ impl Host {
         }))
     }
 
-    /// The editor answered one of the agent's requests.
-    fn agent_request_answered(
-        &mut self,
-        key: &str,
-        msg: &Map<String, Value>,
-        by: &str,
-    ) -> Option<String> {
-        let pos = self.agent_requests.iter().position(|r| r.key == key)?;
-        let req = self.agent_requests.remove(pos);
-        let result = msg.get("result").cloned().unwrap_or(Value::Null);
-        if req.is_permission() {
-            self.emit(resolved_event(&req, &result["outcome"], None, by));
-        } else if req.is_elicitation() {
-            if result["action"] != "accept"
-                && let Some(id) = elicitation::elicitation_id(&req)
-            {
-                self.url_elicitations.remove(&id);
-            }
-            self.emit(elicitation::resolved_event(&req, &result, by));
-        }
-        req.session
-    }
-
     // ---- the host as the agent's client --------------------------------
 
-    fn answer_as_client(&mut self, mut req: AgentRequest) {
-        match req.method.as_str() {
-            "session/request_permission" => {
-                // None, never, for a timeout too far off to say.
-                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
-                let event = permission_event(&req, "headless");
-                self.agent_requests.push(req);
-                self.emit(event);
-            }
-            // Held as a permission request is, until someone answers it
-            // or the same timeout cancels it (ADR 4.5).
-            "elicitation/create" => {
-                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
-                let event = elicitation::request_event(&req, "headless");
-                self.agent_requests.push(req);
-                self.emit(event);
-            }
-            method => {
-                let message = format!("{method} is not supported without an editor");
-                self.respond(&req, json!({ "error": { "code": -32601, "message": message } }));
-            }
-        }
+    /// What the host is as one of the agent's requests is answered.
+    pub(super) fn client(&self) -> Client {
+        let accepting = self.status.is_none() && self.agent_in.is_some();
+        Client { editor: self.editor_attached(), accepting }
     }
 
-    /// Answers permission request `handle` with the option of one kind
-    /// (ADR 8.1): `allow_once`, `allow_always` with `always`, `reject_once`
-    /// or `reject_always`. No other kind stands in for it, and a reject is
-    /// never `cancelled`: without that kind, or with two options of it, it
-    /// fails, listing the options (P4). `option` names the option instead:
-    /// one of a kind ACP has must be on the choice's side, and with `always`
-    /// the always kind; one of a kind brnr doesn't know goes with either. On
-    /// an editor's session, where this is the experimental `permission` (see
-    /// experimental.rs), the request is then withdrawn from the editor.
-    pub(super) fn resolve_permission(
-        &mut self,
-        handle: &str,
-        choice: Choice,
-        always: bool,
-        option: Option<&str>,
-        by: &str,
-    ) -> Result<Value, String> {
-        let pos = self
-            .agent_requests
-            .iter()
-            .position(|r| r.is_permission() && r.held() == Some(handle))
-            .ok_or_else(|| format!("no pending request {handle}"))?;
-        if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+    /// One of the agent's requests has ended, whoever answered it (see
+    /// approvals.rs): the host's reply goes to the agent, the request is
+    /// withdrawn from the editor if it was shown it (see experimental.rs),
+    /// then the event.
+    pub(super) fn resolved(&mut self, resolved: Resolved) {
+        let Resolved { req, answer: _, reply, withdraw, event } = resolved;
+        if let Some(reply) = reply {
+            self.respond(&req, reply);
         }
-        let options =
-            self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
-        let allow = matches!(choice, Choice::Allow);
-        let wanted = kind_of(choice, always);
-        let listed = || {
-            let all: Vec<String> = options.iter().map(option_text).collect();
-            format!("options: {}", all.join(", "))
-        };
-        let chosen = match option {
-            Some(option) => {
-                let Some(chosen) = options.iter().find(|o| o["optionId"] == option) else {
-                    return Err(format!("{handle} has no option {option} ({})", listed()));
-                };
-                let kind = chosen["kind"].as_str().unwrap_or_default();
-                match known_kind(chosen) {
-                    Some(k) if allows(k) != allow => {
-                        let verb = if allow { "reject" } else { "allow" };
-                        return Err(format!(
-                            "{handle}: {option} ({kind}) is for brnr permission {verb}"
-                        ));
-                    }
-                    Some(_) if always && kind != wanted => {
-                        return Err(format!(
-                            "{handle}: {option} is {kind}, not {wanted} as --always asks"
-                        ));
-                    }
-                    _ => chosen,
-                }
-            }
-            None => {
-                let of_kind: Vec<&Value> = options.iter().filter(|o| o["kind"] == wanted).collect();
-                match of_kind[..] {
-                    [chosen] => chosen,
-                    [] => {
-                        return Err(format!(
-                            "{handle} has no {wanted} option ({}); --option <id> picks one",
-                            listed()
-                        ));
-                    }
-                    _ => {
-                        return Err(format!(
-                            "{handle} has {} {wanted} options ({}); --option <id> picks one",
-                            of_kind.len(),
-                            listed()
-                        ));
-                    }
-                }
-            }
-        };
-        let outcome = json!({ "outcome": "selected", "optionId": chosen["optionId"] });
-        let req = self.agent_requests.remove(pos);
-        self.respond(&req, json!({ "result": { "outcome": outcome } }));
-        let how = if allow { "allowed" } else { "rejected" };
-        self.withdraw(&req, how, by);
-        self.emit(resolved_event(&req, &outcome, Some(how), by));
-        Ok(outcome)
-    }
-
-    /// Answers elicitation `handle` with `action`, ACP's `accept` (its
-    /// `content` checked against the form's schema first, see
-    /// elicitation.rs), `decline` or `cancel`, by `by` (ADR 4.5). Nothing is
-    /// sent for content that doesn't fit (P4). On an editor's session,
-    /// where this is the experimental `elicitation` (see experimental.rs),
-    /// the request is then withdrawn from the editor.
-    pub(super) fn resolve_elicitation(
-        &mut self,
-        handle: &str,
-        action: &str,
-        content: &Value,
-        by: &str,
-    ) -> Result<Value, String> {
-        let pos = self
-            .agent_requests
-            .iter()
-            .position(|r| r.is_elicitation() && r.held() == Some(handle))
-            .ok_or_else(|| format!("no pending elicitation {handle}"))?;
-        if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+        if let Some((how, by)) = withdraw {
+            self.withdraw(&req, how, &by);
         }
-        let result = elicitation::response(&self.agent_requests[pos], action, content)?;
-        let req = self.agent_requests.remove(pos);
-        if action != "accept"
-            && let Some(id) = elicitation::elicitation_id(&req)
-        {
-            self.url_elicitations.remove(&id);
-        }
-        self.respond(&req, json!({ "result": result }));
-        let how = match action {
-            "accept" => "accepted",
-            "decline" => "declined",
-            _ => "cancelled",
-        };
-        self.withdraw(&req, how, by);
-        self.emit(elicitation::resolved_event(&req, &result, by));
-        Ok(result)
-    }
-
-    /// ACP: a client that cancels a turn answers that session's pending
-    /// permission requests with `cancelled`, `by` `cancel` or `timeout`. Its
-    /// pending elicitations are answered `cancel` the same way (ADR 4.5):
-    /// the turn they were asked in is gone. If the editor is showing one,
-    /// it is withdrawn, and its late answer dropped (see experimental.rs).
-    fn cancel_requests(&mut self, session: &str, by: &str) {
-        let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
-            .into_iter()
-            .partition(|r| r.handle.is_some() && r.session.as_deref() == Some(session));
-        self.agent_requests = keep;
-        for req in cancel {
-            if req.is_elicitation() {
-                let result = json!({ "action": "cancel" });
-                if let Some(id) = elicitation::elicitation_id(&req) {
-                    self.url_elicitations.remove(&id);
-                }
-                self.respond(&req, json!({ "result": result }));
-                self.withdraw(&req, "cancelled", by);
-                self.emit(elicitation::resolved_event(&req, &result, by));
-                continue;
-            }
-            let outcome = json!({ "outcome": "cancelled" });
-            self.respond(&req, json!({ "result": { "outcome": outcome } }));
-            self.withdraw(&req, "cancelled", by);
-            self.emit(resolved_event(&req, &outcome, Some("cancelled"), by));
+        if let Some(event) = event {
+            self.emit(event);
         }
     }
 
@@ -1454,89 +977,23 @@ impl Host {
         self.emit(json!({ "event": kind, "session": session, "text": text }));
     }
 
-    /// After a prompt or a steer is answered: once the session is idle, and
-    /// no steer is waiting for its answer, send the next held message.
-    fn next_turn(&mut self, session: &str) {
-        let Some(i) = self.find(session) else { return };
+    /// After a prompt or a steer is answered: once no turn runs, a close
+    /// that waited for it goes.
+    fn close_after_turn(&mut self, i: usize) {
         let s = &mut self.sessions[i];
-        if s.prompts.is_empty() && matches!(s.closing, Some(Close::AfterTurn { .. })) {
-            if let Some(Close::AfterTurn { peer, req_id, by }) = s.closing.take() {
-                self.send_close(i, peer, req_id, by);
-            }
-            return;
-        }
-        if s.prompts.is_empty()
-            && s.steering.is_empty()
-            && let Some(held) = s.held.pop_front()
+        if s.turns.activity() != Activity::Busy
+            && matches!(s.closing, Some(Close::AfterTurn { .. }))
+            && let Some(Close::AfterTurn { peer, req_id, by }) = s.closing.take()
         {
-            s.interrupts = s.interrupts.saturating_sub(1);
-            self.send_prompt(i, held);
+            self.send_close(i, peer, req_id, by);
         }
     }
 
     /// What a session that is closing or whose process is exiting held,
     /// messages and context alike, is dropped, each with its event.
     pub(super) fn drop_all(&mut self, i: usize, by: &str) {
-        self.drop_held(i, by);
-        self.drop_context(i, by);
-    }
-
-    /// Context session `i` held for its next prompt, which won't come: each
-    /// is a `context_dropped` event, `by` `close`, `exit` or `queue` (ADR 5.2;
-    /// context has no message id, ADR 4.1). Returns the texts.
-    pub(super) fn drop_context(&mut self, i: usize, by: &str) -> Vec<String> {
-        let context = take(&mut self.sessions[i].context);
-        let session = self.sessions[i].id.clone();
-        for text in &context {
-            self.emit(json!({
-                "event": "context_dropped",
-                "session": session,
-                "text": text,
-                "by": by,
-            }));
-        }
-        context
-    }
-
-    /// Drops everything session `i` holds (see `dropped`), and the steers
-    /// the agent hasn't answered: whatever it answers, they don't go out.
-    pub(super) fn drop_held(&mut self, i: usize, by: &str) -> Vec<Value> {
-        let s = &mut self.sessions[i];
-        s.interrupts = 0;
-        let held: Vec<Held> = s.steering.drain(..).chain(s.held.drain(..)).collect();
-        let dropped = self.dropped(i, held, by);
-        self.turn_answered(i);
-        dropped
-    }
-
-    /// The `turn_ended` that waited for the steers into its turn (see
-    /// `Session::ended`), once none is left unanswered.
-    fn turn_answered(&mut self, i: usize) {
-        if self.sessions[i].steering.is_empty()
-            && let Some(event) = self.sessions[i].ended.take()
-        {
-            self.emit(event);
-        }
-    }
-
-    /// Messages taken from session `i`'s held ones, never to be sent: each is
-    /// a `message_dropped` event, `by` `cancel`, `queue`, `close` or `exit`
-    /// (ADR 5.2), or `steer` for a steer the agent refused. Returns them as
-    /// `{message, text}`, for a response.
-    pub(super) fn dropped(&mut self, i: usize, held: Vec<Held>, by: &str) -> Vec<Value> {
-        let session = self.sessions[i].id.clone();
-        held.into_iter()
-            .map(|h| {
-                self.emit(json!({
-                    "event": "message_dropped",
-                    "session": session,
-                    "message": h.id,
-                    "text": h.text,
-                    "by": by,
-                }));
-                json!({ "message": h.id, "text": h.text })
-            })
-            .collect()
+        let todo = self.sessions[i].turns.drop_all(by);
+        self.act(i, todo);
     }
 
     /// Closes session `i`, `by` `close` (`brnr session close`, `--take-over`)
@@ -1551,7 +1008,7 @@ impl Host {
             let session = self.sessions[i].id.clone();
             self.cancel(&session, "cancel");
         }
-        if self.sessions[i].prompts.is_empty() {
+        if self.sessions[i].turns.activity() != Activity::Busy {
             self.send_close(i, peer, req_id, by);
         } else {
             self.sessions[i].closing = Some(Close::AfterTurn { peer, req_id, by });
@@ -1571,97 +1028,6 @@ impl Host {
         );
     }
 
-    /// The agent has closed session `i`, `by` `close`, `idle` or `editor`:
-    /// what it still holds is dropped, then `session_closed` (ADR 5.2). Its
-    /// lock goes, and the peer in `answer` is answered with its reply, once
-    /// that is written, LOG_FLUSH at most (see `LettingGo`).
-    pub(super) fn close_session(&mut self, i: usize, by: &str, answer: Option<(u64, Value)>) {
-        self.flush_agent_message(i);
-        self.drop_all(i, "close");
-        let Session { id: session, hold, replay, .. } = self.sessions.remove(i);
-        self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
-        // A load of it still to be answered may open it again (ADR 5.6).
-        if let Some(replay) = replay.filter(|r| r.unanswered > 0 && self.editor_attached()) {
-            self.closed_loads.insert(session.clone(), replay);
-        }
-        // After its last record, so nothing of it is lost (ADR 5.1).
-        self.sink.close_session(&session);
-        self.let_go(session, hold, answer);
-    }
-
-    /// Lets go of `session`, gone from `sessions`, and answers the peer in
-    /// `answer` with its reply, once the logger has written what this
-    /// process recorded of it, LOG_FLUSH at most (see `LettingGo`): a close's
-    /// records, or a failed open's (a load's replay, ADR 5.6), come before
-    /// the next process's (ADR 5.5).
-    pub(super) fn let_go(&mut self, session: String, hold: Hold, answer: Option<(u64, Value)>) {
-        let lock = match hold {
-            Hold::Owner(lock) => lock,
-            Hold::Shared(_) | Hold::Unlocked(_) => None,
-        };
-        let answers =
-            answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
-        let release = Release { lock, answers: answers.into_iter().collect() };
-        let held = Arc::new(Mutex::new(Some(release)));
-        let written = held.clone();
-        self.sink.when_written(move |_| {
-            // Taken out first, so the lock isn't held while it goes.
-            let release = written.lock().unwrap_or_else(PoisonError::into_inner).take();
-            if let Some(release) = release {
-                release.go();
-            }
-        });
-        let until = Instant::now() + LOG_FLUSH;
-        self.letting_go.push(LettingGo { session, until, held });
-    }
-
-    /// Closed sessions whose time to be written is up are let go of as they
-    /// are; past that, records of theirs can come after a resume's (ADR 5.5).
-    pub(super) fn fire_letting_go(&mut self, now: Instant) {
-        self.letting_go.retain(|l| {
-            if now < l.until {
-                return !l.done();
-            }
-            if let Some(release) = l.take() {
-                release.go();
-            }
-            false
-        });
-    }
-
-    /// When the next closed session is let go of, for the event loop.
-    pub(super) fn next_letting_go(&self) -> Option<Instant> {
-        self.letting_go.iter().map(|l| l.until).min()
-    }
-
-    /// Exiting, once the logger has had its time: every closed session is
-    /// let go of, and its close answered.
-    pub(super) fn let_go_of_closed(&mut self) {
-        for release in take(&mut self.letting_go).iter().filter_map(LettingGo::take) {
-            release.go();
-        }
-    }
-
-    /// `session`'s lock, if it closed here and isn't let go of yet: opened
-    /// here again, it is this process's still, and its records come after
-    /// the close's from the same logger. The close is answered as before,
-    /// once its records are written (ADR 5.5).
-    fn reclaim(&mut self, session: &str) -> Option<Lock> {
-        self.letting_go.iter().filter(|l| l.session == session).find_map(LettingGo::reclaim)
-    }
-
-    /// Whether `session` closed here and its lock is still this process's.
-    fn letting_go_of(&self, session: &str) -> bool {
-        self.letting_go.iter().any(|l| l.session == session && l.locked())
-    }
-
-    /// The sessions closed here whose locks are still this process's, until
-    /// their records are written: `status` says so, so that brnr can tell
-    /// one closing from one opening (ADR 5.5).
-    pub(super) fn closing(&self) -> Vec<&str> {
-        self.letting_go.iter().filter(|l| l.locked()).map(|l| l.session.as_str()).collect()
-    }
-
     /// The agent has deleted `session`, as the editor asked: a
     /// `session_deleted`, and brnr's transcript stays (ADR 8.1). One open here
     /// is gone from the agent, so it closes, as if the editor had closed it.
@@ -1672,9 +1038,9 @@ impl Host {
         let event = json!({ "event": "session_deleted", "session": session, "by": "editor" });
         let event = self.emit(event);
         match self.find(session) {
-            Some(i) => self.close_session(i, "editor", None),
+            Some(i) => self.close_session(i, Ending::Closed("editor"), None),
             // Closed here, and not let go of yet: still this process's to write.
-            None if self.letting_go_of(session) || lock::holder(session).is_none() => {
+            None if self.sessions.letting_go_of(session) || lock::holder(session).is_none() => {
                 self.sink.append(session, event);
             }
             None => {}
@@ -1685,18 +1051,12 @@ impl Host {
     /// answer.
     pub(super) fn is_idle(&self, i: usize) -> bool {
         let s = &self.sessions[i];
-        s.prompts.is_empty()
-            && s.held.is_empty()
-            && s.steering.is_empty()
-            && !self
-                .agent_requests
-                .iter()
-                .any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
+        s.turns.activity() == Activity::Idle && !self.approvals.waiting(&s.id)
     }
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
     /// process stops with its last session, one a bridge is opening
-    /// counting (`opening_in_flight`). Idle time counts from the
+    /// counting (`Outbound::opening`). Idle time counts from the
     /// commit too, so a session started without a prompt doesn't run
     /// forever; one with a prompt is busy from then.
     pub(super) fn fire_idle_timers(&mut self, now: Instant) {
@@ -1723,7 +1083,7 @@ impl Host {
         let session = self.sessions[i].id.clone();
         self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
         // A session a bridge is opening keeps the process going.
-        if self.sessions.len() == 1 && !self.opening_in_flight() {
+        if self.sessions.len() == 1 && !self.outbound.opening() {
             self.begin_stop();
         } else if self.caps.close {
             // As `brnr session close` would, with nobody to answer (peer 0).
@@ -1757,85 +1117,72 @@ impl Host {
             .min()
     }
 
-    /// A new id for a request to the agent, `brnr-<n>`: the host gives every
-    /// request its own, the editor's too, so no two can be confused (ADR 2.4).
-    pub(super) fn wire_id(&mut self) -> Value {
-        self.next_id += 1;
-        Value::String(format!("brnr-{}", self.next_id))
-    }
-
     /// A new `m<n>` message id.
     pub(super) fn message_id(&mut self) -> String {
         self.next_message += 1;
         format!("m{}", self.next_message)
     }
 
-    fn start_turn(&mut self, i: usize, prompt: Prompt) {
-        let s = &mut self.sessions[i];
-        if s.prompts.is_empty() {
-            s.turn_started = Some(Instant::now());
+    /// Does what session `i`'s turns say to, in order (see turns.rs).
+    pub(super) fn act(&mut self, i: usize, todo: Vec<Do>) {
+        let session = self.sessions[i].id.clone();
+        for step in todo {
+            match step {
+                Do::Prompt(held) => self.send_prompt(i, held),
+                // Asking the agent to answer `promptRequired` rather than
+                // start a turn of its own if none is running
+                // (claude-agent-acp's `steer()` has the contract). Held
+                // context waits for the next prompt.
+                Do::Steer { message, prompt } => {
+                    let params = json!({
+                        "sessionId": session,
+                        "prompt": prompt,
+                        "_meta": { "steering": { "idleBehavior": "promptRequired" } },
+                    });
+                    let steer = HostRequest::Steer { session: session.clone(), message };
+                    self.host_request("_session/steering", params, steer);
+                }
+                Do::Cancel => self.cancel(&session, "cancel"),
+                Do::Sent { event, echo } => {
+                    self.flush_agent_message(i);
+                    if let Some(blocks) = echo {
+                        self.echo_message(&session, "Message via brnr", &blocks);
+                    }
+                    self.emit(event);
+                }
+                Do::Emit(event) => {
+                    self.emit(event);
+                }
+                Do::Note(event) => self.sink.note(Some(&session), event),
+            }
         }
-        s.prompts.push_back(prompt);
     }
 
+    /// Message `held` as session `i`'s next `session/prompt`, held context
+    /// appended (see turns.rs): the editor is shown it as it goes.
     pub(super) fn send_prompt(&mut self, i: usize, held: Held) {
-        let id = self.wire_id();
+        let id = self.outbound.next_id();
         let key = id_key(&id);
         let session = self.sessions[i].id.clone();
-        let context = take(&mut self.sessions[i].context);
-        let mut blocks = held.content();
-        blocks.extend(context.iter().map(|t| text_block(t)));
+        let (blocks, sent) = self.sessions[i].turns.start(key, held);
         let msg = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "session/prompt",
             "params": { "sessionId": session, "prompt": blocks },
         });
-        let prompt = Prompt { id: key.clone(), injected: true, messages: vec![held.id.clone()] };
-        self.start_turn(i, prompt);
-        self.prompt_session.insert(key.clone(), session.clone());
-        let request = ClientRequest { by: Requester::Prompt, session: Some(session.clone()) };
-        self.client_requests.insert(key.clone(), request);
-        let text = prompt_text(Some(&json!(blocks)));
-        self.echo_message(&session, "Message via brnr", &blocks);
-        self.emit(json!({
-            "event": "user_message",
-            "session": session,
-            "by": "control",
-            "message": held.id,
-            "prompt": key,
-            "text": text,
-        }));
+        let then = Then::Turn(session.clone());
+        let asked = Asked { by: By::Host, session: Some(session.clone()), opens: None, then };
+        self.outbound.insert(&id, asked);
+        self.act(i, vec![sent]);
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
         self.record(Some(&session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
     }
 
-    /// `send --steer`: `held` goes into session `i`'s running turn as
-    /// `_session/steering`, asking the agent to answer `promptRequired`
-    /// rather than start a turn of its own if none is running
-    /// (claude-agent-acp's `steer()` has the contract). Held context waits
-    /// for the next prompt.
-    pub(super) fn steer(&mut self, i: usize, held: Held) {
-        let session = self.sessions[i].id.clone();
-        let params = json!({
-            "sessionId": session,
-            "prompt": held.content(),
-            "_meta": { "steering": { "idleBehavior": "promptRequired" } },
-        });
-        let message = held.id.clone();
-        self.sessions[i].steering.push_back(held);
-        self.host_request("_session/steering", params, HostRequest::Steer { session, message });
-    }
-
-    /// The agent's answer to steering `message`. `injected`: it is in the
-    /// running turn, whose `turn_ended` lists it, even if the turn's own
-    /// answer came first (its `turn_ended` waits for the steers').
-    /// `promptRequired`: the turn ended first, and it goes next as a prompt
-    /// of its own, ahead of what is held as it would have been in the turn
-    /// (after interrupts, which end that turn). Anything else, an error
-    /// too, drops it.
+    /// The agent's answer to steering `message` into `session`'s turn (see
+    /// turns.rs).
     pub(super) fn steer_answered(
         &mut self,
         session: &str,
@@ -1843,130 +1190,42 @@ impl Host {
         msg: &Map<String, Value>,
     ) {
         let Some(i) = self.find(session) else { return };
-        let s = &mut self.sessions[i];
-        // Gone meanwhile (a cancel, a close): it doesn't go out.
-        let Some(pos) = s.steering.iter().position(|h| h.id == message) else { return };
-        let held = s.steering.remove(pos).unwrap();
-        match msg.get("result").and_then(|r| r["outcome"].as_str()) {
-            Some("injected") => self.injected(i, held),
-            Some("promptRequired") => {
-                s.held.insert(s.interrupts, held);
-                s.interrupts += 1;
-            }
-            _ => {
-                let answer = msg.get("error").or(msg.get("result"));
-                let event = json!({ "event": "steer-refused", "answer": answer });
-                self.sink.note(Some(session), event);
-                self.dropped(i, vec![held], "steer");
-            }
-        }
-        self.turn_answered(i);
-        self.next_turn(session);
-    }
-
-    /// A steered message the agent took into session `i`'s turn, which
-    /// carries it from now: it is shown as sent, as `send_prompt` shows a
-    /// prompt. The turn is the running one, or the one that ended before the
-    /// agent answered (whose `turn_ended` is waiting for it).
-    fn injected(&mut self, i: usize, held: Held) {
-        let s = &mut self.sessions[i];
-        let session = s.id.clone();
-        let key = if let Some(ended) = &mut s.ended {
-            if let Some(messages) = ended["messages"].as_array_mut() {
-                messages.push(json!(held.id));
-            }
-            ended["prompt"].as_str().unwrap_or_default().to_owned()
-        } else if let Some(prompt) = s.prompts.front_mut() {
-            prompt.messages.push(held.id.clone());
-            prompt.id.clone()
-        } else {
-            // No turn to carry it. A steer goes while a turn runs, or while
-            // one's `turn_ended` waits for an earlier steer's answer, so this
-            // shouldn't happen; if it does, it isn't left without an end.
-            let event = json!({ "event": "steer-after-turn", "message": held.id });
-            self.sink.note(Some(&session), event);
-            self.dropped(i, vec![held], "steer");
-            return;
-        };
-        let blocks = held.content();
-        let text = prompt_text(Some(&json!(blocks)));
-        self.echo_message(&session, "Message via brnr", &blocks);
-        self.emit(json!({
-            "event": "user_message",
-            "session": session,
-            "by": "control",
-            "message": held.id,
-            "prompt": key,
-            "text": text,
-        }));
+        let todo = self.sessions[i].turns.steer_answered(message, msg);
+        self.act(i, todo);
+        self.close_after_turn(i);
     }
 
     /// The editor's own steer, which the agent took into the running turn of
     /// `session`: a `user_message` of that turn, by the editor, as brnr's own
-    /// steers are (see `injected`). The steer itself went through untouched.
+    /// steers are. The steer itself went through untouched.
     fn editor_steered(&mut self, session: &str, text: String) {
         let Some(i) = self.find(session) else { return };
-        let Some(key) = self.sessions[i].prompts.front().map(|p| p.id.clone()) else {
-            let event = json!({ "event": "steer-after-turn", "by": "editor" });
-            return self.sink.note(Some(session), event);
-        };
-        self.flush_agent_message(i);
-        self.emit(json!({
-            "event": "user_message",
-            "session": session,
-            "by": "editor",
-            "prompt": key,
-            "text": text,
-        }));
+        let sent = self.sessions[i].turns.editor_steered(text);
+        self.act(i, vec![sent]);
     }
 
-    /// Answers permission requests nobody answered within
-    /// `response_timeout` with their `reject_once` option (ADR 8.1). One
-    /// without one (or with two: which, brnr can't say) has its turn
-    /// cancelled, which answers it and every request pending in its session
-    /// `cancelled`, as ACP requires. Never `reject_always`, which nobody
-    /// chose, and never an allow. An elicitation nobody answered is
-    /// answered `cancel`, which ACP has for no choice made (ADR 4.5): never
-    /// `decline`, which is the user's no, nor `accept`.
+    /// Answers the requests nobody answered within `response_timeout`, as
+    /// ADR 4.5 has it (see `Approvals::time_out`): one whose turn is to be
+    /// cancelled is answered with it, as is every request pending in its
+    /// session, `cancelled`, as ACP requires.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
         if self.editor_attached() {
             return;
         }
-        let expired: Vec<String> = self
-            .agent_requests
-            .iter()
-            .filter(|r| r.deadline.is_some_and(|d| now >= d))
-            .filter_map(|r| r.handle.clone())
-            .collect();
-        for handle in expired {
-            // Gone already: answered `cancelled` with an earlier one's turn.
-            let Some(req) =
-                self.agent_requests.iter_mut().find(|r| r.handle.as_ref() == Some(&handle))
-            else {
-                continue;
-            };
-            req.deadline = None;
-            let elicitation = req.is_elicitation();
-            let options = req.params["options"].as_array().into_iter().flatten();
-            let once = options.filter(|o| o["kind"] == "reject_once").count();
-            let session = req.session.clone();
-            let result = if elicitation {
-                self.resolve_elicitation(&handle, "cancel", &Value::Null, "timeout")
-            } else if once == 1 {
-                self.resolve_permission(&handle, Choice::Reject, false, None, "timeout")
-            } else if self.status.is_some() || self.agent_in.is_none() {
-                Err("the agent is no longer accepting input".to_owned())
-            } else if let Some(session) = session {
-                let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
-                self.sink.note(Some(&session), event);
-                self.cancel(&session, "timeout");
-                Ok(Value::Null)
-            } else {
-                Err("no reject_once option, and no session to cancel".to_owned())
-            };
-            if let Err(err) = result {
-                let event = json!({ "event": "timeout-failed", "request": handle, "error": err });
-                self.sink.note(None, event);
+        for handle in self.approvals.expired(now) {
+            match self.approvals.time_out(&handle, self.client()) {
+                None => {}
+                Some(Timeout::Resolved(resolved)) => self.resolved(*resolved),
+                Some(Timeout::Cancel { session }) => {
+                    let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
+                    self.sink.note(Some(&session), event);
+                    self.cancel(&session, "timeout");
+                }
+                Some(Timeout::Failed(err)) => {
+                    let event =
+                        json!({ "event": "timeout-failed", "request": handle, "error": err });
+                    self.sink.note(None, event);
+                }
             }
         }
     }
@@ -1976,7 +1235,7 @@ impl Host {
         if self.editor_attached() {
             return None;
         }
-        self.agent_requests.iter().filter_map(|r| r.deadline).min()
+        self.approvals.next_deadline()
     }
 
     /// Cancels `session`'s turn (`session/cancel`), answering its pending
@@ -1992,7 +1251,10 @@ impl Host {
         line.push(b'\n');
         self.record(Some(session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
-        self.cancel_requests(session, by);
+        // ACP: a client that cancels a turn answers what the agent asked in it.
+        for resolved in self.approvals.cancel(session, by, self.client()) {
+            self.resolved(resolved);
+        }
     }
 
     /// Shows the editor an injected message, titled `title`, in the form its
@@ -2025,14 +1287,14 @@ impl Host {
         if !self.editor_attached() {
             return;
         }
-        self.next_id += 1;
+        let echo = self.outbound.echo_id();
         let content: Vec<Value> =
             blocks.iter().map(|b| json!({ "type": "content", "content": b })).collect();
         self.update_editor(
             session,
             json!({
                 "sessionUpdate": "tool_call",
-                "toolCallId": format!("brnr-echo-{}", self.next_id),
+                "toolCallId": echo,
                 "title": title,
                 "kind": "other",
                 "status": "completed",
@@ -2080,73 +1342,6 @@ impl Host {
 
     // ---- sessions ------------------------------------------------------
 
-    pub(super) fn find(&self, session: &str) -> Option<usize> {
-        self.sessions.iter().position(|s| s.id == session)
-    }
-
-    /// Index of `session`, started (with its lock and log file) if this is
-    /// the first we hear of it. Without a cwd, the host's own is used.
-    pub(super) fn open_session(&mut self, session: &str, cwd: Option<&str>) -> usize {
-        self.open_fork(session, cwd, None)
-    }
-
-    /// As [`Self::open_session`], for a session forked from `forked_from`,
-    /// which its transcript's `session-opened` and its status name (ADR 3.12).
-    pub(super) fn open_fork(
-        &mut self,
-        session: &str,
-        cwd: Option<&str>,
-        forked_from: Option<&str>,
-    ) -> usize {
-        if let Some(i) = self.find(session) {
-            return i;
-        }
-        let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| self.cwd.clone());
-        let hold = match self.claimed.remove(session) {
-            Some(hold) => hold,
-            None => self.take_lock(session),
-        };
-        match hold {
-            Hold::Shared(pid) => {
-                let event =
-                    json!({ "event": "session-shared", "session_id": session, "held_by": pid });
-                self.sink.note(None, event);
-            }
-            Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
-            // One the headless process won't serve gets no transcript.
-            Hold::Unlocked(_) if self.editor_attached() => {
-                self.sink.open_session(session, &cwd, forked_from)
-            }
-            Hold::Unlocked(_) => {}
-        }
-        self.sessions.push(Session {
-            id: session.to_owned(),
-            cwd,
-            forked_from: forked_from.map(str::to_owned),
-            prompts: VecDeque::new(),
-            held: VecDeque::new(),
-            context: Vec::new(),
-            interrupts: 0,
-            steering: VecDeque::new(),
-            ended: None,
-            agent_text: String::new(),
-            agent_text_kind: "agent_message",
-            agent_message_id: None,
-            state: SessionState::default(),
-            turn_started: None,
-            // One a load still to be answered had, closed under it (ADR 5.6).
-            replay: self.closed_loads.remove(session),
-            idle_since: None,
-            idle_done: false,
-            last_active: SystemTime::now(),
-            last_turn: None,
-            hold,
-            closing: None,
-            opening: false,
-        });
-        self.sessions.len() - 1
-    }
-
     /// Whether brnr has a transcript of `session`, in any folder, counting
     /// what this process has recorded of it that the disk may not have yet;
     /// an events file holding only openings, which a load that failed
@@ -2154,39 +1349,6 @@ impl Host {
     pub(super) fn has_transcript(&self, session: &str) -> bool {
         self.sink.recorded(session)
             || transcript::of_session(session).iter().any(|p| transcript::has_records(p))
-    }
-
-    /// `session`'s lock, for a session this process is to serve. One another
-    /// process holds is shared, as `attach` lets it be; one that can't be
-    /// locked is `Unlocked`, and the host log says why. Whoever opened it
-    /// decides what becomes of either (ADR 3.9).
-    fn take_lock(&mut self, session: &str) -> Hold {
-        if let Some(lock) = self.reclaim(session) {
-            return Hold::Owner(Some(lock));
-        }
-        match lock::take(session) {
-            Ok(lock) => Hold::Owner(Some(lock)),
-            Err(lock::Error::Held(pid)) => Hold::Shared(pid),
-            Err(lock::Error::Io(error)) => {
-                let event =
-                    json!({ "event": "lock-failed", "session_id": session, "error": error });
-                self.sink.note(None, event);
-                Hold::Unlocked(error)
-            }
-        }
-    }
-
-    /// Takes the lock of `session`, which a headless start resumes, before
-    /// the agent is asked for it: one another process holds, or one that
-    /// can't be locked, can't be served here (ADR 3.9).
-    pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
-        let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
-        let lock = lock.map_err(|err| match err {
-            lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
-            lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
-        })?;
-        self.claimed.insert(session.to_owned(), Hold::Owner(Some(lock)));
-        Ok(())
     }
 }
 
@@ -2223,24 +1385,6 @@ fn held_elsewhere(session: &str, pid: u32) -> String {
     }
 }
 
-/// A prompt's content as text: its text blocks, with other blocks shown as
-/// `[image]`, `[resource <uri>]` and so on.
-pub(super) fn prompt_text(blocks: Option<&Value>) -> String {
-    let blocks = blocks.and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-    let parts: Vec<String> = blocks
-        .iter()
-        .map(|b| match b["type"].as_str() {
-            Some("text") => b["text"].as_str().unwrap_or_default().to_owned(),
-            Some(kind) => match b["uri"].as_str().or(b["resource"]["uri"].as_str()) {
-                Some(uri) => format!("[{kind} {uri}]"),
-                None => format!("[{kind}]"),
-            },
-            None => "[?]".to_owned(),
-        })
-        .collect();
-    parts.join("\n")
-}
-
 /// The tokens a `session/prompt` answer says its turn used (ADR 4.4): its
 /// `usage`, unstable ACP and so read as a `Value` (ADR 2.3), as `{total,
 /// input, output, thought, cached_read, cached_write}`. Each is the agent's
@@ -2270,87 +1414,4 @@ pub(super) fn new_session(result: &Value) -> Option<String> {
 
 fn param_session(msg: &Map<String, Value>) -> Option<String> {
     msg.get("params")?.get("sessionId")?.as_str().map(str::to_owned)
-}
-
-/// Whether a permission option of `kind` allows the tool call, rather than
-/// rejecting it.
-fn allows(kind: PermissionOptionKind) -> bool {
-    matches!(kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)
-}
-
-/// A permission option's kind, if ACP's schema has it (v2 allows `_…` kinds
-/// of an agent's own).
-fn known_kind(option: &Value) -> Option<PermissionOptionKind> {
-    schema::read::<PermissionOptionKind>(&option["kind"])
-}
-
-/// The kind `choice` answers with, once or `always`.
-fn kind_of(choice: Choice, always: bool) -> &'static str {
-    match (choice, always) {
-        (Choice::Allow, false) => "allow_once",
-        (Choice::Allow, true) => "allow_always",
-        (Choice::Reject, false) => "reject_once",
-        (Choice::Reject, true) => "reject_always",
-    }
-}
-
-/// An option as errors list it: `allow (allow_once)`.
-fn option_text(option: &Value) -> String {
-    let id = option["optionId"].as_str().unwrap_or("?");
-    format!("{id} ({})", option["kind"].as_str().unwrap_or("?"))
-}
-
-/// `permission_resolved` for `req`, answered with `outcome` (ACP's) by
-/// `by`: `answer` says `allowed`, `rejected` or `cancelled`, which brnr
-/// knows when it answered, and `option_kind` the chosen option's kind. An
-/// editor's answer is told by the kind, so an option of a kind brnr doesn't
-/// know has no `answer` (null).
-fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &str) -> Value {
-    let chosen = req.params["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|o| outcome["outcome"] == "selected" && o["optionId"] == outcome["optionId"]);
-    let option_kind = chosen.map_or(Value::Null, |o| o["kind"].clone());
-    let answer = how.map(str::to_owned).or_else(|| match chosen.and_then(known_kind) {
-        _ if outcome["outcome"] == "cancelled" => Some("cancelled".to_owned()),
-        Some(k) if allows(k) => Some("allowed".to_owned()),
-        Some(_) => Some("rejected".to_owned()),
-        None => None,
-    });
-    json!({
-        "event": "permission_resolved",
-        "session": req.session,
-        "request": req.handle,
-        "answer": answer,
-        "option_kind": option_kind,
-        "outcome": outcome,
-        "by": by,
-    })
-}
-
-/// The event for a request brnr holds, `permission_request` or
-/// `elicitation_request`; none for one it doesn't.
-fn request_event(req: &AgentRequest, owner: &str) -> Option<Value> {
-    if req.is_permission() {
-        Some(permission_event(req, owner))
-    } else if req.is_elicitation() {
-        Some(elicitation::request_event(req, owner))
-    } else {
-        None
-    }
-}
-
-fn permission_event(req: &AgentRequest, owner: &str) -> Value {
-    let tool = &req.params["toolCall"];
-    json!({
-        "event": "permission_request",
-        "session": req.session,
-        "request": req.handle,
-        "owner": owner,
-        "title": tool["title"],
-        "kind": tool["kind"],
-        "tool_call": tool,
-        "options": req.params["options"],
-    })
 }

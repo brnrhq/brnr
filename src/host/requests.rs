@@ -29,9 +29,12 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{ClientRequest, Close, Held, Replay, Requester, new_session};
+use super::Host;
+use super::acp::{Close, Replay, new_session};
+use super::outbound::{Asked, By, Opens, Then};
+use super::sessions::Ending;
 use super::state::SessionState;
-use super::{Host, id_key};
+use super::turns::Held;
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
 use crate::schema::{
@@ -39,10 +42,11 @@ use crate::schema::{
     ElicitationUrlCapabilities, Error, ErrorCode, error_message,
 };
 
+/// One of the host's own requests to the agent, as it waits for the
+/// answer: what the answer goes on to (see outbound.rs).
 pub(super) enum HostRequest {
-    Initialize,
-    Authenticate(String),
-    Open(Open),
+    /// A step of the headless start.
+    Start(StartStep),
     /// A peer's `new` or `resume`.
     Opening(Open, Box<Opening>),
     /// The step the agent is answering, and what is left.
@@ -57,6 +61,14 @@ pub(super) enum HostRequest {
         session: String,
         message: String,
     },
+}
+
+/// The headless start's steps before its settings: `initialize`, the
+/// login, the session.
+pub(super) enum StartStep {
+    Initialize,
+    Authenticate(String),
+    Open(Open),
 }
 
 /// How a headless start, or a peer's `new` or `resume`, gets its session.
@@ -161,95 +173,84 @@ impl Host {
             "clientCapabilities": { "elicitation": elicitation },
             "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
         });
-        self.host_request("initialize", params, HostRequest::Initialize);
+        self.host_request("initialize", params, HostRequest::Start(StartStep::Initialize));
     }
 
-    pub(super) fn host_request(&mut self, method: &str, params: Value, kind: HostRequest) {
-        let id = self.wire_id();
-        let key = id_key(&id);
-        let cwd = params["cwd"].as_str().map(str::to_owned);
+    pub(super) fn host_request(&mut self, method: &str, params: Value, request: HostRequest) {
+        let id = self.outbound.next_id();
         let session = params["sessionId"].as_str().map(str::to_owned);
+        let mut opens = Opens::of(method, &params, Dir::ControlToAgent);
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
-        let request = ClientRequest { by: Requester::Host(kind), session: session.clone() };
-        self.client_requests.insert(key.clone(), request);
         // Without the MCP servers' secrets (ADR 9.1 in docs/adr).
         let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());
         self.record(session.as_deref(), Dir::ControlToAgent, &recorded);
-        if matches!(method, "session/new" | "session/fork") {
-            // A fork's source is the session it names (ADR 3.12).
-            let forked_from = session.filter(|_| method == "session/fork");
-            let (request, dir) = (Some(recorded), Dir::ControlToAgent);
-            let pending = super::acp::Pending::New { cwd, request, dir, forked_from };
-            self.pending.insert(key, pending);
+        if let Some(opens) = &mut opens {
+            opens.request = Some(recorded);
         }
+        let then = Then::Host(request);
+        self.outbound.insert(&id, Asked { by: By::Host, session, opens, then });
         self.write_agent(&line);
     }
 
+    /// The agent's answer to one of the host's own requests.
     pub(super) fn host_request_done(&mut self, request: HostRequest, msg: &Map<String, Value>) {
-        if let HostRequest::Peer { peer, req_id, op } = request {
-            return self.peer_done(peer, req_id, op, msg);
+        match request {
+            HostRequest::Start(step) => self.start_answered(step, msg),
+            HostRequest::Opening(open, opening) => self.peer_opened(open, opening, msg),
+            HostRequest::Setup(step, setup) => self.setup_answered(step, setup, msg),
+            HostRequest::Peer { peer, req_id, op } => self.peer_done(peer, req_id, op, msg),
+            HostRequest::Steer { session, message } => self.steer_answered(&session, &message, msg),
         }
-        if let HostRequest::Steer { session, message } = request {
-            return self.steer_answered(&session, &message, msg);
-        }
-        if let HostRequest::Setup(step, setup) = request {
-            return self.setup_answered(step, setup, msg);
-        }
-        if let HostRequest::Opening(open, opening) = request {
-            return self.peer_opened(open, opening, msg);
-        }
+    }
+
+    /// The agent's answer to one of the headless start's steps, `step`: an
+    /// error fails the start; otherwise the next step goes.
+    fn start_answered(&mut self, step: StartStep, msg: &Map<String, Value>) {
         if let Some(error) = msg.get("error") {
-            let what = match &request {
-                HostRequest::Initialize => "initialize".to_owned(),
-                HostRequest::Authenticate(method) => format!("authenticate {method}"),
-                HostRequest::Open(Open::New) => "session/new".to_owned(),
-                HostRequest::Open(Open::Resume(_)) => "session/resume".to_owned(),
-                HostRequest::Open(Open::Load(session)) => {
+            let what = match &step {
+                StartStep::Initialize => "initialize".to_owned(),
+                StartStep::Authenticate(method) => format!("authenticate {method}"),
+                StartStep::Open(Open::New) => "session/new".to_owned(),
+                StartStep::Open(Open::Resume(_)) => "session/resume".to_owned(),
+                StartStep::Open(Open::Load(session)) => {
                     // Its lock goes once its replay is written, with the
                     // exit's records at the latest (ADR 5.5).
-                    if let Some(i) = self.find(session) {
-                        let hold = self.sessions.remove(i).hold;
-                        self.let_go(session.clone(), hold, None);
-                    }
+                    self.open_failed(session, None);
                     "session/load".to_owned()
                 }
-                HostRequest::Opening(..)
-                | HostRequest::Setup(..)
-                | HostRequest::Peer { .. }
-                | HostRequest::Steer { .. } => unreachable!(),
             };
             let mut text = format!("{what} failed: {}", error_message(error));
             // The hint is for a login that wasn't asked for.
-            if is_auth_error(error) && !matches!(request, HostRequest::Authenticate(_)) {
+            if is_auth_error(error) && !matches!(step, StartStep::Authenticate(_)) {
                 text.push_str(&self.auth_hint());
             }
             return self.fail_start(&text);
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
-        match request {
-            HostRequest::Initialize => {
+        match step {
+            StartStep::Initialize => {
                 // An answer in a version brnr doesn't speak isn't read any
                 // further, and nothing more is sent (ADR 2.2).
                 if let Err(err) = schema::check_protocol_version(&result) {
                     return self.fail_start(&err);
                 }
                 self.initialized(&result);
-                if let Err(err) = self.check_mcp_servers() {
+                let Some(start) = &self.start else { return }; // Failed, or abandoned.
+                let auth = start.auth.clone();
+                let checked =
+                    start.prompt.as_ref().map_or(Ok(()), |p| self.check_blocks(&p.blocks));
+                if let Err(err) = self.check_mcp_servers().and(checked) {
                     return self.fail_start(&err);
                 }
-                let checked = self.prompt.as_ref().map_or(Ok(()), |p| self.check_blocks(&p.blocks));
-                if let Err(err) = checked {
-                    return self.fail_start(&err);
-                }
-                match self.auth.clone() {
+                match auth {
                     Some(method) => self.authenticate(method),
                     None => self.open_first_session(),
                 }
             }
-            HostRequest::Authenticate(_) => self.open_first_session(),
-            HostRequest::Open(open) => {
+            StartStep::Authenticate(_) => self.open_first_session(),
+            StartStep::Open(open) => {
                 let session = match open {
                     Open::New => match new_session(&result) {
                         Some(session) => session,
@@ -257,32 +258,28 @@ impl Host {
                     },
                     Open::Resume(session) | Open::Load(session) => session,
                 };
-                if self.stop_requested {
-                    return; // The start already failed (timed out) or was stopped.
-                }
+                // The start already failed (timed out), or was stopped.
+                let Some(start) = self.start.as_mut().filter(|_| !self.stop_requested) else {
+                    return;
+                };
+                let flags = std::mem::take(&mut start.flags);
                 let i = self.open_session(&session, None);
                 // A resumed session's lock was taken before the agent was
                 // asked for it; a new one's, as it opened. Without it, the
                 // session gets no work, and nobody is to find it (ADR 3.9).
                 if let Some(why) = self.sessions[i].not_owned() {
-                    self.sessions.remove(i);
+                    self.close_session(i, Ending::NotOwned, None);
                     return self.fail_start(&format!("the agent opened {session}, which {why}"));
                 }
                 self.end_replay(i);
                 self.sessions[i].state.result(&result);
-                // The profile's are kept, for the sessions opened later.
-                let flags = std::mem::take(&mut self.settings.0);
-                match resolve_settings(&flags, &self.settings.1, &self.sessions[i].state) {
+                match resolve_settings(&flags, &self.defaults, &self.sessions[i].state) {
                     Ok(steps) => {
                         self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Start })
                     }
                     Err(error) => self.fail_start(&error),
                 }
             }
-            HostRequest::Opening(..)
-            | HostRequest::Setup(..)
-            | HostRequest::Peer { .. }
-            | HostRequest::Steer { .. } => unreachable!(),
         }
     }
 
@@ -323,33 +320,39 @@ impl Host {
             return self.fail_start(&error);
         }
         let params = json!({ "methodId": method });
-        self.host_request("authenticate", params, HostRequest::Authenticate(method));
+        let step = HostRequest::Start(StartStep::Authenticate(method));
+        self.host_request("authenticate", params, step);
     }
 
     fn open_first_session(&mut self) {
         let cwd = self.cwd.to_string_lossy().into_owned();
         let mcp = json!(self.mcp_servers);
-        let Some(session) = self.resume.clone() else {
+        let Some(start) = &self.start else { return }; // Failed, or abandoned.
+        let transcript = start.transcript;
+        let Some(session) = start.resume.clone() else {
             let params = json!({ "cwd": cwd, "mcpServers": mcp });
-            return self.host_request("session/new", params, HostRequest::Open(Open::New));
+            let step = HostRequest::Start(StartStep::Open(Open::New));
+            return self.host_request("session/new", params, step);
         };
         let params = json!({ "sessionId": session, "cwd": cwd, "mcpServers": mcp });
         let caps = self.caps;
         if caps.resume || caps.load {
             // Taken before the agent hears of it: a session another process
             // holds is refused (ADR 3.9).
-            if let Err(err) = self.own(&session) {
+            if let Err(err) = self.sessions.own(&session) {
                 return self.fail_start(&err);
             }
         }
         if caps.resume {
-            self.host_request("session/resume", params, HostRequest::Open(Open::Resume(session)));
+            let step = HostRequest::Start(StartStep::Open(Open::Resume(session)));
+            self.host_request("session/resume", params, step);
         } else if caps.load {
             // The agent replays the history: recorded unless the transcript
             // has it already (ADR 5.6).
             let i = self.open_session(&session, None);
-            self.begin_replay(i, !self.transcript);
-            self.host_request("session/load", params, HostRequest::Open(Open::Load(session)));
+            self.begin_replay(i, !transcript);
+            let step = HostRequest::Start(StartStep::Open(Open::Load(session)));
+            self.host_request("session/load", params, step);
         } else {
             self.fail_start("the agent can't resume sessions (no session/resume or session/load)");
         }
@@ -505,24 +508,23 @@ impl Host {
             return; // The start already failed (timed out), or was stopped.
         }
         let session = self.sessions[i].id.clone();
-        let message = self.prompt.is_some().then(|| self.message_id());
+        let prompted = self.start.as_ref().is_some_and(|s| s.prompt.is_some());
+        let message = prompted.then(|| self.message_id());
         if !self.report_ready(&session, message.as_deref()) {
             return;
         }
-        self.start_deadline = None;
+        let prompt = self.start.take().and_then(|s| s.prompt);
         self.start_done = true;
         if self.foreground {
             self.say(format!("brnr: session {}", crate::render::clean(&session)));
         }
-        if let (Some(prompt), Some(id)) = (self.prompt.take(), message) {
+        if let (Some(prompt), Some(id)) = (prompt, message) {
             self.send_prompt(i, Held { id, text: prompt.text, blocks: prompt.blocks });
         }
     }
 
     pub(super) fn fail_start(&mut self, error: &str) {
-        // Nobody is to know of a session it was opening: nothing was recorded
-        // under one still claimed, so its lock can go now (ADR 5.5).
-        self.claimed.clear();
+        self.sessions.unclaim_all();
         self.sink.note(None, json!({ "event": "start-failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
@@ -569,28 +571,18 @@ impl Host {
         };
         if let Some(error) = msg.get("error") {
             let error = format!("{what} failed: {}", error_message(error));
-            let mut reply = json!({ "ok": false, "error": error });
+            let reply = json!({ "ok": false, "error": error });
             // Its lock, taken as it opened, goes, and the bridge is answered,
             // once what was recorded of it (a load's replay, ADR 5.6) is
             // written, as a close's are: whoever resumes it next appends
             // after that (ADR 5.5).
-            let hold = asked.as_ref().and_then(|session| match self.find(session) {
-                Some(i) => {
-                    // The last replayed message, still marked as replayed (P3).
-                    self.flush_agent_message(i);
-                    self.sink.close_session(session); // A load's files.
-                    Some(self.sessions.remove(i).hold)
-                }
-                None => self.claimed.remove(session),
-            });
-            let (Some(session), Some(hold)) = (asked, hold) else {
-                self.reply(opening.peer, opening.req_id, reply);
-                return self.stop_if_empty();
-            };
-            if let Some(req_id) = opening.req_id {
-                reply["req_id"] = req_id;
+            let mut answer = reply.clone();
+            if let Some(req_id) = opening.req_id.clone() {
+                answer["req_id"] = req_id;
             }
-            self.let_go(session, hold, Some((opening.peer, reply)));
+            if !asked.is_some_and(|s| self.open_failed(&s, Some((opening.peer, answer)))) {
+                self.reply(opening.peer, opening.req_id, reply);
+            }
             return self.stop_if_empty();
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
@@ -601,7 +593,7 @@ impl Host {
         };
         let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
         if let Some(why) = self.sessions[i].not_owned() {
-            self.sink.close_session(&self.sessions.remove(i).id);
+            self.close_session(i, Ending::NotOwned, None);
             let error = format!("the agent opened {session}, which {why}");
             return self.abandon_open(&session, opening.peer, opening.req_id, error);
         }
@@ -609,7 +601,7 @@ impl Host {
         self.end_replay(i);
         self.sessions[i].state.result(&result);
         // The process's profile's settings, under the bridge's (ADR 6.1).
-        match resolve_settings(&opening.settings, &self.settings.1, &self.sessions[i].state) {
+        match resolve_settings(&opening.settings, &self.defaults, &self.sessions[i].state) {
             Ok(steps) => {
                 self.run_setup(Setup { session, steps, done: vec![], of: SetupOf::Open(opening) })
             }
@@ -687,20 +679,9 @@ impl Host {
     /// A headless process stops with its last session, unless a bridge's
     /// `new` or `resume` is still waiting for the agent to open one.
     fn stop_if_empty(&mut self) {
-        if self.sessions.is_empty() && !self.opening_in_flight() && !self.editor_attached() {
+        if self.sessions.is_empty() && !self.outbound.opening() && !self.editor_attached() {
             self.begin_stop();
         }
-    }
-
-    /// Whether a bridge's `new` or `resume` is waiting for the agent's
-    /// answer: a session not among `sessions` yet, which keeps the process
-    /// from stopping as if it had none (see `stop_if_empty`,
-    /// `fire_idle_timers`).
-    pub(super) fn opening_in_flight(&self) -> bool {
-        let opening = |r: &ClientRequest| {
-            matches!(r.by, Requester::Host(HostRequest::Opening(Open::New | Open::Resume(_), _)))
-        };
-        self.client_requests.values().any(opening)
     }
 
     pub(super) fn peer_op(
@@ -774,7 +755,7 @@ impl Host {
                 // Nothing to let go of once written (ADR 5.5): this process
                 // took no lock on it, and opened no transcript for it.
                 if let Some(why) = self.sessions[i].not_owned() {
-                    self.sink.close_session(&self.sessions.remove(i).id);
+                    self.close_session(i, Ending::NotOwned, None);
                     let error = format!("the agent forked into {session}, which {why}");
                     return Some(json!({ "ok": false, "error": error }));
                 }
@@ -797,7 +778,7 @@ impl Host {
                 }
                 // Once its records are written: whoever resumes it next
                 // appends after them (ADR 5.5).
-                self.close_session(i, by, Some((peer, reply)));
+                self.close_session(i, Ending::Closed(by), Some((peer, reply)));
                 self.stop_if_empty();
                 return None;
             }

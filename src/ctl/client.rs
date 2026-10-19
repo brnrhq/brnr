@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::host::alive;
-use crate::{json, lock, paths, render};
+use crate::{json, lock, paths, render, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
 
@@ -327,19 +327,26 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
 const STOPPING_WAIT: Duration = Duration::from_secs(10);
 
 /// Whether the process whose socket is `socket` has gone, within `wait`:
-/// nobody listens on it, and the process, whose pid names it, has exited.
-/// A refusal alone isn't enough: a process removes its socket before its
-/// last records are written (ADR 5.5), and on macOS a full backlog refuses
-/// too. A pid that is another process's now is waited for to the end.
+/// it has exited, its pid naming the socket. Its socket isn't asked: a
+/// process removes it before its last records are written (ADR 5.5), a
+/// full backlog refuses on macOS and blocks a connection on Linux. Only a
+/// socket no pid names goes by whether anyone listens. A pid that is
+/// another process's now is waited for to the end.
 fn gone_within(socket: &Path, wait: Duration) -> bool {
-    let pid = socket.file_stem().and_then(|s| s.to_str()?.parse::<i64>().ok());
+    let pid = socket.file_stem().and_then(|s| s.to_str()?.parse::<libc::pid_t>().ok());
     let until = Instant::now() + wait;
     loop {
-        match UnixStream::connect(socket) {
-            Err(e) if refused(&e) && pid.is_none_or(|pid| !alive(pid)) => return true,
-            _ if Instant::now() >= until => return false,
-            _ => std::thread::sleep(REFUSED_AGAIN),
+        let gone = match pid {
+            Some(pid) => sys::exited(pid),
+            None => UnixStream::connect(socket).is_err_and(|e| refused(&e)),
+        };
+        if gone {
+            return true;
         }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(REFUSED_AGAIN);
     }
 }
 
@@ -1117,21 +1124,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A socket that refuses is gone only once its process, whose pid names
-    /// it, has exited: one that has removed its socket may still be writing
-    /// its last records, and on macOS a full backlog refuses too.
+    /// A process has gone once it has exited, its pid naming its socket,
+    /// whether its socket is there or not: one that has removed it may still
+    /// be writing its last records. A zombie nobody has reaped has exited,
+    /// though `kill(pid, 0)` still reaches it.
     #[test]
-    fn adr_0010_a_refusing_socket_whose_process_lives_isnt_gone() {
+    fn adr_0010_a_process_has_gone_once_it_has_exited() {
         let dir = env::temp_dir().join(format!("brnr-gone-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let mut done = std::process::Command::new("true").spawn().unwrap();
-        done.wait().unwrap();
-        for (pid, gone) in [(std::process::id(), false), (done.id(), true)] {
-            let socket = dir.join(format!("{pid}.sock"));
-            drop(UnixListener::bind(&socket).unwrap()); // Nobody listens: refused.
-            assert_eq!(gone_within(&socket, Duration::from_millis(100)), gone, "{pid}");
-        }
+        let socket = |pid: u32| dir.join(format!("{pid}.sock"));
+        let wait = Duration::from_millis(100);
+        assert!(!gone_within(&socket(std::process::id()), wait));
+        let mut zombie = std::process::Command::new("true").spawn().unwrap();
+        assert!(gone_within(&socket(zombie.id()), Duration::from_secs(5)));
+        assert!(sys::kill(zombie.id() as libc::pid_t, 0), "reaped already");
+        zombie.wait().unwrap();
+        assert!(gone_within(&socket(zombie.id()), wait));
         let _ = fs::remove_dir_all(&dir);
     }
 

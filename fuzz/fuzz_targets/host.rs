@@ -10,6 +10,8 @@
 //!   with no newline after them (the line goes on in the next step);
 //! - `A`: the rest is a line from the agent; `a`: the agent's last bytes,
 //!   with no newline;
+//! - `B`: the rest is a bridge's request, a JSON object: `send`, `cancel`,
+//!   `queue` and `status` are taken (see `Harness::bridge`);
 //! - `T`: time passes (permission requests and idle sessions time out);
 //! - `Z`: the editor closes its stdin, and sends nothing more.
 //!
@@ -81,6 +83,11 @@ fuzz_target!(|data: &[u8]| {
                 host.agent_line(&line);
                 if editor && !object(rest) {
                     assert_eq!(host.sent().editor, [(frame::DATA, line)]);
+                }
+            }
+            b'B' => {
+                if let Ok(req) = serde_json::from_slice::<Value>(rest) {
+                    let _ = host.bridge(&req);
                 }
             }
             b'T' => host.tick(),

@@ -25,13 +25,14 @@
 
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
+use std::mem::take;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::LazyLock;
 use std::sync::atomic::Ordering::Relaxed;
-#[cfg(any(test, feature = "internals"))]
-use std::sync::mpsc::Sender;
 use std::sync::mpsc::SyncSender;
+#[cfg(any(test, feature = "internals"))]
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,9 +40,46 @@ use serde_json::{Value, json};
 
 use super::control::{self, Closer, Peer, Queue};
 use super::{Ev, Host};
+use crate::request::{Headless, Prompt, Settings};
 
 /// The start channel's name as a peer.
 const START_PEER: &str = "socket#start";
+
+/// A headless start, from the request (ADR 3.3) until it commits or fails
+/// (ADR 3.4): what only it uses, which goes with it.
+pub(super) struct Start {
+    /// brnr session new's start channel, once it is open.
+    channel: Option<StartChannel>,
+    /// When the start fails if it hasn't committed: the request's start
+    /// timeout.
+    pub(super) deadline: Option<Instant>,
+    /// The prompt, sent once the start has committed.
+    pub(super) prompt: Option<Prompt>,
+    /// The login method to run before the session opens (ADR 4.7).
+    pub(super) auth: Option<String>,
+    /// Resume this session instead of opening a new one.
+    pub(super) resume: Option<String>,
+    /// brnr has a transcript of the session resumed, so a load's replay
+    /// isn't recorded again (ADR 5.6).
+    pub(super) transcript: bool,
+    /// What its flags set, over the profile's (ADR 6.1).
+    pub(super) flags: Settings,
+}
+
+impl Start {
+    /// The start `headless` asks for, its timeout counting from now.
+    pub(super) fn of(headless: &mut Headless) -> Start {
+        Start {
+            channel: None,
+            deadline: Instant::now().checked_add(Duration::from_secs(headless.start_timeout)),
+            prompt: headless.prompt.take(),
+            auth: headless.auth.take(),
+            resume: headless.resume.take(),
+            transcript: headless.transcript,
+            flags: take(&mut headless.settings),
+        }
+    }
+}
 
 /// The start channel while the start is under way.
 pub(super) enum StartChannel {
@@ -72,7 +110,10 @@ impl Host {
     ) -> io::Result<()> {
         let (reader, closer) = (channel.try_clone()?, channel.try_clone()?);
         let peer = control::NEXT_PEER.fetch_add(1, Relaxed);
-        self.start_channel = Some(StartChannel::Socket { peer, stream: channel, closer, events });
+        let socket = StartChannel::Socket { peer, stream: channel, closer, events };
+        if let Some(start) = &mut self.start {
+            start.channel = Some(socket);
+        }
         let t = tx.clone();
         thread::spawn(move || {
             read_to_eof(reader);
@@ -81,24 +122,25 @@ impl Host {
         Ok(())
     }
 
-    /// The start channel is let go of, with nothing written to it: how the
-    /// start ended is `main`'s to tell brnr session new, on fd 3, as of a
-    /// start that fails before the event loop (see `Host::died_starting`).
+    /// The start, and its channel, are let go of, with nothing written to
+    /// it: how the start ended is `main`'s to tell brnr session new, on fd
+    /// 3, as of a start that fails before the event loop (see
+    /// `Host::died_starting`).
     pub(super) fn release_start_channel(&mut self) {
-        self.start_channel = None;
+        self.start = None;
     }
 
     /// brnr session new closed its end of the channel.
     pub(super) fn start_gone(&mut self, peer: u64) {
         self.peers.remove(&peer);
-        if matches!(&self.start_channel, Some(StartChannel::Socket { peer: id, .. }) if *id == peer)
-        {
-            self.start_channel = None;
+        let channel = self.start.as_ref().and_then(|s| s.channel.as_ref());
+        if matches!(channel, Some(StartChannel::Socket { peer: id, .. }) if *id == peer) {
             self.abandon_start();
         }
     }
 
     fn abandon_start(&mut self) {
+        self.start = None;
         self.sink.note(None, json!({ "event": "start-abandoned" }));
         self.begin_stop();
     }
@@ -108,7 +150,9 @@ impl Host {
     /// the start: brnr session new has gone, whether or not its EOF has
     /// reached the event loop yet.
     pub(super) fn report_ready(&mut self, session: &str, message: Option<&str>) -> bool {
-        let Some(channel) = self.start_channel.take() else { return false };
+        let Some(channel) = self.start.as_mut().and_then(|s| s.channel.take()) else {
+            return false;
+        };
         let mut ready = json!({ "ok": true, "pid": std::process::id(), "session": session });
         if let Some(message) = message {
             ready["message"] = json!(message);
@@ -136,11 +180,23 @@ impl Host {
         true
     }
 
+    /// The start's reports, collected rather than written, for the fuzz
+    /// harness (see fuzz.rs): none for an editor's process, which has no
+    /// start.
+    #[cfg(any(test, feature = "internals"))]
+    pub(super) fn collect_start(&mut self) -> Receiver<Value> {
+        let (tx, rx) = mpsc::channel();
+        if let Some(start) = &mut self.start {
+            start.channel = Some(StartChannel::Collected(tx));
+        }
+        rx
+    }
+
     /// Tells brnr session new the start failed, if it is still waiting to
-    /// hear.
+    /// hear: the start goes.
     pub(super) fn report_failure(&mut self, error: &str) {
         let report = json!({ "ok": false, "error": error });
-        match self.start_channel.take() {
+        match self.start.take().and_then(|s| s.channel) {
             Some(StartChannel::Socket { mut stream, .. }) => {
                 let _ = write_report(&mut stream, &report);
             }
@@ -195,10 +251,10 @@ impl Host {
     /// however slowly the agent starts. Whether it is held; held, the
     /// deadline moves 10 ms on, so the event loop sleeps rather than spins.
     pub(super) fn test_hold_start_timer(&mut self, now: Instant) -> bool {
-        let wrote = !self.stderr_tail.is_empty() || !self.stderr_line.is_empty();
+        let wrote = !self.stderr_tail.is_empty() || self.stderr_lines.partial().is_some();
         let held = !wrote && TEST_START_TIMER_UNTIL.is_some_and(|until| now < until);
-        if held {
-            self.start_deadline = Some(now + Duration::from_millis(10));
+        if held && let Some(start) = &mut self.start {
+            start.deadline = Some(now + Duration::from_millis(10));
         }
         held
     }

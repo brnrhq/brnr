@@ -2693,6 +2693,41 @@ fn adr_0005_a_bridges_failed_load_records_its_last_replayed_message() {
     assert_eq!(old_messages(&env), said);
 }
 
+/// The same for a headless start's load, whose process stops (P3, ADR 5.6,
+/// #291).
+#[test]
+fn adr_0005_a_starts_failed_load_records_its_last_replayed_message() {
+    let env = Env::new("startfailedlast").agent("NO_RESUME", "1").agent("LOAD_FAIL", "1");
+    let err = env.fails(&resume_args("old-1", &[]));
+    assert!(err.contains("session/load failed: Can't load"), "{err}");
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()));
+    let said = [json!(["old question", true]), json!(["replayed history", true])];
+    assert_eq!(old_messages(&env), said);
+}
+
+/// The editor's load of a session brnr has no transcript of, which the
+/// agent replays and then fails, while the logger is behind: its process
+/// holds the session's lock until the replay it recorded is written, as a
+/// bridge's and a start's do, so that a resume elsewhere appends after it
+/// (ADR 5.5, ADR 5.6, #291).
+#[test]
+fn adr_0005_an_editors_failed_load_holds_its_lock_until_written() {
+    let env = Env::new("ed-loadheld");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("LOAD_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    fs::write(&stall, "").unwrap();
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let lock = env.dir.join("home/sessions/old-1.lock");
+    let held = fs::read_to_string(&lock).unwrap_or_default();
+    let held: Value = serde_json::from_str(&held).unwrap_or_default();
+    assert_eq!(held["pid"], env.host_pid(), "let go of before its replay was written");
+    fs::remove_file(&stall).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || !lock.exists()), "not let go of");
+    let _ = editor.kill();
+}
+
 /// A session served and closed while the disk is too slow for its records,
 /// all of them skipped, its close's too: its events file holds only its
 /// opening, which isn't a transcript of it, and its process doesn't count

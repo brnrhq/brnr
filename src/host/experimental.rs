@@ -27,24 +27,12 @@
 
 use serde_json::{Map, Value, json};
 
-use super::acp::AgentRequest;
+use super::approvals::{AgentRequest, Answered};
 use super::strict::Beyond;
+use super::turns::Activity;
 use super::{Host, text_block};
 use crate::config::Experimental;
 use crate::lock;
-
-/// An agent request the host answered while the editor may answer it too:
-/// what the editor is told if it does.
-pub(super) struct Answered {
-    session: Option<String>,
-    /// The tool call's title, or the elicitation's message, as the request
-    /// has it.
-    title: String,
-    /// `allowed`, `rejected` or `cancelled`; `accepted` or `declined`.
-    how: &'static str,
-    /// Who answered it: `cancel`, or a peer's label.
-    by: String,
-}
 
 impl Host {
     /// Refuses `action` on an editor's session unless the editor's part of
@@ -81,7 +69,7 @@ impl Host {
         }
         let context = mode == "context";
         self.check_experimental(if context { Experimental::Context } else { Experimental::Send })?;
-        if !context && !self.sessions[i].prompts.is_empty() {
+        if !context && self.sessions[i].turns.activity() == Activity::Busy {
             return Err("the editor controls this session's turns; one is running, so send once \
                         it has ended (or with --context, for the editor's next prompt)"
                 .into());
@@ -94,18 +82,12 @@ impl Host {
     /// The host answered the agent's request `req`, `how` (`allowed`,
     /// `rejected` or `cancelled`; an elicitation's `accepted`, `declined` or
     /// `cancelled`), which the editor was shown too: it is withdrawn from
-    /// the editor. An allowed tool call is in progress, a rejected one has
+    /// the editor, and its late answer dropped (see approvals.rs). An allowed tool call is in progress, a rejected one has
     /// failed: the status the agent's own updates take it on from, so
     /// neither contradicts the other. An allow or a reject, an accept or a
     /// decline, is also told in the session, saying by whom.
     pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &str) {
-        if !self.editor_attached() {
-            return;
-        }
         let title = req.title();
-        let answered =
-            Answered { session: req.session.clone(), title: title.clone(), how, by: by.to_owned() };
-        self.answered.insert(req.key.clone(), answered);
         let params = json!({ "requestId": req.id });
         let msg = json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": params });
         self.send_editor(req.session.as_deref(), &msg);
@@ -126,13 +108,11 @@ impl Host {
         self.echo(session, note, &[text_block(&text)]);
     }
 
-    /// The editor answered `key` (`msg`), a request the host answered
+    /// The editor answered `id` (`msg`), a request the host had `answered`
     /// already: dropped, as the agent must not get a second answer. One the
     /// editor chose (a result, not the error that acknowledges a
-    /// `$/cancel_request`) is told to it in the session. False if `key`
-    /// isn't such a request.
-    pub(super) fn late_answer(&mut self, key: &str, id: &Value, msg: &Map<String, Value>) -> bool {
-        let Some(answered) = self.answered.remove(key) else { return false };
+    /// `$/cancel_request`) is told to it in the session.
+    pub(super) fn late_answer(&mut self, id: &Value, answered: Answered, msg: &Map<String, Value>) {
         let Answered { session, title, how, by } = answered;
         let event = json!({ "event": "editor-response-dropped", "id": id, "answered": how });
         self.sink.note(session.as_deref(), event);
@@ -145,7 +125,6 @@ impl Host {
             );
             self.echo(&session, &format!("Already {how} via brnr"), &[text_block(&text)]);
         }
-        true
     }
 
     // ---- config ---------------------------------------------------------
@@ -176,7 +155,7 @@ impl Host {
         if !self.editor_attached() {
             return;
         }
-        self.closed.insert(session.to_owned(), taken_by);
+        self.sessions.close_under_editor(session, taken_by);
         let (title, text) = match taken_by {
             Some(pid) => (
                 format!("Session taken over by brnr (process {pid})"),
@@ -197,7 +176,7 @@ impl Host {
     /// The agent didn't close `session`, with `error`: it stays open, and
     /// the editor's requests for it go through again.
     pub(super) fn close_failed(&mut self, session: &str, error: &str) {
-        if self.closed.remove(session).is_some() {
+        if self.sessions.back_to_editor(session) {
             let text = format!("The agent didn't close it ({error}); it stays open here.");
             self.echo(session, "Close via brnr failed", &[text_block(&text)]);
         }
@@ -209,10 +188,10 @@ impl Host {
     /// again.
     pub(super) fn closed_error(&mut self, session: &str, method: &str) -> Option<String> {
         if matches!(method, "session/load" | "session/resume") {
-            self.closed.remove(session);
+            self.sessions.back_to_editor(session);
             return None;
         }
-        let taken_by = *self.closed.get(session)?;
+        let taken_by = self.sessions.closed_under_editor(session)?;
         let mut error = match taken_by {
             Some(pid) => format!("brnr: session {session} was taken over by brnr (process {pid})"),
             None => format!("brnr: session {session} was closed via brnr"),

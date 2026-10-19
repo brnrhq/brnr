@@ -83,6 +83,15 @@ brnr's own conventions:
   a stopping process hangs up on the question whether it cut the watcher
   off, so the watcher waits for it to go and asks its host log (ADR 10.2,
   #275).
+- A start whose `session/load` the agent fails, after replaying the history,
+  records the last message replayed, as an editor's and a bridge's failed
+  load do; it was lost (P3, ADR 5.6, #291).
+- The editor's `session/load` that the agent fails, after replaying the
+  history, holds the session's lock until the process has written what it
+  recorded of the replay, 2 s at most, as a bridge's and a start's do, and
+  `status` lists it as closing meanwhile. Its lock went at once, and a
+  resume in another process could write before those records (ADR 5.5,
+  #291).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork

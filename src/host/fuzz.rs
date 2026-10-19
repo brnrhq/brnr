@@ -11,15 +11,13 @@
 //! (`$BRNR_HOME`, see paths.rs, ADR 3.9), held until the harness drops.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use super::Host;
-use super::start::StartChannel;
-use crate::config::{ClientCapability, EchoAs, Experimental, Feature, Log};
+use crate::config::{ClientCapability, EchoAs, Experimental, Feature};
 use crate::request::{Editor, Headless, Prompt, Role, Settings};
 
 /// How far the clock moves at each [`Harness::tick`]: past every timeout
@@ -80,22 +78,14 @@ impl Harness {
     }
 
     fn new(role: Role, strict: bool) -> Harness {
-        let (_, rx) = mpsc::sync_channel(1);
-        // No agent to signal: a pid no process can have.
-        let mut host = Host::new(role, PathBuf::from("/"), strict, Log::Off, libc::pid_t::MAX, rx);
-        let (agent_in, agent) = mpsc::channel();
-        host.agent_in = Some(agent_in);
-        let mut editor = None;
-        if host.editor {
-            let (link, rx) = mpsc::channel();
-            (host.link, host.start_done, editor) = (Some(link), true, Some(rx));
+        let (host, ends) = Host::simulated(role, strict);
+        Harness {
+            host,
+            agent: ends.agent,
+            editor: ends.editor,
+            start: ends.start,
+            now: Instant::now(),
         }
-        let editor = editor.unwrap_or_else(|| mpsc::channel().1);
-        let (tx, start) = mpsc::channel();
-        if !host.editor {
-            host.start_channel = Some(StartChannel::Collected(tx));
-        }
-        Harness { host, agent, editor, start, now: Instant::now() }
     }
 
     /// Bytes from the editor, as the link delivers them: lines may be split
@@ -124,6 +114,30 @@ impl Harness {
         self.host.handle(super::Ev::AgentStderr(bytes.to_vec()));
     }
 
+    /// A bridge's `send`, `cancel`, `queue` or `status` (see control.rs),
+    /// from a peer that isn't there: the answer it would get. Other commands
+    /// start or stop processes, and aren't taken.
+    pub fn bridge(&mut self, req: &Value) -> Result<Value, String> {
+        if !matches!(req["cmd"].as_str(), Some("send" | "cancel" | "queue" | "status")) {
+            return Err("not a command the harness takes".into());
+        }
+        self.host.command(0, req).map(Option::unwrap_or_default)
+    }
+
+    /// `session` is this process's before the agent opens it, as if its lock
+    /// had been taken (ADR 3.9), with no lock file: for the unit tests, which
+    /// have no state directory of their own.
+    #[cfg(test)]
+    pub(super) fn claim(&mut self, session: &str) {
+        self.host.sessions.claim(session, super::sessions::Hold::Owner(None));
+    }
+
+    /// The host, for the unit tests to look at what it holds.
+    #[cfg(test)]
+    pub(super) fn host(&mut self) -> &mut Host {
+        &mut self.host
+    }
+
     /// Time passes: unanswered permission requests and idle sessions time
     /// out.
     pub fn tick(&mut self) {
@@ -148,6 +162,8 @@ impl Harness {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
     use crate::{frame, json};
 
@@ -234,7 +250,7 @@ mod tests {
         h.sent();
         // No real session lock in this unit test. The fuzz targets use their
         // own state directory for the locks they exercise.
-        h.host.claimed.insert("fuzz-start".into(), super::super::acp::Hold::Owner(None));
+        h.claim("fuzz-start");
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1}}"#);
         h.sent();
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-start","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
@@ -246,5 +262,41 @@ mod tests {
         assert_eq!(sent.start[0]["session"], "fuzz-start");
         assert!(h.host.start_done);
         assert!(sent.agent[0].windows(14).any(|w| w == b"session/prompt"));
+    }
+
+    /// The start's session, its prompt `brnr-4` running, with an agent that
+    /// steers.
+    fn turn_running() -> Harness {
+        let mut h = Harness::headless(false, None);
+        h.claim("fuzz-send");
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1,"_meta":{"steering":{"supported":true}}}}"#);
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"fuzz-send","modes":{"currentModeId":"default","availableModes":[{"id":"plan","name":"Plan"}]}}}"#);
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-3","result":{}}"#);
+        h.sent();
+        h
+    }
+
+    #[test]
+    fn adr_0004_a_bridge_sends_through_the_sessions_turns() {
+        let mut h = turn_running();
+        let send = |text: &str, mode: &str| serde_json::json!({ "cmd": "send", "session": "fuzz-send", "text": text, "mode": mode });
+        assert_eq!(h.bridge(&send("later", "prompt")).unwrap()["status"], "held");
+        assert_eq!(h.bridge(&send("now", "steer")).unwrap()["status"], "steered");
+        let sent = h.sent().agent;
+        assert!(sent.len() == 1 && sent[0].windows(17).any(|w| w == b"_session/steering"));
+        // The turn's answer, then the steer's: only then does the held one go.
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-4","result":{"stopReason":"end_turn"}}"#);
+        assert!(h.sent().agent.is_empty(), "a prompt went while a steer was unanswered");
+        let status = h.bridge(&serde_json::json!({ "cmd": "status" })).unwrap();
+        assert_eq!(
+            (&status["sessions"][0]["state"], &status["sessions"][0]["held"]),
+            (&"idle".into(), &1.into())
+        );
+        h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-5","result":{"outcome":"injected"}}"#);
+        let sent = h.sent().agent;
+        assert!(sent.len() == 1 && sent[0].windows(5).any(|w| w == b"later"));
+        let queue = serde_json::json!({ "cmd": "queue", "session": "fuzz-send", "drop": "m1" });
+        assert_eq!(h.bridge(&queue).err(), Some("no held message m1".into()));
+        assert!(h.bridge(&serde_json::json!({ "cmd": "stop" })).is_err());
     }
 }
