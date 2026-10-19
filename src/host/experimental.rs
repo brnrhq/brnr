@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 
 use super::acp::AgentRequest;
 use super::strict::Beyond;
+use super::turns::Activity;
 use super::{Host, text_block};
 use crate::config::Experimental;
 use crate::lock;
@@ -81,7 +82,7 @@ impl Host {
         }
         let context = mode == "context";
         self.check_experimental(if context { Experimental::Context } else { Experimental::Send })?;
-        if !context && !self.sessions[i].prompts.is_empty() {
+        if !context && self.sessions[i].turns.activity() == Activity::Busy {
             return Err("the editor controls this session's turns; one is running, so send once \
                         it has ended (or with --context, for the editor's next prompt)"
                 .into());

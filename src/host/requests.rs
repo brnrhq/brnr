@@ -29,8 +29,9 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::acp::{ClientRequest, Close, Held, Replay, Requester, new_session};
+use super::acp::{ClientRequest, Close, Replay, Requester, new_session};
 use super::state::SessionState;
+use super::turns::Held;
 use super::{Host, id_key};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
@@ -172,7 +173,8 @@ impl Host {
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
-        let request = ClientRequest { by: Requester::Host(kind), session: session.clone() };
+        let request =
+            ClientRequest { by: Requester::Host(kind), session: session.clone(), turn: false };
         self.client_requests.insert(key.clone(), request);
         // Without the MCP servers' secrets (ADR 9.1 in docs/adr).
         let recorded = msg.as_object().and_then(log::redacted).unwrap_or_else(|| line.clone());

@@ -40,6 +40,7 @@ mod requests;
 mod start;
 mod state;
 mod strict;
+mod turns;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
@@ -395,8 +396,6 @@ struct Host {
     /// each over, if one did: the editor's requests for them are answered
     /// here.
     closed: HashMap<String, Option<u32>>,
-    /// Request id of every unanswered prompt → its session.
-    prompt_session: HashMap<String, String>,
     /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
     next_permission: u64,
@@ -645,7 +644,6 @@ impl Host {
             agent_requests: Vec::new(),
             answered: HashMap::new(),
             closed: HashMap::new(),
-            prompt_session: HashMap::new(),
             next_id: 0,
             next_permission: 0,
             next_elicitation: 0,
