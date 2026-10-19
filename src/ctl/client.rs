@@ -322,6 +322,22 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
     }
 }
 
+/// How long a process that hangs up on a request unanswered has to go: one
+/// that is stopping writes what it has left before its socket goes.
+const STOPPING_WAIT: Duration = Duration::from_secs(10);
+
+/// Whether nobody listens on `socket` any more, within `wait`.
+fn gone_within(socket: &Path, wait: Duration) -> bool {
+    let until = Instant::now() + wait;
+    loop {
+        match UnixStream::connect(socket) {
+            Err(e) if refused(&e) => return true,
+            _ if Instant::now() >= until => return false,
+            _ => std::thread::sleep(REFUSED_AGAIN),
+        }
+    }
+}
+
 /// Whether a connection failed because nobody listens: refused, or no
 /// socket there.
 fn refused(err: &io::Error) -> bool {
@@ -596,7 +612,13 @@ impl Conn {
             Some(f) => {
                 match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
                 {
-                    Ok(mut conn) => conn.was_cut_off(&f.peer).is_some(),
+                    Ok(mut conn) => match conn.was_cut_off(&f.peer) {
+                        Ok(cut) => cut.is_some(),
+                        // Stopping (#275): its host log says, once it has gone.
+                        Err(_) => {
+                            gone_within(&f.socket, STOPPING_WAIT) && f.cut_off_before_it_went()
+                        }
+                    },
                     Err(_) => f.cut_off_before_it_went(),
                 }
             }
@@ -610,9 +632,9 @@ impl Conn {
     /// Asks the process whether it cut `peer` off: if it did, the last
     /// position then (`last_queued`), if it says; none if it didn't, or
     /// doesn't answer.
-    fn was_cut_off(&mut self, peer: &str) -> Option<Option<u64>> {
-        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer })).ok()?;
-        (asked["cut_off"] == true).then(|| asked["last_queued"].as_u64())
+    fn was_cut_off(&mut self, peer: &str) -> Result<Option<Option<u64>>, String> {
+        let asked = self.call(json!({ "cmd": "was_cut_off", "peer": peer }))?;
+        Ok((asked["cut_off"] == true).then(|| asked["last_queued"].as_u64()))
     }
 
     /// The connection has ended (`why`) before the end the command waits
@@ -637,9 +659,19 @@ impl Conn {
                 Err(_) => return Err(why),
             };
             if cut.is_none() {
-                cut = conn.was_cut_off(&f.peer);
-                if cut.is_none() {
-                    return Err(why);
+                match conn.was_cut_off(&f.peer) {
+                    Ok(Some(at)) => cut = Some(at),
+                    Ok(None) => return Err(why),
+                    // Hung up unanswered: a process that is stopping accepts
+                    // until its socket goes (#275). Gone, its host log says
+                    // whether it had cut `f.peer` off.
+                    Err(_) => {
+                        drop(conn);
+                        if gone_within(&f.socket, STOPPING_WAIT) && f.cut_off_before_it_went() {
+                            break (None, None);
+                        }
+                        return Err(why);
+                    }
                 }
             }
             match conn.resubscribe(&f) {
@@ -1051,6 +1083,51 @@ mod tests {
         }
         assert_eq!(seqs, [11, 12, 13]);
         assert_eq!(conn.reconnects, 2);
+        process.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A process that is stopping accepts, and hangs up with no answer,
+    /// until its socket goes (#275). A peer it had cut off waits for it to
+    /// go, then reads what it missed from the transcript to its end, where
+    /// it failed with "the process closed the connection".
+    #[test]
+    fn adr_0010_a_peer_cut_off_by_a_stopping_process_catches_up() {
+        let dir = env::temp_dir().join(format!("brnr-stopping-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let record =
+            |event: Value| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event }));
+        let dropped = record(json!({ "event": "peer-dropped", "peer": "socket#0" }));
+        let events: String =
+            (11..=12).map(|n| record(json!({ "event": "turn_ended", "seq": n }))).collect();
+        fs::write(&host_log, dropped + &events).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        // Three connections hung up on, then it goes.
+        let process = thread::spawn(move || {
+            for stream in listener.incoming().take(3) {
+                drop(stream.unwrap());
+            }
+        });
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["turn_ended".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        let mut seqs = Vec::new();
+        while let Ok(Some(e)) = conn.next_event(None) {
+            seqs.push(e["seq"].as_u64().unwrap());
+        }
+        assert_eq!(seqs, [11, 12]);
         process.join().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
