@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use crate::paths;
 
-use super::USAGE;
+use super::Args;
+use super::args::Error;
 
 const SKILL: &str = include_str!("../../skills/brnr/SKILL.md");
 
@@ -29,38 +30,27 @@ const REFERENCES: &[(&str, &str)] = &[
 /// Claude Code and Codex.
 const DIRS: &[&str] = &["~/.claude/skills", "~/.agents/skills"];
 
-pub(super) fn skill(args: &[String]) -> Result<(), String> {
-    // An option `skill` doesn't take, wherever it is; `install` has its own.
-    if args.first().is_none_or(|a| a != "install")
-        && let Some(flag) = args.iter().find(|a| a.starts_with("--"))
-    {
-        return Err(format!("unknown option: {flag}"));
-    }
-    match args {
-        [] => out!("{SKILL}"),
-        [cmd, rest @ ..] if cmd == "install" => return install(rest),
-        [name] if !name.starts_with('-') => match REFERENCES.iter().find(|(n, _)| n == name) {
+/// `brnr skill [<reference>]`; a reference is never `-h` or another
+/// single-dash word, which is a usage error.
+pub(super) fn skill(a: &Args) -> Result<(), Error> {
+    match a.positional.first() {
+        None => out!("{SKILL}"),
+        Some(name) if name.starts_with('-') => return Err(Error::Usage),
+        Some(name) => match REFERENCES.iter().find(|(n, _)| n == name) {
             Some((_, text)) => out!("{text}"),
             None => {
                 let names: Vec<&str> = REFERENCES.iter().map(|(n, _)| *n).collect();
-                return Err(format!("no reference {name} (references: {})", names.join(", ")));
+                let names = names.join(", ");
+                return Err(format!("no reference {name} (references: {names})").into());
             }
         },
-        _ => return Err(USAGE.to_owned()),
     }
     Ok(())
 }
 
-fn install(args: &[String]) -> Result<(), String> {
-    let mut dirs = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--dir" => dirs.push(paths::expand(it.next().ok_or("--dir needs a directory")?)),
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+/// `brnr skill install [--dir <dir>]...`.
+pub(super) fn install(a: &Args) -> Result<(), String> {
+    let mut dirs: Vec<_> = a.values("--dir").iter().map(|d| paths::expand(d)).collect();
     if dirs.is_empty() {
         dirs = DIRS.iter().map(|d| paths::expand(d)).collect();
     }

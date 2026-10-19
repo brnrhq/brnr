@@ -25,37 +25,21 @@ use serde_json::Value;
 use crate::host::alive;
 use crate::{json, render, transcript};
 
-use super::{USAGE, default_events, events_arg, ownership};
+use super::{Args, default_events, events_arg, ownership};
 
 const POLL: Duration = Duration::from_millis(200);
 
-pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut last = None;
-    let mut events = default_events();
-    let (mut follow, mut json_out) = (false, false);
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--last" => {
-                let n = it.next().ok_or("--last needs a number")?;
-                last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
-            }
-            "--follow" => follow = true,
-            "--events" => events = events_arg(it.next(), &default_events())?,
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
+    let last = a.number("--last");
+    let events = events_arg(a, &default_events())?;
+    let (follow, json_out) = (a.has("--follow"), a.json);
     // A gap in the transcript (`records-skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
     let wanted = |e: &Value| {
         e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
     };
     let show = Show { options: render::Options { session: false, time: true }, json_out };
-    let target = target.ok_or(USAGE)?;
+    let target = a.positional[0].clone();
     let (path, acp_path, host_pid) = ownership::transcript(&target)?;
     let mut acp = None;
     if events.iter().any(|e| e == "acp") {

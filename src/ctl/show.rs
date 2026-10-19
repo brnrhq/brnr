@@ -8,19 +8,10 @@ use serde_json::Value;
 
 use crate::render;
 
-use super::{USAGE, discover, print_json, running_session};
+use super::{Args, discover, print_json, running_session};
 
-pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
-    let mut positional = Vec::new();
-    let mut json_out = false;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => positional.push(arg),
-        }
-    }
-    let [arg, request] = positional[..] else { return Err(USAGE.to_owned()) };
+pub(super) fn show(a: &Args) -> Result<ExitCode, String> {
+    let (arg, request, json_out) = (&a.positional[0], &a.positional[1], a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     // As deep as the agent made it: shown, and let go of, on a stack that

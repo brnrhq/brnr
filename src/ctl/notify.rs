@@ -63,7 +63,7 @@ use crate::{host, json, render, signals, sys};
 
 use super::catch_up::MISSED;
 use super::client::{Conn, discover};
-use super::{USAGE, events_arg, session_or_pid};
+use super::{Args, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] =
     &["permission_request", "elicitation_request", "turn_ended", "exited"];
@@ -83,26 +83,12 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 /// hung up the connection.
 const HANGUP_CHECK: Duration = Duration::from_millis(100);
 
-pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut pid, mut stdin) = (None, None, false);
+pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
+    let (session, pid) = (a.positional.first().cloned(), a.value("--pid").map(str::to_owned));
+    let stdin = a.has("--stdin");
     let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
-    let mut events = default.clone();
-    let mut command = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--events" => events = events_arg(it.next(), &default)?,
-            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
-            "--stdin" => stdin = true,
-            "--" => {
-                command = it.by_ref().cloned().collect();
-                break;
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+    let events = events_arg(a, &default)?;
+    let command = a.rest.clone().unwrap_or_default();
     if command.is_empty() {
         return Err("notify needs a command after --".into());
     }

@@ -15,6 +15,7 @@
 //!   doctor.rs: `doctor`; skill.rs: `skill`
 //! - here: `process list`, `process stop`, `session status`,
 //!   `permission requests`, `permission allow` and `reject`, `event watch`
+//! - args.rs: every command's arguments, read from one table before it runs
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
@@ -53,6 +54,7 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
+mod args;
 mod catch_up;
 mod client;
 mod delete;
@@ -67,6 +69,7 @@ mod show;
 mod skill;
 mod talk;
 
+use args::Args;
 use client::{Conn, Host, discover};
 use ownership::running_session;
 
@@ -164,97 +167,101 @@ const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `acp` and `host`. A group's
-/// commands are `brnr <group> <verb>`; the others, one word.
+/// commands are `brnr <group> <verb>`; the others, one word. Each verb's
+/// arguments are read as [`args::VERBS`] has them, before it runs.
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
     let cmd = args.first().map_or("", String::as_str);
     let grouped = GROUPS.contains(&cmd);
     let verb = if grouped { args.get(1).map(String::as_str) } else { None };
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
-    let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
-    let result = match (cmd, verb) {
-        (group, Some(verb))
-            if grouped && asks_help(group, verb, rest) && has_usage(group, verb) =>
-        {
-            outln!("{}", usage_of(group, Some(verb)));
+    // `skill install` is a verb of a command outside the groups.
+    let (verb, rest) = match rest {
+        [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
+        _ => (verb, rest),
+    };
+    let result = match args::spec(cmd, verb) {
+        Some(spec) if grouped && spec.asks_help(rest) => {
+            outln!("{}", usage_of(cmd, verb));
             Ok(ExitCode::SUCCESS)
         }
-        ("process", Some("list")) => done(ps(rest)),
-        ("process", Some("stop")) => done(stop(rest)),
-        ("session", Some("new")) => talk::new(rest),
-        ("session", Some("resume")) => talk::resume(rest),
-        ("session", Some("list")) => sessions::list(rest),
-        ("session", Some("status")) => done(status(rest)),
-        ("session", Some("fork")) => settings::fork(rest),
-        ("session", Some("close")) => settings::close(rest),
-        ("session", Some("delete")) => delete::delete(rest),
-        ("prompt", Some("send")) => talk::send(rest),
-        ("prompt", Some("cancel")) => talk::cancel(rest),
-        ("prompt", Some("commands")) => settings::commands(rest),
-        ("queue", Some("list")) => talk::queue_list(rest),
-        ("queue", Some("show")) => talk::queue_show(rest),
-        ("queue", Some("drop")) => talk::queue_drop(rest),
-        ("queue", Some("clear")) => talk::queue_clear(rest),
-        ("permission", Some("requests")) => done(pending(rest)),
-        ("permission", Some("show")) => show::show(rest),
-        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
-        ("elicitation", Some("requests")) => done(elicitation::requests(rest)),
-        ("elicitation", Some("show")) => done(elicitation::show(rest)),
-        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
-            done(elicitation::answer(rest, verb))
-        }
-        ("config", Some("get")) => settings::config_get(rest),
-        ("config", Some("set")) => settings::config_set(rest),
-        ("event", Some("log")) => history::log(rest),
-        ("event", Some("watch")) => watch(rest),
-        ("event", Some("notify")) => notify::notify(rest),
-        ("event", Some("wait")) => talk::wait(rest),
-        (group, Some("-h" | "--help")) if grouped => {
-            outln!("{}", usage_of(group, None));
-            Ok(ExitCode::SUCCESS)
-        }
-        (group, Some(verb)) if grouped => {
-            Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
-        }
-        (_, None) if grouped => Err(USAGE.to_owned()),
-        ("doctor", _) => done(doctor::main(rest)),
-        ("skill", _) => done(skill::skill(rest)),
-        ("-h" | "--help", _) => {
-            outln!("{USAGE}");
-            Ok(ExitCode::SUCCESS)
-        }
-        ("-V" | "--version", _) => {
-            outln!("brnr {}", env!("CARGO_PKG_VERSION"));
-            Ok(ExitCode::SUCCESS)
-        }
-        ("", _) => Err(USAGE.to_owned()),
-        (cmd, _) => Err(format!("unknown command: {cmd} (brnr --help for every command)")),
+        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)),
+        None => match (cmd, verb) {
+            (group, Some("-h" | "--help")) if grouped => {
+                outln!("{}", usage_of(group, None));
+                Ok(ExitCode::SUCCESS)
+            }
+            (group, Some(verb)) if grouped => Err(args::Error::Message(format!(
+                "unknown command: {group} {verb}\n{}",
+                usage_of(group, None)
+            ))),
+            ("-h" | "--help", _) => {
+                outln!("{USAGE}");
+                Ok(ExitCode::SUCCESS)
+            }
+            ("-V" | "--version", _) => {
+                outln!("brnr {}", env!("CARGO_PKG_VERSION"));
+                Ok(ExitCode::SUCCESS)
+            }
+            (_, None) if grouped => Err(args::Error::Usage),
+            ("", _) => Err(args::Error::Usage),
+            (cmd, _) => Err(args::Error::Message(format!(
+                "unknown command: {cmd} (brnr --help for every command)"
+            ))),
+        },
     };
     match result {
         Ok(code) => code,
-        Err(msg) if msg == USAGE => {
+        Err(args::Error::Usage) => {
             eprintln!("{}", usage_of(cmd, verb));
             ExitCode::FAILURE
         }
-        Err(msg) => {
+        Err(args::Error::Message(msg)) => {
             errln!("brnr: {msg}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
-/// `--`, after which they are the agent's or the command's, and before a
-/// prompt's first word, after which they are the prompt's.
-fn asks_help(group: &str, verb: &str, args: &[String]) -> bool {
-    match (group, verb) {
-        ("prompt", "send") => talk::prompt_start(args).1,
-        _ => args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help"),
-    }
-}
-
-/// Whether [`USAGE`] has `brnr <group> <verb>`.
-fn has_usage(group: &str, verb: &str) -> bool {
-    USAGE.lines().any(|l| l.split_whitespace().take(3).eq(["brnr", group, verb]))
+/// Runs the verb `spec` is, with its arguments `a`.
+fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
+    let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
+    let code = match (spec.cmd, spec.verb) {
+        ("process", Some("list")) => done(ps(a)),
+        ("process", Some("stop")) => done(stop(a)),
+        ("session", Some("new")) => talk::new(a),
+        ("session", Some("resume")) => talk::resume(a),
+        ("session", Some("list")) => sessions::list(a),
+        ("session", Some("status")) => done(status(a)),
+        ("session", Some("fork")) => settings::fork(a),
+        ("session", Some("close")) => settings::close(a),
+        ("session", Some("delete")) => delete::delete(a),
+        ("prompt", Some("send")) => talk::send(a),
+        ("prompt", Some("cancel")) => talk::cancel(a),
+        ("prompt", Some("commands")) => settings::commands(a),
+        ("queue", Some("list")) => talk::queue_list(a),
+        ("queue", Some("show")) => talk::queue_show(a),
+        ("queue", Some("drop")) => talk::queue_drop(a),
+        ("queue", Some("clear")) => talk::queue_clear(a),
+        ("permission", Some("requests")) => done(pending(a)),
+        ("permission", Some("show")) => show::show(a),
+        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(a, verb)),
+        ("elicitation", Some("requests")) => done(elicitation::requests(a)),
+        ("elicitation", Some("show")) => done(elicitation::show(a)),
+        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
+            done(elicitation::answer(a, verb))
+        }
+        ("config", Some("get")) => settings::config_get(a),
+        ("config", Some("set")) => settings::config_set(a),
+        ("event", Some("log")) => history::log(a),
+        ("event", Some("watch")) => watch(a),
+        ("event", Some("notify")) => notify::notify(a),
+        ("event", Some("wait")) => talk::wait(a),
+        ("doctor", None) => done(doctor::main(a)),
+        ("skill", None) => return skill::skill(a).map(|()| ExitCode::SUCCESS),
+        ("skill", Some("install")) => done(skill::install(a)),
+        (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
+    };
+    Ok(code?)
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
@@ -338,15 +345,8 @@ fn session_or_pid<'a>(
 
 // ---- processes -----------------------------------------------------------
 
-fn ps(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn ps(a: &Args) -> Result<(), String> {
+    let json_out = a.json;
     let hosts = discover()?;
     let locks = lock::all();
     let rows: Vec<Value> = hosts
@@ -394,25 +394,10 @@ fn ps(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The one `<session>` or `<pid>` a command takes, and whether `--json` was
-/// given: an option it doesn't take is never read as its argument.
-fn one_arg(args: &[String]) -> Result<(String, bool), String> {
-    let (mut arg, mut json_out) = (None, false);
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    Ok((arg.ok_or(USAGE)?, json_out))
-}
-
-fn stop(args: &[String]) -> Result<(), String> {
-    let (pid, json_out) = one_arg(args)?;
+fn stop(a: &Args) -> Result<(), String> {
+    let (pid, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let host = process(&hosts, &pid)?;
+    let host = process(&hosts, pid)?;
     let response = host.call(&json!({ "cmd": "stop" }))?;
     if json_out {
         // Its pid as `process list` has it, as `prompt cancel` names its session.
@@ -503,10 +488,10 @@ fn agent_name(argv: &Value) -> String {
     Path::new(program).file_name().map_or(program.to_owned(), |f| f.to_string_lossy().into_owned())
 }
 
-fn status(args: &[String]) -> Result<(), String> {
-    let (arg, json_out) = one_arg(args)?;
+fn status(a: &Args) -> Result<(), String> {
+    let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let (host, id) = running_session(&hosts, &arg)?;
+    let (host, id) = running_session(&hosts, arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.session(&id).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
@@ -561,7 +546,7 @@ fn status(args: &[String]) -> Result<(), String> {
     if json_out {
         return print_json(&report);
     }
-    out!("{}", describe_status(&report, &arg));
+    out!("{}", describe_status(&report, arg));
     Ok(())
 }
 
@@ -695,19 +680,10 @@ fn when(ts: &str) -> String {
 
 /// The approvals waiting, in every process that answers (saying which
 /// don't) or in one session's.
-fn pending(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
-    let mut arg = None;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn pending(a: &Args) -> Result<(), String> {
+    let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
-    let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
+    let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
         // Those that answered `discover`: one that didn't is passed over, as
         // process list and session list do (ADR 3.9), not waited for again,
         // and said to be (P3).
@@ -790,22 +766,9 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
 /// `permission allow` and `reject` (`cmd`): the request's option of one
 /// kind, or the one `--option` names; the host picks it, and says why it
 /// can't (ADR 8.1).
-fn answer(args: &[String], cmd: &str) -> Result<(), String> {
-    let mut positional = Vec::new();
-    let mut option = None;
-    let mut always = false;
-    let mut json_out = false;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--always" => always = true,
-            "--option" => option = Some(it.next().ok_or("--option needs an id")?.clone()),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => positional.push(arg.clone()),
-        }
-    }
-    let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
+fn answer(a: &Args, cmd: &str) -> Result<(), String> {
+    let [arg, request_id] = &a.positional[..] else { unreachable!("the table has two") };
+    let (option, always, json_out) = (a.value("--option"), a.has("--always"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let req = json!({
@@ -835,23 +798,11 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 /// falling behind, it catches up from the transcript and goes on; unable to,
 /// it ends with what it missed, an `events-missed` note, and exits 3 (ADR
 /// 69).
-fn watch(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut pid) = (None, None);
-    let mut events = default_events();
-    let mut json_out = false;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--events" => events = events_arg(it.next(), &default_events())?,
-            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn watch(a: &Args) -> Result<ExitCode, String> {
+    let (session, pid, json_out) = (a.positional.first(), a.value("--pid"), a.json);
+    let mut events = events_arg(a, &default_events())?;
     let hosts = discover()?;
-    let (host, only_session) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
+    let (host, only_session) = session_or_pid(&hosts, session.map(String::as_str), pid)?;
     // `exited` (and for a session, `session_closed`) is how watch tells the
     // end from the process cutting the connection; asked for even when not
     // shown.
@@ -904,11 +855,16 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// The value of `--events` (for `event watch`, `event log` and `event
+/// What `--events` asks for (in `event watch`, `event log` and `event
 /// notify`): event names, `default` for the command's own `default` (what it
 /// does without `--events`), `all` for every event.
-fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
-    let list = list.ok_or("--events needs a list")?;
+fn events_arg(a: &Args, default: &[String]) -> Result<Vec<String>, String> {
+    let events = a.value_as("--events", |list| events_in(list, default))?;
+    Ok(events.unwrap_or_else(|| default.to_vec()))
+}
+
+/// The events one `--events` names.
+fn events_in(list: &str, default: &[String]) -> Result<Vec<String>, String> {
     let mut events = Vec::new();
     for name in list.split(',').map(str::trim) {
         let names = match name {

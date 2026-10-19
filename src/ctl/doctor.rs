@@ -49,7 +49,7 @@ use crate::host::check_bridge;
 use crate::{bug, config, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::client::{Host, Probe, gone, probe, read_meta};
-use super::{USAGE, text, when};
+use super::{Args, text, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;
@@ -99,17 +99,8 @@ impl Report {
     }
 }
 
-pub(crate) fn main(args: &[String]) -> Result<(), String> {
-    let (mut fix, mut json_out, mut report) = (false, false, false);
-    for arg in args {
-        match arg.as_str() {
-            "--fix" => fix = true,
-            "--json" => json_out = true,
-            "--report" => report = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(crate) fn main(a: &Args) -> Result<(), String> {
+    let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
         return Err("--fix and --report don't go together".into());
     }

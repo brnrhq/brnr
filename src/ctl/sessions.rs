@@ -20,7 +20,7 @@ use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsRespo
 use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::client::{Host, discover};
-use super::{USAGE, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
+use super::{Args, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -36,31 +36,18 @@ const STATES: [&str; 2] = ["active", "inactive"];
 /// `brnr session list`: brnr's index of sessions, every cwd's, with nothing
 /// started; or, with an agent named, those in one cwd joined with the
 /// agent's own list there.
-pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
-    let (mut include, mut profile, mut cwd, mut json_out) = (STATES.to_vec(), None, None, false);
-    let mut agent = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--include" => include = states(it.next().ok_or("--include needs a list")?)?,
-            "--profile" => profile = Some(it.next().ok_or("--profile needs a name")?.clone()),
-            "--cwd" => cwd = Some(it.next().ok_or("--cwd needs a directory")?.clone()),
-            "--json" => json_out = true,
-            "--" => {
-                agent = it.by_ref().cloned().collect();
-                if agent.is_empty() {
-                    return Err("-- needs an agent".into());
-                }
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
+pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
+    let include = a.value_as("--include", states)?.unwrap_or(STATES.to_vec());
+    let (profile, cwd, json_out) = (a.value("--profile"), a.value("--cwd"), a.json);
+    let agent = a.rest.clone().unwrap_or_default();
+    if a.rest.as_ref().is_some_and(Vec::is_empty) {
+        return Err("-- needs an agent".into());
     }
-    let asked = named_agent(profile.as_deref(), agent)?;
+    let asked = named_agent(profile, agent)?;
     // Here, once there is an agent to ask; every cwd without one, unless
     // --cwd names one.
     let cwd = match cwd {
-        Some(dir) => Some(paths::expand(&dir)),
+        Some(dir) => Some(paths::expand(dir)),
         None if asked.is_some() => Some(env::current_dir().map_err(|e| format!("cwd: {e}"))?),
         None => None,
     };

@@ -878,7 +878,12 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_deletion_is_shown_with_who_deleted`;
   [src/log.rs](../../src/log.rs):
   `adr_0008_a_time_is_read_with_its_offset_and_written_in_utc`,
-  `adr_0008_what_isnt_an_rfc3339_time_isnt_read`.
+  `adr_0008_what_isnt_an_rfc3339_time_isnt_read`;
+  [src/ctl/args.rs](../../src/ctl/args.rs):
+  `adr_0008_a_flags_value_is_never_a_positional`,
+  `adr_0008_every_flag_is_in_its_verbs_usage`,
+  `adr_0008_positionals_and_unknown_options`,
+  `adr_0008_a_prompt_starts_after_the_session`.
 - 8.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,

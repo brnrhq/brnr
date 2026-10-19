@@ -31,27 +31,12 @@ use crate::{lock, log};
 
 use super::client::discover;
 use super::sessions::{Asked, named_agent};
-use super::{USAGE, ownership, print_json};
+use super::{Args, ownership, print_json};
 
-pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut purge, mut profile, mut json_out) = (None, false, None, false);
-    let mut agent = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--purge" => purge = true,
-            "--profile" => profile = Some(it.next().ok_or("--profile needs a name")?.clone()),
-            "--json" => json_out = true,
-            "--" => {
-                agent = it.by_ref().cloned().collect();
-                break;
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let id = session.ok_or(USAGE)?;
+pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
+    let (purge, profile, json_out) = (a.has("--purge"), a.value("--profile"), a.json);
+    let agent = a.rest.clone().unwrap_or_default();
+    let id = a.positional[0].clone();
     // What brnr recorded of it, as a resume has it, if anything; one open in
     // a process, or closing there, is refused (ADR 3.9, ADR 5.5).
     let past = ownership::locate(&discover()?, &id).delete()?;
@@ -60,7 +45,7 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
         let argv = argv.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned);
         Some(argv.collect::<Vec<_>>()).filter(|a| !a.is_empty())
     };
-    let agent = match named_agent(profile.as_deref(), agent)?.or_else(recorded) {
+    let agent = match named_agent(profile, agent)?.or_else(recorded) {
         Some(agent) => agent,
         None if past.is_some() => {
             return Err("no agent recorded for it: give one after -- or with --profile".into());

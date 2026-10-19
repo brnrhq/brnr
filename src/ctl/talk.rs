@@ -40,7 +40,7 @@ use crate::{config, json, paths, render, signals, spawn, sys, transcript};
 use super::client::{Conn, Host, discover, session_in};
 use super::ownership::{self, Resume};
 use super::{
-    START_GRACE, START_TIMEOUT, USAGE, print_json, process, read_stdin, running_session, settings,
+    Args, START_GRACE, START_TIMEOUT, print_json, process, read_stdin, running_session, settings,
     text,
 };
 
@@ -194,10 +194,6 @@ fn deadline(timeout: Option<u64>) -> Option<Instant> {
     timeout.and_then(|s| Instant::now().checked_add(Duration::from_secs(s)))
 }
 
-fn seconds(flag: &str, value: &str) -> Result<u64, String> {
-    value.parse().map_err(|_| format!("{flag}: not a number of seconds: {value}"))
-}
-
 // ---- attachments ---------------------------------------------------------
 
 /// `--file` as a resource link and `--image` as an image block.
@@ -298,61 +294,33 @@ struct StartArgs {
 
 /// `session new`'s flags, or (`resume`) `session resume`'s, which also
 /// takes the session and `--take-over`.
-fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
-    let mut a = StartArgs::default();
-    let mut pairs = Vec::new();
-    let mut by_category: [(&str, Option<String>); 3] =
-        [("mode", None), ("model", None), ("thought-level", None)];
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let flag = arg.strip_prefix("--");
-        if let Some((name, set)) = by_category.iter_mut().find(|(name, _)| Some(*name) == flag) {
-            let value = it.next().ok_or(format!("--{name} needs a value"))?;
-            if let Some(was) = set.replace(value.clone())
-                && was != *value
-            {
-                return Err(format!("--{name} {was} and --{name} {value} disagree"));
-            }
-            continue;
-        }
-        let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
-        match arg.as_str() {
-            "--pid" => a.pid = Some(value("--pid")?),
-            "--profile" => a.profile = Some(value("--profile")?),
-            "--cwd" => a.cwd = Some(value("--cwd")?),
-            "--prompt" => a.prompt = Some(value("--prompt")?),
-            "--file" => a.files.push(value("--file")?),
-            "--image" => a.images.push(value("--image")?),
-            "--option" => pairs.push(value("--option")?),
-            "--take-over" if resume => a.take_over = true,
-            "--take-over" => return Err("--take-over goes with session resume".into()),
-            "--auth" => a.auth = Some(value("--auth")?),
-            "--timeout" => a.timeout = Some(seconds("--timeout", &value("--timeout")?)?),
-            "--stop-when-idle" => {
-                a.stop_when_idle = Some(seconds("--stop-when-idle", &value("--stop-when-idle")?)?);
-            }
-            "--response-timeout" => {
-                let secs = value("--response-timeout")?;
-                a.response_timeout = Some(seconds("--response-timeout", &secs)?);
-            }
-            "--strict" => a.strict = true,
-            "--wait" => a.wait = true,
-            "--foreground" => a.foreground = true,
-            "--quiet" => a.quiet = true,
-            "--json" => a.json = true,
-            "--" => {
-                a.agent = it.by_ref().cloned().collect();
-                a.agent_given = true;
-                break;
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if resume && a.resume.is_none() => a.resume = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
+fn parse_start(args: &Args, resume: bool) -> Result<StartArgs, String> {
+    if args.has("--take-over") && !resume {
+        return Err("--take-over goes with session resume".into());
     }
-    if resume && a.resume.is_none() {
-        return Err(USAGE.to_owned());
-    }
+    let value = |flag| args.value(flag).map(str::to_owned);
+    let mut a = StartArgs {
+        profile: value("--profile"),
+        cwd: value("--cwd"),
+        prompt: value("--prompt"),
+        files: args.values("--file"),
+        images: args.values("--image"),
+        resume: args.positional.first().cloned(),
+        pid: value("--pid"),
+        take_over: args.has("--take-over"),
+        stop_when_idle: args.number("--stop-when-idle"),
+        response_timeout: args.number("--response-timeout"),
+        auth: value("--auth"),
+        strict: args.has("--strict"),
+        wait: args.has("--wait"),
+        timeout: args.number("--timeout"),
+        foreground: args.has("--foreground"),
+        quiet: args.has("--quiet"),
+        json: args.json,
+        agent: args.rest.clone().unwrap_or_default(),
+        agent_given: args.rest.is_some(),
+        ..StartArgs::default()
+    };
     // The process is running: what starts one has nothing to do (P7).
     if let Some(pid) = &a.pid {
         let process = [
@@ -372,8 +340,9 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
             ));
         }
     }
-    let [(_, mode), (_, model), (_, thought_level)] = by_category;
-    let options = settings::options("--option", &pairs)?;
+    let (mode, model, thought_level) =
+        (value("--mode"), value("--model"), value("--thought-level"));
+    let options = settings::options("--option", &args.values("--option"))?;
     a.settings = request::Settings { mode, model, thought_level, options };
     if a.prompt.as_deref() == Some("-") {
         a.prompt = Some(read_stdin()?);
@@ -398,12 +367,12 @@ fn parse_start(args: &[String], resume: bool) -> Result<StartArgs, String> {
 }
 
 /// `brnr session new`: a process, and the new session it opens.
-pub(super) fn new(args: &[String]) -> Result<ExitCode, String> {
+pub(super) fn new(args: &Args) -> Result<ExitCode, String> {
     start(parse_start(args, false)?)
 }
 
 /// `brnr session resume`: a process, and the session it resumes (ADR 3.11).
-pub(super) fn resume(args: &[String]) -> Result<ExitCode, String> {
+pub(super) fn resume(args: &Args) -> Result<ExitCode, String> {
     start(parse_start(args, true)?)
 }
 
@@ -747,61 +716,20 @@ fn exit_status(mut child: Child) -> ExitCode {
 
 // ---- send ----------------------------------------------------------------
 
-/// `prompt send`'s options that take a value.
-const SEND_VALUES: [&str; 3] = ["--timeout", "--file", "--image"];
-
-/// Where `prompt send`'s prompt starts in `args`, at its first word after
-/// the session or at `--`, and whether its options before it, `-h` and
-/// `--help` among them, ask for its usage. From the prompt on, every word is
-/// the prompt's; an option's value is the option's.
-pub(super) fn prompt_start(args: &[String]) -> (usize, bool) {
-    let (mut session, mut help) = (false, false);
-    let mut i = 0;
-    while let Some(arg) = args.get(i) {
-        match arg.as_str() {
-            "--" => break,
-            "-h" | "--help" => help = true,
-            flag if SEND_VALUES.contains(&flag) => i += 1,
-            flag if flag.starts_with("--") => {}
-            _ if !session => session = true,
-            _ => break,
-        }
-        i += 1;
-    }
-    (i.min(args.len()), help)
-}
-
-pub(super) fn send(args: &[String]) -> Result<ExitCode, String> {
-    let mut arg = None;
+pub(super) fn send(a: &Args) -> Result<ExitCode, String> {
+    let arg = a.positional[0].clone();
     let mut mode = None;
-    let (mut replace, mut wait, mut json_out) = (false, false, false);
-    let mut timeout = None;
-    let mut files = Vec::new();
-    let mut images = Vec::new();
-    let (options, prompt) = args.split_at(prompt_start(args).0);
-    let words = prompt.strip_prefix(&["--".to_owned()][..]).unwrap_or(prompt);
-    let mut it = options.iter();
-    while let Some(a) = it.next() {
-        let set_mode = |mode: &mut Option<&str>, m| match mode.replace(m) {
-            Some(prev) if prev != m => Err(format!("--{prev} and --{m} don't go together")),
-            _ => Ok(()),
-        };
-        let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
-        match a.as_str() {
-            "--steer" => set_mode(&mut mode, "steer")?,
-            "--interrupt" => set_mode(&mut mode, "interrupt")?,
-            "--context" => set_mode(&mut mode, "context")?,
-            "--replace" => replace = true,
-            "--wait" => wait = true,
-            "--json" => json_out = true,
-            "--timeout" => timeout = Some(seconds("--timeout", &value("--timeout")?)?),
-            "--file" => files.push(value("--file")?),
-            "--image" => images.push(value("--image")?),
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => arg = Some(a.clone()),
+    let modes = a.given().filter_map(|f| f.strip_prefix("--"));
+    for m in modes.filter(|m| ["steer", "interrupt", "context"].contains(m)) {
+        match mode.replace(m) {
+            Some(prev) if prev != m => return Err(format!("--{prev} and --{m} don't go together")),
+            _ => {}
         }
     }
-    let arg = arg.ok_or(USAGE)?;
+    let (replace, wait, json_out) = (a.has("--replace"), a.has("--wait"), a.json);
+    let timeout = a.number("--timeout");
+    let (files, images) = (a.values("--file"), a.values("--image"));
+    let words = a.rest.as_deref().unwrap_or_default();
     if timeout.is_some() && !wait {
         return Err("--timeout goes with --wait".into());
     }
@@ -871,27 +799,13 @@ fn describe_sent(response: &Value) -> String {
 
 // ---- wait ----------------------------------------------------------------
 
-pub(super) fn wait(args: &[String]) -> Result<ExitCode, String> {
-    let mut arg = None;
-    let mut what = "idle".to_owned();
-    let mut timeout = None;
-    let mut json_out = false;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        let mut value = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
-        match a.as_str() {
-            "--for" => what = value("--for")?,
-            "--timeout" => timeout = Some(seconds("--timeout", &value("--timeout")?)?),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(super) fn wait(a: &Args) -> Result<ExitCode, String> {
+    let (arg, json_out) = (a.positional[0].clone(), a.json);
+    let what = a.value("--for").unwrap_or("idle").to_owned();
+    let timeout = a.number("--timeout");
     if !matches!(what.as_str(), "idle" | "turn" | "permission" | "elicitation" | "exit") {
         return Err(format!("--for idle|turn|permission|elicitation|exit, not {what}"));
     }
-    let arg = arg.ok_or(USAGE)?;
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let mut conn = Conn::open(host)?;
@@ -1078,19 +992,8 @@ fn describe_elicitation(e: &Value) -> String {
 
 // ---- cancel and queue ----------------------------------------------------
 
-pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
-    let mut arg = None;
-    let (mut keep_held, mut json_out) = (false, false);
-    for a in args {
-        match a.as_str() {
-            "--keep-held" => keep_held = true,
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let arg = arg.ok_or(USAGE)?;
+pub(super) fn cancel(a: &Args) -> Result<ExitCode, String> {
+    let (arg, keep_held, json_out) = (a.positional[0].clone(), a.has("--keep-held"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let req = json!({ "cmd": "cancel", "session": session, "keep_held": keep_held });
@@ -1107,17 +1010,14 @@ pub(super) fn cancel(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// `queue list`: the held messages and context.
-pub(super) fn queue_list(args: &[String]) -> Result<ExitCode, String> {
-    let (positional, json_out) = queue_args(args, &[])?;
-    let [arg] = positional[..] else { return Err(USAGE.to_owned()) };
-    queue(arg, json!({ "cmd": "queue" }), json_out)
+pub(super) fn queue_list(a: &Args) -> Result<ExitCode, String> {
+    queue(&a.positional[0], json!({ "cmd": "queue" }), a.json)
 }
 
 /// `queue show <session> <message>`: one held message in full, its text,
 /// whether it interrupts, and its attachments.
-pub(super) fn queue_show(args: &[String]) -> Result<ExitCode, String> {
-    let (positional, json_out) = queue_args(args, &[])?;
-    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
+pub(super) fn queue_show(a: &Args) -> Result<ExitCode, String> {
+    let (arg, message, json_out) = (&a.positional[0], &a.positional[1], a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let response = host.call(&json!({ "cmd": "queue", "session": session, "show": message }))?;
@@ -1148,38 +1048,18 @@ pub(super) fn queue_show(args: &[String]) -> Result<ExitCode, String> {
 
 /// `queue drop <session> <message>`: one held message dropped, and what is
 /// still held.
-pub(super) fn queue_drop(args: &[String]) -> Result<ExitCode, String> {
-    let (positional, json_out) = queue_args(args, &[])?;
-    let [arg, message] = positional[..] else { return Err(USAGE.to_owned()) };
-    queue(arg, json!({ "cmd": "queue", "drop": message }), json_out)
+pub(super) fn queue_drop(a: &Args) -> Result<ExitCode, String> {
+    let (arg, message) = (&a.positional[0], &a.positional[1]);
+    queue(arg, json!({ "cmd": "queue", "drop": message }), a.json)
 }
 
 /// `queue clear <session> [--messages] [--context]`: the held messages, the
 /// held context, or with neither flag both, dropped; and what is left.
-pub(super) fn queue_clear(args: &[String]) -> Result<ExitCode, String> {
-    let (positional, json_out) = queue_args(args, &["--messages", "--context"])?;
-    let [arg] = positional[..] else { return Err(USAGE.to_owned()) };
-    let has = |flag: &str| args.iter().any(|a| a == flag);
-    let (messages, context) = (has("--messages"), has("--context"));
+pub(super) fn queue_clear(a: &Args) -> Result<ExitCode, String> {
+    let (messages, context) = (a.has("--messages"), a.has("--context"));
     let neither = !messages && !context;
     let req = json!({ "cmd": "queue", "clear": messages || neither, "clear_context": context || neither });
-    queue(arg, req, json_out)
-}
-
-/// A queue command's positional arguments and `--json`, refusing any other
-/// option than `flags`.
-fn queue_args<'a>(args: &'a [String], flags: &[&str]) -> Result<(Vec<&'a str>, bool), String> {
-    let mut positional = Vec::new();
-    let mut json_out = false;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flags.contains(&flag) => {}
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => positional.push(a.as_str()),
-        }
-    }
-    Ok((positional, json_out))
+    queue(&a.positional[0], req, a.json)
 }
 
 /// Sends `req`, the socket's `queue`, for session `arg`, and prints what it
