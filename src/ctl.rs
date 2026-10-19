@@ -19,15 +19,15 @@
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
 //! act on a session need it running and say so when it isn't. Which process
-//! serves a session is what the session's lock says (ADR 3.9, see lock.rs),
-//! whether that process answers or not.
+//! serves a session is what the session's lock says (ADR 3.9), whether that
+//! process answers or not; ownership.rs says where a session is, and what a
+//! command may do with it there.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `event log`, `event watch` and `session new --foreground`).
 
 use std::collections::HashMap;
 use std::env;
-use std::fmt::Display;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -60,6 +60,7 @@ mod doctor;
 mod elicitation;
 mod history;
 mod notify;
+mod ownership;
 mod sessions;
 mod settings;
 mod show;
@@ -67,6 +68,7 @@ mod skill;
 mod talk;
 
 use client::{Conn, Host, discover};
+use ownership::running_session;
 
 /// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
@@ -311,76 +313,6 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
 }
 
 // ---- naming sessions and processes ---------------------------------------
-
-/// What a `<session>` argument names.
-enum Found<'a> {
-    /// A running session: its process and id.
-    Running(&'a Host, String),
-    /// One that has ended, as `inactive_sessions` has it.
-    Inactive(Value),
-}
-
-/// What is said of `session`, closed in process `pid`, whose lock it holds
-/// until its records are written (ADR 5.5).
-fn closing(session: &str, pid: impl Display) -> String {
-    format!(
-        "{session} is closing in process {pid}; it's free once its records are written (2 s at most)"
-    )
-}
-
-/// "`session` is running in process `pid`", then `hint`; for a process
-/// started with another runtime directory, which the commands run here
-/// can't reach, that directory instead, and that `BRNR_DIR` set to it
-/// reaches the process (ADR 3.9).
-fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
-    match lock::holder_dir(session) {
-        Some(dir) => format!(
-            "{session} is running in process {pid} with runtime directory {} ({} reaches it)",
-            dir.display(),
-            paths::brnr_dir_is(&dir)
-        ),
-        None => format!("{session} is running in process {pid}{hint}"),
-    }
-}
-
-/// The process holding `session`'s lock as it closes it, if one is: see
-/// `closing`.
-fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
-    let pid = lock::holder(session)?.to_string();
-    hosts.iter().find(|h| h.id() == pid && h.closing(session))
-}
-
-/// The session with id `arg`, running or not: in the process holding its
-/// lock, or one that serves it shared, without the lock (ADR 3.9).
-fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
-    let serves = |host: &Host| host.session(arg).is_some();
-    if let Some(pid) = lock::holder(arg) {
-        return match hosts.iter().find(|h| h.id() == pid.to_string()) {
-            Some(host) if serves(host) => Ok(Found::Running(host, arg.to_owned())),
-            Some(host) if host.status.is_none() => {
-                Err(format!("{arg} is running in process {pid}, which is not answering"))
-            }
-            Some(host) if host.closing(arg) => Err(closing(arg, pid)),
-            Some(_) => Err(format!("{arg} is opening in process {pid}")),
-            None => Err(running_in(arg, pid, ", which brnr doesn't list")),
-        };
-    }
-    if let Some(host) = hosts.iter().find(|h| serves(h)) {
-        return Ok(Found::Running(host, arg.to_owned()));
-    }
-    if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
-        return Ok(Found::Inactive(p));
-    }
-    Err(format!("no session {arg} (see brnr session list)"))
-}
-
-/// The running session `arg` names, for what needs one running.
-fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String), String> {
-    match find_session(hosts, arg)? {
-        Found::Running(host, id) => Ok((host, id)),
-        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr session resume {arg}")),
-    }
-}
 
 /// The process with pid `pid`.
 fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {

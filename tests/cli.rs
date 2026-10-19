@@ -2318,14 +2318,18 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     fs::create_dir_all(&elsewhere).unwrap();
     let in_dir = spawn(&["session", "list", "--json", "--cwd", &dir]);
     let there = spawn(&["session", "list", "--json", "--cwd", &elsewhere.to_string_lossy()]);
-    let [resume, take_over, list, ps, sessions, table, in_dir, there] =
-        [resume, take_over, list, ps, sessions, table, in_dir, there]
+    let delete = spawn(&["session", "delete", "sess-1", "--", AGENT]);
+    let [resume, take_over, list, ps, sessions, table, in_dir, there, delete] =
+        [resume, take_over, list, ps, sessions, table, in_dir, there, delete]
             .map(|c| c.wait_with_output().unwrap());
     kill(pid, libc::SIGCONT);
-    let refused = format!("sess-1 is running in process {pid}");
-    assert!(stderr(&resume).contains(&refused), "{}", stderr(&resume));
-    let refused = format!("sess-1 is running in process {pid}, which is not answering");
-    assert!(stderr(&take_over).contains(&refused), "{}", stderr(&take_over));
+    // Each command says where the session is in the same words, and none
+    // offers what can't work: a process that doesn't answer can't be asked
+    // to close it (ADR 3.9).
+    let refused = format!("brnr: sess-1 is running in process {pid}, which is not answering\n");
+    for out in [&resume, &take_over, &delete] {
+        assert_eq!((code(out), stderr(out)), (1, refused.clone()));
+    }
     let list: Value = serde_json::from_slice(&list.stdout).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
@@ -5112,8 +5116,9 @@ fn adr_0008_delete_refuses_an_open_session() {
     for args in [&["session", "delete", "sess-1"][..], &["session", "delete", "sess-1", "--purge"]]
     {
         let err = env.fails(args);
-        let want =
-            format!("sess-1 is open in process {pid}: close it first (brnr session close sess-1)");
+        let want = format!(
+            "sess-1 is running in process {pid}: close it first (brnr session close sess-1)"
+        );
         assert!(err.contains(&want), "{err}");
     }
     assert!(env.calls_of("session/delete").is_empty());

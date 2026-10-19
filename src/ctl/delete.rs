@@ -31,7 +31,7 @@ use crate::{lock, log};
 
 use super::client::discover;
 use super::sessions::{Asked, named_agent};
-use super::{Found, USAGE, closing, closing_in, find_session, print_json, running_in};
+use super::{USAGE, ownership, print_json};
 
 pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     let (mut session, mut purge, mut profile, mut json_out) = (None, false, None, false);
@@ -52,26 +52,9 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     let id = session.ok_or(USAGE)?;
-    // One open in a process started with another runtime directory is
-    // closed from there (ADR 3.9).
-    let open = |pid: &str| match lock::holder_dir(&id) {
-        Some(_) => running_in(&id, pid, ""),
-        None => format!("{id} is open in process {pid}: close it first (brnr session close {id})"),
-    };
-    let hosts = discover()?;
-    if let Some(pid) = lock::holder(&id) {
-        // Closing there: free once its records are written (ADR 5.5).
-        return Err(match closing_in(&hosts, &id) {
-            Some(_) => closing(&id, pid),
-            None => open(&pid.to_string()),
-        });
-    }
-    // What brnr recorded of it, as a resume has it, if anything.
-    let past = match find_session(&hosts, &id) {
-        Ok(Found::Running(host, _)) => return Err(open(host.id())),
-        Ok(Found::Inactive(past)) => Some(past),
-        Err(_) => None,
-    };
+    // What brnr recorded of it, as a resume has it, if anything; one open in
+    // a process, or closing there, is refused (ADR 3.9, ADR 5.5).
+    let past = ownership::locate(&discover()?, &id).delete()?;
     let recorded = || {
         let argv = past.as_ref().and_then(|p| p["agent"].as_array());
         let argv = argv.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned);
@@ -90,7 +73,7 @@ pub(super) fn delete(args: &[String]) -> Result<ExitCode, String> {
     };
     // Taken last: a session that is open is refused above, naming its process.
     let held = lock::take(&id).map_err(|e| match e {
-        lock::Error::Held(pid) => open(&pid.to_string()),
+        lock::Error::Held(pid) => ownership::taken(&id, pid),
         lock::Error::Io(why) => format!("{id} can't be locked: {why}"),
     })?;
     let (mut asked, caps) = Asked::start(&agent)?;

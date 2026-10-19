@@ -55,6 +55,13 @@ brnr's own conventions:
   (ADR 2.7, #272).
 - The Claude adapter is built from claude-agent-acp 0.90.0
   (`brnr-claude-adapter`) (ADR 11.3).
+- A command refused for where its session is says it in the same words,
+  whichever command it is: `session delete` of a session open in a process
+  says `sess-1 is running in process 4466: close it first (…)`, and
+  `session resume` and `session delete` of one whose process doesn't
+  answer, is opening it or isn't listed say which, without offering
+  `--take-over` or closing it first, which can't work there (ADR 3.9,
+  #281).
 
 ### Fixed
 

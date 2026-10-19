@@ -35,12 +35,13 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, json, lock, paths, render, signals, spawn, sys, transcript};
+use crate::{config, json, paths, render, signals, spawn, sys, transcript};
 
 use super::client::{Conn, Host, discover, session_in};
+use super::ownership::{self, Resume};
 use super::{
-    Found, START_GRACE, START_TIMEOUT, USAGE, closing, closing_in, find_session, print_json,
-    process, read_stdin, running_in, running_session, settings, text,
+    START_GRACE, START_TIMEOUT, USAGE, print_json, process, read_stdin, running_session, settings,
+    text,
 };
 
 /// Images bigger than this aren't sent: the whole prompt is one JSON line.
@@ -429,41 +430,26 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let mut owner = None;
     let mut transcript = false;
     if let Some(wanted) = a.resume.clone() {
-        // Closing in its process: free once its records are written (ADR 5.5).
-        if let Some(host) = closing_in(&hosts, &wanted) {
-            return Err(closing(&wanted, host.id()));
-        }
         // A session another process holds is refused, naming the process,
         // unless --take-over. The process started here takes the lock itself,
-        // and is refused the same way if it has been taken meanwhile.
-        let found = match lock::holder(&wanted) {
-            Some(pid) if !a.take_over => {
-                let hint = " (--take-over closes it there and resumes it here)";
-                return Err(running_in(&wanted, pid, hint));
-            }
-            Some(pid) => {
-                let (host, running) = settings::held(&hosts, &wanted, pid)?;
+        // and is refused the same way if it has been taken meanwhile. A
+        // session brnr has no transcript of (one only the agent knows) goes to
+        // the agent as given, in --cwd or here, with -- <agent> or the
+        // profile's.
+        let found = match ownership::locate(&hosts, &wanted).resume(None, a.take_over)? {
+            Resume::TakeOver(host, running) => {
                 owner = Some((host, wanted.clone()));
                 transcript = true;
                 Some(running)
             }
-            // A session brnr has no transcript of (one only the agent knows)
-            // goes to the agent as given, in --cwd or here, with -- <agent>
-            // or the profile's.
-            None => match find_session(&hosts, &wanted) {
-                // Served without its lock, shared by an editor's process.
-                Ok(Found::Running(host, _)) => {
-                    return Err(format!("{wanted} is running in process {}", host.id()));
-                }
-                // One holding only openings, which a load that failed
-                // leaves, isn't a transcript of it (ADR 5.6).
-                Ok(Found::Inactive(past)) => {
-                    let file = past["log"].as_str().map(Path::new);
-                    transcript = file.is_some_and(transcript::has_records);
-                    Some(past)
-                }
-                Err(_) => None,
-            },
+            // One holding only openings, which a load that failed leaves,
+            // isn't a transcript of it (ADR 5.6).
+            Resume::Inactive(past) => {
+                let file = past["log"].as_str().map(Path::new);
+                transcript = file.is_some_and(transcript::has_records);
+                Some(past)
+            }
+            Resume::Unknown => None,
         };
         if let Some(past) = found {
             a.resume = past["session_id"].as_str().map(str::to_owned);
@@ -641,32 +627,15 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     let mut owner = None;
     if let Some(wanted) = &a.resume {
         req = json!({ "cmd": "resume", "session": wanted });
-        if let Some(host) = closing_in(&hosts, wanted) {
-            return Err(closing(wanted, host.id()));
-        }
-        let here = format!("{wanted} is already open in process {pid}");
-        let found = match lock::holder(wanted) {
-            Some(holder) if holder.to_string() == pid => return Err(here),
-            Some(holder) if !a.take_over => {
-                let hint =
-                    format!(" (--take-over closes it there and resumes it in process {pid})");
-                return Err(running_in(wanted, holder, &hint));
-            }
-            Some(holder) => {
-                let (owner_host, running) = settings::held(&hosts, wanted, holder)?;
+        // A session brnr has no transcript of goes to the agent as given, in
+        // --cwd or here.
+        let found = match ownership::locate(&hosts, wanted).resume(Some(host), a.take_over)? {
+            Resume::TakeOver(owner_host, running) => {
                 owner = Some(owner_host);
                 Some(running)
             }
-            // A session brnr has no transcript of goes to the agent as
-            // given, in --cwd or here.
-            None => match find_session(&hosts, wanted) {
-                Ok(Found::Running(h, _)) if h.id() == pid => return Err(here),
-                Ok(Found::Running(h, _)) => {
-                    return Err(format!("{wanted} is running in process {}", h.id()));
-                }
-                Ok(Found::Inactive(past)) => Some(past),
-                Err(_) => None,
-            },
+            Resume::Inactive(past) => Some(past),
+            Resume::Unknown => None,
         };
         if cwd.is_none() {
             cwd = found.and_then(|past| past["cwd"].as_str().map(str::to_owned));

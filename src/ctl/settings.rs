@@ -7,9 +7,7 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 
 use super::client::Host;
-use super::{
-    USAGE, closing, discover, one_arg, print_json, print_table, running_in, running_session, text,
-};
+use super::{USAGE, discover, one_arg, print_json, print_table, running_session, text};
 
 /// `<session>`, the other arguments, and whether `--json` was given.
 fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> {
@@ -307,36 +305,6 @@ pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
     }
     outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
-}
-
-/// `session resume --take-over`: process `pid`, which holds `session`'s
-/// lock, and the session as its transcript has it once closed there (its
-/// cwd, the process's agent and profile), for the process that resumes it.
-pub(super) fn held<'a>(
-    hosts: &'a [Host],
-    session: &str,
-    pid: u32,
-) -> Result<(&'a Host, Value), String> {
-    let running = format!("{session} is running in process {pid}");
-    let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
-        return Err(running_in(session, pid, ", which brnr doesn't list"));
-    };
-    let Some(status) = &host.status else {
-        return Err(format!("{running}, which is not answering"));
-    };
-    let Some(s) = host.session(session) else {
-        if host.closing(session) {
-            return Err(closing(session, pid));
-        }
-        return Err(format!("{session} is opening in process {pid}"));
-    };
-    let past = json!({
-        "session_id": session,
-        "cwd": s["cwd"],
-        "agent": status["agent"],
-        "profile": status["profile"],
-    });
-    Ok((host, past))
 }
 
 /// `session resume --take-over`: `owner`, which holds `session`'s lock, closes
