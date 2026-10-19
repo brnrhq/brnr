@@ -361,6 +361,31 @@ fn adr_0009_a_symlinked_transcript_is_never_followed() {
     assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "wrote through it");
 }
 
+/// What reads transcripts reads them only where the logger could have
+/// written them (ADR 9.3): a session whose events file is a symlink, or in
+/// a symlinked project folder, isn't listed or logged, as the link could
+/// point at any file.
+#[test]
+fn adr_0009_a_symlinked_transcript_is_never_read() {
+    let env = Env::new("s-readlink");
+    let project = served_once(&env);
+    let text = fs::read_to_string(project.join("old-1.jsonl")).unwrap();
+    let outside = env.dir.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("linked-1.jsonl"), text.replace("old-1", "linked-1")).unwrap();
+    symlink(&outside, env.dir.join("home/projects/linked")).unwrap();
+    fs::write(outside.join("target"), text.replace("old-1", "link-2")).unwrap();
+    symlink(outside.join("target"), project.join("link-2.jsonl")).unwrap();
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let ids: Vec<&str> =
+        list.as_array().unwrap().iter().filter_map(|r| r["session"].as_str()).collect();
+    assert_eq!(ids, ["old-1"], "{list}");
+    for id in ["linked-1", "link-2"] {
+        let err = env.fails(&["event", "log", id]);
+        assert!(err.contains(&format!("no session {id} ")), "{err}");
+    }
+}
+
 // ---- the agent's text (P8) ---------------------------------------------
 
 /// A session id is the agent's text: as a file name it can't leave the

@@ -107,7 +107,9 @@ Reading:
   partway through a line, starts its first record on a line of its own.
   The line cut short stays as it was.
 - Nothing that reads a transcript writes to it: brnr never repairs,
-  truncates or rewrites one (P3).
+  truncates or rewrites one (P3). Nor does it read one where the logger
+  couldn't have written it: through a symlink, in a symlinked project
+  folder, or what isn't a regular file (ADR 9.3).
 
 **Why.** The raw ACP needs the host's interpretation to read as a history
 (agent messages assembled, permission requests paired with their answers,

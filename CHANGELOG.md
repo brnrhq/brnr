@@ -116,6 +116,11 @@ brnr's own conventions:
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is
   listed as last active then (ADR 2.5, ADR 5.1).
+- `session list`, `event log`, `session resume`, catching up and `doctor`
+  no longer read a transcript through a symlink, nor in a symlinked
+  project folder, which they listed and read as the user's sessions though
+  brnr never writes there; `session delete` already left them alone. The
+  transcripts brnr writes are where they were (ADR 9.3).
 
 ## [0.9.0] - 2026-10-16
 
