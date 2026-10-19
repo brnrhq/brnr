@@ -65,6 +65,9 @@ brnr's own conventions:
 
 ### Fixed
 
+- A flag's value is never taken as a request for help: `brnr session new
+  --prompt -h` sends `-h` as the prompt, where it printed the usage, as
+  `prompt send` already did (ADR 8.1).
 - A watcher cut off while its process stops reads what it missed from the
   transcript, where it could fail with `the process closed the connection`:
   a stopping process hangs up on the question whether it cut the watcher
