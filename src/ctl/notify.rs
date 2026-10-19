@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 use libc::c_int;
 use serde_json::Value;
 
-use crate::{host, render, signals, sys};
+use crate::{host, json, render, signals, sys};
 
 use super::catch_up::MISSED;
 use super::talk::Conn;
@@ -121,7 +121,7 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
         Events::open(stdin, session.as_deref(), pid.as_deref(), &wanted)?;
     // Looked at while a command runs, until the process hangs up.
     let mut hangup = source.socket().0;
-    let (tx, rx) = mpsc::channel();
+    let (tx, mut rx) = mpsc::channel();
     let (ask, asks) = mpsc::channel();
     let t = tx.clone();
     thread::spawn(move || read_events(source, asks, t));
@@ -133,11 +133,11 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
     // why there was no more.
     let mut ahead: VecDeque<Value> = VecDeque::new();
     let mut end: Option<String> = None;
-    loop {
+    let ended = loop {
         let e = if let Some(e) = ahead.pop_front() {
             e
         } else if let Some(why) = end.take() {
-            return Err(cut_off(&why, None));
+            break Err(cut_off(&why, None));
         } else {
             let _ = ask.send(Ask::Next);
             match next(&rx) {
@@ -148,85 +148,103 @@ pub(super) fn notify(args: &[String]) -> Result<ExitCode, String> {
                     }
                     e
                 }
-                Err(Stop::Ended(why)) => return Err(cut_off(&why, None)),
+                Err(Stop::Ended(why)) => break Err(cut_off(&why, None)),
                 Err(Stop::Missed(note)) => {
                     let text = render::event(&note, &options).unwrap_or_default();
                     errln!("brnr: {text}; no more notifications");
-                    return Ok(ExitCode::from(MISSED));
+                    break Ok(ExitCode::from(MISSED));
                 }
             }
         };
-        let name = e["event"].as_str().unwrap_or_default().to_owned();
-        let session = e["session"].as_str().unwrap_or_default().to_owned();
-        if only.as_deref().is_some_and(|s| !session.is_empty() && s != session) {
-            continue;
-        }
-        match name.as_str() {
-            "agent_message" => {
-                last_message
-                    .insert(session.clone(), e["text"].as_str().unwrap_or_default().to_owned());
+        // Run for, and let go of, on a stack that takes it (ADR 26). How
+        // notify ends, if it does here.
+        let ended = json::holding(e, |e| -> Option<Result<ExitCode, String>> {
+            // Mutably: this may run on a thread of its own, and a `Receiver`
+            // isn't `Sync`.
+            let rx = &mut rx;
+            let name = e["event"].as_str().unwrap_or_default().to_owned();
+            let session = e["session"].as_str().unwrap_or_default().to_owned();
+            if only.as_deref().is_some_and(|s| !session.is_empty() && s != session) {
+                return None;
             }
-            "session_changed" if e["what"] == "title" => {
-                titles.insert(session.clone(), e["value"].as_str().unwrap_or_default().to_owned());
+            match name.as_str() {
+                "agent_message" => {
+                    last_message
+                        .insert(session.clone(), e["text"].as_str().unwrap_or_default().to_owned());
+                }
+                "session_changed" if e["what"] == "title" => {
+                    let title = e["value"].as_str().unwrap_or_default().to_owned();
+                    titles.insert(session.clone(), title);
+                }
+                _ => {}
             }
-            _ => {}
-        }
-        if events.contains(&name) {
-            let text = render::event(&e, &options);
-            let title = titles.get(&session).cloned().unwrap_or_else(|| session.clone());
-            let message = last_message.get(&session).cloned().unwrap_or_default();
-            let vars = [
-                ("BRNR_EVENT", name.clone()),
-                ("BRNR_TEXT", env_text(&text.unwrap_or_default())),
-                ("BRNR_TITLE", env_text(&title)),
-                ("BRNR_SESSION_ID", session.clone()),
-                ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
-                ("BRNR_MESSAGE", env_text(&message)),
-                ("BRNR_PID", process.clone()),
-            ];
-            let mut running = Running::start(&command, &e, &vars, &tx);
-            // Asked for the rest, once the process hung up; not got it yet.
-            let mut draining = false;
-            while running.is_some() || draining {
-                match rx.recv_timeout(HANGUP_CHECK) {
-                    Ok(Msg::Done(pid)) if running.as_ref().is_some_and(|r| r.pid() == pid) => {
-                        running.take().unwrap().reap();
-                    }
-                    Ok(Msg::Signal(sig)) => {
-                        let stopped = running.take().map(|r| r.stop(&rx));
-                        return Err(cut_off(&render::signal(sig.into()), stopped.as_deref()));
-                    }
-                    // What the process sent before it hung up says whether
-                    // that was the end; else the process says whether it
-                    // cut notify off, which catches up once the command is
-                    // done (ADR 69).
-                    Ok(Msg::Rest(rest, why, cut)) => {
-                        draining = false;
-                        let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
-                        if !end_too && !cut {
-                            let stopped = running.take().map(|r| r.stop(&rx));
-                            return Err(cut_off(&why, stopped.as_deref()));
+            if events.contains(&name) {
+                let text = render::event(&e, &options);
+                let title = titles.get(&session).cloned().unwrap_or_else(|| session.clone());
+                let message = last_message.get(&session).cloned().unwrap_or_default();
+                let vars = [
+                    ("BRNR_EVENT", name.clone()),
+                    ("BRNR_TEXT", env_text(&text.unwrap_or_default())),
+                    ("BRNR_TITLE", env_text(&title)),
+                    ("BRNR_SESSION_ID", session.clone()),
+                    ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
+                    ("BRNR_MESSAGE", env_text(&message)),
+                    ("BRNR_PID", process.clone()),
+                ];
+                let mut running = Running::start(&command, &e, &vars, &tx);
+                // Asked for the rest, once the process hung up; not got it yet.
+                let mut draining = false;
+                while running.is_some() || draining {
+                    match rx.recv_timeout(HANGUP_CHECK) {
+                        Ok(Msg::Done(pid)) if running.as_ref().is_some_and(|r| r.pid() == pid) => {
+                            running.take().unwrap().reap();
                         }
-                        ahead.extend(rest);
-                        if end_too {
-                            end = Some(why);
+                        Ok(Msg::Signal(sig)) => {
+                            let stopped = running.take().map(|r| r.stop(rx));
+                            return Some(Err(cut_off(
+                                &render::signal(sig.into()),
+                                stopped.as_deref(),
+                            )));
                         }
+                        // What the process sent before it hung up says whether
+                        // that was the end; else the process says whether it
+                        // cut notify off, which catches up once the command is
+                        // done (ADR 69).
+                        Ok(Msg::Rest(rest, why, cut)) => {
+                            draining = false;
+                            let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
+                            if !end_too && !cut {
+                                json::free(Value::Array(rest));
+                                let stopped = running.take().map(|r| r.stop(rx));
+                                return Some(Err(cut_off(&why, stopped.as_deref())));
+                            }
+                            ahead.extend(rest);
+                            if end_too {
+                                end = Some(why);
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout)
+                            if running.is_some() && hangup.as_ref().is_some_and(hung_up) =>
+                        {
+                            hangup = None;
+                            draining = true;
+                            let _ = ask.send(Ask::Rest);
+                        }
+                        _ => {}
                     }
-                    Err(RecvTimeoutError::Timeout)
-                        if running.is_some() && hangup.as_ref().is_some_and(hung_up) =>
-                    {
-                        hangup = None;
-                        draining = true;
-                        let _ = ask.send(Ask::Rest);
-                    }
-                    _ => {}
                 }
             }
+            ends(&e, only.as_deref()).then_some(Ok(ExitCode::SUCCESS))
+        });
+        match ended {
+            Ok(None) => {}
+            Ok(Some(ended)) => break ended,
+            Err(why) => break Err(why),
         }
-        if ends(&e, only.as_deref()) {
-            return Ok(ExitCode::SUCCESS);
-        }
-    }
+    };
+    // What it read ahead may be deep too.
+    json::free(Value::Array(ahead.into()));
+    ended
 }
 
 /// Whether `e` is the last event notify waits for: `exited`, or with `only`
@@ -282,7 +300,10 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
     for ask in asks {
         if matches!(ask, Ask::Rest) {
             let (rest, why, cut) = source.rest();
-            let _ = tx.send(Msg::Rest(rest, why, cut));
+            // Not sent, notify has ended: let go of here.
+            if let Err(mpsc::SendError(Msg::Rest(rest, ..))) = tx.send(Msg::Rest(rest, why, cut)) {
+                json::free(Value::Array(rest));
+            }
             if cut {
                 continue;
             }
@@ -294,7 +315,10 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
                     let (socket, made) = source.socket();
                     let socket = socket.filter(|_| made != told);
                     told = made;
-                    let _ = tx.send(Msg::Event(e, socket));
+                    // Not sent, notify has ended: let go of here.
+                    if let Err(mpsc::SendError(Msg::Event(e, _))) = tx.send(Msg::Event(e, socket)) {
+                        json::free(e);
+                    }
                     break;
                 }
                 Ok(None) => {}
@@ -404,14 +428,15 @@ impl Events {
             Err(_) if conn.missed().is_some() => Value::Null,
             Err(why) => return Err(why),
         };
-        let titles: HashMap<String, String> = status["sessions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| {
-                Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
-            })
-            .collect();
+        // Read and let go of on a stack that takes it (ADR 26).
+        let titles = conn.deep(status, |_, status| {
+            let sessions = status["sessions"].as_array().into_iter().flatten();
+            sessions
+                .filter_map(|s| {
+                    Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
+                })
+                .collect::<HashMap<String, String>>()
+        })?;
         Ok(Events {
             source: Source::Socket(Box::new(conn)),
             process: process.to_owned(),
@@ -431,9 +456,15 @@ impl Source {
                 let mut line = Vec::new();
                 match stdin.lock().read_until(b'\n', &mut line) {
                     Ok(0) => Err("stdin closed".into()),
-                    Ok(_) => Ok(serde_json::from_slice::<Value>(&line)
-                        .ok()
-                        .filter(|e| e.get("event").is_some())),
+                    // As the host reads it (see json.rs), as the socket's.
+                    // A line that isn't an event is let go of there too.
+                    Ok(_) => {
+                        let depth = json::depth(&line);
+                        let event =
+                            || json::parse::<Value>(&line).filter(|e| e.get("event").is_some());
+                        json::on_stack(depth, event)
+                            .ok_or_else(|| format!("no stack to be had for a message {depth} deep"))
+                    }
                     Err(e) => Err(format!("stdin: {e}")),
                 }
             }
@@ -562,6 +593,9 @@ impl Running {
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Done(done)) if done == pid => break,
+                // Stopped while draining: what is left goes with it.
+                Ok(Msg::Rest(rest, ..)) => json::free(Value::Array(rest)),
+                Ok(Msg::Event(e, _)) => json::free(e),
                 Ok(_) => {}
                 Err(_) => break,
             }

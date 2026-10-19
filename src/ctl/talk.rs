@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, lock, log, paths, render, signals, spawn, sys};
+use crate::{config, json, lock, log, paths, render, signals, spawn, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
 
@@ -58,11 +58,17 @@ const TIMED_OUT: u8 = 124;
 /// requests: responses are matched by `req_id`, and events that arrive in
 /// between are kept for `next_event`. Cut off by the process for falling
 /// behind, it catches up from the transcript and goes on live on a new
-/// connection (ADR 69, see catch_up.rs).
+/// connection (ADR 69, see catch_up.rs). What it reads may nest as deep as
+/// the agent made it: [`Conn::deep`] uses it and lets go of it on a stack
+/// that takes it (ADR 26).
 pub(super) struct Conn {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     events: VecDeque<Value>,
+    /// How deep what it read, and may still hold in `events`, nests.
+    deepest: usize,
+    /// How deep the stack it runs on takes (see `deep`).
+    stack: usize,
     next_req: u64,
     /// The process's socket, to subscribe on again.
     socket: Option<PathBuf>,
@@ -89,6 +95,8 @@ impl Conn {
             reader: BufReader::new(stream),
             writer,
             events: VecDeque::new(),
+            deepest: 0,
+            stack: json::SHALLOW,
             next_req: 0,
             socket: None,
             follow: None,
@@ -146,6 +154,37 @@ impl Conn {
         Ok(ExitCode::from(MISSED))
     }
 
+    /// Runs `f` with `value` on a stack that takes it and what the connection
+    /// holds: this one, or a thread's of its own (see json.rs). `f` lets go of
+    /// `value` there. `Err` says there is no such stack to be had (P3); then
+    /// `value` is kept until the process exits, rather than let go of here.
+    pub(super) fn deep<R: Send>(
+        &mut self,
+        value: Value,
+        f: impl FnOnce(&mut Conn, Value) -> R + Send,
+    ) -> Result<R, String> {
+        let need = json::nesting([&value]).max(self.deepest);
+        let mut value = Some(value);
+        let result = if need <= self.stack {
+            Some(f(self, value.take().unwrap()))
+        } else {
+            let outer = self.stack;
+            let result = json::on_stack(need, || {
+                self.stack = need;
+                f(self, value.take().unwrap())
+            });
+            self.stack = outer;
+            result
+        };
+        // Not taken: no stack to be had, to let go of it on either.
+        std::mem::forget(value);
+        // What was deep may be gone, as in the host's `deep`.
+        if self.deepest > json::SHALLOW {
+            self.deepest = json::nesting(&self.events);
+        }
+        result.ok_or_else(|| format!("no stack to be had for a message {need} deep"))
+    }
+
     /// A request whose failure is an error.
     pub(super) fn call(&mut self, req: Value) -> Result<Value, String> {
         self.call_until(req, None)?.ok_or_else(|| "the process closed the connection".into())
@@ -184,6 +223,8 @@ impl Conn {
             }
             if msg.get("event").is_some() {
                 self.events.push_back(msg);
+            } else {
+                json::free(msg); // An answer to another request.
             }
         }
     }
@@ -201,7 +242,7 @@ impl Conn {
             match self.read(deadline) {
                 Ok(None) => return Ok(None),
                 Ok(Some(msg)) if msg.get("event").is_some() => return Ok(Some(msg)),
-                Ok(Some(_)) => {} // A response nobody waits for.
+                Ok(Some(msg)) => json::free(msg), // A response nobody waits for.
                 Err(why) => self.catch_up(why)?,
             }
         }
@@ -215,7 +256,8 @@ impl Conn {
         let why = loop {
             match self.read(None) {
                 Ok(Some(msg)) if msg.get("event").is_some() => rest.push(msg),
-                Ok(_) => {}
+                Ok(Some(msg)) => json::free(msg),
+                Ok(None) => {}
                 Err(why) => break why,
             }
         };
@@ -253,7 +295,7 @@ impl Conn {
         let Some(mut f) = self.follow.take() else { return Err(why) };
         // Once the process has said it cut `f.peer` off: where it was then.
         let mut cut: Option<Option<u64>> = None;
-        let (mut live, until) = loop {
+        let (live, until) = loop {
             f.tries += 1;
             let fresh =
                 UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
@@ -298,8 +340,9 @@ impl Conn {
             Err(e) => return Err(self.give_up(&f, until, &e)),
         };
         f.last = until.or(caught.last().and_then(|e| e["seq"].as_u64())).unwrap_or(f.last);
+        self.deepest = self.deepest.max(json::nesting(&caught));
         self.events.extend(caught);
-        let Some(conn) = live.as_mut() else { return Ok(()) };
+        let Some(mut conn) = live else { return Ok(()) };
         if !conn.events.is_empty() {
             f.tries = 0;
         }
@@ -308,8 +351,9 @@ impl Conn {
             f.last = f.last.max(seq);
         }
         self.events.append(&mut conn.events);
-        let conn = live.unwrap();
-        (self.reader, self.writer) = (conn.reader, conn.writer);
+        self.deepest = self.deepest.max(conn.deepest);
+        std::mem::swap(&mut self.reader, &mut conn.reader);
+        std::mem::swap(&mut self.writer, &mut conn.writer);
         self.reconnects += 1;
         self.follow = Some(f);
         Ok(())
@@ -361,7 +405,13 @@ impl Conn {
             // Cut short: the process cut the connection off mid-line.
             Ok(_) if !line.ends_with('\n') => Err("the process closed the connection".into()),
             Ok(_) => {
-                let msg: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                // As the host reads it (see json.rs): an event carries what
+                // the agent sent as deep as it nested it (ADR 26).
+                let line = line.as_bytes();
+                let depth = json::depth(line);
+                let msg = json::on_stack(depth, || json::parse::<Value>(line));
+                let msg = msg.flatten().unwrap_or(Value::Null);
+                self.deepest = self.deepest.max(depth);
                 if let (Some(f), Some(seq)) = (&mut self.follow, msg["seq"].as_u64())
                     && msg.get("event").is_some()
                 {
@@ -372,6 +422,13 @@ impl Conn {
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+impl Drop for Conn {
+    /// What it still holds may be deep: let go of on a stack that takes it.
+    fn drop(&mut self) {
+        json::free(Value::Array(std::mem::take(&mut self.events).into()));
     }
 }
 
@@ -401,7 +458,7 @@ pub(super) fn wait_for_message(
     session: &str,
     message: &str,
     deadline: Option<Instant>,
-    json: Option<Value>,
+    mut json: Option<Value>,
 ) -> Result<ExitCode, String> {
     let mut started = false;
     let mut reply: Vec<String> = Vec::new();
@@ -414,50 +471,57 @@ pub(super) fn wait_for_message(
             }
             Err(why) => return conn.ended(why),
         };
-        let ours = e["session"] == session;
-        match e["event"].as_str().unwrap_or_default() {
-            "user_message" if e["message"] == message => started = true,
-            "agent_message" if ours && started => {
-                let text = e["text"].as_str().unwrap_or_default();
-                if json.is_some() {
-                    reply.push(text.to_owned());
-                } else {
-                    outln!("{text}");
-                    io::stdout().flush().ok();
+        // Used and let go of on a stack that takes it (ADR 26).
+        let ended = conn.deep(e, |_, e| -> Result<Option<ExitCode>, String> {
+            let ours = e["session"] == session;
+            match e["event"].as_str().unwrap_or_default() {
+                "user_message" if e["message"] == message => started = true,
+                "agent_message" if ours && started => {
+                    let text = e["text"].as_str().unwrap_or_default();
+                    if json.is_some() {
+                        reply.push(text.to_owned());
+                    } else {
+                        outln!("{text}");
+                        io::stdout().flush().ok();
+                    }
                 }
-            }
-            "permission_request" if ours => {
-                let request = e["request"].as_str().unwrap_or("?");
-                errln!(
-                    "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr permission allow {arg} {request})",
-                    e["title"].as_str().unwrap_or("?")
-                );
-            }
-            "elicitation_request" if ours => {
-                let request = e["request"].as_str().unwrap_or("?");
-                errln!(
-                    "brnr: waiting for input {request}: {} (brnr elicitation show {arg} {request}; brnr elicitation accept {arg} {request})",
-                    e["message"].as_str().unwrap_or("?")
-                );
-            }
-            "turn_ended" if carries(&e, message) => {
-                if let Some(out) = json {
-                    print_turn(out, session, message, &reply, &e)?;
+                "permission_request" if ours => {
+                    let request = e["request"].as_str().unwrap_or("?");
+                    errln!(
+                        "brnr: waiting for approval {request}: {} (brnr permission show {arg} {request}; brnr permission allow {arg} {request})",
+                        e["title"].as_str().unwrap_or("?")
+                    );
                 }
-                return Ok(turn_status(&e));
-            }
-            "message_dropped" if e["message"] == message => {
-                if let Some(out) = json {
-                    print_turn(out, session, message, &reply, &e)?;
+                "elicitation_request" if ours => {
+                    let request = e["request"].as_str().unwrap_or("?");
+                    errln!(
+                        "brnr: waiting for input {request}: {} (brnr elicitation show {arg} {request}; brnr elicitation accept {arg} {request})",
+                        e["message"].as_str().unwrap_or("?")
+                    );
                 }
-                errln!("brnr: {message} was dropped ({})", e["by"].as_str().unwrap_or("?"));
-                return Ok(ExitCode::FAILURE);
+                "turn_ended" if carries(&e, message) => {
+                    if let Some(out) = json.take() {
+                        print_turn(out, session, message, &reply, &e)?;
+                    }
+                    return Ok(Some(turn_status(&e)));
+                }
+                "message_dropped" if e["message"] == message => {
+                    if let Some(out) = json.take() {
+                        print_turn(out, session, message, &reply, &e)?;
+                    }
+                    errln!("brnr: {message} was dropped ({})", e["by"].as_str().unwrap_or("?"));
+                    return Ok(Some(ExitCode::FAILURE));
+                }
+                "session_closed" if ours => {
+                    return Err("the session closed before the turn ended".into());
+                }
+                "exited" => return Err("the agent exited before the turn ended".into()),
+                _ => {}
             }
-            "session_closed" if ours => {
-                return Err("the session closed before the turn ended".into());
-            }
-            "exited" => return Err("the agent exited before the turn ended".into()),
-            _ => {}
+            Ok(None)
+        })??;
+        if let Some(status) = ended {
+            return Ok(status);
         }
     }
 }
@@ -883,7 +947,8 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
     let ready = loop {
         match conn.read(fallback) {
-            Ok(Some(msg)) if msg.get("event").is_some() => {} // Before the report: not ours.
+            // Before the report: not ours.
+            Ok(Some(msg)) if msg.get("event").is_some() => json::free(msg),
             Ok(Some(msg)) => break msg,
             Ok(None) => return Err("timed out waiting for the session".into()),
             Err(_) => break Value::Null,
@@ -1269,18 +1334,23 @@ fn wait_on(
         Ok(())
     };
     let idle_now = json!({ "event": "idle", "session": session });
-    // How the last turn ended: a wait for `idle` that ends on an idle or a
-    // closed session exits as if it had waited for that turn (see ADR 21 in
-    // docs/adr).
+    // How the last turn ended, as `shallow_turn` has it: a wait for `idle`
+    // that ends on an idle or a closed session exits as if it had waited
+    // for that turn (see ADR 21 in docs/adr).
     let mut last_turn = Value::Null;
+    // What the process answers, and each event, is used and let go of on a
+    // stack that takes it (ADR 26).
     match what {
         "permission" => {
             let pending = match conn.call(json!({ "cmd": "pending" })) {
                 Ok(pending) => pending,
                 Err(why) => return conn.ended(why),
             };
-            if let Some(p) = pending["pending"].as_array().into_iter().flatten().find(|p| mine(p)) {
-                done(p, describe_permission(p))?;
+            let found = conn.deep(pending, |_, pending| {
+                let p = pending["pending"].as_array().into_iter().flatten().find(|p| mine(p));
+                p.map(|p| done(p, describe_permission(p))).transpose()
+            })??;
+            if found.is_some() {
                 return Ok(ExitCode::SUCCESS);
             }
         }
@@ -1289,22 +1359,24 @@ fn wait_on(
                 Ok(pending) => pending,
                 Err(why) => return conn.ended(why),
             };
-            let waiting = pending["elicitations"].as_array().into_iter().flatten();
-            if let Some(e) = waiting.into_iter().find(|e| mine(e)) {
-                done(e, describe_elicitation(e))?;
+            let found = conn.deep(pending, |_, pending| {
+                let mut waiting = pending["elicitations"].as_array().into_iter().flatten();
+                waiting.find(|e| mine(e)).map(|e| done(e, describe_elicitation(e))).transpose()
+            })??;
+            if found.is_some() {
                 return Ok(ExitCode::SUCCESS);
             }
         }
         "idle" => {
-            let (is_idle, s) = match idle(conn, session) {
+            let (is_idle, turn) = match idle(conn, session) {
                 Ok(idle) => idle,
                 Err(why) => return conn.ended(why),
             };
             if is_idle {
                 done(&idle_now, "idle".into())?;
-                return Ok(ended_as(&s["last_turn"]));
+                return Ok(ended_as(&turn));
             }
-            last_turn = s["last_turn"].clone();
+            last_turn = turn;
         }
         _ => {}
     }
@@ -1323,63 +1395,93 @@ fn wait_on(
             }
             Err(e) => return Err(e),
         };
-        match (e["event"].as_str().unwrap_or_default(), what) {
-            ("exited", "exit") => {
-                done(&e, render::exited(&e["status"]))?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            ("exited", _) => return Err("the agent exited".into()),
-            // A closed session counts as idle; there is no next turn or
-            // approval in it to wait for.
-            ("session_closed", "idle") if mine(&e) => {
-                done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
-                return Ok(ended_as(&last_turn));
-            }
-            ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
-                return Err("the session closed".into());
-            }
-            ("permission_request", "permission") if mine(&e) => {
-                done(&e, describe_permission(&e))?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            ("elicitation_request", "elicitation") if mine(&e) => {
-                done(&e, describe_elicitation(&e))?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            ("turn_ended", "turn") if mine(&e) => {
-                done(&e, format!("turn ended: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
-                return Ok(turn_status(&e));
-            }
-            ("turn_ended", "idle") if mine(&e) => {
-                last_turn = e.clone();
-                let is_idle = match idle(conn, session) {
-                    Ok((is_idle, _)) => is_idle,
-                    Err(why) => return conn.ended(why),
-                };
-                if is_idle {
-                    // Behind the session, the turns that ended after this
-                    // one are queued, before the status that says it is
-                    // idle: it went idle after the last of them.
-                    let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
-                    let e = conn.events.iter().rev().find(ended).cloned().unwrap_or(e);
-                    done(&e, format!("idle: {}", e["stop_reason"].as_str().unwrap_or("error")))?;
-                    return Ok(turn_status(&e));
+        let ended = conn.deep(e, |conn, e| -> Result<Option<ExitCode>, String> {
+            match (e["event"].as_str().unwrap_or_default(), what) {
+                ("exited", "exit") => {
+                    done(&e, render::exited(&e["status"]))?;
+                    return Ok(Some(ExitCode::SUCCESS));
                 }
+                ("exited", _) => return Err("the agent exited".into()),
+                // A closed session counts as idle; there is no next turn or
+                // approval in it to wait for.
+                ("session_closed", "idle") if mine(&e) => {
+                    done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
+                    return Ok(Some(ended_as(&last_turn)));
+                }
+                ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
+                    return Err("the session closed".into());
+                }
+                ("permission_request", "permission") if mine(&e) => {
+                    done(&e, describe_permission(&e))?;
+                    return Ok(Some(ExitCode::SUCCESS));
+                }
+                ("elicitation_request", "elicitation") if mine(&e) => {
+                    done(&e, describe_elicitation(&e))?;
+                    return Ok(Some(ExitCode::SUCCESS));
+                }
+                ("turn_ended", "turn") if mine(&e) => {
+                    let how = e["stop_reason"].as_str().unwrap_or("error");
+                    done(&e, format!("turn ended: {how}"))?;
+                    return Ok(Some(turn_status(&e)));
+                }
+                ("turn_ended", "idle") if mine(&e) => {
+                    last_turn = shallow_turn(&e);
+                    let is_idle = match idle(conn, session) {
+                        Ok((is_idle, _)) => is_idle,
+                        Err(why) => return conn.ended(why).map(Some),
+                    };
+                    if is_idle {
+                        // Behind the session, the turns that ended after
+                        // this one are queued, before the status that says
+                        // it is idle: it went idle after the last of them.
+                        // Queued after this stack was had, they may need a
+                        // deeper one.
+                        return conn.deep(e, |conn, e| {
+                            let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
+                            let e = conn.events.iter().rev().find(ended).cloned().unwrap_or(e);
+                            let how = e["stop_reason"].as_str().unwrap_or("error");
+                            done(&e, format!("idle: {how}"))?;
+                            Ok(Some(turn_status(&e)))
+                        })?;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+            Ok(None)
+        })??;
+        if let Some(status) = ended {
+            return Ok(status);
         }
     }
 }
 
 /// Whether the session is idle, with no turn running and nothing held (a
-/// closed one counts), and its status (null for one that has closed).
+/// closed one counts), and how its last turn ended, as `shallow_turn` has
+/// it (null for one that has closed).
 fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
-    let sessions = status["sessions"].as_array().map_or(&[][..], Vec::as_slice);
-    Ok(match sessions.iter().find(|s| s["session_id"] == session) {
-        Some(s) => (s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0, s.clone()),
-        None => (true, Value::Null),
+    conn.deep(status, |_, status| {
+        let sessions = status["sessions"].as_array().map_or(&[][..], Vec::as_slice);
+        match sessions.iter().find(|s| s["session_id"] == session) {
+            Some(s) => {
+                let is_idle = s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0;
+                (is_idle, shallow_turn(&s["last_turn"]))
+            }
+            None => (true, Value::Null),
+        }
     })
+}
+
+/// Of a turn (`turn_ended`, or status's `last_turn`), what `turn_status`
+/// reads: nothing the agent nested, so it is held on any stack (ADR 26).
+fn shallow_turn(turn: &Value) -> Value {
+    if !turn.is_object() {
+        return Value::Null;
+    }
+    let error = turn["error"]
+        .as_object()
+        .map(|e| json!({ "message": e.get("message").and_then(Value::as_str) }));
+    json!({ "stop_reason": turn["stop_reason"].as_str(), "error": error })
 }
 
 /// The exit status of a turn that ended as `turn` says (`turn_ended`, or

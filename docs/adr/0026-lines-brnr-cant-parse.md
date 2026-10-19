@@ -31,7 +31,16 @@ nesting deeper than 128 is serde_json's limit, not JSON's.
   and for what comes after it, events and timers alike, while the host
   keeps something of it). The line itself is forwarded byte for byte, as
   always. This stays brnr's own work with the official schema types too
-  (ADR 43): they parse with serde_json.
+  (ADR 43): they parse with serde_json. `brnr permission requests` reads
+  the host's answer the same way, on a stack sized to it: a request the
+  host holds is listed however deep it nests. The commands that read events
+  (`prompt send --wait`, `event wait`, `event watch`, `event notify`, and
+  what they catch up on from the transcript, ADR 69) read them the same
+  way, so an event nested past 128 isn't dropped, and use and let go of
+  each event (and each answer of the host's they read) on a stack that
+  takes it, as the host does, so one as deep as the host holds is followed
+  too (#252). With no such stack to be had, they say so and exit non-zero
+  (P3).
 - For a line that isn't JSON at all: the host keeps the ids of agent
   requests it answered itself (permission requests cancelled, or answered
   from outside, ADR 4) and drops only the editor's late answers to those,
@@ -59,9 +68,15 @@ Run `cargo test --release adr_0026_`. Named claims and their assertions:
 
 - [src/host/fuzz.rs](../../src/host/fuzz.rs)
   - `adr_0026_the_stack_is_as_deep_as_what_the_host_holds`.
+- [src/json.rs](../../src/json.rs)
+  - `adr_0026_a_value_is_let_go_of_on_a_stack_that_takes_it`.
 - [tests/headless.rs](../../tests/headless.rs)
   - `adr_0026_a_lone_surrogate_is_read`.
   - `adr_0026_deep_nesting_is_read`.
   - `adr_0026_a_deep_request_that_times_out_is_answered`.
+  - `adr_0026_a_deep_request_is_listed`.
+  - `adr_0026_a_deep_request_is_followed`.
+  - `adr_0026_a_deep_request_is_notified`.
+  - `adr_0026_a_deep_event_is_caught_up`.
   - `adr_0026_an_answer_the_host_cant_place_reaches_the_agent`.
   - `adr_0026_a_late_answer_to_a_cancelled_request_is_dropped`.
