@@ -25,8 +25,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   docs/adr/README.md). One that gives up a factor or breaks a principle
   says which, and why.
 - Until 1.0.0 the ADRs are drafts: change a decision where it is written,
-  rewriting, renumbering, merging or removing records, with no `Amended by`
-  or `Superseded by` lines; a renumbered or removed record takes its
+  rewriting, renumbering, merging or removing records, without adding
+  `Amended by` or `Superseded by` lines (those already there go as the
+  records are consolidated); a renumbered or removed record takes its
   references (`ADR N`, `adr_NNNN_`) with it.
 - In a design discussion, settle the factor and the principle at stake
   first, and show the current sequence of events, traced from the code, as

@@ -96,7 +96,10 @@ brnr runs where reliability is required. Its processes respect the system
 they run on: memory, threads, files and processes stay bounded whatever a
 peer, the agent or the editor sends (P6); a start is atomic (P10); no
 process is left without an owner (P14); a failure is reported and cleaned
-up, and doesn't take down more than it must. Principles: P6, P10, P14.
+up, and doesn't take down more than it must. This is the goal, not a claim
+about brnr today: what ADR 51 lists as not bounded by a count of bytes (a
+message the agent is still sending, what a session keeps, a line on the
+control socket) is a gap measured against it. Principles: P6, P10, P14.
 
 #### N3. Performance
 
@@ -115,6 +118,11 @@ Principles: P2, P9.
 Security (N1) first, then reliability (N2), then faithfulness to ACP (F1).
 The other factors give way to these three. A record that gives up one factor
 for another says which, and why.
+
+F1 and F2 meet by mode, not by rank: by default brnr follows the
+conventions ahead of the spec (F2), and strict mode is ACP's stable parts to
+the letter (F1). A convention followed by default is not a conflict with F1,
+as long as strict mode leaves it out.
 
 ## Principles
 
