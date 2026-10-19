@@ -205,6 +205,11 @@ impl Pending {
         self.approvals.iter().filter(move |p| only.is_none_or(|id| p["session"] == id))
     }
 
+    /// Permission request `request` of `session`.
+    pub(super) fn approval(&self, session: &str, request: &str) -> Option<&Value> {
+        self.approvals.iter().find(|p| p["session"] == session && p["request"] == request)
+    }
+
     /// The elicitations of session `only`, or every one, outside any
     /// session too.
     pub(super) fn elicitations<'a>(
@@ -212,6 +217,13 @@ impl Pending {
         only: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Value> {
         self.elicitations.iter().filter(move |e| only.is_none_or(|id| e["session"] == id))
+    }
+
+    /// Elicitation `request` of `session`, or, with none, outside any
+    /// session.
+    pub(super) fn elicitation(&self, session: Option<&str>, request: &str) -> Option<&Value> {
+        let mut all = self.elicitations.iter();
+        all.find(|e| e["request"] == request && e["session"].as_str() == session)
     }
 }
 
@@ -860,6 +872,48 @@ mod tests {
         let asked: Vec<Value> =
             process.join().unwrap().into_iter().map(|r| r["cmd"].clone()).collect();
         assert_eq!(asked, ["stop", "stop", "fork", "queue"]);
+    }
+
+    /// `pending` is read however deep what the agent sent nests (ADR 2.5),
+    /// and finds a request by its session and handle: an elicitation outside
+    /// any session by none.
+    #[test]
+    fn adr_0002_pending_is_read_however_deep() {
+        for depth in [200, 1_000_000] {
+            let input = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+            let answer = format!(
+                r#"{{"ok":true,"pending":[{{"session":"s","request":"p1","tool_call":{{"rawInput":{input}}}}},{{"session":"t","request":"p1"}}],"elicitations":[{{"session":null,"request":"e1"}},{{"session":"s","request":"e2"}}]}}"#
+            );
+            let (host, process) = answering(&format!("pending-{depth}"), vec![answer]);
+            let found = host.pending(|pending| {
+                // Each as `<session>:<request>`, `-` for none.
+                let named = |items: &mut dyn Iterator<Item = &Value>| -> Vec<String> {
+                    let name = |v: &Value| v["session"].as_str().unwrap_or("-").to_owned();
+                    items
+                        .map(|v| format!("{}:{}", name(v), v["request"].as_str().unwrap()))
+                        .collect()
+                };
+                (
+                    pending.approval("s", "p1").map(|p| json::nesting([p])),
+                    named(&mut pending.approvals(None)),
+                    named(&mut pending.approvals(Some("t"))),
+                    named(&mut pending.elicitations(None)),
+                    named(&mut pending.elicitations(Some("s"))),
+                    [(None, "e1"), (Some("s"), "e1"), (Some("s"), "e2")]
+                        .map(|(session, request)| pending.elicitation(session, request).is_some()),
+                )
+            });
+            let want = (
+                Some(depth + 2),
+                vec!["s:p1".to_owned(), "t:p1".to_owned()],
+                vec!["t:p1".to_owned()],
+                vec!["-:e1".to_owned(), "s:e2".to_owned()],
+                vec!["s:e2".to_owned()],
+                [true, false, true],
+            );
+            assert_eq!(found, Ok(want), "{depth}");
+            assert_eq!(process.join().unwrap(), [json!({ "cmd": "pending" })]);
+        }
     }
 
     /// A process that cuts every new connection off again once it has

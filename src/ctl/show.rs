@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::render;
 
@@ -23,17 +23,23 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
     let [arg, request] = positional[..] else { return Err(USAGE.to_owned()) };
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let response = host.call(&json!({ "cmd": "pending" }))?;
-    let p: &Value = response["pending"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|p| p["session"] == session.as_str() && p["request"] == request.as_str())
-        .ok_or(format!("no pending request {request} in {arg}"))?;
-    if json_out {
-        print_json(p)?;
-        return Ok(ExitCode::SUCCESS);
-    }
+    // As deep as the agent made it: shown, and let go of, on a stack that
+    // takes it (ADR 2.5).
+    host.pending(|pending| {
+        let p = pending.approval(&session, request);
+        let p = p.ok_or(format!("no pending request {request} in {arg}"))?;
+        if json_out {
+            return print_json(p);
+        }
+        describe(p, &session, arg, request);
+        Ok(())
+    })??;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prints permission request `p`, `request` of `session` (named `arg`), in
+/// full.
+fn describe(p: &Value, session: &str, arg: &str, request: &str) {
     let editor = p["owner"] == "editor";
     let by = if editor { ", waiting in the editor" } else { "" };
     outln!("{request}, session {session}{by}");
@@ -67,5 +73,4 @@ pub(super) fn show(args: &[String]) -> Result<ExitCode, String> {
         (true, None) => outln!("answer: in the editor, or {here} (experimental)"),
         (true, Some(why)) => outln!("answer it in the editor ({why})"),
     }
-    Ok(ExitCode::SUCCESS)
 }

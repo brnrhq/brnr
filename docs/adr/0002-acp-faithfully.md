@@ -228,7 +228,8 @@ the other's request (GHSA-84pw-hh9c-w2m8).
   always. This stays brnr's own work with the official schema types
   (ADR 2.3): they parse with serde_json.
 - The CLI reads the host's answers the same way. `brnr permission
-  requests` lists a request the host holds however deep it nests (#239).
+  requests` and `show`, and `elicitation requests` and `show`, list and
+  show a request the host holds however deep it nests (#239).
   The commands that read events (`prompt send --wait`, `event wait`,
   `event watch`, `event notify`, and what they catch up on from the
   transcript, ADR 10.2) don't drop an event nested past 128 (#250), and
@@ -492,12 +493,15 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_the_stack_is_as_deep_as_what_the_host_holds`;
   [src/json.rs](../../src/json.rs):
   `adr_0002_a_value_is_let_go_of_on_a_stack_that_takes_it`;
+  [src/ctl/client.rs](../../src/ctl/client.rs):
+  `adr_0002_pending_is_read_however_deep`;
   [tests/headless.rs](../../tests/headless.rs):
   `adr_0002_a_lone_surrogate_is_read`, `adr_0002_deep_nesting_is_read`,
   `adr_0002_a_deep_request_that_times_out_is_answered`,
   `adr_0002_an_answer_the_host_cant_place_reaches_the_agent`,
   `adr_0002_a_late_answer_to_a_cancelled_request_is_dropped`,
   `adr_0002_a_deep_request_is_listed`,
+  `adr_0002_a_deep_request_is_shown`,
   `adr_0002_a_deep_request_is_followed`,
   `adr_0002_a_deep_request_is_notified`,
   `adr_0002_a_deep_event_is_caught_up`.

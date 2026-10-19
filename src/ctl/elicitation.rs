@@ -13,9 +13,9 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::render;
+use crate::{json, render};
 
-use super::client::Host;
+use super::client::{Host, Pending};
 use super::{USAGE, discover, print_json, print_table, process, read_stdin, running_session, text};
 
 /// Where an elicitation is: a session in a process, or a process alone for
@@ -59,14 +59,10 @@ fn parse<'a>(
     Ok((target, request))
 }
 
-/// The elicitation `request` waiting at `target`, in full.
-fn find(target: &Target, request: &str) -> Result<Value, String> {
-    let response = target.host.call(&json!({ "cmd": "pending" }))?;
-    let found =
-        response["elicitations"].as_array().into_iter().flatten().find(|e| {
-            e["request"] == request && e["session"].as_str() == target.session.as_deref()
-        });
-    found.cloned().ok_or_else(|| match &target.session {
+/// The elicitation `request` waiting at `target`, in `pending`.
+fn find<'a>(pending: &'a Pending, target: &Target, request: &str) -> Result<&'a Value, String> {
+    let found = pending.elicitation(target.session.as_deref(), request);
+    found.ok_or_else(|| match &target.session {
         Some(_) => format!("no pending elicitation {request} in {}", target.arg),
         None => format!(
             "no pending elicitation {request} outside a session in process {}",
@@ -106,33 +102,41 @@ pub(super) fn requests(args: &[String]) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
+    // Read, listed and let go of on a stack that takes what the agent sent
+    // (ADR 2.5), as `permission requests` does.
     let mut rows = Vec::new();
     for host in chosen {
-        let response = host.call(&json!({ "cmd": "pending" }))?;
-        for e in response["elicitations"].as_array().into_iter().flatten() {
-            if only.as_deref().is_some_and(|id| e["session"] != id) {
-                continue;
-            }
-            rows.push(json!({
-                "session": e["session"],
-                "pid": host.id().parse::<u64>().ok(),
-                "request": e["request"],
-                "owner": e["owner"],
-                "mode": e["mode"],
-                "scope": e["scope"],
-                "message": e["message"],
-            }));
-        }
+        let pid = host.id().parse::<u64>().ok();
+        rows.extend(host.pending(|pending| {
+            let row = |e: &Value| {
+                json!({
+                    "session": e["session"],
+                    "pid": pid,
+                    "request": e["request"],
+                    "owner": e["owner"],
+                    "mode": e["mode"],
+                    "scope": e["scope"],
+                    "message": e["message"],
+                })
+            };
+            pending.elicitations(only.as_deref()).map(row).collect::<Vec<_>>()
+        })?);
     }
+    json::holding(Value::Array(rows), |rows| list(&rows, json_out))?
+}
+
+/// The elicitations' `rows`, as a table or `--json`.
+fn list(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(rows);
     }
+    let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
         outln!("nothing waiting");
         return Ok(());
     }
     let mut table = vec![["SESSION", "REQUEST", "OWNER", "MODE", "MESSAGE"].map(String::from)];
-    for r in &rows {
+    for r in rows {
         // One outside a session is named by its process, as the commands
         // take it.
         let session = match r["session"].as_str() {
@@ -156,10 +160,20 @@ pub(super) fn show(args: &[String]) -> Result<(), String> {
         json_out |= json;
         Ok(json)
     })?;
-    let e = find(&target, &request)?;
-    if json_out {
-        return print_json(&e);
-    }
+    // As deep as the agent made it, with the rest of what waits there:
+    // shown, and let go of, on a stack that takes it (ADR 2.5).
+    target.host.pending(|pending| {
+        let e = find(pending, &target, &request)?;
+        if json_out {
+            return print_json(e);
+        }
+        describe(e, &target, &request);
+        Ok(())
+    })?
+}
+
+/// Prints elicitation `e`, `request` at `target`, in full.
+fn describe(e: &Value, target: &Target, request: &str) {
     let editor = e["owner"] == "editor";
     let by = if editor { ", waiting in the editor" } else { "" };
     let arg = &target.arg;
@@ -212,7 +226,6 @@ pub(super) fn show(args: &[String]) -> Result<(), String> {
         (true, None) => outln!("answer: in the editor, or {here} (experimental)"),
         (true, Some(why)) => outln!("answer it in the editor ({why})"),
     }
-    Ok(())
 }
 
 /// `elicitation accept`, `decline` and `cancel` (`action`): the action sent,

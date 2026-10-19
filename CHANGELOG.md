@@ -106,6 +106,10 @@ brnr's own conventions:
   each event is used and let go of on a stack that takes it, as the host
   does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
   #252).
+- `brnr permission show` shows a request nested deeper than 128, and
+  `elicitation requests` and `elicitation show` work in a process where one
+  waits, where each failed with `recursion limit exceeded`: every command
+  reads the host's answers as `permission requests` does (ADR 2.5).
 
 ## [0.9.0] - 2026-10-16
 

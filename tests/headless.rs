@@ -4293,6 +4293,44 @@ fn adr_0002_a_deep_request_is_listed() {
     }
 }
 
+/// So do `permission show`, and `elicitation requests` and `show`, whose
+/// answer has every request waiting in the process: a request nested past
+/// 128 is shown, in text and `--json`, and an elicitation beside one, or
+/// beside one a million deep, is listed and shown. Shown, a request is
+/// indented: a million deep would be a terabyte of it, so it is shown at
+/// 200 only.
+#[test]
+fn adr_0002_a_deep_request_is_shown() {
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-show-{depth}"));
+        env.start(&[]);
+        env.ok(&["session", "fork", "sess-1"]);
+        env.ok(&["prompt", "send", "sess-2", "elicit form"]);
+        env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
+        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        // A million deep is slow to read on a loaded runner: time enough.
+        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
+        if depth == 200 {
+            let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
+            assert!(shown.starts_with("p1, session sess-1\nEdit src/lib.rs\n"), "{shown}");
+            assert!(shown.contains("input:\n  [\n    [\n"), "{shown}");
+            let shown = env.ok(&["permission", "show", "sess-1", "p1", "--json"]);
+            assert!(shown.contains(r#""request": "p1""#), "{shown}");
+            assert!(shown.matches('[').count() >= depth, "{} bytes", shown.len());
+        }
+        let listed = env.ok(&["elicitation", "requests"]);
+        let row = |l: &str| l.split_whitespace().take(2).eq(["sess-2", "e1"]);
+        assert!(listed.lines().any(row), "{depth}: {listed}");
+        let shown = env.ok(&["elicitation", "show", "sess-2", "e1"]);
+        assert!(shown.starts_with("e1, session sess-2\nTell me about you\n"), "{depth}: {shown}");
+        let shown = env.ok(&["elicitation", "show", "sess-2", "e1", "--json"]);
+        let shown: Value = serde_json::from_str(&shown).unwrap();
+        assert_eq!((&shown["request"], &shown["mode"]), (&"e1".into(), &"form".into()), "{depth}");
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+        env.stop();
+    }
+}
+
 /// Its stdout, read as it comes (a deep event fills a pipe), once it exits.
 fn read_out(child: &mut Child) -> std::thread::JoinHandle<String> {
     let mut stdout = child.stdout.take().unwrap();
