@@ -81,7 +81,7 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
-use super::elicitation::{self, UrlElicitation};
+use super::approvals::{AgentRequest, Client, EditorAnswer, Resolved, Timeout};
 use super::flow::LINE_BYTES;
 use super::lines::Piece;
 use super::requests::{HostRequest, PeerOp};
@@ -92,13 +92,8 @@ use super::{Host, id_key, text_block};
 use crate::config::{ClientCapability, EchoAs, Feature, Log};
 use crate::lock;
 use crate::log::{self, Dir};
-use crate::schema::{
-    self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
-};
+use crate::schema::{self, ContentBlock, MessageId, NewSessionResponse, SessionUpdate};
 use crate::{frame, json, paths, transcript};
-
-/// The most URL elicitations the host keeps waiting for their completion.
-const URL_ELICITATIONS: usize = 1024;
 
 /// A `session/load`'s replay of history, while it lasts (ADR 5.6).
 pub(super) struct Replay {
@@ -306,63 +301,6 @@ pub(super) enum Requester {
     Prompt,
 }
 
-/// A request from the agent to its client.
-pub(super) struct AgentRequest {
-    pub(super) key: String,
-    pub(super) id: Value,
-    method: String,
-    pub(super) session: Option<String>,
-    pub(super) params: Value,
-    /// `p<n>` for a permission request, `e<n>` for an elicitation: what
-    /// bridges and brnr call it. None for a request brnr doesn't hold.
-    pub(super) handle: Option<String>,
-    /// When `response_timeout` answers it.
-    pub(super) deadline: Option<Instant>,
-}
-
-impl AgentRequest {
-    /// A `session/request_permission` (ADR 4.5).
-    pub(super) fn is_permission(&self) -> bool {
-        self.method == "session/request_permission"
-    }
-
-    /// An `elicitation/create` (ADR 4.5).
-    pub(super) fn is_elicitation(&self) -> bool {
-        self.method == "elicitation/create"
-    }
-
-    /// Its handle, if brnr holds it.
-    pub(super) fn held(&self) -> Option<&str> {
-        self.handle.as_deref()
-    }
-
-    /// The title brnr tells the editor by (see experimental.rs): the tool
-    /// call's, or the elicitation's message.
-    pub(super) fn title(&self) -> String {
-        let title = if self.is_elicitation() {
-            self.params["message"].as_str()
-        } else {
-            self.params["toolCall"]["title"].as_str()
-        };
-        title.unwrap_or("the request").to_owned()
-    }
-
-    /// How deeply what it keeps of the request nests (see `Host::holds`).
-    pub(super) fn holds(&self) -> usize {
-        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
-            self;
-        json::nesting([id, params])
-    }
-}
-
-/// How a permission request is answered from outside (ADR 8.1): `allow` or
-/// `reject`, once or, with `always`, always.
-#[derive(Clone, Copy)]
-pub(super) enum Choice {
-    Allow,
-    Reject,
-}
-
 impl Host {
     // ---- editor → agent ------------------------------------------------
 
@@ -477,19 +415,19 @@ impl Host {
                         return;
                     }
                 }
-                (None, Some(id)) => {
-                    let key = id_key(&id);
-                    if self.agent_requests.iter().any(|r| r.key == key) {
-                        session = self.agent_request_answered(&key, &msg, "editor");
-                    } else if self.late_answer(&key, &id, &msg) {
-                        // Answered by the host already (a cancel, an allow
-                        // or reject): the agent must not get a second answer.
-                        return;
+                (None, Some(id)) => match self.approvals.editor_answer(&id_key(&id), &msg) {
+                    EditorAnswer::Resolved(resolved) => {
+                        session = resolved.req.session.clone();
+                        self.resolved(*resolved);
                     }
-                    // Otherwise it answers a request the host couldn't read,
-                    // or none: it goes on, and the agent ignores an answer to
+                    // Answered by the host already (a cancel, an allow or
+                    // reject): the agent must not get a second answer.
+                    EditorAnswer::Late(answered) => return self.late_answer(&id, answered, &msg),
+                    // It answers a request the host couldn't read, or none:
+                    // it goes on, and the agent ignores an answer to
                     // something it never asked (ADR 2.5 in docs/adr).
-                }
+                    EditorAnswer::Unknown => {}
+                },
                 _ => {}
             }
             recorded = log::redacted(&msg);
@@ -964,46 +902,23 @@ impl Host {
     fn agent_request(&mut self, method: String, id: Value, msg: &Map<String, Value>, line: &[u8]) {
         let session = param_session(msg);
         self.record(session.as_deref(), Dir::AgentToEditor, line);
-        let mut req = AgentRequest {
-            key: id_key(&id),
-            id,
-            method,
-            session,
-            params: msg.get("params").cloned().unwrap_or(Value::Null),
-            handle: None,
-            deadline: None,
+        let unsupported = format!("{method} is not supported without an editor");
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        let req = AgentRequest::new(id, method, session, params);
+        let event = if self.editor_attached() {
+            self.send_link(frame::DATA, line);
+            self.approvals.ask(req, None, "editor")
+        } else if req.kind().is_some() {
+            // Held until someone answers it, or `response_timeout` does
+            // (ADR 4.5): none, never, for a timeout too far off to say.
+            let deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
+            self.approvals.ask(req, deadline, "headless")
+        } else {
+            let error = json!({ "code": -32601, "message": unsupported });
+            return self.respond(&req, json!({ "error": error }));
         };
-        if req.is_permission() {
-            self.next_permission += 1;
-            req.handle = Some(format!("p{}", self.next_permission));
-        } else if req.is_elicitation() {
-            self.next_elicitation += 1;
-            req.handle = Some(format!("e{}", self.next_elicitation));
-            self.remember_url(&req);
-        }
-        if !self.editor_attached() {
-            return self.answer_as_client(req);
-        }
-        self.send_link(frame::DATA, line);
-        let event = request_event(&req, "editor");
-        self.agent_requests.push(req);
         if let Some(event) = event {
             self.emit(event);
-        }
-    }
-
-    /// Keeps a URL elicitation's id, so the agent's `elicitation/complete`
-    /// for it can be told to whom it belonged (ADR 4.5). Up to
-    /// [`URL_ELICITATIONS`]: past that, an agent that never completes them
-    /// would have the host keep them without limit, and the completion of
-    /// one not kept is told without its handle.
-    fn remember_url(&mut self, req: &AgentRequest) {
-        if self.url_elicitations.len() >= URL_ELICITATIONS {
-            return;
-        }
-        if let (Some(id), Some(handle)) = (elicitation::elicitation_id(req), req.held()) {
-            let held = UrlElicitation { session: req.session.clone(), handle: handle.to_owned() };
-            self.url_elicitations.insert(id, held);
         }
     }
 
@@ -1012,10 +927,7 @@ impl Host {
     /// the session is the request's, if brnr kept it.
     fn elicitation_complete(&mut self, msg: &Map<String, Value>) -> Option<Value> {
         let id = msg.get("params")?.get("elicitationId")?.as_str()?;
-        let (session, handle) = match self.url_elicitations.remove(id) {
-            Some(held) => (held.session, Some(held.handle)),
-            None => (None, None),
-        };
+        let (session, handle) = self.approvals.complete(id);
         Some(json!({
             "event": "elicitation_completed",
             "session": session,
@@ -1024,202 +936,28 @@ impl Host {
         }))
     }
 
-    /// The editor answered one of the agent's requests.
-    fn agent_request_answered(
-        &mut self,
-        key: &str,
-        msg: &Map<String, Value>,
-        by: &str,
-    ) -> Option<String> {
-        let pos = self.agent_requests.iter().position(|r| r.key == key)?;
-        let req = self.agent_requests.remove(pos);
-        let result = msg.get("result").cloned().unwrap_or(Value::Null);
-        if req.is_permission() {
-            self.emit(resolved_event(&req, &result["outcome"], None, by));
-        } else if req.is_elicitation() {
-            if result["action"] != "accept"
-                && let Some(id) = elicitation::elicitation_id(&req)
-            {
-                self.url_elicitations.remove(&id);
-            }
-            self.emit(elicitation::resolved_event(&req, &result, by));
-        }
-        req.session
-    }
-
     // ---- the host as the agent's client --------------------------------
 
-    fn answer_as_client(&mut self, mut req: AgentRequest) {
-        match req.method.as_str() {
-            "session/request_permission" => {
-                // None, never, for a timeout too far off to say.
-                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
-                let event = permission_event(&req, "headless");
-                self.agent_requests.push(req);
-                self.emit(event);
-            }
-            // Held as a permission request is, until someone answers it
-            // or the same timeout cancels it (ADR 4.5).
-            "elicitation/create" => {
-                req.deadline = self.response_timeout.and_then(|t| Instant::now().checked_add(t));
-                let event = elicitation::request_event(&req, "headless");
-                self.agent_requests.push(req);
-                self.emit(event);
-            }
-            method => {
-                let message = format!("{method} is not supported without an editor");
-                self.respond(&req, json!({ "error": { "code": -32601, "message": message } }));
-            }
-        }
+    /// What the host is as one of the agent's requests is answered.
+    pub(super) fn client(&self) -> Client {
+        let accepting = self.status.is_none() && self.agent_in.is_some();
+        Client { editor: self.editor_attached(), accepting }
     }
 
-    /// Answers permission request `handle` with the option of one kind
-    /// (ADR 8.1): `allow_once`, `allow_always` with `always`, `reject_once`
-    /// or `reject_always`. No other kind stands in for it, and a reject is
-    /// never `cancelled`: without that kind, or with two options of it, it
-    /// fails, listing the options (P4). `option` names the option instead:
-    /// one of a kind ACP has must be on the choice's side, and with `always`
-    /// the always kind; one of a kind brnr doesn't know goes with either. On
-    /// an editor's session, where this is the experimental `permission` (see
-    /// experimental.rs), the request is then withdrawn from the editor.
-    pub(super) fn resolve_permission(
-        &mut self,
-        handle: &str,
-        choice: Choice,
-        always: bool,
-        option: Option<&str>,
-        by: &str,
-    ) -> Result<Value, String> {
-        let pos = self
-            .agent_requests
-            .iter()
-            .position(|r| r.is_permission() && r.held() == Some(handle))
-            .ok_or_else(|| format!("no pending request {handle}"))?;
-        if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+    /// One of the agent's requests has ended, whoever answered it (see
+    /// approvals.rs): the host's reply goes to the agent, the request is
+    /// withdrawn from the editor if it was shown it (see experimental.rs),
+    /// then the event.
+    pub(super) fn resolved(&mut self, resolved: Resolved) {
+        let Resolved { req, answer: _, reply, withdraw, event } = resolved;
+        if let Some(reply) = reply {
+            self.respond(&req, reply);
         }
-        let options =
-            self.agent_requests[pos].params["options"].as_array().cloned().unwrap_or_default();
-        let allow = matches!(choice, Choice::Allow);
-        let wanted = kind_of(choice, always);
-        let listed = || {
-            let all: Vec<String> = options.iter().map(option_text).collect();
-            format!("options: {}", all.join(", "))
-        };
-        let chosen = match option {
-            Some(option) => {
-                let Some(chosen) = options.iter().find(|o| o["optionId"] == option) else {
-                    return Err(format!("{handle} has no option {option} ({})", listed()));
-                };
-                let kind = chosen["kind"].as_str().unwrap_or_default();
-                match known_kind(chosen) {
-                    Some(k) if allows(k) != allow => {
-                        let verb = if allow { "reject" } else { "allow" };
-                        return Err(format!(
-                            "{handle}: {option} ({kind}) is for brnr permission {verb}"
-                        ));
-                    }
-                    Some(_) if always && kind != wanted => {
-                        return Err(format!(
-                            "{handle}: {option} is {kind}, not {wanted} as --always asks"
-                        ));
-                    }
-                    _ => chosen,
-                }
-            }
-            None => {
-                let of_kind: Vec<&Value> = options.iter().filter(|o| o["kind"] == wanted).collect();
-                match of_kind[..] {
-                    [chosen] => chosen,
-                    [] => {
-                        return Err(format!(
-                            "{handle} has no {wanted} option ({}); --option <id> picks one",
-                            listed()
-                        ));
-                    }
-                    _ => {
-                        return Err(format!(
-                            "{handle} has {} {wanted} options ({}); --option <id> picks one",
-                            of_kind.len(),
-                            listed()
-                        ));
-                    }
-                }
-            }
-        };
-        let outcome = json!({ "outcome": "selected", "optionId": chosen["optionId"] });
-        let req = self.agent_requests.remove(pos);
-        self.respond(&req, json!({ "result": { "outcome": outcome } }));
-        let how = if allow { "allowed" } else { "rejected" };
-        self.withdraw(&req, how, by);
-        self.emit(resolved_event(&req, &outcome, Some(how), by));
-        Ok(outcome)
-    }
-
-    /// Answers elicitation `handle` with `action`, ACP's `accept` (its
-    /// `content` checked against the form's schema first, see
-    /// elicitation.rs), `decline` or `cancel`, by `by` (ADR 4.5). Nothing is
-    /// sent for content that doesn't fit (P4). On an editor's session,
-    /// where this is the experimental `elicitation` (see experimental.rs),
-    /// the request is then withdrawn from the editor.
-    pub(super) fn resolve_elicitation(
-        &mut self,
-        handle: &str,
-        action: &str,
-        content: &Value,
-        by: &str,
-    ) -> Result<Value, String> {
-        let pos = self
-            .agent_requests
-            .iter()
-            .position(|r| r.is_elicitation() && r.held() == Some(handle))
-            .ok_or_else(|| format!("no pending elicitation {handle}"))?;
-        if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+        if let Some((how, by)) = withdraw {
+            self.withdraw(&req, how, &by);
         }
-        let result = elicitation::response(&self.agent_requests[pos], action, content)?;
-        let req = self.agent_requests.remove(pos);
-        if action != "accept"
-            && let Some(id) = elicitation::elicitation_id(&req)
-        {
-            self.url_elicitations.remove(&id);
-        }
-        self.respond(&req, json!({ "result": result }));
-        let how = match action {
-            "accept" => "accepted",
-            "decline" => "declined",
-            _ => "cancelled",
-        };
-        self.withdraw(&req, how, by);
-        self.emit(elicitation::resolved_event(&req, &result, by));
-        Ok(result)
-    }
-
-    /// ACP: a client that cancels a turn answers that session's pending
-    /// permission requests with `cancelled`, `by` `cancel` or `timeout`. Its
-    /// pending elicitations are answered `cancel` the same way (ADR 4.5):
-    /// the turn they were asked in is gone. If the editor is showing one,
-    /// it is withdrawn, and its late answer dropped (see experimental.rs).
-    fn cancel_requests(&mut self, session: &str, by: &str) {
-        let (cancel, keep): (Vec<_>, Vec<_>) = take(&mut self.agent_requests)
-            .into_iter()
-            .partition(|r| r.handle.is_some() && r.session.as_deref() == Some(session));
-        self.agent_requests = keep;
-        for req in cancel {
-            if req.is_elicitation() {
-                let result = json!({ "action": "cancel" });
-                if let Some(id) = elicitation::elicitation_id(&req) {
-                    self.url_elicitations.remove(&id);
-                }
-                self.respond(&req, json!({ "result": result }));
-                self.withdraw(&req, "cancelled", by);
-                self.emit(elicitation::resolved_event(&req, &result, by));
-                continue;
-            }
-            let outcome = json!({ "outcome": "cancelled" });
-            self.respond(&req, json!({ "result": { "outcome": outcome } }));
-            self.withdraw(&req, "cancelled", by);
-            self.emit(resolved_event(&req, &outcome, Some("cancelled"), by));
+        if let Some(event) = event {
+            self.emit(event);
         }
     }
 
@@ -1361,11 +1099,7 @@ impl Host {
     /// answer.
     pub(super) fn is_idle(&self, i: usize) -> bool {
         let s = &self.sessions[i];
-        s.turns.activity() == Activity::Idle
-            && !self
-                .agent_requests
-                .iter()
-                .any(|r| r.handle.is_some() && r.session.as_ref() == Some(&s.id))
+        s.turns.activity() == Activity::Idle && !self.approvals.waiting(&s.id)
     }
 
     /// `stop_when_idle`: a headless session idle that long closes, and the
@@ -1525,53 +1259,28 @@ impl Host {
         self.act(i, vec![sent]);
     }
 
-    /// Answers permission requests nobody answered within
-    /// `response_timeout` with their `reject_once` option (ADR 8.1). One
-    /// without one (or with two: which, brnr can't say) has its turn
-    /// cancelled, which answers it and every request pending in its session
-    /// `cancelled`, as ACP requires. Never `reject_always`, which nobody
-    /// chose, and never an allow. An elicitation nobody answered is
-    /// answered `cancel`, which ACP has for no choice made (ADR 4.5): never
-    /// `decline`, which is the user's no, nor `accept`.
+    /// Answers the requests nobody answered within `response_timeout`, as
+    /// ADR 4.5 has it (see `Approvals::time_out`): one whose turn is to be
+    /// cancelled is answered with it, as is every request pending in its
+    /// session, `cancelled`, as ACP requires.
     pub(super) fn fire_permission_timers(&mut self, now: Instant) {
         if self.editor_attached() {
             return;
         }
-        let expired: Vec<String> = self
-            .agent_requests
-            .iter()
-            .filter(|r| r.deadline.is_some_and(|d| now >= d))
-            .filter_map(|r| r.handle.clone())
-            .collect();
-        for handle in expired {
-            // Gone already: answered `cancelled` with an earlier one's turn.
-            let Some(req) =
-                self.agent_requests.iter_mut().find(|r| r.handle.as_ref() == Some(&handle))
-            else {
-                continue;
-            };
-            req.deadline = None;
-            let elicitation = req.is_elicitation();
-            let options = req.params["options"].as_array().into_iter().flatten();
-            let once = options.filter(|o| o["kind"] == "reject_once").count();
-            let session = req.session.clone();
-            let result = if elicitation {
-                self.resolve_elicitation(&handle, "cancel", &Value::Null, "timeout")
-            } else if once == 1 {
-                self.resolve_permission(&handle, Choice::Reject, false, None, "timeout")
-            } else if self.status.is_some() || self.agent_in.is_none() {
-                Err("the agent is no longer accepting input".to_owned())
-            } else if let Some(session) = session {
-                let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
-                self.sink.note(Some(&session), event);
-                self.cancel(&session, "timeout");
-                Ok(Value::Null)
-            } else {
-                Err("no reject_once option, and no session to cancel".to_owned())
-            };
-            if let Err(err) = result {
-                let event = json!({ "event": "timeout-failed", "request": handle, "error": err });
-                self.sink.note(None, event);
+        for handle in self.approvals.expired(now) {
+            match self.approvals.time_out(&handle, self.client()) {
+                None => {}
+                Some(Timeout::Resolved(resolved)) => self.resolved(*resolved),
+                Some(Timeout::Cancel { session }) => {
+                    let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
+                    self.sink.note(Some(&session), event);
+                    self.cancel(&session, "timeout");
+                }
+                Some(Timeout::Failed(err)) => {
+                    let event =
+                        json!({ "event": "timeout-failed", "request": handle, "error": err });
+                    self.sink.note(None, event);
+                }
             }
         }
     }
@@ -1581,7 +1290,7 @@ impl Host {
         if self.editor_attached() {
             return None;
         }
-        self.agent_requests.iter().filter_map(|r| r.deadline).min()
+        self.approvals.next_deadline()
     }
 
     /// Cancels `session`'s turn (`session/cancel`), answering its pending
@@ -1597,7 +1306,10 @@ impl Host {
         line.push(b'\n');
         self.record(Some(session), Dir::ControlToAgent, &line);
         self.write_agent(&line);
-        self.cancel_requests(session, by);
+        // ACP: a client that cancels a turn answers what the agent asked in it.
+        for resolved in self.approvals.cancel(session, by, self.client()) {
+            self.resolved(resolved);
+        }
     }
 
     /// Shows the editor an injected message, titled `title`, in the form its
@@ -1757,87 +1469,4 @@ pub(super) fn new_session(result: &Value) -> Option<String> {
 
 fn param_session(msg: &Map<String, Value>) -> Option<String> {
     msg.get("params")?.get("sessionId")?.as_str().map(str::to_owned)
-}
-
-/// Whether a permission option of `kind` allows the tool call, rather than
-/// rejecting it.
-fn allows(kind: PermissionOptionKind) -> bool {
-    matches!(kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)
-}
-
-/// A permission option's kind, if ACP's schema has it (v2 allows `_…` kinds
-/// of an agent's own).
-fn known_kind(option: &Value) -> Option<PermissionOptionKind> {
-    schema::read::<PermissionOptionKind>(&option["kind"])
-}
-
-/// The kind `choice` answers with, once or `always`.
-fn kind_of(choice: Choice, always: bool) -> &'static str {
-    match (choice, always) {
-        (Choice::Allow, false) => "allow_once",
-        (Choice::Allow, true) => "allow_always",
-        (Choice::Reject, false) => "reject_once",
-        (Choice::Reject, true) => "reject_always",
-    }
-}
-
-/// An option as errors list it: `allow (allow_once)`.
-fn option_text(option: &Value) -> String {
-    let id = option["optionId"].as_str().unwrap_or("?");
-    format!("{id} ({})", option["kind"].as_str().unwrap_or("?"))
-}
-
-/// `permission_resolved` for `req`, answered with `outcome` (ACP's) by
-/// `by`: `answer` says `allowed`, `rejected` or `cancelled`, which brnr
-/// knows when it answered, and `option_kind` the chosen option's kind. An
-/// editor's answer is told by the kind, so an option of a kind brnr doesn't
-/// know has no `answer` (null).
-fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &str) -> Value {
-    let chosen = req.params["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|o| outcome["outcome"] == "selected" && o["optionId"] == outcome["optionId"]);
-    let option_kind = chosen.map_or(Value::Null, |o| o["kind"].clone());
-    let answer = how.map(str::to_owned).or_else(|| match chosen.and_then(known_kind) {
-        _ if outcome["outcome"] == "cancelled" => Some("cancelled".to_owned()),
-        Some(k) if allows(k) => Some("allowed".to_owned()),
-        Some(_) => Some("rejected".to_owned()),
-        None => None,
-    });
-    json!({
-        "event": "permission_resolved",
-        "session": req.session,
-        "request": req.handle,
-        "answer": answer,
-        "option_kind": option_kind,
-        "outcome": outcome,
-        "by": by,
-    })
-}
-
-/// The event for a request brnr holds, `permission_request` or
-/// `elicitation_request`; none for one it doesn't.
-fn request_event(req: &AgentRequest, owner: &str) -> Option<Value> {
-    if req.is_permission() {
-        Some(permission_event(req, owner))
-    } else if req.is_elicitation() {
-        Some(elicitation::request_event(req, owner))
-    } else {
-        None
-    }
-}
-
-fn permission_event(req: &AgentRequest, owner: &str) -> Value {
-    let tool = &req.params["toolCall"];
-    json!({
-        "event": "permission_request",
-        "session": req.session,
-        "request": req.handle,
-        "owner": owner,
-        "title": tool["title"],
-        "kind": tool["kind"],
-        "tool_call": tool,
-        "options": req.params["options"],
-    })
 }

@@ -109,7 +109,7 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::acp::{AgentRequest, Choice};
+use super::approvals::{self, AgentRequest, Answer, Choice, Kind};
 use super::elicitation;
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
@@ -659,16 +659,18 @@ impl Host {
         self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
-        let ours = self.agent_requests.iter().any(|r| {
-            r.is_permission() && r.held() == Some(&handle) && r.session.as_ref() == Some(&session)
-        });
-        if !ours {
-            return Err(format!("no pending request {handle} in session {session}"));
-        }
         let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
         let always = req["always"].as_bool() == Some(true);
-        let outcome =
-            self.resolve_permission(&handle, choice, always, req["option"].as_str(), &by)?;
+        let resolved = self.approvals.answer(
+            Kind::Permission,
+            &handle,
+            Some(&session),
+            &by,
+            self.client(),
+            |r| approvals::choose(r, choice, always, req["option"].as_str()),
+        )?;
+        let outcome = resolved.answer.clone();
+        self.resolved(resolved);
         Ok(json!({ "ok": true, "session": session, "request": handle, "outcome": outcome }))
     }
 
@@ -677,12 +679,12 @@ impl Host {
         // Whether `brnr permission allow` would be taken, and if not, why
         // (ADR 7.1).
         let why_not = self.check_experimental(Experimental::Permission).err();
-        self.agent_requests
-            .iter()
+        self.approvals
+            .held()
             .filter(|r| r.is_permission())
             .map(|r| {
                 json!({
-                    "request": r.handle,
+                    "request": r.held(),
                     "session": r.session,
                     "owner": owner,
                     "answerable": why_not.is_none(),
@@ -691,7 +693,7 @@ impl Host {
                     "kind": r.params["toolCall"]["kind"],
                     "tool_call": r.params["toolCall"],
                     "options": r.params["options"],
-                    "timeout_seconds": r.deadline.map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
+                    "timeout_seconds": r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
                 })
             })
             .collect()
@@ -709,18 +711,17 @@ impl Host {
         self.check_experimental(Experimental::Elicitation)?;
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let action = req["action"].as_str().ok_or("missing action: accept, decline or cancel")?;
-        let ours = self
-            .agent_requests
-            .iter()
-            .any(|r| r.is_elicitation() && r.held() == Some(&handle) && r.session == session);
-        if !ours {
-            return Err(match &session {
-                Some(session) => format!("no pending elicitation {handle} in session {session}"),
-                None => format!("no pending elicitation {handle} outside a session"),
-            });
-        }
         let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
-        let result = self.resolve_elicitation(&handle, action, &req["content"], &by)?;
+        let resolved = self.approvals.answer(
+            Kind::Elicitation,
+            &handle,
+            session.as_deref(),
+            &by,
+            self.client(),
+            |r| elicitation::response(r, action, &req["content"]).map(Answer::Result),
+        )?;
+        let result = resolved.answer.clone();
+        self.resolved(resolved);
         Ok(json!({ "ok": true, "session": session, "request": handle, "result": result }))
     }
 
@@ -730,18 +731,18 @@ impl Host {
     fn pending_elicitations(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
         let why_not = self.check_experimental(Experimental::Elicitation).err();
-        self.agent_requests
-            .iter()
+        self.approvals
+            .held()
             .filter(|r| r.is_elicitation())
             .map(|r| {
                 let mut e = elicitation::describe(r);
-                e["request"] = json!(r.handle);
+                e["request"] = json!(r.held());
                 e["session"] = json!(r.session);
                 e["owner"] = json!(owner);
                 e["answerable"] = json!(why_not.is_none());
                 e["why_not"] = json!(why_not);
                 e["timeout_seconds"] = json!(
-                    r.deadline.map(|d| d.saturating_duration_since(Instant::now()).as_secs())
+                    r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs())
                 );
                 e
             })
@@ -754,9 +755,9 @@ impl Host {
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
         // Counted, not described: a description copies each request's tool
         // call, which can nest a million deep (ADR 2.5).
-        report["pending"] = json!(self.agent_requests.iter().filter(|r| r.is_permission()).count());
+        report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
         report["elicitations"] =
-            json!(self.agent_requests.iter().filter(|r| r.is_elicitation()).count());
+            json!(self.approvals.held().filter(|r| r.is_elicitation()).count());
         report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
@@ -774,9 +775,9 @@ impl Host {
                 let s = &self.sessions[i];
                 let mut session = s.state.report();
                 let held = |r: &&AgentRequest| r.session.as_ref() == Some(&s.id);
-                let requests = self.agent_requests.iter().filter(held);
+                let requests = self.approvals.held().filter(held);
                 let (asking, pending): (Vec<_>, Vec<_>) =
-                    requests.filter(|r| r.held().is_some()).partition(|r| r.is_elicitation());
+                    requests.partition(|r| r.is_elicitation());
                 let (pending, elicitations) = (pending.len(), asking.len());
                 // Waiting for the user's answer, not for a turn.
                 let busy = s.turns.activity() == Activity::Busy;

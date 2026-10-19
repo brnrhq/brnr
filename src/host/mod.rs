@@ -25,6 +25,7 @@
 //! back likewise (see flow.rs).
 
 mod acp;
+mod approvals;
 mod control;
 mod death;
 mod display;
@@ -72,7 +73,8 @@ use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
 
-use acp::{AgentRequest, ClientRequest, Pending};
+use acp::{ClientRequest, Pending};
+use approvals::Approvals;
 use control::{Closer, Peer};
 pub(crate) use control::{EVENTS, QUIET, check_bridge};
 use display::Display;
@@ -379,19 +381,11 @@ struct Host {
     /// Every unanswered request to the agent, by its id there, which is the
     /// host's whoever asked (ADR 2.4): who asked, and the session it is about.
     client_requests: HashMap<String, ClientRequest>,
-    /// Requests from the agent to its client that are unanswered.
-    agent_requests: Vec<AgentRequest>,
-    /// Agent requests the host answered itself while the editor may answer
-    /// them too (a cancel, an allow): its late answers are dropped (see
-    /// experimental.rs).
-    answered: HashMap<String, experimental::Answered>,
+    /// Requests from the agent to its client that are unanswered, and the
+    /// late answers to drop of those the host answered (ADR 4.5).
+    approvals: Approvals,
     /// The last of the host's ids, for requests to the agent and its echoes.
     next_id: u64,
-    next_permission: u64,
-    next_elicitation: u64,
-    /// URL elicitations held or accepted, by the agent's `elicitationId`,
-    /// until the agent says each is complete (ADR 4.5).
-    url_elicitations: HashMap<String, elicitation::UrlElicitation>,
     /// What the editor writes, as lines: one past `LINE_BYTES` goes to the
     /// agent unread (ADR 10.3).
     editor_lines: Lines,
@@ -627,12 +621,8 @@ impl Host {
             sessions: Sessions::default(),
             pending: HashMap::new(),
             client_requests: HashMap::new(),
-            agent_requests: Vec::new(),
-            answered: HashMap::new(),
+            approvals: Approvals::default(),
             next_id: 0,
-            next_permission: 0,
-            next_elicitation: 0,
-            url_elicitations: HashMap::new(),
             editor_lines: Lines::new(LINE_BYTES, Long::Relay),
             stderr_lines: Lines::new(PIECE, Long::Cut),
             deepest: 0,
@@ -935,9 +925,9 @@ impl Host {
     fn holds(&self) -> usize {
         let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
         let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
-        let requests = self.agent_requests.iter().map(AgentRequest::holds);
         let sessions = std::iter::once(self.sessions.holds());
-        methods.chain(requests).chain(sessions).fold(json::nesting([&self.info]), usize::max)
+        let requests = self.approvals.holds();
+        methods.chain(sessions).fold(json::nesting([&self.info]).max(requests), usize::max)
     }
 
     /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
