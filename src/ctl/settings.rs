@@ -3,54 +3,18 @@
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{
-    Host, USAGE, closing, discover, one_arg, print_json, print_table, request_timeout,
-    response_json, running_in, running_session, text,
-};
-
-/// The agent may take a while to switch model or fork a session.
-const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// `<session>`, the other arguments, and whether `--json` was given.
-fn session_args(args: &[String]) -> Result<(String, Vec<String>, bool), String> {
-    let mut session = None;
-    let mut rest = Vec::new();
-    let mut json_out = false;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => rest.push(arg.clone()),
-        }
-    }
-    Ok((session.ok_or(USAGE)?, rest, json_out))
-}
+use super::client::Host;
+use super::{Args, discover, print_json, print_table, running_session, text};
 
 /// The running session `arg` names: its process and its status.
 fn session_status(arg: &str) -> Result<(Host, Value), String> {
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
-    let status = host
-        .sessions()
-        .iter()
-        .find(|s| s["session_id"] == id.as_str())
-        .cloned()
-        .ok_or("the process is not answering")?;
-    Ok((Host { meta: host.meta.clone(), status: host.status.clone() }, status))
-}
-
-fn agent_call(host: &Host, req: &Value) -> Result<Value, String> {
-    let response = request_timeout(host, req, AGENT_TIMEOUT)
-        .map_err(|e| format!("process {}: {e}", host.id()))?;
-    if response["ok"].as_bool() != Some(true) {
-        return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
-    }
-    Ok(response)
+    let status = host.session(&id).cloned().ok_or("the process is not answering")?;
+    Ok((host.clone(), status))
 }
 
 fn s(v: &Value) -> &str {
@@ -69,24 +33,20 @@ enum Wanted {
 /// (`option` null), as the agent gave them; `--mode`, `--model`,
 /// `--thought-level` and `--option <o>` narrow it to those, found as
 /// `config set` finds them (ADR 8.1).
-pub(super) fn config_get(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut json_out, mut wanted) = (None, false, Vec::new());
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--json" => json_out = true,
-            "--mode" => wanted.push(Wanted::Category("mode")),
-            "--model" => wanted.push(Wanted::Category("model")),
-            "--thought-level" => wanted.push(Wanted::Category("thought_level")),
-            "--option" => {
-                wanted.push(Wanted::Id(it.next().ok_or("--option needs an option's id")?.clone()));
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let (_, status) = session_status(&session.ok_or(USAGE)?)?;
+pub(super) fn config_get(a: &Args) -> Result<ExitCode, String> {
+    let json_out = a.json;
+    // In the order given, `--option`'s ids among them.
+    let mut ids = a.values("--option").into_iter();
+    let wanted: Vec<Wanted> = a
+        .given()
+        .filter_map(|flag| match flag {
+            "--mode" => Some(Wanted::Category("mode")),
+            "--model" => Some(Wanted::Category("model")),
+            "--thought-level" => Some(Wanted::Category("thought_level")),
+            _ => ids.next().map(Wanted::Id),
+        })
+        .collect();
+    let (_, status) = session_status(&a.positional[0])?;
     let id = s(&status["session_id"]).to_owned();
     let options = status["config"].as_array().map_or(&[][..], Vec::as_slice);
     let mut rows: Vec<Value> = options
@@ -202,36 +162,12 @@ fn choices(option: &Value) -> Vec<Value> {
 /// `config set`: `--mode`, `--model` and `--thought-level` find their option
 /// by category, `--option <o>=<v>` by id, resolved by the process as a
 /// start's settings are (ADR 6.1, ADR 8.1) and sent one at a time.
-pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut json_out, mut pairs) = (None, false, Vec::new());
-    let mut by_category: [(&str, Option<String>); 3] =
-        [("mode", None), ("model", None), ("thought-level", None)];
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let flag = arg.strip_prefix("--");
-        if let Some((name, set)) = by_category.iter_mut().find(|(name, _)| Some(*name) == flag) {
-            let value = it.next().ok_or(format!("--{name} needs a value"))?;
-            if let Some(was) = set.replace(value.clone())
-                && was != *value
-            {
-                return Err(format!("--{name} {was} and --{name} {value} disagree"));
-            }
-            continue;
-        }
-        match arg.as_str() {
-            "--json" => json_out = true,
-            "--option" => pairs.push(it.next().ok_or("--option needs <option>=<value>")?.clone()),
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let options = options("--option", &pairs)?;
-    let [(_, mode), (_, model), (_, thought_level)] = by_category;
-    if mode.is_none() && model.is_none() && thought_level.is_none() && options.is_empty() {
-        return Err(USAGE.to_owned());
-    }
-    let (host, status) = session_status(&session.ok_or(USAGE)?)?;
+pub(super) fn config_set(a: &Args) -> Result<ExitCode, String> {
+    let json_out = a.json;
+    let options = options("--option", &a.values("--option"))?;
+    let (mode, model, thought_level) =
+        (a.value("--mode"), a.value("--model"), a.value("--thought-level"));
+    let (host, status) = session_status(&a.positional[0])?;
     let id = s(&status["session_id"]).to_owned();
     let req = json!({
         "cmd": "set_config",
@@ -241,7 +177,7 @@ pub(super) fn config_set(args: &[String]) -> Result<ExitCode, String> {
         "thought_level": thought_level,
         "options": options,
     });
-    let response = agent_call(&host, &req)?;
+    let response = host.call_agent(&req)?;
     if json_out {
         print_json(&json!({ "session": id, "set": response["set"] }))?;
         return Ok(ExitCode::SUCCESS);
@@ -269,12 +205,9 @@ pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, S
     Ok(options)
 }
 
-pub(super) fn commands(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, rest, json_out) = session_args(args)?;
-    if !rest.is_empty() {
-        return Err(USAGE.to_owned());
-    }
-    let (_, status) = session_status(&arg)?;
+pub(super) fn commands(a: &Args) -> Result<ExitCode, String> {
+    let json_out = a.json;
+    let (_, status) = session_status(&a.positional[0])?;
     let commands: Vec<Value> = status["commands"]
         .as_array()
         .into_iter()
@@ -297,14 +230,11 @@ pub(super) fn commands(args: &[String]) -> Result<ExitCode, String> {
 
 // ---- forking, closing ---------------------------------------------------
 
-pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, rest, json_out) = session_args(args)?;
-    if !rest.is_empty() {
-        return Err(USAGE.to_owned());
-    }
+pub(super) fn fork(a: &Args) -> Result<ExitCode, String> {
+    let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let (host, from) = running_session(&hosts, &arg)?;
-    let response = agent_call(host, &json!({ "cmd": "fork", "session": from }))?;
+    let (host, from) = running_session(&hosts, arg)?;
+    let response = host.call_agent(&json!({ "cmd": "fork", "session": from }))?;
     let session = text(&response["session"]);
     if json_out {
         print_json(&json!({ "session": session, "from": from }))?;
@@ -314,47 +244,17 @@ pub(super) fn fork(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) fn close(args: &[String]) -> Result<ExitCode, String> {
-    let (arg, json_out) = one_arg(args)?;
+pub(super) fn close(a: &Args) -> Result<ExitCode, String> {
+    let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let (host, id) = running_session(&hosts, &arg)?;
-    let response = agent_call(host, &json!({ "cmd": "close", "session": id }))?;
+    let (host, id) = running_session(&hosts, arg)?;
+    let response = host.call_agent(&json!({ "cmd": "close", "session": id }))?;
     if json_out {
-        print_json(&response_json(response))?;
+        print_json(&response)?;
         return Ok(ExitCode::SUCCESS);
     }
     outln!("closed {id}");
     Ok(ExitCode::SUCCESS)
-}
-
-/// `session resume --take-over`: process `pid`, which holds `session`'s
-/// lock, and the session as its transcript has it once closed there (its
-/// cwd, the process's agent and profile), for the process that resumes it.
-pub(super) fn held<'a>(
-    hosts: &'a [Host],
-    session: &str,
-    pid: u32,
-) -> Result<(&'a Host, Value), String> {
-    let running = format!("{session} is running in process {pid}");
-    let Some(host) = hosts.iter().find(|h| h.id() == pid.to_string()) else {
-        return Err(running_in(session, pid, ", which brnr doesn't list"));
-    };
-    let Some(status) = &host.status else {
-        return Err(format!("{running}, which is not answering"));
-    };
-    let Some(s) = host.sessions().iter().find(|s| s["session_id"] == session) else {
-        if host.closing(session) {
-            return Err(closing(session, pid));
-        }
-        return Err(format!("{session} is opening in process {pid}"));
-    };
-    let past = json!({
-        "session_id": session,
-        "cwd": s["cwd"],
-        "agent": status["agent"],
-        "profile": status["profile"],
-    });
-    Ok((host, past))
 }
 
 /// `session resume --take-over`: `owner`, which holds `session`'s lock, closes
@@ -366,7 +266,7 @@ pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), Stri
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");
     let req = json!({ "cmd": "close", "session": session, "take_over": to });
-    agent_call(owner, &req).map_err(|e| {
+    owner.call_agent(&req).map_err(|e| {
         if owner.info()["owner"] == "editor" {
             format!("{running}, an editor's: {e}")
         } else {

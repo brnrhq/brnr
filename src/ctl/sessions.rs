@@ -17,12 +17,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
-use crate::{config, json, lock, log, paths, signals, spawn, sys};
+use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
-use super::{
-    Host, USAGE, agent_name, discover, first_record, forked_from, inactive_sessions, print_json,
-    print_table, when,
-};
+use super::client::{Host, discover};
+use super::{Args, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -38,31 +36,18 @@ const STATES: [&str; 2] = ["active", "inactive"];
 /// `brnr session list`: brnr's index of sessions, every cwd's, with nothing
 /// started; or, with an agent named, those in one cwd joined with the
 /// agent's own list there.
-pub(super) fn list(args: &[String]) -> Result<ExitCode, String> {
-    let (mut include, mut profile, mut cwd, mut json_out) = (STATES.to_vec(), None, None, false);
-    let mut agent = Vec::new();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--include" => include = states(it.next().ok_or("--include needs a list")?)?,
-            "--profile" => profile = Some(it.next().ok_or("--profile needs a name")?.clone()),
-            "--cwd" => cwd = Some(it.next().ok_or("--cwd needs a directory")?.clone()),
-            "--json" => json_out = true,
-            "--" => {
-                agent = it.by_ref().cloned().collect();
-                if agent.is_empty() {
-                    return Err("-- needs an agent".into());
-                }
-            }
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
+pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
+    let include = a.value_as("--include", states)?.unwrap_or(STATES.to_vec());
+    let (profile, cwd, json_out) = (a.value("--profile"), a.value("--cwd"), a.json);
+    let agent = a.rest.clone().unwrap_or_default();
+    if a.rest.as_ref().is_some_and(Vec::is_empty) {
+        return Err("-- needs an agent".into());
     }
-    let asked = named_agent(profile.as_deref(), agent)?;
+    let asked = named_agent(profile, agent)?;
     // Here, once there is an agent to ask; every cwd without one, unless
     // --cwd names one.
     let cwd = match cwd {
-        Some(dir) => Some(paths::expand(&dir)),
+        Some(dir) => Some(paths::expand(dir)),
         None if asked.is_some() => Some(env::current_dir().map_err(|e| format!("cwd: {e}"))?),
         None => None,
     };
@@ -204,12 +189,8 @@ fn same_dir(dir: &str) -> PathBuf {
 /// file `inactive_sessions` reads, in whichever spelling of `dir` it was
 /// opened with.
 fn transcript_in(id: &str, dir: &Path) -> bool {
-    let Some(file) = paths::session_log(Path::new("/"), id).file_name().map(PathBuf::from) else {
-        return false;
-    };
-    let projects = fs::read_dir(paths::state_dir().join("projects")).into_iter().flatten();
-    projects.flatten().map(|p| p.path().join(&file)).any(|log| {
-        first_record(&log)
+    transcript::of_session(id).iter().any(|log| {
+        transcript::first(log)
             .and_then(|first| first["event"]["cwd"].as_str().map(same_dir))
             .is_some_and(|recorded| recorded == dir)
     })

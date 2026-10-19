@@ -94,7 +94,7 @@ use crate::log::{self, Dir};
 use crate::schema::{
     self, ContentBlock, MessageId, NewSessionResponse, PermissionOptionKind, SessionUpdate,
 };
-use crate::{frame, json, paths};
+use crate::{frame, json, paths, transcript};
 
 /// The most URL elicitations the host keeps waiting for their completion.
 const URL_ELICITATIONS: usize = 1024;
@@ -737,7 +737,7 @@ impl Host {
     /// replays before it answers: recorded only if brnr has no transcript of
     /// the session, in any folder, as a headless start's and a bridge's are
     /// (ADR 5.6): an events file holding only openings, which a load that
-    /// failed leaves, is none ([`log::has_records`]). One not open here
+    /// failed leaves, is none ([`transcript::has_records`]). One not open here
     /// opens now, so that the replay is the session's; one open here has its
     /// transcript already, from this process, whether or not the logger has
     /// written it yet, unless the process logs nothing; one this process
@@ -2152,7 +2152,8 @@ impl Host {
     /// an events file holding only openings, which a load that failed
     /// leaves, is none (ADR 5.6).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
-        self.sink.recorded(session) || log::transcripts(session).iter().any(|p| log::has_records(p))
+        self.sink.recorded(session)
+            || transcript::of_session(session).iter().any(|p| transcript::has_records(p))
     }
 
     /// `session`'s lock, for a session this process is to serve. One another

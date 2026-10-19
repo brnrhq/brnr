@@ -15,30 +15,29 @@
 //!   doctor.rs: `doctor`; skill.rs: `skill`
 //! - here: `process list`, `process stop`, `session status`,
 //!   `permission requests`, `permission allow` and `reject`, `event watch`
+//! - args.rs: every command's arguments, read from one table before it runs
 //!
 //! A `<session>` is a session's id, as the agent gave it. A `<pid>` is a
 //! brnr process, which runs one agent for one or more sessions. Commands that
 //! act on a session need it running and say so when it isn't. Which process
-//! serves a session is what the session's lock says (ADR 3.9, see lock.rs),
-//! whether that process answers or not.
+//! serves a session is what the session's lock says (ADR 3.9), whether that
+//! process answers or not; ownership.rs says where a session is, and what a
+//! command may do with it there.
 //!
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `event log`, `event watch` and `session new --foreground`).
 
 use std::collections::HashMap;
 use std::env;
-use std::fmt::Display;
-use std::fs;
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::host::{EVENTS, QUIET, alive};
-use crate::{json, lock, log, paths, render};
+use crate::host::{EVENTS, QUIET};
+use crate::{json, lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -55,17 +54,24 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
+mod args;
 mod catch_up;
+mod client;
 mod delete;
 mod doctor;
 mod elicitation;
 mod history;
 mod notify;
+mod ownership;
 mod sessions;
 mod settings;
 mod show;
 mod skill;
 mod talk;
+
+use args::Args;
+use client::{Conn, Host, discover};
+use ownership::running_session;
 
 /// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
@@ -161,97 +167,101 @@ const START_TIMEOUT: u64 = 120;
 const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `acp` and `host`. A group's
-/// commands are `brnr <group> <verb>`; the others, one word.
+/// commands are `brnr <group> <verb>`; the others, one word. Each verb's
+/// arguments are read as [`args::VERBS`] has them, before it runs.
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
     let cmd = args.first().map_or("", String::as_str);
     let grouped = GROUPS.contains(&cmd);
     let verb = if grouped { args.get(1).map(String::as_str) } else { None };
     let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
-    let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
-    let result = match (cmd, verb) {
-        (group, Some(verb))
-            if grouped && asks_help(group, verb, rest) && has_usage(group, verb) =>
-        {
-            outln!("{}", usage_of(group, Some(verb)));
+    // `skill install` is a verb of a command outside the groups.
+    let (verb, rest) = match rest {
+        [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
+        _ => (verb, rest),
+    };
+    let result = match args::spec(cmd, verb) {
+        Some(spec) if grouped && spec.asks_help(rest) => {
+            outln!("{}", usage_of(cmd, verb));
             Ok(ExitCode::SUCCESS)
         }
-        ("process", Some("list")) => done(ps(rest)),
-        ("process", Some("stop")) => done(stop(rest)),
-        ("session", Some("new")) => talk::new(rest),
-        ("session", Some("resume")) => talk::resume(rest),
-        ("session", Some("list")) => sessions::list(rest),
-        ("session", Some("status")) => done(status(rest)),
-        ("session", Some("fork")) => settings::fork(rest),
-        ("session", Some("close")) => settings::close(rest),
-        ("session", Some("delete")) => delete::delete(rest),
-        ("prompt", Some("send")) => talk::send(rest),
-        ("prompt", Some("cancel")) => talk::cancel(rest),
-        ("prompt", Some("commands")) => settings::commands(rest),
-        ("queue", Some("list")) => talk::queue_list(rest),
-        ("queue", Some("show")) => talk::queue_show(rest),
-        ("queue", Some("drop")) => talk::queue_drop(rest),
-        ("queue", Some("clear")) => talk::queue_clear(rest),
-        ("permission", Some("requests")) => done(pending(rest)),
-        ("permission", Some("show")) => show::show(rest),
-        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(rest, verb)),
-        ("elicitation", Some("requests")) => done(elicitation::requests(rest)),
-        ("elicitation", Some("show")) => done(elicitation::show(rest)),
-        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
-            done(elicitation::answer(rest, verb))
-        }
-        ("config", Some("get")) => settings::config_get(rest),
-        ("config", Some("set")) => settings::config_set(rest),
-        ("event", Some("log")) => history::log(rest),
-        ("event", Some("watch")) => watch(rest),
-        ("event", Some("notify")) => notify::notify(rest),
-        ("event", Some("wait")) => talk::wait(rest),
-        (group, Some("-h" | "--help")) if grouped => {
-            outln!("{}", usage_of(group, None));
-            Ok(ExitCode::SUCCESS)
-        }
-        (group, Some(verb)) if grouped => {
-            Err(format!("unknown command: {group} {verb}\n{}", usage_of(group, None)))
-        }
-        (_, None) if grouped => Err(USAGE.to_owned()),
-        ("doctor", _) => done(doctor::main(rest)),
-        ("skill", _) => done(skill::skill(rest)),
-        ("-h" | "--help", _) => {
-            outln!("{USAGE}");
-            Ok(ExitCode::SUCCESS)
-        }
-        ("-V" | "--version", _) => {
-            outln!("brnr {}", env!("CARGO_PKG_VERSION"));
-            Ok(ExitCode::SUCCESS)
-        }
-        ("", _) => Err(USAGE.to_owned()),
-        (cmd, _) => Err(format!("unknown command: {cmd} (brnr --help for every command)")),
+        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)),
+        None => match (cmd, verb) {
+            (group, Some("-h" | "--help")) if grouped => {
+                outln!("{}", usage_of(group, None));
+                Ok(ExitCode::SUCCESS)
+            }
+            (group, Some(verb)) if grouped => Err(args::Error::Message(format!(
+                "unknown command: {group} {verb}\n{}",
+                usage_of(group, None)
+            ))),
+            ("-h" | "--help", _) => {
+                outln!("{USAGE}");
+                Ok(ExitCode::SUCCESS)
+            }
+            ("-V" | "--version", _) => {
+                outln!("brnr {}", env!("CARGO_PKG_VERSION"));
+                Ok(ExitCode::SUCCESS)
+            }
+            (_, None) if grouped => Err(args::Error::Usage),
+            ("", _) => Err(args::Error::Usage),
+            (cmd, _) => Err(args::Error::Message(format!(
+                "unknown command: {cmd} (brnr --help for every command)"
+            ))),
+        },
     };
     match result {
         Ok(code) => code,
-        Err(msg) if msg == USAGE => {
+        Err(args::Error::Usage) => {
             eprintln!("{}", usage_of(cmd, verb));
             ExitCode::FAILURE
         }
-        Err(msg) => {
+        Err(args::Error::Message(msg)) => {
             errln!("brnr: {msg}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Whether a verb's `args` ask for its usage: `-h` or `--help` before any
-/// `--`, after which they are the agent's or the command's, and before a
-/// prompt's first word, after which they are the prompt's.
-fn asks_help(group: &str, verb: &str, args: &[String]) -> bool {
-    match (group, verb) {
-        ("prompt", "send") => talk::prompt_start(args).1,
-        _ => args.iter().take_while(|a| *a != "--").any(|a| a == "-h" || a == "--help"),
-    }
-}
-
-/// Whether [`USAGE`] has `brnr <group> <verb>`.
-fn has_usage(group: &str, verb: &str) -> bool {
-    USAGE.lines().any(|l| l.split_whitespace().take(3).eq(["brnr", group, verb]))
+/// Runs the verb `spec` is, with its arguments `a`.
+fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
+    let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
+    let code = match (spec.cmd, spec.verb) {
+        ("process", Some("list")) => done(ps(a)),
+        ("process", Some("stop")) => done(stop(a)),
+        ("session", Some("new")) => talk::new(a),
+        ("session", Some("resume")) => talk::resume(a),
+        ("session", Some("list")) => sessions::list(a),
+        ("session", Some("status")) => done(status(a)),
+        ("session", Some("fork")) => settings::fork(a),
+        ("session", Some("close")) => settings::close(a),
+        ("session", Some("delete")) => delete::delete(a),
+        ("prompt", Some("send")) => talk::send(a),
+        ("prompt", Some("cancel")) => talk::cancel(a),
+        ("prompt", Some("commands")) => settings::commands(a),
+        ("queue", Some("list")) => talk::queue_list(a),
+        ("queue", Some("show")) => talk::queue_show(a),
+        ("queue", Some("drop")) => talk::queue_drop(a),
+        ("queue", Some("clear")) => talk::queue_clear(a),
+        ("permission", Some("requests")) => done(pending(a)),
+        ("permission", Some("show")) => show::show(a),
+        ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(a, verb)),
+        ("elicitation", Some("requests")) => done(elicitation::requests(a)),
+        ("elicitation", Some("show")) => done(elicitation::show(a)),
+        ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
+            done(elicitation::answer(a, verb))
+        }
+        ("config", Some("get")) => settings::config_get(a),
+        ("config", Some("set")) => settings::config_set(a),
+        ("event", Some("log")) => history::log(a),
+        ("event", Some("watch")) => watch(a),
+        ("event", Some("notify")) => notify::notify(a),
+        ("event", Some("wait")) => talk::wait(a),
+        ("doctor", None) => done(doctor::main(a)),
+        ("skill", None) => return skill::skill(a).map(|()| ExitCode::SUCCESS),
+        ("skill", Some("install")) => done(skill::install(a)),
+        (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
+    };
+    Ok(code?)
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
@@ -309,114 +319,7 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
     format!("usage:\n{}\n(brnr --help for every command)", lines.join("\n"))
 }
 
-/// A running brnr process: its metadata file and, if it answered, its live
-/// status.
-struct Host {
-    meta: Value,
-    status: Option<Value>,
-}
-
-impl Host {
-    fn info(&self) -> &Value {
-        self.status.as_ref().unwrap_or(&self.meta)
-    }
-
-    /// Its pid, which names its socket and metadata.
-    fn id(&self) -> &str {
-        self.meta["id"].as_str().unwrap_or("?")
-    }
-
-    fn sessions(&self) -> &[Value] {
-        self.status.as_ref().and_then(|s| s["sessions"].as_array()).map_or(&[], Vec::as_slice)
-    }
-
-    /// Whether it has closed `session` and holds its lock still, until its
-    /// records are written (ADR 5.5).
-    fn closing(&self, session: &str) -> bool {
-        let closing = self.status.as_ref().and_then(|s| s["closing"].as_array());
-        closing.is_some_and(|c| c.iter().any(|s| s == session))
-    }
-
-    /// The sessions whose locks it holds, as `locks` has them: what it
-    /// serves, asked of nobody.
-    fn held(&self, locks: &[lock::Entry]) -> Vec<String> {
-        let pid = self.id().parse().ok();
-        let held = locks.iter().filter(|e| e.pid.is_some() && e.pid == pid);
-        held.filter_map(|e| e.session.clone()).collect()
-    }
-}
-
 // ---- naming sessions and processes ---------------------------------------
-
-/// What a `<session>` argument names.
-enum Found<'a> {
-    /// A running session: its process and id.
-    Running(&'a Host, String),
-    /// One that has ended, as `inactive_sessions` has it.
-    Inactive(Value),
-}
-
-/// What is said of `session`, closed in process `pid`, whose lock it holds
-/// until its records are written (ADR 5.5).
-fn closing(session: &str, pid: impl Display) -> String {
-    format!(
-        "{session} is closing in process {pid}; it's free once its records are written (2 s at most)"
-    )
-}
-
-/// "`session` is running in process `pid`", then `hint`; for a process
-/// started with another runtime directory, which the commands run here
-/// can't reach, that directory instead, and that `BRNR_DIR` set to it
-/// reaches the process (ADR 3.9).
-fn running_in(session: &str, pid: impl Display, hint: &str) -> String {
-    match lock::holder_dir(session) {
-        Some(dir) => format!(
-            "{session} is running in process {pid} with runtime directory {} ({} reaches it)",
-            dir.display(),
-            paths::brnr_dir_is(&dir)
-        ),
-        None => format!("{session} is running in process {pid}{hint}"),
-    }
-}
-
-/// The process holding `session`'s lock as it closes it, if one is: see
-/// `closing`.
-fn closing_in<'a>(hosts: &'a [Host], session: &str) -> Option<&'a Host> {
-    let pid = lock::holder(session)?.to_string();
-    hosts.iter().find(|h| h.id() == pid && h.closing(session))
-}
-
-/// The session with id `arg`, running or not: in the process holding its
-/// lock, or one that serves it shared, without the lock (ADR 3.9).
-fn find_session<'a>(hosts: &'a [Host], arg: &str) -> Result<Found<'a>, String> {
-    let serves = |host: &Host| host.sessions().iter().any(|s| s["session_id"] == arg);
-    if let Some(pid) = lock::holder(arg) {
-        return match hosts.iter().find(|h| h.id() == pid.to_string()) {
-            Some(host) if serves(host) => Ok(Found::Running(host, arg.to_owned())),
-            Some(host) if host.status.is_none() => {
-                Err(format!("{arg} is running in process {pid}, which is not answering"))
-            }
-            Some(host) if host.closing(arg) => Err(closing(arg, pid)),
-            Some(_) => Err(format!("{arg} is opening in process {pid}")),
-            None => Err(running_in(arg, pid, ", which brnr doesn't list")),
-        };
-    }
-    if let Some(host) = hosts.iter().find(|h| serves(h)) {
-        return Ok(Found::Running(host, arg.to_owned()));
-    }
-    if let Some(p) = inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == arg) {
-        return Ok(Found::Inactive(p));
-    }
-    Err(format!("no session {arg} (see brnr session list)"))
-}
-
-/// The running session `arg` names, for what needs one running.
-fn running_session<'a>(hosts: &'a [Host], arg: &str) -> Result<(&'a Host, String), String> {
-    match find_session(hosts, arg)? {
-        Found::Running(host, id) => Ok((host, id)),
-        Found::Inactive(_) => Err(format!("{arg} isn't running: brnr session resume {arg}")),
-    }
-}
 
 /// The process with pid `pid`.
 fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
@@ -442,15 +345,8 @@ fn session_or_pid<'a>(
 
 // ---- processes -----------------------------------------------------------
 
-fn ps(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn ps(a: &Args) -> Result<(), String> {
+    let json_out = a.json;
     let hosts = discover()?;
     let locks = lock::all();
     let rows: Vec<Value> = hosts
@@ -498,26 +394,11 @@ fn ps(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The one `<session>` or `<pid>` a command takes, and whether `--json` was
-/// given: an option it doesn't take is never read as its argument.
-fn one_arg(args: &[String]) -> Result<(String, bool), String> {
-    let (mut arg, mut json_out) = (None, false);
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    Ok((arg.ok_or(USAGE)?, json_out))
-}
-
-fn stop(args: &[String]) -> Result<(), String> {
-    let (pid, json_out) = one_arg(args)?;
+fn stop(a: &Args) -> Result<(), String> {
+    let (pid, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let host = process(&hosts, &pid)?;
-    let response = call(host, &json!({ "cmd": "stop" }))?;
+    let host = process(&hosts, pid)?;
+    let response = host.call(&json!({ "cmd": "stop" }))?;
     if json_out {
         // Its pid as `process list` has it, as `prompt cancel` names its session.
         let pid = host.id().parse::<u64>().ok();
@@ -543,14 +424,6 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         .iter()
         .flat_map(|h| h.sessions().iter().filter_map(|s| s["log"].as_str().map(PathBuf::from)))
         .collect();
-    let projects = paths::state_dir().join("projects");
-    let files = fs::read_dir(&projects)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(|p| paths::is_events_log(p));
 
     // A session whose lock is held is running, whether its process answers
     // or not.
@@ -558,8 +431,12 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session).collect();
     let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
-    for file in files {
-        let (Some(first), Some(last)) = (first_record(&file), last_record(&file)) else { continue };
+    for file in transcript::events_files() {
+        let (Some(first), Some(last)) =
+            (transcript::first(&file), transcript::last(&file, |_| true))
+        else {
+            continue;
+        };
         let Some(session) = last["session_id"].as_str() else { continue };
         if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
@@ -568,13 +445,13 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         // process's (ADR 8.1).
         let served = match last["host_id"].is_string() {
             true => Some(last.clone()),
-            false => last_record_where(&file, |r| r["host_id"].is_string()),
+            false => transcript::last(&file, |r| r["host_id"].is_string()),
         };
         let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
         let host_id = host_id.unwrap_or_default().to_owned();
         let start = started
             .entry(host_id.clone())
-            .or_insert_with(|| first_record(&paths::host_log(&host_id)).unwrap_or_default());
+            .or_insert_with(|| transcript::first(&paths::host_log(&host_id)).unwrap_or_default());
         let info = &start["event"]["info"];
         past.push(json!({
             "session_id": session,
@@ -600,53 +477,8 @@ fn forked_from(s: &Value) -> Value {
     if s["forked_from"].is_string() {
         return s["forked_from"].clone();
     }
-    let first = s["log"].as_str().and_then(|log| first_record(Path::new(log)));
+    let first = s["log"].as_str().and_then(|log| transcript::first(Path::new(log)));
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
-}
-
-/// The first record in a file that brnr can read (ADR 5.1).
-fn first_record(path: &Path) -> Option<Value> {
-    let lines = BufReader::new(fs::File::open(path).ok()?).split(b'\n');
-    lines.map_while(Result::ok).find_map(|line| log::as_record(&line))
-}
-
-/// The last record in a file that brnr can read, read backwards so a long
-/// transcript costs no more than its last records. A line brnr can't read
-/// is passed over (ADR 5.1): one a process that died mid-write cut short,
-/// at the end or, once another process has taken the file, before what it
-/// wrote. A line cut short is never read as a record: an object ends only
-/// at its last byte.
-fn last_record(path: &Path) -> Option<Value> {
-    last_record_where(path, |_| true)
-}
-
-/// The last record in a file that brnr can read and `wanted` takes, read
-/// backwards as [`last_record`] reads.
-fn last_record_where(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
-    use std::io::{Seek, SeekFrom};
-    let mut file = fs::File::open(path).ok()?;
-    let mut end = file.metadata().ok()?.len();
-    // From `end` to the start of the lines already tried.
-    let mut tail: Vec<u8> = Vec::new();
-    loop {
-        let start = end.saturating_sub(64 * 1024);
-        let mut chunk = vec![0; (end - start) as usize];
-        file.seek(SeekFrom::Start(start)).ok()?;
-        file.read_exact(&mut chunk).ok()?;
-        chunk.extend_from_slice(&tail);
-        tail = chunk;
-        // Its lines, last first; the first is whole only at the file's start.
-        while let Some(i) = tail.iter().rposition(|&b| b == b'\n') {
-            if let Some(found) = log::as_record(&tail[i + 1..]).filter(&wanted) {
-                return Some(found);
-            }
-            tail.truncate(i);
-        }
-        if start == 0 {
-            return log::as_record(&tail).filter(&wanted);
-        }
-        end = start;
-    }
 }
 
 fn agent_name(argv: &Value) -> String {
@@ -656,12 +488,12 @@ fn agent_name(argv: &Value) -> String {
     Path::new(program).file_name().map_or(program.to_owned(), |f| f.to_string_lossy().into_owned())
 }
 
-fn status(args: &[String]) -> Result<(), String> {
-    let (arg, json_out) = one_arg(args)?;
+fn status(a: &Args) -> Result<(), String> {
+    let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
-    let (host, id) = running_session(&hosts, &arg)?;
+    let (host, id) = running_session(&hosts, arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
-    let x = host.sessions().iter().find(|s| s["session_id"] == id.as_str()).ok_or("no session")?;
+    let x = host.session(&id).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session_id"] == id.as_str() && s["shared"] == true;
@@ -714,7 +546,7 @@ fn status(args: &[String]) -> Result<(), String> {
     if json_out {
         return print_json(&report);
     }
-    out!("{}", describe_status(&report, &arg));
+    out!("{}", describe_status(&report, arg));
     Ok(())
 }
 
@@ -848,19 +680,10 @@ fn when(ts: &str) -> String {
 
 /// The approvals waiting, in every process that answers (saying which
 /// don't) or in one session's.
-fn pending(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
-    let mut arg = None;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn pending(a: &Args) -> Result<(), String> {
+    let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
-    let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
+    let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
         // Those that answered `discover`: one that didn't is passed over, as
         // process list and session list do (ADR 3.9), not waited for again,
         // and said to be (P3).
@@ -878,61 +701,49 @@ fn pending(args: &[String]) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    let mut answers = Vec::new();
-    for host in chosen {
-        let line = exchange(host, &json!({ "cmd": "pending" }), ANSWER_WAIT)
-            .map_err(|e| format!("process {}: {e}", host.id()))?;
-        answers.push((host.id(), line));
-    }
     // A request nests as deep as the agent made it: read as the host reads
-    // the agent's line, and listed and let go on a stack that takes it
+    // the agent's line, and listed and let go of on a stack that takes it
     // (ADR 2.5).
-    let depth = answers.iter().map(|(_, line)| json::depth(line.as_bytes())).max().unwrap_or(0);
-    json::on_stack(depth, || list_pending(&answers, only.as_deref(), json_out))
-        .unwrap_or_else(|| Err(format!("no stack to be had for an answer {depth} deep")))
+    let mut rows = Vec::new();
+    for host in chosen {
+        rows.extend(host.pending(|pending| {
+            pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
+        })?);
+    }
+    json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
 }
 
-/// The permission requests in each process's `answers` (of session `only`,
-/// if given), as a table or `--json`.
-fn list_pending(
-    answers: &[(&str, String)],
-    only: Option<&str>,
-    json_out: bool,
-) -> Result<(), String> {
-    let mut rows = Vec::new();
-    for (id, line) in answers {
-        let response: Value = json::parse(line.as_bytes())
-            .ok_or_else(|| format!("process {id}: its answer isn't JSON"))?;
-        for p in response["pending"].as_array().into_iter().flatten() {
-            if only.is_some_and(|id| p["session"] != id) {
-                continue;
-            }
-            let options: Vec<Value> = p["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
-                .collect();
-            rows.push(json!({
-                "session": p["session"],
-                "request": p["request"],
-                "owner": p["owner"],
-                "kind": p["kind"],
-                "title": p["title"],
-                "options": options,
-            }));
-        }
-    }
+/// A permission request as `permission requests` lists it.
+fn pending_row(p: &Value) -> Value {
+    let options: Vec<Value> = p["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
+        .collect();
+    json!({
+        "session": p["session"],
+        "request": p["request"],
+        "owner": p["owner"],
+        "kind": p["kind"],
+        "title": p["title"],
+        "options": options,
+    })
+}
+
+/// The permission requests' `rows`, as a table or `--json`.
+fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(rows);
     }
+    let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
         outln!("nothing waiting");
         return Ok(());
     }
     let mut table =
         vec![["SESSION", "REQUEST", "OWNER", "KIND", "TITLE", "OPTIONS"].map(String::from)];
-    for r in &rows {
+    for r in rows {
         let options: Vec<String> = r["options"]
             .as_array()
             .into_iter()
@@ -955,22 +766,9 @@ fn list_pending(
 /// `permission allow` and `reject` (`cmd`): the request's option of one
 /// kind, or the one `--option` names; the host picks it, and says why it
 /// can't (ADR 8.1).
-fn answer(args: &[String], cmd: &str) -> Result<(), String> {
-    let mut positional = Vec::new();
-    let mut option = None;
-    let mut always = false;
-    let mut json_out = false;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--always" => always = true,
-            "--option" => option = Some(it.next().ok_or("--option needs an id")?.clone()),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => positional.push(arg.clone()),
-        }
-    }
-    let [arg, request_id] = &positional[..] else { return Err(USAGE.to_owned()) };
+fn answer(a: &Args, cmd: &str) -> Result<(), String> {
+    let [arg, request_id] = &a.positional[..] else { unreachable!("the table has two") };
+    let (option, always, json_out) = (a.value("--option"), a.has("--always"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let req = json!({
@@ -980,7 +778,7 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
         "always": always,
         "option": option,
     });
-    let response = call(host, &req)?;
+    let response = host.call(&req)?;
     let outcome = &response["outcome"];
     if json_out {
         return print_json(
@@ -1000,23 +798,11 @@ fn answer(args: &[String], cmd: &str) -> Result<(), String> {
 /// falling behind, it catches up from the transcript and goes on; unable to,
 /// it ends with what it missed, an `events-missed` note, and exits 3 (ADR
 /// 69).
-fn watch(args: &[String]) -> Result<ExitCode, String> {
-    let (mut session, mut pid) = (None, None);
-    let mut events = default_events();
-    let mut json_out = false;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--events" => events = events_arg(it.next(), &default_events())?,
-            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if session.is_none() => session = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+fn watch(a: &Args) -> Result<ExitCode, String> {
+    let (session, pid, json_out) = (a.positional.first(), a.value("--pid"), a.json);
+    let mut events = events_arg(a, &default_events())?;
     let hosts = discover()?;
-    let (host, only_session) = session_or_pid(&hosts, session.as_deref(), pid.as_deref())?;
+    let (host, only_session) = session_or_pid(&hosts, session.map(String::as_str), pid)?;
     // `exited` (and for a session, `session_closed`) is how watch tells the
     // end from the process cutting the connection; asked for even when not
     // shown.
@@ -1028,7 +814,7 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
             events.push(end.to_string());
         }
     }
-    let mut conn = talk::Conn::open(host)?;
+    let mut conn = Conn::open(host)?;
     let names: Vec<&str> = events.iter().map(String::as_str).collect();
     conn.subscribe(&names, only_session.as_deref())?;
     let options = render::Options { session: only_session.is_none(), time: true };
@@ -1069,11 +855,16 @@ fn watch(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// The value of `--events` (for `event watch`, `event log` and `event
+/// What `--events` asks for (in `event watch`, `event log` and `event
 /// notify`): event names, `default` for the command's own `default` (what it
 /// does without `--events`), `all` for every event.
-fn events_arg(list: Option<&String>, default: &[String]) -> Result<Vec<String>, String> {
-    let list = list.ok_or("--events needs a list")?;
+fn events_arg(a: &Args, default: &[String]) -> Result<Vec<String>, String> {
+    let events = a.value_as("--events", |list| events_in(list, default))?;
+    Ok(events.unwrap_or_else(|| default.to_vec()))
+}
+
+/// The events one `--events` names.
+fn events_in(list: &str, default: &[String]) -> Result<Vec<String>, String> {
     let mut events = Vec::new();
     for name in list.split(',').map(str::trim) {
         let names = match name {
@@ -1101,194 +892,6 @@ fn default_events() -> Vec<String> {
 }
 
 // ---- plumbing ------------------------------------------------------------
-
-/// Every process with a metadata file, asking each for its live status.
-/// Files left by a process that is gone are removed, even when its pid is
-/// another process's now (see `gone`). The runtime directory must be
-/// private, as the processes themselves require: anyone who could write to
-/// it could list a process of their own, and be sent what brnr sends.
-fn discover() -> Result<Vec<Host>, String> {
-    let dir = paths::runtime_dir();
-    match paths::check_private(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("{}: {e}", dir.display())),
-    }
-    let Ok(entries) = fs::read_dir(&dir) else { return Ok(Vec::new()) };
-    let mut hosts = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let Some(meta) = read_meta(&path) else { continue };
-        let mut host = Host { meta, status: None };
-        match probe(&path, &host) {
-            Probe::Answered(status) => host.status = Some(status),
-            Probe::Silent(_) => {}
-            Probe::Gone => {
-                let _ = fs::remove_file(&path);
-                let _ = fs::remove_file(path.with_extension("sock"));
-                continue;
-            }
-        }
-        hosts.push(host);
-    }
-    hosts.sort_by(|a, b| a.meta["started"].as_str().cmp(&b.meta["started"].as_str()));
-    Ok(hosts)
-}
-
-/// What a process whose metadata is at `path` turned out to be, asked for
-/// its status.
-enum Probe {
-    /// Running and answering: its status.
-    Answered(Value),
-    /// Running but not answering (ADR 3.9): why.
-    Silent(String),
-    /// Gone, whatever process has its pid now.
-    Gone,
-}
-
-/// Asks the process whose metadata is at `path` for its status, and says
-/// what it is.
-fn probe(path: &Path, host: &Host) -> Probe {
-    let pid = host.meta["host_pid"].as_i64().unwrap_or(0);
-    let socket = path.with_extension("sock");
-    match request(host, &json!({ "cmd": "status" })) {
-        Ok(status) => Probe::Answered(status),
-        Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
-        // Running, but accepting nothing: its backlog is full (`made`).
-        Err(e) if refused(&e) => Probe::Silent("not answering".into()),
-        Err(e) => Probe::Silent(e.to_string()),
-    }
-}
-
-/// How long a refused connection waits to be tried again: a process that
-/// is starting binds its socket a moment before it listens on it.
-const REFUSED_AGAIN: Duration = Duration::from_millis(20);
-
-/// Whether the brnr process with `pid` that made `file` in the runtime
-/// directory (its metadata, or its socket) is gone, a connection to its
-/// `socket` having failed with `err`.
-///
-/// A brnr process binds its socket and listens on it before it writes
-/// anything else there, and listens until it removes it as it ends. While
-/// it lives, connecting succeeds, whether it answers or not (SIGSTOPped
-/// too: the kernel queues the connection). A socket nobody listens on
-/// refuses, as one that isn't there does: the process that made it is
-/// gone, even when another process has its pid now (a reboot, or pids
-/// wrapping around). A pid that isn't the user's isn't brnr's (`alive`).
-fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> bool {
-    if !alive(pid) {
-        return true;
-    }
-    if !refused(err) {
-        return false;
-    }
-    std::thread::sleep(REFUSED_AGAIN);
-    match UnixStream::connect(socket) {
-        Err(e) if refused(&e) => !made(pid, file),
-        _ => false,
-    }
-}
-
-/// Whether a connection failed because nobody listens: refused, or no
-/// socket there.
-fn refused(err: &io::Error) -> bool {
-    matches!(err.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound)
-}
-
-/// Whether the process with `pid` now may be the one that made `file`,
-/// though its socket refuses: macOS also refuses a connection to a socket
-/// whose backlog is full, as a stopped process's fills up with every
-/// `brnr session list` that waited on it. One that started after `file` was
-/// written is another process. What can't be told counts as "may be":
-/// nothing is removed on a guess (P4).
-#[cfg(target_vendor = "apple")]
-fn made(pid: i64, file: &Path) -> bool {
-    use std::time::UNIX_EPOCH;
-    let Ok(written) = fs::metadata(file).and_then(|m| m.modified()) else { return true };
-    // SAFETY: proc_bsdinfo is plain data, for which all zeros is a valid
-    // value.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let buffer = (&raw mut info).cast();
-    // SAFETY: buffer points at info, and size is its size, as proc_pidinfo
-    // fills it.
-    let got =
-        unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, buffer, size) };
-    if got != size {
-        return true;
-    }
-    let started = UNIX_EPOCH
-        + Duration::from_secs(info.pbi_start_tvsec)
-        + Duration::from_micros(info.pbi_start_tvusec);
-    started <= written
-}
-
-/// Linux refuses a connection only when nobody listens: a full backlog
-/// makes it wait.
-#[cfg(not(target_vendor = "apple"))]
-fn made(_pid: i64, _file: &Path) -> bool {
-    false
-}
-
-/// A process's metadata file, if it is one: the socket it names must be the
-/// one next to it in the runtime directory.
-fn read_meta(path: &Path) -> Option<Value> {
-    let meta: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    let socket = meta["socket"].as_str().map(Path::new);
-    (socket == Some(&path.with_extension("sock"))).then_some(meta)
-}
-
-fn connect(host: &Host) -> io::Result<UnixStream> {
-    let socket = host.meta["socket"].as_str().ok_or(io::Error::other("no socket in metadata"))?;
-    UnixStream::connect(PathBuf::from(socket))
-}
-
-/// How long a request waits for its answer, unless it says otherwise.
-const ANSWER_WAIT: Duration = Duration::from_secs(5);
-
-fn request(host: &Host, req: &Value) -> io::Result<Value> {
-    request_timeout(host, req, ANSWER_WAIT)
-}
-
-/// A request and its answer, waiting up to `timeout` for it.
-fn request_timeout(host: &Host, req: &Value, timeout: Duration) -> io::Result<Value> {
-    serde_json::from_str(&exchange(host, req, timeout)?).map_err(io::Error::other)
-}
-
-/// A request and the line that answers it, waiting up to `timeout` for it.
-fn exchange(host: &Host, req: &Value, timeout: Duration) -> io::Result<String> {
-    let mut conn = connect(host)?;
-    conn.set_read_timeout(Some(timeout))?;
-    writeln!(conn, "{req}")?;
-    let mut line = String::new();
-    BufReader::new(conn).read_line(&mut line).map_err(|e| match e.kind() {
-        ErrorKind::WouldBlock | ErrorKind::TimedOut => io::Error::other("not answering"),
-        _ => e,
-    })?;
-    Ok(line)
-}
-
-/// A request whose failure is the command's failure.
-fn call(host: &Host, req: &Value) -> Result<Value, String> {
-    let response = request(host, req).map_err(|e| format!("process {}: {e}", host.id()))?;
-    if response["ok"].as_bool() != Some(true) {
-        return Err(response["error"].as_str().unwrap_or("request failed").to_owned());
-    }
-    Ok(response)
-}
-
-/// A response as `--json` prints it: what it says, without `ok` and
-/// `req_id`.
-fn response_json(mut response: Value) -> Value {
-    if let Some(map) = response.as_object_mut() {
-        map.shift_remove("ok");
-        map.shift_remove("req_id");
-    }
-    response
-}
 
 fn print_json(value: &Value) -> Result<(), String> {
     outln!("{}", serde_json::to_string_pretty(value).unwrap());
@@ -1341,35 +944,5 @@ mod tests {
         // Waiting for an elicitation only (ADR 4.5).
         let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
         assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
-    }
-
-    /// What `session list` and `session resume` take from a transcript, whatever
-    /// its end (ADR 5.1): ending in a newline or not; cut short; a whole line
-    /// that isn't a record, last or before the last; empty; nothing readable.
-    #[test]
-    fn adr_0005_the_first_and_last_records_are_ones_brnr_can_read() {
-        let path = env::temp_dir().join(format!("brnr-records-{}.jsonl", std::process::id()));
-        let cases: [(&str, Option<i64>, Option<i64>); 9] = [
-            ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"part\n{\"n\":3}\n", Some(1), Some(3)),
-            ("{\"ts\":\"part\n{\"n\":1}\n", Some(1), Some(1)),
-            ("{\"n\":1}\n42\n", Some(1), Some(1)),
-            ("", None, None),
-            ("{\"ts\":\"partial", None, None),
-        ];
-        let n = |r: Option<Value>| r.and_then(|r| r["n"].as_i64());
-        for (text, first, last) in cases {
-            fs::write(&path, text).unwrap();
-            assert_eq!((n(first_record(&path)), n(last_record(&path))), (first, last), "{text:?}");
-        }
-        // Past the 64 KiB a read backwards takes at a time.
-        let long = format!(r#"{{"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
-        let junk = "y".repeat(70_000);
-        fs::write(&path, format!("{{\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut")).unwrap();
-        assert_eq!(n(last_record(&path)), Some(3));
-        let _ = fs::remove_file(path);
     }
 }

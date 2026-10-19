@@ -4268,7 +4268,12 @@ fn adr_0002_a_deep_request_that_times_out_is_answered() {
     assert_eq!(answer().unwrap(), json!({ "outcome": "cancelled" }));
     let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
     assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
-    assert!(env.ok(&["event", "log", "sess-1"]).contains("permission p1 cancelled, by timeout"));
+    // The request too, which `event log` read as no record (ADR 2.5).
+    let out = env.run(&["event", "log", "sess-1"]);
+    let (logged, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(err.is_empty(), "{err}");
+    assert!(logged.contains("permission p1: Edit src/lib.rs"), "{logged}");
+    assert!(logged.contains("permission p1 cancelled, by timeout"), "{logged}");
     env.stop();
 }
 
@@ -4290,6 +4295,44 @@ fn adr_0002_a_deep_request_is_listed() {
         assert!(text.contains("p1") && text.contains("Edit src/lib.rs"), "{depth}: {text}");
         writeln!(to_agent, "{ALLOW}").unwrap();
         line_with(&mut from_agent, "end_turn");
+    }
+}
+
+/// So do `permission show`, and `elicitation requests` and `show`, whose
+/// answer has every request waiting in the process: a request nested past
+/// 128 is shown, in text and `--json`, and an elicitation beside one, or
+/// beside one a million deep, is listed and shown. Shown, a request is
+/// indented: a million deep would be a terabyte of it, so it is shown at
+/// 200 only.
+#[test]
+fn adr_0002_a_deep_request_is_shown() {
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-show-{depth}"));
+        env.start(&[]);
+        env.ok(&["session", "fork", "sess-1"]);
+        env.ok(&["prompt", "send", "sess-2", "elicit form"]);
+        env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
+        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        // A million deep is slow to read on a loaded runner: time enough.
+        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
+        if depth == 200 {
+            let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
+            assert!(shown.starts_with("p1, session sess-1\nEdit src/lib.rs\n"), "{shown}");
+            assert!(shown.contains("input:\n  [\n    [\n"), "{shown}");
+            let shown = env.ok(&["permission", "show", "sess-1", "p1", "--json"]);
+            assert!(shown.contains(r#""request": "p1""#), "{shown}");
+            assert!(shown.matches('[').count() >= depth, "{} bytes", shown.len());
+        }
+        let listed = env.ok(&["elicitation", "requests"]);
+        let row = |l: &str| l.split_whitespace().take(2).eq(["sess-2", "e1"]);
+        assert!(listed.lines().any(row), "{depth}: {listed}");
+        let shown = env.ok(&["elicitation", "show", "sess-2", "e1"]);
+        assert!(shown.starts_with("e1, session sess-2\nTell me about you\n"), "{depth}: {shown}");
+        let shown = env.ok(&["elicitation", "show", "sess-2", "e1", "--json"]);
+        let shown: Value = serde_json::from_str(&shown).unwrap();
+        assert_eq!((&shown["request"], &shown["mode"]), (&"e1".into(), &"form".into()), "{depth}");
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+        env.stop();
     }
 }
 
@@ -4450,6 +4493,38 @@ fn adr_0002_a_deep_event_is_caught_up() {
         let request = request.expect("no permission_request");
         let raw = format!(r#""rawInput":{}"#, "[".repeat(depth));
         assert!(request.contains(&raw), "{depth}: {} bytes", request.len());
+    }
+}
+
+/// And so does `event log` (ADR 5.1): a request nested past 128, or a
+/// million deep, is shown from the transcript as `event watch` showed it,
+/// in text and `--json`, where it was said not to be a record brnr can read.
+#[test]
+fn adr_0002_a_deep_request_is_logged() {
+    for depth in [200, 1_000_000] {
+        let env = Env::new(&format!("deep-log-{depth}"));
+        env.start(&[]);
+        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        // A slow runner's process can be busy with the deep line past the
+        // 10 seconds of a wait: it is asked again, as it stays pending.
+        let asked = || {
+            let wait = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
+            env.run(&wait).status.success()
+        };
+        assert!(wait_for(Duration::from_secs(40), asked), "{depth}: never asked");
+        let args = ["event", "log", "sess-1", "--events", "permission_request"];
+        for json_out in [false, true] {
+            let out = env.run(&[&args[..], if json_out { &["--json"] } else { &[] }].concat());
+            let (shown, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
+            assert!(out.status.success() && err.is_empty(), "{depth}: {err}");
+            let want = match json_out {
+                true => format!(r#""rawInput":{}"#, "[".repeat(depth)),
+                false => "permission p1: Edit src/lib.rs".to_owned(),
+            };
+            assert!(shown.contains(&want), "{depth}: event log showed {} bytes", shown.len());
+        }
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+        env.stop();
     }
 }
 

@@ -128,6 +128,13 @@ whose file systems ignore case and Unicode normalization by default,
     …`). For a session's file, the session is served without it and the
     host log has `session-log-failed` with the error (ADR 5.1).
   - A FIFO is opened without blocking, so it is refused, not waited on.
+- What reads a transcript reads it only where it could have been written:
+  `session list`, `event log`, `session resume`, `session delete`,
+  catching up (ADR 10.2) and `doctor` don't look in a symlinked project
+  folder, and don't read a transcript or host log that is a symlink (it
+  is opened `O_NOFOLLOW`) or isn't a regular file. One read through a link
+  would be whatever the link points at, taken for a session of the user's.
+  `transcript.rs` holds every read.
 - There is no override. `log = false` (ADR 5.1) is the way to write
   nothing, and a transcript to share is copied out.
 
@@ -197,6 +204,10 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_only_the_users_own_directories_and_files_are_written_to`: a
       file with another hard link, a FIFO, a file where a directory goes
       and another user's directory are refused.
+  - [src/transcript.rs](../../src/transcript.rs):
+    `adr_0009_a_transcript_is_read_only_where_it_could_be_written`: a
+    symlinked project folder isn't looked in; a symlink, a FIFO and a
+    directory aren't read.
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`:
       a resumed session's events and raw ACP files, made 0644 beneath
@@ -206,3 +217,6 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       events file is left alone and `session-log-failed` says why; a
       symlinked state directory fails the start before the agent is
       prompted.
+    - `adr_0009_a_symlinked_transcript_is_never_read`: a session whose
+      events file is a symlink, or in a symlinked project folder, isn't
+      listed or logged.

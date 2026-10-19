@@ -55,9 +55,24 @@ brnr's own conventions:
   (ADR 2.7, #272).
 - The Claude adapter is built from claude-agent-acp 0.90.0
   (`brnr-claude-adapter`) (ADR 11.3).
+- A command refused for where its session is says it in the same words,
+  whichever command it is: `session delete` of a session open in a process
+  says `sess-1 is running in process 4466: close it first (…)`, and
+  `session resume` and `session delete` of one whose process doesn't
+  answer, is opening it or isn't listed say which, without offering
+  `--take-over` or closing it first, which can't work there (ADR 3.9,
+  #281).
 
 ### Fixed
 
+- A flag's value is never taken as a request for help: `brnr session new
+  --prompt -h` sends `-h` as the prompt, where it printed the usage, as
+  `prompt send` already did (ADR 8.1).
+- A watcher cut off while its process stops reads what it missed from the
+  transcript, where it could fail with `the process closed the connection`:
+  a stopping process hangs up on the question whether it cut the watcher
+  off, so the watcher waits for it to go and asks its host log (ADR 10.2,
+  #275).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork
@@ -106,6 +121,21 @@ brnr's own conventions:
   each event is used and let go of on a stack that takes it, as the host
   does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
   #252).
+- `brnr permission show` shows a request nested deeper than 128, and
+  `elicitation requests` and `elicitation show` work in a process where one
+  waits, where each failed with `recursion limit exceeded`: every command
+  reads the host's answers as `permission requests` does (ADR 2.5).
+- `brnr event log` shows a record nested deeper than 128, such as a deep
+  `permission_request`, as `event watch` showed it live, where it said the
+  line `isn't a record brnr can read, not shown`. `session list`, `session
+  resume` and `doctor` read such a record too, where they passed over it
+  for the one before: a session whose last record nests that deep is
+  listed as last active then (ADR 2.5, ADR 5.1).
+- `session list`, `event log`, `session resume`, catching up and `doctor`
+  no longer read a transcript through a symlink, nor in a symlinked
+  project folder, which they listed and read as the user's sessions though
+  brnr never writes there; `session delete` already left them alone. The
+  transcripts brnr writes are where they were (ADR 9.3).
 
 ## [0.9.0] - 2026-10-16
 

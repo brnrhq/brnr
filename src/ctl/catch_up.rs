@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::{json, log, paths};
+use crate::{json, log, paths, transcript};
 
 /// The exit status of a command that was cut off and couldn't catch up.
 pub(super) const MISSED: u8 = 3;
@@ -89,13 +89,13 @@ impl Follow {
     /// Whether the process, having gone, had cut it off: its host log's
     /// `peer-dropped` says so.
     pub(super) fn cut_off_before_it_went(&self) -> bool {
-        let Ok(file) = File::open(&self.host_log) else { return false };
+        let Ok(file) = transcript::open(&self.host_log) else { return false };
         let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
         let ours =
             |r: &Value| r["event"]["event"] == "peer-dropped" && r["event"]["peer"] == *self.peer;
         lines
             .filter(|l| l.windows(13).any(|w| w == b"\"peer-dropped"))
-            .filter_map(|l| serde_json::from_slice::<Value>(&l).ok())
+            .filter_map(|l| transcript::head(&l))
             .any(|r| ours(&r))
     }
 
@@ -106,7 +106,7 @@ impl Follow {
         let acp = self.events.iter().any(|e| e == "acp");
         let host_log = &self.host_log;
         let mut found = Found { follow: self, until, events: Vec::new(), files: Vec::new() };
-        match File::open(host_log) {
+        match transcript::open(host_log) {
             Ok(file) => found.read(file, acp)?,
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 return Err("the process keeps no transcript (log = false)".into());
@@ -114,7 +114,7 @@ impl Follow {
             Err(e) => return Err(format!("{}: {e}", host_log.display())),
         }
         for path in std::mem::take(&mut found.files) {
-            let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let file = transcript::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             found.read(file, acp)?;
         }
         let mut events = std::mem::take(&mut found.events);
@@ -147,7 +147,7 @@ impl Found<'_> {
                 continue;
             }
             // Before or after what it missed: not read whole.
-            if position(&line).is_some_and(|n| !self.missed(n)) {
+            if transcript::position(&line).is_some_and(|n| !self.missed(n)) {
                 continue;
             }
             // As the host reads it (see json.rs), as the socket's events,
@@ -163,11 +163,12 @@ impl Found<'_> {
     /// (in the host log) a session's files are to read.
     fn record(&mut self, line: &[u8], acp: bool) -> Result<(), String> {
         let f = self.follow;
-        let Some(mut record) = json::parse::<Value>(line) else { return Ok(()) };
+        let Some(record) = transcript::record(line) else { return Ok(()) };
         if record["host_id"] != *f.host_id {
             return Ok(());
         }
-        let event = &record["event"];
+        // An ACP message is an `acp` event, as `event log` has it.
+        let Some(mut event) = transcript::event(record) else { return Ok(()) };
         match event["event"].as_str() {
             Some("session-opened") if event["session_id"].is_string() => {
                 if f.session.as_ref().is_some_and(|s| event["session_id"] != **s) {
@@ -203,28 +204,7 @@ impl Found<'_> {
                     return Ok(());
                 };
                 if self.wanted(name, &event["session"]) {
-                    self.events.push((seq, record["event"].take()));
-                }
-            }
-            // An ACP message, as `acp` events have it.
-            None if acp => {
-                let Some(seq) = record["seq"].as_u64().filter(|&n| self.missed(n)) else {
-                    return Ok(());
-                };
-                let key = if record.get("msg").is_some() { "msg" } else { "raw" };
-                let Some(msg) = record.get_mut(key).map(Value::take) else { return Ok(()) };
-                let session = record["session_id"].take();
-                if self.wanted("acp", &session) {
-                    let event = json!({
-                        "event": "acp",
-                        "dir": record["dir"],
-                        "session": session,
-                        "msg": msg,
-                        "ts": record["ts"],
-                        "host_id": record["host_id"],
-                        "seq": seq,
-                    });
-                    self.events.push((seq, event));
+                    self.events.push((seq, event.take()));
                 }
             }
             None => {}
@@ -251,53 +231,5 @@ impl Drop for Found<'_> {
     /// takes it (ADR 2.5).
     fn drop(&mut self) {
         json::free(Value::Array(self.events.drain(..).map(|(_, e)| e).collect()));
-    }
-}
-
-/// A record's position, read without reading all of it, for a line too
-/// long to parse for nothing: an event's `seq` is its last key, so at the
-/// record's end; an ACP message's comes before the message. None for a
-/// record without one (a note of the logger's).
-fn position(line: &[u8]) -> Option<u64> {
-    const KEY: &[u8] = b"\"seq\":";
-    let digits = |at: &[u8]| -> Option<u64> {
-        let end = at.iter().position(|b| !b.is_ascii_digit()).unwrap_or(at.len());
-        std::str::from_utf8(&at[..end]).ok()?.parse().ok()
-    };
-    let last = |within: &[u8]| -> Option<u64> {
-        let at = within.windows(KEY.len()).rposition(|w| w == KEY)?;
-        digits(&within[at + KEY.len()..])
-    };
-    let line = line.strip_suffix(b"\n").unwrap_or(line);
-    // What the record is follows its head (times, ids, pids and the session,
-    // none with a quote unescaped in it), in its first KiB unless the
-    // session's id is long, when the record is read whole.
-    let head = &line[..line.len().min(1024)];
-    let find = |key: &[u8]| head.windows(key.len()).position(|w| w == key);
-    match (find(b"\"event\":"), find(b"\"dir\":")) {
-        // `…,"event":{…,"seq":12}}`: an event's, ending the record.
-        (Some(event), dir) if dir.is_none_or(|d| event < d) => {
-            last(&line[line.len().saturating_sub(32)..]).filter(|_| line.ends_with(b"}}"))
-        }
-        // `…,"session_id":…,"seq":12,"dir":…`: an ACP message's, before it.
-        (_, Some(dir)) => last(&head[..dir]),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn adr_0010_a_records_position_is_read_from_its_end_or_head() {
-        let event = br#"{"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
-        assert_eq!(position(event), Some(12));
-        let acp = br#"{"ts":"t","host_id":"h","session_id":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
-        assert_eq!(position(acp), Some(13));
-        let note = br#"{"ts":"t","host_id":"h","event":{"event":"records-skipped","count":1}}"#;
-        assert_eq!(position(note), None);
-        let raw = br#"{"ts":"t","host_id":"h","dir":"agent-stderr","msg":"x"}"#;
-        assert_eq!(position(raw), None);
     }
 }

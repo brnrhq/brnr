@@ -46,9 +46,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::host::check_bridge;
-use crate::{bug, config, lock, log, paths, signals, spawn, sys};
+use crate::{bug, config, lock, log, paths, signals, spawn, sys, transcript};
 
-use super::{Host, Probe, USAGE, gone, last_record, probe, read_meta, text, when};
+use super::client::{Host, Probe, gone, probe, read_meta};
+use super::{Args, text, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
 const PID_DIGITS: usize = 7;
@@ -98,17 +99,8 @@ impl Report {
     }
 }
 
-pub(crate) fn main(args: &[String]) -> Result<(), String> {
-    let (mut fix, mut json_out, mut report) = (false, false, false);
-    for arg in args {
-        match arg.as_str() {
-            "--fix" => fix = true,
-            "--json" => json_out = true,
-            "--report" => report = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(crate) fn main(a: &Args) -> Result<(), String> {
+    let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
         return Err("--fix and --report don't go together".into());
     }
@@ -677,32 +669,17 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
 /// as it lets go (a bridge's exit, its own stderr), so it is in the end of
 /// the file.
 fn recorded_exit(path: &Path) -> Option<bool> {
-    Some(recorded(&tail(path)?, "exited"))
+    Some(recorded(&transcript::tail(path, LOG_TAIL)?, "exited"))
 }
 
 /// Whether one of `lines` is a host event `event`.
 fn recorded(lines: &[Vec<u8>], event: &str) -> bool {
     let quoted = format!("\"{event}\"");
     let quoted = quoted.as_bytes();
-    lines.iter().filter(|line| line.windows(quoted.len()).any(|w| w == quoted)).any(|line| {
-        serde_json::from_slice::<Value>(line).is_ok_and(|record| record["event"]["event"] == event)
-    })
-}
-
-/// The whole lines in the last [`LOG_TAIL`] bytes of a file, `None` if it
-/// can't be read.
-fn tail(path: &Path) -> Option<Vec<Vec<u8>>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = fs::File::open(path).ok()?;
-    let start = file.metadata().ok()?.len().saturating_sub(LOG_TAIL);
-    let mut tail = Vec::new();
-    file.seek(SeekFrom::Start(start)).ok()?;
-    file.read_to_end(&mut tail).ok()?;
-    let mut lines = tail.split(|&b| b == b'\n');
-    if start > 0 {
-        lines.next(); // Cut off.
-    }
-    Some(lines.filter(|l| !l.is_empty()).map(<[u8]>::to_vec).collect())
+    lines
+        .iter()
+        .filter(|line| line.windows(quoted.len()).any(|w| w == quoted))
+        .any(|line| transcript::head(line).is_some_and(|record| record["event"]["event"] == event))
 }
 
 /// The sessions each run had open when it last wrote to them, by run id:
@@ -710,16 +687,8 @@ fn tail(path: &Path) -> Option<Vec<Vec<u8>>> {
 /// closed.
 fn open_sessions() -> HashMap<String, Vec<String>> {
     let mut open: HashMap<String, Vec<String>> = HashMap::new();
-    let projects = paths::state_dir().join("projects");
-    let files = fs::read_dir(&projects)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(|p| paths::is_events_log(p));
-    for file in files {
-        let Some(last) = last_record(&file) else { continue };
+    for file in transcript::events_files() {
+        let Some(last) = transcript::last(&file, |_| true) else { continue };
         let (Some(run), Some(session)) = (last["host_id"].as_str(), last["session_id"].as_str())
         else {
             continue;
@@ -834,7 +803,7 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     logs.sort_by(|a, b| b.cmp(a));
     let mut shown: Vec<HostLog> = Vec::new();
     for (i, (_, run, path)) in logs.iter().enumerate() {
-        let Some(lines) = tail(path) else { continue };
+        let Some(lines) = transcript::tail(path, LOG_TAIL) else { continue };
         let ended = if recorded(&lines, "panic") {
             "brnr panicked"
         } else if recorded(&lines, "exited") {

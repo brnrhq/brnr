@@ -13,12 +13,10 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::render;
+use crate::{json, render};
 
-use super::{
-    Host, USAGE, call, discover, print_json, print_table, process, read_stdin, request,
-    running_session, text,
-};
+use super::client::{Host, Pending};
+use super::{Args, discover, print_json, print_table, process, read_stdin, running_session, text};
 
 /// Where an elicitation is: a session in a process, or a process alone for
 /// one outside any session.
@@ -29,46 +27,27 @@ struct Target<'a> {
     arg: String,
 }
 
-/// `<session>` or `--pid <pid>`, then `<request>`, and the flags `flag`
-/// takes (its value, if it has one); the rest of `args` are an error.
-fn parse<'a>(
-    hosts: &'a [Host],
-    args: &[String],
-    mut flag: impl FnMut(&str, &mut dyn Iterator<Item = &String>) -> Result<bool, String>,
-) -> Result<(Target<'a>, String), String> {
-    let (mut pid, mut positional) = (None, Vec::new());
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--pid" => pid = Some(it.next().ok_or("--pid needs a pid")?.clone()),
-            a if flag(a, &mut it)? => {}
-            a if a.starts_with("--") => return Err(format!("unknown option: {a}")),
-            _ => positional.push(arg.clone()),
-        }
-    }
-    let target = match (pid, &positional[..]) {
-        (None, [session, _]) => {
+/// Where `a`'s `<session>` or `--pid <pid>` is, and its `<request>`.
+fn locate<'a>(hosts: &'a [Host], a: &Args) -> Result<(Target<'a>, String), String> {
+    let target = match a.value("--pid") {
+        None => {
+            let session = &a.positional[0];
             let (host, id) = running_session(hosts, session)?;
             Target { host, session: Some(id), arg: session.clone() }
         }
-        (Some(pid), [_]) => {
-            let host = process(hosts, &pid)?;
+        Some(pid) => {
+            let host = process(hosts, pid)?;
             Target { host, session: None, arg: format!("--pid {pid}") }
         }
-        _ => return Err(USAGE.to_owned()),
     };
-    let request = positional.pop().unwrap_or_default();
+    let request = a.positional.last().cloned().unwrap_or_default();
     Ok((target, request))
 }
 
-/// The elicitation `request` waiting at `target`, in full.
-fn find(target: &Target, request: &str) -> Result<Value, String> {
-    let response = call(target.host, &json!({ "cmd": "pending" }))?;
-    let found =
-        response["elicitations"].as_array().into_iter().flatten().find(|e| {
-            e["request"] == request && e["session"].as_str() == target.session.as_deref()
-        });
-    found.cloned().ok_or_else(|| match &target.session {
+/// The elicitation `request` waiting at `target`, in `pending`.
+fn find<'a>(pending: &'a Pending, target: &Target, request: &str) -> Result<&'a Value, String> {
+    let found = pending.elicitation(target.session.as_deref(), request);
+    found.ok_or_else(|| match &target.session {
         Some(_) => format!("no pending elicitation {request} in {}", target.arg),
         None => format!(
             "no pending elicitation {request} outside a session in process {}",
@@ -79,19 +58,10 @@ fn find(target: &Target, request: &str) -> Result<Value, String> {
 
 /// `elicitation requests [<session>]`: those waiting, in every process that
 /// answers (saying which don't), or in one session.
-pub(super) fn requests(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
-    let mut arg = None;
-    for a in args {
-        match a.as_str() {
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if arg.is_none() => arg = Some(a.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(super) fn requests(a: &Args) -> Result<(), String> {
+    let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
-    let (chosen, only): (Vec<&Host>, Option<String>) = match &arg {
+    let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
         // As `permission requests` (ADR 4.5): one that doesn't answer is
         // passed over, and said to be.
         None => {
@@ -108,34 +78,41 @@ pub(super) fn requests(args: &[String]) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
+    // Read, listed and let go of on a stack that takes what the agent sent
+    // (ADR 2.5), as `permission requests` does.
     let mut rows = Vec::new();
     for host in chosen {
-        let response = request(host, &json!({ "cmd": "pending" }))
-            .map_err(|e| format!("process {}: {e}", host.id()))?;
-        for e in response["elicitations"].as_array().into_iter().flatten() {
-            if only.as_deref().is_some_and(|id| e["session"] != id) {
-                continue;
-            }
-            rows.push(json!({
-                "session": e["session"],
-                "pid": host.id().parse::<u64>().ok(),
-                "request": e["request"],
-                "owner": e["owner"],
-                "mode": e["mode"],
-                "scope": e["scope"],
-                "message": e["message"],
-            }));
-        }
+        let pid = host.id().parse::<u64>().ok();
+        rows.extend(host.pending(|pending| {
+            let row = |e: &Value| {
+                json!({
+                    "session": e["session"],
+                    "pid": pid,
+                    "request": e["request"],
+                    "owner": e["owner"],
+                    "mode": e["mode"],
+                    "scope": e["scope"],
+                    "message": e["message"],
+                })
+            };
+            pending.elicitations(only.as_deref()).map(row).collect::<Vec<_>>()
+        })?);
     }
+    json::holding(Value::Array(rows), |rows| list(&rows, json_out))?
+}
+
+/// The elicitations' `rows`, as a table or `--json`.
+fn list(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(rows);
     }
+    let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
         outln!("nothing waiting");
         return Ok(());
     }
     let mut table = vec![["SESSION", "REQUEST", "OWNER", "MODE", "MESSAGE"].map(String::from)];
-    for r in &rows {
+    for r in rows {
         // One outside a session is named by its process, as the commands
         // take it.
         let session = match r["session"].as_str() {
@@ -151,18 +128,24 @@ pub(super) fn requests(args: &[String]) -> Result<(), String> {
 
 /// `elicitation show`: one in full, so it can be answered: the message, the
 /// mode and scope, a form's fields, a URL as the agent sent it.
-pub(super) fn show(args: &[String]) -> Result<(), String> {
-    let mut json_out = false;
+pub(super) fn show(a: &Args) -> Result<(), String> {
+    let json_out = a.json;
     let hosts = discover()?;
-    let (target, request) = parse(&hosts, args, |a, _| {
-        let json = a == "--json";
-        json_out |= json;
-        Ok(json)
-    })?;
-    let e = find(&target, &request)?;
-    if json_out {
-        return print_json(&e);
-    }
+    let (target, request) = locate(&hosts, a)?;
+    // As deep as the agent made it, with the rest of what waits there:
+    // shown, and let go of, on a stack that takes it (ADR 2.5).
+    target.host.pending(|pending| {
+        let e = find(pending, &target, &request)?;
+        if json_out {
+            return print_json(e);
+        }
+        describe(e, &target, &request);
+        Ok(())
+    })?
+}
+
+/// Prints elicitation `e`, `request` at `target`, in full.
+fn describe(e: &Value, target: &Target, request: &str) {
     let editor = e["owner"] == "editor";
     let by = if editor { ", waiting in the editor" } else { "" };
     let arg = &target.arg;
@@ -215,42 +198,29 @@ pub(super) fn show(args: &[String]) -> Result<(), String> {
         (true, None) => outln!("answer: in the editor, or {here} (experimental)"),
         (true, Some(why)) => outln!("answer it in the editor ({why})"),
     }
-    Ok(())
 }
 
 /// `elicitation accept`, `decline` and `cancel` (`action`): the action sent,
 /// an accept's fields checked against the form by the process first.
-pub(super) fn answer(args: &[String], action: &str) -> Result<(), String> {
-    let mut json_out = false;
-    let mut stdin = false;
+pub(super) fn answer(a: &Args, action: &str) -> Result<(), String> {
+    let accept = action == "accept";
+    let (json_out, stdin) = (a.json, accept && a.has("-"));
     let mut fields: Map<String, Value> = Map::new();
-    let hosts = discover()?;
-    let (target, request) = parse(&hosts, args, |a, it| match a {
-        "--json" => {
-            json_out = true;
-            Ok(true)
-        }
-        "-" if action == "accept" => {
-            stdin = true;
-            Ok(true)
-        }
-        "--field" if action == "accept" => {
-            let field = it.next().ok_or("--field needs <name>=<value>")?;
-            let (name, value) =
-                field.split_once('=').ok_or(format!("--field {field}: not <name>=<value>"))?;
-            // A field given again is a list's next value.
-            let value = Value::String(value.to_owned());
-            match fields.get_mut(name) {
-                Some(Value::Array(list)) => list.push(value),
-                Some(first) => *first = json!([first.take(), value]),
-                None => {
-                    fields.insert(name.to_owned(), value);
-                }
+    for field in if accept { a.values("--field") } else { Vec::new() } {
+        let (name, value) =
+            field.split_once('=').ok_or(format!("--field {field}: not <name>=<value>"))?;
+        // A field given again is a list's next value.
+        let value = Value::String(value.to_owned());
+        match fields.get_mut(name) {
+            Some(Value::Array(list)) => list.push(value),
+            Some(first) => *first = json!([first.take(), value]),
+            None => {
+                fields.insert(name.to_owned(), value);
             }
-            Ok(true)
         }
-        _ => Ok(false),
-    })?;
+    }
+    let hosts = discover()?;
+    let (target, request) = locate(&hosts, a)?;
     let content = match (stdin, fields.is_empty()) {
         (true, false) => {
             return Err("give the fields with --field or on stdin (-), not both".into());
@@ -274,7 +244,7 @@ pub(super) fn answer(args: &[String], action: &str) -> Result<(), String> {
         "action": action,
         "content": content,
     });
-    let response = call(target.host, &req)?;
+    let response = target.host.call(&req)?;
     let result = &response["result"];
     if json_out {
         return print_json(&json!({

@@ -15,65 +15,43 @@
 //! order (ADR 5.1 in docs/adr). A running session's, once its process has
 //! written what it recorded until then (ADR 5.5).
 
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
-use std::mem::take;
-use std::path::{Path, PathBuf};
+use std::io::{self, Write};
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::host::alive;
-use crate::{paths, render};
+use crate::{json, render, transcript};
 
-use super::{Found, USAGE, call, closing_in, default_events, discover, events_arg, find_session};
+use super::{Args, default_events, events_arg, ownership};
 
 const POLL: Duration = Duration::from_millis(200);
 
-pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
-    let mut target = None;
-    let mut last = None;
-    let mut events = default_events();
-    let (mut follow, mut json_out) = (false, false);
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--last" => {
-                let n = it.next().ok_or("--last needs a number")?;
-                last = Some(n.parse::<usize>().map_err(|_| format!("--last: not a number: {n}"))?);
-            }
-            "--follow" => follow = true,
-            "--events" => events = events_arg(it.next(), &default_events())?,
-            "--json" => json_out = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option: {flag}")),
-            _ if target.is_none() => target = Some(arg.clone()),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
+pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
+    let last = a.number("--last");
+    let events = events_arg(a, &default_events())?;
+    let (follow, json_out) = (a.has("--follow"), a.json);
     // A gap in the transcript (`records-skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
     let wanted = |e: &Value| {
         e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
     };
     let show = Show { options: render::Options { session: false, time: true }, json_out };
-    let target = target.ok_or(USAGE)?;
-    let (path, acp_path, host_pid) = transcript(&target)?;
-    let open = |path: &Path| Tail::open(path).map_err(|e| format!("{}: {e}", path.display()));
+    let target = a.positional[0].clone();
+    let (path, acp_path, host_pid) = ownership::transcript(&target)?;
     let mut acp = None;
     if events.iter().any(|e| e == "acp") {
         match acp_path {
-            Some(raw) if raw.exists() => acp = Some(open(&raw)?),
+            Some(raw) if raw.exists() => acp = Some(raw),
             _ => errln!("brnr: no raw ACP for {target}: log = \"events\" leaves it out"),
         }
     }
-    let events_file = open(&path)?;
-    let mut transcript =
-        Transcript { events: events_file, acp, last: String::new(), held: Vec::new() };
+    let mut reader = transcript::Reader::open(&path, acp.as_deref())?;
 
     // Everything so far, from the n-th last message on.
-    let records = transcript.read(!follow)?;
+    let mut records = reader.read(!follow)?;
     let from = match last {
         Some(n) => {
             let starts: Vec<usize> =
@@ -87,16 +65,15 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
         None => 0,
     };
     if last == Some(0) {
-        // ACP held back (see `Transcript::read`) is from before, too.
-        transcript.held.clear();
+        // ACP held back (see `Reader::read`) is from before, too.
+        reader.forget_held();
     }
-    let mut out = io::stdout().lock();
-    let mut shown = 0;
-    for event in records[from..].iter().filter(|e| wanted(e)) {
-        shown += show.print(&mut out, event)?;
-    }
+    let none = records.is_empty();
     let no_events = !records.iter().any(|e| e["event"] != "acp");
-    if shown == 0 && no_events && !records.is_empty() && !follow {
+    let shown_now = records.split_off(from);
+    json::free(Value::Array(records));
+    let (shown, _) = show.all(shown_now, &wanted, false)?;
+    if shown == 0 && no_events && !none && !follow {
         eprintln!(
             "brnr: no events in {} (an older brnr wrote it); try --events acp",
             path.display()
@@ -107,195 +84,23 @@ pub(super) fn log(args: &[String]) -> Result<ExitCode, String> {
     let has_gone = || !host_pid.is_some_and(alive);
     if !follow {
         if has_gone() {
-            transcript.cut_short();
+            reader.cut_short();
         }
         return Ok(ExitCode::SUCCESS);
     }
     loop {
         // Looked at first: what the process wrote before it went is read.
         let gone = has_gone();
-        for event in transcript.read(gone)? {
-            // Nothing more comes once the session closes or the agent exits.
-            let end = event["event"] == "exited" || event["event"] == "session_closed";
-            if wanted(&event) {
-                show.print(&mut out, &event)?;
-            }
-            if end {
-                return Ok(ExitCode::SUCCESS);
-            }
+        // Nothing more comes once the session closes or the agent exits.
+        if show.all(reader.read(gone)?, &wanted, true)?.1 {
+            return Ok(ExitCode::SUCCESS);
         }
         if gone {
-            transcript.cut_short();
+            reader.cut_short();
             return Ok(ExitCode::SUCCESS);
         }
         sleep(POLL);
     }
-}
-
-/// The files of the session `arg` names, its events and its raw ACP (none
-/// if its process records none), and the pid of the process serving it, if
-/// one is. A running session's process is asked to have written what it
-/// recorded until now first: a thread of its own writes it, and what was
-/// just seen happen (a turn `session new --wait` reported) may not be there
-/// yet (ADR 5.5).
-///
-/// One closing in its process is read once that process has written its
-/// records, `session_closed` last, and let go of it (ADR 5.5).
-fn transcript(arg: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
-    let mut hosts = discover()?;
-    if let Some(host) = closing_in(&hosts, arg) {
-        // Answered once what it recorded before is written: the close's
-        // records, and the lock gone with them.
-        if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
-            errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
-        }
-        hosts = discover()?;
-    }
-    match find_session(&hosts, arg)? {
-        Found::Running(host, id) => {
-            let s = host.sessions().iter().find(|s| s["session_id"] == id.as_str());
-            let path = s
-                .and_then(|s| s["log"].as_str())
-                .ok_or("this process keeps no transcript (log = false)")?;
-            let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
-            if let Err(e) = call(host, &json!({ "cmd": "logged" })) {
-                errln!("brnr: {e}: what it recorded last may not be written yet (a slow disk?)");
-            }
-            Ok((PathBuf::from(path), acp, host.meta["host_pid"].as_i64()))
-        }
-        Found::Inactive(past) => {
-            let path = PathBuf::from(past["log"].as_str().unwrap_or_default());
-            Ok((path.clone(), Some(paths::acp_log(&path)), None))
-        }
-    }
-}
-
-/// A session's two files, read as they grow: its events, and its raw ACP
-/// when `acp` events are chosen.
-struct Transcript {
-    events: Tail,
-    acp: Option<Tail>,
-    /// When the last record read from the events file was written.
-    last: String,
-    /// ACP written after it, held for one read (see `read`).
-    held: Vec<(String, Value)>,
-}
-
-impl Transcript {
-    /// What was written since the last read, in time order: each record as
-    /// `event watch` would have shown it. `all` for everything read, of a
-    /// transcript that won't grow.
-    ///
-    /// One writer writes both files, each in time order, and the events file
-    /// is read first: ACP up to the last event read is all there, but ACP
-    /// past it may follow an event written since. That ACP is held, and goes
-    /// with the next read, once the events file has been read again.
-    fn read(&mut self, all: bool) -> Result<Vec<Value>, String> {
-        let events = self.events.read()?;
-        if let Some((ts, _)) = events.last() {
-            self.last.clone_from(ts);
-        }
-        let mut acp = take(&mut self.held);
-        if let Some(tail) = &mut self.acp {
-            let (now, later): (Vec<_>, _) =
-                tail.read()?.into_iter().partition(|(ts, _)| all || *ts <= self.last);
-            acp.extend(now);
-            self.held = later;
-        }
-        // Both in time order: merged, events first at the same time.
-        let mut merged = Vec::with_capacity(events.len() + acp.len());
-        let (mut events, mut acp) = (events.into_iter().peekable(), acp.into_iter().peekable());
-        loop {
-            let next = match (events.peek(), acp.peek()) {
-                (Some((e, _)), Some((a, _))) if a < e => acp.next(),
-                (Some(_), _) => events.next(),
-                (None, _) => acp.next(),
-            };
-            let Some((_, event)) = next else { return Ok(merged) };
-            merged.push(event);
-        }
-    }
-
-    /// Says which of its files end partway through a record, for a
-    /// transcript that won't grow.
-    fn cut_short(&self) {
-        self.events.cut_short();
-        if let Some(acp) = &self.acp {
-            acp.cut_short();
-        }
-    }
-}
-
-/// One file of a transcript, read as it grows.
-struct Tail {
-    path: PathBuf,
-    file: BufReader<File>,
-    /// A line still being written.
-    partial: Vec<u8>,
-    /// How many lines were read whole.
-    lines: usize,
-}
-
-impl Tail {
-    fn open(path: &Path) -> io::Result<Tail> {
-        let file = BufReader::new(File::open(path)?);
-        Ok(Tail { path: path.to_owned(), file, partial: Vec::new(), lines: 0 })
-    }
-
-    /// The records appended since the last read, with when each was
-    /// written. A line that isn't one is passed over, and said (ADR 5.1).
-    fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
-        let mut records = Vec::new();
-        loop {
-            let n = self.file.read_until(b'\n', &mut self.partial).map_err(|e| e.to_string())?;
-            if n == 0 || !self.partial.ends_with(b"\n") {
-                return Ok(records);
-            }
-            self.lines += 1;
-            match record(&take(&mut self.partial)) {
-                Some(r) => records.push(r),
-                None => errln!(
-                    "brnr: {}:{} isn't a record brnr can read, not shown",
-                    self.path.display(),
-                    self.lines
-                ),
-            }
-        }
-    }
-
-    /// Says so if the file ends partway through a line: once nothing more
-    /// will be written, it is a record cut short (ADR 5.1).
-    fn cut_short(&self) {
-        if !self.partial.is_empty() {
-            let (path, n) = (self.path.display(), self.partial.len());
-            errln!("brnr: {path} ends partway through a record ({n} bytes), not shown");
-        }
-    }
-}
-
-/// A transcript record as `event watch` would have shown it, a host event
-/// (see host/control.rs, `emit`) or an ACP message as an `acp` event, with
-/// when it was written.
-fn record(line: &[u8]) -> Option<(String, Value)> {
-    let mut record: Value = serde_json::from_slice(line).ok()?;
-    let ts = record["ts"].as_str().unwrap_or_default().to_owned();
-    if record["event"]["event"].is_string() {
-        return Some((ts, record["event"].take()));
-    }
-    let msg = record.get("msg").or(record.get("raw"))?;
-    // As the process sent it, with its position (ADR 10.2).
-    let mut event = json!({
-        "event": "acp",
-        "dir": record["dir"],
-        "session": record["session_id"],
-        "msg": msg,
-        "ts": record["ts"],
-        "host_id": record["host_id"],
-    });
-    if record["seq"].is_u64() {
-        event["seq"] = record["seq"].clone();
-    }
-    Some((ts, event))
 }
 
 struct Show {
@@ -304,14 +109,39 @@ struct Show {
 }
 
 impl Show {
+    /// Shows each of `events` that is `wanted`, up to the end of the
+    /// session with `to_end`, and lets go of each on a stack that takes it
+    /// (ADR 2.5): how many lines it showed, and whether the session ended.
+    fn all(
+        &self,
+        events: Vec<Value>,
+        wanted: &(impl Fn(&Value) -> bool + Sync),
+        to_end: bool,
+    ) -> Result<(usize, bool), String> {
+        let (mut shown, mut events) = (0, events.into_iter());
+        while let Some(event) = events.next() {
+            let end = to_end && (event["event"] == "exited" || event["event"] == "session_closed");
+            let one = json::holding(event, |e| if wanted(&e) { self.print(&e) } else { Ok(0) });
+            match one.and_then(|one| one) {
+                Ok(n) if !end => shown += n,
+                done => {
+                    json::free(Value::Array(events.collect()));
+                    return done.map(|n| (shown + n, true));
+                }
+            }
+        }
+        Ok((shown, false))
+    }
+
     /// Prints one event as asked; returns how many lines it showed.
-    fn print(&self, out: &mut impl Write, event: &Value) -> Result<usize, String> {
+    fn print(&self, event: &Value) -> Result<usize, String> {
         let text = if self.json_out {
             Some(event.to_string())
         } else {
             render::event(event, &self.options)
         };
         let Some(text) = text else { return Ok(0) };
+        let mut out = io::stdout().lock();
         match writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()) {
             Ok(()) => Ok(1),
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
