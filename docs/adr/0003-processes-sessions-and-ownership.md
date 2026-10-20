@@ -508,8 +508,11 @@ Where things live, fixed for 1.x and kept within the major version from
 - `file_name` (ADR 9.2): lowercase ASCII letters, digits, `-` and `_` stay;
   every other byte of the id's UTF-8 is `%` and two lowercase hex digits;
   the empty id is `%`;
-- `project_key`: the session's cwd with every character but ASCII letters
-  and digits replaced by `-`, as `~/.claude/projects` has it.
+- `project_key` (ADR 9.2): `<claude>-<hash>`, `<claude>` the session's cwd
+  with every character but ASCII letters and digits replaced by `-`, as
+  `~/.claude/projects` has it, and `<hash>` the low 32 bits of FNV-1a 64
+  over the cwd's bytes, as 8 lowercase hex digits; the cwd as given, its
+  trailing `/` removed.
 
 What host logs and lock files contain, and what is in the runtime
 directory, aren't covered: a lock's fields are for brnr's own commands and

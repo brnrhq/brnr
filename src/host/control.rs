@@ -787,7 +787,7 @@ impl Host {
                     _ => "idle",
                 };
                 // Its transcript: events, and raw ACP (ADR 5.1).
-                let events = paths::session_log(&s.cwd, &s.id);
+                let events = log::session_log(&s.cwd, &s.id);
                 let acp = paths::acp_log(&events);
                 let fields = json!({
                     "session_id": s.id,

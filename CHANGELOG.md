@@ -72,6 +72,15 @@ brnr's own conventions:
   answer, is opening it or isn't listed say which, without offering
   `--take-over` or closing it first, which can't work there (ADR 3.9,
   #281).
+- **Breaking:** each cwd has a project folder of its own: a new session's
+  transcript goes in `~/.brnr/projects/<claude>-<hash>/`, `<claude>` the
+  cwd as `~/.claude/projects` names it and `<hash>` 8 hex digits of a hash
+  of the cwd (`-Users-me-src-3db3a304`), where `/a-b` and `/a/b`, and on
+  macOS `/A` and `/a`, shared one folder. Transcripts already written stay
+  where they are, and a session resumed in the cwd it began in goes on in
+  its file there. Nothing to do, but a tool that joins brnr's folders to
+  `~/.claude/projects` by the exact name now matches by the prefix (ADR 9.2,
+  #120).
 
 ### Fixed
 

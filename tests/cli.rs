@@ -7,6 +7,7 @@ mod common;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1633,9 +1634,9 @@ fn adr_0008_list_finds_a_cwd_however_it_is_spelled() {
     assert!(ids(&["--cwd", &other.to_string_lossy()]).is_empty());
 }
 
-/// Two cwds whose project folder is one, as `~/.claude/projects` names it
-/// (ADR 9.2): `<dir>/x-y`, a's, and `<dir>/x/y`, b's, each made.
-fn sharing_a_folder(env: &Env) -> [(String, &'static str); 2] {
+/// Two cwds that `~/.claude/projects` names alike, `-…-x-y` (ADR 9.2):
+/// `<dir>/x-y`, a's, and `<dir>/x/y`, b's, each made.
+fn alike(env: &Env) -> [(String, &'static str); 2] {
     let dirs = [(env.dir.join("x-y"), "a"), (env.dir.join("x/y"), "b")];
     dirs.map(|(dir, x)| {
         fs::create_dir_all(&dir).unwrap();
@@ -1643,11 +1644,23 @@ fn sharing_a_folder(env: &Env) -> [(String, &'static str); 2] {
     })
 }
 
-/// The events files in the one project folder brnr has.
-fn one_folder(env: &Env) -> Vec<String> {
-    let projects: Vec<_> = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten().collect();
-    assert_eq!(projects.len(), 1, "{projects:?}");
-    let files = fs::read_dir(projects[0].path()).unwrap().flatten();
+/// The project folder `cwd`'s sessions have (ADR 9.2).
+fn folder_of(cwd: &str) -> String {
+    brnr::internals::paths::project_key(Path::new(cwd))
+}
+
+/// The names of the project folders brnr has, in order.
+fn project_folders(env: &Env) -> Vec<String> {
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let mut names: Vec<String> =
+        folders.map(|f| f.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+/// The events files in `cwd`'s project folder.
+fn folder_files(env: &Env, cwd: &str) -> Vec<String> {
+    let files = fs::read_dir(env.dir.join("home/projects").join(folder_of(cwd))).unwrap().flatten();
     let mut names: Vec<String> = files
         .map(|f| f.file_name().to_string_lossy().into_owned())
         .filter(|n| !n.ends_with(".acp.jsonl"))
@@ -1656,14 +1669,14 @@ fn one_folder(env: &Env) -> Vec<String> {
     names
 }
 
-/// `session list --cwd` keeps two cwds that share a project folder apart,
-/// with an agent named or not: each lists only its own sessions, closed,
-/// open in a process, or open in one that doesn't answer, by the cwd each
-/// session's records name, not by the folder.
+/// Two cwds named alike get a project folder each, and `session list
+/// --cwd` keeps them apart, with an agent named or not: each lists only its
+/// own sessions, closed, open in a process, or open in one that doesn't
+/// answer.
 #[test]
-fn adr_0009_cwds_that_share_a_project_folder_are_listed_apart() {
-    let env = Env::new("c-shared-list");
-    let cwds = sharing_a_folder(&env);
+fn adr_0009_cwds_alike_are_listed_apart() {
+    let env = Env::new("c-alike-list");
+    let cwds = alike(&env);
     for (dir, x) in &cwds {
         closed_session(&env, &format!("{x}-closed"), &["--cwd", dir]);
         let open = format!("{x}-open");
@@ -1673,10 +1686,15 @@ fn adr_0009_cwds_that_share_a_project_folder_are_listed_apart() {
         // process can't.
         env.ok(&["event", "log", &open]);
     }
-    assert_eq!(
-        one_folder(&env),
-        ["a-closed.jsonl", "a-open.jsonl", "b-closed.jsonl", "b-open.jsonl"]
-    );
+    let [a, b] = cwds.each_ref().map(|(dir, _)| folder_of(dir));
+    assert_ne!(a, b);
+    assert_eq!(project_folders(&env), if a < b { [a, b] } else { [b, a] });
+    for (dir, x) in &cwds {
+        assert_eq!(
+            folder_files(&env, dir),
+            [format!("{x}-closed.jsonl"), format!("{x}-open.jsonl")]
+        );
+    }
     // brnr's rows, not those only the fake agent knows (sess-1, old-1).
     let ours = |rows: Vec<Value>| -> Vec<(String, String)> {
         let mut ours: Vec<(String, String)> = rows
@@ -1696,7 +1714,7 @@ fn adr_0009_cwds_that_share_a_project_folder_are_listed_apart() {
         assert_eq!(ours(joined), want(x, "idle"), "{dir}");
     }
     // Their processes stopped: an open session's cwd is then known only
-    // from its transcript, in the folder both share.
+    // from its transcript.
     let pids: Vec<i32> =
         env.hosts().iter().map(|h| h["host_pid"].as_i64().unwrap() as i32).collect();
     assert_eq!(pids.len(), 2, "{pids:?}");
@@ -1717,18 +1735,21 @@ fn adr_0009_cwds_that_share_a_project_folder_are_listed_apart() {
     }
 }
 
-/// A session is found by its id, not by its folder: two cwds that share a
-/// project folder each have their own session's transcript in `event log`,
-/// and `session resume` opens each in its own cwd.
+/// Two cwds named alike each have their own session's transcript, in a
+/// folder of its own, in `event log`, and `session resume` opens each in its
+/// own cwd.
 #[test]
-fn adr_0009_cwds_that_share_a_project_folder_are_resumed_apart() {
-    let env = Env::new("c-shared-resume");
-    let cwds = sharing_a_folder(&env);
+fn adr_0009_cwds_alike_are_resumed_apart() {
+    let env = Env::new("c-alike-resume");
+    let cwds = alike(&env);
     for (dir, x) in &cwds {
         let prompt = format!("reply in {x}");
         closed_session(&env, &format!("{x}-1"), &["--cwd", dir, "--wait", "--prompt", &prompt]);
     }
-    assert_eq!(one_folder(&env), ["a-1.jsonl", "b-1.jsonl"]);
+    assert_eq!(project_folders(&env).len(), 2);
+    for (dir, x) in &cwds {
+        assert_eq!(folder_files(&env, dir), [format!("{x}-1.jsonl")]);
+    }
     for (dir, x) in &cwds {
         let id = format!("{x}-1");
         let log = env.ok(&["event", "log", &id, "--events", "agent_message"]);
@@ -1743,6 +1764,67 @@ fn adr_0009_cwds_that_share_a_project_folder_are_resumed_apart() {
         assert_eq!(ids, [id.as_str()], "{rows:?}");
         assert_eq!((&rows[0]["state"], &rows[0]["cwd"]), (&"idle".into(), &dir.as_str().into()));
     }
+}
+
+/// Session `s-1`, opened and closed in `cwd`, its transcript then moved to
+/// the folder the earlier rule named, `~/.claude/projects`' name, as a brnr
+/// before ADR 9.2's hash left it. That folder.
+fn under_the_old_rule(env: &Env, cwd: &str) -> PathBuf {
+    closed_session(env, "s-1", &["--cwd", cwd]);
+    let projects = env.dir.join("home/projects");
+    let old = brnr::internals::paths::claude_project_key(Path::new(cwd));
+    assert_ne!(old, folder_of(cwd));
+    fs::rename(projects.join(folder_of(cwd)), projects.join(&old)).unwrap();
+    projects.join(old)
+}
+
+/// Session `s-1` resumed with `args`, and closed, its process gone.
+fn resumed_and_closed(env: &Env, args: &[&str]) {
+    env.ok(&resume_args("s-1", args));
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+}
+
+/// A session's two files, as they are.
+fn session_files(folder: &Path) -> [Vec<u8>; 2] {
+    ["s-1.jsonl", "s-1.acp.jsonl"].map(|f| fs::read(folder.join(f)).unwrap())
+}
+
+/// A session whose transcript is under the earlier rule's folder name, and
+/// began in its cwd, resumed, goes on in those two files: it doesn't split
+/// into two transcripts (ADR 9.2).
+#[test]
+fn adr_0009_a_transcript_under_the_old_rule_is_continued() {
+    let env = Env::new("c-old-rule");
+    let cwd = env.dir.join("w");
+    fs::create_dir(&cwd).unwrap();
+    let cwd = cwd.to_string_lossy().into_owned();
+    let old = under_the_old_rule(&env, &cwd);
+    let before = session_files(&old);
+    resumed_and_closed(&env, &[]);
+    for (was, is) in before.iter().zip(session_files(&old)) {
+        assert!(is.len() > was.len() && is.starts_with(was), "not continued");
+    }
+    let name = old.file_name().unwrap().to_string_lossy();
+    assert_eq!(project_folders(&env), [name], "a new folder");
+    // Opened twice, in one file.
+    let text = fs::read_to_string(old.join("s-1.jsonl")).unwrap();
+    assert_eq!(text.matches(r#""event":"session-opened""#).count(), 2, "{text}");
+}
+
+/// A file under the earlier rule's folder name whose transcript began in
+/// another cwd isn't continued: `<dir>/x-y`'s `s-1`, resumed in `<dir>/x/y`,
+/// which the earlier rule named alike, is written in `<dir>/x/y`'s own
+/// folder, and the old file stays as it was (ADR 9.2).
+#[test]
+fn adr_0009_another_cwds_transcript_under_the_old_rule_is_not_continued() {
+    let env = Env::new("c-old-rule-other");
+    let [(x_y, _), (x_slash_y, _)] = alike(&env);
+    let old = under_the_old_rule(&env, &x_y);
+    let before = session_files(&old);
+    resumed_and_closed(&env, &["--cwd", &x_slash_y]);
+    assert!(session_files(&old) == before, "continued");
+    assert_eq!(folder_files(&env, &x_slash_y), ["s-1.jsonl"]);
 }
 
 /// `--include` keeps sessions by state: `active` those open in a process,
