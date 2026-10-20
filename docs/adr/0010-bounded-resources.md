@@ -302,9 +302,10 @@ its owner.
   its session's close, or exit status 3.
 - The names this adds (`seq`, `peer_cut_off`, `last_queued`, `first_seq`,
   `last_seq`, `events-missed`, kebab-case as the logger's other notes are)
-  depend on #150 and #151, which settle the names and shapes of `--json`
-  output and events; they may be renamed there. The change is kept to one
-  field on every event, one event, one note and one request.
+  follow ADR 5.9 once #314 lands: `last_queued_seq`, and `events_missed`
+  with `after_seq` and `until_seq`. #150 settles the shapes of `--json`
+  output. The change is kept to one field on every event, one event, one
+  note and one request.
 
 **Why.** A burst of lines longer than 16 MiB that comes to more than the
 64 MiB ADR 10.1 sets aside still cuts off a peer that keeps up (#117): a
