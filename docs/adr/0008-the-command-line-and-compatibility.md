@@ -1,8 +1,10 @@
 # 8. The command line and compatibility
 
 Draft 2026-10-19. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade waits for #150, and 8.6's evals with a real agent
-aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+1.0.0, 8.5's typed facade waits for #150, 8.6's evals with a real agent
+aren't done, and these are decided, not implemented yet: 8.1's names
+spelled one way (#154, #311) and 8.3's usage errors and help
+(#153, #310). Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -86,7 +88,8 @@ How words are read:
   with the group's usage; a command used wrongly shows its own usage. A
   verb's `--help` or `-h`, before any `--`, prints its usage; after `--` it
   is the command's, and as a flag's value it is that value (`--prompt -h`
-  sends `-h`).
+  sends `-h`). Help goes to stdout and exits 0, and a usage error goes to
+  stderr and exits 2, in every command, once #310 lands (ADR 8.3).
 - `prompt send`'s options go before its prompt: from the prompt's first
   word on, every word is the prompt's (`-h`, `--help`, `--wait`, `--json`
   too), sent as given. `-` (stdin) goes alone.
@@ -294,6 +297,32 @@ The same names reach brnr's other interfaces, so one word means one thing
 - Events: `permission_resolved` and `session_deleted`, as above.
 - Errors, hints and the usage text name these commands.
 
+One name, one meaning, one spelling (#154), decided, not implemented yet
+(#311). Where a name had two, one wins, and the other form goes, with
+no alias (P9):
+
+- `--option` is a config option, and only that: an id in `config get
+  --option <o>`, an `<o>=<v>` pair in `config set`, `session new` and
+  `session resume`, its value form following the verb as `--mode`'s does.
+  The option of a permission request is `--option-id <id>`, ACP's
+  `optionId`, a name ACP gives only to a permission option:
+  `permission allow <session> <request> [--always] [--option-id <id>]`,
+  and `reject` the same. The socket's `allow` and `reject` take
+  `option_id` in place of `option`.
+- The prompt is `--prompt <text> | -` wherever a command takes one:
+  `session new`, `session resume` and `prompt send`
+  (`prompt send <session> [flags] --prompt <text> | -`). The words after
+  the prompt's first are no longer the prompt's, so the rule that
+  `prompt send`'s options go before its prompt goes too.
+- A duration is in whole seconds, and its name has no unit: `--timeout`,
+  `--stop-when-idle`, `--response-timeout`, and the profile's
+  `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
+  `--json` and the socket's replies, `uptime_seconds` becomes `uptime`,
+  `turn_seconds` `turn_elapsed`, and `timeout_seconds` (the time left
+  before `response_timeout` answers a request) `timeout_left`.
+- Config's names follow the same rule (ADR 6.1): `log` takes strings only,
+  and a command in config is one shape.
+
 **Why.** brnr knows sessions two ways: from its own transcripts and
 processes, in any cwd, with no agent to ask; and from an agent's
 `session/list`, which knows sessions started outside brnr, but only that
@@ -303,7 +332,11 @@ things, and `cancelled` is ACP's answer for a cancelled turn, not a
 refusal. ACP's draft v2 makes modes, models and thought levels config
 options told apart by category. Grouping by entity, with ACP's verbs, gives
 one word for one thing (P1, P5); one row shape lets every table of
-sessions read alike.
+sessions read alike. Names that still had two meanings or two spellings
+(#154) are what a script and a reader get wrong: `--option` meant a config
+option in one command and a permission option in another, the prompt was
+a flag in one and words in another, and a duration's name said its unit in
+some places only (F5, P5).
 
 **Consequences.**
 
@@ -344,6 +377,18 @@ sessions read alike.
   a cancelled turn's.
 - `--config` for `--option`: it reads as a config file's path.
 - `permission list`: what is listed are requests, not permissions.
+- For `--option`'s two meanings (#154): renaming the config side, which is
+  in more places (`config get`, `config set`, a start, the profile's
+  `options`, the socket's `set_config`); `--config` for it reads as a
+  config file's path (above). A positional option id for `allow` and
+  `reject`: it would name the agent's id with no word to say what it is.
+- The prompt as positional words everywhere: `session new` and
+  `session resume` end their options with `-- <agent>`, which a prompt's
+  words can't come before, and a positional word that starts with `-`
+  must then be read as the prompt or as an option, a guess (P4). A flag's
+  value is taken as given.
+- A unit in every duration's name (`stop_when_idle_seconds`): longer
+  names, all in one unit; one rule said once does as well.
 
 ## 8.2 Same data in text and JSON
 
@@ -413,6 +458,24 @@ where P5 allows one, and a script could not see what a person sees.
   codes for `prompt send --wait`, `session new --wait` and
   `session resume --wait`. `event wait` on a session that is idle already
   exits as its last turn ended.
+- Usage errors and help, the same in every command (#153), decided, not
+  implemented yet (#310):
+  - A usage error exits 2: an unknown command, verb or option, an argument
+    missing or one too many, a value a flag can't take, `brnr` or a group
+    with no command. Nothing is done, and the command's usage is printed
+    on stderr. `brnr acp` exits 2 so already. 1 stays an operation that
+    failed, so a script tells a mistake in its own command line from a
+    failure.
+  - `--help` and `-h` print the usage on stdout and exit 0, wherever they
+    are taken (ADR 8.1): `brnr`, a group without a verb
+    (`brnr session --help`), a verb, `brnr acp`, `doctor` and `skill`
+    (`skill install` too).
+  - The usage names a thing one way: `brnr acp --help` says `<p>` and
+    `<agent>`, as `brnr --help` does, not `<name>` and `<program>`.
+  - The adapters' own `--help` (`brnr-claude-adapter --help`) is left as
+    upstream has it. An adapter brnr packages is upstream's program,
+    unchanged but for finding the agent and `--version` (ADR 11.1), and
+    not part of what ADR 8.4 covers.
 - A timeout too long to count is no timeout, not a crash. `--timeout` goes
   with `--wait`: without it, `prompt send` and `session new` fail, and
   nothing is sent.
@@ -428,12 +491,31 @@ where P5 allows one, and a script could not see what a person sees.
   reported for the turn, or null (ADR 4.4).
 
 **Why.** A script or a supervising agent needs to wait for a turn without
-polling, and to know from the exit status alone how it ended (F5, P3).
+polling, and to know from the exit status alone how it ended (F5, P3). The
+control commands exit 1 for a usage error, the code of a failed operation,
+while `brnr acp` exits 2; `doctor --help` and `skill --help` print on stderr
+and exit 1, while a verb's `--help` prints on stdout and exits 0 (#153). An
+exit code is part of the interface (ADR 8.4), so one situation gets one code
+in every command (F5, P5). 2 is what many utilities exit for a usage error
+(`grep`, `ls`, the shell's builtins) and what `brnr acp` exits, and 0, 1, 3
+and 124 already have their meanings. Help asked for is the answer, so stdout
+and 0, as a verb's `--help` has it already.
 
 **Considered.**
 
 - A command per condition (`wait-idle`, …): one command with `--for` is
   smaller.
+- A usage error exiting 1, as the control commands do: `brnr acp` would
+  need changing instead, and a script couldn't tell a mistake from a
+  failure.
+- An exit code of its own for each kind of usage error: one code says the
+  command line was wrong; stderr says how.
+- sysexits' 64 (`EX_USAGE`): few utilities use it, and `brnr acp` has 2.
+- Help on stderr: help asked for is the output, and `brnr --help | less`
+  should work.
+- Making the adapters' `--help` print a usage without starting ACP (as a
+  comment on #153 asked): it would change upstream's program past what
+  ADR 11.1 adds, for an interface ADR 8.4 doesn't cover.
 
 ## 8.4 What the compatibility promise covers
 
@@ -532,11 +614,12 @@ upgrading within that major is the fix, and breaks nothing covered. There
 is one major so far, so no support period for older majors is set; it will
 be, by a record that amends this one, once a second major exists.
 
-The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes),
-#151 (event and transcript record names), #153 (the exit code of a usage
-error, `--help`) and #154 (flags and config keys spelled two ways) still
-settle names and shapes, breaking as P9 allows. What they settle is what
-1.0.0 promises.
+The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
+and #151 (event and transcript record names) still settle names and
+shapes, breaking as P9 allows. #153 (the exit code of a usage error,
+`--help`) and #154 (flags and config keys spelled two ways) are decided
+(ADR 8.3, ADR 8.1 and 6.1), and their changes, breaking too, land before
+it (#310, #311). What they settle is what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise

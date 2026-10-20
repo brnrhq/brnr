@@ -1,6 +1,8 @@
 # 5. Events, transcripts and observers
 
-Draft 2026-10-19. Implemented. Factor: F3, F5 (ADR 1). Brings together
+Draft 2026-10-19. Implemented, but for 5.1's reading of one session's
+files in more than one folder as one transcript (#121), decided, not
+implemented yet (#309). Factor: F3, F5 (ADR 1). Brings together
 former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36 (docs/adr/README.md maps
 them).
 
@@ -51,6 +53,11 @@ Files:
   with every non-alphanumeric character replaced by `-` (as in
   `~/.claude/projects`). The session id in the names is escaped, one name
   per id, so distinct sessions never share a transcript (ADR 9.2).
+- One session id is one session, whatever folders its files are in
+  (#121), decided, not implemented yet (#309). A session resumed in
+  another cwd (`session resume --cwd`) has files in each folder, and its
+  transcript is all of them: brnr reads them as one (below), and a load
+  finds it in any folder (ADR 5.6).
 - Each process also has a host log, `~/.brnr/hosts/<run id>.jsonl`, for
   what belongs to no session (ACP before a session exists, the agent's
   stderr).
@@ -83,12 +90,21 @@ Reading:
   has none, and `event log` says so.
 - `event log` of a running session first waits for what its process has
   recorded (ADR 5.5).
+- `event log` reads every file of the session, in every project folder,
+  merged by their records' `ts` (#121), decided, not implemented yet
+  (#309). One process owns a session at a time (ADR 3.9), so the
+  records of two files don't overlap in time. `--last` counts in what is
+  merged; `--follow` follows the files the serving process writes.
 - What a transcript is for `session list`, `session resume` and `doctor`
   comes from the first and last records brnr can read in it. A line that
   isn't a JSON object, cut short or not, is passed over. The last record
   is read backwards, so a long transcript costs no more than its last
-  records. A line cut short is never taken for a record: a JSON object
-  ends only at its last byte. So, for a transcript:
+  records. Of a session with files in more than one folder, the first
+  record is the oldest file's and the last is the newest record of them
+  all: `session resume` takes its cwd, agent and profile from that newest
+  record (ADR 3.11), and `session list` its row (#121), decided, not
+  implemented yet (#309). A line cut short is never taken for a
+  record: a JSON object ends only at its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;
   - ending partway through a line: its last whole record;
   - with a whole line that isn't a record, last or anywhere: the line is
@@ -125,6 +141,14 @@ the logger ends a line its own failed write cut short before it writes
 again, so a broken line can be anywhere in a file. Reading past it keeps
 the session listed, logged and resumed, as every record before the cut is
 there (#61).
+
+A session's files in two folders are one session read as half of one:
+`event log` and `session resume` take the most recent file, and say
+nothing of the other (#121). An id is one session (ADR 9.2), so its
+transcript is every file of it. The files can't interleave, since one
+process owns the session at a time (ADR 3.9), and `ts` orders them. The
+newest record is where the session was last served, a fixed rule that
+doesn't depend on where the command runs (P4).
 
 **Consequences.**
 
@@ -166,6 +190,11 @@ there (#61).
 - Taking the session's id from the file name when no record can be read:
   the name is an escaped id (ADR 9.2), not the id, and there would be no
   cwd, agent or profile to resume it with.
+- For one id with files in two folders (#121): keeping "the most recent
+  file wins", which shows half a session and says nothing (P3); preferring
+  the file in the current cwd, which makes the answer depend on where the
+  command runs (P4); refusing and listing the folders, with `--cwd` to
+  choose one, which treats one session as two.
 
 ## 5.2 Dropped messages and closed sessions are events
 
@@ -375,6 +404,10 @@ written.
   is serving (`--take-over`). That is the one thing brnr knows about the
   history it has; it doesn't compare the replay with the transcript to
   guess what is missing (P4).
+- "brnr has a transcript of the session" means in any project folder,
+  whatever cwd the session is resumed in, for a start's load as for an
+  editor's and a bridge's (below): an id is one session, and its files
+  in every folder are its transcript (ADR 5.1, #121).
 - A transcript is an events file holding a record of the session beyond
   its openings. One holding only `session-opened` records, as a failed
   load leaves, isn't one: the next load, a start's, a bridge's or an
@@ -478,6 +511,11 @@ says it is missing (P3, #60).
   it, and a load of a session brnr has a transcript of doesn't add them.
   The `history` event's `recorded: false` says that the replay was left
   out, so that what is missing is known to be missing.
+- A session resumed in another cwd (`session resume --cwd`) starts a file
+  in that folder, and its load records nothing of the replay there: the
+  history is in the file in the first folder. `event log` reads both
+  (ADR 5.1), so it shows the history; until that is implemented
+  (#309), it reads the newest file only, and shows none of it.
 - Deleting a session's transcript makes its next load record the history
   again, except in a process that served the session before the delete:
   that process remembers what it recorded of the session until it exits.
