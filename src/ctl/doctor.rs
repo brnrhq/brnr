@@ -10,9 +10,10 @@
 //!   be locked (ADR 3.9), `sessions/` being a private directory with nothing
 //!   but files where lock files go, and none left by a process that is gone;
 //! - transcripts under `BRNR_HOME`: readable only by the user;
-//! - the config file: it parses, every key is in its part of a profile
-//!   (ADR 6.1), and every profile's settings, cwd, agent and bridges are
-//!   valid;
+//! - the config file: the user's own, with nobody else able to read or write
+//!   it or write its folder (ADR 9.4); it parses, every key is in its part of
+//!   a profile (ADR 6.1), and every profile's settings, cwd, agent and
+//!   bridges are valid;
 //! - the adapters: where brnr's (`brnr-claude-adapter`, `brnr-codex-adapter`)
 //!   and the npm packages' (`claude-agent-acp`, `codex-acp`) are found;
 //! - running processes: each answers; of one that doesn't, the sessions it
@@ -24,7 +25,7 @@
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata, sockets and locks. It never touches anything it
-//! would refuse to use, nor any log. The exit status is non-zero if a check
+//! would refuse to use, nor any log, nor the config file (P4). The exit status is non-zero if a check
 //! failed. `--json` prints the checks as a list of `{level, check,
 //! message}`.
 //!
