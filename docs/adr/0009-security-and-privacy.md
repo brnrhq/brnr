@@ -56,6 +56,9 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   - `session list`, `event log` and `session resume` find a transcript by
     the id its records carry, not by its file name. The original id is in
     every record and in the lock file.
+  - `session list --cwd` keeps a session by the cwd its records name,
+    not by its folder, so two cwds that share a folder each list only
+    their own (#120).
 - An id whose name doesn't fit in a file name (255 bytes with the
   `.acp.jsonl`; an escaped byte takes three) is not supported. Its
   transcript fails to open and the host log says so, and its lock can't be
@@ -191,6 +194,14 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0009_distinct_ids_never_share_a_transcript`,
     `adr_0009_distinct_ids_never_share_a_lock`.
+  - [tests/cli.rs](../../tests/cli.rs):
+    - `adr_0009_cwds_that_share_a_project_folder_are_listed_apart`:
+      `<dir>/x-y` and `<dir>/x/y`, one folder, each list only their own
+      sessions with `--cwd`, closed, open, and open in a process that
+      doesn't answer, with an agent named or not.
+    - `adr_0009_cwds_that_share_a_project_folder_are_resumed_apart`: each
+      one's session has its own transcript in `event log`, and `session
+      resume` opens it in its own cwd.
 - 9.3:
   - [src/log.rs](../../src/log.rs):
     - `adr_0009_new_and_private_paths_are_opened_as_they_are`: what is

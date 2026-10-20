@@ -1633,6 +1633,118 @@ fn adr_0008_list_finds_a_cwd_however_it_is_spelled() {
     assert!(ids(&["--cwd", &other.to_string_lossy()]).is_empty());
 }
 
+/// Two cwds whose project folder is one, as `~/.claude/projects` names it
+/// (ADR 9.2): `<dir>/x-y`, a's, and `<dir>/x/y`, b's, each made.
+fn sharing_a_folder(env: &Env) -> [(String, &'static str); 2] {
+    let dirs = [(env.dir.join("x-y"), "a"), (env.dir.join("x/y"), "b")];
+    dirs.map(|(dir, x)| {
+        fs::create_dir_all(&dir).unwrap();
+        (dir.to_string_lossy().into_owned(), x)
+    })
+}
+
+/// The events files in the one project folder brnr has.
+fn one_folder(env: &Env) -> Vec<String> {
+    let projects: Vec<_> = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten().collect();
+    assert_eq!(projects.len(), 1, "{projects:?}");
+    let files = fs::read_dir(projects[0].path()).unwrap().flatten();
+    let mut names: Vec<String> = files
+        .map(|f| f.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.ends_with(".acp.jsonl"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// `session list --cwd` keeps two cwds that share a project folder apart,
+/// with an agent named or not: each lists only its own sessions, closed,
+/// open in a process, or open in one that doesn't answer, by the cwd each
+/// session's records name, not by the folder.
+#[test]
+fn adr_0009_cwds_that_share_a_project_folder_are_listed_apart() {
+    let env = Env::new("c-shared-list");
+    let cwds = sharing_a_folder(&env);
+    for (dir, x) in &cwds {
+        closed_session(&env, &format!("{x}-closed"), &["--cwd", dir]);
+        let open = format!("{x}-open");
+        let out = env.brnr(&new_args(&["--cwd", dir])).env("SESSION_ID", &open).output().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        // Its transcript written: what says which cwd's it is when its
+        // process can't.
+        env.ok(&["event", "log", &open]);
+    }
+    assert_eq!(
+        one_folder(&env),
+        ["a-closed.jsonl", "a-open.jsonl", "b-closed.jsonl", "b-open.jsonl"]
+    );
+    // brnr's rows, not those only the fake agent knows (sess-1, old-1).
+    let ours = |rows: Vec<Value>| -> Vec<(String, String)> {
+        let mut ours: Vec<(String, String)> = rows
+            .iter()
+            .filter(|r| r["source"] != "agent")
+            .map(|r| (r["session"].as_str().unwrap().into(), r["state"].as_str().unwrap().into()))
+            .collect();
+        ours.sort();
+        ours
+    };
+    let want = |x: &str, open: &str| {
+        [(format!("{x}-closed"), "inactive".to_owned()), (format!("{x}-open"), open.to_owned())]
+    };
+    for (dir, x) in &cwds {
+        assert_eq!(ours(session_list(&env, &["--cwd", dir])), want(x, "idle"), "{dir}");
+        let joined = session_list(&env, &["--cwd", dir, "--", AGENT]);
+        assert_eq!(ours(joined), want(x, "idle"), "{dir}");
+    }
+    // Their processes stopped: an open session's cwd is then known only
+    // from its transcript, in the folder both share.
+    let pids: Vec<i32> =
+        env.hosts().iter().map(|h| h["host_pid"].as_i64().unwrap() as i32).collect();
+    assert_eq!(pids.len(), 2, "{pids:?}");
+    for pid in &pids {
+        kill(*pid, libc::SIGSTOP);
+    }
+    let lists = cwds.each_ref().map(|(dir, _)| {
+        let args = ["session", "list", "--json", "--cwd", dir];
+        env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    });
+    let lists = lists.map(|c| c.wait_with_output().unwrap());
+    for pid in &pids {
+        kill(*pid, libc::SIGCONT);
+    }
+    for (out, (dir, x)) in lists.iter().zip(&cwds) {
+        let rows: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(ours(rows.as_array().unwrap().clone()), want(x, "unreachable"), "{dir}");
+    }
+}
+
+/// A session is found by its id, not by its folder: two cwds that share a
+/// project folder each have their own session's transcript in `event log`,
+/// and `session resume` opens each in its own cwd.
+#[test]
+fn adr_0009_cwds_that_share_a_project_folder_are_resumed_apart() {
+    let env = Env::new("c-shared-resume");
+    let cwds = sharing_a_folder(&env);
+    for (dir, x) in &cwds {
+        let prompt = format!("reply in {x}");
+        closed_session(&env, &format!("{x}-1"), &["--cwd", dir, "--wait", "--prompt", &prompt]);
+    }
+    assert_eq!(one_folder(&env), ["a-1.jsonl", "b-1.jsonl"]);
+    for (dir, x) in &cwds {
+        let id = format!("{x}-1");
+        let log = env.ok(&["event", "log", &id, "--events", "agent_message"]);
+        let said: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+        assert_eq!(said, [format!("agent: in {x}")], "{id}");
+        env.ok(&resume_args(&id, &[]));
+        let resumed = env.calls_of("session/resume");
+        let asked = resumed.iter().find(|c| c["params"]["sessionId"] == id.as_str());
+        assert_eq!(asked.unwrap()["params"]["cwd"], dir.as_str(), "{resumed:?}");
+        let rows = session_list(&env, &["--cwd", dir]);
+        let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
+        assert_eq!(ids, [id.as_str()], "{rows:?}");
+        assert_eq!((&rows[0]["state"], &rows[0]["cwd"]), (&"idle".into(), &dir.as_str().into()));
+    }
+}
+
 /// `--include` keeps sessions by state: `active` those open in a process,
 /// `inactive` those that aren't, whoever knows them; both by default. An
 /// unknown state fails.
