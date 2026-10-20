@@ -1046,3 +1046,162 @@ fn adr_0002_stdout_and_stderr_end_on_their_own() {
     ends(&editor.stderr);
     assert_eq!(editor.code(), Some(4));
 }
+
+/// The config file, its mode set to `mode` and its folder's to `dir`.
+fn config(env: &Env, text: &str, mode: u32, dir: u32) -> PathBuf {
+    env.write_config(text);
+    let path = env.config();
+    chmod(&path, mode);
+    chmod(path.parent().unwrap(), dir);
+    path
+}
+
+/// A config file the group or others can read or write, or in a folder they
+/// can write, is refused by every command that reads it, before an agent
+/// starts, saying which path, why, and the `chmod` that fixes it; brnr
+/// changes neither (ADR 9.4).
+#[test]
+fn adr_0009_a_config_others_can_read_or_write_is_refused() {
+    let env = Env::new("s-config");
+    let text = "[profiles.default]\nlog = false\n";
+    for (file, dir, says, fix) in [
+        (0o640, 0o700, "it can be read by the group (mode 640), and may hold secrets", "go-rw"),
+        (0o604, 0o700, "it can be read by others (mode 604)", "go-rw"),
+        (0o620, 0o700, "it can be written by the group (mode 620)", "go-rw"),
+        (0o602, 0o700, "it can be written by others (mode 602)", "go-rw"),
+        (0o600, 0o757, "can be written by others (mode 757)", "go-w"),
+        (0o600, 0o770, "can be written by the group (mode 770)", "go-w"),
+    ] {
+        let path = config(&env, text, file, dir);
+        let at = if fix == "go-w" { path.parent().unwrap() } else { &path };
+        let name = at.file_name().unwrap().to_string_lossy().into_owned();
+        let new = env.fails(&new_args(&["--prompt", "hi"]));
+        let acp = stderr(&env.run_with_stdin(&["acp", "--", AGENT], b""));
+        for err in [&new, &acp] {
+            assert!(err.contains(&format!("{}: ", path.display())), "{err}");
+            assert!(err.contains(says), "{file:o} {dir:o}: {err}");
+            assert!(err.contains("so brnr won't read the config"), "{err}");
+            let fix = format!("chmod {fix} ");
+            assert!(err.contains(&fix) && err.trim_end().ends_with(&name), "{err}");
+        }
+        assert_eq!((mode(&path), mode(path.parent().unwrap())), (file, dir));
+        assert!(env.hosts().is_empty() && env.calls().is_empty());
+    }
+    // Both wrong: both said.
+    let path = config(&env, text, 0o666, 0o777);
+    let err = env.fails(&new_args(&["--prompt", "hi"]));
+    assert!(err.contains("it can be read and written by the group and others (mode 666)"), "{err}");
+    assert!(err.contains("can be written by the group and others (mode 777)"), "{err}");
+    // Private again: read.
+    config(&env, text, 0o600, 0o700);
+    env.start(&["--prompt", "hi"]);
+    env.stop();
+    assert_eq!(mode(&path), 0o600);
+}
+
+/// A config file of another user's (root's), in a folder of theirs, is
+/// refused for being theirs, mode aside, with the `chown` that fixes it.
+/// Skipped as root.
+#[test]
+fn adr_0009_a_config_of_another_users_is_refused() {
+    let theirs = Path::new("/etc/hosts");
+    if uid() == 0 || !fs::metadata(theirs).is_ok_and(|m| m.uid() == 0) {
+        eprintln!("skipped: needs a file of root's, and not to be root");
+        return;
+    }
+    let env = Env::new("s-config-theirs");
+    let out = env.brnr(&new_args(&["--prompt", "hi"])).env("BRNR_CONFIG", theirs).output().unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    let not_you = format!("is owned by uid 0, not you (uid {})", uid());
+    assert!(err.contains(&format!("it {not_you}")), "{err}");
+    assert!(
+        err.contains(&format!("{not_you}, so brnr won't read the config: sudo chown {}", uid()))
+    );
+    let folder = fs::canonicalize("/etc").unwrap();
+    assert!(err.contains(&format!("its folder {} {not_you}", folder.display())), "{err}");
+    assert!(env.hosts().is_empty() && env.calls().is_empty());
+}
+
+/// A symlinked config file is followed, as dotfiles have them: what is
+/// checked is the file it points at and that file's folder, so a link to a
+/// private file is read, and one to a file others can read is refused,
+/// naming that file (ADR 9.4).
+#[test]
+fn adr_0009_a_symlinked_config_is_checked_where_it_points() {
+    let env = Env::new("s-config-link");
+    let dotfiles = env.dir.join("dotfiles");
+    fs::create_dir(&dotfiles).unwrap();
+    chmod(&dotfiles, 0o700);
+    let target = dotfiles.join("brnr.toml");
+    fs::write(&target, format!("[profiles.default]\nagent = [{AGENT:?}]\n")).unwrap();
+    chmod(&target, 0o600);
+    let link = env.dir.join("config.toml");
+    symlink(&target, &link).unwrap();
+    // The profile's agent: no agent is given.
+    let out = env.brnr(&["session", "new", "--prompt", "hi"]).env("BRNR_CONFIG", &link).output();
+    let out = out.unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    env.stop();
+
+    chmod(&target, 0o644);
+    let out = env.brnr(&["session", "new", "--prompt", "hi"]).env("BRNR_CONFIG", &link).output();
+    let err = stderr(&out.unwrap());
+    let real = fs::canonicalize(&target).unwrap();
+    assert!(err.contains(&format!("{}: {}, which it links to,", link.display(), real.display())));
+    assert!(err.contains(&format!("chmod go-rw {}", real.display())), "{err}");
+    assert_eq!(mode(&target), 0o644);
+}
+
+/// On macOS an access control list can let others in whatever the mode
+/// says (`chmod +a`): a config file or folder with one is refused, with the
+/// `chmod -N` that removes it, and brnr leaves it there (ADR 9.4).
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0009_a_config_with_an_acl_is_refused() {
+    let env = Env::new("s-config-acl");
+    let path = config(&env, "[profiles.default]\nlog = false\n", 0o600, 0o700);
+    let acl = |entry: &str, at: &Path| {
+        let ok = std::process::Command::new("chmod").args(["+a", entry]).arg(at).status().unwrap();
+        assert!(ok.success(), "chmod +a {entry} {}", at.display());
+    };
+    let has_acl = |at: &Path| {
+        let out = std::process::Command::new("ls").arg("-lde").arg(at).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).lines().count() > 1
+    };
+    let folder = path.parent().unwrap().to_owned();
+    for (at, entry, says) in [
+        (
+            &path,
+            "everyone allow read",
+            "it has an access control list (ls -le), which can let others read or write it",
+        ),
+        (
+            &folder,
+            "everyone allow add_file",
+            "has an access control list (ls -le), which can let others change what is in it",
+        ),
+    ] {
+        acl(entry, at);
+        let err = env.fails(&new_args(&["--prompt", "hi"]));
+        assert!(err.contains(says), "{err}");
+        assert!(err.contains("so brnr won't read the config"), "{err}");
+        let name = at.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(err.contains("chmod -N ") && err.trim_end().ends_with(&name), "{err}");
+        assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
+        assert!(env.hosts().is_empty() && env.calls().is_empty());
+        let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();
+        assert!(ok.success());
+    }
+    env.start(&["--prompt", "hi"]);
+    env.stop();
+}
+
+/// No config file is no config, as before: defaults apply.
+#[test]
+fn adr_0009_a_missing_config_is_no_config() {
+    let env = Env::new("s-config-none");
+    assert!(!env.config().exists() && !env.config().parent().unwrap().exists());
+    env.start(&["--prompt", "hi"]);
+    env.stop();
+}

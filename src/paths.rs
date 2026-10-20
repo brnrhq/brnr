@@ -146,7 +146,7 @@ pub(crate) fn brnr_dir_is(dir: &Path) -> String {
 
 /// `word` as one shell word: as it is when nothing in it is special to a
 /// shell, else in single quotes, with each `'` in it written `'\''`.
-fn shell_word(word: &str) -> String {
+pub(crate) fn shell_word(word: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-.,/:=+@%".contains(c);
     if !word.is_empty() && word.chars().all(plain) {
         return word.to_owned();
