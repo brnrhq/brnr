@@ -1,9 +1,10 @@
 # 3. Processes, sessions and ownership
 
-Draft 2026-10-19. Implemented; the cause of the deaths 3.7 records is still
-to be found. Factor: F3; N2 for how a process starts and dies (ADR 1).
-Brings together former ADRs 2, 13, 8, 7, 9, 10, 11, 12, 3, 50, 65, 42, 14
-and 16 (docs/adr/README.md maps them).
+Draft 2026-10-19. Implemented, but for 3.11's resume of an id with files in
+more than one folder (#121), decided, not implemented yet (#309); the cause
+of the deaths 3.7 records is still to be found. Factor: F3; N2 for how a
+process starts and dies (ADR 1). Brings together former ADRs 2, 13, 8, 7, 9,
+10, 11, 12, 3, 50, 65, 42, 14 and 16 (docs/adr/README.md maps them).
 
 How brnr runs agents: the process that owns each agent, how it is started,
 how it ends, and which process may serve a session. This is what ACP leaves
@@ -641,14 +642,19 @@ otherwise, kept apart from strict mode, which is about the protocol
   and a `history` event says which it was (ADR 5.6).
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
   the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
-  override them. An id brnr doesn't know (one `session list` with an agent
-  named shows) goes to the agent as given, in `--cwd` (or the profile's
-  `cwd`, or here), with the agent after `--` (or the profile's).
+  override them. Of an id with files in more than one project folder, they
+  come from the newest record of them all, where the session was last served
+  (ADR 5.1, #121), decided, not implemented yet (#309). An id brnr doesn't
+  know (one `session list` with an agent named shows) goes to the agent as
+  given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
+  `--` (or the profile's).
 - A session another process holds is refused, unless `--take-over`
   (ADR 3.9).
 - With `--pid`, the session is resumed in that running process, in its
   recorded cwd (ADR 3.12).
-- It appends to the same transcript.
+- It appends to the session's file in its cwd's folder: the same file,
+  unless `--cwd` names another cwd, where it starts one. Either way it is
+  one session's transcript (ADR 5.1).
 
 **Why.** Sessions are the agent's (P2): any id the agent knows can be
 resumed, and brnr's own record of one is used where it has one, as a fixed
@@ -658,6 +664,9 @@ rule rather than a guess (P4).
 
 - Refusing an id brnr has no transcript of: `session list` would show
   sessions that `session resume` then refused.
+- For an id with files in two folders, the cwd of the file in the folder
+  the command runs in: a rule that depends on where it runs (P4). The
+  options are in ADR 5.1.
 
 ## 3.12 Fork and close
 
@@ -806,6 +815,12 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`.
+  That a resume in another cwd starts a file in that folder is shown, for
+  a bridge's resume, by ADR 5.6's
+  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`
+  ([tests/cli.rs](../../tests/cli.rs)). Not covered by a Rust test: the
+  cwd of an id with files in more than one folder (#121), decided, not
+  implemented yet; its tests come with #309.
 - 3.12:
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_fork_and_close`,
