@@ -491,7 +491,10 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_ids_come_back_as_the_editor_wrote_them`,
   `adr_0002_the_editors_cancel_request_is_for_its_own_request`;
   [src/json.rs](../../src/json.rs):
-  `adr_0002_an_id_is_found_where_it_is_and_nowhere_else`. Also
+  `adr_0002_an_id_is_found_where_it_is_and_nowhere_else`;
+  [src/host/outbound.rs](../../src/host/outbound.rs):
+  `adr_0002_ids_are_never_given_twice`,
+  `adr_0002_an_answer_is_its_requests_once`. Also
   [tests/security.rs](../../tests/security.rs):
   `adr_0003_acp_passes_bytes_unchanged` (ADR 3.1's), which checks that
   only the ids change.

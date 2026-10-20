@@ -58,9 +58,12 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   targets reach them through `brnr::internals` (the `internals` feature).
 - `src/host/`: `mod.rs` the process and its event loop, `acp.rs` the ACP
   stream, `control.rs` the socket and bridges, `state.rs` what the agent has
-  said, `sessions.rs` the sessions opening, open and closing, plus one file
-  per ADR-sized concern (start, death, flow, display, strict,
-  experimental).
+  said, `sessions.rs` the sessions opening, open and closing, `turns.rs` a
+  session's turns and the messages held for them, `outbound.rs` the host's
+  requests the agent hasn't answered, `approvals.rs` the agent's permission
+  requests and elicitations no one has answered, `lines.rs` bytes into
+  lines (one too long to keep included), plus one file per ADR-sized
+  concern (start, death, flow, display, strict, experimental).
 - `src/render.rs`: events as text, the one way sessions are shown (P5).
 - `src/sys.rs`: the system calls that are safe whatever their arguments.
 - `tests/`: integration tests that drive the real binary against

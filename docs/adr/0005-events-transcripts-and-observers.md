@@ -653,6 +653,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_closing_sessions_closes_their_files`;
   [src/log.rs](../../src/log.rs):
   `adr_0005_a_closed_session_has_its_records_and_then_no_file`;
+  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  `adr_0005_a_session_without_a_transcript_has_none_to_read`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
@@ -693,9 +695,15 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_closing_session_is_read_once_written_and_said_to_be_closing`,
   `adr_0005_a_failed_load_is_written_before_the_session_is_resumed`,
   `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`,
-  `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`;
+  `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`,
+  `adr_0005_an_editors_failed_load_holds_its_lock_until_written`;
   [tests/cli.rs](../../tests/cli.rs):
-  `adr_0005_log_shows_what_the_process_has_recorded`.
+  `adr_0005_log_shows_what_the_process_has_recorded`. That a session
+  closing in its process is said to be closing, not opening, by every
+  command that refuses it is ADR 3.9's
+  `adr_0003_the_lock_decides_and_closing_comes_before_opening` and
+  `adr_0003_each_place_is_refused_in_the_same_words`
+  ([src/ctl/ownership.rs](../../src/ctl/ownership.rs)).
 - 5.6: [tests/cli.rs](../../tests/cli.rs):
   `adr_0005_a_first_load_records_the_replayed_history`,
   `adr_0005_a_load_without_the_transcript_records_the_history`,

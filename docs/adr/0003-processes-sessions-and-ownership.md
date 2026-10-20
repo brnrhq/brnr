@@ -421,11 +421,23 @@ The lock:
 
 A session another process holds:
 
-- `session resume <session>` refuses it, naming the process ("… is running
-  in process 4466"), unless `--take-over`. A process that doesn't answer
-  but holds the lock is alive and serving the session; nothing is guessed.
-  The lock is taken before the agent is asked. With `--pid`, a session that
-  process serves already is refused, `--take-over` or not.
+- `session resume <session>` refuses it, saying where it is in the words
+  every command uses for it: `sess-1 is running in process 4466`, with `,
+  which is not answering` for a holder that doesn't answer and `, which brnr
+  doesn't list` for one not listed here, or `sess-1 is opening in process
+  4466` for one that hasn't opened it yet. A process that doesn't answer but
+  holds the lock is alive and serving the session; nothing is guessed. The
+  lock is taken before the agent is asked.
+- `--take-over` is offered only where it can work: for a session open in
+  the process holding its lock, whose refusal adds `(--take-over closes it
+  there and resumes it here)`, or `… resumes it in process 4470` with
+  `--pid`. A holder that doesn't answer, is opening the session or isn't
+  listed here can't be asked to close it, and a session a process serves
+  without its lock isn't taken over: their refusals don't offer it, and
+  with `--take-over` they are refused in the same words.
+- With `--pid`, a session that process serves or holds already is refused
+  (`sess-1 is already open in process 4466`), `--take-over` or not; one
+  closing there is closing (ADR 5.5).
 - `--take-over` releases the session from its owner first: the owner
   cancels a running turn and closes that one session (`session/close`),
   never stopping a whole process. Sessions forked beside it keep running; a
@@ -781,6 +793,10 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session`.
   - [src/paths.rs](../../src/paths.rs):
     `adr_0003_brnr_dir_is_one_shell_word`.
+  - [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+    `adr_0003_each_place_is_refused_in_the_same_words`,
+    `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
+    `adr_0003_a_resume_into_its_own_process_is_refused`.
 - 3.10: [tests/headless.rs](../../tests/headless.rs):
   `adr_0003_shared_sessions_let_an_editor_load_a_held_session`.
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
