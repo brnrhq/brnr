@@ -98,7 +98,7 @@ fn a_runtime_dir_others_can_use_is_refused() {
             &["session", "list"][..],
             &["process", "list"],
             &["permission", "requests"],
-            &["prompt", "send", "sess-1", "hi"],
+            &["prompt", "send", "sess-1", "--prompt", "hi"],
         ] {
             private_dir_error(&env.fails(args));
         }
@@ -197,7 +197,7 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
 fn no_approval_goes_through_a_dir_others_can_use() {
     let env = Env::new("s-approve");
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
     assert!(wait_for(Duration::from_secs(5), || env
         .ok(&["permission", "requests"])
         .contains("p1")));
@@ -457,7 +457,7 @@ fn a_session_id_cant_climb_out_of_its_folder() {
     assert!(escaped.is_empty(), "{escaped:?}");
     let list = env.ok(&["session", "list"]);
     assert!(!list.contains('\x1b') && list.contains("escape"), "{list:?}");
-    env.ok(&["prompt", "send", id, "hi"]);
+    env.ok(&["prompt", "send", id, "--prompt", "hi"]);
     env.stop();
 }
 
@@ -521,7 +521,7 @@ fn outcome(env: &Env, request: &str) -> Option<Value> {
 fn adr_0004_an_unanswered_request_waits() {
     let env = Env::new("s-waits");
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || env
         .ok(&["permission", "requests"])
         .contains("p1")));
@@ -540,7 +540,7 @@ fn adr_0004_a_timeout_never_allows() {
     let env = Env::new("s-allowonly").agent("ALLOW_ONLY", "1");
     env.write_config("[profiles.default.headless]\nresponse_timeout = 1\n");
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm execute"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm execute"]);
     assert!(wait_for(Duration::from_secs(5), || outcome(&env, "perm-1").is_some()), "never ended");
     assert_eq!(outcome(&env, "perm-1").unwrap(), json!({ "outcome": "cancelled" }));
     assert!(env.ok(&["event", "log", "sess-1"]).contains("by timeout"));
@@ -567,7 +567,7 @@ fn adr_0008_timeout_rejects_once_else_cancels_the_turn() {
     let env = Env::new("s-timeoutonce");
     env.write_config(timeout);
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
     predicts(&env, "rejected once");
     assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
     assert_eq!(outcome(&env, "perm-1").unwrap()["optionId"], "reject");
@@ -585,7 +585,7 @@ fn adr_0008_timeout_rejects_once_else_cancels_the_turn() {
         let env = Env::new(name).agent("PERM_OPTIONS", options);
         env.write_config(timeout);
         env.start(&[]);
-        env.ok(&["prompt", "send", "sess-1", &format!("perm edit {asks}")]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("perm edit {asks}")]);
         predicts(&env, "its turn cancelled");
         let requests: Vec<String> = (1..=asks).map(|n| format!("perm-{n}")).collect();
         let answered = || requests.iter().all(|r| outcome(&env, r).is_some());
@@ -627,7 +627,7 @@ fn adr_0004_a_timeout_cancels_never_accepts() {
     let env = Env::new("s-eltimeout");
     env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "elicit form"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "elicit form"]);
     let asked = || env.ok(&["elicitation", "requests"]).contains("e1");
     assert!(wait_for(Duration::from_secs(5), asked), "never asked");
     let shown = env.ok(&["elicitation", "show", "sess-1", "e1"]);
@@ -653,7 +653,7 @@ fn adr_0004_a_request_is_answered_only_in_its_session() {
     let env = Env::new("s-othersession");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
-    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
     assert!(wait_for(Duration::from_secs(5), || env
         .ok(&["permission", "requests"])
         .contains("p1")));
@@ -712,10 +712,12 @@ fn adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks() {
     let (events, acp) = (env.dir.join("events"), env.dir.join("acp"));
     env.write_config(&format!(
         r#"[[profiles.default.bridges]]
-command = ["sh", "-c", {:?}]
+command = "sh"
+args = ["-c", {:?}]
 
 [[profiles.default.bridges]]
-command = ["sh", "-c", {:?}]
+command = "sh"
+args = ["-c", {:?}]
 events = ["acp", "turn_ended"]
 
 [[profiles.default.headless.mcp_servers]]
@@ -762,7 +764,7 @@ fn adr_0010_was_cut_off_says_where_never_what() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..4 {
-        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
     }
     let log = || {
         let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
@@ -1111,7 +1113,7 @@ fn config(env: &Env, text: &str, mode: u32, dir: u32) -> PathBuf {
 #[test]
 fn adr_0009_a_config_others_can_read_or_write_is_refused() {
     let env = Env::new("s-config");
-    let text = "[profiles.default]\nlog = false\n";
+    let text = "[profiles.default]\nlog = \"off\"\n";
     for (file, dir, says, fix) in [
         (0o640, 0o700, "it can be read by the group (mode 640), and may hold secrets", "go-rw"),
         (0o604, 0o700, "it can be read by others (mode 604)", "go-rw"),
@@ -1208,7 +1210,7 @@ fn adr_0009_a_symlinked_config_is_checked_where_it_points() {
 #[test]
 fn adr_0009_a_config_with_an_acl_is_refused() {
     let env = Env::new("s-config-acl");
-    let path = config(&env, "[profiles.default]\nlog = false\n", 0o600, 0o700);
+    let path = config(&env, "[profiles.default]\nlog = \"off\"\n", 0o600, 0o700);
     let acl = |entry: &str, at: &Path| {
         let ok = std::process::Command::new("chmod").args(["+a", entry]).arg(at).status().unwrap();
         assert!(ok.success(), "chmod +a {entry} {}", at.display());

@@ -66,7 +66,7 @@ Files:
   stderr).
 - The events file is always written: `event log`, `session list` and
   `session resume` read it. The raw file is written by default; a
-  profile's `log = "events"` leaves it out, and `log = false` writes
+  profile's `log = "events"` leaves it out, and `log = "off"` writes
   neither (ADR 6.1).
 - A transcript is written only where only the user can read it: what
   others can reach is made private first, and a symlink is refused
@@ -112,7 +112,7 @@ Reading:
   and a folder without one is said (`no raw ACP for <session> beside
   <file>`). A file of the session an older brnr wrote, in any folder, is
   said and not read (above). Of a session open in a process that logs
-  nothing (`log = false`), what the other folders hold is shown, and
+  nothing (`log = "off"`), what the other folders hold is shown, and
   `event log` says the process keeps no transcript of it.
 - What a transcript is for `session list`, `session resume` and `doctor`
   comes from the first and last records brnr can read in it. A line that
@@ -338,7 +338,7 @@ is the one most likely wanted.
   gap of skipped records (ADR 10.1) that ends there. It says `lost` when a
   file has lost records it hasn't noted yet (ADR 10.2). The answer comes
   from the logger's thread; the event loop doesn't wait for it (P1). With
-  `log = false` it is answered at once.
+  `log = "off"` it is answered at once.
 - `event log` of a running session sends it first, and reads the files
   once it is answered: what `session new --wait`, `prompt send --wait` or
   `event wait` has reported is in what it shows. A process that doesn't
@@ -477,7 +477,7 @@ written.
 - A session a process has served, open or closed since, has its
   transcript in that process, for an editor's load and a bridge's alike,
   whether or not the logger, which writes behind (ADR 5.5), has written it
-  yet, unless the process logs nothing (`log = false`). The process
+  yet, unless the process logs nothing (`log = "off"`). The process
   remembers each session it has handed the logger a record of beyond its
   openings, for its events file, as the disk has it once that is written.
   So loading it again there records nothing of the replay again.
@@ -536,7 +536,7 @@ says it is missing (P3, #60).
   load, and carry this process's ids.
 - brnr's transcript is complete only for what happened through brnr:
   turns taken in the agent's own client, or while a profile had `log =
-  false` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
+  "off"` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
   it, and a load of a session brnr has a transcript of doesn't add them.
   The `history` event's `recorded: false` says that the replay was left
   out, so that what is missing is known to be missing.
@@ -578,7 +578,7 @@ says it is missing (P3, #60).
   Requests (`command` in src/host/control.rs): `status`, `send`,
   `cancel`, `queue` (with `show`), `subscribe`, `pending` (answered with
   `pending` and `elicitations`, ADR 4.5), `allow` and `reject`
-  `{session, request, always?, option?}`, `elicitation` `{session,
+  `{session, request, always?, option_id?}`, `elicitation` `{session,
   request, action, content?}` (ADR 4.5), `set_config` (taking `mode`,
   `model`, `thought_level` and `options`, ADR 6.2), `new` and `resume` (a
   session in the running process, as `session new --pid` and `session
@@ -673,8 +673,8 @@ closed its stdout, was dropped in 4 ms.
   it) from being cut off.
 - `brnr event notify --stdin [--events …] -- <command>` reads its events
   from its stdin, a started bridge's transport (ADR 5.7), instead of
-  connecting. That is how it runs as a bridge: `command = ["brnr",
-  "event", "notify", "--stdin", "--", …]` in the profile, with no `sh -c`
+  connecting. That is how it runs as a bridge: `command = "brnr"`, `args =
+  ["event", "notify", "--stdin", "--", …]` in the profile, with no `sh -c`
   and no `$BRNR_PID`, and one subscription. A started bridge isn't caught
   up when cut off; one that must not miss events runs `brnr event notify
   <session> -- …` on the socket instead (ADR 10.2).
@@ -794,7 +794,8 @@ Fields:
   `last_active`). A duration is in whole seconds, its name with no unit,
   as ADR 8.1 decides for #154: `uptime`, `turn_elapsed`, `timeout_left`,
   `stop_when_idle`. A size is in bytes by the same rule (`line_too_long`'s
-  `limit`).
+  `limit`). A depth is in levels of nesting, and its name says so
+  (`line_too_deep`'s `max_depth`), as it is no size.
 - A file brnr writes is `<which>_log` (`events_log`, `acp_log`,
   `host_log`); any other file or directory is `path`. `log` alone is the
   profile's setting (ADR 6.1), never a file.
@@ -827,7 +828,7 @@ socket's replies (`uptime_seconds`, `turn_seconds`, `timeout_seconds`),
 
 ### Renames
 
-Events (`EVENTS`). The other 23 keep their names.
+Events (`EVENTS`). The other 24 keep their names.
 
 | Old | New | |
 |---|---|---|
@@ -887,7 +888,6 @@ Records in the host log only (not covered, ADR 8.4):
 | `open-failed` | `open_failed` |
 | `session-log-failed` | `session_log_failed` |
 | `made-private` | `path_made_private` |
-| `line-too-deep` | `line_too_deep` |
 | `peer-dropped` | `peer_dropped` |
 | `timeout-failed` | `timeout_failed` |
 

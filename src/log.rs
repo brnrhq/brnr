@@ -1,7 +1,7 @@
 //! Transcripts (ADR 5.1 in docs/adr): two JSONL files per ACP session, its
 //! events and its raw ACP, plus one per host for what belongs to no session
 //! (see paths.rs for where they go). `log = "events"` leaves out the raw
-//! ACP; `log = false` is no logger at all. Records are written by a
+//! ACP; `log = "off"` is no logger at all. Records are written by a
 //! background thread so logging can never slow down or break forwarding;
 //! [`Sink::when_written`] says when what was recorded is written, for
 //! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.
@@ -342,8 +342,7 @@ impl Sink {
     }
 
     /// An event: into the session's events file, or the host log. It is
-    /// written out here, on the caller's stack: it may nest as deeply as the
-    /// ACP it came from (see json.rs).
+    /// written out here, so the logger's queue holds text.
     pub(crate) fn note(&self, session: Option<&str>, event: Value) {
         // How the process ended is never skipped: it is what tells an exit
         // from a death (`brnr doctor`, ADR 3.7).
@@ -817,7 +816,7 @@ fn embed(out: &mut Vec<u8>, line: &[u8]) {
 /// What brnr records of an ACP message, if not the line as it came: in a
 /// request that opens a session, the values of its MCP servers' `env` and
 /// `headers` are `"<redacted>"` (ADR 9.1 in docs/adr). The keys and the
-/// structure stay. Run it on a stack that takes the message.
+/// structure stay.
 pub(crate) fn redacted(msg: &Map<String, Value>) -> Option<Vec<u8>> {
     let method = msg.get("method")?.as_str()?;
     if !OPENING.contains(&method) {
@@ -857,11 +856,10 @@ pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
 
 /// A record of a host log or transcript with what [`redacted`] and
 /// `Request::recorded` redact redacted (ADR 9.1 in docs/adr), as brnr
-/// records it now: for one an older brnr wrote, shown again. Run it on a
-/// stack that takes `record`.
+/// records it now: for one an older brnr wrote, shown again.
 pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
-        && let Some(msg) = json::parse(&bytes)
+        && let Some(msg) = json::parse(&bytes, json::OWN_DEPTH)
     {
         record["msg"] = msg;
     }

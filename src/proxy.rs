@@ -1,4 +1,4 @@
-//! The editor-facing process: `brnr acp [options] [-- <program> [args...]]`,
+//! The editor-facing process: `brnr acp [options] [-- <agent> [args...]]`,
 //! a proxy between the editor and the host.
 //!
 //! The editor launches this as if it were the agent. It resolves the
@@ -32,7 +32,7 @@ use serde_json::Value;
 use crate::request::{self, Request, Role};
 use crate::{config, frame, signals, spawn, sys};
 
-const USAGE: &str = "usage: brnr acp [--profile <name>] [--strict] [-- <program> [args...]]";
+const USAGE: &str = "usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]";
 
 /// `brnr acp --help`: the usage, and what it is.
 const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
@@ -58,13 +58,13 @@ struct Options {
 type SignalLink = Arc<Mutex<UnixStream>>;
 
 pub(crate) fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
-    let args: Vec<OsString> = args.collect();
-    if args.first().is_some_and(|a| a == "-h" || a == "--help") {
-        println!("{USAGE}\n\n{HELP}");
-        return ExitCode::SUCCESS;
-    }
-    let (opts, program) = match parse_args(args.into_iter()) {
-        Ok(parsed) => parsed,
+    // Help on stdout and 0, a usage error on stderr and 2 (ADR 8.3).
+    let (opts, program) = match parse_args(args) {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => {
+            println!("{USAGE}\n\n{HELP}");
+            return ExitCode::SUCCESS;
+        }
         Err(msg) => {
             eprintln!("brnr acp: {msg}\n{USAGE}");
             return ExitCode::from(2);
@@ -72,12 +72,12 @@ pub(crate) fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     };
 
     // A config error is the editor's to see, as the process's own failures
-    // are.
+    // are, and exits 1, as it does in the control commands (ADR 8.3).
     let request = match resolve(opts, program, signals::current_mask()) {
         Ok(request) => request,
         Err(msg) => {
             eprintln!("brnr acp: {msg}");
-            return ExitCode::from(2);
+            return ExitCode::FAILURE;
         }
     };
     let signals = signals::install();
@@ -102,10 +102,11 @@ pub(crate) fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
     run(link, signal_link)
 }
 
-/// Splits `[options] [-- <program> [args...]]`.
+/// Splits `[options] [-- <agent> [args...]]`; `None` for `-h` or `--help`,
+/// as an option before any `--` (ADR 8.1).
 fn parse_args(
     mut args: impl Iterator<Item = OsString>,
-) -> Result<(Options, Vec<OsString>), String> {
+) -> Result<Option<(Options, Vec<String>)>, String> {
     let mut opts = Options::default();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -127,22 +128,23 @@ fn parse_args(
             }
         };
         match key.as_str() {
+            "-h" | "--help" if inline.is_none() => return Ok(None),
             "--profile" => opts.profile = Some(value()?),
             "--strict" if inline.is_none() => opts.strict = true,
             "--strict" => return Err("--strict takes no value".into()),
             _ => return Err(format!("unknown option: {key}")),
         }
     }
-    Ok((opts, args.collect()))
+    let agent = args
+        .map(|a| a.into_string().map_err(|a| format!("the agent's command isn't UTF-8: {a:?}")))
+        .collect::<Result<Vec<String>, String>>()?;
+    Ok(Some((opts, agent)))
 }
 
 /// The editor's process, as its start request has it: the profile's shared
 /// and editor parts, the agent, our cwd, the editor's signal mask.
-fn resolve(opts: Options, program: Vec<OsString>, mask: Vec<c_int>) -> Result<Request, String> {
+fn resolve(opts: Options, agent: Vec<String>, mask: Vec<c_int>) -> Result<Request, String> {
     let profile = config::load(opts.profile.as_deref())?;
-    let agent = (program.into_iter())
-        .map(|a| a.into_string().map_err(|a| format!("the agent's command isn't UTF-8: {a:?}")))
-        .collect::<Result<Vec<String>, String>>()?;
     let cwd = env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let editor = request::Editor {
         proxy_pid: std::process::id(),

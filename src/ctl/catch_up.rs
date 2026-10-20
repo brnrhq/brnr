@@ -113,7 +113,7 @@ impl Follow {
         match transcript::open(host_log) {
             Ok(file) => found.read(file, acp)?,
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err("the process keeps no transcript (log = false)".into());
+                return Err("the process keeps no transcript (log = \"off\")".into());
             }
             Err(e) => return Err(format!("{}: {e}", host_log.display())),
         }
@@ -154,11 +154,10 @@ impl Found<'_> {
             if transcript::position(&line).is_some_and(|n| !self.missed(n)) {
                 continue;
             }
-            // As the host reads it (see json.rs), as the socket's events,
-            // and let go of on a stack that takes it (ADR 2.5).
-            let depth = json::depth(&line);
-            json::on_stack(depth, || self.record(&line, acp))
-                .ok_or_else(|| format!("no stack to be had for a record {depth} deep"))??;
+            // As brnr reads what it wrote, as the socket's events: one too
+            // deep is none it wrote, and is said (ADR 2.5).
+            json::within(&line, json::OWN_DEPTH, "a record")?;
+            self.record(&line, acp)?;
         }
         Ok(())
     }
@@ -227,13 +226,5 @@ impl Found<'_> {
         let f = self.follow;
         f.events.iter().any(|e| e == name)
             && (session.is_null() || f.session.as_ref().is_none_or(|s| session == s.as_str()))
-    }
-}
-
-impl Drop for Found<'_> {
-    /// What it found before it failed may be deep: let go of on a stack that
-    /// takes it (ADR 2.5).
-    fn drop(&mut self) {
-        json::free(Value::Array(self.events.drain(..).map(|(_, e)| e).collect()));
     }
 }

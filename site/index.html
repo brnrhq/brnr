@@ -264,9 +264,9 @@ brnr acp --profile work          <span class="c"># agent and settings from a pro
       </div>
       <div class="body">
 <pre>brnr session list                  <span class="c"># open sessions and ended ones; -- &lt;agent&gt;: the agent's too</span>
-brnr prompt send $s "also update the changelog"   <span class="c"># held while a turn runs</span>
-brnr prompt send $s --steer "and the tests too"   <span class="c"># into the running turn</span>
-brnr prompt send $s --interrupt "stop, wrong branch"
+brnr prompt send $s --prompt "also update the changelog"   <span class="c"># held while a turn runs</span>
+brnr prompt send $s --steer --prompt "and the tests too"   <span class="c"># into the running turn</span>
+brnr prompt send $s --interrupt --prompt "stop, wrong branch"
 brnr event watch $s                <span class="c"># messages, tools, plan and approvals, live</span>
 brnr permission requests           <span class="c"># approvals waiting for an answer</span>
 brnr permission allow $s p1

@@ -128,7 +128,7 @@ a session, and picking one for the user hid that.
   (`start_request`), secrets redacted (ADR 9.1): every process records
   what it was asked to do.
 - A config error under `brnr acp` is reported on the editor's stderr as
-  `brnr acp: …`, as the process's own failures are.
+  `brnr acp: …`, as the process's own failures are, and exits 1 (ADR 8.3).
 
 **Consequences.** There is one way to get a prompt to a process. The
 agent's command isn't in the process's argv, so killing processes by the
@@ -299,7 +299,7 @@ every session).
   agent (P14). Until then its pid and group id can't be reused. Cleanup
   doesn't depend on a stop request having come first.
 - A detached process's stderr goes to its host log (`process_stderr`), a line
-  or a piece of 64 KiB at a time (ADR 10.3). With `log = false` there is no
+  or a piece of 64 KiB at a time (ADR 10.3). With `log = "off"` there is no
   host log, and it goes to `/dev/null`.
 - A panic, on any thread, is recorded. The hook notes it and wakes the
   event loop, which records the panic in the host log (`process_panicked`),
@@ -411,7 +411,7 @@ The lock:
   file it leaves, held by nobody, is taken as it is. `doctor` lists such
   files under `session locks`, and `--fix` removes them. A process that
   closes a session removes the file as it lets go.
-- `log = false` writes no transcripts, but its sessions are locked all the
+- `log = "off"` writes no transcripts, but its sessions are locked all the
   same: the lock is ownership, not logging.
 - `sessions/` is held to the runtime directory's terms (P13): created
   0700, refused with the cause when it isn't the user's own private
@@ -576,7 +576,7 @@ lock goes.
 - Refusing whenever any process doesn't answer: one hung process would
   block every resume.
 - Refusing only if the transcript was last written by the silent process,
-  or by a process not listed here: an inference, wrong for `log = false`.
+  or by a process not listed here: an inference, wrong for `log = "off"`.
 - Each process listing its sessions in its `<pid>.json`: rewritten on
   every change, and trusting a file a dead process left behind.
 - The editor's load taking over automatically: a click in the editor's

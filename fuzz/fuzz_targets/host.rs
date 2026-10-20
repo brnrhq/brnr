@@ -30,11 +30,10 @@ use brnr::internals::{frame, json};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
-/// Whether `line` is a message the host interprets: a JSON object.
+/// Whether `line` is a message the host interprets: a JSON object, to the
+/// depth limit.
 fn object(line: &[u8]) -> bool {
-    let depth = json::depth(line);
-    json::on_stack(depth, || matches!(json::parse::<Value>(line), Some(Value::Object(_))))
-        .unwrap_or(false)
+    matches!(json::parse::<Value>(line, json::DEPTH), Some(Value::Object(_)))
 }
 
 fuzz_target!(|data: &[u8]| {

@@ -35,8 +35,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::request::{self, Request, Role};
-use crate::{config, json, paths, render, signals, spawn, sys, transcript};
+use crate::{config, paths, render, signals, spawn, sys, transcript};
 
+use super::args::Error::{self, Failed, Invalid};
 use super::client::{Conn, Host, discover, session_in};
 use super::ownership::{self, Resume};
 use super::{
@@ -89,8 +90,7 @@ pub(super) fn wait_for_message(
             }
             Err(why) => return conn.ended(why),
         };
-        // Used and let go of on a stack that takes it (ADR 2.5).
-        let ended = conn.deep(e, |_, e| -> Result<Option<ExitCode>, String> {
+        let ended = 'event: {
             let ours = e["session"] == session;
             match e["event"].as_str().unwrap_or_default() {
                 "user_message" if e["message"] == message => started = true,
@@ -121,14 +121,14 @@ pub(super) fn wait_for_message(
                     if let Some(out) = json.take() {
                         print_turn(out, session, message, &reply, &e)?;
                     }
-                    return Ok(Some(turn_status(&e)));
+                    break 'event Some(turn_status(&e));
                 }
                 "message_dropped" if e["message"] == message => {
                     if let Some(out) = json.take() {
                         print_turn(out, session, message, &reply, &e)?;
                     }
                     errln!("brnr: {message} was dropped ({})", e["reason"].as_str().unwrap_or("?"));
-                    return Ok(Some(ExitCode::FAILURE));
+                    break 'event Some(ExitCode::FAILURE);
                 }
                 "session_closed" if ours => {
                     return Err("the session closed before the turn ended".into());
@@ -136,8 +136,8 @@ pub(super) fn wait_for_message(
                 "process_exited" => return Err("the agent exited before the turn ended".into()),
                 _ => {}
             }
-            Ok(None)
-        })??;
+            None
+        };
         if let Some(status) = ended {
             return Ok(status);
         }
@@ -294,10 +294,11 @@ struct StartArgs {
 }
 
 /// `session new`'s flags, or (`resume`) `session resume`'s, which also
-/// takes the session and `--take-over`.
-fn parse_start(args: &Args, resume: bool) -> Result<StartArgs, String> {
+/// takes the session and `--take-over`; checked before the prompt is read
+/// from stdin, so a usage error reads nothing.
+fn parse_start(args: &Args, resume: bool) -> Result<StartArgs, Error> {
     if args.has("--take-over") && !resume {
-        return Err("--take-over goes with session resume".into());
+        return Err(Invalid("--take-over goes with session resume".into()));
     }
     let value = |flag| args.value(flag).map(str::to_owned);
     let mut a = StartArgs {
@@ -335,46 +336,51 @@ fn parse_start(args: &Args, resume: bool) -> Result<StartArgs, String> {
             ("-- <agent>", a.agent_given),
         ];
         if let Some((flag, _)) = process.iter().find(|(_, given)| *given) {
-            return Err(format!(
+            return Err(Invalid(format!(
                 "{flag} is for starting a process, and doesn't go with --pid: process {pid} is \
                  running already"
-            ));
+            )));
         }
     }
     let (mode, model, thought_level) =
         (value("--mode"), value("--model"), value("--thought-level"));
     let options = settings::options("--option", &args.values("--option"))?;
     a.settings = request::Settings { mode, model, thought_level, options };
-    if a.prompt.as_deref() == Some("-") {
-        a.prompt = Some(read_stdin()?);
-    }
-    if a.prompt.as_deref().is_some_and(|p| p.trim().is_empty()) {
-        return Err("--prompt is empty".into());
+    let empty = |p: &Option<String>| p.as_deref().is_some_and(|p| p.trim().is_empty());
+    if empty(&a.prompt) {
+        return Err(Invalid("--prompt is empty".into()));
     }
     let has_prompt = a.prompt.is_some() || !a.files.is_empty() || !a.images.is_empty();
     if a.wait && !has_prompt {
-        return Err("--wait needs a --prompt (or --file, --image)".into());
+        return Err(Invalid("--wait needs a --prompt (or --file, --image)".into()));
     }
     if a.wait && a.foreground {
-        return Err("--wait and --foreground don't go together".into());
+        return Err(Invalid("--wait and --foreground don't go together".into()));
     }
     if a.quiet && !a.foreground {
-        return Err("--quiet goes with --foreground".into());
+        return Err(Invalid("--quiet goes with --foreground".into()));
     }
     if a.timeout.is_some() && !a.wait {
-        return Err("--timeout goes with --wait".into());
+        return Err(Invalid("--timeout goes with --wait".into()));
+    }
+    // What stdin holds isn't the command line's: nothing there fails.
+    if a.prompt.as_deref() == Some("-") {
+        a.prompt = Some(read_stdin()?);
+        if empty(&a.prompt) {
+            return Err(Failed("the prompt on stdin is empty".into()));
+        }
     }
     Ok(a)
 }
 
 /// `brnr session new`: a process, and the new session it opens.
-pub(super) fn new(args: &Args) -> Result<ExitCode, String> {
-    start(parse_start(args, false)?)
+pub(super) fn new(args: &Args) -> Result<ExitCode, Error> {
+    Ok(start(parse_start(args, false)?)?)
 }
 
 /// `brnr session resume`: a process, and the session it resumes (ADR 3.11).
-pub(super) fn resume(args: &Args) -> Result<ExitCode, String> {
-    start(parse_start(args, true)?)
+pub(super) fn resume(args: &Args) -> Result<ExitCode, Error> {
+    Ok(start(parse_start(args, true)?)?)
 }
 
 /// How long a start may take until it commits (`BRNR_START_TIMEOUT`).
@@ -522,7 +528,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let ready = loop {
         match conn.read(fallback) {
             // Before the report: not ours.
-            Ok(Some(msg)) if msg.get("event").is_some() => json::free(msg),
+            Ok(Some(msg)) if msg.get("event").is_some() => {}
             Ok(Some(msg)) => break msg,
             Ok(None) => return Err("timed out waiting for the session".into()),
             Err(_) => break Value::Null,
@@ -718,42 +724,45 @@ fn exit_status(mut child: Child) -> ExitCode {
 
 // ---- send ----------------------------------------------------------------
 
-pub(super) fn send(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn send(a: &Args) -> Result<ExitCode, Error> {
     let arg = a.positional[0].clone();
     let mut mode = None;
     let modes = a.given().filter_map(|f| f.strip_prefix("--"));
     for m in modes.filter(|m| ["steer", "interrupt", "context"].contains(m)) {
         match mode.replace(m) {
-            Some(prev) if prev != m => return Err(format!("--{prev} and --{m} don't go together")),
+            Some(prev) if prev != m => {
+                return Err(Invalid(format!("--{prev} and --{m} don't go together")));
+            }
             _ => {}
         }
     }
     let (replace, wait, json_out) = (a.has("--replace"), a.has("--wait"), a.json);
     let timeout = a.number("--timeout");
     let (files, images) = (a.values("--file"), a.values("--image"));
-    let words = a.rest.as_deref().unwrap_or_default();
+    let prompt = a.value("--prompt");
     if timeout.is_some() && !wait {
-        return Err("--timeout goes with --wait".into());
+        return Err(Invalid("--timeout goes with --wait".into()));
     }
     if replace && mode != Some("context") {
-        return Err("--replace only applies to --context".into());
+        return Err(Invalid("--replace only applies to --context".into()));
     }
     if wait && mode == Some("context") {
-        return Err("--wait needs a turn; --context doesn't start one".into());
+        return Err(Invalid("--wait needs a turn; --context doesn't start one".into()));
     }
-    let text_in = match words {
-        [one] if one == "-" => read_stdin()?,
-        // What follows would be sent as text, an option there too.
-        [first, ..] if first == "-" => {
-            return Err(
-                "- reads the prompt from stdin, and goes alone: options go before it".into()
-            );
-        }
-        _ => words.join(" "),
+    if prompt.is_some_and(|p| p.trim().is_empty()) {
+        return Err(Invalid("--prompt is empty".into()));
+    }
+    if prompt.is_none() && files.is_empty() && images.is_empty() {
+        return Err(Invalid("nothing to send: give --prompt, --file or --image".into()));
+    }
+    // What stdin holds isn't the command line's: nothing there fails.
+    let text_in = match prompt {
+        Some("-") => read_stdin()?,
+        p => p.unwrap_or_default().to_owned(),
     };
     let blocks = attachments(&files, &images)?;
     if text_in.trim().is_empty() && blocks.is_empty() {
-        return Err("nothing to send".into());
+        return Err(Failed("nothing to send".into()));
     }
 
     let hosts = discover()?;
@@ -790,6 +799,7 @@ pub(super) fn send(a: &Args) -> Result<ExitCode, String> {
         deadline(timeout),
         json_out.then(|| json!({})),
     )
+    .map_err(Failed)
 }
 
 /// `delivered (message m1)`, `held`, …
@@ -801,17 +811,17 @@ fn describe_sent(response: &Value) -> String {
 
 // ---- wait ----------------------------------------------------------------
 
-pub(super) fn wait(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn wait(a: &Args) -> Result<ExitCode, Error> {
     let (arg, json_out) = (a.positional[0].clone(), a.json);
     let what = a.value("--for").unwrap_or("idle").to_owned();
     let timeout = a.number("--timeout");
     if !matches!(what.as_str(), "idle" | "turn" | "permission" | "elicitation" | "exit") {
-        return Err(format!("--for idle|turn|permission|elicitation|exit, not {what}"));
+        return Err(Invalid(format!("--for idle|turn|permission|elicitation|exit, not {what}")));
     }
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let mut conn = Conn::open(host)?;
-    wait_on(&mut conn, &session, &what, deadline(timeout), json_out)
+    Ok(wait_on(&mut conn, &session, &what, deadline(timeout), json_out)?)
 }
 
 /// `event wait` on `conn`, the process's, for `what` of `session`.
@@ -845,27 +855,22 @@ fn wait_on(
     // that ends on an idle or a closed session exits as if it had waited
     // for that turn (see ADR 8.3 in docs/adr).
     let mut last_turn = Value::Null;
-    // What the process answers, and each event, is used and let go of on a
-    // stack that takes it (ADR 2.5).
     match what {
         "permission" | "elicitation" => {
-            let found = conn.pending(|pending| {
-                let found = match what {
-                    "permission" => {
-                        pending.approvals(Some(session)).next().map(|p| (p, describe_permission(p)))
-                    }
-                    _ => pending
-                        .elicitations(Some(session))
-                        .next()
-                        .map(|e| (e, describe_elicitation(e))),
-                };
-                found.map(|(e, text)| done(e, text)).transpose()
-            });
-            let found = match found {
-                Ok(found) => found?,
+            let pending = match conn.pending() {
+                Ok(pending) => pending,
                 Err(why) => return conn.ended(why),
             };
-            if found.is_some() {
+            let found = match what {
+                "permission" => {
+                    pending.approvals(Some(session)).next().map(|p| (p, describe_permission(p)))
+                }
+                _ => {
+                    pending.elicitations(Some(session)).next().map(|e| (e, describe_elicitation(e)))
+                }
+            };
+            if let Some((e, text)) = found {
+                done(e, text)?;
                 return Ok(ExitCode::SUCCESS);
             }
         }
@@ -897,60 +902,56 @@ fn wait_on(
             }
             Err(e) => return Err(e),
         };
-        let ended = conn.deep(e, |conn, e| -> Result<Option<ExitCode>, String> {
+        let ended = 'event: {
             match (e["event"].as_str().unwrap_or_default(), what) {
                 ("process_exited", "exit") => {
                     done(&e, render::exited(&e["exit_status"]))?;
-                    return Ok(Some(ExitCode::SUCCESS));
+                    break 'event Some(ExitCode::SUCCESS);
                 }
                 ("process_exited", _) => return Err("the agent exited".into()),
                 // A closed session counts as idle; there is no next turn or
                 // approval in it to wait for.
                 ("session_closed", "idle") if mine(&e) => {
                     done(&e, format!("idle: session closed ({})", render::who(&e)))?;
-                    return Ok(Some(ended_as(&last_turn)));
+                    break 'event Some(ended_as(&last_turn));
                 }
                 ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
                     return Err("the session closed".into());
                 }
                 ("permission_request", "permission") if mine(&e) => {
                     done(&e, describe_permission(&e))?;
-                    return Ok(Some(ExitCode::SUCCESS));
+                    break 'event Some(ExitCode::SUCCESS);
                 }
                 ("elicitation_request", "elicitation") if mine(&e) => {
                     done(&e, describe_elicitation(&e))?;
-                    return Ok(Some(ExitCode::SUCCESS));
+                    break 'event Some(ExitCode::SUCCESS);
                 }
                 ("turn_ended", "turn") if mine(&e) => {
                     let how = e["stop_reason"].as_str().unwrap_or("error");
                     done(&e, format!("turn ended: {how}"))?;
-                    return Ok(Some(turn_status(&e)));
+                    break 'event Some(turn_status(&e));
                 }
                 ("turn_ended", "idle") if mine(&e) => {
                     last_turn = shallow_turn(&e);
                     let is_idle = match idle(conn, session) {
                         Ok((is_idle, _)) => is_idle,
-                        Err(why) => return conn.ended(why).map(Some),
+                        Err(why) => return conn.ended(why),
                     };
                     if is_idle {
                         // Behind the session, the turns that ended after
                         // this one are queued, before the status that says
                         // it is idle: it went idle after the last of them.
-                        // Queued after this stack was had, they may need a
-                        // deeper one.
-                        return conn.deep(e, |conn, e| {
-                            let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
-                            let e = conn.queued().rev().find(ended).cloned().unwrap_or(e);
-                            let how = e["stop_reason"].as_str().unwrap_or("error");
-                            done(&e, format!("idle: {how}"))?;
-                            Ok(Some(turn_status(&e)))
-                        })?;
+                        let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
+                        let e = conn.queued().rev().find(ended).cloned().unwrap_or(e);
+                        let how = e["stop_reason"].as_str().unwrap_or("error");
+                        done(&e, format!("idle: {how}"))?;
+                        break 'event Some(turn_status(&e));
                     }
                 }
                 _ => {}
             }
-            Ok(None)
-        })??;
+            None
+        };
         if let Some(status) = ended {
             return Ok(status);
         }
@@ -962,7 +963,7 @@ fn wait_on(
 /// it (null for one that has closed).
 fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
-    conn.deep(status, |_, status| match session_in(&status, session) {
+    Ok(match session_in(&status, session) {
         Some(s) => {
             let is_idle = s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0;
             (is_idle, shallow_turn(&s["last_turn"]))
@@ -972,7 +973,7 @@ fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
 }
 
 /// Of a turn (`turn_ended`, or status's `last_turn`), what `turn_status`
-/// reads: nothing the agent nested, so it is held on any stack (ADR 2.5).
+/// reads, and nothing more.
 fn shallow_turn(turn: &Value) -> Value {
     if !turn.is_object() {
         return Value::Null;

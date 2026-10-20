@@ -1,7 +1,6 @@
 # 4. Turns, messages and the agent's requests
 
-Draft 2026-10-19. Implemented, but for 4.5's request the agent cancels
-(#162), decided, not implemented yet (#308). Factor: F3 (ADR 1).
+Draft 2026-10-20. Implemented. Factor: F3 (ADR 1).
 Brings together former ADRs 17, 56, 18, 19, 71, 27, 68, 29 and 30
 (docs/adr/README.md maps them).
 
@@ -288,7 +287,7 @@ Answering a permission request:
   order in the request. No other kind stands in for it, and `reject` never
   answers `cancelled`: a request without that kind, or with two options of
   it, fails, listing the options, and nothing is answered (P4, P7).
-- `--option <id>` names the option instead, for a kind brnr doesn't know
+- `--option-id <id>` names the option instead, for a kind brnr doesn't know
   or two options of one kind. One of an ACP kind must be on the verb's side
   (`allow_*` for `allow`), and with `--always` of the always kind; one of a
   kind brnr doesn't know goes with either verb.
@@ -329,7 +328,7 @@ Socket and bridges (ADR 5.7):
 
 - `pending` answers with `elicitations` beside `pending`, each in full,
   with `answerable` and `why_not`.
-- `allow` and `reject`, with `always` and `option`, answer a permission
+- `allow` and `reject`, with `always` and `option_id`, answer a permission
   request (ADR 8.1). `elicitation {session, request, action:
   accept|decline|cancel, content?}` answers an elicitation, `session` null
   for a request-scoped one. The turn's `cancel` keeps its name.
@@ -352,8 +351,7 @@ One timeout:
   `control`, `reason` `cancel`, as it answers its permission requests `cancelled`: the turn
   they were asked in is gone, and nothing is left waiting unsaid (P3).
 
-A request the agent gives up on (#162), decided, not implemented yet
-(#308):
+A request the agent gives up on (#162):
 
 - The agent's `$/cancel_request` for a permission request or an
   elicitation it sent ends the request, in brnr's role either way. It is
@@ -379,6 +377,9 @@ A request the agent gives up on (#162), decided, not implemented yet
   `prompt cancel` cancels it; meanwhile the session is `waiting`, and
   `stop_when_idle` doesn't count (ADR 3.8). What the agent does wrong
   shows, as it would without brnr.
+- A request brnr doesn't hold (an editor's `fs` or `terminal` request) is
+  the editor's: the agent's `$/cancel_request` for it reaches the editor,
+  and brnr ends nothing.
 
 Editor sessions (ADR 7.1):
 
@@ -437,6 +438,14 @@ answers would be (ADR 4.6).
   say so.
 - Bridges that list `pending` see an `elicitations` key; one that answers
   elicitations sends `elicitation`.
+- Both adapters can send `$/cancel_request` for a request of their own:
+  as their code reads (claude-agent-acp 0.85.1, codex-acp 2.1.1), Claude's
+  permission requests and elicitations go with the abort signal of Claude
+  Code's tool call, and Codex's approvals with the turn's cancellation
+  signal, and the ACP SDK sends `$/cancel_request` when one aborts.
+  Neither has been seen to end a turn with a request open.
+  `adapters/check.py` drives no turn that asks (that needs the real
+  agents, with credentials), so neither is run there.
 
 **Considered.**
 
@@ -602,9 +611,13 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_handles_are_never_used_again`,
   `adr_0004_every_way_a_request_ends_leaves_nothing_behind`,
   `adr_0004_an_answer_that_cant_be_sent_leaves_the_request_waiting`,
-  `adr_0004_a_timeout_rejects_once_or_cancels_the_turn`. Not covered by a
-  Rust test: a request the agent cancels with `$/cancel_request` (#162),
-  decided, not implemented yet; its tests come with #308.
+  `adr_0004_a_timeout_rejects_once_or_cancels_the_turn`,
+  `adr_0004_the_agents_cancel_ends_only_what_waits`. A request the agent
+  cancels with `$/cancel_request`: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0004_a_request_the_agent_cancels_ends_by_the_agent`,
+  `adr_0004_a_turn_that_ends_leaves_its_request_waiting`;
+  [tests/headless.rs](../../tests/headless.rs):
+  `adr_0004_an_editor_gets_the_agents_cancel_and_answers_it`.
 - 4.6: [tests/cli.rs](../../tests/cli.rs):
   `adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host`.
 - 4.7: [tests/cli.rs](../../tests/cli.rs):

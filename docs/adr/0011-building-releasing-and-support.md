@@ -70,8 +70,8 @@ prebuilt adapters.
   (ADR 3.3). They pass the path found to the process, which starts the
   agent. The rule is fixed and documented (P4).
 - A started bridge's bare command (`~` expanded) is looked for the same
-  way, in the same place. So `command = ["brnr", "event", "notify", …]`
-  works from an editor whose PATH lacks brnr, and a bridge linked into
+  way, in the same place. So `command = "brnr"`, `args = ["event",
+  "notify", …]` works from an editor whose PATH lacks brnr, and a bridge linked into
   Homebrew's `bin` is found on Linux too (ADR 5.7, ADR 5.8).
 
 **Why.** An editor's PATH often lacks Homebrew's `bin`, and on Linux the
@@ -240,10 +240,10 @@ are best written with the change, by whoever made it (P9).
     that is another one, each with how it ended (`exited`, `brnr panicked`,
     `running`, `died without recording it`). A line longer than 4000
     characters is cut, saying how much more there was. Each line that is a
-    record, read as transcripts are (ADR 2.5: also one nested past 128),
-    has what ADR 9.1 redacts redacted again, for a log an older brnr
-    wrote; it is otherwise as recorded. A line too deep for any stack to
-    be had is not shown, and says so.
+    record, read as transcripts are (ADR 2.5: nested up to 256), has what
+    ADR 9.1 redacts redacted again, for a log an older brnr wrote; it is
+    otherwise as recorded. A line nested deeper is not shown, and says
+    so.
   - Everywhere, the home directory is `~`, as a path and as the start of a
     project folder's name.
 - `doctor --report --json` is one object with the same data (P5, ADR 8.2):

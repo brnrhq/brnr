@@ -255,7 +255,7 @@ agent = ["no-such-agent-brnr"]
 cwd = "/no/such/dir"
 
 [[profiles.bad.bridges]]
-command = ["true"]
+command = "true"
 events = ["nope"]
 "#;
     env.write_config(config);
@@ -511,7 +511,7 @@ fn a_death_without_a_record_is_reported() {
 #[test]
 fn a_failed_start_is_no_death() {
     let env = Env::new("dr-failed");
-    env.write_config("[[profiles.b.bridges]]\ncommand = [\"/no/such/brnr-bridge\"]\n");
+    env.write_config("[[profiles.b.bridges]]\ncommand = \"/no/such/brnr-bridge\"\n");
     let out = env.run(&new_args(&["--profile", "b"]));
     assert!(!out.status.success(), "it started");
     let (_, text) = doctor(&env, &[]);

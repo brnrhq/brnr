@@ -53,6 +53,7 @@ use serde_json::{Value, json};
 use crate::host::check_bridge;
 use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
 
+use super::args::Error;
 use super::client::{Host, Probe, gone, probe, read_meta};
 use super::{Args, text, when};
 
@@ -104,10 +105,10 @@ impl Report {
     }
 }
 
-pub(crate) fn main(a: &Args) -> Result<(), String> {
+pub(crate) fn main(a: &Args) -> Result<(), Error> {
     let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
-        return Err("--fix and --report don't go together".into());
+        return Err(Error::Invalid("--fix and --report don't go together".into()));
     }
     let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
@@ -122,14 +123,14 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
         bug_report(&r, hosts.as_deref());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     if r.json {
         outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     match (r.failed, r.warned) {
@@ -138,7 +139,7 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
             outln!("\n{n} warning{}", plural(n));
             Ok(())
         }
-        (n, _) => Err(format!("{n} check{} failed", plural(n))),
+        (n, _) => Err(format!("{n} check{} failed", plural(n)).into()),
     }
 }
 
@@ -515,8 +516,8 @@ fn config_file(r: &mut Report) {
         for bridge in &profile.bridges {
             if let Err(e) = check_bridge(bridge) {
                 problems.push(e);
-            } else if find_program(&bridge.command[0]).is_none() {
-                problems.push(format!("bridge {} not found", bridge.command[0]));
+            } else if find_program(&bridge.command).is_none() {
+                problems.push(format!("bridge {} not found", bridge.command));
             }
         }
         if problems.is_empty() {
@@ -933,24 +934,22 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
 
 /// A host log's line as the report shows it: with what brnr redacts
 /// redacted again (a log written before it did), cut short if it is long.
-/// A record is read as transcripts are, however deep it nests, and shown,
-/// and let go of, on a stack that takes it.
+/// A record is read as transcripts are, to `json::OWN_DEPTH`.
 fn report_line(line: &[u8]) -> String {
-    let depth = json::depth(line);
-    let shown = json::on_stack(depth, || {
-        let mut record = transcript::record(line)?;
+    let text = match transcript::record(line) {
         // Its names aren't this brnr's, nor what it would redact (ADR 5.9).
-        if transcript::older(&record) {
-            return Some("(a record an older brnr wrote, not shown)".to_owned());
+        Some(record) if transcript::older(&record) => {
+            "(a record an older brnr wrote, not shown)".to_owned()
         }
-        log::redact_record(&mut record);
-        Some(record.to_string())
-    });
-    let text = match shown {
-        Some(Some(text)) => text,
-        Some(None) => String::from_utf8_lossy(line).into_owned(),
-        // Not shown as it came: it may hold what brnr redacts.
-        None => format!("(a line {depth} deep, not shown: no stack to be had to read it)"),
+        Some(mut record) => {
+            log::redact_record(&mut record);
+            record.to_string()
+        }
+        None => match json::within(line, json::OWN_DEPTH, "a line") {
+            // Not shown as it came: it may hold what brnr redacts.
+            Err(why) => format!("({why}, not shown)"),
+            Ok(()) => String::from_utf8_lossy(line).into_owned(),
+        },
     };
     let chars = text.chars().count();
     if chars <= REPORT_LINE_CHARS {

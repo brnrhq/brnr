@@ -66,7 +66,6 @@ use serde_json::{Value, json};
 
 use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log};
 use crate::frame;
-use crate::json;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
 use crate::request::{Request, Role, Settings};
@@ -398,10 +397,6 @@ struct Host {
     /// The agent's stderr as lines, for the host log and the tail (ADR 3.6):
     /// what came of it is sent on already (ADR 2.6).
     stderr_lines: Lines,
-    /// How deeply what the host holds may nest (see `holds`), and how
-    /// deeply the stack it is running on takes (see `deep`).
-    deepest: usize,
-    stack: usize,
     /// What the profile sets, under the flags of each session the host
     /// opens, the start's and a bridge's (`new`, `resume`), resolved once the
     /// agent has said which option is which (ADR 6.1).
@@ -617,8 +612,6 @@ impl Host {
             approvals: Approvals::default(),
             editor_lines: Lines::new(LINE_BYTES, Long::Relay),
             stderr_lines: Lines::new(PIECE, Long::Cut),
-            deepest: 0,
-            stack: json::SHALLOW,
             defaults: h.defaults,
             mcp_servers: h.mcp_servers,
             stop_when_idle: h.stop_when_idle.map(Duration::from_secs),
@@ -836,13 +829,7 @@ impl Host {
         // next turn of the loop (see death.rs).
         let looped = panic::catch_unwind(AssertUnwindSafe(|| self.event_loop()));
         let died = death::panicked().or(looped.err().map(|_| "brnr panicked"));
-        // One in `deep` leaves the stack it took.
-        self.stack = json::SHALLOW;
-        // Finishing drops what the host holds: on a stack that takes it too.
-        let deepest = self.deepest;
-        let mut host = Some(self);
-        json::on_stack(deepest, || host.take().unwrap().finish(died))
-            .unwrap_or_else(|| host.take().unwrap().finish(died))
+        self.finish(died)
     }
 
     fn event_loop(&mut self) {
@@ -862,18 +849,11 @@ impl Host {
                 }
                 self.drain_until = Some(now + DRAIN);
             }
-            // Timers answer and drop what the host holds, as events do: on a
-            // stack that takes it too.
-            let timers = move |host: &mut Host| {
-                host.fire_start_timer(now);
-                host.fire_stop_timer(now);
-                host.fire_permission_timers(now);
-                host.fire_idle_timers(now);
-                host.sessions.fire_letting_go(now);
-            };
-            if self.deep(0, timers).is_none() {
-                timers(self);
-            }
+            self.fire_start_timer(now);
+            self.fire_stop_timer(now);
+            self.fire_permission_timers(now);
+            self.fire_idle_timers(now);
+            self.sessions.fire_letting_go(now);
             let stop_at = self.stopping.as_ref().map(|(t, _)| *t);
             let permission_at = self.next_permission_deadline();
             let idle_at = self.next_idle_deadline();
@@ -895,56 +875,8 @@ impl Host {
                     Err(RecvTimeoutError::Disconnected) => break,
                 },
             };
-            let mut ev = Some(ev);
-            if self.deep(0, |host| host.handle(ev.take().unwrap())).is_none() {
-                // No stack to be had for what the host holds: this one, then.
-                self.handle(ev.take().unwrap());
-            }
+            self.handle(ev);
         }
-    }
-
-    /// Runs `f` on a stack that takes values `depth` deep, and what the host
-    /// holds: this one, or a thread's of its own (see json.rs). `None` if
-    /// there is no such stack to be had.
-    fn deep<R: Send>(&mut self, depth: usize, f: impl FnOnce(&mut Host) -> R + Send) -> Option<R> {
-        let need = depth.max(self.deepest);
-        let result = if need <= self.stack {
-            Some(f(self))
-        } else {
-            let outer = self.stack;
-            let result = json::on_stack(need, || {
-                self.stack = need;
-                f(self)
-            });
-            self.stack = outer;
-            result
-        };
-        // What was deep may be gone: then what comes next takes a stack for
-        // what is left, not for the deepest line there ever was.
-        if self.deepest > json::SHALLOW {
-            self.deepest = self.holds();
-        }
-        result
-    }
-
-    /// How deeply what the host keeps of the lines it read nests: what the
-    /// agent said and asked, and what it said of itself. What bridges send
-    /// is read by serde_json, never deeper than `json::SHALLOW`, as is the
-    /// request the process started with.
-    fn holds(&self) -> usize {
-        let methods = self.auth_methods.iter().filter_map(AuthMethod::meta);
-        let methods = methods.map(|meta| json::nesting(meta.values()) + 1);
-        let sessions = std::iter::once(self.sessions.holds());
-        let requests = self.approvals.holds();
-        methods.chain(sessions).fold(json::nesting([&self.info]).max(requests), usize::max)
-    }
-
-    /// An ACP line as json.rs reads it, on a stack that takes `depth` (see
-    /// `deep`). What the host keeps of it may now nest that deep.
-    fn read(&mut self, line: &[u8], depth: usize) -> Option<Value> {
-        let msg = json::parse(line)?;
-        self.deepest = self.deepest.max(depth);
-        Some(msg)
     }
 
     fn finish(mut self, died: Option<&str>) -> ExitCode {
