@@ -50,7 +50,7 @@ impl Env {
             .current_dir(&self.dir)
             .env("BRNR_DIR", self.dir.join("run"))
             .env("BRNR_HOME", self.dir.join("home"))
-            .env("BRNR_CONFIG", self.dir.join("none.toml"))
+            .env("BRNR_CONFIG", self.config())
             .env("PROMPT_LOG", self.dir.join("prompts"))
             .env("CALL_LOG", self.dir.join("calls"))
             .env("CHILD_PID", self.dir.join("child.pid"))
@@ -180,8 +180,20 @@ impl Env {
         assert!(out.status.success(), "session new failed: {}", stderr(&out));
     }
 
+    /// Where brnr finds its config file: none until one is written.
+    pub fn config(&self) -> PathBuf {
+        self.dir.join("config").join("none.toml")
+    }
+
+    /// Writes the config file 0600 in a 0700 folder, whatever the umask, as
+    /// brnr reads only one nobody else can reach (ADR 9.4).
     pub fn write_config(&self, text: &str) {
-        fs::write(self.dir.join("none.toml"), text).unwrap();
+        let path = self.config();
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&path, text).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     pub fn child_pid(&self) -> i32 {

@@ -253,7 +253,9 @@ on no network. A transcript is written only where the state directory, each
 directory below it and the file are the user's own and private, whether
 brnr created them or found them: what others can reach is made private
 before anything is written, and a symlink, or what isn't the user's, is
-refused (ADR 9.3). Reach beyond the machine is what a bridge the user
+refused (ADR 9.3). The config file is read only if it and its folder are
+the user's own and nobody else can write them, nor read the file
+(ADR 9.4). Reach beyond the machine is what a bridge the user
 configures adds.
 
 ### P14. No orphans
