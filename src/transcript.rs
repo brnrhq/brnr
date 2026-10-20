@@ -12,8 +12,8 @@
 //! another hard link. What is written there is refused anyway; read, it
 //! would be whatever the link points at.
 //!
-//! A record is a line that is a JSON object: `{"ts","host_id","pid",
-//! "proxy_pid","agent_pid"[,"session"],…}`, then `"event":{…}` for a
+//! A record is a line that is a JSON object: `{"format","ts","host_id",
+//! "pid","proxy_pid","agent_pid"[,"session"],…}`, then `"event":{…}` for a
 //! host event, or `["seq",]"dir"` and `"msg"` (`"raw"` for a line that
 //! wasn't JSON) for an ACP message. It is read as the host reads ACP
 //! (ADR 2.5): a lone surrogate is U+FFFD, and there is no depth limit, so a
@@ -23,11 +23,11 @@
 //! process wrote, or broken otherwise. A line cut short is never taken for
 //! a record: an object ends only at its last byte.
 //!
-//! A record an older brnr wrote, its head naming the process `host_pid` and
-//! the session `session_id`, isn't read (ADR 5.9, P9): its names are not
-//! this brnr's. A file of them is no transcript to `session list`, `session
-//! resume` or a load; `event log` and `doctor` say an older brnr wrote it
-//! (P3).
+//! Every record's head has its format, [`FORMAT`] (ADR 5.10), and a record
+//! in a format this brnr doesn't read, an older brnr's without one or a
+//! newer one's, isn't read (P9): a file of them is no transcript to `session
+//! list`, `session resume` or a load, nor one whose newest record is of
+//! them to the first two; `event log` and `doctor` say what isn't read (P3).
 
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
@@ -41,6 +41,12 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::{json, paths, render, sys};
+
+/// The format of the records this brnr writes, in each one's head as
+/// `format` (ADR 5.10), and the one format it reads. It stays 1 for all of
+/// 1.x: what 1.x adds (a field, an event, a record) a reader passes over,
+/// and what a 1.x reader can't read is a new format, for a new major.
+pub(crate) const FORMAT: u64 = 1;
 
 /// How much of a file a read backwards takes at a time.
 const CHUNK: u64 = 64 * 1024;
@@ -72,8 +78,8 @@ fn of_session_in(root: &Path, session: &str) -> Vec<PathBuf> {
 /// `session`'s transcript: of its events files in every project folder
 /// ([`of_session`]), those whose records name it, as brnr finds a
 /// transcript by the id its records carry (ADR 9.2), oldest first, by when
-/// each one's first record was recorded. Not one an older brnr wrote
-/// ([`head`]). An id is one session, whatever folders its files are in
+/// each one's first record was recorded. Not one with no record in this
+/// brnr's format ([`head`]). An id is one session, whatever folders its files are in
 /// (ADR 5.1).
 pub(crate) fn files_of(session: &str) -> Vec<PathBuf> {
     files_of_in(&paths::state_dir(), session)
@@ -216,30 +222,41 @@ pub(crate) fn record(line: &[u8]) -> Option<Value> {
     json::parse::<Value>(line).filter(Value::is_object)
 }
 
-/// Whether `record` is one an older brnr wrote (ADR 5.9): its head has
-/// `host_pid` or `session_id`, where this brnr's has `pid` and `session`.
-pub(crate) fn older(record: &Value) -> bool {
-    record.get("host_pid").is_some() || record.get("session_id").is_some()
+/// Whether `record` is in the format this brnr reads, [`FORMAT`] (ADR 5.10).
+pub(crate) fn readable(record: &Value) -> bool {
+    record["format"] == FORMAT
 }
 
-/// Whether the file at `path` is one an older brnr wrote: its first record
-/// is ([`older`]).
-pub(crate) fn by_an_older_brnr(path: &Path) -> bool {
-    let Ok(file) = open(path) else { return false };
-    let mut lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
-    lines.find_map(|line| any_head(&line)).is_some_and(|r| older(&r))
+/// Of `record`, in a format this brnr doesn't read, which it is, as brnr
+/// says it: none if it is in this brnr's ([`readable`]).
+pub(crate) fn unread(record: &Value) -> Option<String> {
+    match record.get("format") {
+        _ if readable(record) => None,
+        None => Some("records an older brnr wrote, before transcripts had a format".into()),
+        Some(other) => Some(format!("records in format {other}; this brnr reads format {FORMAT}")),
+    }
+}
+
+/// Of the file at `path`, the records in a format this brnr doesn't read
+/// ([`unread`]), if its first or its newest record is one: a file an older
+/// brnr wrote, or one a newer brnr went on with.
+pub(crate) fn unread_in(path: &Path) -> Option<String> {
+    let lines = BufReader::new(open(path).ok()?).split(b'\n').map_while(Result::ok);
+    let first = lines.filter_map(|line| any_head(&line)).next()?;
+    unread(&first).or_else(|| newest(path).and_then(|r| unread(&r)))
 }
 
 /// `line` as a record of this brnr's, if it is one, without its members,
 /// and its event's, that nest deeper than any stack takes: what a
 /// transcript is (its session, cwd and process, and when) comes from the
 /// rest. Read, and let go of, on a stack that takes it; none if there is no
-/// such stack to be had, or it is an older brnr's ([`older`]).
+/// such stack to be had, or it is in a format this brnr doesn't read
+/// ([`readable`]).
 pub(crate) fn head(line: &[u8]) -> Option<Value> {
-    any_head(line).filter(|r| !older(r))
+    any_head(line).filter(readable)
 }
 
-/// [`head`], an older brnr's record too.
+/// [`head`], of a record in any format.
 fn any_head(line: &[u8]) -> Option<Value> {
     json::on_stack(json::depth(line), || {
         let mut record = record(line)?;
@@ -321,6 +338,12 @@ pub(crate) fn first(path: &Path) -> Option<Value> {
 /// no more than its last records.
 pub(crate) fn last(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
     Backwards::new(path, u64::MAX)?.find_map(|(_, line)| head(&line).filter(&wanted))
+}
+
+/// The newest record in the file at `path`, in any format: whether it is
+/// one this brnr reads ([`readable`]) is the caller's to ask.
+pub(crate) fn newest(path: &Path) -> Option<Value> {
+    Backwards::new(path, u64::MAX)?.find_map(|(_, line)| any_head(&line))
 }
 
 /// The lines in the last `bytes` of the file at `path`, in order, but one
@@ -557,8 +580,9 @@ struct Tail {
     partial: Vec<u8>,
     /// How many lines were read whole.
     lines: usize,
-    /// It was said that an older brnr wrote the file.
-    older: bool,
+    /// It was said that the file has records in a format this brnr
+    /// doesn't read.
+    unread: bool,
 }
 
 impl Tail {
@@ -569,13 +593,14 @@ impl Tail {
             file: BufReader::new(file),
             partial: Vec::new(),
             lines: 0,
-            older: false,
+            unread: false,
         })
     }
 
     /// The records appended since the last read as events ([`event`]), with
     /// when each was written. A line that isn't one is passed over, and said
-    /// (ADR 5.1); an older brnr's records too, said once (ADR 5.9).
+    /// (ADR 5.1); a record in a format this brnr doesn't read too, said once
+    /// (ADR 5.10).
     fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
         let mut read = Vec::new();
         loop {
@@ -592,23 +617,19 @@ impl Tail {
             let depth = json::depth(&line);
             let one = json::on_stack(depth, || {
                 let record = record(&line)?;
-                if older(&record) {
-                    return Some(Err(()));
+                if let Some(why) = unread(&record) {
+                    return Some(Err(why));
                 }
                 let ts = record["ts"].as_str().unwrap_or_default().to_owned();
                 Some(Ok((ts, event(record)?)))
             });
             match one {
                 Some(Some(Ok(one))) => read.push(one),
-                Some(Some(Err(()))) if !self.older => {
-                    self.older = true;
-                    say(&format!(
-                        "brnr: {}: an older brnr wrote it, in names this one doesn't read (ADR \
-                         5.9); its records are not shown",
-                        self.path.display()
-                    ));
+                Some(Some(Err(why))) if !self.unread => {
+                    self.unread = true;
+                    say(&format!("brnr: {}: {why}, not shown (ADR 5.10)", self.path.display()));
                 }
-                Some(Some(Err(()))) => {}
+                Some(Some(Err(_))) => {}
                 Some(None) => say(&format!(
                     "brnr: {}:{} isn't a record brnr can read, not shown",
                     self.path.display(),
@@ -666,7 +687,7 @@ mod tests {
     fn adr_0009_a_transcript_is_read_only_where_it_could_be_written() {
         let (home, outside) = (scratch("walk"), scratch("walk-outside"));
         let projects = home.join("projects");
-        let record = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
+        let record = r#"{"format":1,"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         fs::write(outside.join("s.jsonl"), format!("{record}\n")).unwrap();
         for folder in ["-a", "-b"] {
             fs::create_dir_all(projects.join(folder)).unwrap();
@@ -703,7 +724,7 @@ mod tests {
     #[test]
     fn adr_0009_every_part_of_a_transcripts_path_is_the_users_own() {
         let (home, outside) = (scratch("parts"), scratch("parts-outside"));
-        let record = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
+        let record = r#"{"format":1,"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         fs::create_dir_all(outside.join("projects/-w")).unwrap();
         fs::create_dir_all(outside.join("hosts")).unwrap();
         for file in ["projects/-w/s.jsonl", "hosts/h.jsonl"] {
@@ -742,13 +763,17 @@ mod tests {
     fn adr_0005_the_first_and_last_records_are_ones_brnr_can_read() {
         let path = scratch("records").join("s.jsonl");
         let cases: [(&str, Option<i64>, Option<i64>); 9] = [
-            ("{\"n\":1}\n{\"n\":2}\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
-            ("{\"n\":1}\n{\"n\":2}\n{\"ts\":\"part\n{\"n\":3}\n", Some(1), Some(3)),
-            ("{\"ts\":\"part\n{\"n\":1}\n", Some(1), Some(1)),
-            ("{\"n\":1}\n42\n", Some(1), Some(1)),
+            ("{\"format\":1,\"n\":1}\n{\"format\":1,\"n\":2}\n", Some(1), Some(2)),
+            ("{\"format\":1,\"n\":1}\n{\"format\":1,\"n\":2}", Some(1), Some(2)),
+            ("{\"format\":1,\"n\":1}\n{\"format\":1,\"n\":2}\n{\"ts\":\"partial", Some(1), Some(2)),
+            ("{\"format\":1,\"n\":1}\n{\"format\":1,\"n\":2}\nnot a record\n\n", Some(1), Some(2)),
+            (
+                "{\"format\":1,\"n\":1}\n{\"format\":1,\"n\":2}\n{\"ts\":\"part\n{\"format\":1,\"n\":3}\n",
+                Some(1),
+                Some(3),
+            ),
+            ("{\"ts\":\"part\n{\"format\":1,\"n\":1}\n", Some(1), Some(1)),
+            ("{\"format\":1,\"n\":1}\n42\n", Some(1), Some(1)),
             ("", None, None),
             ("{\"ts\":\"partial", None, None),
         ];
@@ -759,9 +784,10 @@ mod tests {
             assert_eq!(found, (first_n, last_n), "{text:?}");
         }
         // Past the 64 KiB a read backwards takes at a time.
-        let long = format!(r#"{{"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
+        let long = format!(r#"{{"format":1,"n":3,"pad":"{}"}}"#, "x".repeat(100 * 1024));
         let junk = "y".repeat(70_000);
-        fs::write(&path, format!("{{\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut")).unwrap();
+        fs::write(&path, format!("{{\"format\":1,\"n\":1}}\n{long}\n{junk}\n{{\"ts\":\"cut"))
+            .unwrap();
         assert_eq!(n(last(&path, |_| true)), Some(3));
         assert_eq!(n(last(&path, |r| r["n"] == 1)), Some(1));
         let _ = fs::remove_dir_all(path.parent().unwrap());
@@ -773,15 +799,16 @@ mod tests {
     #[test]
     fn adr_0002_a_deep_record_is_read() {
         let path = scratch("deep").join("s.jsonl");
-        let opened = r#"{"ts":"1","session":"s","event":{"event":"session_opened","cwd":"/w"}}"#;
+        let opened =
+            r#"{"format":1,"ts":"1","session":"s","event":{"event":"session_opened","cwd":"/w"}}"#;
         for depth in [200, 10_000] {
             let request = format!(
-                r#"{{"ts":"2","host_id":"h","session":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
+                r#"{{"format":1,"ts":"2","host_id":"h","session":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
                 deep(depth)
             );
             fs::write(&path, format!("{opened}\n{request}\n")).unwrap();
             let read = last(&path, |_| true).unwrap();
-            let want = json!({ "ts": "2", "host_id": "h", "session": "s",
+            let want = json!({ "format": 1, "ts": "2", "host_id": "h", "session": "s",
                 "event": { "event": "permission_request", "request": "p1" } });
             assert_eq!(read, want, "{depth}");
             assert!(has_records(&path), "{depth}");
@@ -844,10 +871,14 @@ mod tests {
         let dir = scratch("reader");
         let (events, acp) = (dir.join("s.jsonl"), dir.join("s.acp.jsonl"));
         let host = |ts: &str, name: &str, more: &str| {
-            format!(r#"{{"ts":"{ts}","host_id":"h","event":{{"event":"{name}"{more}}}}}"#)
+            format!(
+                r#"{{"format":1,"ts":"{ts}","host_id":"h","event":{{"event":"{name}"{more}}}}}"#
+            )
         };
         let msg = |ts: &str| {
-            format!(r#"{{"ts":"{ts}","host_id":"h","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#)
+            format!(
+                r#"{{"format":1,"ts":"{ts}","host_id":"h","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#
+            )
         };
         let append = |path: &Path, text: &str| {
             let mut file = OpenOptions::new().append(true).open(path).unwrap();
@@ -894,12 +925,12 @@ mod tests {
         let root = scratch("folders");
         let record = |ts: &str, session: &str, name: &str| {
             format!(
-                r#"{{"ts":"{ts}","host_id":"h","pid":1,"session":"{session}","event":{{"event":"{name}"}}}}"#
+                r#"{{"format":1,"ts":"{ts}","host_id":"h","pid":1,"session":"{session}","event":{{"event":"{name}"}}}}"#
             )
         };
         let msg = |ts: &str| {
             format!(
-                r#"{{"ts":"{ts}","host_id":"h","pid":1,"session":"s","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#
+                r#"{{"format":1,"ts":"{ts}","host_id":"h","pid":1,"session":"s","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#
             )
         };
         let folder = |name: &str, lines: &[String]| {
@@ -938,14 +969,51 @@ mod tests {
 
     #[test]
     fn adr_0010_a_records_position_is_read_from_its_end_or_head() {
-        let event = br#"{"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
+        let event = br#"{"format":1,"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
         assert_eq!(position(event), Some(12));
-        let acp = br#"{"ts":"t","host_id":"h","session":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
+        let acp = br#"{"format":1,"ts":"t","host_id":"h","session":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
         assert_eq!(position(acp), Some(13));
-        let note = br#"{"ts":"t","host_id":"h","event":{"event":"records_skipped","count":1}}"#;
+        let note =
+            br#"{"format":1,"ts":"t","host_id":"h","event":{"event":"records_skipped","count":1}}"#;
         assert_eq!(position(note), None);
-        let raw = br#"{"ts":"t","host_id":"h","dir":"agent_stderr","msg":"x"}"#;
+        let raw = br#"{"format":1,"ts":"t","host_id":"h","dir":"agent_stderr","msg":"x"}"#;
         assert_eq!(position(raw), None);
+    }
+
+    /// A record is read by its format, [`FORMAT`] (ADR 5.10), whatever its
+    /// fields: one without, an older brnr's, or in another, isn't. A file is
+    /// one with records in another format by its first record or its newest.
+    #[test]
+    fn adr_0005_a_record_is_read_by_its_format() {
+        let path = scratch("formats").join("s.jsonl");
+        let at = |format: &str, ts: &str| {
+            format!(r#"{{{format}"ts":"{ts}","session":"s","event":{{"event":"user_message"}}}}"#)
+        };
+        let (one, none, two) = (at(r#""format":1,"#, "1"), at("", "2"), at(r#""format":2,"#, "3"));
+        let older = "records an older brnr wrote, before transcripts had a format";
+        let newer = "records in format 2; this brnr reads format 1";
+        // Each file's lines, what of it isn't read, and whether a record of
+        // it is: the first and the last brnr can read are the one at "1".
+        let cases: [(&[&str], Option<&str>, bool); 5] = [
+            (&[&one, &one], None, true),
+            (&[&none, &one], Some(older), true),
+            (&[&one, &two, "cut"], Some(newer), true),
+            (&[&one, &two, &one], None, true),
+            (&[&none, &two], Some(older), false),
+        ];
+        let ts = |r: Option<Value>| r.map(|r| r["ts"].as_str().unwrap().to_owned());
+        for (lines, unread, read) in cases {
+            fs::write(&path, lines.join("\n")).unwrap();
+            assert_eq!(unread_in(&path).as_deref(), unread, "{lines:?}");
+            let want = read.then(|| "1".to_owned());
+            assert_eq!((ts(first(&path)), ts(last(&path, |_| true))), (want.clone(), want));
+        }
+        assert_eq!(
+            unread(&json!({ "format": "1" })).unwrap(),
+            r#"records in format "1"; this brnr reads format 1"#
+        );
+        assert!(readable(&json!({ "format": 1, "session_id": "s" })), "a field doesn't say");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// An events file holding only openings, which a load that failed
@@ -954,8 +1022,8 @@ mod tests {
     #[test]
     fn adr_0005_only_openings_are_no_transcript() {
         let path = scratch("openings").join("s.jsonl");
-        let opened = r#"{"ts":"t","session":"s","event":{"event":"session_opened"}}"#;
-        let other = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
+        let opened = r#"{"format":1,"ts":"t","session":"s","event":{"event":"session_opened"}}"#;
+        let other = r#"{"format":1,"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         let cases = [
             ("", false),
             (&format!("{opened}\n"), false),

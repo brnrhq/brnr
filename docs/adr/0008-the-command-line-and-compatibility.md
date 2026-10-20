@@ -557,9 +557,10 @@ Covered:
   promise, whatever it speaks.
 - **Transcripts**: the events file and the raw ACP file of each session
   under `$BRNR_HOME` (`projects/<folder>/<session id>.jsonl` and
-  `.acp.jsonl`), and their records. A 1.x brnr reads what an earlier 1.x
-  wrote (`event log`, `session list`, `session resume`). What each record
-  promises in detail is #70's.
+  `.acp.jsonl`), and their records, in format 1. A 1.x brnr reads what an
+  earlier 1.x wrote (`event log`, `session list`, `session resume`). What
+  each record promises, and how a reader tells a format it doesn't read,
+  is ADR 5.10's.
 - **Where brnr's files are**: how the state directory (`$BRNR_HOME`, else
   `~/.brnr`) and the runtime directory are found, and where each file brnr
   writes under `$BRNR_HOME` is, the session locks
@@ -625,7 +626,8 @@ be, by a record that amends this one, once a second major exists.
 
 The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
 still settles names and shapes, breaking as P9 allows. #151 (event and
-transcript record names) is decided and made (ADR 5.9, #314); #153 (the
+transcript record names) is decided and made (ADR 5.9, #314), and so is
+#70 (what a transcript promises, its format marked, ADR 5.10); #153 (the
 exit code of a usage error, `--help`) and #154 (flags and config keys
 spelled two ways) are decided (ADR 8.3, ADR 8.1 and 6.1), and their
 changes, breaking too, land before it (#310, #311). What they settle is

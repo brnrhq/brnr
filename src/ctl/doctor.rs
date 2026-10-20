@@ -22,8 +22,9 @@
 //!   `process_exited`, and not running), the cases ADR 3.7 can't record, with when
 //!   each last wrote and the sessions it had open. Info, not a warning:
 //!   they are a record, and nothing is to be repaired;
-//! - files an older brnr wrote, transcripts and host logs, in names this
-//!   one doesn't read (ADR 5.9): listed, as info, as they aren't read.
+//! - transcripts and host logs with records in a format this brnr doesn't
+//!   read, an older brnr's or a newer one's (ADR 5.10): listed, as info, as
+//!   they aren't read.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata, sockets and locks. It never touches anything it
@@ -117,7 +118,7 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
     adapters(&mut r);
     running(&mut r, hosts.as_deref().unwrap_or_default());
     host_logs(&mut r, hosts.as_deref());
-    older_files(&mut r);
+    file_formats(&mut r);
     if r.report {
         bug_report(&r, hosts.as_deref());
         return match r.failed {
@@ -699,7 +700,7 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
         logs += 1;
         if running.contains(&run)
             || recorded_exit(&path) != Some(false)
-            || transcript::by_an_older_brnr(&path)
+            || transcript::unread_in(&path).is_some()
         {
             continue;
         }
@@ -735,35 +736,37 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
     r.line(Level::Info, what, msg);
 }
 
-/// How many of the files an older brnr wrote the line names, the latest
-/// first.
-const OLDER_SHOWN: usize = 5;
+/// How many of the files in other formats the line names, the latest first.
+const UNREAD_SHOWN: usize = 5;
 
-/// The transcripts and host logs an older brnr wrote, which this one doesn't
-/// read (ADR 5.9): `session list` and `session resume` pass them over, so
-/// they are listed here (P3). Info: they are a record, and stay as they are
-/// (P9).
-fn older_files(r: &mut Report) {
-    let what = "older files";
+/// The transcripts and host logs with records in a format this brnr doesn't
+/// read, by their first or newest record (ADR 5.10): `session list` and
+/// `session resume` pass them over, so they are listed here (P3). Info:
+/// they are a record, and stay as they are (P9).
+fn file_formats(r: &mut Report) {
+    let what = "file formats";
     let files = transcript::events_files().into_iter().chain(transcript::host_logs());
-    let mut older: Vec<(SystemTime, PathBuf)> = files
-        .filter(|path| transcript::by_an_older_brnr(path))
+    let mut unread: Vec<(SystemTime, PathBuf)> = files
+        .filter(|path| transcript::unread_in(path).is_some())
         .map(|path| {
             let written = fs::symlink_metadata(&path).and_then(|m| m.modified());
             (written.unwrap_or(UNIX_EPOCH), path)
         })
         .collect();
-    if older.is_empty() {
-        return r.line(Level::Ok, what, "none an older brnr wrote");
+    if unread.is_empty() {
+        let msg = format!("every file in format {}, the one this brnr reads", transcript::FORMAT);
+        return r.line(Level::Ok, what, msg);
     }
-    older.sort_by(|a, b| b.cmp(a));
-    let n = older.len();
+    unread.sort_by(|a, b| b.cmp(a));
+    let n = unread.len();
     let shown: Vec<String> =
-        older.iter().take(OLDER_SHOWN).map(|(_, p)| p.display().to_string()).collect();
-    let which = if n > OLDER_SHOWN { "; the latest" } else { "" };
+        unread.iter().take(UNREAD_SHOWN).map(|(_, p)| p.display().to_string()).collect();
+    let which = if n > UNREAD_SHOWN { "; the latest" } else { "" };
     let msg = format!(
-        "{n} file{} an older brnr wrote, in names this one doesn't read (ADR 5.9){which}: {}",
+        "{n} file{} with records in a format this brnr doesn't read (it reads format {}), an \
+         older brnr's or a newer one's, not read (ADR 5.10){which}: {}",
         plural(n),
+        transcript::FORMAT,
         shown.join(", ")
     );
     r.line(Level::Info, what, msg);
@@ -903,8 +906,8 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     // The latest first; of two written in the same instant, the later run.
     logs.sort_by(|a, b| b.cmp(a));
     let mut shown: Vec<HostLog> = Vec::new();
-    // An older brnr's isn't read (ADR 5.9): `older files` lists it.
-    logs.retain(|(_, _, path)| !transcript::by_an_older_brnr(path));
+    // One in another format isn't read (ADR 5.10): `file formats` lists it.
+    logs.retain(|(_, _, path)| transcript::unread_in(path).is_none());
     for (i, (_, run, path)) in logs.iter().enumerate() {
         let Some(lines) = transcript::tail(path, LOG_TAIL) else { continue };
         let ended = if recorded(&lines, "process_panicked") {
@@ -939,9 +942,9 @@ fn report_line(line: &[u8]) -> String {
     let depth = json::depth(line);
     let shown = json::on_stack(depth, || {
         let mut record = transcript::record(line)?;
-        // Its names aren't this brnr's, nor what it would redact (ADR 5.9).
-        if transcript::older(&record) {
-            return Some("(a record an older brnr wrote, not shown)".to_owned());
+        // Its names aren't this brnr's, nor what it would redact (ADR 5.10).
+        if !transcript::readable(&record) {
+            return Some("(a record in a format this brnr doesn't read, not shown)".to_owned());
         }
         log::redact_record(&mut record);
         Some(record.to_string())

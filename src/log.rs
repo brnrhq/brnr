@@ -6,8 +6,9 @@
 //! [`Sink::when_written`] says when what was recorded is written, for
 //! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.
 //!
-//! Every record starts with the fields that join files together:
-//! `{"ts","host_id","pid","proxy_pid","agent_pid"[,"session"],…}`,
+//! Every record starts with its format, `transcript::FORMAT` (ADR 5.10),
+//! then the fields that join files together:
+//! `{"format","ts","host_id","pid","proxy_pid","agent_pid"[,"session"],…}`,
 //! where `proxy_pid` is null for a headless process. ACP traffic adds
 //! `"dir"` and `"msg"`: ACP frames messages as newline-delimited JSON, so
 //! each line is embedded unchanged (but for the MCP servers' secrets in a
@@ -16,7 +17,8 @@
 //! `"event":{…}`.
 //!
 //! A session's events file starts with a `session_opened` record naming the
-//! session, its cwd and its files (`events_log`, `acp_log`, `host_log`); the
+//! session, its cwd, the process's profile and agent, and its files
+//! (`events_log`, `acp_log`, `host_log`); the
 //! host log records the same `session_opened`. Both name the session a fork
 //! came from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
@@ -125,6 +127,10 @@ pub(crate) struct Ids {
     pub(crate) host_id: String,
     pub(crate) pid: u32,
     pub(crate) agent_pid: u32,
+    /// The process's profile and agent, as each `session_opened` names them:
+    /// what `session resume` resumes a session with (ADR 3.11, ADR 5.10).
+    pub(crate) profile: Option<String>,
+    pub(crate) agent: Vec<String>,
 }
 
 enum Cmd {
@@ -594,6 +600,8 @@ impl Writer {
             "event": "session_opened",
             "session": session,
             "cwd": cwd.to_string_lossy(),
+            "profile": self.head.ids.profile,
+            "agent": self.head.ids.agent,
             "events_log": path.to_string_lossy(),
             "acp_log": acp_path,
             "host_log": self.host_path.to_string_lossy(),
@@ -712,7 +720,8 @@ impl Head {
     fn record(&self, ts: SystemTime, session: Option<&str>, body: &[u8]) -> Vec<u8> {
         let proxy = self.proxy_pid.map_or("null".to_owned(), |p| p.to_string());
         let mut out = format!(
-            r#"{{"ts":"{}","host_id":"{}","pid":{},"proxy_pid":{},"agent_pid":{},"#,
+            r#"{{"format":{},"ts":"{}","host_id":"{}","pid":{},"proxy_pid":{},"agent_pid":{},"#,
+            transcript::FORMAT,
             rfc3339(ts),
             self.ids.host_id,
             self.ids.pid,
@@ -998,7 +1007,8 @@ pub(crate) fn record_in_transcripts(
     event: &Value,
 ) -> (Vec<PathBuf>, Vec<String>, Made) {
     let mut record = format!(
-        r#"{{"ts":"{}","host_id":null,"pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session":{},"#,
+        r#"{{"format":{},"ts":"{}","host_id":null,"pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session":{},"#,
+        transcript::FORMAT,
         rfc3339(SystemTime::now()),
         json!(session),
     )
@@ -1260,7 +1270,9 @@ mod tests {
     }
 
     fn head() -> Head {
-        Head { ids: Ids { host_id: "h".into(), pid: 1, agent_pid: 2 }, proxy_pid: None }
+        let ids =
+            Ids { host_id: "h".into(), pid: 1, agent_pid: 2, profile: None, agent: Vec::new() };
+        Head { ids, proxy_pid: None }
     }
 
     #[test]

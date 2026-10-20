@@ -677,6 +677,8 @@ impl Host {
                 host_id: self.host_id.clone(),
                 pid: std::process::id(),
                 agent_pid: self.agent_pid as u32,
+                profile: profile.clone(),
+                agent: agent.clone(),
             };
             self.log = Logger::start(ids, proxy_pid, self.logging == Log::All)
                 .map_err(|e| (format!("log: {e}"), 1))?;

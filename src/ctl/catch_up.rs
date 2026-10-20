@@ -171,6 +171,11 @@ impl Found<'_> {
         if record["host_id"] != *f.host_id {
             return Ok(());
         }
+        // A process of another brnr's, writing in a format this one doesn't
+        // read: what it missed can't be had (ADR 5.10).
+        if let Some(why) = transcript::unread(&record) {
+            return Err(format!("its transcript has {why}"));
+        }
         // An ACP message is an `acp` event, as `event log` has it.
         let Some(mut event) = transcript::event(record) else { return Ok(()) };
         match event["event"].as_str() {

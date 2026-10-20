@@ -770,56 +770,241 @@ fn adr_0005_who_acted_and_why_are_by_peer_and_reason() {
     env.stop();
 }
 
-/// A transcript an older brnr wrote, its head naming the session
-/// `session_id`, isn't read (ADR 5.9, P9): `session list` passes it over,
-/// `event log` of it says an older brnr wrote it, and `doctor` lists it (P3).
-#[test]
-fn adr_0005_a_transcript_an_older_brnr_wrote_isnt_read() {
+/// The transcript fixture `name` (tests/fixtures/transcripts, ADR 5.10), its
+/// raw ACP too if it has one, put where brnr keeps `cwd`'s, private, with
+/// the cwd, the fake agent and the paths filled in: the events file.
+fn fixture(env: &Env, name: &str, cwd: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let env = Env::new("c-older");
-    let cwd = env.dir.to_string_lossy().into_owned();
     let home = env.dir.join("home");
-    let folder = home.join("projects").join(folder_of(&cwd));
+    let folder = home.join("projects").join(folder_of(cwd));
     fs::create_dir_all(&folder).unwrap();
     for dir in [&home, &home.join("projects"), &folder] {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
     }
-    let head = r#"{"ts":"2026-10-01T00:00:00.000000Z","host_id":"20261001T000000-1","host_pid":1,"proxy_pid":null,"agent_pid":2,"session_id":"old-1","#;
-    let opened = json!({ "event": "session-opened", "cwd": cwd });
-    let said = json!({ "event": "user_message", "session": "old-1", "text": "hi", "seq": 1 });
-    let path = folder.join("old-1.jsonl");
-    fs::write(&path, format!("{head}\"event\":{opened}}}\n{head}\"event\":{said}}}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcripts");
+    for file in [format!("{name}.jsonl"), format!("{name}.acp.jsonl")] {
+        let Ok(text) = fs::read_to_string(fixtures.join(&file)) else { continue };
+        let text = text
+            .replace("@CWD@", cwd)
+            .replace("@AGENT@", AGENT)
+            .replace("@FOLDER@", &folder.to_string_lossy())
+            .replace("@HOME@", &home.to_string_lossy());
+        fs::write(folder.join(&file), text).unwrap();
+        fs::set_permissions(folder.join(&file), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    folder.join(format!("{name}.jsonl"))
+}
 
-    let list = env.ok(&["session", "list", "--include", "inactive", "--json"]);
-    assert!(!list.contains("old-1"), "{list}");
-    let err = env.fails(&["event", "log", "old-1"]);
-    let says =
-        format!("{}: an older brnr wrote it, in names this one doesn't read", path.display());
-    assert!(err.contains(&says), "{err}");
+/// `doctor --json`'s check `name`.
+fn doctor_check(env: &Env, name: &str) -> Value {
     let out = env.run(&["doctor", "--json"]);
     let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let older = checks.as_array().unwrap().iter().find(|c| c["check"] == "older files");
-    let older = older.expect("no older files check");
-    assert_eq!(older["level"], "info", "{older}");
-    assert!(older["message"].as_str().unwrap().contains(&path.to_string_lossy().into_owned()));
+    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == name);
+    check.unwrap_or_else(|| panic!("no {name} check in {checks}")).clone()
+}
+
+/// Every record brnr writes, in a session's events file, its raw ACP and
+/// the host log, starts with its format, 1 (ADR 5.10); a deletion's, of no
+/// process's, too. A session's `session_opened` names the profile and agent
+/// it is served with, in both files, so that the transcript alone resumes it
+/// (ADR 3.11).
+#[test]
+fn adr_0005_every_record_brnr_writes_has_its_format() {
+    let env = Env::new("c-format-all");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    env.ok(&["session", "delete", "sess-1", "--", AGENT]);
+    let home = env.dir.join("home");
+    let only = |dir: &Path| fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
+    let (folder, host_log) = (only(&home.join("projects")), only(&home.join("hosts")));
+    let files = [folder.join("sess-1.jsonl"), folder.join("sess-1.acp.jsonl"), host_log];
+    for path in &files {
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.lines().count() > 2, "{}: {text}", path.display());
+        for line in text.lines() {
+            assert!(line.starts_with(r#"{"format":1,"ts":""#), "{}: {line}", path.display());
+        }
+        if path != &files[1] {
+            let mut records = text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+            let opened = records.find(|r| r["event"]["event"] == "session_opened").unwrap();
+            let opened = &opened["event"];
+            assert_eq!((&opened["agent"], &opened["profile"]), (&json!([AGENT]), &Value::Null));
+        }
+    }
+    let events = fs::read_to_string(&files[0]).unwrap();
+    assert!(events.lines().last().unwrap().contains(r#""event":"session_deleted""#), "{events}");
+}
+
+/// A transcript in format 1, as 1.0 writes it, is read by every 1.x brnr
+/// (ADR 5.10, ADR 8.4). The fixture is frozen: a change that fails this test
+/// breaks what 1.x promises. `session list` lists it, `event log` shows its
+/// records as the events they were, and its raw ACP, `doctor` has nothing to
+/// say of it, and `session resume` resumes it from it alone, with no host
+/// log: its cwd, agent and profile are its `session_opened`'s (ADR 3.11). A
+/// load records nothing of the replay, as the transcript has the history
+/// (ADR 5.6).
+#[test]
+fn adr_0005_a_format_1_transcript_is_read_by_every_1x_brnr() {
+    let env = Env::new("c-format-1").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "fixture-1", &cwd);
+    assert!(!env.dir.join("home/hosts").exists());
+
+    let rows = session_list(&env, &["--include", "inactive"]);
+    let row = row(&rows, "fixture-1");
+    assert_eq!((&row["state"], &row["agent"]), (&"inactive".into(), &"fake_agent.py".into()));
+    assert_eq!((&row["cwd"], &row["forked_from"]), (&json!(cwd), &Value::Null), "{row}");
+    assert_eq!(row["last_active"], "2026-10-01T09:00:52.699336Z", "{row}");
+    let names = |log: &str| -> Vec<String> {
+        let events = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+        events.map(|e| e["event"].as_str().unwrap().to_owned()).collect()
+    };
+    let log = env.ok(&["event", "log", "fixture-1", "--json"]);
+    let want = [
+        "user_message",
+        "session_changed",
+        "session_changed",
+        "agent_message",
+        "turn_ended",
+        "user_message",
+        "permission_request",
+        "permission_resolved",
+        "turn_ended",
+        "process_exited",
+    ];
+    assert_eq!(names(&log), want, "{log}");
+    // Each the event its record holds, as a bridge got it.
+    let records = fs::read_to_string(&path).unwrap();
+    let records: Vec<Value> = records.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    for event in log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()) {
+        assert!(records.iter().any(|r| r["event"] == event), "{event}");
+    }
+    let text = env.ok(&["event", "log", "fixture-1"]);
+    assert!(text.contains("agent: hi there") && text.contains("permission p1"), "{text}");
+    let acp = env.ok(&["event", "log", "fixture-1", "--json", "--events", "acp"]);
+    assert_eq!(names(&acp), ["acp"; 11], "{acp}");
+    assert_eq!(doctor_check(&env, "file formats")["level"], "ok");
+
+    let out = env.run(&["session", "resume", "fixture-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let load = env.calls_of("session/load").remove(0);
+    assert_eq!(load["params"]["cwd"], json!(cwd), "{load}");
+    let history = logged(&env, "fixture-1", "history");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &false.into()));
+    assert!(replayed(&env, "fixture-1").is_empty());
+    env.stop();
+}
+
+/// A record is read by its format, not by its fields (ADR 5.10, P9). A
+/// transcript with none, an older brnr's, as this brnr's records but for
+/// it, and one in format 2, a newer brnr's, aren't read: `session list`
+/// passes them over, `event log` of each fails saying what it doesn't read,
+/// `session resume` says so too and resumes the id as one brnr doesn't know
+/// (ADR 3.11), and `doctor` lists them (P3). A file a newer brnr went on
+/// with, its newest records in format 2, is no session to `session list`,
+/// which can't say where it was last served; `event log` shows the records
+/// it can read, and says the rest isn't shown.
+#[test]
+fn adr_0005_a_transcript_in_another_format_isnt_read() {
+    let env = Env::new("c-format-other");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let older = fixture(&env, "older-1", &cwd);
+    let newer = fixture(&env, "newer-1", &cwd);
+    let mixed = fixture(&env, "mixed-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert!(rows.is_empty(), "{rows:?}");
+    let older_says = format!(
+        "{}: records an older brnr wrote, before transcripts had a format, not read (ADR 5.10)",
+        older.display()
+    );
+    let newer_says =
+        format!("{}: records in format 2; this brnr reads format 1, not read", newer.display());
+    assert!(env.fails(&["event", "log", "older-1"]).contains(&older_says));
+    assert!(env.fails(&["event", "log", "newer-1"]).contains(&newer_says));
+    let out = env.run(&["event", "log", "mixed-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let says =
+        format!("{}: records in format 2; this brnr reads format 1, not shown", mixed.display());
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert_eq!(log.matches("user: reply hi there").count(), 1, "{log}");
+    assert!(log.contains("agent: hi there") && log.contains("turn ended"), "{log}");
+    // Resumed as an id brnr doesn't know: with no agent named, none.
+    let err = env.fails(&["session", "resume", "newer-1"]);
+    assert!(err.contains(&newer_says) && err.contains("no agent"), "{err}");
+    let check = doctor_check(&env, "file formats");
+    assert_eq!(check["level"], "info", "{check}");
+    for path in [&older, &newer, &mixed] {
+        assert!(check["message"].as_str().unwrap().contains(&*path.to_string_lossy()), "{check}");
+    }
     // Beside a file of this brnr's in another folder, it is said and not
     // read, and the session is the other file's (ADR 5.1).
     let other = env.dir.join("other");
     fs::create_dir(&other).unwrap();
     closed_session(
         &env,
-        "old-1",
+        "older-1",
         &["--cwd", &other.to_string_lossy(), "--wait", "--prompt", "reply new"],
     );
-    let out = env.run(&["event", "log", "old-1"]);
+    let out = env.run(&["event", "log", "older-1"]);
     assert!(out.status.success(), "{}", stderr(&out));
+    let says = older_says.replace("not read", "not shown");
     assert!(stderr(&out).contains(&says), "{}", stderr(&out));
     let log = stdout(&out);
-    assert!(log.contains("agent: new") && !log.contains("user: hi"), "{log}");
-    let list = session_list(&env, &["--include", "inactive"]);
-    let rows: Vec<&Value> = list.iter().filter(|r| r["session"] == "old-1").collect();
-    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(log.contains("agent: new") && !log.contains("user: reply hi there"), "{log}");
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "older-1")["cwd"], json!(other.to_string_lossy()), "{rows:?}");
+}
+
+/// A transcript a write cut short, at its end and before its last records,
+/// is read to its last whole record (ADR 5.1, ADR 5.10): `session list` lists
+/// it as of that record, `event log` shows every record and says each line
+/// it can't read and the end cut short, exiting 0, and a resume appends its
+/// first record on a line of its own, the cut bytes left as they were.
+#[test]
+fn adr_0005_a_transcript_cut_short_is_read_to_its_last_whole_record() {
+    let env = Env::new("c-format-cut").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "cut-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "cut-1")["last_active"], "2026-10-01T09:00:51.484926Z", "{rows:?}");
+    let out = env.run(&["event", "log", "cut-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("user: reply hi there") && log.contains("agent: hi there"), "{log}");
+    assert!(log.contains("turn ended"), "{log}");
+    let err = stderr(&out);
+    let file = path.display();
+    assert!(err.contains(&format!("{file}:3 isn't a record brnr can read, not shown")), "{err}");
+    let end = format!("{file} ends partway through a record (40 bytes), not shown");
+    assert!(err.contains(&end), "{err}");
+    let before = fs::read_to_string(&path).unwrap();
+    env.resume("cut-1", &[]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(after.starts_with(&format!("{before}\n{{\"format\":1,")), "{after}");
+    let history = logged(&env, "cut-1", "history");
+    assert_eq!(history[0]["recorded"], false, "{history:?}");
+}
+
+/// A transcript holding only its openings, as a load that failed leaves,
+/// has no history (ADR 5.6, ADR 5.10): `session list` lists it, with its cwd
+/// and agent, and the next load records the history the agent replays.
+#[test]
+fn adr_0005_a_transcript_of_openings_only_gets_the_history() {
+    let env = Env::new("c-format-opened").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    fixture(&env, "opened-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "opened-1")["agent"], "fake_agent.py", "{rows:?}");
+    let out = env.run(&["session", "resume", "opened-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(replayed(&env, "opened-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "opened-1", "history");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    env.stop();
 }
 
 #[test]

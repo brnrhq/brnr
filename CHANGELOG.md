@@ -108,11 +108,24 @@ brnr's own conventions:
   `agent-stderr` is `agent_stderr` (ADR 5.9, #314).
 - **Breaking:** every record's head names the session `session` and the
   brnr process `pid`, where it had `session_id` and `host_pid`. A
-  transcript or host log an older brnr wrote isn't read: `session list`
-  and `session resume` pass it over, `event log` of it says `an older brnr
-  wrote it`, and `brnr doctor` lists it under `older files`. A session
+  transcript or host log an older brnr wrote isn't read (below). A session
   resumed starts a new transcript in its cwd's folder; nothing goes on in
   an older brnr's file (ADR 5.9, ADR 9.2, #314).
+- **Breaking:** every record of a transcript and a host log starts with
+  its format, `"format":1`, which stays 1 for all of 1.x. A record without
+  one, as every brnr before this wrote, or in another format, isn't read:
+  `session list` and `session resume` pass over its file, and a file whose
+  newest record is one; `event log` says `<file>: records an older brnr
+  wrote, before transcripts had a format, not shown (ADR 5.10)` (or `records
+  in format 2; this brnr reads format 1`); `session resume` says it too;
+  and `brnr doctor` lists such files under `file formats`, which replaces
+  `older files`. `event log` no longer guesses `no events in … (an older
+  brnr wrote it)` (ADR 5.10, #70).
+- A session's `session_opened` names the process's `profile` and `agent`,
+  and `session list` and `session resume` take the session's cwd, profile
+  and agent from the `session_opened` of the process that last served it:
+  a session resumes from its transcript alone. Pruning `~/.brnr/hosts`
+  made `session resume` fail with `no agent` (ADR 3.11, ADR 5.10, #70).
 - **Breaking:** `by` says who acted, `editor`, `agent` or `control`;
   `peer` which connection asked; `reason` why. `message_dropped` and
   `context_dropped` have `reason` where they had `by`; `session_closed`

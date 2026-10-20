@@ -878,17 +878,25 @@ most). A process killed (SIGKILL) loses what it hadn't written yet, and may
 leave its last record cut short: the session is still listed, logged and
 resumed as of its last whole record, `event log` says on stderr which lines it
 couldn't read, and the next process starts on a new line; brnr never rewrites
-a transcript. Every record carries `ts`, `host_id`, `pid` (the brnr
-process), `proxy_pid`, `agent_pid` and, in a session's file, `session`, for
-joining: `proxy_pid` is null for a headless process, and the
-`session_deleted` that `session delete` records is no process's, its
-`host_id`, `pid` and `proxy_pid` null. A session's events file starts with
-`session_opened`, as the host log records it too: the `session`, its `cwd`,
-its `events_log`, `acp_log` and `host_log`, and `forked_from` for a fork. A
-transcript an older brnr wrote, its records naming the session `session_id`
-and the process `host_pid`, isn't read: brnr reads only its own names (ADR
-5.9). `session list` and `session resume` pass it over, `event log` of it
-says an older brnr wrote it, and `brnr doctor` lists it. `log = "events"` leaves out the
+a transcript. Every record starts with its `format`, 1, then carries `ts`,
+`host_id`, `pid` (the brnr process), `proxy_pid`, `agent_pid` and, in a
+session's file, `session`, for joining: `proxy_pid` is null for a headless
+process, and the `session_deleted` that `session delete` records is no
+process's, its `host_id`, `pid` and `proxy_pid` null. A session's events
+file starts with `session_opened`, as the host log records it too: the
+`session`, its `cwd`, the process's `profile` and `agent`, its
+`events_log`, `acp_log` and `host_log`, and `forked_from` for a fork. That
+is what `session resume` resumes a session with: the transcript alone, not
+the host log (ADR 3.11).
+
+The format stays 1 for all of 1.x, and every 1.x reads every 1.x's
+transcripts (ADR 5.10, ADR 8.4). A record in a format brnr doesn't read,
+an older brnr's without `format` or a newer one's, isn't read: `session
+list` and `session resume` pass its file over, `event log` says
+`<file>: records in format 2; this brnr reads format 1, not shown`, and
+`brnr doctor` lists it. The events are a summary: an agent message's text,
+a tool call's title, kind, status and locations; images, diffs and tool
+output are in the raw file only. `log = "events"` leaves out the
 raw file, most of the space; `log = false` writes nothing but the session
 locks.
 
@@ -977,8 +985,9 @@ It also lists the host logs (`~/.brnr/hosts/`) of processes that died
 without recording it, killed by SIGKILL for instance: logs without `process_exited`
 whose process isn't running. The line says how many, and for the latest three
 when each last wrote and the sessions it had open; it is information, not a
-warning. So is its list of the files an older brnr wrote, transcripts and
-host logs, which this one doesn't read (ADR 5.9). `--fix` makes the runtime directory and transcripts private (only
+warning. So is its list of the files in a format this brnr doesn't read
+(`file formats`), transcripts and host logs, an older brnr's or a newer
+one's (ADR 5.10). `--fix` makes the runtime directory and transcripts private (only
 what you own, never through a symlink) and removes what processes that are
 gone left behind; it leaves logs alone. It exits non-zero if a check fails;
 `--json` prints the checks, each a `level`, `check` and `message`.

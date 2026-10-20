@@ -1903,8 +1903,8 @@ fn project(env: &Env) -> (PathBuf, Vec<String>) {
 /// A session's transcript is two files: its events, which `event log`,
 /// `session list` and `session resume` read, and its raw ACP beside them (ADR 5.1).
 /// A session's opening is one record, the same in its events file and the
-/// host log: the session, its cwd and its three files, and `forked_from`
-/// for a fork (ADR 5.9).
+/// host log: the session, its cwd, the profile and agent, its three files,
+/// and `forked_from` for a fork (ADR 5.9, ADR 5.10).
 #[test]
 fn adr_0005_a_sessions_opening_is_the_same_in_both_files() {
     let env = Env::new("opened");
@@ -1922,12 +1922,22 @@ fn adr_0005_a_sessions_opening_is_the_same_in_both_files() {
         let events = dir.join(format!("{id}.jsonl"));
         let opened = records(&events)[0]["event"].clone();
         let keys: Vec<&String> = opened.as_object().unwrap().keys().collect();
-        let mut want = vec!["event", "session", "cwd", "events_log", "acp_log", "host_log"];
+        let mut want = vec![
+            "event",
+            "session",
+            "cwd",
+            "profile",
+            "agent",
+            "events_log",
+            "acp_log",
+            "host_log",
+        ];
         if fork.is_string() {
             want.push("forked_from");
         }
         assert_eq!(keys, want, "{opened}");
         assert_eq!((&opened["session"], &opened["forked_from"]), (&id.into(), &fork));
+        assert_eq!((&opened["profile"], &opened["agent"]), (&Value::Null, &json!([AGENT])));
         assert_eq!(opened["events_log"], events.to_string_lossy().as_ref());
         assert_eq!(
             opened["acp_log"],

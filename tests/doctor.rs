@@ -587,18 +587,18 @@ fn adr_0011_the_report_is_what_to_paste() {
     // An older brnr's log of a panic, its secret not redacted, and a log of
     // a process that exited, older still: not shown.
     let opened = format!(
-        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"{}","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}]}}}}}}"#,
+        r#"{{"format":1,"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"{}","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}]}}}}}}"#,
         env.dir.display()
     );
     let panicked = format!(
         "{opened}\n{}\n{}\n",
-        r#"{"ts":"t","event":{"event":"process_panicked","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
-        r#"{"ts":"t","event":{"event":"process_exited","exit_status":null,"error":"brnr panicked at src/x.rs:1:1: oops"}}"#
+        r#"{"format":1,"ts":"t","event":{"event":"process_panicked","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
+        r#"{"format":1,"ts":"t","event":{"event":"process_exited","exit_status":null,"error":"brnr panicked at src/x.rs:1:1: oops"}}"#
     );
     write(&hosts.join("20260101T000000-1.jsonl"), &panicked, 0o600);
     write(
         &hosts.join("20250101T000000-2.jsonl"),
-        "{\"event\":{\"event\":\"process_exited\"}}\n",
+        "{\"format\":1,\"event\":{\"event\":\"process_exited\"}}\n",
         0o600,
     );
     let old = std::time::SystemTime::now() - Duration::from_secs(3600);
@@ -666,9 +666,10 @@ fn adr_0011_the_report_redacts_a_deep_line() {
     mkdir(&hosts, 0o700);
     let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
     let opened = format!(
-        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
+        r#"{{"format":1,"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
     );
-    let exited = r#"{"ts":"t","event":{"event":"process_exited","exit_status":{"code":0}}}"#;
+    let exited =
+        r#"{"format":1,"ts":"t","event":{"event":"process_exited","exit_status":{"code":0}}}"#;
     write(&hosts.join("20260101T000000-1.jsonl"), &format!("{opened}\n{exited}\n"), 0o600);
 
     let out = env.run(&["doctor", "--report", "--json"]);

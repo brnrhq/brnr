@@ -475,14 +475,15 @@ See [buffering and cutoffs](../README.md#when-a-reader-falls-behind) for the
 
 [Transcripts](../README.md#transcripts) documents the JSON-lines file paths,
 host/session identity fields, logging modes, redaction and `records_skipped`
-gap notes. A transcript an older brnr wrote, its records naming the session
-`session_id`, isn't read (ADR 5.9). Read history through `event log` where possible. A transcript is not
+gap notes. Every record starts with its `format`, 1 for all of 1.x; a
+record in another format, an older brnr's without one or a newer one's,
+isn't read, and `event log` and `doctor` say so (ADR 5.10). Read history through `event log` where possible. A transcript is not
 a guarantee of complete history: disk backlog/errors, disabled logging,
 and abrupt process death can lose records.
 
 **Covered** from 1.0.0: each session's events and raw ACP files, where they
-are under `$BRNR_HOME` and their records; a 1.x brnr reads what an earlier
-1.x wrote; and where each other file under `$BRNR_HOME` is. **Not
+are under `$BRNR_HOME` and their records, in format 1; a 1.x brnr reads
+what an earlier 1.x wrote (ADR 5.10); and where each other file under `$BRNR_HOME` is. **Not
 covered**: what host logs (`hosts/<run id>.jsonl`) and session lock files
 (`sessions/<id>.lock`) contain, and what is in the runtime directory:
 sockets and metadata files.

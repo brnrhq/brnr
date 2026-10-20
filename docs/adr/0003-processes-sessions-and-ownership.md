@@ -531,7 +531,7 @@ Where things live, fixed for 1.x and kept within the major version from
 What host logs and lock files contain, and what is in the runtime
 directory, aren't covered: a lock's fields are for brnr's own commands and
 can change in any release. What a transcript's records contain, and how a
-reader tells formats apart, is the rest of #70, not this section's.
+reader tells formats apart, is ADR 5.10's.
 
 **Consequences.**
 
@@ -641,10 +641,11 @@ otherwise, kept apart from strict mode, which is about the protocol
   session brnr has no transcript of records the replay, marked `replayed`,
   and a `history` event says which it was (ADR 5.6).
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
-  the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
-  override them. Of an id with files in more than one project folder, they
-  come from the newest record of them all, where the session was last served
-  (ADR 5.1, #121). An id brnr doesn't
+  the session's own record (P4): the `session_opened` of the process that
+  last served it, never the host log (ADR 5.10); `--cwd`, `--profile` or
+  `-- <agent>` override them. Of an id with files in more than one project
+  folder, that process is the newest record's of them all, where the
+  session was last served (ADR 5.1, #121). An id brnr doesn't
   know (one `session list` with an agent named shows) goes to the agent as
   given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
   `--` (or the profile's).
