@@ -26,15 +26,22 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::host::alive;
-use crate::{json, render, transcript};
+use crate::{render, transcript};
 
+use super::args::Error;
 use super::{Args, default_events, events_arg, ownership};
 
 const POLL: Duration = Duration::from_millis(200);
 
-pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn log(a: &Args) -> Result<ExitCode, Error> {
     let last = a.number("--last");
     let events = events_arg(a, &default_events())?;
+    Ok(show(a, last, events)?)
+}
+
+/// `event log`, its arguments checked: the `events` of the session, from
+/// the `last`-th last message on.
+fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, String> {
     let (follow, json_out) = (a.has("--follow"), a.json);
     // A gap in the transcript (`records_skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
@@ -79,7 +86,6 @@ pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
         reader.forget_held();
     }
     let shown_now = records.split_off(from);
-    json::free(Value::Array(records));
     show.all(shown_now, &wanted, false)?;
     // A line cut short at the end is still being written while its process
     // runs; once it has gone, it is a record cut short (ADR 5.1).
@@ -110,25 +116,21 @@ struct Show {
 
 impl Show {
     /// Shows each of `events` that is `wanted`, up to the end of the
-    /// session with `to_end`, and lets go of each on a stack that takes it
-    /// (ADR 2.5): how many lines it showed, and whether the session ended.
+    /// session with `to_end`: how many lines it showed, and whether the
+    /// session ended.
     fn all(
         &self,
         events: Vec<Value>,
-        wanted: &(impl Fn(&Value) -> bool + Sync),
+        wanted: &impl Fn(&Value) -> bool,
         to_end: bool,
     ) -> Result<(usize, bool), String> {
-        let (mut shown, mut events) = (0, events.into_iter());
-        while let Some(event) = events.next() {
+        let mut shown = 0;
+        for event in events {
             let end = to_end
                 && (event["event"] == "process_exited" || event["event"] == "session_closed");
-            let one = json::holding(event, |e| if wanted(&e) { self.print(&e) } else { Ok(0) });
-            match one.and_then(|one| one) {
-                Ok(n) if !end => shown += n,
-                done => {
-                    json::free(Value::Array(events.collect()));
-                    return done.map(|n| (shown + n, true));
-                }
+            shown += if wanted(&event) { self.print(&event)? } else { 0 };
+            if end {
+                return Ok((shown, true));
             }
         }
         Ok((shown, false))

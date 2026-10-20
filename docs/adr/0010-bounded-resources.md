@@ -237,7 +237,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 
 - The command can't catch up where the transcript doesn't have what it
   missed:
-  - none is kept (`log = false`);
+  - none is kept (`log = "off"`);
   - no raw ACP is kept (`log = "events"`), for a peer that asked for `acp`;
   - records weren't written where it missed events: a `records_skipped`
     note's `first_seq` and `last_seq` between L and R is a hole;
@@ -249,7 +249,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   the shape of the logger's `records_skipped` note:
 
   ```json
-  {"event":"events_missed","ts":"…","host_id":"…","pid":4466,"peer":"socket#7","after_seq":120,"until_seq":180,"error":"the process keeps no transcript (log = false)"}
+  {"event":"events_missed","ts":"…","host_id":"…","pid":4466,"peer":"socket#7","after_seq":120,"until_seq":180,"error":"the process keeps no transcript (log = \"off\")"}
   ```
 
   `until_seq` is R, where the command subscribed again. Given up at the 4th
@@ -303,8 +303,7 @@ its owner.
   its session's close, or exit status 3.
 - The names this adds (`seq`, `peer_cut_off`, `last_queued_seq`,
   `first_seq`, `last_seq`, `events_missed` with `after_seq` and
-  `until_seq`) follow ADR 5.9. #150 settles the shapes of `--json`
-  output. The change is kept to one field on every event, one event, one
+  `until_seq`) follow ADR 5.9, and their shapes in `--json` ADR 8.2. The change is kept to one field on every event, one event, one
   note and one request.
 
 **Why.** A burst of lines longer than 16 MiB that comes to more than the
@@ -394,7 +393,10 @@ What is bounded, and what isn't:
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
   - the foreground's display (ADR 3.5);
-  - the proxy reads the editor 64 KiB at a time.
+  - the proxy reads the editor 64 KiB at a time;
+  - how deep a line may nest for brnr to read it: 128 levels for what the
+    agent, the editor or a peer sends, 256 for what brnr wrote, and so the
+    stack any value takes (ADR 2.5). No thread is sized to a line.
 - Not bounded by a count of bytes:
   - the agent's message or thought being assembled from its chunks, for an
     `agent_message` event: each chunk has been through the cap, and the

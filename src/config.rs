@@ -6,11 +6,12 @@
 //! ```toml
 //! [profiles.work]                     # every process of the profile
 //! agent = ["brnr-claude-adapter"]     # used when no agent is given after --
-//! log = "all"                         # transcripts under ~/.brnr; "events", or false
+//! log = "all"                         # transcripts under ~/.brnr; "events", or "off"
 //! strict = false                      # stable ACP only (ADR 2.1)
 //!
 //! [[profiles.work.bridges]]
-//! command = ["~/bin/slack-bridge", "--channel", "#agents"]
+//! command = "~/bin/slack-bridge"      # a program and its arguments, as an MCP server's
+//! args = ["--channel", "#agents"]
 //! events = ["permission_request", "turn_ended"]   # omit for every event but acp
 //!
 //! [profiles.work.headless]            # brnr session new and resume
@@ -47,7 +48,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
-use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::os::fd::AsFd;
@@ -55,7 +55,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{paths, sys};
@@ -116,50 +116,14 @@ pub(crate) struct Editor {
 }
 
 /// What the host records (ADR 5.1): `"all"`, `"events"` (no raw ACP) or
-/// `false` (nothing).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `"off"` (nothing). Strings only (ADR 6.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Log {
     #[default]
     All,
     Events,
     Off,
-}
-
-impl Serialize for Log {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Log::All => s.serialize_str("all"),
-            Log::Events => s.serialize_str("events"),
-            Log::Off => s.serialize_bool(false),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Log {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Log, D::Error> {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = Log;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str(r#""all", "events" or false"#)
-            }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Log, E> {
-                if v {
-                    Err(E::invalid_value(serde::de::Unexpected::Bool(v), &self))
-                } else {
-                    Ok(Log::Off)
-                }
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Log, E> {
-                match v {
-                    "all" => Ok(Log::All),
-                    "events" => Ok(Log::Events),
-                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(v), &self)),
-                }
-            }
-        }
-        d.deserialize_any(Visitor)
-    }
 }
 
 /// An action on an editor's session through the side channel, enabled by
@@ -317,10 +281,14 @@ impl McpServer {
     }
 }
 
+/// A process the host starts and speaks JSON lines with (ADR 5.7): a
+/// program and its arguments, as an MCP server's are (ADR 6.1).
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Bridge {
-    pub(crate) command: Vec<String>,
+    pub(crate) command: String,
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
     pub(crate) events: Option<Vec<String>>,
 }
 
@@ -516,7 +484,8 @@ impl Part {
 }
 
 /// What the typed parse can't say well: keys in the wrong part (the flat
-/// layout of before among them), unknown keys and names, and `log`'s values.
+/// layout of before among them), unknown keys and names, `log`'s values and
+/// a bridge's `command` given as a list.
 /// Types are left to it.
 fn check(file: &toml::Table) -> Vec<String> {
     let mut problems = Vec::new();
@@ -580,11 +549,18 @@ fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<Stri
             continue;
         }
         match key.as_str() {
-            "log"
-                if !matches!(value, toml::Value::Boolean(false))
-                    && !matches!(value.as_str(), Some("all" | "events")) =>
-            {
-                problems.push(format!(r#"{here}: log is "all", "events" or false, not {value}"#));
+            "log" if !matches!(value.as_str(), Some("all" | "events" | "off")) => {
+                problems.push(format!(r#"{here}: log is "all", "events" or "off", not {value}"#));
+            }
+            "bridges" => {
+                let bridges = value.as_array().into_iter().flatten();
+                let listed = |b: &toml::Value| b.get("command").is_some_and(toml::Value::is_array);
+                for (n, _) in bridges.enumerate().filter(|(_, b)| listed(b)) {
+                    problems.push(format!(
+                        "{here}.bridges[{n}]: command is the program, a string; its arguments go \
+                         in args"
+                    ));
+                }
             }
             "experimental" => {
                 let names: Vec<&str> = Experimental::ALL.iter().map(|e| e.name()).collect();

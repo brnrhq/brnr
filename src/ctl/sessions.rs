@@ -19,8 +19,9 @@ use serde_json::{Value, json};
 use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
 use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
+use super::args::{self, Error::Invalid};
 use super::client::{Host, discover};
-use super::{Args, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
+use super::{Args, agent, agent_of, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -36,12 +37,12 @@ const STATES: [&str; 2] = ["active", "inactive"];
 /// `brnr session list`: brnr's index of sessions, every cwd's, with nothing
 /// started; or, with an agent named, those in one cwd joined with the
 /// agent's own list there.
-pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
-    let include = a.value_as("--include", states)?.unwrap_or(STATES.to_vec());
+pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
+    let include = a.value_as("--include", states).map_err(Invalid)?.unwrap_or(STATES.to_vec());
     let (profile, cwd, json_out) = (a.value("--profile"), a.value("--cwd"), a.json);
     let agent = a.rest.clone().unwrap_or_default();
     if a.rest.as_ref().is_some_and(Vec::is_empty) {
-        return Err("-- needs an agent".into());
+        return Err(Invalid("-- needs an agent".into()));
     }
     let asked = named_agent(profile, agent)?;
     // Here, once there is an agent to ask; every cwd without one, unless
@@ -53,7 +54,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
     };
     let cwd = match cwd.map(|dir| std::path::absolute(&dir).map_err(|e| (dir, e))).transpose() {
         Ok(cwd) => cwd.map(|dir| dir.to_string_lossy().into_owned()),
-        Err((dir, e)) => return Err(format!("{}: {e}", dir.display())),
+        Err((dir, e)) => return Err(format!("{}: {e}", dir.display()).into()),
     };
     let listed = match (&asked, &cwd) {
         (Some(agent), Some(cwd)) => agent_sessions(agent, cwd)?,
@@ -82,7 +83,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
     // Joined on the id, exactly: never on which recorded agent the command
     // line might be (P4). The agent's title and time, where it gives them.
     let ours = rows.len();
-    let program = asked.as_ref().map(|a| agent_name(&json!(a)));
+    let program = agent_of(&json!(asked), &Value::Null);
     for x in listed {
         let id = x.session_id.to_string();
         let mut known = false;
@@ -139,7 +140,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
         }
     }
     if json_out {
-        print_json(&json!(rows))?;
+        print_json(&json!({ "sessions": rows }))?;
         return Ok(ExitCode::SUCCESS);
     }
     if rows.is_empty() {
@@ -167,7 +168,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, String> {
             cell(&r["title"]),
             cell(&r["state"]),
             r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
-            cell(&r["agent"]),
+            cell(&r["agent"]["program"]),
             cell(&r["source"]),
             r["last_active"].as_str().map_or("-".to_owned(), when),
             cell(&r["forked_from"]),
@@ -219,7 +220,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
     let mut rows = Vec::new();
     for host in hosts {
         let pid = host.id().parse::<u64>().ok();
-        let agent = agent_name(&host.info()["agent"]);
+        let agent = agent(host);
         for s in host.sessions() {
             rows.push(json!({
                 "session": s["session"],
@@ -256,7 +257,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "unreachable",
             "pid": held.pid,
-            "agent": null,
+            "agent": agent_of(&Value::Null, &Value::Null),
             "source": "brnr",
             "last_active": null,
             "forked_from": null,
@@ -269,7 +270,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "inactive",
             "pid": null,
-            "agent": agent_name(&p["agent"]),
+            "agent": agent_of(&p["agent"], &Value::Null),
             "source": "brnr",
             "last_active": p["last_active"],
             "forked_from": p["forked_from"],
@@ -405,12 +406,11 @@ impl Asked {
                 .recv_timeout(wait)
                 .map_err(|_| (None, format!("the agent didn't answer {method}")))?;
             // As the host reads it (see json.rs): a title cut mid-emoji is no
-            // reason to miss the answer.
+            // reason to miss the answer. One too deep may be the answer: as
+            // the client, brnr refuses it, and says so (ADR 2.5).
             let line = line.as_bytes();
-            let Some(Some(msg)) = json::on_stack(json::depth(line), || json::parse::<Value>(line))
-            else {
-                continue;
-            };
+            json::within(line, json::DEPTH, "a line of the agent's").map_err(|e| (None, e))?;
+            let Some(msg) = json::parse::<Value>(line, json::DEPTH) else { continue };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
                     let code = schema::read::<Error>(error).map(|e| e.code);

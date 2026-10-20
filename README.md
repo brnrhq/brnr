@@ -38,6 +38,8 @@ editor ──stdio── brnr acp ──socketpairs── brnr process ──pip
   a session through its process, over a Unix socket that only you can open.
   Most are a group, what they act on, and a verb: `brnr <group> --help` lists
   a group's ([ADR 8.1](docs/adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
+  `--help` exits 0, and a command used wrongly exits 2 with its usage on
+  stderr, having done nothing ([ADR 8.3](docs/adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status)).
 
 macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).
@@ -220,12 +222,12 @@ action on a session: it stops an editor's process as it does any other.
 ```sh
 brnr session list                  # brnr's sessions: open ones and ended ones (--include active: open only)
 brnr session status $s             # what it's doing: turn, tools, plan, usage, last turn and message
-brnr prompt send $s "also update the changelog"                # held while a turn runs
-brnr prompt send $s --steer "and the tests too"                # into the running turn
-brnr prompt send $s --interrupt "stop, wrong branch"
-brnr prompt send $s --context "the API key is in .env.local"   # added to the next prompt; --replace: instead of the last
-brnr prompt send $s --wait "what did you change?"              # prints the reply
-brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
+brnr prompt send $s --prompt "also update the changelog"               # held while a turn runs
+brnr prompt send $s --steer --prompt "and the tests too"               # into the running turn
+brnr prompt send $s --interrupt --prompt "stop, wrong branch"
+brnr prompt send $s --context --prompt "the API key is in .env.local"  # added to the next prompt; --replace: instead of the last
+brnr prompt send $s --wait --prompt "what did you change?"             # prints the reply
+brnr prompt send $s --file src/api.rs --image screenshot.png --prompt "why does this look wrong?"
 brnr prompt cancel $s              # stop the running turn (held messages are dropped and listed)
 brnr queue list $s                 # held messages and context; brnr queue show $s m3: one in full
 brnr queue clear $s                # drop them (--messages, --context: only those); brnr queue drop $s m3: one
@@ -240,9 +242,9 @@ the new one, with its process's `pid` and the prompt's id as `message`
 that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
 
-`prompt send`'s options go before the message: from its first word on,
-every word is the message's, as after `--`, so `brnr prompt send $s explain
-ls -h` sends `explain ls -h`. `-` reads the message from stdin, alone.
+The message is `--prompt`'s value, as for `session new`, taken as given:
+`brnr prompt send $s --prompt -h` sends `-h`. `--prompt -` reads it from
+stdin. A word that is no flag's is a usage error.
 
 brnr never sends a second prompt while a turn runs: ACP doesn't say what one
 means, and agents differ. `prompt send` holds the message and sends it as a
@@ -267,7 +269,12 @@ Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `event log`, `event watch`
 and `session new --foreground`. `session close --json` is `{session}`, and
 `process stop --json` `{pid, status}`; `event notify`, whose output is its
-command's, has none.
+command's, has none. One thing has one name and one shape in all of them
+([ADR 8.2](docs/adr/0008-the-command-line-and-compatibility.md#82-same-data-in-text-and-json)):
+a list is an object (`{"sessions": [...]}`, `{"processes": [...]}`,
+`{"requests": [...]}`, `{"checks": [...]}`), its rows the detail's objects
+with fewer fields; `dropped` is always the messages dropped; `agent` is
+always `{program, name, version}`; a count is `<what>_count`.
 
 ### Waiting, for scripts
 
@@ -291,7 +298,11 @@ its last turn ended. While `prompt send --wait` and `session new --wait`
 wait, approvals and elicitations are announced on stderr; `session new --wait`
 says `started …` there too, so stdout is the reply and nothing else. With `--json`, the turn is one object at its end:
 `session`, `message`, `reply`, `stop_reason`, `error`, `tokens`, `dropped`
-(and `pid`, for `session new` and `resume`).
+(and `pid`, for `session new` and `resume`). `event wait --json` prints one
+shape for each `--for`, whether the wait ended at once or later: for `idle`
+`{session, state, last_turn}`, for `turn` the `turn_ended` event, for
+`permission` and `elicitation` the request as `permission show` and
+`elicitation show` print it, for `exit` the `process_exited` event.
 
 ### Approvals
 
@@ -305,7 +316,7 @@ brnr permission reject $s p1       # with its reject_once option; --always: reje
 `allow` and `reject` answer with the request's option of that kind, whatever
 the order the agent gives them in. No other kind stands in for it: a request
 without one, or with two, isn't answered, and the command fails, listing the
-options. `--option <id>` names the option instead (for two of one kind, or a
+options. `--option-id <id>` names the option instead (for two of one kind, or a
 kind ACP doesn't have): one of an ACP kind must be on the verb's side, and the
 always kind with `--always`; one of a kind brnr doesn't know goes with either
 verb. `reject` never answers `cancelled`, which ACP keeps for a cancelled
@@ -319,6 +330,13 @@ A headless request waits until it is answered, or for `response_timeout`
 that. `response_timeout` has no default (P4): without it, a request nobody
 answers waits as long as the process runs. An unattended run, with nobody to
 answer (a script, CI, a worker left alone), must set it.
+
+The agent can give up on a request itself (`$/cancel_request`): it is no
+longer waiting, `permission_resolved` says `by: agent`, and brnr answers it
+`cancelled`, as ACP has it; an answer to it after that fails, and nothing is
+sent. On an editor's session the editor gets the agent's notification and
+answers it. A turn that ends with its request unanswered doesn't end the
+request: it waits as any does, and the session stays `waiting`.
 
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `permission show`
@@ -354,10 +372,11 @@ doesn't know can only be declined or cancelled. One asked outside any session
 
 `response_timeout` covers elicitations too: one nobody answered is answered
 `cancel`, never `decline` or `accept`, and `elicitation show` says when. `prompt
-cancel` answers the session's elicitations `cancel` too. On an editor's
-session the request reaches the editor as the agent sent it, and is seen
-(`elicitation_request`, `elicitation_resolved`) as approvals are; answering it
-here is the experimental `elicitation`.
+cancel` answers the session's elicitations `cancel` too, and one the agent
+gives up on (`$/cancel_request`) is answered `cancel`, `by: agent`, as an
+approval is. On an editor's session the request reaches the editor as the
+agent sent it, and is seen (`elicitation_request`, `elicitation_resolved`) as
+approvals are; answering it here is the experimental `elicitation`.
 
 ### Settings
 
@@ -400,7 +419,7 @@ brnr session delete $s --purge     # and brnr's transcript of it goes too
 brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here
-brnr process list                  # brnr's processes: pid, owner, agent, sessions
+brnr process list                  # brnr's processes: pid, state, owner, agent, sessions
 brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5 s apart
 ```
 
@@ -409,7 +428,7 @@ A process holds a lock for each session it serves
 write one transcript contend for one lock however each found its runtime
 directory), so which process has a session is known without asking it. A
 process that doesn't answer (within 5 seconds) still has its sessions:
-`session list` and `process list` show them `unreachable`, commands on them
+`session list` and `process list` show them `unreachable` (`state`), commands on them
 say the process isn't answering, and `session resume` refuses them, naming
 the process, as it does any session that is running. A process started with
 another runtime directory (`BRNR_DIR`; a cron job without `XDG_RUNTIME_DIR`,
@@ -536,20 +555,22 @@ show the same events, live or read back from the transcript:
 | `session_deleted` | the agent deleted the session, `by` `control` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), how many of them are (`recorded_updates`: fewer only when the session closed while its load was unanswered), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
+| `line_too_deep` | a line `from` the `agent` or `editor` nested past `max_depth` (128 levels), unread and unrecorded: `relayed` to the other side with an editor, dropped headless |
 | `peer_cut_off` | a `peer` (a watcher, a bridge) cut off for falling behind, and the last event it was sent (`last_queued_seq`) |
 | `process_exited` | the agent exited, and the process with it: its `exit_status`, and an `error` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
 Each has `ts`, `host_id` (the process's run) and `pid` (the process), and
-names its session; `process_exited` and `line_too_long` are the process's,
-and are in every session's transcript; `peer_cut_off` is the process's too,
+names its session; `process_exited`, `line_too_long` and `line_too_deep` are
+the process's, and are in every session's transcript; `peer_cut_off` is the process's too,
 in its host log. Each has its position, `seq`: one more than the last
 event's or ACP message's of its process, live and in the transcript. Who
 acted is `by`: `editor`, `agent` or `control` (brnr's commands, bridges and
 timers); beside it, `peer` is the connection that asked, where brnr knows
 one (`socket#7`, a bridge's name), and `reason` is why, a word
 (`permission_resolved` by `control`: `peer` for `brnr permission allow`,
-`reason` `timeout` or `cancel` otherwise). Every name is snake_case (ADR
+`reason` `timeout` or `cancel` otherwise; by `agent` when the agent gave the
+request up with `$/cancel_request`). Every name is snake_case (ADR
 5.9). For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
@@ -602,8 +623,9 @@ the events the process writes on its stdin:
 
 ```toml
 [[profiles.work.bridges]]
-command = ["brnr", "event", "notify", "--stdin", "--",
-           "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
+command = "brnr"
+args = ["event", "notify", "--stdin", "--",
+        "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
 ```
 
 If the bridge's `events` limit what it gets, they must include
@@ -675,7 +697,7 @@ recorded the same way, and the editor gets the replay as the agent sent it.
 Its loads of a session that overlap share one replay and one `history`
 event, with how many `loads`; a recorded replay then has the history once per
 load, each copy marked. brnr's transcript has only what happened through
-brnr: turns taken in the agent's own client, or with `log = false`, aren't
+brnr: turns taken in the agent's own client, or with `log = "off"`, aren't
 in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
@@ -737,11 +759,12 @@ writes its transcript, and `session status` says the session is shared.
 ```toml
 [profiles.work]                     # every process of the profile
 agent = ["brnr-claude-adapter"]
-log = "all"                         # "events": no raw ACP; false: no transcripts
+log = "all"                         # "events": no raw ACP; "off": no transcripts
 strict = false                      # stable ACP only
 
 [[profiles.work.bridges]]
-command = ["~/bin/slack-bridge", "--channel", "#agents"]
+command = "~/bin/slack-bridge"      # a program and its arguments, as an MCP server's
+args = ["--channel", "#agents"]
 events = ["permission_request", "turn_ended"]   # omit for every event but acp
 
 [profiles.work.headless]            # brnr session new and resume
@@ -825,7 +848,7 @@ commands catch up: `event watch`, `event notify`, `event wait` and the
 (`was_cut_off`), subscribe again, and read what they missed from the
 transcript, by the events' positions, before going on live; a peer cut off
 is a `peer_cut_off` event to the others. Where the transcript can't have
-it all (`log = false`, `log = "events"` for `acp`, records skipped), or
+it all (`log = "off"`, `log = "events"` for `acp`, records skipped), or
 when cut off 4 times in a row while catching up, the command says what it
 missed, an `events_missed` note (`after_seq`, `until_seq`, `error`), and exits 3.
 Started bridges are cut off as before (ADR 10.2).
@@ -837,6 +860,14 @@ unread and unrecorded, to the editor or the agent unchanged, or is dropped
 headless, and a `line_too_long` event says so. The agent's stderr
 goes on as it is written, newline or not, 64 KiB at most at a time, every
 byte.
+
+However deep the lines: brnr reads a line nested up to 128 levels (`[[1]]`
+is 2), about what serde_json, and so ACP's Rust SDK, reads. A deeper one is
+treated as a long one: it goes on unread and unrecorded with an editor, is
+dropped headless, and a `line_too_deep` event says so; brnr tracks nothing
+of it, so a permission request that deep isn't listed or answerable from
+outside. brnr's commands read what brnr itself wrote (answers, events,
+transcripts) up to 256 levels, and say so, and fail, past that (ADR 2.5).
 
 ## Transcripts
 
@@ -897,7 +928,7 @@ list` and `session resume` pass its file over, `event log` says
 `brnr doctor` lists it. The events are a summary: an agent message's text,
 a tool call's title, kind, status and locations; images, diffs and tool
 output are in the raw file only. `log = "events"` leaves out the
-raw file, most of the space; `log = false` writes nothing but the session
+raw file, most of the space; `log = "off"` writes nothing but the session
 locks.
 
 Records skipped behind a slow disk are counted, and a `records_skipped` note
@@ -933,7 +964,7 @@ and a session whose file can't be is served without it, with a
 `session_log_failed` record in the host log saying why. What reads them
 (`session list`, `event log`, `doctor`, …) keeps the same rules: nothing is
 read through a symlink, nor what isn't yours or has another hard link. There
-is no override; `log = false` writes no transcripts.
+is no override; `log = "off"` writes no transcripts.
 
 ## Adapters
 
@@ -990,7 +1021,7 @@ warning. So is its list of the files in a format this brnr doesn't read
 one's (ADR 5.10). `--fix` makes the runtime directory and transcripts private (only
 what you own, never through a symlink) and removes what processes that are
 gone left behind; it leaves logs alone. It exits non-zero if a check fails;
-`--json` prints the checks, each a `level`, `check` and `message`.
+`--json` prints `{checks}`, each a `level`, `check` and `message`.
 
 `--report` prints, instead of the checks, what a bug report needs, as
 Markdown to paste into an issue: brnr's version, the OS, the adapters, the

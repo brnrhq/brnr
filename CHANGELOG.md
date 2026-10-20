@@ -45,6 +45,9 @@ brnr's own conventions:
   `records_skipped` note has `ts`, `host_id`, `pid` and, in a session's
   file, `session`, and `events_missed` has `pid`; `subscribe`'s answer has
   `pid` too (ADR 5.9, #314).
+- `elicitation show --json`, and the elicitations in the socket's `pending`
+  answer, have the process's `pid`, as `elicitation requests --json`'s rows
+  do (ADR 8.2, #150).
 - `--events` takes the notes' names, `records_skipped` and
   `events_missed`, which are shown whatever it chose: `event log
   --events records_skipped` lists only a transcript's gaps (ADR 5.9,
@@ -52,6 +55,36 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** a usage error exits 2, not 1, in every command: an unknown
+  command, verb or option, an argument missing or one too many, a value a
+  flag can't take (`event wait --for soon`, `--events nope`, `brnr skill
+  nope`), flags that don't go together (`--timeout` without `--wait`), or
+  `brnr` or a group with no command. Nothing is done; brnr says what was
+  wrong, then the command's usage, on stderr. An operation that fails still
+  exits 1. A script that took 1 for both tells them apart now (ADR 8.3).
+- **Breaking:** `--help` and `-h` print the usage on stdout and exit 0 in
+  every command: `doctor --help`, `skill --help` and `skill install --help`
+  printed on stderr and exited 1, and `brnr acp` took them only as its
+  first word (ADR 8.3).
+- `brnr acp --help` names its arguments `<p>` and `<agent>`, as `brnr
+  --help` does (ADR 8.3).
+- **Breaking:** `brnr acp` exits 1 for a config error, not 2, as the
+  control commands do: 2 is a usage error only (ADR 8.3, #338).
+- **Breaking:** brnr reads a line nested up to 128 levels (`[[1]]` is 2),
+  about what serde_json and ACP's Rust SDK read, where it read any depth on
+  a thread whose stack it sized to the line. A deeper line from the agent or
+  the editor is treated as one past 32 MiB: with an editor it goes on unread
+  and unrecorded, headless it is dropped, and a new `line_too_deep` event
+  (`from`, `max_depth`, `relayed`) says so; brnr tracks nothing of it, so a
+  permission request that deep isn't listed, answered from outside or timed
+  out. The commands read what brnr wrote (answers, events, transcripts) up
+  to 256 levels, and fail, saying so, past it. No event or timer runs on a
+  thread of its own any more, and `--json` output indented stays small
+  (ADR 2.5, #268, #259).
+- A process whose `status` answer has an agent's turn error nested past
+  128 is answering: the commands that look for processes (`session list`,
+  `permission requests`, …) no longer pass it over as not answering
+  (ADR 2.5, #323).
 - **Breaking:** brnr refuses a config file that isn't yours, or that the
   group or others can read or write, or whose folder isn't yours or they
   can write, or, on macOS, either with an access control list (`chmod
@@ -146,8 +179,7 @@ brnr's own conventions:
   (`session`, `cwd`, `events_log`, `acp_log`, `host_log`, `forked_from`);
   the bridge `status` reply's sessions have `session` and `events_log`
   where they had `session_id` and `log`; `event notify`'s
-  `BRNR_SESSION_ID` is `BRNR_SESSION`; `permission requests --json`'s
-  options have `option_id` where they had `option`; and in the host log
+  `BRNR_SESSION_ID` is `BRNR_SESSION`; and in the host log
   `bridge` is `peer`, `bridge_started`'s `pid` `bridge_pid`,
   `bridge_exited`'s `status` `exit_status` (`{code}`, `{signal}` or
   null), `capabilities_dropped`'s `dropped` `capabilities`, the editor
@@ -158,6 +190,27 @@ brnr's own conventions:
 - **Breaking:** a profile's bridge whose `events` names a note
   (`records_skipped`, `events_missed`) fails to load, and `subscribe` to
   one is refused: the process never sends one (ADR 5.9, #314).
+- **Breaking:** `permission allow` and `reject` name an option with
+  `--option-id <id>`, ACP's `optionId`, not `--option <id>`, which is a
+  config option's only and an unknown option there (exit 2). The socket's
+  `allow` and `reject` take `option_id`, and refuse `option`, answering
+  nothing (ADR 8.1, #311).
+- **Breaking:** `prompt send` takes its prompt as `--prompt <text>`, or
+  `--prompt -` for stdin, as `session new` does: `brnr prompt send $s
+  --prompt "fix it"`. Words after the session are a usage error (exit 2),
+  and the rule that options go before the prompt is gone (ADR 8.1, #311).
+- **Breaking:** a duration in `--json` and the socket's replies has no unit
+  in its name: `uptime_seconds` is `uptime` (`process list`, `session
+  status`), `turn_seconds` `turn_elapsed` (`session status`) and
+  `timeout_seconds` `timeout_left` (`permission show`, `elicitation show`)
+  (ADR 8.1, #311).
+- **Breaking:** a profile's `log` is a string, `"all"`, `"events"` or
+  `"off"`: `log = false` is `log = "off"`, and `true` and `false` fail to
+  load, as `brnr doctor` says (ADR 6.1, #311).
+- **Breaking:** a bridge is a program and its arguments, as an MCP server
+  is: `command = "brnr"` and `args = ["event", "notify", …]`, not
+  `command = ["brnr", "event", "notify", …]`. A list `command` fails to
+  load, as `brnr doctor` says (ADR 6.1, #311).
 - **Breaking:** one session's files in more than one project folder (a
   session resumed with `--cwd` has one in each) are one transcript.
   `event log` shows them all, merged by their records' time, the raw ACP
@@ -166,9 +219,60 @@ brnr's own conventions:
   cwd showed none of its history. `session resume` takes its cwd, agent and
   profile from the newest record of them all, and `session list` has one
   row of the session, with that record's cwd (ADR 5.1, ADR 3.11, #121).
+- **Breaking:** a command that lists prints an object, not a bare array:
+  `process list --json` is `{processes}`, `session list --json`
+  `{sessions}`, `permission requests --json` and `elicitation requests
+  --json` `{requests}`, and `doctor --json` `{checks}`, as `doctor --report
+  --json` has it. `jq '.[]'` is `jq '.sessions[]'` (ADR 8.2, #150).
+- **Breaking:** `dropped` is the messages dropped, each `{message, text,
+  reason}` as its `message_dropped` event has it: `--wait --json`'s is a
+  list, empty or with the message whose drop ended the wait, where it was
+  the reason or null; `prompt cancel`'s and `queue`'s, and the socket's
+  `cancel` and `queue` replies, have each message's `reason` (ADR 8.2,
+  #150).
+- **Breaking:** `permission requests --json` has the agent's options whole,
+  `{optionId, name, kind}`, as `permission show` has them, not `{option,
+  kind}` (ADR 8.2, #150).
+- **Breaking:** `agent` is `{program, name, version}` in `process list`,
+  `session list` and `session status`: `.agent` in the lists is
+  `.agent.program`. `name` and `version` are what the agent says it is in
+  `initialize` (`agentInfo`), null where brnr doesn't know them; `session
+  status` left them out (ADR 8.2, #150, #335).
+- **Breaking:** `process list --json`'s `owner` is `editor` or `headless`,
+  null for a process that doesn't answer, which its new `state` says:
+  `starting`, `running`, `stopping` or `unreachable`. Its `sessions` are
+  `{session, state}`, as `session list` has them, not ids (ADR 8.2, #150).
+- **Breaking:** `session status --json` counts with `held_count`,
+  `context_count`, `pending_count` and `elicitation_count`, not `held`,
+  `context`, `pending` and `elicitations`, which are lists in `queue list`
+  and `pending`; so does the socket's `status` reply, for the process and
+  each session. `held_by` is `lock_pid`, `shared_by` `shared_pids`, and the
+  host log's `session_shared` has `lock_pid` (ADR 8.2, #150).
+- **Breaking:** `event wait --json` prints one shape for each `--for`,
+  however the wait ended: `idle` `{session, state, last_turn}` (`state`
+  `idle`, or `inactive` once closed), not `{"event": "idle"}` or the event
+  that ended the wait; `permission` and `elicitation` the request as
+  `permission show` and `elicitation show` print it, also when it came
+  while the command waited; `turn` the `turn_ended` event; `exit` the
+  `process_exited` event, which for a process killed has `ts`, `host_id`,
+  `pid`, and `exit_status` and `seq` null, and `error` (ADR 8.3, #150).
+  Text says `idle: <stop reason>` for a session idle already too.
+- **Breaking:** `session fork --json`'s `from` is `forked_from`, and
+  `session delete --json`'s `recorded` is `recorded_in`: `recorded` is
+  `history`'s boolean (ADR 8.2, #150).
 
 ### Fixed
 
+- A permission request or an elicitation the agent cancels with
+  `$/cancel_request` ends: it is gone from `permission requests`,
+  `elicitation requests` and a bridge's `pending`, the session is no longer
+  `waiting` (so `stop_when_idle` counts again), and its
+  `permission_resolved` or `elicitation_resolved` says `by: agent`.
+  Headless, brnr answers it `cancelled` or `cancel`, as ACP has a cancelled
+  request answered; in an editor's session the editor gets the
+  notification and answers it. An answer to it after that fails and sends
+  nothing. brnr passed the notification over, and the request stayed
+  listed, waiting for an answer the agent no longer took (ADR 4.5, #308).
 - What reads transcripts holds every part of their path to the rules they
   are written by: `session list`, `event log`, `session resume`, `session
   delete`, catching up and `doctor` don't look in, or read through, a

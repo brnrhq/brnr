@@ -91,7 +91,7 @@ fn recovered(env: &Env, unrecorded: bool) {
     };
     assert!(report.contains(want), "{report}");
     assert!(env.hosts().is_empty(), "runtime metadata survived: {:?}", env.hosts());
-    let listed: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
+    let listed = serde_json::from_str::<Value>(&env.ok(&["process", "list", "--json"])).unwrap()["processes"].clone();
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3.9).
@@ -145,7 +145,7 @@ fn adr_0003_seeded_agent_crash_records_death_and_releases_session() {
         env.start(&[]);
         let (host, agent) = processes(&env);
         let descendant = Process::new(env.child_pid());
-        let _ = env.run(&["prompt", "send", "sess-1", "fault"]);
+        let _ = env.run(&["prompt", "send", "sess-1", "--prompt", "fault"]);
         let fault = marker(&env);
         assert_eq!(fault["seed"], seed.parse::<u64>().unwrap());
         host.gone();
@@ -162,7 +162,7 @@ fn adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session() {
         let env = fixture(&format!("chaos-host-{seed}"), "flood", seed);
         env.start(&[]);
         let (host, agent) = processes(&env);
-        env.ok(&["prompt", "send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "fault"]);
         marker(&env);
         env.ok(&["event", "log", "sess-1"]); // Flush the session identity before SIGKILL.
         host.signal(libc::SIGKILL);
@@ -227,14 +227,14 @@ fn adr_0005_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         let path = env.dir.join("bridge.pid");
         let script = format!("echo $$ > '{}'; exec cat > /dev/null", path.display());
         env.write_config(&format!(
-            "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+            "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
         ));
         env.start(&[]);
         let (host, agent) = processes(&env);
         assert!(wait_for(WAIT, || fs::read_to_string(&path)
             .is_ok_and(|s| s.trim().parse::<i32>().is_ok())));
         let bridge = Process::new(fs::read_to_string(path).unwrap().trim().parse().unwrap());
-        env.ok(&["prompt", "send", "sess-1", "fault"]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "fault"]);
         marker(&env);
         bridge.signal(libc::SIGKILL);
         bridge.gone();

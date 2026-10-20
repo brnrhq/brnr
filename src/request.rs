@@ -161,7 +161,7 @@ impl Request {
         let mut bridges = profile.bridges.clone();
         for bridge in &mut bridges {
             host::check_bridge(bridge)?;
-            let program = &mut bridge.command[0];
+            let program = &mut bridge.command;
             *program = paths::expand(program).to_string_lossy().into_owned();
             next_to_brnr(program);
         }

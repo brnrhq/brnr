@@ -1,10 +1,8 @@
 # 8. The command line and compatibility
 
-Draft 2026-10-19. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade waits for #150, 8.6's evals with a real agent
-aren't done, and these are decided, not implemented yet: 8.1's names
-spelled one way (#154, #311) and 8.3's usage errors and help
-(#153, #310). Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
+1.0.0, 8.5's typed facade (#215) isn't built, and 8.6's evals with a real
+agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -43,14 +41,14 @@ brnr session     new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
                  | status <session> | fork <session> | close <session>
                  | delete <session> [--purge] [--profile <p>] [-- <agent> [args...]]
 brnr prompt      send <session> [--steer | --interrupt | --context [--replace]]
-                   [--file <path>]... [--image <path>]... [--wait [--timeout <s>]]
-                   (<text>... | -)
+                   [--prompt <text> | -] [--file <path>]... [--image <path>]...
+                   [--wait [--timeout <s>]]
                  | cancel <session> [--keep-held] | commands <session>
 brnr queue       list <session> | show <session> <message>
                  | drop <session> <message> | clear <session> [--messages] [--context]
 brnr permission  requests [<session>] | show <session> <request>
-                 | allow <session> <request> [--always] [--option <id>]
-                 | reject <session> <request> [--always] [--option <id>]
+                 | allow <session> <request> [--always] [--option-id <id>]
+                 | reject <session> <request> [--always] [--option-id <id>]
 brnr elicitation requests [<session>] | show <s> <request>
                  | accept <s> <request> [--field <k>=<v>]... [-]
                  | decline <s> <request> | cancel <s> <request>
@@ -89,15 +87,16 @@ How words are read:
   verb's `--help` or `-h`, before any `--`, prints its usage; after `--` it
   is the command's, and as a flag's value it is that value (`--prompt -h`
   sends `-h`). Help goes to stdout and exits 0, and a usage error goes to
-  stderr and exits 2, in every command, once #310 lands (ADR 8.3).
-- `prompt send`'s options go before its prompt: from the prompt's first
-  word on, every word is the prompt's (`-h`, `--help`, `--wait`, `--json`
-  too), sent as given. `-` (stdin) goes alone.
+  stderr and exits 2, in every command (ADR 8.3).
+- A prompt is `--prompt`'s value, sent as given (`--prompt --wait` sends
+  `--wait`), and `--prompt -` reads it from stdin, for `prompt send` as for
+  a start. A word that is neither a flag, a flag's value nor a positional
+  the command takes, such as a prompt given as words, is a usage error.
 - An option a command doesn't take fails as unknown, and nothing is done.
   It is never read as a `<session>` or `<pid>`: `session status --json`
   without a session is a usage error. Every command says an unknown option
-  (`session list`, `process list`, `doctor` and `skill` too), rather than
-  printing its usage. A word with one dash, such as `-x`, is an argument
+  (`session list`, `process list`, `doctor` and `skill` too), before its
+  usage. A word with one dash, such as `-x`, is an argument
   (`event log` has no `-f`).
 - Names that this tree replaced have no alias (P9), and the CHANGELOG lists
   them: such a command fails as unknown and does nothing; so do the
@@ -170,7 +169,8 @@ How words are read:
 - Every table of sessions has the same columns, in the same order,
   formatted the same way: SESSION, TITLE, STATE, PID, AGENT, SOURCE,
   LAST ACTIVE, FORKED FROM, CWD (`session`, `title`, `state`, `pid`,
-  `agent`, `source`, `last_active`, `forked_from`, `cwd` in `--json`).
+  `agent`, `source`, `last_active`, `forked_from`, `cwd` in `--json`, each
+  row in `{sessions}`, AGENT the `agent`'s `program`, ADR 8.2).
   Rows are ordered most recently active first.
 - STATE is a running session's live state (`idle`, `busy`, `waiting` for an
   approval or an elicitation), `unreachable` for one whose process holds
@@ -258,7 +258,7 @@ How words are read:
   order. No other kind stands in for it, and `reject` never answers
   `cancelled`: a request without that kind, or with two options of it,
   fails, listing the options, and nothing is answered (P4, P7).
-- `--option <id>` names the option instead, for a kind brnr doesn't know
+- `--option-id <id>` names the option instead, for a kind brnr doesn't know
   (v2 allows `_…` kinds) or two options of one kind. One of an ACP kind
   must be on the verb's side (`allow_*` for `allow`), and with `--always`
   the always kind; one of a kind brnr doesn't know goes with either verb
@@ -296,7 +296,7 @@ The same names reach brnr's other interfaces, so one word means one thing
 (P5):
 
 - Socket and bridge commands (ADR 5.7): `allow` and `reject`, with `always`
-  and `option`; one `set_config` taking `mode`, `model`, `thought_level`
+  and `option_id`; one `set_config` taking `mode`, `model`, `thought_level`
   and `options`; `new` and `resume` for `--pid`, with the command's
   `timeout`. `send` is the message, whatever its mode.
 - A profile's headless part (ADR 6.1): `mode`, `model`, `thought_level`,
@@ -306,9 +306,8 @@ The same names reach brnr's other interfaces, so one word means one thing
 - Events: `permission_resolved` and `session_deleted`, as above.
 - Errors, hints and the usage text name these commands.
 
-One name, one meaning, one spelling (#154), decided, not implemented yet
-(#311). Where a name had two, one wins, and the other form goes, with
-no alias (P9):
+One name, one meaning, one spelling (#154). Where a name had two, one
+wins, and the other form goes, with no alias (P9):
 
 - `--option` is a config option, and only that: an id in `config get
   --option <o>`, an `<o>=<v>` pair in `config set`, `session new` and
@@ -316,13 +315,16 @@ no alias (P9):
   The option of a permission request is `--option-id <id>`, ACP's
   `optionId`, a name ACP gives only to a permission option:
   `permission allow <session> <request> [--always] [--option-id <id>]`,
-  and `reject` the same. The socket's `allow` and `reject` take
-  `option_id` in place of `option`.
+  and `reject` the same; `--option` there is an unknown option (exit 2,
+  ADR 8.3). The socket's `allow` and `reject` take `option_id` in place of
+  `option`, and refuse `option`, answering nothing: ignored, it would let
+  a bridge that names an option get the kind's option instead (P3, P7).
 - The prompt is `--prompt <text> | -` wherever a command takes one:
   `session new`, `session resume` and `prompt send`
-  (`prompt send <session> [flags] --prompt <text> | -`). The words after
-  the prompt's first are no longer the prompt's, so the rule that
-  `prompt send`'s options go before its prompt goes too.
+  (`prompt send <session> [flags] [--prompt <text> | -]`, with a prompt, a
+  file or an image: none is `nothing to send`, a usage error). A prompt
+  given as words is a word too many, a usage error (ADR 8.3), and the rule
+  that `prompt send`'s options go before its prompt is gone.
 - A duration is in whole seconds, and its name has no unit: `--timeout`,
   `--stop-when-idle`, `--response-timeout`, and the profile's
   `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
@@ -381,7 +383,7 @@ some places only (F5, P5).
   ways) and its own order.
 - `permission respond <option>` with ACP's option ids alone: ids are the
   agent's, so a script would work for one agent; kinds are ACP's.
-  `--option` keeps ids for what kinds can't say.
+  `--option-id` keeps ids for what kinds can't say.
 - `permission dismiss`: ACP has no outcome for it but `cancelled`, which is
   a cancelled turn's.
 - `--config` for `--option`: it reads as a config file's path.
@@ -410,9 +412,11 @@ some places only (F5, P5).
   elicitations, token usage, the last turn (`last_turn`: `stop_reason`,
   `error`, `tokens`, ADR 4.4, with a line for it in the text), the last
   agent message (at most 4000 characters of it; the events have all of
-  it), the session it was forked from (`forked_from`, ADR 3.12), and what
-  the agent says it is (`agentInfo`). The control socket's `status` stays
-  the full report, which bridges use; brnr shapes what it prints from it.
+  it), the session it was forked from (`forked_from`, ADR 3.12), and the
+  agent (`agent`: `program`, the command brnr ran, and `name` and
+  `version`, what the agent says it is in `initialize`, ACP's
+  `agentInfo`). The control socket's `status` stays the full report, which
+  bridges use; brnr shapes what it prints from it.
 - Running tools are the running turn's (#164). A tool call the agent left
   unfinished, in a turn that was cancelled or failed, isn't running once
   the turn has ended; nor is one from a load's replayed history that ended
@@ -434,9 +438,81 @@ some places only (F5, P5).
   `--json` is everywhere. `brnr <group> --help` prints a group's part. A
   usage error prints that command's lines, not all of it.
 
+One concept has one name and one shape in every command's `--json`, and in
+the socket's replies where the commands print their fields as they are
+(#150). A field means one thing and has one type wherever it is, and is
+named as ADR 5.9 has it:
+
+- **Lists.** A command that lists prints an object, the list under the
+  plural of what it lists: `process list` `{processes}`, `session list`
+  `{sessions}`, `permission requests` and `elicitation requests`
+  `{requests}`, `doctor` `{checks}`, as `doctor --report --json`,
+  `config get` (`{session, options}`) and `prompt commands`
+  (`{session, commands}`) have theirs. It has no `version`: brnr's major
+  version is the version of what it prints (ADR 8.4).
+- **Rows.** A row is the object its command's detail prints, with fewer
+  fields, none renamed or reshaped: `session list`'s are `session
+  status`'s (with `source`), `permission requests`' are `permission
+  show`'s, `elicitation requests`' are `elicitation show`'s, which has the
+  process's `pid` as its row does; a `process list` row's `sessions` are
+  `session list` rows with `session` and `state` only.
+- **ACP's objects whole** (ADR 5.9). A permission request's `options` are
+  the agent's, `{optionId, name, kind}`, in `permission requests` as in
+  `permission show` and `permission_request`; `--option-id` takes an
+  `optionId` (ADR 8.1).
+- **A count or a list, never both.** A count of what is listed elsewhere is
+  `<what>_count`, as `records_skipped`'s `acp_count` is: `session status`,
+  and the socket's `status`, have `held_count`, `context_count`,
+  `pending_count` and `elicitation_count`, where `held` and `context` are
+  `queue list`'s lists, and `pending` and `elicitations` the socket's
+  `pending` answer's.
+- **`dropped`** is the messages dropped, a list of `{message, text,
+  reason}` as their `message_dropped` events have them: in `prompt
+  cancel`, `queue drop` and `queue clear`, and in `--wait`'s turn, where it
+  is empty, or the message whose drop ended the wait (ADR 8.3).
+- **`agent`** is `{program, name, version}` in `process list`, `session
+  list` and `session status`: `program` the file name of the command brnr
+  ran, `name` and `version` what the agent says it is in `initialize`
+  (`agentInfo`); each null where brnr doesn't know it. A process that
+  doesn't answer, an inactive session and a session only the agent lists
+  have no `agentInfo` brnr kept. The socket's `status`, the full report,
+  keeps the command as `agent`, as a profile's `agent` has it (ADR 6.1),
+  and `agentInfo` as `agent_info`; the commands make `agent` of the two.
+- **`owner`** is who owns a process's sessions, `editor` or `headless`,
+  and null where it isn't known: a process that doesn't answer. Whether one
+  answers is its `state` in `process list`, `starting`, `running`,
+  `stopping` or `unreachable`, as a session in it is `unreachable` in
+  `session list`.
+- **Who and where.** `by` is who acted (ADR 5.9), never a process: a
+  session's lock is held by `lock_pid`, and the processes serving it
+  without it are `shared_pids` (ADR 3.9). `session fork` names the session
+  it forked `forked_from`, as `session status` and `session list` do.
+  `session delete` names the files `session_deleted` went into
+  `recorded_in`: `recorded` is `history`'s boolean.
+- **`event wait`** prints one shape for each `--for`, whatever ended the
+  wait and whether it held when the wait began (ADR 8.3).
+
 **Why.** Scripts and agents read `--json`, people read text (F5). If the two
 carried different data, brnr would have two interpretations of one session
 where P5 allows one, and a script could not see what a person sees.
+
+At f017499 one thing had several shapes (#150): `dropped` was a reason in
+`--wait` and a list of messages in `prompt cancel` and `queue`, so
+`jq '.dropped | length'` worked on one and not the other; a permission
+request was rewritten in `permission requests` (`name` dropped), ACP's in
+`permission show`, and either that or its event in `event wait`, which
+also made up an `idle` event and a `process_exited` with no fields but its
+status; `agent` was a string in the lists and an object in `session
+status`; `held` and `context` were counts in one and lists in another;
+`owner` held reachability in `process list`; and every list was a bare
+array. A script written against one command broke on the next, and ADR
+8.4 would hold each of these for 1.x (F5, P5). One shape learned once is
+fewer concepts (N4), and a filter written for a row works on the detail.
+An object can gain a field in a minor release (ADR 8.4) where a bare array
+can't: what belongs beside a list, such as the processes that didn't
+answer, which go to stderr now, has room. Within a major, what changes in
+an object is fields added, which readers ignore, so a `version` beside them
+would never change; a 2.0 can add one if it needs one.
 
 **Considered.**
 
@@ -444,6 +520,23 @@ where P5 allows one, and a script could not see what a person sees.
   text showed six columns.
 - `session status` as a summary in text and the raw report in `--json`.
 - `--json` on a few commands only.
+- Bare arrays for lists, as they were: nothing can be added beside the
+  rows without a break.
+- A `version` in each list's object: within 1.x it could only stay `1`.
+- JSON lines for lists, as `event log` prints: a list is one value, read
+  whole; the `event` commands stream because events go on.
+- `dropped` as the drop's reason in `--wait`: `prompt cancel` and `queue`
+  drop several messages, so one name would keep two types.
+- Lists in `session status` for `held` and `context`: it counts what
+  `queue list` lists, as it counts the approvals `permission requests`
+  lists, each with its tool call.
+- A request in `permission requests` as brnr rewrote it, `{option_id,
+  kind}`: it dropped the option's `name`, and was a third shape of one
+  request.
+- `agent` a string everywhere, with `agent_name` and `agent_version` in
+  `session status`: three fields for one thing, and nowhere to add a
+  fourth.
+- `owner: unreachable`, as it was: a field with two lists of values.
 
 ## 8.3 Waiting, and exit status
 
@@ -467,14 +560,24 @@ where P5 allows one, and a script could not see what a person sees.
   codes for `prompt send --wait`, `session new --wait` and
   `session resume --wait`. `event wait` on a session that is idle already
   exits as its last turn ended.
-- Usage errors and help, the same in every command (#153), decided, not
-  implemented yet (#310):
+- Usage errors and help, the same in every command (#153):
   - A usage error exits 2: an unknown command, verb or option, an argument
     missing or one too many, a value a flag can't take, `brnr` or a group
     with no command. Nothing is done, and the command's usage is printed
-    on stderr. `brnr acp` exits 2 so already. 1 stays an operation that
-    failed, so a script tells a mistake in its own command line from a
-    failure.
+    on stderr, after what was wrong where brnr can say it
+    (`brnr: unknown option: --bogus`); for a command brnr doesn't have,
+    `brnr --help lists every command` in place of all of it. `brnr acp`
+    exits 2 so already. 1 stays an operation that failed, so a script
+    tells a mistake in its own command line from a failure.
+  - A usage error is what the command line alone shows wrong, checked
+    before anything is read or done: flags that don't go together
+    (`--timeout` without `--wait`), a value not of the flag's form or not
+    one of its fixed choices (`--for`, `--events`, `--include`, `--option
+    <o>=<v>`, `brnr skill`'s references), an empty `--prompt`. What
+    depends on anything else is a failure, 1: a session, process or
+    profile that isn't there, a mode or option the agent doesn't have, a
+    file that can't be read, a prompt on stdin that is empty. `brnr acp`
+    too: a config error there exits 1, as in `session new` (#338).
   - `--help` and `-h` print the usage on stdout and exit 0, wherever they
     are taken (ADR 8.1): `brnr`, a group without a verb
     (`brnr session --help`), a verb, `brnr acp`, `doctor` and `skill`
@@ -497,18 +600,49 @@ where P5 allows one, and a script could not see what a person sees.
 - With `--json`, `--wait` prints the turn as one object at its end:
   `{session, message, reply, stop_reason, error, tokens, dropped}`, and for
   `session new` and `session resume` its `pid`. `tokens` is what the agent
-  reported for the turn, or null (ADR 4.4).
+  reported for the turn, or null (ADR 4.4). `dropped` is the messages
+  dropped, as `prompt cancel` has them (ADR 8.2): empty, or the message,
+  dropped before it was sent.
+- With `--json`, `event wait` prints what met its condition in one shape
+  for each `--for` (ADR 8.2), whatever ended the wait, and whether it held
+  when the wait began:
+  - `idle`: the session's state, `{session, state, last_turn}`: `state`
+    `idle`, or `inactive` once it has closed, as `session list` has it, and
+    `last_turn` as `session status` has it, null before the first turn.
+  - `turn`: the turn's `turn_ended` event, as `event watch --json` prints
+    it.
+  - `permission` and `elicitation`: the request waiting, as `permission
+    show --json` and `elicitation show --json` print it. The event of one
+    answered before brnr asks for it doesn't end the wait: none is
+    waiting.
+  - `exit`: the `process_exited` event. A process gone without sending it
+    (killed) gets the same event from the command, as far as it knows it:
+    `exit_status` and `seq` null, `ts` when it saw the process go, and
+    `error` saying so.
+
+  Text says the same: `idle: end_turn`, `inactive: session closed (idle)`,
+  `turn ended: end_turn`, `approval p1: Edit src/lib.rs`, `exited`.
 
 **Why.** A script or a supervising agent needs to wait for a turn without
 polling, and to know from the exit status alone how it ended (F5, P3). The
-control commands exit 1 for a usage error, the code of a failed operation,
-while `brnr acp` exits 2; `doctor --help` and `skill --help` print on stderr
-and exit 1, while a verb's `--help` prints on stdout and exits 0 (#153). An
+control commands exited 1 for a usage error, the code of a failed
+operation, while `brnr acp` exited 2; `doctor --help` and `skill --help`
+printed on stderr and exited 1, while a verb's `--help` printed on stdout
+and exited 0 (#153). An
 exit code is part of the interface (ADR 8.4), so one situation gets one code
 in every command (F5, P5). 2 is what many utilities exit for a usage error
 (`grep`, `ls`, the shell's builtins) and what `brnr acp` exits, and 0, 1, 3
 and 124 already have their meanings. Help asked for is the answer, so stdout
-and 0, as a verb's `--help` has it already.
+and 0, as a verb's `--help` had it already. The line between a usage error
+and a failure is what the command line alone shows, so the same words get
+the same code whatever the machine holds (P5), and a script that gets 2
+knows retrying can't help. Saying what was wrong before the usage serves
+both of 8.1's needs: the option named, and the command's form to fix it
+by. A command brnr doesn't have has no usage of its own, and all of
+`brnr --help` for a typo buries the one line that matters. An editor's
+process reads the same config as `session new`, and nothing in what an
+editor does with the code needs it to differ: the editor shows stderr
+either way (ADR 3.3), so one situation keeps one code (P5).
 
 **Considered.**
 
@@ -522,6 +656,11 @@ and 0, as a verb's `--help` has it already.
 - sysexits' 64 (`EX_USAGE`): few utilities use it, and `brnr acp` has 2.
 - Help on stderr: help asked for is the output, and `brnr --help | less`
   should work.
+- A usage error only for what the parser catches, every other check a
+  failure: `--timeout` without `--wait` would then exit 1 while
+  `--timeout soon` exits 2, two codes for one kind of mistake.
+- `brnr acp` exiting 2 for a config error, as it did: the same config
+  error would exit 2 there and 1 in `session new`.
 - Making the adapters' `--help` print a usage without starting ACP (as a
   comment on #153 asked): it would change upstream's program past what
   ADR 11.1 adds, for an interface ADR 8.4 doesn't cover.
@@ -624,13 +763,11 @@ upgrading within that major is the fix, and breaks nothing covered. There
 is one major so far, so no support period for older majors is set; it will
 be, by a record that amends this one, once a second major exists.
 
-The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
-still settles names and shapes, breaking as P9 allows. #151 (event and
-transcript record names) is decided and made (ADR 5.9, #314), and so is
-#70 (what a transcript promises, its format marked, ADR 5.10); #153 (the
-exit code of a usage error, `--help`) and #154 (flags and config keys
-spelled two ways) are decided (ADR 8.3, ADR 8.1 and 6.1), and their
-changes, breaking too, land before it (#310, #311). What they settle is
+The promise starts at 1.0.0. #150 (`--json` shapes) is decided and made
+(ADR 8.2), as are #151 (event and transcript record names: ADR 5.9, #314),
+#70 (what a transcript promises, its format marked: ADR 5.10), #153 (the
+exit code of a usage error, `--help`: ADR 8.3, #310), and #154 (flags and
+config keys spelled two ways: ADR 8.1 and 6.1, #311). What they settle is
 what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
@@ -678,8 +815,8 @@ requests, such as answering a permission, with no promise.
 
 ## 8.5 The library is private, and its facade mirrors the command line
 
-Implemented, but for the typed facade, which waits for #150: `brnr::run` is
-the library's one public item.
+Implemented, but for the typed facade (#215): `brnr::run` is the library's
+one public item.
 
 - The library is private. Its modules are `mod`, not `pub mod`, and an item
   is `pub(crate)` unless something outside reaches it (below).
@@ -702,9 +839,9 @@ the library's one public item.
   returning the data its `--json` prints, with the same names and shapes.
   An error carries the stable code the command's error has (#205) once
   those land; its message, like the command's, is not covered. It isn't
-  built yet: its return types are the `--json` shapes, which #150 makes
-  one name and one shape per concept. It follows #150, by a record of its
-  own if it departs from this shape.
+  built yet (#215): its return types are the `--json` shapes, which ADR
+  8.2 makes one name and one shape per concept (#150). A record of its own
+  says so if it departs from this shape.
 - The crate's own tests and fuzz targets reach internals through
   `brnr::internals`, a `#[doc(hidden)]` module behind the `internals` Cargo
   feature, off by default. It re-exports what they use (`frame`'s reading
@@ -925,7 +1062,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_old_socket_commands_are_unknown`,
   `adr_0008_profile_keys_and_actions_have_the_new_names`,
   `adr_0008_help_lists_the_groups_and_their_commands`,
-  `adr_0008_a_prompts_words_are_never_options`,
+  `adr_0008_prompt_send_takes_its_prompt_as_a_flag`,
   `adr_0008_a_flag_is_never_a_session_or_pid`,
   `adr_0008_a_single_dash_word_is_an_argument`,
   `adr_0008_an_unknown_option_is_said`,
@@ -937,7 +1074,9 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_response_timeout_flag_wins_over_the_profile`,
   `adr_0008_allow_and_reject_pick_by_kind`,
   `adr_0008_a_missing_or_doubled_kind_fails`,
-  `adr_0008_option_must_be_on_the_verbs_side`, `adr_0008_queue_show`,
+  `adr_0008_option_must_be_on_the_verbs_side`,
+  `adr_0008_a_permissions_option_is_option_id`,
+  `adr_0008_a_durations_name_has_no_unit`, `adr_0008_queue_show`,
   `adr_0008_queue_clear_flags`,
   `adr_0008_list_without_an_agent_is_brnrs_index`,
   `adr_0008_list_joins_the_agents_sessions_on_id`,
@@ -979,16 +1118,20 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_flags_value_is_never_a_positional`,
   `adr_0008_every_flag_is_in_its_verbs_usage`,
   `adr_0008_positionals_and_unknown_options`,
-  `adr_0008_a_prompt_starts_after_the_session`. Not covered by a Rust
-  test: the names spelled one way (`--option-id`, `--prompt`, durations
-  with no unit, #154), decided, not implemented yet; their tests come with
-  #311.
+  `adr_0008_a_prompt_is_a_flags_value`.
 - 8.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,
   `adr_0008_a_cancelled_turns_tool_calls_are_not_running`,
-  `adr_0008_a_failed_turns_tool_calls_are_not_running`;
+  `adr_0008_a_failed_turns_tool_calls_are_not_running`,
+  `adr_0008_a_list_is_an_object`,
+  `adr_0008_a_row_is_its_details_object_with_fewer_fields`,
+  `adr_0008_dropped_is_a_list_of_messages_everywhere`,
+  `adr_0008_a_count_is_named_so` (and, for `process list`'s `state` and
+  `owner`, ADR 3's `adr_0003_ps_lists_the_processes` and
+  `adr_0003_a_silent_process_keeps_its_session`);
   [tests/headless.rs](../../tests/headless.rs):
+  `adr_0008_the_agent_is_what_it_says_it_is` (#335),
   `adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running`,
   `adr_0008_a_failed_loads_history_leaves_no_tool_call_running`,
   `adr_0008_a_replays_call_with_a_finished_calls_id_is_not_running`;
@@ -1004,9 +1147,10 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_wait_returns_when_the_session_goes_idle`,
   `adr_0008_wait_on_an_idle_session_reports_the_last_turn`,
   `adr_0008_huge_timeouts_are_never`, `adr_0008_wait_for_permission`,
-  `adr_0008_wait_for_exit`. Not covered by a Rust test: usage errors and
-  help the same in every command (#153), decided, not implemented yet;
-  their tests come with #310.
+  `adr_0008_wait_for_exit`,
+  `adr_0008_event_wait_prints_one_shape_for_each_condition`,
+  `adr_0008_a_usage_error_exits_2`,
+  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`.
 - 8.4: none: it is a promise that applies from 1.0.0.
 - 8.5: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's

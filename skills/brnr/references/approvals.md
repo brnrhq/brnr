@@ -7,7 +7,9 @@ waits for `brnr permission allow` or `brnr permission reject`, or for
 `response_timeout` in the profile, which rejects it once, or cancels its
 turn. An elicitation waits the same way, and the timeout answers it `cancel`.
 `response_timeout` has no default: a worker left to run unattended needs it
-set, or its turn waits for an answer that never comes.
+set, or its turn waits for an answer that never comes. The agent can give a
+request up itself: then it is gone from the lists, its `*_resolved` event says
+`by: agent`, and an answer to it fails.
 
 ## The rule
 
@@ -38,21 +40,22 @@ brnr permission show $s p1 --json
 ```
 
 `event wait --for permission` returns when a request is waiting (at once if
-one already is), with it as JSON. `permission requests` lists every waiting
-request in the processes that answer (one that doesn't is named on stderr,
+one already is), with it as JSON, as `permission show` has it.
+`permission requests` lists every waiting request in the processes that
+answer (one that doesn't is named on stderr,
 `process <pid> is not answering; its approvals aren't listed`, and is
 `unreachable` in `brnr process list --json`), or a session's
 (`brnr permission requests <session> --json`):
 
 ```json
-[{"session": "0f6c…", "request": "p1", "owner": "headless", "kind": "edit", "title": "Edit src/lib.rs",
-  "options": [{"option": "allow", "kind": "allow_once"}, {"option": "reject", "kind": "reject_once"}]}]
+{"requests": [{"session": "0f6c…", "request": "p1", "owner": "headless", "kind": "edit", "title": "Edit src/lib.rs",
+  "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}]}
 ```
 
 `permission show` has the request in full: `title`, `kind`, `tool_call` (with
 `locations`, `rawInput`, and for an edit a `diff` content block with
 `oldText` and `newText`), the `options` (`optionId`, `name`, `kind`),
-`timeout_seconds`, and for an editor's session `answerable` and `why_not`.
+`timeout_left`, and for an editor's session `answerable` and `why_not`.
 Its text form is what to show the user:
 
 ```sh
@@ -72,7 +75,7 @@ may not be what it looks like: say so.
 ```sh
 brnr permission allow $s p1 --json
 brnr permission reject $s p1 --json
-brnr permission allow $s p1 --option <option> --json
+brnr permission allow $s p1 --option-id <option> --json
 ```
 
 `allow` answers with the request's `allow_once` option, `reject` with its
@@ -80,7 +83,7 @@ brnr permission allow $s p1 --option <option> --json
 instead, but only when the user chose it: an "always" outlives the request
 you were asked about. A request without that kind, or with two options of
 it, isn't answered: the command fails and lists the options. Then show them
-to the user, and answer with `--option <id>`, the one the user picked (it
+to the user, and answer with `--option-id <id>`, the one the user picked (it
 must be on the verb's side). The response has the `outcome` sent to the
 agent:
 

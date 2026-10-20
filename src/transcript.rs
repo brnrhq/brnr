@@ -15,10 +15,10 @@
 //! A record is a line that is a JSON object: `{"format","ts","host_id",
 //! "pid","proxy_pid","agent_pid"[,"session"],…}`, then `"event":{…}` for a
 //! host event, or `["seq",]"dir"` and `"msg"` (`"raw"` for a line that
-//! wasn't JSON) for an ACP message. It is read as the host reads ACP
-//! (ADR 2.5): a lone surrogate is U+FFFD, and there is no depth limit, so a
-//! record nested past 128 is read, and let go of, on a stack that takes it
-//! (json.rs). A line that isn't a record is passed over: cut short by a
+//! wasn't JSON) for an ACP message. It is read as brnr reads what it wrote
+//! (ADR 2.5): a lone surrogate is U+FFFD, and a record nests up to
+//! `json::OWN_DEPTH` (json.rs). A line that isn't a record, or nests deeper,
+//! is passed over: cut short by a
 //! process that died mid-write, at a file's end or before what another
 //! process wrote, or broken otherwise. A line cut short is never taken for
 //! a record: an object ends only at its last byte.
@@ -216,10 +216,9 @@ fn refused(path: &Path, last: bool, why: &str) -> io::Error {
     io::Error::new(ErrorKind::InvalidInput, why)
 }
 
-/// `line` as a record, if it is one. Run it on a stack that takes
-/// `json::depth(line)`.
+/// `line` as a record, if it is one.
 pub(crate) fn record(line: &[u8]) -> Option<Value> {
-    json::parse::<Value>(line).filter(Value::is_object)
+    json::parse::<Value>(line, json::OWN_DEPTH).filter(Value::is_object)
 }
 
 /// Whether `record` is in the format this brnr reads, [`FORMAT`] (ADR 5.10).
@@ -242,45 +241,27 @@ pub(crate) fn unread(record: &Value) -> Option<String> {
 /// brnr wrote, or one a newer brnr went on with.
 pub(crate) fn unread_in(path: &Path) -> Option<String> {
     let lines = BufReader::new(open(path).ok()?).split(b'\n').map_while(Result::ok);
-    let first = lines.filter_map(|line| any_head(&line)).next()?;
+    let first = lines.filter_map(|line| record(&line)).next()?;
     unread(&first).or_else(|| newest(path).and_then(|r| unread(&r)))
 }
 
-/// `line` as a record of this brnr's, if it is one, without its members,
-/// and its event's, that nest deeper than any stack takes: what a
-/// transcript is (its session, cwd and process, and when) comes from the
-/// rest. Read, and let go of, on a stack that takes it; none if there is no
-/// such stack to be had, or it is in a format this brnr doesn't read
-/// ([`readable`]).
+/// `line` as a record of this brnr's, if it is one: none for one in a
+/// format this brnr doesn't read ([`readable`]).
 pub(crate) fn head(line: &[u8]) -> Option<Value> {
-    any_head(line).filter(readable)
-}
-
-/// [`head`], of a record in any format.
-fn any_head(line: &[u8]) -> Option<Value> {
-    json::on_stack(json::depth(line), || {
-        let mut record = record(line)?;
-        let fits = |most: usize| move |_: &String, v: &mut Value| json::nesting([&*v]) <= most;
-        if let Some(event) = record.get_mut("event").and_then(Value::as_object_mut) {
-            event.retain(fits(json::SHALLOW - 2));
-        }
-        record.as_object_mut()?.retain(fits(json::SHALLOW - 1));
-        Some(record)
-    })?
+    record(line).filter(readable)
 }
 
 /// `record` as the event `event watch` would have shown (ADR 5.1): a host
 /// event as the host emitted it (see host/control.rs, `emit`), or an ACP
 /// message as an `acp` event, with its position where the record has one
 /// (ADR 10.2: the copy of a `session/new` in a session's raw file has none).
-/// None for a record that is neither. Run it on a stack that takes `record`.
+/// None for a record that is neither.
 pub(crate) fn event(mut record: Value) -> Option<Value> {
     if record["event"]["event"].is_string() {
         return Some(record["event"].take());
     }
     let key = if record.get("msg").is_some() { "msg" } else { "raw" };
     let msg = record.get_mut(key)?.take();
-    // Moved, not copied: a message can nest as deep as the stack it is on.
     let mut event = Map::new();
     event.insert("event".into(), "acp".into());
     event.insert("dir".into(), record["dir"].take());
@@ -343,7 +324,7 @@ pub(crate) fn last(path: &Path, wanted: impl Fn(&Value) -> bool) -> Option<Value
 /// The newest record in the file at `path`, in any format: whether it is
 /// one this brnr reads ([`readable`]) is the caller's to ask.
 pub(crate) fn newest(path: &Path) -> Option<Value> {
-    Backwards::new(path, u64::MAX)?.find_map(|(_, line)| any_head(&line))
+    Backwards::new(path, u64::MAX)?.find_map(|(_, line)| record(&line))
 }
 
 /// The lines in the last `bytes` of the file at `path`, in order, but one
@@ -445,9 +426,7 @@ impl Reader {
     /// What was written since the last read, in time order: each record as
     /// the event `event watch` would have shown ([`event`]). `all` for
     /// everything read, of a transcript that won't grow; a folder no process
-    /// writes to any more is read so anyway. Each event may nest as deep as
-    /// a record can: show and let go of it on a stack that takes it
-    /// (`json::holding`).
+    /// writes to any more is read so anyway.
     ///
     /// The folders' records are merged by `ts`, each folder's in the order
     /// it has them: one process serves the session at a time (ADR 3.9), so
@@ -456,10 +435,7 @@ impl Reader {
     pub(crate) fn read(&mut self, all: bool) -> Result<Vec<Value>, String> {
         let mut read = Vec::with_capacity(self.folders.len());
         for folder in &mut self.folders {
-            match folder.read(all || !folder.growing) {
-                Ok(one) => read.push(one),
-                Err(e) => return Err(free(read, e)),
-            }
+            read.push(folder.read(all || !folder.growing)?);
         }
         if read.len() == 1 {
             return Ok(read.remove(0).into_iter().map(|(_, event)| event).collect());
@@ -482,7 +458,7 @@ impl Reader {
 
     /// Lets go of the ACP held for the next read: it is from before.
     pub(crate) fn forget_held(&mut self) {
-        free(self.folders.iter_mut().map(|f| take(&mut f.held)).collect(), ());
+        self.folders.iter_mut().for_each(|f| f.held.clear());
     }
 
     /// Says which of its files end partway through a record: a folder's no
@@ -490,12 +466,6 @@ impl Reader {
     /// wrote to.
     pub(crate) fn cut_short(&self, gone: bool) {
         self.folders.iter().filter(|f| gone || !f.growing).for_each(Folder::cut_short);
-    }
-}
-
-impl Drop for Reader {
-    fn drop(&mut self) {
-        self.forget_held();
     }
 }
 
@@ -533,12 +503,8 @@ impl Folder {
         }
         let mut acp = take(&mut self.held);
         if let Some(tail) = &mut self.acp {
-            let read = match tail.read() {
-                Ok(read) => read,
-                Err(e) => return Err(free(vec![events, acp], e)),
-            };
             let (now, later): (Vec<_>, _) =
-                read.into_iter().partition(|(ts, _)| all || *ts <= self.last);
+                tail.read()?.into_iter().partition(|(ts, _)| all || *ts <= self.last);
             acp.extend(now);
             self.held = later;
         }
@@ -564,12 +530,6 @@ impl Folder {
             acp.cut_short();
         }
     }
-}
-
-/// Lets go of `read` on a stack that takes it (ADR 2.5): `then`.
-fn free<T>(read: Vec<Vec<(String, Value)>>, then: T) -> T {
-    json::free(Value::Array(read.into_iter().flatten().map(|(_, e)| e).collect()));
-    then
 }
 
 /// One file of a transcript, read as it grows.
@@ -607,38 +567,34 @@ impl Tail {
             let n = self.file.read_until(b'\n', &mut self.partial);
             let n = match n {
                 Ok(n) => n,
-                Err(e) => return Err(free(vec![read], e.to_string())),
+                Err(e) => return Err(e.to_string()),
             };
             if n == 0 || !self.partial.ends_with(b"\n") {
                 return Ok(read);
             }
             self.lines += 1;
             let line = take(&mut self.partial);
-            let depth = json::depth(&line);
-            let one = json::on_stack(depth, || {
-                let record = record(&line)?;
+            let one = record(&line).and_then(|record| {
                 if let Some(why) = unread(&record) {
                     return Some(Err(why));
                 }
                 let ts = record["ts"].as_str().unwrap_or_default().to_owned();
                 Some(Ok((ts, event(record)?)))
             });
+            let at = || format!("{}:{}", self.path.display(), self.lines);
             match one {
-                Some(Some(Ok(one))) => read.push(one),
-                Some(Some(Err(why))) if !self.unread => {
+                Some(Ok(one)) => read.push(one),
+                Some(Err(why)) if !self.unread => {
                     self.unread = true;
                     say(&format!("brnr: {}: {why}, not shown (ADR 5.10)", self.path.display()));
                 }
-                Some(Some(Err(_))) => {}
-                Some(None) => say(&format!(
-                    "brnr: {}:{} isn't a record brnr can read, not shown",
-                    self.path.display(),
-                    self.lines
-                )),
-                None => {
-                    let e = format!("no stack to be had for a record {depth} deep");
-                    return Err(free(vec![read], e));
-                }
+                Some(Err(_)) => {}
+                None => match json::within(&line, json::OWN_DEPTH, "it") {
+                    Err(why) => say(&format!("brnr: {}: {why}, not shown", at())),
+                    Ok(()) => {
+                        say(&format!("brnr: {} isn't a record brnr can read, not shown", at()))
+                    }
+                },
             }
         }
     }
@@ -793,31 +749,35 @@ mod tests {
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// A record nested past 128 is one brnr can read (ADR 2.5): first, last,
-    /// or beyond the openings. It is read for what a transcript is without
-    /// what nests that deep, so that any stack holds what is kept.
+    /// A record nested past serde_json's 128 is one brnr can read, up to
+    /// `json::OWN_DEPTH` (ADR 2.5): first, last, or beyond the openings. One
+    /// level deeper is none brnr wrote, and is passed over.
     #[test]
-    fn adr_0002_a_deep_record_is_read() {
+    fn adr_0002_a_record_is_read_to_the_limit_and_no_deeper() {
         let path = scratch("deep").join("s.jsonl");
         let opened =
             r#"{"format":1,"ts":"1","session":"s","event":{"event":"session_opened","cwd":"/w"}}"#;
-        for depth in [200, 10_000] {
-            let request = format!(
-                r#"{{"format":1,"ts":"2","host_id":"h","session":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
-                deep(depth)
-            );
-            fs::write(&path, format!("{opened}\n{request}\n")).unwrap();
-            let read = last(&path, |_| true).unwrap();
-            let want = json!({ "format": 1, "ts": "2", "host_id": "h", "session": "s",
-                "event": { "event": "permission_request", "request": "p1" } });
-            assert_eq!(read, want, "{depth}");
-            assert!(has_records(&path), "{depth}");
-            fs::write(&path, format!("{request}\n{opened}\n")).unwrap();
-            assert_eq!(first(&path).unwrap()["event"]["request"], "p1", "{depth}");
-            let line = request.as_bytes();
-            let whole = json::on_stack(depth, || record(line).map(|r| json::nesting([&r])));
-            assert_eq!(whole, Some(Some(depth + 2)), "{depth}");
-        }
+        let request = |depth: usize| {
+            format!(
+                r#"{{"format":1,"ts":"2","host_id":"h","session":"s","event":{{"event":"permission_request","request":"p1","tool_call":{}}}}}"#,
+                deep(depth - 2)
+            )
+        };
+        let at = request(json::OWN_DEPTH);
+        assert_eq!(json::depth(at.as_bytes()), json::OWN_DEPTH);
+        fs::write(&path, format!("{opened}\n{at}\n")).unwrap();
+        let read = last(&path, |_| true).unwrap();
+        assert_eq!(read["event"]["tool_call"].to_string(), deep(json::OWN_DEPTH - 2));
+        assert!(has_records(&path));
+        fs::write(&path, format!("{at}\n{opened}\n")).unwrap();
+        assert_eq!(first(&path).unwrap()["event"]["request"], "p1");
+        let past = request(json::OWN_DEPTH + 1);
+        assert_eq!(record(past.as_bytes()), None);
+        fs::write(&path, format!("{opened}\n{past}\n")).unwrap();
+        assert_eq!(last(&path, |_| true).unwrap()["event"]["event"], "session_opened");
+        assert!(!has_records(&path));
+        fs::write(&path, format!("{past}\n{opened}\n")).unwrap();
+        assert_eq!(first(&path).unwrap()["event"]["event"], "session_opened");
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

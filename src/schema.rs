@@ -52,7 +52,7 @@ pub(crate) use agent_client_protocol_schema::v1::{
     SessionConfigOptionValue, SessionInfo, SetSessionConfigOptionRequest, ToolCallStatus, ToolKind,
 };
 /// `value`, a part of a message as json.rs read it, as the schema's `T`, if
-/// it is one. Run it on a stack that takes `value` (see json.rs).
+/// it is one.
 pub fn read<T: DeserializeOwned>(value: &Value) -> Option<T> {
     T::deserialize(value).ok()
 }
@@ -205,19 +205,21 @@ mod tests {
         assert_eq!(error_message(&json!("boom")), r#""boom""#);
     }
 
+    /// A part of a line at the depth limit (ADR 2.5) reads as its type on
+    /// a spawned thread's stack, of its default size.
     #[test]
-    fn adr_0002_a_deep_part_reads_on_the_stack_json_rs_gives_it() {
-        let n = 20_000;
+    fn adr_0002_a_part_of_a_line_at_the_limit_reads_as_its_type() {
+        let n = json::DEPTH - 1;
         let input = format!("{}1{}", r#"{"a":"#.repeat(n), "}".repeat(n));
         let line = format!(
             r#"{{"sessionUpdate":"tool_call","toolCallId":"t","title":"deep","rawInput":{input}}}"#
         );
-        let line = line.as_bytes();
-        let read = json::on_stack(json::depth(line), || {
-            let value: Value = json::parse(line).unwrap();
+        assert_eq!(json::depth(line.as_bytes()), json::DEPTH);
+        let read = std::thread::Builder::new().stack_size(2 << 20).spawn(move || {
+            let value: Value = json::parse(line.as_bytes(), json::DEPTH).unwrap();
             matches!(read::<SessionUpdate>(&value), Some(SessionUpdate::ToolCall(c)) if c.title == "deep")
         });
-        assert_eq!(read, Some(true));
+        assert!(read.unwrap().join().unwrap());
     }
 
     #[test]
