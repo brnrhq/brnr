@@ -4333,6 +4333,65 @@ fn adr_0002_a_deep_request_is_listed() {
     }
 }
 
+/// With no session, `permission requests` and `elicitation requests` ask
+/// every process: a request a million deep (its title, or its message),
+/// read from one, is let go of on a stack that takes it when a process asked
+/// after it fails, which is said, not a stack overflow (#301).
+#[test]
+fn adr_0002_a_deep_request_is_let_go_of_when_another_process_fails() {
+    let env = Env::new("deep-fail");
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["prompt", "send", "sess-1", "odd title 1000000"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
+    env.ok(&["prompt", "send", "sess-2", "elicit deep 1000000"]);
+    env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "60"]);
+    for what in ["permission", "elicitation"] {
+        let mut gone = gone_after_status(&env);
+        let out = env.run(&[what, "requests"]);
+        let err = stderr(&out);
+        assert_eq!((out.status.code(), out.status.signal()), (Some(1), None), "{what}: {err}");
+        assert!(err.contains(&format!("brnr: process {}: ", gone.id())), "{what}: {err}");
+        assert!(gone.wait().unwrap().success(), "{what}");
+        for ext in ["json", "sock"] {
+            fs::remove_file(env.dir.join(format!("run/{}.{ext}", gone.id()))).unwrap();
+        }
+    }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.stop();
+}
+
+/// A process, as far as `discover` can tell, started after any other, so
+/// asked last: it answers its status, then exits, and what else it is asked
+/// fails. Its metadata and socket are the caller's to remove.
+fn gone_after_status(env: &Env) -> Child {
+    let script = r#"
+import json, os, socket, sys
+run, pid = sys.argv[1], os.getpid()
+path = f"{run}/{pid}.sock"
+listener = socket.socket(socket.AF_UNIX)
+listener.bind(path)
+listener.listen()
+meta = {"id": str(pid), "host_pid": pid, "socket": path, "started": "2999-01-01T00:00:00Z"}
+with open(f"{run}/{pid}.json", "w") as f:
+    json.dump(meta, f)
+print("ready", flush=True)
+conn, _ = listener.accept()
+conn.makefile().readline()
+conn.sendall(b'{"ok":true,"sessions":[]}\n')
+"#;
+    let mut child = Command::new("python3")
+        .args(["-c", script])
+        .arg(env.dir.join("run"))
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    BufReader::new(child.stdout.as_mut().unwrap()).read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    child
+}
+
 /// So do `permission show`, and `elicitation requests` and `show`, whose
 /// answer has every request waiting in the process: a request nested past
 /// 128 is shown, in text and `--json`, and an elicitation beside one, or

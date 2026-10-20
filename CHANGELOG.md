@@ -134,6 +134,10 @@ brnr's own conventions:
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
+- `brnr permission requests` and `elicitation requests`, with no session,
+  say a process failed when one does after another held a request nested
+  about a million deep, where they overflowed their stack and aborted: what
+  was read already is let go of on a stack that takes it (ADR 2.5, #301).
 - `brnr event log` shows a record nested deeper than 128, such as a deep
   `permission_request`, as `event watch` showed it live, where it said the
   line `isn't a record brnr can read, not shown`. `session list`, `session
