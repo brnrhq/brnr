@@ -1352,8 +1352,7 @@ impl Host {
     /// an events file holding only openings, which a load that failed
     /// leaves, is none (ADR 5.6).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
-        self.sink.recorded(session)
-            || transcript::of_session(session).iter().any(|p| transcript::has_records(p))
+        self.sink.recorded(session) || transcript::kept(session)
     }
 }
 

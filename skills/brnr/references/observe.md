@@ -23,8 +23,10 @@ from, or null), `pid`, `stop_when_idle`. Use it to answer "what is it doing?", n
 `event wait` for that).
 
 `event log` prints the session's events, one JSON object per line, and works on a
-session that has ended too. `--last <n>` starts at the n-th last message sent
-to the agent; `--follow` keeps printing until the session closes.
+session that has ended too. A session resumed in another cwd has files in
+each folder, and `event log` reads them all, in time order. `--last <n>`
+starts at the n-th last message sent to the agent; `--follow` keeps printing
+until the session closes.
 
 ## Live
 

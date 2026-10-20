@@ -412,11 +412,12 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
                 transcript = true;
                 Some(running)
             }
-            // One holding only openings, which a load that failed leaves,
-            // isn't a transcript of it (ADR 5.6).
+            // In any folder, whatever the cwd it is resumed in; one holding
+            // only openings, which a load that failed leaves, isn't a
+            // transcript of it (ADR 5.6). Its cwd, agent and profile are
+            // the newest record's, of all its files (ADR 3.11).
             Resume::Inactive(past) => {
-                let file = past["events_log"].as_str().map(Path::new);
-                transcript = file.is_some_and(transcript::has_records);
+                transcript = transcript::kept(&wanted);
                 Some(past)
             }
             Resume::Unknown => None,

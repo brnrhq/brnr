@@ -69,6 +69,32 @@ fn of_session_in(root: &Path, session: &str) -> Vec<PathBuf> {
     files.filter(|path| fs::symlink_metadata(path).is_ok_and(|m| m.is_file())).collect()
 }
 
+/// `session`'s transcript: of its events files in every project folder
+/// ([`of_session`]), those whose records name it, as brnr finds a
+/// transcript by the id its records carry (ADR 9.2), oldest first, by when
+/// each one's first record was recorded. Not one an older brnr wrote
+/// ([`head`]). An id is one session, whatever folders its files are in
+/// (ADR 5.1).
+pub(crate) fn files_of(session: &str) -> Vec<PathBuf> {
+    files_of_in(&paths::state_dir(), session)
+}
+
+fn files_of_in(root: &Path, session: &str) -> Vec<PathBuf> {
+    let firsts =
+        of_session_in(root, session).into_iter().filter_map(|path| Some((first(&path)?, path)));
+    let mut found: Vec<(Value, PathBuf)> =
+        firsts.filter(|(r, _)| r["session"] == session).collect();
+    found.sort_by(|(a, _), (b, _)| a["ts"].as_str().cmp(&b["ts"].as_str()));
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Whether brnr has a transcript of `session`, in any project folder: an
+/// events file of it holding a record beyond its openings
+/// ([`has_records`], ADR 5.6).
+pub(crate) fn kept(session: &str) -> bool {
+    of_session(session).iter().any(|path| has_records(path))
+}
+
 /// The host logs under the state directory (`hosts/<run id>.jsonl`), in
 /// order.
 pub(crate) fn host_logs() -> Vec<PathBuf> {
@@ -370,36 +396,114 @@ impl Iterator for Backwards {
     }
 }
 
-/// A session's two files, read as they grow, as `event log` shows them: its
-/// events, and its raw ACP when `acp` events are chosen, merged in time
-/// order (ADR 5.1).
+/// One project folder's files of a session's transcript, to read (ADR 5.1):
+/// its events file, its raw ACP if that is to be read too, and whether its
+/// process may still write to them.
+pub(crate) struct Files {
+    pub(crate) events: PathBuf,
+    pub(crate) acp: Option<PathBuf>,
+    pub(crate) growing: bool,
+}
+
+/// A session's transcript, read as it grows, as `event log` shows it: the
+/// files of each project folder it has files in, merged by their records'
+/// `ts` (ADR 5.1).
 pub(crate) struct Reader {
+    folders: Vec<Folder>,
+}
+
+impl Reader {
+    /// The files of each folder, oldest first.
+    pub(crate) fn open(files: &[Files]) -> Result<Reader, String> {
+        let folders = files.iter().map(Folder::open).collect::<Result<_, _>>()?;
+        Ok(Reader { folders })
+    }
+
+    /// What was written since the last read, in time order: each record as
+    /// the event `event watch` would have shown ([`event`]). `all` for
+    /// everything read, of a transcript that won't grow; a folder no process
+    /// writes to any more is read so anyway. Each event may nest as deep as
+    /// a record can: show and let go of it on a stack that takes it
+    /// (`json::holding`).
+    ///
+    /// The folders' records are merged by `ts`, each folder's in the order
+    /// it has them: one process serves the session at a time (ADR 3.9), so
+    /// they don't overlap in time, and the records a closing process wrote
+    /// after the next one's still come before them.
+    pub(crate) fn read(&mut self, all: bool) -> Result<Vec<Value>, String> {
+        let mut read = Vec::with_capacity(self.folders.len());
+        for folder in &mut self.folders {
+            match folder.read(all || !folder.growing) {
+                Ok(one) => read.push(one),
+                Err(e) => return Err(free(read, e)),
+            }
+        }
+        if read.len() == 1 {
+            return Ok(read.remove(0).into_iter().map(|(_, event)| event).collect());
+        }
+        let mut merged = Vec::with_capacity(read.iter().map(Vec::len).sum());
+        let mut read: Vec<_> = read.into_iter().map(|one| one.into_iter().peekable()).collect();
+        loop {
+            // The earliest next record, the oldest folder's at the same time.
+            let mut next: Option<(usize, &str)> = None;
+            for (i, one) in read.iter_mut().enumerate() {
+                let Some((ts, _)) = one.peek() else { continue };
+                if next.is_none_or(|(_, at)| ts.as_str() < at) {
+                    next = Some((i, ts));
+                }
+            }
+            let Some((i, _)) = next else { return Ok(merged) };
+            merged.extend(read[i].next().map(|(_, event)| event));
+        }
+    }
+
+    /// Lets go of the ACP held for the next read: it is from before.
+    pub(crate) fn forget_held(&mut self) {
+        free(self.folders.iter_mut().map(|f| take(&mut f.held)).collect(), ());
+    }
+
+    /// Says which of its files end partway through a record: a folder's no
+    /// process writes to, and, once its process has `gone`, the one it
+    /// wrote to.
+    pub(crate) fn cut_short(&self, gone: bool) {
+        self.folders.iter().filter(|f| gone || !f.growing).for_each(Folder::cut_short);
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.forget_held();
+    }
+}
+
+/// One folder's two files of a session, read as they grow: its events, and
+/// its raw ACP when `acp` events are chosen, merged in time order (ADR 5.1).
+struct Folder {
     events: Tail,
     acp: Option<Tail>,
     /// When the last record read from the events file was written.
     last: String,
     /// ACP written after it, held for one read (see `read`).
     held: Vec<(String, Value)>,
+    /// Its process may still write to it.
+    growing: bool,
 }
 
-impl Reader {
-    /// The events file at `events`, and the raw ACP at `acp`.
-    pub(crate) fn open(events: &Path, acp: Option<&Path>) -> Result<Reader, String> {
-        let acp = acp.map(Tail::open).transpose()?;
-        Ok(Reader { events: Tail::open(events)?, acp, last: String::new(), held: Vec::new() })
+impl Folder {
+    fn open(files: &Files) -> Result<Folder, String> {
+        let acp = files.acp.as_deref().map(Tail::open).transpose()?;
+        let (events, growing) = (Tail::open(&files.events)?, files.growing);
+        Ok(Folder { events, acp, last: String::new(), held: Vec::new(), growing })
     }
 
-    /// What was written since the last read, in time order: each record as
-    /// the event `event watch` would have shown ([`event`]). `all` for
-    /// everything read, of a transcript that won't grow. Each event may nest
-    /// as deep as a record can: show and let go of it on a stack that takes
-    /// it (`json::holding`).
+    /// What was written since the last read, in time order, with when each
+    /// was written, as [`Reader::read`] has it.
     ///
     /// One writer writes both files, each in time order, and the events file
     /// is read first: ACP up to the last event read is all there, but ACP
     /// past it may follow an event written since. That ACP is held, and goes
     /// with the next read, once the events file has been read again.
-    pub(crate) fn read(&mut self, all: bool) -> Result<Vec<Value>, String> {
+    fn read(&mut self, all: bool) -> Result<Vec<(String, Value)>, String> {
         let events = self.events.read()?;
         if let Some((ts, _)) = events.last() {
             self.last.clone_from(ts);
@@ -408,7 +512,7 @@ impl Reader {
         if let Some(tail) = &mut self.acp {
             let read = match tail.read() {
                 Ok(read) => read,
-                Err(e) => return Err(free([events, acp], e)),
+                Err(e) => return Err(free(vec![events, acp], e)),
             };
             let (now, later): (Vec<_>, _) =
                 read.into_iter().partition(|(ts, _)| all || *ts <= self.last);
@@ -424,19 +528,14 @@ impl Reader {
                 (Some(_), _) => events.next(),
                 (None, _) => acp.next(),
             };
-            let Some((_, event)) = next else { return Ok(merged) };
-            merged.push(event);
+            let Some(one) = next else { return Ok(merged) };
+            merged.push(one);
         }
     }
 
-    /// Lets go of the ACP held for the next read: it is from before.
-    pub(crate) fn forget_held(&mut self) {
-        free([take(&mut self.held)], ());
-    }
-
-    /// Says which of its files end partway through a record, for a
-    /// transcript that won't grow.
-    pub(crate) fn cut_short(&self) {
+    /// Says which of its files end partway through a record, for files that
+    /// won't grow.
+    fn cut_short(&self) {
         self.events.cut_short();
         if let Some(acp) = &self.acp {
             acp.cut_short();
@@ -444,14 +543,8 @@ impl Reader {
     }
 }
 
-impl Drop for Reader {
-    fn drop(&mut self) {
-        self.forget_held();
-    }
-}
-
 /// Lets go of `read` on a stack that takes it (ADR 2.5): `then`.
-fn free<T, const N: usize>(read: [Vec<(String, Value)>; N], then: T) -> T {
+fn free<T>(read: Vec<Vec<(String, Value)>>, then: T) -> T {
     json::free(Value::Array(read.into_iter().flatten().map(|(_, e)| e).collect()));
     then
 }
@@ -489,7 +582,7 @@ impl Tail {
             let n = self.file.read_until(b'\n', &mut self.partial);
             let n = match n {
                 Ok(n) => n,
-                Err(e) => return Err(free([read], e.to_string())),
+                Err(e) => return Err(free(vec![read], e.to_string())),
             };
             if n == 0 || !self.partial.ends_with(b"\n") {
                 return Ok(read);
@@ -523,7 +616,7 @@ impl Tail {
                 )),
                 None => {
                     let e = format!("no stack to be had for a record {depth} deep");
-                    return Err(free([read], e));
+                    return Err(free(vec![read], e));
                 }
             }
         }
@@ -770,7 +863,8 @@ mod tests {
         )
         .unwrap();
         fs::write(&acp, format!("{}\n{}\n", msg("2"), msg("4"))).unwrap();
-        let mut reader = Reader::open(&events, Some(&acp)).unwrap();
+        let files = Files { events: events.clone(), acp: Some(acp.clone()), growing: true };
+        let mut reader = Reader::open(&[files]).unwrap();
         assert_eq!(names(reader.read(false).unwrap()), ["a", "2", "b"]);
         append(&events, &host("5", "c", ""));
         assert_eq!(names(reader.read(false).unwrap()), ["4"]);
@@ -780,12 +874,66 @@ mod tests {
         let read = reader.read(true).unwrap();
         assert_eq!(read[1]["tool_call"].to_string(), deep(200));
         assert_eq!(names(read), ["c", "permission_request", "7"]);
-        let missing = Reader::open(&dir.join("none.jsonl"), None).err().unwrap();
+        let none = Files { events: dir.join("none.jsonl"), acp: None, growing: true };
+        let missing = Reader::open(&[none]).err().unwrap();
         assert!(
             missing.starts_with(&format!("{}: ", dir.join("none.jsonl").display())),
             "{missing}"
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// One session's files in two project folders are one transcript (ADR
+    /// 5.1, #121): found by the id their records carry, oldest first, and
+    /// read merged by `ts`, each folder's in the order it has them. A folder
+    /// no process writes to any more is read whole, its raw ACP too; the one
+    /// still written to, where the newest records are, holds the ACP past
+    /// its last event, as one folder's read does.
+    #[test]
+    fn adr_0005_a_sessions_files_in_every_folder_are_read_as_one() {
+        let root = scratch("folders");
+        let record = |ts: &str, session: &str, name: &str| {
+            format!(
+                r#"{{"ts":"{ts}","host_id":"h","pid":1,"session":"{session}","event":{{"event":"{name}"}}}}"#
+            )
+        };
+        let msg = |ts: &str| {
+            format!(
+                r#"{{"ts":"{ts}","host_id":"h","pid":1,"session":"s","seq":1,"dir":"agent->editor","msg":"{ts}"}}"#
+            )
+        };
+        let folder = |name: &str, lines: &[String]| {
+            let dir = root.join("projects").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("s.jsonl"), lines.join("\n") + "\n").unwrap();
+            dir.join("s.jsonl")
+        };
+        // The newer folder sorts first; the files are taken oldest first.
+        let a = folder("b-first", &[record("1", "s", "session_opened"), record("5", "s", "x5")]);
+        let b = folder("a-then", &[record("3", "s", "session_opened"), record("4", "s", "x4")]);
+        // A file of the name whose records are another session's isn't its.
+        folder("c-other", &[record("2", "t", "session_opened")]);
+        assert_eq!(files_of_in(&root, "s"), [a.clone(), b.clone()]);
+        let acp = paths::acp_log(&a);
+        fs::write(&acp, format!("{}\n{}\n", msg("1.5"), msg("5.5"))).unwrap();
+        let names = |read: Vec<Value>| -> Vec<String> {
+            let name = |e: &Value| e["msg"].as_str().or(e["event"].as_str()).unwrap().to_owned();
+            read.iter().map(name).collect()
+        };
+        let files = |growing: bool| {
+            [
+                Files { events: a.clone(), acp: Some(acp.clone()), growing },
+                Files { events: b.clone(), acp: None, growing: false },
+            ]
+        };
+        let all = ["session_opened", "1.5", "session_opened", "x4", "x5", "5.5"];
+        let mut reader = Reader::open(&files(false)).unwrap();
+        assert_eq!(names(reader.read(false).unwrap()), all);
+        // Written to still, the folder holds what follows its last event.
+        let mut reader = Reader::open(&files(true)).unwrap();
+        assert_eq!(names(reader.read(false).unwrap()), all[..5]);
+        assert_eq!(names(reader.read(true).unwrap()), ["5.5"]);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1,9 +1,6 @@
 # 5. Events, transcripts and observers
 
-Draft 2026-10-20. Implemented, but this is decided, not implemented yet:
-5.1's reading of one session's files in more than one folder as one
-transcript (#121, #309). Factor: F3, F5
-(ADR 1). Brings together former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36
+Draft 2026-10-20. Implemented. Factor: F3, F5 (ADR 1). Brings together former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36
 (docs/adr/README.md maps them).
 
 What a brnr process says about its sessions, and what it keeps: the events
@@ -60,7 +57,7 @@ Files:
   folder of its own. The session id in the names is escaped, one name per
   id, so distinct sessions never share a transcript (ADR 9.2).
 - One session id is one session, whatever folders its files are in
-  (#121), decided, not implemented yet (#309). A session resumed in
+  (#121). A session resumed in
   another cwd (`session resume --cwd`) has files in each folder, and its
   transcript is all of them: brnr reads them as one (below), and a load
   finds it in any folder (ADR 5.6).
@@ -104,13 +101,19 @@ Reading:
 - `event log` of a running session first waits for what its process has
   recorded (ADR 5.5).
 - `event log` reads every file of the session, in every project folder,
-  merged by their records' `ts` (#121), decided, not implemented yet
-  (#309). One process owns a session at a time (ADR 3.9), and a record's
+  merged by their records' `ts` (#121), each file's records in the order
+  it has them. One process owns a session at a time (ADR 3.9), and a record's
   `ts` is when its process recorded it, not when it was written, so the
   records of two files don't overlap in time. A closing process's last
   records can be written after the next process's, past ADR 5.5's 2 s;
   merged by `ts`, they still come before them. `--last` counts in what is
-  merged; `--follow` follows the files the serving process writes.
+  merged; `--follow` follows the files the serving process writes. With
+  `acp` chosen, each folder's raw file is merged with its events file,
+  and a folder without one is said (`no raw ACP for <session> beside
+  <file>`). A file of the session an older brnr wrote, in any folder, is
+  said and not read (above). Of a session open in a process that logs
+  nothing (`log = false`), what the other folders hold is shown, and
+  `event log` says the process keeps no transcript of it.
 - What a transcript is for `session list`, `session resume` and `doctor`
   comes from the first and last records brnr can read in it. A line that
   isn't a JSON object, cut short or not, is passed over. The last record
@@ -118,9 +121,11 @@ Reading:
   records. Of a session with files in more than one folder, the first
   record is the oldest file's and the last is the newest record of them
   all: `session resume` takes its cwd, agent and profile from that newest
-  record (ADR 3.11), and `session list` its row (#121), decided, not
-  implemented yet (#309). A line cut short is never taken for a
-  record: a JSON object ends only at its last byte. So, for a transcript:
+  record (ADR 3.11), and `session list` its row, one per id (#121). That
+  record is the newest a process recorded (a deletion's, ADR 8.1, is no
+  process's), and its cwd is the one its file's first record names. A
+  line cut short is never taken for a record: a JSON object ends only at
+  its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;
   - ending partway through a line: its last whole record;
   - with a whole line that isn't a record, last or anywhere: the line is
@@ -538,8 +543,8 @@ says it is missing (P3, #60).
 - A session resumed in another cwd (`session resume --cwd`) starts a file
   in that folder, and its load records nothing of the replay there: the
   history is in the file in the first folder. `event log` reads both
-  (ADR 5.1), so it shows the history; until that is implemented
-  (#309), it reads the newest file only, and shows none of it.
+  (ADR 5.1), so it shows the history, and the `history` event says the
+  replay wasn't recorded.
 - Deleting a session's transcript makes its next load record the history
   again, except in a process that served the session before the delete:
   that process remembers what it recorded of the session until it exits.
@@ -1060,10 +1065,14 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
   `adr_0005_a_record_is_the_event_watch_showed`,
-  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`. Not covered by
-  a Rust test: one session's files in more than one folder read as one
-  transcript (#121), decided, not implemented yet; its tests come with
-  #309.
+  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`,
+  `adr_0005_a_sessions_files_in_every_folder_are_read_as_one`; one
+  session's files in two folders read as one transcript (#121):
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one` (text,
+  `--json`, `--events acp`, `--last`, and one `session list` row), and,
+  for its `session resume`, ADR 3.11's
+  `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile`.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
   `adr_0005_editor_close_is_an_event`,
@@ -1113,6 +1122,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_load_without_the_transcript_records_the_history`,
   `adr_0005_a_load_of_an_empty_history_says_so`,
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`,
+  `adr_0005_a_load_in_another_cwd_leaves_the_history_in_the_log` (#121's
+  trace: `session resume --cwd` records none of the replay, and `event
+  log` shows the history from the first folder),
   `adr_0005_a_load_after_a_failed_load_records_the_history`,
   `adr_0005_a_bridges_load_after_a_failed_load_records_the_history`;
   [tests/headless.rs](../../tests/headless.rs):

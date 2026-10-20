@@ -76,11 +76,10 @@ pub(super) enum Resume<'a> {
     Unknown,
 }
 
-/// A session's transcript, to read: its events file, its raw ACP (none if
-/// its process records none), and the process writing it, if one is.
+/// A session's transcript, to read: the files of each folder it has files
+/// in, oldest first, and the process writing to one, if one is.
 struct Files<'a> {
-    events: PathBuf,
-    acp: Option<PathBuf>,
+    files: Vec<transcript::Files>,
     host: Option<&'a Host>,
 }
 
@@ -226,26 +225,51 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// Its transcript's files, for `event log`: a running session's as its
-    /// process says, with the process to ask `logged` first.
+    /// Its transcript's files, for `event log`: every folder's (ADR 5.1),
+    /// with a running session's as its process says, and the process to ask
+    /// `logged` first.
     fn files(self) -> Result<Files<'a>, String> {
         let said = self.said();
+        let id = &self.id;
+        let beside = |events: PathBuf| transcript::Files {
+            acp: Some(paths::acp_log(&events)),
+            events,
+            growing: false,
+        };
+        let mut files: Vec<transcript::Files> =
+            transcript::files_of(id).into_iter().map(beside).collect();
         match self.place {
             Place::Open(host) | Place::Shared(host) => {
-                let s = host.session(&self.id);
-                let events = s
-                    .and_then(|s| s["events_log"].as_str())
-                    .ok_or("this process keeps no transcript (log = false)")?;
+                let s = host.session(id);
+                let Some(events) = s.and_then(|s| s["events_log"].as_str()).map(PathBuf::from)
+                else {
+                    if files.is_empty() {
+                        return Err("this process keeps no transcript (log = false)".into());
+                    }
+                    errln!(
+                        "brnr: process {} keeps no transcript of {id} (log = false): what it does \
+                         is not shown",
+                        host.id()
+                    );
+                    return Ok(Files { files, host: Some(host) });
+                };
                 let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
-                Ok(Files { events: PathBuf::from(events), acp, host: Some(host) })
+                let serving = transcript::Files { events, acp, growing: true };
+                match files.iter_mut().find(|f| same_file(&f.events, &serving.events)) {
+                    Some(found) => *found = serving,
+                    None => files.push(serving),
+                }
+                Ok(Files { files, host: Some(host) })
             }
             Place::Inactive(past) => {
-                let events = PathBuf::from(past["events_log"].as_str().unwrap_or_default());
-                Ok(Files { acp: Some(paths::acp_log(&events)), events, host: None })
+                if files.is_empty() {
+                    files.extend(past["events_log"].as_str().map(PathBuf::from).map(beside));
+                }
+                Ok(Files { files, host: None })
             }
             // Passed over as no transcript, and said to be an older brnr's
             // (ADR 5.9, P3).
-            Place::Unknown => match older_transcript(&self.id) {
+            Place::Unknown => match older_transcripts(id).first() {
                 Some(path) => Err(format!(
                     "{}: an older brnr wrote it, in names this one doesn't read (ADR 5.9)",
                     path.display()
@@ -257,9 +281,21 @@ impl<'a> Session<'a> {
     }
 }
 
-/// A transcript of session `id` that an older brnr wrote, if there is one.
-fn older_transcript(id: &str) -> Option<PathBuf> {
-    transcript::of_session(id).into_iter().find(|path| transcript::by_an_older_brnr(path))
+/// Whether `a` and `b` are the same file, however each is spelled.
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => a == b,
+    }
+}
+
+/// The transcripts of session `id` that an older brnr wrote.
+fn older_transcripts(id: &str) -> Vec<PathBuf> {
+    transcript::of_session(id)
+        .into_iter()
+        .filter(|path| transcript::by_an_older_brnr(path))
+        .collect()
 }
 
 /// The running session `id` names: its process, and its id.
@@ -279,14 +315,16 @@ pub(super) fn taken(id: &str, pid: u32) -> String {
     }
 }
 
-/// The files of session `id`'s transcript, its events and its raw ACP (none
-/// if its process records none), and the pid of the process serving it, if
-/// one is. A running session's process is asked to have written what it
+/// The files of session `id`'s transcript, in every folder it has files in
+/// (ADR 5.1), oldest first: each one's events and raw ACP (none if its
+/// process records none); and the pid of the process serving it, if one
+/// is. The files of it an older brnr wrote are said, and not read (ADR
+/// 5.9). A running session's process is asked to have written what it
 /// recorded until now first: a thread of its own writes it, and what was
 /// just seen happen (a turn `session new --wait` reported) may not be there
 /// yet. One closing in its process is read once that process has written its
 /// records, `session_closed` last, and let go of it (ADR 5.5).
-pub(super) fn transcript(id: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i64>), String> {
+pub(super) fn transcript(id: &str) -> Result<(Vec<transcript::Files>, Option<i64>), String> {
     let hosts = discover()?;
     // Answered once what it recorded before is written: the close's records,
     // and the lock gone with them.
@@ -302,7 +340,14 @@ pub(super) fn transcript(id: &str) -> Result<(PathBuf, Option<PathBuf>, Option<i
     if let Some(host) = files.host {
         written(host);
     }
-    Ok((files.events, files.acp, files.host.and_then(|h| h.meta["host_pid"].as_i64())))
+    for path in older_transcripts(id) {
+        errln!(
+            "brnr: {}: an older brnr wrote it, in names this one doesn't read (ADR 5.9); its \
+             records are not shown",
+            path.display()
+        );
+    }
+    Ok((files.files, files.host.and_then(|h| h.meta["host_pid"].as_i64())))
 }
 
 /// Asks `host` to have written what it recorded until now (`logged`), and
@@ -452,9 +497,13 @@ mod tests {
                 resumed(at().resume(None, true)),
                 resumed(at().resume(Some(&other), false)),
                 at().delete().map(|p| if p.is_some() { "inactive" } else { "unknown" }.to_owned()),
-                at().files().map(|f| match f.host {
-                    Some(h) => format!("{} from {}", f.events.display(), h.id()),
-                    None => f.events.display().to_string(),
+                at().files().map(|f| {
+                    let events = f.files.iter().map(|f| f.events.display().to_string());
+                    let events = events.collect::<Vec<_>>().join(", ");
+                    match f.host {
+                        Some(h) => format!("{events} from {}", h.id()),
+                        None => events,
+                    }
                 }),
             ];
             let want = said(name).map(|r| r.map(str::to_owned));
@@ -519,6 +568,6 @@ mod tests {
         );
         let (s, _) = find(&[], None, ended());
         let files = s.files().expect("files");
-        assert_eq!(files.acp, Some(PathBuf::from("/l/s.acp.jsonl")));
+        assert_eq!(files.files[0].acp, Some(PathBuf::from("/l/s.acp.jsonl")));
     }
 }

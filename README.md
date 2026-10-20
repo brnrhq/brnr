@@ -663,8 +663,9 @@ events, saying how many (`… 120 events not shown`); stdout closing
 (`| head -1`) ends the display, not the session.
 
 `session resume` uses the agent's `session/resume` (or `session/load`), in the
-session's cwd, with the agent and profile it last had, and appends to the
-same transcript. A load replays the session's history: brnr records it, as
+session's cwd, with the agent and profile it last had (where it was last
+served, the newest record of all its files), and appends to the same
+transcript. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, whose transcript is gone, or whose loads all failed,
 leaving only their openings), so repeated loads don't record it twice. A
@@ -859,7 +860,10 @@ a folder each. A claude-agent-acp session's events file has the same name as
 Claude Code's own transcript, in a folder whose name starts with Claude
 Code's. A transcript an earlier brnr wrote in a folder without the hash stays
 there, and isn't read (below); a session resumed goes on in its cwd's folder
-(ADR 9.2). In
+(ADR 9.2). One resumed in another cwd (`--cwd`) so has a file in each
+folder, and they are one transcript: `event log` reads them all, merged by
+time, `session list` has one row of it, and `session resume` takes the cwd,
+agent and profile of the newest record of them all (ADR 5.1). In
 `<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
 digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
 sessions never share a file. The events are the ones bridges get, `process_exited`

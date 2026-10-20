@@ -145,6 +145,14 @@ brnr's own conventions:
 - **Breaking:** a profile's bridge whose `events` names a note
   (`records_skipped`, `events_missed`) fails to load, and `subscribe` to
   one is refused: the process never sends one (ADR 5.9, #314).
+- **Breaking:** one session's files in more than one project folder (a
+  session resumed with `--cwd` has one in each) are one transcript.
+  `event log` shows them all, merged by their records' time, the raw ACP
+  of each with `--events acp`, and `--last` counts in what is merged;
+  before, it showed the newest file only, so a session loaded in another
+  cwd showed none of its history. `session resume` takes its cwd, agent and
+  profile from the newest record of them all, and `session list` has one
+  row of the session, with that record's cwd (ADR 5.1, ADR 3.11, #121).
 
 ### Fixed
 

@@ -803,6 +803,23 @@ fn adr_0005_a_transcript_an_older_brnr_wrote_isnt_read() {
     let older = older.expect("no older files check");
     assert_eq!(older["level"], "info", "{older}");
     assert!(older["message"].as_str().unwrap().contains(&path.to_string_lossy().into_owned()));
+    // Beside a file of this brnr's in another folder, it is said and not
+    // read, and the session is the other file's (ADR 5.1).
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    closed_session(
+        &env,
+        "old-1",
+        &["--cwd", &other.to_string_lossy(), "--wait", "--prompt", "reply new"],
+    );
+    let out = env.run(&["event", "log", "old-1"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("agent: new") && !log.contains("user: hi"), "{log}");
+    let list = session_list(&env, &["--include", "inactive"]);
+    let rows: Vec<&Value> = list.iter().filter(|r| r["session"] == "old-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }
 
 #[test]
@@ -1956,6 +1973,123 @@ fn adr_0009_a_transcript_under_the_old_rule_is_left_as_it_was() {
     resumed_and_closed(&env, &[]);
     assert!(session_files(&old) == before, "continued");
     assert_eq!(folder_files(&env, &cwd), ["s-1.jsonl"]);
+}
+
+/// Session `s-1` in cwd `a`, resumed in `b` (`--cwd`), then in `a` again, a
+/// turn in each, its processes gone: files in two folders, the first
+/// written to before and after the second.
+fn in_two_folders(env: &Env) -> [String; 2] {
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(env, "s-1", &["--cwd", &a, "--wait", "--prompt", "reply one"]);
+    resumed_and_closed(env, &["--cwd", &b, "--wait", "--prompt", "reply two"]);
+    resumed_and_closed(env, &["--cwd", &a, "--wait", "--prompt", "reply three"]);
+    for dir in [&a, &b] {
+        assert_eq!(folder_files(env, dir), ["s-1.jsonl"], "{dir}");
+    }
+    [a, b]
+}
+
+/// One session's files in two folders are one transcript (ADR 5.1, #121):
+/// `event log` shows both files' records in `ts` order, in text, `--json`
+/// and with the raw ACP, and `--last` counts in what is merged; `session
+/// list` has one row of it.
+#[test]
+fn adr_0005_log_reads_a_sessions_files_in_every_folder_as_one() {
+    let env = Env::new("c-two-folders");
+    let [a, _] = in_two_folders(&env);
+    let log = env.ok(&["event", "log", "s-1", "--events", "agent_message"]);
+    let said: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(said, ["agent: one", "agent: two", "agent: three"], "{log}");
+    // Each process's records together, in the order the processes ran.
+    let runs = |events: &[Value]| {
+        let mut runs: Vec<&Value> = events.iter().map(|e| &e["host_id"]).collect();
+        runs.dedup();
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert!(runs[0] != runs[2], "{runs:?}");
+    };
+    let all = logged(&env, "s-1", "all");
+    runs(&all);
+    let asked: Vec<&Value> =
+        all.iter().filter(|e| e["event"] == "user_message").map(|e| &e["text"]).collect();
+    assert_eq!(asked, ["reply one", "reply two", "reply three"]);
+    let acp = logged(&env, "s-1", "acp");
+    let prompts: Vec<&Value> = acp
+        .iter()
+        .filter(|e| e["msg"]["method"] == "session/prompt")
+        .map(|e| &e["msg"]["params"]["prompt"][0]["text"])
+        .collect();
+    assert_eq!(prompts, ["reply one", "reply two", "reply three"], "{acp:?}");
+    runs(&acp);
+    let last = env.ok(&["event", "log", "s-1", "--last", "2", "--events", "agent_message"]);
+    let said: Vec<&str> = last.lines().map(|l| &l[10..]).collect();
+    assert_eq!(said, ["agent: two", "agent: three"], "{last}");
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((&rows[0]["state"], &rows[0]["cwd"]), (&"inactive".into(), &a.as_str().into()));
+}
+
+/// `session resume` of a session with files in two folders takes its cwd,
+/// agent and profile from the newest record of them all, where it was last
+/// served, and `session list` its row (ADR 3.11, ADR 5.1).
+#[test]
+fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
+    let env = Env::new("c-newest");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    env.write_config(&format!("[profiles.other]\nagent = [{:?}]\n", agent.to_string_lossy()));
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--profile", "other", "--", &other]);
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (&rows[0]["cwd"], &rows[0]["agent"]),
+        (&b.as_str().into(), &"other-agent.py".into())
+    );
+    // No --cwd, --profile or agent: the newest record's.
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], b.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!((&hosts[0]["profile"], &hosts[0]["agent"]), (&"other".into(), &json!([other])));
+    env.stop();
+}
+
+/// The trace in #121: a session resumed in another cwd, loaded, records
+/// none of the replay there, as brnr has its transcript in the first folder
+/// (ADR 5.6), and a `history` event says so; `event log` still shows the
+/// history, from the first folder's file (ADR 5.1).
+#[test]
+fn adr_0005_a_load_in_another_cwd_leaves_the_history_in_the_log() {
+    let env = Env::new("c-load-cwd").agent("NO_RESUME", "1");
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    let other = other.to_string_lossy().into_owned();
+    closed_session(&env, "s-1", &["--wait", "--prompt", "reply first"]);
+    resumed_and_closed(&env, &["--cwd", &other, "--wait", "--prompt", "reply again"]);
+    assert_eq!(env.calls_of("session/load")[0]["params"]["cwd"], other.as_str());
+    let history = logged(&env, "s-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], false, "{history:?}");
+    assert!(replayed(&env, "s-1").is_empty(), "{:?}", replayed(&env, "s-1"));
+    let log = env.ok(&["event", "log", "s-1"]);
+    assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
+    assert!(log.contains("not recorded: brnr's transcript has the session"), "{log}");
+    assert!(log.find("agent: first") < log.find("history:"), "{log}");
 }
 
 /// `--include` keeps sessions by state: `active` those open in a process,
