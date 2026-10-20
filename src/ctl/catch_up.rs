@@ -113,7 +113,7 @@ impl Follow {
         match transcript::open(host_log) {
             Ok(file) => found.read(file, acp)?,
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err("the process keeps no transcript (log = false)".into());
+                return Err("the process keeps no transcript (log = \"off\")".into());
             }
             Err(e) => return Err(format!("{}: {e}", host_log.display())),
         }

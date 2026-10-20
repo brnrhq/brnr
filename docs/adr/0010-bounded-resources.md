@@ -237,7 +237,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 
 - The command can't catch up where the transcript doesn't have what it
   missed:
-  - none is kept (`log = false`);
+  - none is kept (`log = "off"`);
   - no raw ACP is kept (`log = "events"`), for a peer that asked for `acp`;
   - records weren't written where it missed events: a `records_skipped`
     note's `first_seq` and `last_seq` between L and R is a hole;
@@ -249,7 +249,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   the shape of the logger's `records_skipped` note:
 
   ```json
-  {"event":"events_missed","ts":"…","host_id":"…","pid":4466,"peer":"socket#7","after_seq":120,"until_seq":180,"error":"the process keeps no transcript (log = false)"}
+  {"event":"events_missed","ts":"…","host_id":"…","pid":4466,"peer":"socket#7","after_seq":120,"until_seq":180,"error":"the process keeps no transcript (log = \"off\")"}
   ```
 
   `until_seq` is R, where the command subscribed again. Given up at the 4th

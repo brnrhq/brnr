@@ -48,7 +48,7 @@ fn describe(p: &Value, session: &str, arg: &str, request: &str) {
         })
         .collect();
     outln!("options: {}", options.join(", "));
-    if let Some(secs) = p["timeout_seconds"].as_u64() {
+    if let Some(secs) = p["timeout_left"].as_u64() {
         // As the timeout answers (ADR 8.1): the one reject_once option, else
         // the turn is cancelled.
         let once = p["options"].as_array().into_iter().flatten();
@@ -57,7 +57,7 @@ fn describe(p: &Value, session: &str, arg: &str, request: &str) {
         outln!("{how} in {secs}s if nobody answers");
     }
     let here = format!(
-        "brnr permission allow {arg} {request} or reject {arg} {request} (--always, --option <id>)"
+        "brnr permission allow {arg} {request} or reject {arg} {request} (--always, --option-id <id>)"
     );
     match (editor, p["why_not"].as_str()) {
         (false, _) => outln!("answer: {here}"),

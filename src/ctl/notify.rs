@@ -35,7 +35,7 @@
 //! With `--stdin` it reads the events from its stdin, one per line, instead of
 //! connecting: a started bridge's transport (ADRs 5.7 and 5.8 in docs/adr). As a
 //! bridge in a profile it is
-//! `command = ["brnr", "event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
+//! `command = "brnr"`, `args = ["event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
 //! is the one the process gives it. The bridge's `events`, if the profile
 //! limits them, must include `agent_message`, `session_changed` and `process_exited`
 //! for the environment and the end. Its stdin ending before `process_exited` is being

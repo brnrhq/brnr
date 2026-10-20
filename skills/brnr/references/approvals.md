@@ -46,13 +46,13 @@ request in the processes that answer (one that doesn't is named on stderr,
 
 ```json
 [{"session": "0f6c…", "request": "p1", "owner": "headless", "kind": "edit", "title": "Edit src/lib.rs",
-  "options": [{"option": "allow", "kind": "allow_once"}, {"option": "reject", "kind": "reject_once"}]}]
+  "options": [{"option_id": "allow", "kind": "allow_once"}, {"option_id": "reject", "kind": "reject_once"}]}]
 ```
 
 `permission show` has the request in full: `title`, `kind`, `tool_call` (with
 `locations`, `rawInput`, and for an edit a `diff` content block with
 `oldText` and `newText`), the `options` (`optionId`, `name`, `kind`),
-`timeout_seconds`, and for an editor's session `answerable` and `why_not`.
+`timeout_left`, and for an editor's session `answerable` and `why_not`.
 Its text form is what to show the user:
 
 ```sh
@@ -72,7 +72,7 @@ may not be what it looks like: say so.
 ```sh
 brnr permission allow $s p1 --json
 brnr permission reject $s p1 --json
-brnr permission allow $s p1 --option <option> --json
+brnr permission allow $s p1 --option-id <option> --json
 ```
 
 `allow` answers with the request's `allow_once` option, `reject` with its
@@ -80,7 +80,7 @@ brnr permission allow $s p1 --option <option> --json
 instead, but only when the user chose it: an "always" outlives the request
 you were asked about. A request without that kind, or with two options of
 it, isn't answered: the command fails and lists the options. Then show them
-to the user, and answer with `--option <id>`, the one the user picked (it
+to the user, and answer with `--option-id <id>`, the one the user picked (it
 must be on the verb's side). The response has the `outcome` sent to the
 agent:
 

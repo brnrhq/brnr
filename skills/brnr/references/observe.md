@@ -14,7 +14,7 @@ brnr event log $s --last 1 --json
 ```
 
 `session status` is one object: `state` (`idle`, `busy`, `waiting` for an
-approval or an elicitation), `turn_seconds`, `owner` (`headless` or
+approval or an elicitation), `turn_elapsed`, `owner` (`headless` or
 `editor`), `title`, `mode`, `model`, `tools` running, `plan`, `pending`
 approvals, `elicitations` waiting, `held` messages, `context`,
 `usage`, `last_turn` (`stop_reason`, `error`, `tokens`), `last_message`

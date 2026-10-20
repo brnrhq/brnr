@@ -91,13 +91,17 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Talk to it from outside
     ("brnr session list", Idle, Says("sess-1")),
     ("brnr session status $s", Idle, Says("Fake session")),
-    (r#"brnr prompt send $s "also update the changelog""#, Turn, Says("held")),
-    (r#"brnr prompt send $s --steer "and the tests too""#, Turn, Says("steered")),
-    (r#"brnr prompt send $s --interrupt "stop, wrong branch""#, Turn, Says("interrupting")),
-    (r#"brnr prompt send $s --context "the API key is in .env.local""#, Idle, Succeeds),
-    (r#"brnr prompt send $s --wait "what did you change?""#, Idle, Succeeds),
+    (r#"brnr prompt send $s --prompt "also update the changelog""#, Turn, Says("held")),
+    (r#"brnr prompt send $s --steer --prompt "and the tests too""#, Turn, Says("steered")),
     (
-        r#"brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?""#,
+        r#"brnr prompt send $s --interrupt --prompt "stop, wrong branch""#,
+        Turn,
+        Says("interrupting"),
+    ),
+    (r#"brnr prompt send $s --context --prompt "the API key is in .env.local""#, Idle, Succeeds),
+    (r#"brnr prompt send $s --wait --prompt "what did you change?""#, Idle, Succeeds),
+    (
+        r#"brnr prompt send $s --file src/api.rs --image screenshot.png --prompt "why does this look wrong?""#,
         Idle,
         Says("delivered"),
     ),
@@ -186,13 +190,13 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""session": "sess-1""#),
     ),
     (
-        r#"brnr prompt send $s --json "now add tests for it""#,
+        r#"brnr prompt send $s --json --prompt "now add tests for it""#,
         Idle,
         Says(r#""status": "delivered""#),
     ),
     ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
     (
-        r#"brnr prompt send $s --wait --timeout 600 --json "what did you change?""#,
+        r#"brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?""#,
         Idle,
         Says(r#""stop_reason": "end_turn""#),
     ),
@@ -210,14 +214,14 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""message": "m1""#),
     ),
     (
-        r#"brnr prompt send $s --json "also update the changelog""#,
+        r#"brnr prompt send $s --json --prompt "also update the changelog""#,
         Turn,
         Says(r#""status": "held""#),
     ),
     ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
     ("brnr event wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
     (
-        r#"brnr prompt send $s --wait --timeout 900 --json "what did you change, and why?""#,
+        r#"brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?""#,
         Idle,
         Says(r#""dropped": null"#),
     ),
@@ -242,16 +246,20 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Says(r#""session": "sess-2""#),
     ),
     (
-        r#"brnr prompt send $s --steer --json "use the existing helper in src/util.rs""#,
+        r#"brnr prompt send $s --steer --json --prompt "use the existing helper in src/util.rs""#,
         Turn,
         Says(r#""status": "steered""#),
     ),
     (
-        r#"brnr prompt send $s --interrupt --json "stop: wrong branch, switch to main first""#,
+        r#"brnr prompt send $s --interrupt --json --prompt "stop: wrong branch, switch to main first""#,
         Turn,
         Says(r#""status": "interrupting""#),
     ),
-    (r#"brnr prompt send $s --context --json "the API key is in .env.local""#, Idle, Succeeds),
+    (
+        r#"brnr prompt send $s --context --json --prompt "the API key is in .env.local""#,
+        Idle,
+        Succeeds,
+    ),
     ("brnr queue list $s --json", Turn, Says(r#""held": []"#)),
     ("brnr prompt cancel $s --json", Turn, Says(r#""status": "cancelling""#)),
     ("brnr process list --json", Idle, Says(r#""owner": "headless""#)),
@@ -264,7 +272,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr permission allow $s p1 --json", Approval, Says(r#""optionId": "allow""#)),
     ("brnr permission reject $s p1 --json", Approval, Says(r#""optionId": "reject""#)),
     (
-        "brnr permission allow $s p1 --option <option> --json",
+        "brnr permission allow $s p1 --option-id <option> --json",
         Approval,
         Says(r#""optionId": "allow""#),
     ),
@@ -677,7 +685,7 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         Succeeds | Says(_) => Ok(()),
         Follows(what) => {
             let ok = wait_for(Duration::from_secs(10), || {
-                env.run(&["prompt", "send", s, "reply readme"]);
+                env.run(&["prompt", "send", s, "--prompt", "reply readme"]);
                 sleep(Duration::from_millis(200));
                 printed().contains(what) || stderr().contains(what)
             });

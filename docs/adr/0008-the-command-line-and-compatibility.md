@@ -1,9 +1,8 @@
 # 8. The command line and compatibility
 
 Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade waits for #150, 8.6's evals with a real agent
-aren't done, and 8.1's names spelled one way (#154, #311) are decided, not
-implemented yet. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+1.0.0, 8.5's typed facade waits for #150, and 8.6's evals with a real agent
+aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -42,14 +41,14 @@ brnr session     new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
                  | status <session> | fork <session> | close <session>
                  | delete <session> [--purge] [--profile <p>] [-- <agent> [args...]]
 brnr prompt      send <session> [--steer | --interrupt | --context [--replace]]
-                   [--file <path>]... [--image <path>]... [--wait [--timeout <s>]]
-                   (<text>... | -)
+                   [--prompt <text> | -] [--file <path>]... [--image <path>]...
+                   [--wait [--timeout <s>]]
                  | cancel <session> [--keep-held] | commands <session>
 brnr queue       list <session> | show <session> <message>
                  | drop <session> <message> | clear <session> [--messages] [--context]
 brnr permission  requests [<session>] | show <session> <request>
-                 | allow <session> <request> [--always] [--option <id>]
-                 | reject <session> <request> [--always] [--option <id>]
+                 | allow <session> <request> [--always] [--option-id <id>]
+                 | reject <session> <request> [--always] [--option-id <id>]
 brnr elicitation requests [<session>] | show <s> <request>
                  | accept <s> <request> [--field <k>=<v>]... [-]
                  | decline <s> <request> | cancel <s> <request>
@@ -89,9 +88,10 @@ How words are read:
   is the command's, and as a flag's value it is that value (`--prompt -h`
   sends `-h`). Help goes to stdout and exits 0, and a usage error goes to
   stderr and exits 2, in every command (ADR 8.3).
-- `prompt send`'s options go before its prompt: from the prompt's first
-  word on, every word is the prompt's (`-h`, `--help`, `--wait`, `--json`
-  too), sent as given. `-` (stdin) goes alone.
+- A prompt is `--prompt`'s value, sent as given (`--prompt --wait` sends
+  `--wait`), and `--prompt -` reads it from stdin, for `prompt send` as for
+  a start. A word that is neither a flag, a flag's value nor a positional
+  the command takes, such as a prompt given as words, is a usage error.
 - An option a command doesn't take fails as unknown, and nothing is done.
   It is never read as a `<session>` or `<pid>`: `session status --json`
   without a session is a usage error. Every command says an unknown option
@@ -257,7 +257,7 @@ How words are read:
   order. No other kind stands in for it, and `reject` never answers
   `cancelled`: a request without that kind, or with two options of it,
   fails, listing the options, and nothing is answered (P4, P7).
-- `--option <id>` names the option instead, for a kind brnr doesn't know
+- `--option-id <id>` names the option instead, for a kind brnr doesn't know
   (v2 allows `_…` kinds) or two options of one kind. One of an ACP kind
   must be on the verb's side (`allow_*` for `allow`), and with `--always`
   the always kind; one of a kind brnr doesn't know goes with either verb
@@ -295,7 +295,7 @@ The same names reach brnr's other interfaces, so one word means one thing
 (P5):
 
 - Socket and bridge commands (ADR 5.7): `allow` and `reject`, with `always`
-  and `option`; one `set_config` taking `mode`, `model`, `thought_level`
+  and `option_id`; one `set_config` taking `mode`, `model`, `thought_level`
   and `options`; `new` and `resume` for `--pid`, with the command's
   `timeout`. `send` is the message, whatever its mode.
 - A profile's headless part (ADR 6.1): `mode`, `model`, `thought_level`,
@@ -305,9 +305,8 @@ The same names reach brnr's other interfaces, so one word means one thing
 - Events: `permission_resolved` and `session_deleted`, as above.
 - Errors, hints and the usage text name these commands.
 
-One name, one meaning, one spelling (#154), decided, not implemented yet
-(#311). Where a name had two, one wins, and the other form goes, with
-no alias (P9):
+One name, one meaning, one spelling (#154). Where a name had two, one
+wins, and the other form goes, with no alias (P9):
 
 - `--option` is a config option, and only that: an id in `config get
   --option <o>`, an `<o>=<v>` pair in `config set`, `session new` and
@@ -315,13 +314,16 @@ no alias (P9):
   The option of a permission request is `--option-id <id>`, ACP's
   `optionId`, a name ACP gives only to a permission option:
   `permission allow <session> <request> [--always] [--option-id <id>]`,
-  and `reject` the same. The socket's `allow` and `reject` take
-  `option_id` in place of `option`.
+  and `reject` the same; `--option` there is an unknown option (exit 2,
+  ADR 8.3). The socket's `allow` and `reject` take `option_id` in place of
+  `option`, and refuse `option`, answering nothing: ignored, it would let
+  a bridge that names an option get the kind's option instead (P3, P7).
 - The prompt is `--prompt <text> | -` wherever a command takes one:
   `session new`, `session resume` and `prompt send`
-  (`prompt send <session> [flags] --prompt <text> | -`). The words after
-  the prompt's first are no longer the prompt's, so the rule that
-  `prompt send`'s options go before its prompt goes too.
+  (`prompt send <session> [flags] [--prompt <text> | -]`, with a prompt, a
+  file or an image: none is `nothing to send`, a usage error). A prompt
+  given as words is a word too many, a usage error (ADR 8.3), and the rule
+  that `prompt send`'s options go before its prompt is gone.
 - A duration is in whole seconds, and its name has no unit: `--timeout`,
   `--stop-when-idle`, `--response-timeout`, and the profile's
   `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
@@ -380,7 +382,7 @@ some places only (F5, P5).
   ways) and its own order.
 - `permission respond <option>` with ACP's option ids alone: ids are the
   agent's, so a script would work for one agent; kinds are ACP's.
-  `--option` keeps ids for what kinds can't say.
+  `--option-id` keeps ids for what kinds can't say.
 - `permission dismiss`: ACP has no outcome for it but `cancelled`, which is
   a cancelled turn's.
 - `--config` for `--option`: it reads as a config file's path.
@@ -645,10 +647,9 @@ be, by a record that amends this one, once a second major exists.
 The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
 still settles names and shapes, breaking as P9 allows. #151 (event and
 transcript record names) is decided and made (ADR 5.9, #314), as is #153
-(the exit code of a usage error, `--help`: ADR 8.3, #310); #154 (flags and
-config keys spelled two ways) is decided (ADR 8.1 and 6.1), and its
-change, breaking too, lands before it (#311). What they settle is what
-1.0.0 promises.
+(the exit code of a usage error, `--help`: ADR 8.3, #310), and #154 (flags
+and config keys spelled two ways: ADR 8.1 and 6.1, #311). What they settle
+is what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise
@@ -942,7 +943,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_old_socket_commands_are_unknown`,
   `adr_0008_profile_keys_and_actions_have_the_new_names`,
   `adr_0008_help_lists_the_groups_and_their_commands`,
-  `adr_0008_a_prompts_words_are_never_options`,
+  `adr_0008_prompt_send_takes_its_prompt_as_a_flag`,
   `adr_0008_a_flag_is_never_a_session_or_pid`,
   `adr_0008_a_single_dash_word_is_an_argument`,
   `adr_0008_an_unknown_option_is_said`,
@@ -954,7 +955,9 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_response_timeout_flag_wins_over_the_profile`,
   `adr_0008_allow_and_reject_pick_by_kind`,
   `adr_0008_a_missing_or_doubled_kind_fails`,
-  `adr_0008_option_must_be_on_the_verbs_side`, `adr_0008_queue_show`,
+  `adr_0008_option_must_be_on_the_verbs_side`,
+  `adr_0008_a_permissions_option_is_option_id`,
+  `adr_0008_a_durations_name_has_no_unit`, `adr_0008_queue_show`,
   `adr_0008_queue_clear_flags`,
   `adr_0008_list_without_an_agent_is_brnrs_index`,
   `adr_0008_list_joins_the_agents_sessions_on_id`,
@@ -996,10 +999,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_flags_value_is_never_a_positional`,
   `adr_0008_every_flag_is_in_its_verbs_usage`,
   `adr_0008_positionals_and_unknown_options`,
-  `adr_0008_a_prompt_starts_after_the_session`. Not covered by a Rust
-  test: the names spelled one way (`--option-id`, `--prompt`, durations
-  with no unit, #154), decided, not implemented yet; their tests come with
-  #311.
+  `adr_0008_a_prompt_is_a_flags_value`.
 - 8.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,

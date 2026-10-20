@@ -31,7 +31,7 @@ your own.
 turn when the running one ends; brnr never sends two prompts at once.
 
 ```sh
-brnr prompt send $s --json "also update the changelog"
+brnr prompt send $s --json --prompt "also update the changelog"
 ```
 
 ```json
@@ -46,7 +46,7 @@ one message's turn, always with a timeout:
 ```sh
 brnr event wait $s --timeout 900 --json
 brnr event wait $s --for turn --timeout 900 --json
-brnr prompt send $s --wait --timeout 900 --json "what did you change, and why?"
+brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?"
 ```
 
 `event wait` prints what ended it (`{"event": "idle", "session": …}`, or
@@ -139,9 +139,9 @@ session again and the error says so, or it names the session left open.
 ## Changing course
 
 ```sh
-brnr prompt send $s --steer --json "use the existing helper in src/util.rs"
-brnr prompt send $s --interrupt --json "stop: wrong branch, switch to main first"
-brnr prompt send $s --context --json "the API key is in .env.local"
+brnr prompt send $s --steer --json --prompt "use the existing helper in src/util.rs"
+brnr prompt send $s --interrupt --json --prompt "stop: wrong branch, switch to main first"
+brnr prompt send $s --context --json --prompt "the API key is in .env.local"
 brnr queue list $s --json
 brnr prompt cancel $s --json
 ```

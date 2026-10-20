@@ -339,7 +339,7 @@ fn stalled_agent_can_still_be_stopped() {
     env.start(&[]);
     let host = env.host_pid();
     let big = vec![b'x'; 1 << 20];
-    let out = env.run_with_stdin(&["prompt", "send", "sess-1", "-"], &big);
+    let out = env.run_with_stdin(&["prompt", "send", "sess-1", "--prompt", "-"], &big);
     assert!(out.status.success(), "send: {}", stderr(&out));
 
     let out = env.run(&["session", "status", "sess-1"]);
@@ -455,7 +455,10 @@ fn adr_0003_foreground_outlives_its_stdout() {
     BufReader::new(reader).read_line(&mut first).unwrap();
     assert!(first.contains("user: reply hi"), "{first}");
     // Something more to show, on a stdout nobody reads any more.
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply again"]), "again\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply again"]),
+        "again\n"
+    );
     let stopped = || host_logs(&env).contains(r#""event":"display_stopped""#);
     assert!(wait_for(Duration::from_secs(5), stopped), "no note of the display stopping");
     assert!(env.ok(&["session", "status", "sess-1"]).contains("idle"));
@@ -573,7 +576,7 @@ fn adr_0005_held_messages_are_reported_on_exit() {
         .spawn()
         .unwrap();
     sleep(Duration::from_millis(300));
-    let out = env.run(&["prompt", "send", "sess-1", "later"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--prompt", "later"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (message m2)");
     assert!(env.run(&["process", "stop", &env.pid()]).status.success());
 
@@ -608,7 +611,7 @@ fn adr_0003_a_panic_is_recorded() {
         let out = env.brnr(&args).env("BRNR_TEST_PANIC", "1").output().unwrap();
         assert!(out.status.success(), "{}", stderr(&out));
         // Held behind the hanging turn, so dropped when the process dies.
-        assert!(env.ok(&["prompt", "send", "sess-1", "later"]).contains("held"));
+        assert!(env.ok(&["prompt", "send", "sess-1", "--prompt", "later"]).contains("held"));
         let host = env.hosts().remove(0);
         let pid = |key: &str| host[key].as_i64().unwrap() as i32;
         let (host_pid, agent_pid) = (pid("host_pid"), pid("agent_pid"));
@@ -659,7 +662,7 @@ fn adr_0003_a_panic_while_starting_is_recorded() {
         let env = Env::new(if editor { "panic-start-ed" } else { "panic-start" });
         let script = format!("exec cat > '{}'", env.dir.join("bridge-events").display());
         env.write_config(&format!(
-            "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+            "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
         ));
         let args = if editor { vec!["acp", "--", AGENT] } else { new_args(&["--prompt", "hi"]) };
         let out =
@@ -718,7 +721,7 @@ fn adr_0011_a_panic_prints_a_link_to_report_it() {
     assert!(url.contains("a%20test%20asked%20for%20it"), "{url}");
     assert!(!url.contains(' '), "{url}");
     // A group's command is named with its verb, not its arguments.
-    let args = ["prompt", "send", "sess-1", "x"];
+    let args = ["prompt", "send", "sess-1", "--prompt", "x"];
     let out = env.brnr(&args).env("BRNR_TEST_PANIC", "cli").output().unwrap();
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(101), "{err}");
@@ -743,7 +746,7 @@ fn adr_0004_interrupts_keep_their_order() {
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     for text in ["first", "second"] {
-        let out = env.run(&["prompt", "send", "sess-1", "--interrupt", text]);
+        let out = env.run(&["prompt", "send", "sess-1", "--interrupt", "--prompt", text]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3), "{:?}", env.prompts());
@@ -764,8 +767,14 @@ fn adr_0004_send_while_a_turn_runs_is_held() {
     let env = Env::new("held-order");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply first"]), "held (message m2)\n");
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply second"]), "held (message m3)\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "reply first"]),
+        "held (message m2)\n"
+    );
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "reply second"]),
+        "held (message m3)\n"
+    );
     sleep(Duration::from_millis(300));
     assert_eq!(env.prompts(), ["hang on"], "a second prompt while one ran");
     env.ok(&["prompt", "cancel", "sess-1", "--keep-held"]);
@@ -784,7 +793,8 @@ fn adr_0004_steer_goes_into_the_running_turn() {
     let env = Env::new("steer");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let out = env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "reply steered"]);
+    let out =
+        env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "--prompt", "reply steered"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "steered\n");
     assert!(stderr(&out).contains("steered (message m2)"), "{}", stderr(&out));
@@ -805,17 +815,20 @@ fn adr_0004_steer_without_a_turn_is_a_prompt() {
     let env = Env::new("steer-idle");
     env.start(&[]);
     assert_eq!(
-        env.ok(&["prompt", "send", "sess-1", "--steer", "reply now"]),
+        env.ok(&["prompt", "send", "sess-1", "--steer", "--prompt", "reply now"]),
         "delivered (message m1)\n"
     );
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     assert!(env.calls_of("_session/steering").is_empty());
 
     // The agent reads nothing until this turn has ended.
-    env.ok(&["prompt", "send", "sess-1", "slow 2"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "slow 2"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply held"]), "held (message m3)\n");
-    let out = env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "reply late"]);
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "reply held"]),
+        "held (message m3)\n"
+    );
+    let out = env.run(&["prompt", "send", "sess-1", "--steer", "--wait", "--prompt", "reply late"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("steered (message m4)"), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "late\n");
@@ -858,6 +871,7 @@ fn adr_0004_steer_answered_after_its_turn_is_in_that_turn() {
         "--wait",
         "--timeout",
         "10",
+        "--prompt",
         "reply steered",
     ]);
     assert!(out.status.success(), "{}{}", stderr(&out), env.ok(&["event", "log", "sess-1"]));
@@ -884,6 +898,7 @@ fn adr_0004_steer_refused_after_its_turn_is_dropped() {
         "--wait",
         "--timeout",
         "10",
+        "--prompt",
         "reply steered",
     ]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -901,8 +916,17 @@ fn adr_0004_steer_never_answered_is_dropped_by_close() {
     let env = Env::new("steer-never").agent("STEER_ANSWER", "never");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let args =
-        ["prompt", "send", "sess-1", "--steer", "--wait", "--timeout", "20", "reply steered"];
+    let args = [
+        "prompt",
+        "send",
+        "sess-1",
+        "--steer",
+        "--wait",
+        "--timeout",
+        "20",
+        "--prompt",
+        "reply steered",
+    ];
     let waiter = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
     sleep(Duration::from_millis(300));
@@ -931,13 +955,13 @@ fn adr_0004_interrupt_waits_for_the_steers_into_the_turn_before() {
         all.extend(args);
         env.brnr(&all).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     };
-    let first = wait(&["hang on"]);
+    let first = wait(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let steered = wait(&["--steer", "reply steered"]);
+    let steered = wait(&["--steer", "--prompt", "reply steered"]);
     assert!(wait_for(Duration::from_secs(5), || env.calls_of("_session/steering").len() == 1));
     sleep(Duration::from_millis(300));
     assert_eq!(endings(&env), [], "the turn ended before its steer was answered");
-    let interrupt = wait(&["--interrupt", "reply third"]);
+    let interrupt = wait(&["--interrupt", "--prompt", "reply third"]);
     let held = || env.ok(&["queue", "list", "sess-1"]).contains("m3");
     assert!(wait_for(Duration::from_secs(5), held), "{}", env.ok(&["queue", "list", "sess-1"]));
     assert_eq!(env.prompts(), ["hang on"], "a turn began before the last one ended");
@@ -963,14 +987,14 @@ fn adr_0004_steer_needs_the_agents_steering() {
     let env = Env::new("steer-none").agent("NO_STEERING", "1");
     env.start(&["--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "reply steered"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "--prompt", "reply steered"]);
     let want = "the agent can't steer a running turn: it doesn't advertise _session/steering";
     assert!(err.contains(want), "{err}");
     assert!(env.calls_of("_session/steering").is_empty());
     env.ok(&["prompt", "cancel", "sess-1"]);
     env.run(&["event", "wait", "sess-1", "--timeout", "10"]);
     assert_eq!(
-        env.ok(&["prompt", "send", "sess-1", "--steer", "reply now"]),
+        env.ok(&["prompt", "send", "sess-1", "--steer", "--prompt", "reply now"]),
         "delivered (message m2)\n"
     );
 }
@@ -986,7 +1010,7 @@ fn adr_0002_strict_mode_refuses_steering_and_fork() {
     env.start(&["--strict", "--prompt", "hang on"]);
     assert_eq!(started_record(&env)["start_request"]["strict"], true);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
-    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "reply steered"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--steer", "--prompt", "reply steered"]);
     let want = "--steer uses _session/steering, an ACP extension, which strict mode doesn't";
     assert!(err.contains(want), "{err}");
     let err = env.fails(&["session", "fork", "sess-1"]);
@@ -994,7 +1018,10 @@ fn adr_0002_strict_mode_refuses_steering_and_fork() {
     assert!(err.contains(want), "{err}");
     assert!(env.calls_of("_session/steering").is_empty());
     assert!(env.calls_of("session/fork").is_empty());
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "reply held"]), "held (message m2)\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "reply held"]),
+        "held (message m2)\n"
+    );
     env.ok(&["prompt", "cancel", "sess-1", "--keep-held"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
     env.ok(&["session", "close", "sess-1"]);
@@ -1129,12 +1156,15 @@ fn adr_0002_headless_sessions_offer_neither() {
     let neither = "no fs\nno terminal\n";
     let env = Env::new("hl-client");
     env.start(&[]);
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "client"]), neither);
     let refused = "fs failed: fs/read_text_file is not supported without an editor\n\
                    terminal failed: terminal/create is not supported without an editor\n";
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client", "anyway"]), refused);
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "client anyway"]),
+        refused
+    );
     assert_eq!(env.ok(&["session", "fork", "sess-1"]), "forked sess-1 into sess-2\n");
-    assert_eq!(env.ok(&["prompt", "send", "sess-2", "--wait", "client"]), neither);
+    assert_eq!(env.ok(&["prompt", "send", "sess-2", "--wait", "--prompt", "client"]), neither);
     // Elicitation is offered headless (ADR 4.5); fs and terminal are not.
     let init = env.calls_of("initialize");
     let caps = &init[0]["params"]["clientCapabilities"];
@@ -1149,7 +1179,7 @@ fn adr_0002_headless_sessions_offer_neither() {
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     assert_ne!(status["pid"].to_string(), editors);
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "client"]), neither);
+    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "client"]), neither);
     let offered: Vec<Value> = (env.calls_of("initialize").iter())
         .map(|c| c["params"]["clientCapabilities"].clone())
         .collect();
@@ -1178,7 +1208,7 @@ fn adr_0010_slow_watcher_is_disconnected() {
     // Stopped until the turn has ended, so every event came while it was:
     // continued sooner, it would be reading again when the turn's 20 MB
     // message came, which a peer that keeps up takes (ADR 10.1).
-    let out = env.run(&["prompt", "send", "sess-1", "--wait", "go"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", "go"]);
     assert!(out.status.success(), "send: {}", stderr(&out));
     kill(watch.id() as i32, libc::SIGCONT);
 
@@ -1228,13 +1258,16 @@ fn adr_0010_a_watcher_cut_off_catches_up() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..2 {
-        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
     }
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
     kill(watch.id() as i32, libc::SIGCONT);
     assert!(cut, "the watcher wasn't cut off");
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply after"]),
+        "after\n"
+    );
     env.stop();
     for w in [&mut watch, &mut told] {
         assert!(wait_exit(w, Duration::from_secs(30)), "watch didn't end");
@@ -1284,7 +1317,7 @@ fn adr_0010_a_burst_past_64_mib_reaches_a_watcher() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     let size = (16 << 20) + 1;
-    env.ok(&["prompt", "send", "sess-1", "--wait", &format!("big {size} think")]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size} think")]);
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
     kill(watch.id() as i32, libc::SIGCONT);
@@ -1305,19 +1338,19 @@ fn adr_0010_a_burst_past_64_mib_reaches_a_watcher() {
 }
 
 /// A watcher cut off where the transcript can't have what it missed (here
-/// none is kept, `log = false`) says what it missed, after which event, and
+/// none is kept, `log = "off"`) says what it missed, after which event, and
 /// why, as its last line, and exits 3 (ADR 10.2).
 #[test]
 fn adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed() {
     let env = Env::new("nocatchup");
-    env.write_config("[profiles.default]\nlog = false\n");
+    env.write_config("[profiles.default]\nlog = \"off\"\n");
     env.start(&[]);
     let (mut watch, lines) =
         watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..2 {
-        env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
     }
     kill(watch.id() as i32, libc::SIGCONT);
     assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
@@ -1325,7 +1358,7 @@ fn adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed() {
     let got = lines.join().unwrap();
     let note = got.last().unwrap();
     assert_eq!(note["event"], "events_missed", "{note}");
-    assert_eq!(note["error"], "the process keeps no transcript (log = false)");
+    assert_eq!(note["error"], "the process keeps no transcript (log = \"off\")");
     let before = &got[got.len() - 2];
     assert_eq!(note["after_seq"], before["seq"], "{note}");
     assert!(note["until_seq"].as_u64() > note["after_seq"].as_u64(), "{note}");
@@ -1339,9 +1372,9 @@ fn adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed() {
 fn adr_0010_a_wait_cut_off_catches_up() {
     let env = Env::new("waitcatchup");
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "hang"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "hang"]);
     let wait = env
-        .brnr(&["prompt", "send", "sess-1", "--wait", "reply done"])
+        .brnr(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply done"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1349,7 +1382,7 @@ fn adr_0010_a_wait_cut_off_catches_up() {
     let held = || env.ok(&["queue", "list", "sess-1"]).contains("m2 (after turn)");
     assert!(wait_for(Duration::from_secs(10), held), "not held");
     kill(wait.id() as i32, libc::SIGSTOP);
-    env.ok(&["prompt", "send", "sess-1", "--interrupt", "many 4 6000000"]);
+    env.ok(&["prompt", "send", "sess-1", "--interrupt", "--prompt", "many 4 6000000"]);
     env.ok(&["event", "wait", "sess-1"]);
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
@@ -1375,7 +1408,7 @@ fn adr_0010_event_wait_cut_off_catches_up() {
         .unwrap();
     sleep(Duration::from_millis(300));
     kill(wait.id() as i32, libc::SIGSTOP);
-    env.ok(&["prompt", "send", "sess-1", "perm edit 4"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit 4"]);
     let pending = || env.ok(&["permission", "requests", "sess-1"]).contains("p4 ");
     assert!(wait_for(Duration::from_secs(10), pending), "no approvals");
     for n in 1..=4 {
@@ -1418,7 +1451,7 @@ fn adr_0010_reading_watcher_stays_connected() {
         }
     });
     sleep(Duration::from_millis(300));
-    assert!(env.run(&["prompt", "send", "sess-1", "go"]).status.success());
+    assert!(env.run(&["prompt", "send", "sess-1", "--prompt", "go"]).status.success());
     let burst = || read.load(Relaxed) > 20000 || watch.try_wait().unwrap().is_some();
     assert!(wait_for(Duration::from_secs(60), burst), "watch read {} lines", read.load(Relaxed));
     assert!(env.run(&["process", "stop", &env.pid()]).status.success());
@@ -1446,7 +1479,9 @@ fn adr_0010_huge_message_reaches_watchers() {
     let first = std::thread::spawn(move || BufReader::new(stdout).lines().next());
     sleep(Duration::from_millis(300));
     let size = 20_000_000;
-    assert!(env.run(&["prompt", "send", "sess-1", &format!("big {size}")]).status.success());
+    assert!(
+        env.run(&["prompt", "send", "sess-1", "--prompt", &format!("big {size}")]).status.success()
+    );
     let line = first.join().unwrap().expect("no message").unwrap();
     let event: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["text"].as_str().unwrap().len(), size);
@@ -1470,7 +1505,7 @@ fn adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer() {
     let env = Env::new("hugeall");
     let got = env.dir.join("bridge-events");
     env.write_config(&format!(
-        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", \"exec cat > '{}'\"]\n\
+        "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", \"exec cat > '{}'\"]\n\
          events = [\"acp\", \"agent_message\", \"turn_ended\"]\n",
         got.display()
     ));
@@ -1498,10 +1533,18 @@ fn adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer() {
         sizes
     });
     sleep(Duration::from_millis(300));
-    let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size}")]);
     assert!(out.status.success(), "send --wait: {}", stderr(&out));
     assert_eq!(out.stdout.len(), size + 1, "send --wait: {}", stderr(&out));
-    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--json", &format!("big {size}")]);
+    let out = env.run(&[
+        "prompt",
+        "send",
+        "sess-1",
+        "--wait",
+        "--json",
+        "--prompt",
+        &format!("big {size}"),
+    ]);
     assert!(out.status.success(), "send --wait --json: {}", stderr(&out));
     let turn: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(turn["reply"].as_str().unwrap().len(), size);
@@ -1540,7 +1583,8 @@ fn adr_0010_a_long_message_doesnt_put_a_watcher_behind() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [8_000_000, 12_000_000] {
-        let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
+        let out =
+            env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size}")]);
         assert!(out.status.success(), "{}", stderr(&out));
     }
     // The watcher's line after the long message, which it is past the limit
@@ -1594,7 +1638,7 @@ fn adr_0011_bridges_next_to_a_symlinked_brnr() {
     let got = env.dir.join("bridge-events");
     let bridge = bin.join("brnr-test-bridge");
     script(&bridge, &format!("#!/bin/sh\nexec cat > '{}'\n", got.display()));
-    env.write_config("[[profiles.default.bridges]]\ncommand = [\"brnr-test-bridge\"]\n");
+    env.write_config("[[profiles.default.bridges]]\ncommand = \"brnr-test-bridge\"\n");
     // Enough PATH for the fake agent's python3, not the prefix.
     let python = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();
     let python = String::from_utf8(python.stdout).unwrap();
@@ -1604,7 +1648,7 @@ fn adr_0011_bridges_next_to_a_symlinked_brnr() {
     let out = env.brnr_at(&bin.join("brnr"), &args).env("PATH", &path).output().unwrap();
     assert!(out.status.success(), "start: {}", stderr(&out));
     let request = started_record(&env)["start_request"].clone();
-    let command = request["bridges"][0]["command"][0].as_str().unwrap_or_default();
+    let command = request["bridges"][0]["command"].as_str().unwrap_or_default();
     assert_eq!(fs::canonicalize(command).ok(), fs::canonicalize(&bridge).ok(), "{request}");
     let ended = || fs::read_to_string(&got).unwrap_or_default().contains(r#""event":"turn_ended""#);
     assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
@@ -1626,7 +1670,8 @@ fn adr_0010_big_message_to_a_lagging_watcher() {
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [6_000_000, 12_000_000] {
-        let out = env.run(&["prompt", "send", "sess-1", "--wait", &format!("big {size}")]);
+        let out =
+            env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size}")]);
         assert!(out.status.success(), "send: {}", stderr(&out));
     }
     kill(watch.id() as i32, libc::SIGCONT);
@@ -1672,7 +1717,7 @@ fn unresponsive_host_is_reported() {
     env.start(&[]);
     let host = env.host_pid();
     kill(host, libc::SIGSTOP);
-    let out = env.run(&["prompt", "send", "sess-1", "hello"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--prompt", "hello"]);
     kill(host, libc::SIGCONT);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not answering"), "{}", stderr(&out));
@@ -1727,13 +1772,13 @@ fn adr_0005_a_bridge_whose_stderr_isnt_utf8_carries_on() {
         events.display()
     );
     env.write_config(&format!(
-        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+        "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
     ));
     env.start(&[]);
     let after = || bridge_stderr(&env).0.len() == 2;
     assert!(wait_for(Duration::from_secs(5), after), "{:?}", bridge_stderr(&env));
     assert_eq!(bridge_stderr(&env).0, ["bad \u{fffd}\u{fffd} bytes", "after"]);
-    env.ok(&["prompt", "send", "sess-1", "--wait", "reply hi"]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
     let ended =
         || fs::read_to_string(&events).unwrap_or_default().contains(r#""event":"turn_ended""#);
     assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");
@@ -1749,7 +1794,7 @@ fn bridge_says(name: &str, script: &str) -> Vec<String> {
     let env = Env::new(name);
     let script = format!("{script}; echo after >&2; exec cat > /dev/null");
     env.write_config(&format!(
-        "[[profiles.default.bridges]]\ncommand = [\"sh\", \"-c\", {script:?}]\n"
+        "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
     ));
     env.start(&[]);
     let after = || bridge_stderr(&env).0.last().is_some_and(|l| l == "after");
@@ -2049,7 +2094,7 @@ fn adr_0009_distinct_ids_never_share_a_lock() {
         let row =
             rows.iter().find(|r| r["session"] == id.as_str()).unwrap_or_else(|| panic!("{id:?}"));
         assert_eq!((&row["state"], &row["pid"]), (&Value::from("idle"), pid), "{id:?}: {list}");
-        env.ok(&["prompt", "send", id, "reply again"]);
+        env.ok(&["prompt", "send", id, "--prompt", "reply again"]);
     }
 }
 
@@ -2807,7 +2852,7 @@ fn adr_0005_a_failed_load_drops_its_held_context() {
     let (mut editor, mut to_agent, mut from_agent) = editor(&env);
     writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
     update(&mut from_agent, "session_info_update");
-    env.ok(&["prompt", "send", "old-1", "--context", "held context"]);
+    env.ok(&["prompt", "send", "old-1", "--context", "--prompt", "held context"]);
     fs::write(&later, "").unwrap();
     assert!(response(&mut from_agent, 2)["error"].is_object());
     let ends = logged(&env, "old-1", "context_dropped,session_closed");
@@ -2832,7 +2877,7 @@ fn adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript() {
     fs::write(&stall, "").unwrap();
     // Past the logger's 64 MiB: 1000 messages of 50 kB, each an event and
     // raw ACP. Then the queue is full.
-    env.ok(&["prompt", "send", "sess-1", "many 1000 50000"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "many 1000 50000"]);
     let out = env.run(&["event", "wait", "sess-1", "--timeout", "60"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let new = env.ok(&["session", "new", "--pid", &pid]);
@@ -2870,7 +2915,7 @@ fn adr_0010_a_stalled_disk_skips_records_and_says_so() {
     // Some 400 MB for the logger: 4000 messages of 50 kB, each an event and
     // raw ACP. The turn runs to its end while nothing is written. (`wait`,
     // as `send --wait` would take every message.)
-    env.ok(&["prompt", "send", "sess-1", "many 4000 50000"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "many 4000 50000"]);
     let out = env.run(&["event", "wait", "sess-1", "--timeout", "60"]);
     assert!(out.status.success(), "the session waited for the logger: {}", stderr(&out));
     // The logger's 64 MiB, and the agent's 16 MiB on its way, with room.
@@ -2879,7 +2924,10 @@ fn adr_0010_a_stalled_disk_skips_records_and_says_so() {
     fs::remove_file(&stall).unwrap();
     let noted = || fs::read_to_string(&events).is_ok_and(|t| t.contains("records_skipped"));
     assert!(wait_for(Duration::from_secs(30), noted), "no records_skipped note");
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply after"]),
+        "after\n"
+    );
     env.stop();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
 
@@ -3113,7 +3161,7 @@ fn adr_0003_acp_is_what_an_editor_runs() {
     assert!(env.ok(&["session", "list", "--include", "active"]).contains("sess-1"));
     // A message sent from outside is shown to the editor as a completed
     // tool call; its response (to brnr's own prompt id) is kept from it.
-    env.ok(&["prompt", "send", "sess-1", "reply hi"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "reply hi"]);
     let echo = loop {
         let mut line = String::new();
         assert!(from_agent.read_line(&mut line).unwrap() > 0, "no echo");
@@ -3434,7 +3482,7 @@ fn adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said() {
     let env = Env::new("toolong");
     env.start(&[]);
     for prompt in ["big 40000000", "long 40"] {
-        let out = env.run(&["prompt", "send", "sess-1", "--wait", prompt]);
+        let out = env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", prompt]);
         assert!(out.status.success(), "send {prompt}: {}", stderr(&out));
         assert!(out.stdout.is_empty(), "send {prompt} printed {} bytes", out.stdout.len());
     }
@@ -3442,7 +3490,10 @@ fn adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said() {
     assert_eq!(events.len(), 2, "{events:?}");
     let dropped = |e: &Value| e["from"] == "agent" && e["relayed"] == false;
     assert!(events.iter().all(dropped), "{events:?}");
-    assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply after"]), "after\n");
+    assert_eq!(
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply after"]),
+        "after\n"
+    );
     env.stop();
 }
 
@@ -3499,10 +3550,10 @@ fn adr_0010_an_editor_line_past_the_limit_goes_to_the_agent_unread() {
 #[test]
 fn adr_0010_the_agents_stderr_without_a_newline_is_bounded() {
     let env = Env::new("errlong");
-    env.write_config("[profiles.default]\nlog = false\n");
+    env.write_config("[profiles.default]\nlog = \"off\"\n");
     env.start(&[]);
     let host = env.host_pid();
-    let out = env.run(&["prompt", "send", "sess-1", "--wait", "long 96 stderr"]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", "long 96 stderr"]);
     assert!(out.status.success(), "send: {}", stderr(&out));
     assert_holds_less(host, 64 << 20);
     env.stop();
@@ -3522,7 +3573,7 @@ fn agent_stderr(env: &Env) -> Vec<String> {
 fn agent_stderr_after(name: &str, prompt: &str) -> Vec<String> {
     let env = Env::new(name);
     env.start(&[]);
-    env.ok(&["prompt", "send", "sess-1", "--wait", prompt]);
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", prompt]);
     env.stop();
     let exited = || host_logs(&env).contains(r#""event":"process_exited""#);
     assert!(wait_for(Duration::from_secs(5), exited), "not exited");
@@ -4064,7 +4115,7 @@ fn adr_0005_overlapping_loads_in_an_editor_have_one_history() {
 #[test]
 fn adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running() {
     let env = Env::new("ed-replay-turn").agent("FULL_HISTORY", "1").agent("LOAD_ENDS_TURN", "1");
-    env.write_config("[profiles.default]\nlog = false\n");
+    env.write_config("[profiles.default]\nlog = \"off\"\n");
     let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
     let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
@@ -4082,7 +4133,7 @@ fn adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running() {
 #[test]
 fn adr_0008_a_replays_call_with_a_finished_calls_id_is_not_running() {
     let env = Env::new("ed-replay-reuse").agent("REUSED_TOOL", "1");
-    env.write_config("[profiles.default]\nlog = false\n");
+    env.write_config("[profiles.default]\nlog = \"off\"\n");
     let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
     writeln!(to_agent, "{}", editor_prompt(3, "hang tool")).unwrap();
     let running = || status_of(&env, "sess-1")["tools"].as_array().is_some_and(|t| !t.is_empty());
@@ -4380,7 +4431,7 @@ fn adr_0002_a_deep_request_that_times_out_is_answered() {
     env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
     env.start(&[]);
     let pid = env.host_pid();
-    env.ok(&["prompt", "send", "sess-1", "odd deep 1000000"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "odd deep 1000000"]);
     let answer = || {
         let ours = |c: &Value| c["id"] == "perm-1" && c.get("method").is_none();
         env.calls().into_iter().find(ours).map(|c| c["result"]["outcome"].clone())
@@ -4447,9 +4498,9 @@ fn adr_0002_a_deep_request_is_let_go_of_when_another_process_fails() {
         let wait = ["event", "wait", session, "--for", what, "--timeout", "10"];
         assert!(wait_for(Duration::from_secs(40), || env.run(&wait).status.success()), "{what}");
     };
-    env.ok(&["prompt", "send", "sess-1", "odd title 200000"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "odd title 200000"]);
     asked("sess-1", "permission");
-    env.ok(&["prompt", "send", "sess-2", "elicit deep 200000"]);
+    env.ok(&["prompt", "send", "sess-2", "--prompt", "elicit deep 200000"]);
     asked("sess-2", "elicitation");
     let gone_files = |pid: u32| {
         for ext in ["json", "sock"] {
@@ -4523,9 +4574,9 @@ fn adr_0002_a_deep_request_is_shown() {
         let env = Env::new(&format!("deep-show-{depth}"));
         env.start(&[]);
         env.ok(&["session", "fork", "sess-1"]);
-        env.ok(&["prompt", "send", "sess-2", "elicit form"]);
+        env.ok(&["prompt", "send", "sess-2", "--prompt", "elicit form"]);
         env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
-        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
         // A million deep is slow to read on a loaded runner: time enough.
         env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
         if depth == 200 {
@@ -4585,7 +4636,7 @@ fn adr_0002_a_deep_request_is_followed() {
         let waited = read_out(&mut wait);
         sleep(Duration::from_millis(300));
         let prompt = format!("odd deep {depth}");
-        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "60", &prompt];
+        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "60", "--prompt", &prompt];
         let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
         let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
         let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
@@ -4635,7 +4686,7 @@ fn adr_0002_a_deep_request_is_notified() {
         let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
         let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
         sleep(Duration::from_millis(300));
-        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
         assert!(wait_for(Duration::from_secs(10), || notified(&out)), "{depth}: not run");
         env.ok(&["permission", "allow", "sess-1", "p1"]);
         env.stop();
@@ -4675,14 +4726,14 @@ fn adr_0002_a_deep_event_is_caught_up() {
         sleep(Duration::from_millis(300));
         kill(watch.id() as i32, libc::SIGSTOP);
         for _ in 0..2 {
-            env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
+            env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
         }
         let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
         let cut = wait_for(Duration::from_secs(10), dropped);
         // Asked for once it is cut off: the request can only reach it from
         // the transcript.
         if cut {
-            env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+            env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
             // A slow runner's process can be busy with the deep line past the
             // 5 seconds a command gives it to answer, or past the wait's 10:
             // it is asked again (#276). The request stays pending until it is
@@ -4717,7 +4768,7 @@ fn adr_0002_a_deep_request_is_logged() {
     for depth in [200, 1_000_000] {
         let env = Env::new(&format!("deep-log-{depth}"));
         env.start(&[]);
-        env.ok(&["prompt", "send", "sess-1", &format!("odd deep {depth}")]);
+        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
         // A slow runner's process can be busy with the deep line past the
         // 10 seconds of a wait: it is asked again, as it stays pending.
         let asked = || {
@@ -4832,8 +4883,8 @@ fn adr_0007_experimental_actions_are_refused_without_opt_in() {
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     let actions: [(&[&str], &str); 10] = [
-        (&["prompt", "send", "sess-1", "hi"], "send"),
-        (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
+        (&["prompt", "send", "sess-1", "--prompt", "hi"], "send"),
+        (&["prompt", "send", "sess-1", "--context", "--prompt", "hi"], "context"),
         (&["queue", "clear", "sess-1", "--context"], "context"),
         (&["prompt", "cancel", "sess-1"], "cancel"),
         (&["permission", "allow", "sess-1", "p1"], "permission"),
@@ -4921,8 +4972,8 @@ fn adr_0002_strict_mode_has_no_experimental_actions() {
     writeln!(to_agent, "{}", editor_prompt(3, "perm edit")).unwrap();
     line_with(&mut from_agent, "session/request_permission");
     let actions: [(&[&str], &str); 7] = [
-        (&["prompt", "send", "sess-1", "hi"], "send"),
-        (&["prompt", "send", "sess-1", "--context", "hi"], "context"),
+        (&["prompt", "send", "sess-1", "--prompt", "hi"], "send"),
+        (&["prompt", "send", "sess-1", "--context", "--prompt", "hi"], "context"),
         (&["prompt", "cancel", "sess-1"], "cancel"),
         (&["permission", "allow", "sess-1", "p1"], "permission"),
         (&["permission", "reject", "sess-1", "p1"], "permission"),
@@ -4949,7 +5000,7 @@ fn adr_0007_send_to_an_editors_session_waits_for_no_turn() {
     let env = Env::new("ex-send");
     env.write_config("[profiles.work.editor]\nexperimental = [\"send\"]\n");
     let (_editor, mut to_agent, mut from_agent) = open_editor_with(&env, &["--profile", "work"]);
-    assert!(env.ok(&["prompt", "send", "sess-1", "reply hi"]).starts_with("delivered"));
+    assert!(env.ok(&["prompt", "send", "sess-1", "--prompt", "reply hi"]).starts_with("delivered"));
     let echo = update(&mut from_agent, "tool_call");
     assert_eq!(
         (&echo["title"], &echo["status"]),
@@ -4959,10 +5010,10 @@ fn adr_0007_send_to_an_editors_session_waits_for_no_turn() {
     // The editor's turn.
     writeln!(to_agent, "{}", editor_prompt(3, "hang")).unwrap();
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
-    let err = env.fails(&["prompt", "send", "sess-1", "more"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "more"]);
     assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
     for flag in ["--steer", "--interrupt"] {
-        let err = env.fails(&["prompt", "send", "sess-1", flag, "more"]);
+        let err = env.fails(&["prompt", "send", "sess-1", flag, "--prompt", "more"]);
         let says = format!("the editor controls this session's turns; {flag} is its call");
         assert!(err.contains(&says), "{err}");
     }
@@ -4973,9 +5024,9 @@ fn adr_0007_send_to_an_editors_session_waits_for_no_turn() {
     writeln!(to_agent, "{cancel}").unwrap();
     assert_eq!(response(&mut from_agent, 3)["result"]["stopReason"], "cancelled");
     // brnr's own turn.
-    env.ok(&["prompt", "send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 3));
-    let err = env.fails(&["prompt", "send", "sess-1", "more"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "more"]);
     assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
     writeln!(to_agent, "{cancel}").unwrap();
     wait_idle(&env);
@@ -4989,11 +5040,11 @@ fn adr_0007_send_to_an_editors_session_waits_for_no_turn() {
 fn adr_0007_context_joins_the_editors_next_prompt() {
     let env = Env::new("ex-context");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["context"]);
-    let err = env.fails(&["prompt", "send", "sess-1", "hi"]);
+    let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "hi"]);
     assert!(err.contains("`send` on an editor's session is experimental"), "{err}");
-    env.ok(&["prompt", "send", "sess-1", "--context", "dropped"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "--prompt", "dropped"]);
     env.ok(&["queue", "clear", "sess-1", "--context"]);
-    env.ok(&["prompt", "send", "sess-1", "--context", "kept"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "--prompt", "kept"]);
     writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
     let echo = update(&mut from_agent, "tool_call");
     assert_eq!(echo["title"], "Context via brnr");
@@ -5020,12 +5071,12 @@ fn adr_0007_messages_can_be_shown_as_user_message_chunks() {
         });
         msg["params"]["update"].clone()
     };
-    env.ok(&["prompt", "send", "sess-1", "reply hi"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "reply hi"]);
     let chunk = echo(&mut from_agent);
     assert_eq!(chunk["sessionUpdate"], "user_message_chunk", "{chunk}");
     assert_eq!(chunk["content"], serde_json::json!({ "type": "text", "text": "reply hi" }));
     wait_idle(&env);
-    env.ok(&["prompt", "send", "sess-1", "--context", "kept"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "--prompt", "kept"]);
     writeln!(to_agent, "{}", editor_prompt(3, "reply ok")).unwrap();
     let chunk = echo(&mut from_agent);
     assert_eq!(chunk["sessionUpdate"], "user_message_chunk", "{chunk}");
@@ -5483,7 +5534,7 @@ fn adr_0002_an_editors_prompt_ends_only_with_its_own_answer() {
 fn adr_0002_an_editors_request_with_a_host_requests_id_is_the_editors() {
     let env = Env::new("id-host").agent("QUIET_MODE", "1");
     let (_editor, mut to_agent, mut from_agent) = experimental_editor(&env, &["send"]);
-    env.ok(&["prompt", "send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let host = env.calls_of("session/prompt")[0]["id"].to_string();
     let params = json!({ "sessionId": "sess-1", "modeId": "plan" });
@@ -5543,7 +5594,7 @@ fn adr_0002_the_editors_cancel_request_is_for_its_own_request() {
     let cancel_request = |id: &str| {
         format!(r#"{{"jsonrpc":"2.0","method":"$/cancel_request","params":{{"requestId":{id}}}}}"#)
     };
-    env.ok(&["prompt", "send", "sess-1", "hang on"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "hang on"]);
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     let host = env.calls_of("session/prompt")[0]["id"].to_string();
     writeln!(to_agent, "{}", cancel_request(&host)).unwrap();

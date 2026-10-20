@@ -53,9 +53,9 @@ the brnr that printed it (`brnr skill`).
 
 ```sh
 brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md   # {session, pid, message}
-brnr prompt send $s --json "now add tests for it"     # {status, session, message}: delivered, held, …
+brnr prompt send $s --json --prompt "now add tests for it"   # {status, session, message}: delivered, held, …
 brnr event wait $s --timeout 600 --json               # until idle; exit 0, 1 or 124
-brnr prompt send $s --wait --timeout 600 --json "what did you change?"   # {session, message, reply, stop_reason, error, tokens, dropped}
+brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?"   # {session, message, reply, stop_reason, error, tokens, dropped}
 brnr event log $s --last 1 --json                     # the latest turn's events, one per line
 brnr session status $s --json                         # state, mode, model, tools, plan, pending, held
 brnr session list --include active --json            # open sessions: session, title, state, pid
@@ -66,8 +66,8 @@ brnr session close $s --json                          # done with it: {session},
 ```
 
 Use `brnr-codex-adapter` for Codex. A start with `--cwd <dir>` works there;
-without it, in the current directory. `prompt send`'s options go before the
-message: every word from its first on is the message's, `--wait` too.
+without it, in the current directory. The message is `--prompt`'s value, as
+given (`--prompt -` reads it from stdin), for `prompt send` as for a start.
 
 ## More, when you need it
 

@@ -222,12 +222,12 @@ action on a session: it stops an editor's process as it does any other.
 ```sh
 brnr session list                  # brnr's sessions: open ones and ended ones (--include active: open only)
 brnr session status $s             # what it's doing: turn, tools, plan, usage, last turn and message
-brnr prompt send $s "also update the changelog"                # held while a turn runs
-brnr prompt send $s --steer "and the tests too"                # into the running turn
-brnr prompt send $s --interrupt "stop, wrong branch"
-brnr prompt send $s --context "the API key is in .env.local"   # added to the next prompt; --replace: instead of the last
-brnr prompt send $s --wait "what did you change?"              # prints the reply
-brnr prompt send $s --file src/api.rs --image screenshot.png "why does this look wrong?"
+brnr prompt send $s --prompt "also update the changelog"               # held while a turn runs
+brnr prompt send $s --steer --prompt "and the tests too"               # into the running turn
+brnr prompt send $s --interrupt --prompt "stop, wrong branch"
+brnr prompt send $s --context --prompt "the API key is in .env.local"  # added to the next prompt; --replace: instead of the last
+brnr prompt send $s --wait --prompt "what did you change?"             # prints the reply
+brnr prompt send $s --file src/api.rs --image screenshot.png --prompt "why does this look wrong?"
 brnr prompt cancel $s              # stop the running turn (held messages are dropped and listed)
 brnr queue list $s                 # held messages and context; brnr queue show $s m3: one in full
 brnr queue clear $s                # drop them (--messages, --context: only those); brnr queue drop $s m3: one
@@ -242,9 +242,9 @@ the new one, with its process's `pid` and the prompt's id as `message`
 that has ended too; commands that need it running say so when it isn't. On an
 editor's session, those that act on it are [experimental](#experimental-actions).
 
-`prompt send`'s options go before the message: from its first word on,
-every word is the message's, as after `--`, so `brnr prompt send $s explain
-ls -h` sends `explain ls -h`. `-` reads the message from stdin, alone.
+The message is `--prompt`'s value, as for `session new`, taken as given:
+`brnr prompt send $s --prompt -h` sends `-h`. `--prompt -` reads it from
+stdin. A word that is no flag's is a usage error.
 
 brnr never sends a second prompt while a turn runs: ACP doesn't say what one
 means, and agents differ. `prompt send` holds the message and sends it as a
@@ -307,7 +307,7 @@ brnr permission reject $s p1       # with its reject_once option; --always: reje
 `allow` and `reject` answer with the request's option of that kind, whatever
 the order the agent gives them in. No other kind stands in for it: a request
 without one, or with two, isn't answered, and the command fails, listing the
-options. `--option <id>` names the option instead (for two of one kind, or a
+options. `--option-id <id>` names the option instead (for two of one kind, or a
 kind ACP doesn't have): one of an ACP kind must be on the verb's side, and the
 always kind with `--always`; one of a kind brnr doesn't know goes with either
 verb. `reject` never answers `cancelled`, which ACP keeps for a cancelled
@@ -604,8 +604,9 @@ the events the process writes on its stdin:
 
 ```toml
 [[profiles.work.bridges]]
-command = ["brnr", "event", "notify", "--stdin", "--",
-           "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
+command = "brnr"
+args = ["event", "notify", "--stdin", "--",
+        "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
 ```
 
 If the bridge's `events` limit what it gets, they must include
@@ -676,7 +677,7 @@ recorded the same way, and the editor gets the replay as the agent sent it.
 Its loads of a session that overlap share one replay and one `history`
 event, with how many `loads`; a recorded replay then has the history once per
 load, each copy marked. brnr's transcript has only what happened through
-brnr: turns taken in the agent's own client, or with `log = false`, aren't
+brnr: turns taken in the agent's own client, or with `log = "off"`, aren't
 in it, and a later load doesn't add them.
 
 With no editor attached brnr is the agent's client: approvals wait for
@@ -738,11 +739,12 @@ writes its transcript, and `session status` says the session is shared.
 ```toml
 [profiles.work]                     # every process of the profile
 agent = ["brnr-claude-adapter"]
-log = "all"                         # "events": no raw ACP; false: no transcripts
+log = "all"                         # "events": no raw ACP; "off": no transcripts
 strict = false                      # stable ACP only
 
 [[profiles.work.bridges]]
-command = ["~/bin/slack-bridge", "--channel", "#agents"]
+command = "~/bin/slack-bridge"      # a program and its arguments, as an MCP server's
+args = ["--channel", "#agents"]
 events = ["permission_request", "turn_ended"]   # omit for every event but acp
 
 [profiles.work.headless]            # brnr session new and resume
@@ -826,7 +828,7 @@ commands catch up: `event watch`, `event notify`, `event wait` and the
 (`was_cut_off`), subscribe again, and read what they missed from the
 transcript, by the events' positions, before going on live; a peer cut off
 is a `peer_cut_off` event to the others. Where the transcript can't have
-it all (`log = false`, `log = "events"` for `acp`, records skipped), or
+it all (`log = "off"`, `log = "events"` for `acp`, records skipped), or
 when cut off 4 times in a row while catching up, the command says what it
 missed, an `events_missed` note (`after_seq`, `until_seq`, `error`), and exits 3.
 Started bridges are cut off as before (ADR 10.2).
@@ -887,7 +889,7 @@ transcript an older brnr wrote, its records naming the session `session_id`
 and the process `host_pid`, isn't read: brnr reads only its own names (ADR
 5.9). `session list` and `session resume` pass it over, `event log` of it
 says an older brnr wrote it, and `brnr doctor` lists it. `log = "events"` leaves out the
-raw file, most of the space; `log = false` writes nothing but the session
+raw file, most of the space; `log = "off"` writes nothing but the session
 locks.
 
 Records skipped behind a slow disk are counted, and a `records_skipped` note
@@ -923,7 +925,7 @@ and a session whose file can't be is served without it, with a
 `session_log_failed` record in the host log saying why. What reads them
 (`session list`, `event log`, `doctor`, …) keeps the same rules: nothing is
 read through a symlink, nor what isn't yours or has another hard link. There
-is no override; `log = false` writes no transcripts.
+is no override; `log = "off"` writes no transcripts.
 
 ## Adapters
 

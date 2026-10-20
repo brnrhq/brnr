@@ -739,7 +739,7 @@ pub(super) fn send(a: &Args) -> Result<ExitCode, Error> {
     let (replace, wait, json_out) = (a.has("--replace"), a.has("--wait"), a.json);
     let timeout = a.number("--timeout");
     let (files, images) = (a.values("--file"), a.values("--image"));
-    let words = a.rest.as_deref().unwrap_or_default();
+    let prompt = a.value("--prompt");
     if timeout.is_some() && !wait {
         return Err(Invalid("--timeout goes with --wait".into()));
     }
@@ -749,17 +749,17 @@ pub(super) fn send(a: &Args) -> Result<ExitCode, Error> {
     if wait && mode == Some("context") {
         return Err(Invalid("--wait needs a turn; --context doesn't start one".into()));
     }
-    let stdin = matches!(words, [one] if one == "-");
-    // What follows would be sent as text, an option there too.
-    if !stdin && words.first().is_some_and(|w| w == "-") {
-        let msg = "- reads the prompt from stdin, and goes alone: options go before it";
-        return Err(Invalid(msg.into()));
+    if prompt.is_some_and(|p| p.trim().is_empty()) {
+        return Err(Invalid("--prompt is empty".into()));
     }
-    let attached = !files.is_empty() || !images.is_empty();
-    if !stdin && !attached && words.join(" ").trim().is_empty() {
-        return Err(Invalid("nothing to send".into()));
+    if prompt.is_none() && files.is_empty() && images.is_empty() {
+        return Err(Invalid("nothing to send: give --prompt, --file or --image".into()));
     }
-    let text_in = if stdin { read_stdin()? } else { words.join(" ") };
+    // What stdin holds isn't the command line's: nothing there fails.
+    let text_in = match prompt {
+        Some("-") => read_stdin()?,
+        p => p.unwrap_or_default().to_owned(),
+    };
     let blocks = attachments(&files, &images)?;
     if text_in.trim().is_empty() && blocks.is_empty() {
         return Err(Failed("nothing to send".into()));

@@ -193,7 +193,7 @@ fn describe(e: &Value, target: &Target, request: &str) {
             None
         }
     };
-    if let Some(secs) = e["timeout_seconds"].as_u64() {
+    if let Some(secs) = e["timeout_left"].as_u64() {
         // As the timeout answers (ADR 4.5): `cancel`, never `decline`.
         outln!("cancelled in {secs}s if nobody answers");
     }

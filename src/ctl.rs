@@ -109,8 +109,8 @@ session
 
 prompt
   brnr prompt send <session> [--steer | --interrupt | --context [--replace]]
-                   [--file <path>]... [--image <path>]... [--wait [--timeout <s>]] [--json]
-                   (<text>... | -)
+                   [--prompt <text> | -] [--file <path>]... [--image <path>]...
+                   [--wait [--timeout <s>]] [--json]
   brnr prompt cancel <session> [--keep-held] [--json]
   brnr prompt commands <session> [--json]
 
@@ -123,8 +123,8 @@ queue
 permission
   brnr permission requests [<session>] [--json]
   brnr permission show <session> <request> [--json]
-  brnr permission allow <session> <request> [--always] [--option <id>] [--json]
-  brnr permission reject <session> <request> [--always] [--option <id>] [--json]
+  brnr permission allow <session> <request> [--always] [--option-id <id>] [--json]
+  brnr permission reject <session> <request> [--always] [--option-id <id>] [--json]
 
 elicitation
   brnr elicitation requests [<session>] [--json]
@@ -376,7 +376,7 @@ fn ps(a: &Args) -> Result<(), String> {
                 "owner": if host.status.is_some() { info["owner"].clone() } else { json!("unreachable") },
                 "agent": agent_name(&info["agent"]),
                 "sessions": sessions,
-                "uptime_seconds": info["uptime_seconds"],
+                "uptime": info["uptime"],
                 "cwd": info["cwd"],
             })
         })
@@ -400,7 +400,7 @@ fn ps(a: &Args) -> Result<(), String> {
             text(&r["owner"]),
             text(&r["agent"]),
             if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
-            r["uptime_seconds"].as_u64().map_or("?".to_owned(), duration),
+            r["uptime"].as_u64().map_or("?".to_owned(), duration),
         ]);
     }
     print_table(table);
@@ -539,7 +539,7 @@ fn status(a: &Args) -> Result<(), String> {
         "cwd": x["cwd"],
         "forked_from": forked_from(x),
         "state": x["state"],
-        "turn_seconds": x["turn_seconds"],
+        "turn_elapsed": x["turn_elapsed"],
         "mode": x["mode"],
         "model": x["model"],
         "tools": x["tools"],
@@ -556,7 +556,7 @@ fn status(a: &Args) -> Result<(), String> {
         "last_active": x["last_active"],
         "stop_when_idle": st["stop_when_idle"],
         "stopping": st["stopping"],
-        "uptime_seconds": st["uptime_seconds"],
+        "uptime": st["uptime"],
     });
     if json_out {
         return print_json(&report);
@@ -581,7 +581,7 @@ fn describe_status(x: &Value, arg: &str) -> String {
         "process {}: {agent}, {}, up {}\n",
         x["pid"],
         text(&x["owner"]),
-        duration(x["uptime_seconds"].as_u64().unwrap_or(0))
+        duration(x["uptime"].as_u64().unwrap_or(0))
     ));
     let shared_by: Vec<String> =
         x["shared_by"].as_array().into_iter().flatten().map(Value::to_string).collect();
@@ -620,7 +620,7 @@ fn describe_status(x: &Value, arg: &str) -> String {
     // The state as JSON has it: `busy` is working, `waiting` is a turn
     // waiting for an approval or for input (ADR 4.5); how long when the
     // turn's start is known.
-    let working = x["turn_seconds"].as_u64().map(|secs| format!("working for {}", duration(secs)));
+    let working = x["turn_elapsed"].as_u64().map(|secs| format!("working for {}", duration(secs)));
     let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
     let input = pending("elicitations").is_some() && pending("pending").is_none();
     let waiting = if input { "input" } else { "an approval" };
@@ -786,11 +786,11 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
 }
 
 /// `permission allow` and `reject` (`cmd`): the request's option of one
-/// kind, or the one `--option` names; the host picks it, and says why it
+/// kind, or the one `--option-id` names; the host picks it, and says why it
 /// can't (ADR 8.1).
 fn answer(a: &Args, cmd: &str) -> Result<(), String> {
     let [arg, request_id] = &a.positional[..] else { unreachable!("the table has two") };
-    let (option, always, json_out) = (a.value("--option"), a.has("--always"), a.json);
+    let (option_id, always, json_out) = (a.value("--option-id"), a.has("--always"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let req = json!({
@@ -798,7 +798,7 @@ fn answer(a: &Args, cmd: &str) -> Result<(), String> {
         "session": session,
         "request": request_id,
         "always": always,
-        "option": option,
+        "option_id": option_id,
     });
     let response = host.call(&req)?;
     let outcome = &response["outcome"];
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn adr_0008_status_says_the_sessions_state() {
         let state = |state: &str, secs: Value| {
-            let x = json!({ "session": "s", "state": state, "turn_seconds": secs });
+            let x = json!({ "session": "s", "state": state, "turn_elapsed": secs });
             let text = describe_status(&x, "s");
             text.lines().nth(3).unwrap_or_default().to_owned()
         };

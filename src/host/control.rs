@@ -36,7 +36,7 @@
 //!   says only where; the events are in the transcript
 //! - `pending`: permission requests waiting for an answer, in full, and
 //!   beside them `elicitations`, the agent's requests for input (ADR 4.5)
-//! - `allow` / `reject` `{session, request, always?, option?}`: with the
+//! - `allow` / `reject` `{session, request, always?, option_id?}`: with the
 //!   option of kind `allow_once` (`allow_always` with `always`), or
 //!   `reject_once` (`reject_always`), or the option named (ADR 8.1)
 //! - `elicitation` `{session, request, action: accept|decline|cancel,
@@ -346,11 +346,11 @@ impl Host {
         // As the request has it: whoever started the process found a bare
         // name next to brnr, as they did the agent's (see request.rs), so
         // `brnr` is this brnr, whatever the editor's PATH.
-        let program = Path::new(&bridge.command[0]);
+        let program = Path::new(&bridge.command);
         let name = program.file_name().unwrap_or(program.as_os_str()).to_string_lossy();
         let label = format!("{name}#{n}");
         let mut cmd = Command::new(program);
-        cmd.args(&bridge.command[1..])
+        cmd.args(&bridge.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -369,7 +369,7 @@ impl Host {
                 Ok(())
             })
         };
-        let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command[0]))?;
+        let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command))?;
         let pid = child.id() as pid_t;
         let peer = NEXT_PEER.fetch_add(1, Relaxed);
         let (out_tx, out_rx, queued) = Queue::new();
@@ -676,13 +676,19 @@ impl Host {
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
+        // Its old name, refused rather than ignored: the option it named
+        // would not be the one answered (ADR 8.1, P3).
+        if req.get("option").is_some() {
+            let cmd = req["cmd"].as_str().unwrap_or("allow");
+            return Err(format!("{cmd} takes option_id, not option"));
+        }
         let resolved = self.approvals.answer(
             Kind::Permission,
             &handle,
             Some(&session),
             &by,
             self.client(),
-            |r| approvals::choose(r, choice, always, req["option"].as_str()),
+            |r| approvals::choose(r, choice, always, req["option_id"].as_str()),
         )?;
         let outcome = resolved.answer.clone();
         self.resolved(resolved);
@@ -708,7 +714,7 @@ impl Host {
                     "kind": r.params["toolCall"]["kind"],
                     "tool_call": r.params["toolCall"],
                     "options": r.params["options"],
-                    "timeout_seconds": r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
+                    "timeout_left": r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
                 })
             })
             .collect()
@@ -756,7 +762,7 @@ impl Host {
                 e["owner"] = json!(owner);
                 e["answerable"] = json!(why_not.is_none());
                 e["why_not"] = json!(why_not);
-                e["timeout_seconds"] = json!(
+                e["timeout_left"] = json!(
                     r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs())
                 );
                 e
@@ -773,7 +779,7 @@ impl Host {
         report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
         report["elicitations"] =
             json!(self.approvals.held().filter(|r| r.is_elicitation()).count());
-        report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
+        report["uptime"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
@@ -811,7 +817,7 @@ impl Host {
                     "cwd": s.cwd.to_string_lossy(),
                     "forked_from": s.forked_from,
                     "busy": busy,
-                    "turn_seconds": s.turns.running_for().map(|d| d.as_secs()),
+                    "turn_elapsed": s.turns.running_for().map(|d| d.as_secs()),
                     "prompts": s.turns.prompts(),
                     "held": s.turns.held(),
                     "context": s.turns.context().len(),

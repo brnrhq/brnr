@@ -516,8 +516,8 @@ fn config_file(r: &mut Report) {
         for bridge in &profile.bridges {
             if let Err(e) = check_bridge(bridge) {
                 problems.push(e);
-            } else if find_program(&bridge.command[0]).is_none() {
-                problems.push(format!("bridge {} not found", bridge.command[0]));
+            } else if find_program(&bridge.command).is_none() {
+                problems.push(format!("bridge {} not found", bridge.command));
             }
         }
         if problems.is_empty() {

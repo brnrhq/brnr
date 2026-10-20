@@ -10,7 +10,6 @@
 //! a value is never a positional. One positional too many, or one too few,
 //! is a usage error, which the command line prints as the verb's usage.
 
-use std::iter;
 use std::str::FromStr;
 
 /// What a flag takes after it, and so what `--flag` alone fails with
@@ -68,9 +67,6 @@ pub(super) enum Rest {
     /// `--` and the words after it: an agent's argument vector, or `event
     /// notify`'s command.
     Dashed,
-    /// `prompt send`'s prompt: from the first word after the positionals,
-    /// or after `--`, every word, flags too.
-    Words,
 }
 
 /// A verb's arguments: `brnr <cmd> <verb>`, or `brnr <cmd>` without a group.
@@ -187,18 +183,17 @@ pub(super) const VERBS: &[Spec] = &[
             Flag("--cwd", One("a directory")),
         ])
         .rest(Rest::Dashed),
-    verb("prompt", "send", SESSION)
-        .flags(&[
-            switch("--steer"),
-            switch("--interrupt"),
-            switch("--context"),
-            switch("--replace"),
-            Flag("--file", Many("a value")),
-            Flag("--image", Many("a value")),
-            switch("--wait"),
-            Flag("--timeout", Seconds),
-        ])
-        .rest(Rest::Words),
+    verb("prompt", "send", SESSION).flags(&[
+        switch("--steer"),
+        switch("--interrupt"),
+        switch("--context"),
+        switch("--replace"),
+        Flag("--prompt", One("a value")),
+        Flag("--file", Many("a value")),
+        Flag("--image", Many("a value")),
+        switch("--wait"),
+        Flag("--timeout", Seconds),
+    ]),
     verb("prompt", "cancel", SESSION).flags(&[switch("--keep-held")]),
     verb("prompt", "commands", SESSION),
     verb("queue", "list", SESSION),
@@ -208,9 +203,9 @@ pub(super) const VERBS: &[Spec] = &[
     verb("permission", "requests", SESSION).optional(),
     verb("permission", "show", REQUEST),
     verb("permission", "allow", REQUEST)
-        .flags(&[switch("--always"), Flag("--option", One("an id"))]),
+        .flags(&[switch("--always"), Flag("--option-id", One("an id"))]),
     verb("permission", "reject", REQUEST)
-        .flags(&[switch("--always"), Flag("--option", One("an id"))]),
+        .flags(&[switch("--always"), Flag("--option-id", One("an id"))]),
     verb("elicitation", "requests", SESSION).optional(),
     verb("elicitation", "show", REQUEST).flags(ELICITATION).instead("--pid"),
     verb("elicitation", "accept", REQUEST)
@@ -299,7 +294,7 @@ pub(super) struct Args {
     /// The flags given, in order, each with its value if it takes one.
     given: Vec<(&'static str, Option<String>)>,
     pub(super) positional: Vec<String>,
-    /// What followed `--`, if it was given; for `prompt send`, its prompt.
+    /// What followed `--`, if it was given.
     pub(super) rest: Option<Vec<String>>,
     pub(super) json: bool,
 }
@@ -339,8 +334,6 @@ impl Spec {
                 return Err(Invalid(format!("unknown option: {arg}")));
             } else if a.positional.len() < self.positionals.len() {
                 a.positional.push(arg.clone());
-            } else if self.rest == Rest::Words {
-                a.rest = Some(iter::once(arg).chain(it.by_ref()).cloned().collect());
             } else {
                 return Err(Error::Usage);
             }
@@ -356,27 +349,21 @@ impl Spec {
 
     /// Whether `args` ask for the verb's usage: `-h` or `--help` as an
     /// option, not a flag's value, before any `--`, after which they are the
-    /// agent's or the command's (ADR 8.1); for `prompt send`, also before its
-    /// prompt.
+    /// agent's or the command's (ADR 8.1).
     pub(super) fn asks_help(&self, args: &[String]) -> bool {
         let help = |a: &str| a == "-h" || a == "--help";
-        let (mut it, mut positionals) = (args.iter(), 0);
+        let mut it = args.iter();
         while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--" => break,
-                a if help(a) => return true,
-                // `--` ends brnr's options even where a value was due
-                // (ADR 8.1).
-                a if self.takes_value(a) => {
-                    if it.next().is_none_or(|v| v == "--") {
-                        break;
-                    }
-                }
-                a if a.starts_with("--") => {}
-                _ if self.rest != Rest::Words || positionals < self.positionals.len() => {
-                    positionals += 1;
-                }
-                _ => break,
+            if arg == "--" {
+                break;
+            }
+            if help(arg) {
+                return true;
+            }
+            // A flag's value is skipped, whatever it is; `--` ends brnr's
+            // options even where a value was due (ADR 8.1).
+            if self.takes_value(arg) && it.next().is_none_or(|v| v == "--") {
+                break;
             }
         }
         false
@@ -455,7 +442,7 @@ mod tests {
 
     /// For every verb, a flag's value is the flag's, before the positionals
     /// or after them, whatever it looks like: never a positional, `--json`,
-    /// help, or the start of a prompt.
+    /// or help.
     #[test]
     fn adr_0008_a_flags_value_is_never_a_positional() {
         for spec in VERBS {
@@ -557,24 +544,21 @@ mod tests {
         assert_eq!(a.rest, Some(words(&["x"])));
     }
 
-    /// `prompt send`'s prompt starts at its first word after the session, or
-    /// after `--`: from there on every word is the prompt's.
+    /// `prompt send`'s prompt is `--prompt`'s value, taken as given, as a
+    /// start's is: a word left over is a usage error, and `--` is unknown.
     #[test]
-    fn adr_0008_a_prompt_starts_after_the_session() {
+    fn adr_0008_a_prompt_is_a_flags_value() {
         let send = spec("prompt", Some("send")).unwrap();
-        let a = send.parse(&words(&["--wait", "s", "--file", "f", "hi", "--json", "-h"])).unwrap();
-        assert_eq!(
-            (a.positional.as_slice(), a.values("--file")),
-            (&words(&["s"])[..], words(&["f"]))
-        );
-        assert_eq!((a.rest, a.json), (Some(words(&["hi", "--json", "-h"])), false));
-        assert_eq!(
-            send.parse(&words(&["s", "--", "--wait"])).unwrap().rest,
-            Some(words(&["--wait"]))
-        );
-        assert!(send.asks_help(&words(&["s", "--wait", "-h", "hi"])));
-        assert!(!send.asks_help(&words(&["s", "hi", "-h"])));
-        assert!(!send.asks_help(&words(&["s", "--", "-h"])));
+        let a = send.parse(&words(&["--wait", "s", "--file", "f", "--prompt", "-h"])).unwrap();
+        assert_eq!(a.positional, words(&["s"]));
+        assert_eq!((a.values("--file"), a.value("--prompt")), (words(&["f"]), Some("-h")));
+        assert_eq!(send.parse(&words(&["s", "hi"])).err(), Some(Error::Usage));
+        assert_eq!(send.parse(&words(&["s", "--prompt", "hi", "there"])).err(), Some(Error::Usage));
+        let unknown = Some(Error::Invalid("unknown option: --".into()));
+        assert_eq!(send.parse(&words(&["s", "--", "hi"])).err(), unknown);
+        assert!(send.asks_help(&words(&["s", "--wait", "-h"])));
+        assert!(!send.asks_help(&words(&["s", "--prompt", "-h"])));
+        assert!(!send.asks_help(&words(&["s", "--prompt", "--help"])));
         let status = spec("session", Some("status")).unwrap();
         assert!(status.asks_help(&words(&["--help"])));
         assert!(!spec("session", Some("new")).unwrap().asks_help(&words(&["--", "-h"])));

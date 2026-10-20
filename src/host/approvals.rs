@@ -530,13 +530,13 @@ pub(super) fn choose(
                 [chosen] => chosen,
                 [] => {
                     return Err(format!(
-                        "{handle} has no {wanted} option ({}); --option <id> picks one",
+                        "{handle} has no {wanted} option ({}); --option-id <id> picks one",
                         listed()
                     ));
                 }
                 _ => {
                     return Err(format!(
-                        "{handle} has {} {wanted} options ({}); --option <id> picks one",
+                        "{handle} has {} {wanted} options ({}); --option-id <id> picks one",
                         of_kind.len(),
                         listed()
                     ));

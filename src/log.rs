@@ -1,7 +1,7 @@
 //! Transcripts (ADR 5.1 in docs/adr): two JSONL files per ACP session, its
 //! events and its raw ACP, plus one per host for what belongs to no session
 //! (see paths.rs for where they go). `log = "events"` leaves out the raw
-//! ACP; `log = false` is no logger at all. Records are written by a
+//! ACP; `log = "off"` is no logger at all. Records are written by a
 //! background thread so logging can never slow down or break forwarding;
 //! [`Sink::when_written`] says when what was recorded is written, for
 //! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.

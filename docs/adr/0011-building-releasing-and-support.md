@@ -70,8 +70,8 @@ prebuilt adapters.
   (ADR 3.3). They pass the path found to the process, which starts the
   agent. The rule is fixed and documented (P4).
 - A started bridge's bare command (`~` expanded) is looked for the same
-  way, in the same place. So `command = ["brnr", "event", "notify", …]`
-  works from an editor whose PATH lacks brnr, and a bridge linked into
+  way, in the same place. So `command = "brnr"`, `args = ["event",
+  "notify", …]` works from an editor whose PATH lacks brnr, and a bridge linked into
   Homebrew's `bin` is found on Linux too (ADR 5.7, ADR 5.8).
 
 **Why.** An editor's PATH often lacks Homebrew's `bin`, and on Linux the

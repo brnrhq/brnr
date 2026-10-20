@@ -158,6 +158,27 @@ brnr's own conventions:
 - **Breaking:** a profile's bridge whose `events` names a note
   (`records_skipped`, `events_missed`) fails to load, and `subscribe` to
   one is refused: the process never sends one (ADR 5.9, #314).
+- **Breaking:** `permission allow` and `reject` name an option with
+  `--option-id <id>`, ACP's `optionId`, not `--option <id>`, which is a
+  config option's only and an unknown option there (exit 2). The socket's
+  `allow` and `reject` take `option_id`, and refuse `option`, answering
+  nothing (ADR 8.1, #311).
+- **Breaking:** `prompt send` takes its prompt as `--prompt <text>`, or
+  `--prompt -` for stdin, as `session new` does: `brnr prompt send $s
+  --prompt "fix it"`. Words after the session are a usage error (exit 2),
+  and the rule that options go before the prompt is gone (ADR 8.1, #311).
+- **Breaking:** a duration in `--json` and the socket's replies has no unit
+  in its name: `uptime_seconds` is `uptime` (`process list`, `session
+  status`), `turn_seconds` `turn_elapsed` (`session status`) and
+  `timeout_seconds` `timeout_left` (`permission show`, `elicitation show`)
+  (ADR 8.1, #311).
+- **Breaking:** a profile's `log` is a string, `"all"`, `"events"` or
+  `"off"`: `log = false` is `log = "off"`, and `true` and `false` fail to
+  load, as `brnr doctor` says (ADR 6.1, #311).
+- **Breaking:** a bridge is a program and its arguments, as an MCP server
+  is: `command = "brnr"` and `args = ["event", "notify", …]`, not
+  `command = ["brnr", "event", "notify", …]`. A list `command` fails to
+  load, as `brnr doctor` says (ADR 6.1, #311).
 
 ### Fixed
 

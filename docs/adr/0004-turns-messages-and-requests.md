@@ -288,7 +288,7 @@ Answering a permission request:
   order in the request. No other kind stands in for it, and `reject` never
   answers `cancelled`: a request without that kind, or with two options of
   it, fails, listing the options, and nothing is answered (P4, P7).
-- `--option <id>` names the option instead, for a kind brnr doesn't know
+- `--option-id <id>` names the option instead, for a kind brnr doesn't know
   or two options of one kind. One of an ACP kind must be on the verb's side
   (`allow_*` for `allow`), and with `--always` of the always kind; one of a
   kind brnr doesn't know goes with either verb.
@@ -329,7 +329,7 @@ Socket and bridges (ADR 5.7):
 
 - `pending` answers with `elicitations` beside `pending`, each in full,
   with `answerable` and `why_not`.
-- `allow` and `reject`, with `always` and `option`, answer a permission
+- `allow` and `reject`, with `always` and `option_id`, answer a permission
   request (ADR 8.1). `elicitation {session, request, action:
   accept|decline|cancel, content?}` answers an elicitation, `session` null
   for a request-scoped one. The turn's `cancel` keeps its name.

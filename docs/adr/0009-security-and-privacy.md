@@ -201,7 +201,7 @@ keeps P9.
   only what it opened, through it (`fchmod`): it doesn't look below a
   symlink, nor change what is put at a name after it looked.
   `transcript.rs` holds every read.
-- There is no override. `log = false` (ADR 5.1) is the way to write
+- There is no override. `log = "off"` (ADR 5.1) is the way to write
   nothing, and a transcript to share is copied out.
 
 **Consequences.**

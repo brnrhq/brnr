@@ -235,7 +235,7 @@ impl<'a> Session<'a> {
                 let s = host.session(&self.id);
                 let events = s
                     .and_then(|s| s["events_log"].as_str())
-                    .ok_or("this process keeps no transcript (log = false)")?;
+                    .ok_or("this process keeps no transcript (log = \"off\")")?;
                 let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
                 Ok(Files { events: PathBuf::from(events), acp, host: Some(host) })
             }
@@ -508,14 +508,14 @@ mod tests {
         r.err().expect("refused")
     }
 
-    /// A process that keeps no transcript (`log = false`) has none to read.
+    /// A process that keeps no transcript (`log = "off"`) has none to read.
     #[test]
     fn adr_0005_a_session_without_a_transcript_has_none_to_read() {
         let hosts = [host(7, serving(&[json!({ "session": "s", "events_log": null })], &[]))];
         let (s, _) = find(&hosts, Some((7, None)), None);
         assert_eq!(
             s.files().err().as_deref(),
-            Some("this process keeps no transcript (log = false)")
+            Some("this process keeps no transcript (log = \"off\")")
         );
         let (s, _) = find(&[], None, ended());
         let files = s.files().expect("files");
