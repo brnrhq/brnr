@@ -222,7 +222,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
         let agent = agent_name(&host.info()["agent"]);
         for s in host.sessions() {
             rows.push(json!({
-                "session": s["session_id"],
+                "session": s["session"],
                 "title": s["title"],
                 "state": s["state"],
                 "pid": pid,
@@ -265,7 +265,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
     }
     for p in inactive_sessions(hosts) {
         rows.push(json!({
-            "session": p["session_id"],
+            "session": p["session"],
             "title": null,
             "state": "inactive",
             "pid": null,

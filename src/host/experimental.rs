@@ -27,7 +27,7 @@
 
 use serde_json::{Map, Value, json};
 
-use super::approvals::{AgentRequest, Answered};
+use super::approvals::{AgentRequest, Answered, Who};
 use super::strict::Beyond;
 use super::turns::Activity;
 use super::{Host, text_block};
@@ -86,7 +86,7 @@ impl Host {
     /// failed: the status the agent's own updates take it on from, so
     /// neither contradicts the other. An allow or a reject, an accept or a
     /// decline, is also told in the session, saying by whom.
-    pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &str) {
+    pub(super) fn withdraw(&mut self, req: &AgentRequest, how: &'static str, by: &Who) {
         let title = req.title();
         let params = json!({ "requestId": req.id });
         let msg = json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": params });
@@ -114,7 +114,7 @@ impl Host {
     /// `$/cancel_request`) is told to it in the session.
     pub(super) fn late_answer(&mut self, id: &Value, answered: Answered, msg: &Map<String, Value>) {
         let Answered { session, title, how, by } = answered;
-        let event = json!({ "event": "editor-response-dropped", "id": id, "answered": how });
+        let event = json!({ "event": "editor_response_dropped", "rpc_id": id, "answered": how });
         self.sink.note(session.as_deref(), event);
         if msg.contains_key("result")
             && let Some(session) = session.filter(|s| self.find(s).is_some())
@@ -208,10 +208,14 @@ impl Host {
 }
 
 /// Who answered a request outside the editor, as the editor is told it.
-fn who(by: &str) -> String {
-    match by {
-        "cancel" => "through brnr, with its turn".to_owned(),
-        _ if by.starts_with("socket#") => format!("through brnr's control socket ({by})"),
-        _ => format!("by brnr's bridge {by}"),
+fn who(by: &Who) -> String {
+    match (&by.peer, by.reason) {
+        (Some(peer), _) if peer.starts_with("socket#") => {
+            format!("through brnr's control socket ({peer})")
+        }
+        (Some(peer), _) => format!("by brnr's bridge {peer}"),
+        (None, Some("timeout")) => "by brnr, its time up".to_owned(),
+        (None, Some("cancel")) => "through brnr, with its turn".to_owned(),
+        (None, _) => "through brnr".to_owned(),
     }
 }

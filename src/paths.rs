@@ -87,16 +87,7 @@ pub(crate) fn host_log(host_id: &str) -> PathBuf {
 }
 
 pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    in_folder(&project_key(cwd), session)
-}
-
-/// Where [`session_log`] was before ADR 9.2's hash: in the folder
-/// [`claude_project_key`] names.
-pub(crate) fn claude_session_log(cwd: &Path, session: &str) -> PathBuf {
-    in_folder(&claude_project_key(cwd), session)
-}
-
-fn in_folder(folder: &str, session: &str) -> PathBuf {
+    let folder = project_key(cwd);
     state_dir().join("projects").join(folder).join(format!("{}.jsonl", file_name(session)))
 }
 

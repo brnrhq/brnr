@@ -9,11 +9,11 @@
 //! it recorded until then (`logged`), reads what lies between from the
 //! transcript: the host log, which names each session's files, and the
 //! files of the session it follows (every session's, for a whole process).
-//! A process that has gone is asked of its host log instead (`peer-dropped`),
+//! A process that has gone is asked of its host log instead (`peer_dropped`),
 //! and its transcript is read to its end. Where the transcript can't have
 //! all of it (no transcript, no raw ACP, records not written), the command
-//! says what it missed, as an `events-missed` note shaped as ADR 10.1's
-//! `records-skipped`, and exits [`MISSED`].
+//! says what it missed, as an `events_missed` note shaped as ADR 10.1's
+//! `records_skipped`, and exits [`MISSED`].
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -36,6 +36,8 @@ pub(super) struct Follow {
     /// The process's control socket.
     pub(super) socket: PathBuf,
     pub(super) host_id: String,
+    /// The process's pid.
+    pub(super) pid: Value,
     /// The process's host log, which names its sessions' files.
     pub(super) host_log: PathBuf,
     /// What the process calls this connection.
@@ -52,7 +54,7 @@ pub(super) struct Follow {
 
 impl Follow {
     /// From a subscription's answer, or a start's ready report, `{peer,
-    /// host_id, seq}`; none from a process that doesn't say.
+    /// host_id, pid, seq}`; none from a process that doesn't say.
     pub(super) fn new(
         socket: PathBuf,
         answer: &Value,
@@ -64,6 +66,7 @@ impl Follow {
             socket,
             host_log: paths::host_log(host_id),
             host_id: host_id.to_owned(),
+            pid: answer["pid"].clone(),
             peer: answer["peer"].as_str()?.to_owned(),
             events: events.iter().map(|e| e.to_string()).collect(),
             session: session.map(str::to_owned),
@@ -76,26 +79,27 @@ impl Follow {
     /// up to `until` (none: to the end of a process that has gone).
     pub(super) fn missed(&self, until: Option<u64>, why: &str) -> Value {
         json!({
-            "event": "events-missed",
+            "event": "events_missed",
             "ts": log::rfc3339(std::time::SystemTime::now()),
             "host_id": self.host_id,
+            "pid": self.pid,
             "peer": self.peer,
-            "after": self.last,
-            "until": until,
+            "after_seq": self.last,
+            "until_seq": until,
             "error": why,
         })
     }
 
     /// Whether the process, having gone, had cut it off: its host log's
-    /// `peer-dropped` says so.
+    /// `peer_dropped` says so.
     pub(super) fn cut_off_before_it_went(&self) -> bool {
         let Ok(file) = transcript::open(&self.host_log) else { return false };
         let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
         let ours =
-            |r: &Value| r["event"]["event"] == "peer-dropped" && r["event"]["peer"] == *self.peer;
+            |r: &Value| r["event"]["event"] == "peer_dropped" && r["event"]["peer"] == *self.peer;
         lines
-            .filter(|l| l.windows(13).any(|w| w == b"\"peer-dropped"))
-            .filter_map(|l| transcript::record(&l))
+            .filter(|l| l.windows(13).any(|w| w == b"\"peer_dropped"))
+            .filter_map(|l| transcript::head(&l))
             .any(|r| ours(&r))
     }
 
@@ -119,7 +123,7 @@ impl Follow {
         }
         let mut events = std::mem::take(&mut found.events);
         events.sort_by_key(|(seq, _)| *seq);
-        // `exited` is in each session's file and the host log.
+        // `process_exited` is in each session's file and the host log.
         events.dedup_by_key(|(seq, _)| *seq);
         Ok(events.into_iter().map(|(_, e)| e).collect())
     }
@@ -169,12 +173,12 @@ impl Found<'_> {
         // An ACP message is an `acp` event, as `event log` has it.
         let Some(mut event) = transcript::event(record) else { return Ok(()) };
         match event["event"].as_str() {
-            Some("session-opened") if event["session_id"].is_string() => {
-                if f.session.as_ref().is_some_and(|s| event["session_id"] != **s) {
+            Some("session_opened") => {
+                if f.session.as_ref().is_some_and(|s| event["session"] != **s) {
                     return Ok(());
                 }
-                let file = PathBuf::from(event["file"].as_str().unwrap_or_default());
-                let raw = event["acp_file"].as_str().map(PathBuf::from);
+                let file = PathBuf::from(event["events_log"].as_str().unwrap_or_default());
+                let raw = event["acp_log"].as_str().map(PathBuf::from);
                 if acp && raw.is_none() {
                     return Err("the process keeps no raw ACP (log = \"events\")".into());
                 }
@@ -185,7 +189,7 @@ impl Found<'_> {
                 }
             }
             // A gap where what it missed was (ADR 10.1).
-            Some("records-skipped") => {
+            Some("records_skipped") => {
                 let (first, last) = (event["first_seq"].as_u64(), event["last_seq"].as_u64());
                 if let (Some(first), Some(last)) = (first, last)
                     && last > f.last

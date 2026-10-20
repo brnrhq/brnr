@@ -90,7 +90,7 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
                 "owner": e["owner"],
                 "mode": e["mode"],
                 "scope": e["scope"],
-                "message": e["message"],
+                "text": e["text"],
             })
         };
         rows.extend(pending.elicitations(only.as_deref()).map(row));
@@ -117,7 +117,7 @@ fn list(rows: &Value, json_out: bool) -> Result<(), String> {
             None => format!("--pid {}", r["pid"]),
         };
         let mode = text(&r["mode"]);
-        table.push([session, text(&r["request"]), text(&r["owner"]), mode, text(&r["message"])]);
+        table.push([session, text(&r["request"]), text(&r["owner"]), mode, text(&r["text"])]);
     }
     print_table(table);
     Ok(())
@@ -147,10 +147,10 @@ fn describe(e: &Value, target: &Target, request: &str) {
         Some(session) => outln!("{request}, session {session}{by}"),
         None => outln!("{request}, process {}, outside any session{by}", target.host.id()),
     }
-    outln!("{}", text(&e["message"]).trim_end());
+    outln!("{}", text(&e["text"]).trim_end());
     let scope = match e["scope"].as_str() {
-        Some("tool_call") => format!("tool call {}", text(&e["tool_call"])),
-        Some("request") => format!("request {}", e["scope_request"]),
+        Some("tool_call") => format!("tool call {}", text(&e["tool_call_id"])),
+        Some("request") => format!("request {}", e["scope_request_id"]),
         scope => scope.unwrap_or("?").to_owned(),
     };
     let mode = text(&e["mode"]);

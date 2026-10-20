@@ -140,6 +140,38 @@ pub(super) struct Client {
     pub(super) accepting: bool,
 }
 
+/// Who answered a request, as its `permission_resolved` or
+/// `elicitation_resolved` says (ADR 5.9): `by`, `editor` or `control`; the
+/// connection that asked (`peer`), where there is one; and why, where it
+/// wasn't asked: its turn cancelled (`cancel`), or its time up (`timeout`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Who {
+    pub(super) by: &'static str,
+    pub(super) peer: Option<String>,
+    pub(super) reason: Option<&'static str>,
+}
+
+impl Who {
+    pub(super) const EDITOR: Who = Who { by: "editor", peer: None, reason: None };
+
+    /// A bridge's or the CLI's answer, through connection `peer`.
+    pub(super) fn peer(peer: Option<String>) -> Who {
+        Who { by: "control", peer, reason: None }
+    }
+
+    /// brnr's own, for `reason`: `cancel` or `timeout`.
+    pub(super) fn because(reason: &'static str) -> Who {
+        Who { by: "control", peer: None, reason: Some(reason) }
+    }
+
+    /// Its fields, into `event`.
+    pub(super) fn add_to(&self, event: &mut Value) {
+        event["by"] = json!(self.by);
+        event["peer"] = json!(self.peer);
+        event["reason"] = json!(self.reason);
+    }
+}
+
 /// A request ended, and what the host is to do for it, in this order.
 pub(super) struct Resolved {
     pub(super) req: AgentRequest,
@@ -151,7 +183,7 @@ pub(super) struct Resolved {
     pub(super) reply: Option<Value>,
     /// The host answered one the editor was shown: it is withdrawn from the
     /// editor, told `how` and by whom (see experimental.rs).
-    pub(super) withdraw: Option<(&'static str, String)>,
+    pub(super) withdraw: Option<(&'static str, Who)>,
     /// `permission_resolved` or `elicitation_resolved`; none for a request
     /// brnr doesn't hold.
     pub(super) event: Option<Value>,
@@ -191,8 +223,8 @@ pub(super) struct Answered {
     pub(super) title: String,
     /// `allowed`, `rejected` or `cancelled`; `accepted` or `declined`.
     pub(super) how: &'static str,
-    /// Who answered it: `cancel`, or a peer's label.
-    pub(super) by: String,
+    /// Who answered it.
+    pub(super) by: Who,
 }
 
 /// What is kept of a URL elicitation held or accepted, until the agent says
@@ -278,7 +310,7 @@ impl Approvals {
     pub(super) fn editor_answer(&mut self, key: &str, msg: &Map<String, Value>) -> EditorAnswer {
         if let Some(pos) = self.requests.iter().position(|r| r.key == key) {
             let result = msg.get("result").cloned().unwrap_or(Value::Null);
-            let resolved = self.end(pos, End::Editor(result), "editor", false);
+            let resolved = self.end(pos, End::Editor(result), &Who::EDITOR, false);
             return EditorAnswer::Resolved(Box::new(resolved));
         }
         match self.answered.remove(key) {
@@ -295,7 +327,7 @@ impl Approvals {
         kind: Kind,
         handle: &str,
         session: Option<&str>,
-        by: &str,
+        by: &Who,
         client: Client,
         answer: impl FnOnce(&AgentRequest) -> Result<Answer, String>,
     ) -> Result<Resolved, String> {
@@ -322,8 +354,8 @@ impl Approvals {
     /// ACP: a client that cancels a turn answers that session's pending
     /// permission requests `cancelled`; its elicitations are answered
     /// `cancel` the same way (ADR 4.5), the turn they were asked in gone.
-    /// `by` is `cancel` or `timeout`.
-    pub(super) fn cancel(&mut self, session: &str, by: &str, client: Client) -> Vec<Resolved> {
+    /// `by` is the cancel's or the timeout's.
+    pub(super) fn cancel(&mut self, session: &str, by: &Who, client: Client) -> Vec<Resolved> {
         let mut ended = Vec::new();
         while let Some(pos) = (self.requests.iter())
             .position(|r| r.handle.is_some() && r.session.as_deref() == Some(session))
@@ -359,7 +391,7 @@ impl Approvals {
         let (kind, session) = (req.kind()?, req.session.clone());
         let options = req.params["options"].as_array().into_iter().flatten();
         let once = options.filter(|o| o["kind"] == "reject_once").count();
-        let by = "timeout";
+        let by = &Who::because("timeout");
         let resolved = match kind {
             Kind::Elicitation => self.answer(kind, handle, session.as_deref(), by, client, |r| {
                 elicitation::response(r, "cancel", &Value::Null).map(Answer::Result)
@@ -381,7 +413,7 @@ impl Approvals {
     /// The one way a request ends: gone from the table, its URL elicitation
     /// with it unless accepted, and if the host answered one the editor was
     /// shown, kept as answered, for the editor's late answer.
-    fn end(&mut self, pos: usize, end: End, by: &str, editor: bool) -> Resolved {
+    fn end(&mut self, pos: usize, end: End, by: &Who, editor: bool) -> Resolved {
         let req = self.requests.remove(pos);
         let (answer, reply, how) = match end {
             End::Editor(result) if req.is_permission() => (result["outcome"].clone(), None, None),
@@ -406,14 +438,10 @@ impl Approvals {
             self.urls.remove(&id);
         }
         let withdraw = how.filter(|_| editor).map(|how| {
-            let answered = Answered {
-                session: req.session.clone(),
-                title: req.title(),
-                how,
-                by: by.to_owned(),
-            };
+            let answered =
+                Answered { session: req.session.clone(), title: req.title(), how, by: by.clone() };
             self.answered.insert(req.key.clone(), answered);
-            (how, by.to_owned())
+            (how, by.clone())
         });
         let event = match req.kind() {
             Some(Kind::Permission) => Some(resolved_event(&req, &answer, how, by)),
@@ -538,7 +566,7 @@ fn option_text(option: &Value) -> String {
 /// knows when it answered, and `option_kind` the chosen option's kind. An
 /// editor's answer is told by the kind, so an option of a kind brnr doesn't
 /// know has no `answer` (null).
-fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &str) -> Value {
+fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &Who) -> Value {
     let chosen = req.params["options"]
         .as_array()
         .into_iter()
@@ -551,15 +579,16 @@ fn resolved_event(req: &AgentRequest, outcome: &Value, how: Option<&str>, by: &s
         Some(_) => Some("rejected".to_owned()),
         None => None,
     });
-    json!({
+    let mut event = json!({
         "event": "permission_resolved",
         "session": req.session,
         "request": req.handle,
         "answer": answer,
         "option_kind": option_kind,
         "outcome": outcome,
-        "by": by,
-    })
+    });
+    by.add_to(&mut event);
+    event
 }
 
 /// The event for a request brnr holds, `permission_request` or
@@ -616,18 +645,24 @@ mod tests {
         AgentRequest::new(json!(id), "elicitation/create".into(), Some(session.into()), params)
     }
 
+    fn b1() -> Who {
+        Who::peer(Some("b1".into()))
+    }
+
+    const CANCEL: &Who = &Who { by: "control", peer: None, reason: Some("cancel") };
+
     fn handles(t: &Approvals) -> Vec<&str> {
         t.held().filter_map(AgentRequest::held).collect()
     }
 
     fn allow(t: &mut Approvals, handle: &str, client: Client) -> Result<Resolved, String> {
-        t.answer(Kind::Permission, handle, Some("s"), "b1", client, |r| {
+        t.answer(Kind::Permission, handle, Some("s"), &b1(), client, |r| {
             choose(r, Choice::Allow, false, None)
         })
     }
 
     fn elicit(t: &mut Approvals, handle: &str, action: &str) -> Result<Resolved, String> {
-        t.answer(Kind::Elicitation, handle, Some("s"), "b1", HEADLESS, |r| {
+        t.answer(Kind::Elicitation, handle, Some("s"), &b1(), HEADLESS, |r| {
             elicitation::response(r, action, &Value::Null).map(Answer::Result)
         })
     }
@@ -646,7 +681,7 @@ mod tests {
         assert!(t.ask(other, None, "editor").is_none(), "no event for one brnr doesn't hold");
         assert_eq!(handles(&t), ["p1", "e1"]);
         allow(&mut t, "p1", HEADLESS).unwrap();
-        t.cancel("s", "cancel", HEADLESS);
+        t.cancel("s", CANCEL, HEADLESS);
         assert!(handles(&t).is_empty());
         let event = t.ask(permission(4, "s", &["allow_once"]), None, "headless").unwrap();
         assert_eq!(event["request"], "p2");
@@ -661,7 +696,7 @@ mod tests {
             ("accepted", |t| drop(elicit(t, "e1", "accept").unwrap()), true),
             ("declined", |t| drop(elicit(t, "e1", "decline").unwrap()), false),
             ("cancelled", |t| drop(elicit(t, "e1", "cancel").unwrap()), false),
-            ("by the turn", |t| drop(t.cancel("s", "cancel", HEADLESS)), false),
+            ("by the turn", |t| drop(t.cancel("s", CANCEL, HEADLESS)), false),
             ("timed out", |t| drop(t.time_out("e1", HEADLESS).unwrap()), false),
             ("editor accepted", |t| drop(editor(t, 1, json!({ "action": "accept" }))), true),
             ("editor declined", |t| drop(editor(t, 1, json!({ "action": "decline" }))), false),
@@ -688,7 +723,7 @@ mod tests {
         assert!(r.reply.is_none() && r.withdraw.is_none());
         assert_eq!(r.event.unwrap()["answer"], "cancelled");
         allow(&mut t, "p2", EDITOR).unwrap();
-        assert_eq!(t.cancel("s", "cancel", EDITOR).len(), 1);
+        assert_eq!(t.cancel("s", CANCEL, EDITOR).len(), 1);
         assert_eq!(handles(&t), ["p4"], "a cancel ends its own session's only");
         assert!(matches!(t.time_out("p4", HEADLESS), Some(Timeout::Resolved(_))));
         assert!(handles(&t).is_empty());
@@ -701,16 +736,16 @@ mod tests {
         t.ask(permission(1, "s", &["allow_once"]), None, "editor");
         t.ask(url(2, "s", "u1"), None, "editor");
         let r = allow(&mut t, "p1", EDITOR).unwrap();
-        assert_eq!(r.withdraw, Some(("allowed", "b1".to_owned())));
+        assert_eq!(r.withdraw, Some(("allowed", b1())));
         assert_eq!(r.reply.unwrap()["result"]["outcome"]["optionId"], "allow_once");
-        let r = t.cancel("s", "cancel", EDITOR).pop().unwrap();
-        assert_eq!(r.withdraw, Some(("cancelled", "cancel".to_owned())));
+        let r = t.cancel("s", CANCEL, EDITOR).pop().unwrap();
+        assert_eq!(r.withdraw, Some(("cancelled", CANCEL.clone())));
         assert_eq!(r.event.unwrap()["action"], "cancel");
-        for (id, how, by) in [(1, "allowed", "b1"), (2, "cancelled", "cancel")] {
+        for (id, how, by) in [(1, "allowed", b1()), (2, "cancelled", CANCEL.clone())] {
             let EditorAnswer::Late(answered) = editor(&mut t, id, json!({})) else {
                 panic!("{id}: not dropped")
             };
-            assert_eq!((answered.how, answered.by.as_str()), (how, by));
+            assert_eq!((answered.how, answered.by), (how, by));
             // Once: what the editor sends after that goes on.
             assert!(matches!(editor(&mut t, id, json!({})), EditorAnswer::Unknown));
         }
@@ -729,13 +764,13 @@ mod tests {
             allow(&mut t, "p1", gone).err().unwrap(),
             "the agent is no longer accepting input"
         );
-        let other = t.answer(Kind::Permission, "p1", Some("t"), "b1", HEADLESS, |r| {
+        let other = t.answer(Kind::Permission, "p1", Some("t"), &b1(), HEADLESS, |r| {
             choose(r, Choice::Allow, false, None)
         });
         assert_eq!(other.err().unwrap(), "no pending request p1 in session t");
         let e = elicit(&mut t, "p1", "cancel").err().unwrap();
         assert_eq!(e, "no pending elicitation p1 in session s");
-        let reject = t.answer(Kind::Permission, "p1", Some("s"), "b1", HEADLESS, |r| {
+        let reject = t.answer(Kind::Permission, "p1", Some("s"), &b1(), HEADLESS, |r| {
             choose(r, Choice::Reject, false, None)
         });
         assert!(reject.err().unwrap().starts_with("p1 has no reject_once option"));
@@ -757,7 +792,7 @@ mod tests {
         );
         // Its time is up once: the cancel answers it.
         assert_eq!(t.expired(now), Vec::<String>::new());
-        assert_eq!(t.cancel("s", "timeout", HEADLESS).len(), 2);
+        assert_eq!(t.cancel("s", &Who::because("timeout"), HEADLESS).len(), 2);
         assert!(t.time_out("p2", HEADLESS).is_none(), "gone with its turn");
         let gone = Client { editor: false, accepting: false };
         t.ask(permission(4, "s", &["allow_once"]), Some(now), "headless");

@@ -75,7 +75,7 @@ use crate::sys;
 
 use approvals::Approvals;
 use control::{Closer, Peer};
-pub(crate) use control::{EVENTS, QUIET, check_bridge};
+pub(crate) use control::{EVENTS, NOTES, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use lines::{Lines, Long, Piece};
@@ -256,7 +256,7 @@ struct Parts {
     signal_link: Option<UnixStream>,
     /// The event loop's channel, for the threads to send on.
     tx: SyncSender<Ev>,
-    /// The request, for the `started` record.
+    /// The request, for the `process_started` record.
     recorded: Value,
     profile: Option<String>,
     agent: Vec<String>,
@@ -668,7 +668,7 @@ impl Host {
         if self.logging != Log::Off {
             let ids = Ids {
                 host_id: self.host_id.clone(),
-                host_pid: std::process::id(),
+                pid: std::process::id(),
                 agent_pid: self.agent_pid as u32,
             };
             self.log = Logger::start(ids, proxy_pid, self.logging == Log::All)
@@ -691,7 +691,10 @@ impl Host {
         write_atomic(&self.meta_path, format!("{:#}\n", self.info).as_bytes());
         // Every process records what it was asked to do (ADR 3.3).
         let info = self.info.clone();
-        self.sink.note(None, json!({ "event": "started", "info": info, "request": recorded }));
+        self.sink.note(
+            None,
+            json!({ "event": "process_started", "info": info, "start_request": recorded }),
+        );
         // A detached process's stderr is /dev/null until here (ADR 3.7).
         if !self.foreground && self.log.host_log().is_some() {
             self.own_stderr = death::capture_stderr(self.sink.clone());
@@ -786,12 +789,13 @@ impl Host {
 
     /// A start that fails before the event loop runs: what it started goes,
     /// and its host log records the end, as `finish` does, so a log without
-    /// `exited` is a process that died (ADR 3.7). Returns `error` and `code`.
+    /// `process_exited` is a process that died (ADR 3.7). Returns `error` and `code`.
     fn abandon(mut self, error: String, code: u8) -> (String, u8) {
         self.kill_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
-        self.sink.note(None, json!({ "event": "exited", "status": null, "reason": error }));
+        self.sink
+            .note(None, json!({ "event": "process_exited", "exit_status": null, "error": error }));
         self.release_stderr();
         self.end_log();
         (error, code)
@@ -877,7 +881,7 @@ impl Host {
 
     fn finish(mut self, died: Option<&str>) -> ExitCode {
         // The agent's last bytes on stderr, sent on already, if they ended no
-        // line: in the host log and the tail too, before `exited`.
+        // line: in the host log and the tail too, before `process_exited`.
         self.stderr_ended();
         if let Some(reason) = died {
             return self.died(reason);
@@ -896,7 +900,7 @@ impl Host {
         for i in 0..self.sessions.len() {
             self.drop_all(i, "exit");
         }
-        self.emit_to_sessions(json!({ "event": "exited", "status": status }));
+        self.emit_to_sessions(json!({ "event": "process_exited", "exit_status": status }));
         self.wait_logged();
         self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
@@ -942,7 +946,7 @@ impl Host {
     /// A panic, in the host log, and the agent killed with its process
     /// group.
     fn record_panic(&mut self, reason: &str) {
-        self.sink.note(None, json!({ "event": "panic", "error": reason }));
+        self.sink.note(None, json!({ "event": "process_panicked", "error": reason }));
         if self.status.is_none() && self.foreground {
             self.say("brnr: killing the agent".into());
         }
@@ -950,25 +954,27 @@ impl Host {
     }
 
     /// The rest of a death, once the agent is killed and whoever waits for
-    /// the start told: `exited`, with the reason, in the host log, every
+    /// the start told: `process_exited`, with the reason, in the host log, every
     /// session's file and to the peers still reached; the `.sock` and
     /// `.json` files removed, and the sessions let go of first, as on any
-    /// exit; bridges given the time to act on `exited` they get on any exit;
+    /// exit; bridges given the time to act on `process_exited` they get on any exit;
     /// the display, stderr and the log let go of. A stalled disk holds the
     /// process, not its sessions.
     fn wind_up(&mut self, reason: &str) {
         // Held messages that never became a prompt, as on a normal exit
-        // (ADR 5.2); a second panic here mustn't cost the `exited` below.
+        // (ADR 5.2); a second panic here mustn't cost the `process_exited` below.
         let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for i in 0..self.sessions.len() {
                 self.drop_all(i, "exit");
             }
         }));
         if held.is_err() {
-            self.sink.note(None, json!({ "event": "drop-held-failed" }));
+            self.sink.note(None, json!({ "event": "drop_held_failed" }));
         }
         let status = describe_status(self.status);
-        self.emit_to_sessions(json!({ "event": "exited", "status": status, "reason": reason }));
+        self.emit_to_sessions(
+            json!({ "event": "process_exited", "exit_status": status, "error": reason }),
+        );
         self.wait_logged();
         self.sessions.let_go_of_all();
         let _ = fs::remove_file(&self.sock_path);
@@ -981,7 +987,7 @@ impl Host {
 
     /// Exiting, before brnr stops listing the process and its sessions are
     /// let go of: waits up to LOG_FLUSH for its transcript to have what was
-    /// recorded, `exited` last, so that `event log`, `session list` and
+    /// recorded, `process_exited` last, so that `event log`, `session list` and
     /// `session resume` of a session that isn't running read it whole (ADR
     /// 48). A stalled disk holds the sessions no longer; the process waits on
     /// for the rest (`end_log`).
@@ -1011,7 +1017,7 @@ impl Host {
         }
     }
 
-    /// Exiting: the last events (`exited`) reach the peers, within
+    /// Exiting: the last events (`process_exited`) reach the peers, within
     /// PEER_FLUSH; then started bridges, their stdin closed, should exit,
     /// and those that haven't by BRIDGE_EXIT get SIGTERM. Bridges also see
     /// EOF on their stdin once we exit. A signal meanwhile gives up on the
@@ -1138,7 +1144,7 @@ impl Host {
             }
             Ev::BridgeStderr { label, line } => {
                 self.sink
-                    .note(None, json!({ "event": "bridge-stderr", "bridge": label, "text": line }));
+                    .note(None, json!({ "event": "bridge_stderr", "peer": label, "text": line }));
             }
             Ev::Signal(sig) => self.host_signal(sig),
             Ev::StartGone { peer } => self.start_gone(peer),
@@ -1148,12 +1154,10 @@ impl Host {
                 // a bridge can never reach a recycled pid.
                 self.bridge_pids.retain(|&p| p != pid);
                 self.peers.remove(&peer);
-                let status = reap(pid).ok().filter(|&s| libc::WIFEXITED(s));
-                let status = status.map(|s| libc::WEXITSTATUS(s));
-                self.sink.note(
-                    None,
-                    json!({ "event": "bridge-exited", "bridge": label, "status": status }),
-                );
+                let status = describe_status(reap(pid).ok());
+                let event =
+                    json!({ "event": "bridge_exited", "peer": label, "exit_status": status });
+                self.sink.note(None, event);
             }
         }
     }
@@ -1206,7 +1210,7 @@ impl Host {
     /// A signal the proxy caught reaches the agent as that signal.
     fn signal(&mut self, sig: c_int) {
         if self.status.is_none() {
-            self.sink.note(None, json!({ "event": "signal", "signal": sig }));
+            self.sink.note(None, json!({ "event": "signal_relayed", "signal": sig }));
             sys::kill(self.agent_pid, sig);
         }
     }
@@ -1219,7 +1223,7 @@ impl Host {
             }
             self.write_agent(&rest.into_bytes().0);
         }
-        self.sink.note(None, json!({ "event": "editor-closed-stdin" }));
+        self.sink.note(None, json!({ "event": "editor_stdin_closed" }));
         self.agent_in = None;
     }
 
@@ -1230,12 +1234,12 @@ impl Host {
     /// writes nothing more there of its own either (`write_editor`).
     fn agent_stdout_ended(&mut self) {
         self.stdout_open = false;
-        self.sink.note(None, json!({ "event": "agent-stdout-ended" }));
+        self.sink.note(None, json!({ "event": "agent_stdout_ended" }));
         self.send_link(frame::EOF, &[]);
     }
 
     fn editor_stopped_reading(&mut self) {
-        self.sink.note(None, json!({ "event": "editor-stopped-reading" }));
+        self.sink.note(None, json!({ "event": "editor_stopped_reading" }));
         // The agent gets EPIPE, just as it would directly.
         self.stop_stdout = None;
     }
@@ -1248,7 +1252,7 @@ impl Host {
         if !take(&mut self.editor) || self.status.is_some() {
             return; // The proxy left after the agent.
         }
-        self.sink.note(None, json!({ "event": "editor-disconnected" }));
+        self.sink.note(None, json!({ "event": "editor_disconnected" }));
         self.agent_in = None;
         self.kill_group(libc::SIGKILL);
     }
@@ -1289,7 +1293,7 @@ impl Host {
         if self.status.is_some() {
             return;
         }
-        self.sink.note(None, json!({ "event": "host-signal", "signal": sig }));
+        self.sink.note(None, json!({ "event": "signal_received", "signal": sig }));
         match sig {
             libc::SIGUSR1 | libc::SIGUSR2 => {
                 sys::kill(self.agent_pid, sig);
@@ -1316,7 +1320,7 @@ impl Host {
             return;
         }
         self.stop_requested = true;
-        self.sink.note(None, json!({ "event": "stopping" }));
+        self.sink.note(None, json!({ "event": "stop_requested" }));
         self.agent_in = None;
         self.stopping = Some((Instant::now() + STOP_TERM_AFTER, StopStage::Term));
     }

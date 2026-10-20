@@ -81,7 +81,7 @@ use std::time::{Instant, SystemTime};
 
 use serde_json::{Map, Value, json};
 
-use super::approvals::{AgentRequest, Client, EditorAnswer, Resolved, Timeout};
+use super::approvals::{AgentRequest, Client, EditorAnswer, Resolved, Timeout, Who};
 use super::flow::LINE_BYTES;
 use super::lines::Piece;
 use super::outbound::{Asked, By, Note, Opens, Then};
@@ -259,7 +259,7 @@ impl Host {
         }
         let relayed = from == "editor" || self.link.is_some();
         self.emit_to_sessions(json!({
-            "event": "line_too_deep", "from": from, "limit": json::DEPTH, "relayed": relayed,
+            "event": "line_too_deep", "from": from, "max_depth": json::DEPTH, "relayed": relayed,
         }));
         true
     }
@@ -391,7 +391,7 @@ impl Host {
             if !self.outbound.waiting(&key) {
                 return None;
             }
-            let event = json!({ "event": "editor-cancel-dropped", "request_id": named });
+            let event = json!({ "event": "editor_cancel_dropped", "rpc_id": named });
             self.sink.note(None, event);
             return Some(Vec::new());
         }
@@ -556,9 +556,9 @@ impl Host {
     /// the agent never hears of it.
     fn refuse(&mut self, id: Value, session: &str, method: &str, error: &str) {
         let event = json!({
-            "event": "editor-request-refused",
-            "session_id": session,
-            "id": id,
+            "event": "editor_request_refused",
+            "session": session,
+            "rpc_id": id,
             "method": method,
             "error": error,
         });
@@ -584,7 +584,7 @@ impl Host {
         if dropped.is_empty() {
             return None;
         }
-        self.sink.note(None, json!({ "event": "capabilities-dropped", "dropped": dropped }));
+        self.sink.note(None, json!({ "event": "capabilities_dropped", "capabilities": dropped }));
         Some(serde_json::to_vec(&msg).unwrap())
     }
 
@@ -622,7 +622,7 @@ impl Host {
         let attached: Vec<Value> = context.iter().map(|t| text_block(t)).collect();
         blocks.extend(attached.iter().cloned());
         let event =
-            json!({ "event": "context-attached", "to": "editor-prompt", "count": context.len() });
+            json!({ "event": "context_attached", "to": "editor_prompt", "count": context.len() });
         self.sink.note(Some(session), event);
         self.echo_message(session, "Context via brnr", &attached);
         Some(serde_json::to_vec(&msg).unwrap())
@@ -986,7 +986,7 @@ impl Host {
         self.drop_all(i, "close");
         if !self.is_idle(i) {
             let session = self.sessions[i].id.clone();
-            self.cancel(&session, "cancel");
+            self.cancel(&session, &Who::because("cancel"));
         }
         if self.sessions[i].turns.activity() != Activity::Busy {
             self.send_close(i, peer, req_id, by);
@@ -1061,7 +1061,7 @@ impl Host {
         };
         self.sessions[i].idle_done = true;
         let session = self.sessions[i].id.clone();
-        self.sink.note(Some(&session), json!({ "event": "idle-timeout" }));
+        self.sink.note(Some(&session), json!({ "event": "idle_timed_out" }));
         // A session a bridge is opening keeps the process going.
         if self.sessions.len() == 1 && !self.outbound.opening() {
             self.begin_stop();
@@ -1122,7 +1122,7 @@ impl Host {
                     let steer = HostRequest::Steer { session: session.clone(), message };
                     self.host_request("_session/steering", params, steer);
                 }
-                Do::Cancel => self.cancel(&session, "cancel"),
+                Do::Cancel => self.cancel(&session, &Who::because("cancel")),
                 Do::Sent { event, echo } => {
                     self.flush_agent_message(i);
                     if let Some(blocks) = echo {
@@ -1197,13 +1197,14 @@ impl Host {
                 None => {}
                 Some(Timeout::Resolved(resolved)) => self.resolved(*resolved),
                 Some(Timeout::Cancel { session }) => {
-                    let event = json!({ "event": "cancel", "by": "timeout", "request": handle });
+                    let (by, reason) = ("control", "timeout");
+                    let event = json!({ "event": "cancel_requested", "by": by, "reason": reason, "request": handle });
                     self.sink.note(Some(&session), event);
-                    self.cancel(&session, "timeout");
+                    self.cancel(&session, &Who::because("timeout"));
                 }
                 Some(Timeout::Failed(err)) => {
                     let event =
-                        json!({ "event": "timeout-failed", "request": handle, "error": err });
+                        json!({ "event": "timeout_failed", "request": handle, "error": err });
                     self.sink.note(None, event);
                 }
             }
@@ -1219,9 +1220,9 @@ impl Host {
     }
 
     /// Cancels `session`'s turn (`session/cancel`), answering its pending
-    /// permission requests `cancelled` and its elicitations `cancel`, `by`
-    /// `cancel` or `timeout`.
-    pub(super) fn cancel(&mut self, session: &str, by: &str) {
+    /// permission requests `cancelled` and its elicitations `cancel`, by
+    /// `by`: the cancel's or the timeout's.
+    pub(super) fn cancel(&mut self, session: &str, by: &Who) {
         let msg = json!({
             "jsonrpc": "2.0",
             "method": "session/cancel",
@@ -1305,11 +1306,11 @@ impl Host {
     fn write_editor(&mut self, session: Option<&str>, msg: &Value) {
         if !self.stdout_open {
             let event = json!({
-                "event": "not-sent-to-editor",
-                "reason": "the agent's stdout has ended",
-                "session_id": session,
+                "event": "editor_message_dropped",
+                "reason": "agent_stdout_ended",
+                "session": session,
                 "method": msg.get("method"),
-                "id": msg.get("id"),
+                "rpc_id": msg.get("id"),
             });
             self.sink.note(None, event);
             return;

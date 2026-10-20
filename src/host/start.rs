@@ -20,7 +20,7 @@
 //!
 //! brnr session new never writes on it; the host reads it on a thread for EOF.
 //! brnr session new gone before the commit means nobody knows of the session:
-//! the process stops at once (`start-abandoned`). After the commit the session
+//! the process stops at once (`start_abandoned`). After the commit the session
 //! carries on, whatever brnr session new does (P14).
 
 use std::env;
@@ -141,7 +141,7 @@ impl Host {
 
     fn abandon_start(&mut self) {
         self.start = None;
-        self.sink.note(None, json!({ "event": "start-abandoned" }));
+        self.sink.note(None, json!({ "event": "start_abandoned" }));
         self.begin_stop();
     }
 
@@ -223,13 +223,13 @@ impl Host {
     /// For the tests, with `BRNR_TEST_READY=hold`: the commit is held, once
     /// the host has decided to report ready and before the report is
     /// written, until brnr session new has gone (for up to 30 s), so that it
-    /// goes at the worst moment. `test-ready-held` in the host log says it is
+    /// goes at the worst moment. `test_ready_held` in the host log says it is
     /// held.
     fn test_hold_ready(&self, stream: &UnixStream) {
         if !*TEST_HOLD_READY {
             return;
         }
-        self.sink.note(None, json!({ "event": "test-ready-held" }));
+        self.sink.note(None, json!({ "event": "test_ready_held" }));
         let until = Instant::now() + Duration::from_secs(30);
         while !closed(stream) && Instant::now() < until {
             thread::sleep(Duration::from_millis(10));

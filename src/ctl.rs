@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::host::{EVENTS, QUIET};
+use crate::host::{EVENTS, NOTES, QUIET};
 use crate::{lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
@@ -355,7 +355,7 @@ fn ps(a: &Args) -> Result<(), String> {
             let info = host.info();
             // One that doesn't answer serves what it holds the locks of.
             let sessions: Vec<Value> = match host.status {
-                Some(_) => host.sessions().iter().map(|s| s["session_id"].clone()).collect(),
+                Some(_) => host.sessions().iter().map(|s| s["session"].clone()).collect(),
                 None => host.held(&locks).into_iter().map(Value::from).collect(),
             };
             json!({
@@ -422,7 +422,9 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // session id alone can repeat across folders.
     let running: Vec<PathBuf> = hosts
         .iter()
-        .flat_map(|h| h.sessions().iter().filter_map(|s| s["log"].as_str().map(PathBuf::from)))
+        .flat_map(|h| {
+            h.sessions().iter().filter_map(|s| s["events_log"].as_str().map(PathBuf::from))
+        })
         .collect();
 
     // A session whose lock is held is running, whether its process answers
@@ -437,7 +439,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         else {
             continue;
         };
-        let Some(session) = last["session_id"].as_str() else { continue };
+        let Some(session) = last["session"].as_str() else { continue };
         if running.contains(&file) || held.iter().any(|s| s == session) {
             continue;
         }
@@ -454,14 +456,14 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
             .or_insert_with(|| transcript::first(&paths::host_log(&host_id)).unwrap_or_default());
         let info = &start["event"]["info"];
         past.push(json!({
-            "session_id": session,
+            "session": session,
             "cwd": first["event"]["cwd"],
             "forked_from": first["event"]["forked_from"],
             // When a process last served it: a deletion isn't activity.
             "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
             "profile": info["profile"],
             "agent": info["agent"],
-            "log": file.to_string_lossy(),
+            "events_log": file.to_string_lossy(),
         }));
     }
     past.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
@@ -477,7 +479,7 @@ fn forked_from(s: &Value) -> Value {
     if s["forked_from"].is_string() {
         return s["forked_from"].clone();
     }
-    let first = s["log"].as_str().and_then(|log| transcript::first(Path::new(log)));
+    let first = s["events_log"].as_str().and_then(|log| transcript::first(Path::new(log)));
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
@@ -496,7 +498,7 @@ fn status(a: &Args) -> Result<(), String> {
     let x = host.session(&id).ok_or("no session")?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
-    let shares = |s: &Value| s["session_id"] == id.as_str() && s["shared"] == true;
+    let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;
     let shared_by: Vec<u64> = hosts
         .iter()
         .filter(|h| h.sessions().iter().any(shares))
@@ -714,7 +716,7 @@ fn pending_row(p: &Value) -> Value {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|o| json!({ "option": o["optionId"], "kind": o["kind"] }))
+        .map(|o| json!({ "option_id": o["optionId"], "kind": o["kind"] }))
         .collect();
     json!({
         "session": p["session"],
@@ -743,7 +745,7 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|o| format!("{}={}", text(&o["option"]), text(&o["kind"])))
+            .map(|o| format!("{}={}", text(&o["option_id"]), text(&o["kind"])))
             .collect();
         table.push([
             text(&r["session"]),
@@ -791,19 +793,22 @@ fn answer(a: &Args, cmd: &str) -> Result<(), String> {
 /// the process exits (or the session closes), as `brnr event log` shows them. A
 /// session's are its own plus the process's (the agent exiting). Cut off for
 /// falling behind, it catches up from the transcript and goes on; unable to,
-/// it ends with what it missed, an `events-missed` note, and exits 3 (ADR
+/// it ends with what it missed, an `events_missed` note, and exits 3 (ADR
 /// 69).
 fn watch(a: &Args) -> Result<ExitCode, String> {
     let (session, pid, json_out) = (a.positional.first(), a.value("--pid"), a.json);
     let mut events = events_arg(a, &default_events())?;
     let hosts = discover()?;
     let (host, only_session) = session_or_pid(&hosts, session.map(String::as_str), pid)?;
-    // `exited` (and for a session, `session_closed`) is how watch tells the
+    // `process_exited` (and for a session, `session_closed`) is how watch tells the
     // end from the process cutting the connection; asked for even when not
     // shown.
     let shown = events.clone();
-    let ends: &[&str] =
-        if only_session.is_some() { &["exited", "session_closed"] } else { &["exited"] };
+    let ends: &[&str] = if only_session.is_some() {
+        &["process_exited", "session_closed"]
+    } else {
+        &["process_exited"]
+    };
     for end in ends {
         if !events.iter().any(|e| e == end) {
             events.push(end.to_string());
@@ -848,10 +853,14 @@ fn watch(a: &Args) -> Result<ExitCode, String> {
 
 /// What `--events` asks for (in `event watch`, `event log` and `event
 /// notify`): event names, `default` for the command's own `default` (what it
-/// does without `--events`), `all` for every event.
+/// does without `--events`), `all` for every event. A note's name is taken
+/// too, and left out of what is asked for: a note is shown whatever was
+/// chosen (ADR 5.9), so `--events records_skipped` alone shows only notes.
 fn events_arg(a: &Args, default: &[String]) -> Result<Vec<String>, String> {
     let events = a.value_as("--events", |list| events_in(list, default))?;
-    Ok(events.unwrap_or_else(|| default.to_vec()))
+    let mut events = events.unwrap_or_else(|| default.to_vec());
+    events.retain(|e| !NOTES.contains(&e.as_str()));
+    Ok(events)
 }
 
 /// The events one `--events` names.
@@ -861,10 +870,11 @@ fn events_in(list: &str, default: &[String]) -> Result<Vec<String>, String> {
         let names = match name {
             "all" => EVENTS.iter().map(|e| e.to_string()).collect(),
             "default" => default.to_vec(),
-            _ if EVENTS.contains(&name) => vec![name.to_owned()],
+            _ if EVENTS.contains(&name) || NOTES.contains(&name) => vec![name.to_owned()],
             _ => {
-                let names = EVENTS.join(", ");
-                return Err(format!("unknown event {name:?} (events: default, all, {names})"));
+                let (names, notes) = (EVENTS.join(", "), NOTES.join(", "));
+                let all = format!("events: default, all, {names}; notes: {notes}");
+                return Err(format!("unknown event {name:?} ({all})"));
             }
         };
         for name in names {

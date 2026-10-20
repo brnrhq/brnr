@@ -16,7 +16,8 @@ claim and what the gaps are: B6 for 9.1, B4 for 9.2, B2 for 9.3, B7 for
 
 - The values of MCP servers' `env` and `headers` are replaced by
   `"<redacted>"` in everything brnr records: the host log, the raw ACP file
-  (ADR 5.1) and the `started` request (ADR 3.3), and in `acp` events. This
+  (ADR 5.1) and the `process_started` record's `start_request` (ADR 3.3),
+  and in `acp` events. This
   holds whoever sent the request: the host (a profile's servers in
   `session/new`, `session/load`, `session/resume` and `session/fork`) or
   the editor.
@@ -88,19 +89,12 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
 - Existing files are not migrated or renamed (P9). Ids of lowercase
   letters, digits, `-` and `_` only, such as the UUIDs of Claude Code's and
   Codex's adapters, keep the names they had. A transcript under a name of
-  the earlier rule (other bytes replaced by `_`) is still listed and read,
-  by the ids its records carry. A session with such an id, resumed, writes
-  a new file under its escaped name. A file two sessions already share
-  stays as it is.
-- A transcript in a folder of the earlier rule, `<claude>` alone, is
-  listed and read as any other. One rule is kept for those files, so that
-  a session doesn't split into two transcripts: when a process opens a
-  session in a cwd whose `<claude>-<hash>` file doesn't exist, but
-  `projects/<claude>/<name>.jsonl` does and its first record's `cwd` is
-  this cwd (the same trailing `/` removed), it goes on in that file and its
-  `.acp.jsonl`. Any other cwd's file there is left as it is, and the
-  session's transcript is in its own folder. That file is read as
-  transcripts are (ADR 9.3).
+  the earlier rule (other bytes replaced by `_`), or in a folder of the
+  earlier rule (`<claude>` alone), is an older brnr's: it stays as it is,
+  and isn't read, as no record an older brnr wrote is (ADR 5.9). A
+  session resumed writes its escaped name in its cwd's `<claude>-<hash>`
+  folder, as any session does. A file two sessions already share stays
+  as it is.
 
 **Consequences.**
 
@@ -112,9 +106,11 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
 - The folder name alone doesn't say the cwd: two cwds that differ only
   where Claude Code puts a `-` are told apart by the hash, and the records
   say which is which.
-- A session of before the hash, resumed in the cwd it began in, keeps its
-  one transcript in the old folder; resumed in another cwd, it starts one in
-  that cwd's folder, as any session does.
+- A session of before the hash, resumed, starts a transcript in its cwd's
+  folder, as any session does. The one it had is an older brnr's, which
+  `doctor` lists (ADR 5.9). Going on in the old file (#120 kept that
+  rule until #314) would add records of this brnr's after records it
+  doesn't read.
 
 **Why.** A session id is the agent's text (P8), and it names the session's
 transcript and its lock. Replacing other bytes with `_` kept a name inside
@@ -133,8 +129,7 @@ puts two cwds in one folder, which is all the earlier rule did for every
 such pair: the sessions in it are still apart by id. Not resolving the cwd
 keeps the name a function of what the agent was told, with no file system
 call that could fail or change its answer. Leaving old files where they are
-keeps P9, and continuing the one file a session already has keeps it one
-transcript (P3).
+keeps P9.
 
 **Considered.**
 
@@ -177,9 +172,9 @@ transcript (P3).
   - A directory or file of the user's that others could read, write or
     search is made private through the same descriptor (`fchmod`), keeping
     the owner's bits, before anything is written. The host log has a
-    `made-private` event per path with the `mode` it had (`"644"`): what
+    `path_made_private` event per path with the `mode` it had (`"644"`): what
     was there before could have been read. `brnr session delete` has no
-    host log, so it says `made-private`, with the mode, on stderr
+    host log, so it says `path_made_private`, with the mode, on stderr
     (ADR 8.1).
   - A symlink, one that isn't a directory (or a regular file), one owned by
     someone else, or a file with other hard links (another name, anywhere)
@@ -187,7 +182,7 @@ transcript (P3).
     what is wrong with it. For the host log, the process doesn't start
     (`log: <path>: is a symlink, so brnr won't write a transcript there
     …`). For a session's file, the session is served without it and the
-    host log has `session-log-failed` with the error (ADR 5.1).
+    host log has `session_log_failed` with the error (ADR 5.1).
   - A FIFO is opened without blocking, so it is refused, not waited on.
 - What reads a transcript reads it only where it could have been written,
   by the same rules for every part of the path: `session list`, `event
@@ -350,12 +345,9 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_cwds_alike_are_resumed_apart`: each one's session has its
       own transcript, in its own folder, in `event log`, and `session
       resume` opens it in its own cwd.
-    - `adr_0009_a_transcript_under_the_old_rule_is_continued`: a session's
-      two files, in the folder of the earlier rule, are appended to when it
-      is resumed in its cwd, and no new folder is made.
-    - `adr_0009_another_cwds_transcript_under_the_old_rule_is_not_continued`:
-      `<dir>/x-y`'s session, in that folder, resumed in `<dir>/x/y`, leaves
-      the old files as they were and writes in `<dir>/x/y`'s own folder.
+    - `adr_0009_a_transcript_under_the_old_rule_is_left_as_it_was`: a
+      session's two files, in the folder of the earlier rule, stay as they
+      were when it is resumed in its cwd, which writes in its own folder.
 - 9.3:
   - [src/log.rs](../../src/log.rs):
     - `adr_0009_new_and_private_paths_are_opened_as_they_are`: what is
@@ -381,9 +373,9 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`:
       a resumed session's events and raw ACP files, made 0644 beneath
       private and beneath 0755 parents, are private when it writes to them,
-      and the host log has a `made-private` for each path.
+      and the host log has a `path_made_private` for each path.
     - `adr_0009_a_symlinked_transcript_is_never_followed`: a symlinked
-      events file is left alone and `session-log-failed` says why; a
+      events file is left alone and `session_log_failed` says why; a
       symlinked state directory fails the start before the agent is
       prompted.
     - `adr_0009_a_symlinked_transcript_is_never_read`: a session whose

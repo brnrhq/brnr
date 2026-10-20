@@ -592,11 +592,15 @@ fn adr_0011_the_report_is_what_to_paste() {
     );
     let panicked = format!(
         "{opened}\n{}\n{}\n",
-        r#"{"ts":"t","event":{"event":"panic","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
-        r#"{"ts":"t","event":{"event":"exited","status":null,"reason":"brnr panicked at src/x.rs:1:1: oops"}}"#
+        r#"{"ts":"t","event":{"event":"process_panicked","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
+        r#"{"ts":"t","event":{"event":"process_exited","exit_status":null,"error":"brnr panicked at src/x.rs:1:1: oops"}}"#
     );
     write(&hosts.join("20260101T000000-1.jsonl"), &panicked, 0o600);
-    write(&hosts.join("20250101T000000-2.jsonl"), "{\"event\":{\"event\":\"exited\"}}\n", 0o600);
+    write(
+        &hosts.join("20250101T000000-2.jsonl"),
+        "{\"event\":{\"event\":\"process_exited\"}}\n",
+        0o600,
+    );
     let old = std::time::SystemTime::now() - Duration::from_secs(3600);
     for (name, age) in [("20260101T000000-1", 1), ("20250101T000000-2", 2)] {
         let file = fs::File::options().write(true).open(hosts.join(format!("{name}.jsonl")));
@@ -664,7 +668,7 @@ fn adr_0011_the_report_redacts_a_deep_line() {
     let opened = format!(
         r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
     );
-    let exited = r#"{"ts":"t","event":{"event":"exited","status":0,"reason":"stopped"}}"#;
+    let exited = r#"{"ts":"t","event":{"event":"process_exited","exit_status":{"code":0}}}"#;
     write(&hosts.join("20260101T000000-1.jsonl"), &format!("{opened}\n{exited}\n"), 0o600);
 
     let out = env.run(&["doctor", "--report", "--json"]);

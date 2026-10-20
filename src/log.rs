@@ -7,7 +7,7 @@
 //! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.
 //!
 //! Every record starts with the fields that join files together:
-//! `{"ts","host_id","host_pid","proxy_pid","agent_pid"[,"session_id"],…}`,
+//! `{"ts","host_id","pid","proxy_pid","agent_pid"[,"session"],…}`,
 //! where `proxy_pid` is null for a headless process. ACP traffic adds
 //! `"dir"` and `"msg"`: ACP frames messages as newline-delimited JSON, so
 //! each line is embedded unchanged (but for the MCP servers' secrets in a
@@ -15,18 +15,18 @@
 //! valid JSON is kept as a string in `"raw"` instead. Host events add
 //! `"event":{…}`.
 //!
-//! A session's events file starts with a `session-opened` event naming the
-//! host log and the raw file; the host log records a `session-opened` event
-//! naming both of each session's files. Both name the session a fork came
-//! from, `forked_from`, when it opens as one. Closing a session closes its files
+//! A session's events file starts with a `session_opened` record naming the
+//! session, its cwd and its files (`events_log`, `acp_log`, `host_log`); the
+//! host log records the same `session_opened`. Both name the session a fork
+//! came from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
 //! files only for the sessions it has open; one opened again appends to
-//! them, starting with another `session-opened`.
+//! them, starting with another `session_opened`.
 //!
 //! What a record goes into, from the state directory down, is the user's own
 //! and private before anything is written to it (P13, ADR 9.3): a file or
 //! directory others can reach is made private, and noted in the host log as
-//! `made-private` (on stderr by `brnr session delete`, which has no host
+//! `path_made_private` (on stderr by `brnr session delete`, which has no host
 //! log); a symlink, or one that isn't the user's, is refused.
 //!
 //! What is queued for the logger is bounded (ADR 10.1 in docs/adr), in bytes,
@@ -34,7 +34,7 @@
 //! Past `LOG_BYTES` (a disk that is slow, or has stopped) records are
 //! skipped rather than queued, and counted; the host never waits for the
 //! logger (P1, P6). Never skipped, however full the queue: a session's
-//! opening, which says where its records go, and `exited` and `panic`,
+//! opening, which says where its records go, and `process_exited` and `process_panicked`,
 //! which say how the process ended, so that `brnr doctor` can tell an exit
 //! from a death (ADR 3.7). Once the queue is down to half `LOG_BYTES`, the
 //! gap is over, and a note says so where the records would have been (P3):
@@ -42,11 +42,13 @@
 //! records,
 //!
 //! ```text
-//! {"event":"records-skipped","count":120,"acp":100,"since":"…","until":"…"}
+//! {"event":"records_skipped","count":120,"acp_count":100,"since":"…","until":"…",
+//!  "ts":"…","host_id":"…","pid":4242,"session":"…"}
 //! ```
 //!
 //! how many records, how many of them raw ACP, and when the first and the
-//! last of them were made. The host log's note counts every record of the
+//! last of them were made; with the fields every event has (ADR 5.9), and
+//! `session` in a session's file. The host log's note counts every record of the
 //! gap, a session's only its own. A write that fails (a full disk) is
 //! counted the same way, and noted, with the `error`, in the file that
 //! lost it once that file takes a record again (the raw file's, in its
@@ -61,7 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
@@ -114,14 +116,14 @@ impl Dir {
             Dir::ControlToAgent => "control->agent",
             Dir::ControlToEditor => "control->editor",
             Dir::AgentToControl => "agent->control",
-            Dir::AgentStderr => "agent-stderr",
+            Dir::AgentStderr => "agent_stderr",
         }
     }
 }
 
 pub(crate) struct Ids {
     pub(crate) host_id: String,
-    pub(crate) host_pid: u32,
+    pub(crate) pid: u32,
     pub(crate) agent_pid: u32,
 }
 
@@ -212,7 +214,7 @@ impl Gap {
     }
 }
 
-/// Records that weren't written, for the `records-skipped` note.
+/// Records that weren't written, for the `records_skipped` note.
 struct Lost {
     count: u64,
     /// How many of them were raw ACP.
@@ -251,11 +253,13 @@ impl Lost {
         }
     }
 
-    fn note(&self) -> Value {
+    /// The note, made at `ts` in `session`'s events file or (none) the host
+    /// log: with the fields an event has (ADR 5.9).
+    fn note(&self, head: &Head, ts: SystemTime, session: Option<&str>) -> Value {
         let mut note = json!({
-            "event": "records-skipped",
+            "event": "records_skipped",
             "count": self.count,
-            "acp": self.acp,
+            "acp_count": self.acp,
             "since": rfc3339(self.since),
             "until": rfc3339(self.until),
         });
@@ -266,6 +270,12 @@ impl Lost {
         }
         if let Some(error) = &self.error {
             note["error"] = json!(error);
+        }
+        note["ts"] = json!(rfc3339(ts));
+        note["host_id"] = json!(head.ids.host_id);
+        note["pid"] = json!(head.ids.pid);
+        if let Some(session) = session {
+            note["session"] = json!(session);
         }
         note
     }
@@ -336,7 +346,7 @@ impl Sink {
     pub(crate) fn note(&self, session: Option<&str>, event: Value) {
         // How the process ended is never skipped: it is what tells an exit
         // from a death (`brnr doctor`, ADR 3.7).
-        let keep = matches!(event["event"].as_str(), Some("exited" | "panic"));
+        let keep = matches!(event["event"].as_str(), Some("process_exited" | "process_panicked"));
         let seq = event["seq"].as_u64();
         let queued = self.record(session, false, keep, seq, |ts| Cmd::Note {
             session: session.map(str::to_owned),
@@ -563,7 +573,7 @@ impl Writer {
         if self.sessions.contains_key(&session) {
             return;
         }
-        let path = session_log(cwd, &session);
+        let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
         let events = match self.open_file(now, &path) {
             Ok(out) => out,
@@ -578,27 +588,21 @@ impl Writer {
             }
         }
         self.sessions.insert(session.clone(), Files { events, acp });
+        // The same in both files (ADR 5.9).
         let mut event = json!({
-            "event": "session-opened",
+            "event": "session_opened",
+            "session": session,
             "cwd": cwd.to_string_lossy(),
-            "host_log": self.host_path.to_string_lossy(),
+            "events_log": path.to_string_lossy(),
             "acp_log": acp_path,
+            "host_log": self.host_path.to_string_lossy(),
         });
         // Only a fork's: opened any other way, the process doesn't know
         // whether it was one, and the first of these in the file says.
-        if let Some(from) = &forked_from {
-            event["forked_from"] = json!(from);
-        }
-        self.note(now, Some(&session), event);
-        let mut event = json!({
-            "event": "session-opened",
-            "session_id": session,
-            "file": path.to_string_lossy(),
-            "acp_file": acp_path,
-        });
         if let Some(from) = forked_from {
             event["forked_from"] = json!(from);
         }
+        self.note(now, Some(&session), event.clone());
         self.note(now, None, event);
     }
 
@@ -616,16 +620,16 @@ impl Writer {
         for (path, mode) in made {
             let path = path.to_string_lossy();
             let event =
-                json!({ "event": "made-private", "path": path, "mode": format!("{mode:o}") });
+                json!({ "event": "path_made_private", "path": path, "mode": format!("{mode:o}") });
             self.note(ts, None, event);
         }
     }
 
     fn failed(&mut self, ts: SystemTime, session: &str, path: &Path, err: &io::Error) {
         let event = json!({
-            "event": "session-log-failed",
-            "session_id": session,
-            "file": path.to_string_lossy(),
+            "event": "session_log_failed",
+            "session": session,
+            "path": path.to_string_lossy(),
             "error": err.to_string(),
         });
         self.note(ts, None, event);
@@ -648,12 +652,16 @@ impl Writer {
                 (lost.count, lost.acp) = (lost.count - lost.acp, 0);
             }
             if lost.count > 0 {
-                let note = head.record(ts, Some(&session), &event_body(lost.note()));
+                let note = head.record(
+                    ts,
+                    Some(&session),
+                    &event_body(lost.note(head, ts, Some(&session))),
+                );
                 files.events.write(head, Some(&session), ts, &note, lost);
             }
         }
         if all.count > 0 {
-            let note = head.record(ts, None, &event_body(all.note()));
+            let note = head.record(ts, None, &event_body(all.note(head, ts, None)));
             self.host.write(head, None, ts, &note, all);
         }
     }
@@ -684,7 +692,7 @@ impl Writer {
             Err(err) => acp.lose(one, &err),
             Ok(()) => {
                 if let Some(lost) = acp.failed.take() {
-                    let note = head.record(ts, session, &event_body(lost.note()));
+                    let note = head.record(ts, session, &event_body(lost.note(head, ts, session)));
                     files.events.write(head, session, ts, &note, lost);
                 }
             }
@@ -703,15 +711,15 @@ impl Head {
     fn record(&self, ts: SystemTime, session: Option<&str>, body: &[u8]) -> Vec<u8> {
         let proxy = self.proxy_pid.map_or("null".to_owned(), |p| p.to_string());
         let mut out = format!(
-            r#"{{"ts":"{}","host_id":"{}","host_pid":{},"proxy_pid":{},"agent_pid":{},"#,
+            r#"{{"ts":"{}","host_id":"{}","pid":{},"proxy_pid":{},"agent_pid":{},"#,
             rfc3339(ts),
             self.ids.host_id,
-            self.ids.host_pid,
+            self.ids.pid,
             proxy,
             self.ids.agent_pid,
         );
         if let Some(session) = session {
-            out.push_str(&format!(r#""session_id":{},"#, json!(session)));
+            out.push_str(&format!(r#""session":{},"#, json!(session)));
         }
         let mut out = out.into_bytes();
         out.extend_from_slice(body);
@@ -751,7 +759,7 @@ impl Out {
         what: Lost,
     ) {
         if let Some(lost) = &self.failed {
-            let note = head.record(ts, session, &event_body(lost.note()));
+            let note = head.record(ts, session, &event_body(lost.note(head, ts, session)));
             if let Err(err) = self.put(&note) {
                 return self.lose(what, &err);
             }
@@ -855,8 +863,8 @@ pub(crate) fn redact_record(record: &mut Value) {
     {
         record["msg"] = msg;
     }
-    if record["event"]["event"] == "started"
-        && let Some(servers) = record.pointer_mut("/event/request/role/headless/mcp_servers")
+    if record["event"]["event"] == "process_started"
+        && let Some(servers) = record.pointer_mut("/event/start_request/role/headless/mcp_servers")
     {
         redact_mcp_servers(servers);
     }
@@ -974,32 +982,9 @@ fn at(path: &Path, err: io::Error) -> io::Error {
     }
 }
 
-/// `session`'s events file in `cwd` (ADR 9.2): `paths::session_log`, unless
-/// that doesn't exist and its file under the folder name of before ADR 9.2's
-/// hash (`paths::claude_project_key`) does, and began in `cwd`, as its first
-/// record says: a session of then, opened again, goes on in its own
-/// transcript instead of starting another. Read as transcripts are (ADR
-/// 9.3): not through a symlink, nor in a symlinked folder, and only a
-/// regular file. The one rule kept for files of the earlier layout.
-pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    let path = paths::session_log(cwd, session);
-    if fs::symlink_metadata(&path).is_ok() {
-        return path;
-    }
-    let old = paths::claude_session_log(cwd, session);
-    // Not looked in through a symlinked folder, as transcripts aren't.
-    let folder = old.parent().and_then(|f| fs::symlink_metadata(f).ok());
-    let first = folder.is_some_and(|m| m.is_dir()).then(|| transcript::first(&old)).flatten();
-    let began = first.as_ref().and_then(|r| r["event"]["cwd"].as_str());
-    // The cwd as a string, as the logger records it.
-    let one = |cwd: &str| paths::without_trailing_slash(Path::new(cwd)).to_owned();
-    let here = began.is_some_and(|b| one(b) == one(&cwd.to_string_lossy()));
-    if here { old } else { path }
-}
-
 /// Records `event` in each of `session`'s events files
 /// (`transcript::of_session`), for a session no process has open: a record
-/// of no process's, its `host_id`, `host_pid` and `proxy_pid` null, with
+/// of no process's, its `host_id`, `pid` and `proxy_pid` null, with
 /// the pid of the agent `brnr session delete` started (ADR 8.1). Written as the logger writes:
 /// private, never through a symlink (ADR 9.3), on a line of its own (ADR
 /// 55). The files written to, what couldn't be written to and why, each
@@ -1011,7 +996,7 @@ pub(crate) fn record_in_transcripts(
     event: &Value,
 ) -> (Vec<PathBuf>, Vec<String>, Made) {
     let mut record = format!(
-        r#"{{"ts":"{}","host_id":null,"host_pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session_id":{},"#,
+        r#"{{"ts":"{}","host_id":null,"pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session":{},"#,
         rfc3339(SystemTime::now()),
         json!(session),
     )
@@ -1264,16 +1249,16 @@ mod tests {
         text.lines().map(|l| serde_json::from_str(l).ok()).collect()
     }
 
-    /// The `records-skipped` notes in `path`: how many records, and of them
+    /// The `records_skipped` notes in `path`: how many records, and of them
     /// raw ACP.
     fn skipped(path: &Path) -> Vec<(u64, u64)> {
         let notes = lines(path).into_iter().flatten().map(|r| r["event"].clone());
-        let notes = notes.filter(|e| e["event"] == "records-skipped");
-        notes.map(|e| (e["count"].as_u64().unwrap(), e["acp"].as_u64().unwrap())).collect()
+        let notes = notes.filter(|e| e["event"] == "records_skipped");
+        notes.map(|e| (e["count"].as_u64().unwrap(), e["acp_count"].as_u64().unwrap())).collect()
     }
 
     fn head() -> Head {
-        Head { ids: Ids { host_id: "h".into(), host_pid: 1, agent_pid: 2 }, proxy_pid: None }
+        Head { ids: Ids { host_id: "h".into(), pid: 1, agent_pid: 2 }, proxy_pid: None }
     }
 
     #[test]
@@ -1283,7 +1268,7 @@ mod tests {
         let sink = Sink(Some((tx, queue.clone())));
         queue.bytes.store(LOG_BYTES + 1, Relaxed);
         sink.note(Some("s"), json!({ "event": "a" }));
-        sink.note(Some("s"), json!({ "event": "exited", "status": { "code": 0 } }));
+        sink.note(Some("s"), json!({ "event": "process_exited", "exit_status": { "code": 0 } }));
         let shown: Vec<String> = (rx.try_iter())
             .map(|cmd| match cmd {
                 Cmd::Note { event, .. } => event,
@@ -1292,7 +1277,7 @@ mod tests {
             })
             .collect();
         // The gap before it is noted first, so the file stays in order.
-        assert_eq!(shown, ["skipped 1", r#"{"event":"exited","status":{"code":0}}"#]);
+        assert_eq!(shown, ["skipped 1", r#"{"event":"process_exited","exit_status":{"code":0}}"#]);
     }
 
     #[test]
@@ -1361,6 +1346,38 @@ mod tests {
         assert_eq!(skipped(&t), []);
         assert_eq!(skipped(&host), [(3, 1)]);
         for path in [host, s, t] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// A note has what every event has (ADR 5.9): `ts`, `host_id`, `pid`,
+    /// and in a session's file `session`, as the record it is in.
+    #[test]
+    fn adr_0005_a_gap_note_has_the_fields_of_an_event() {
+        let (host, s) = (scratch("note-host"), scratch("note-s"));
+        let mut writer = Writer {
+            head: head(),
+            acp: false,
+            host: appending(&host),
+            host_path: host.clone(),
+            sessions: HashMap::new(),
+            queue: Arc::default(),
+            stall: None,
+        };
+        writer.sessions.insert("s".into(), Files { events: appending(&s), acp: None });
+        let ts = SystemTime::now();
+        let mut gap = Gap { all: Lost::none(ts), sessions: HashMap::new() };
+        gap.add(Some("s"), Lost::one(ts, false, None));
+        writer.skipped(ts, gap);
+        for (path, session) in [(&s, json!("s")), (&host, Value::Null)] {
+            let record = lines(path).pop().flatten().unwrap();
+            let note = &record["event"];
+            assert_eq!(note["event"], "records_skipped");
+            assert_eq!((&note["ts"], &note["host_id"]), (&record["ts"], &record["host_id"]));
+            assert_eq!((&note["pid"], &record["pid"]), (&json!(1), &json!(1)));
+            assert_eq!((&note["session"], &record["session"]), (&session, &session));
+        }
+        for path in [host, s] {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -1438,12 +1455,12 @@ mod tests {
         let mut lost = Lost::one(ts, false, Some(9));
         lost.add(&Lost::one(ts, true, Some(5)));
         lost.add(&Lost::one(ts, false, None));
-        let note = lost.note();
+        let note = lost.note(&head(), ts, None);
         assert_eq!(
             (&note["first_seq"], &note["last_seq"], &note["count"]),
             (&json!(5), &json!(9), &json!(3))
         );
-        assert!(Lost::one(ts, false, None).note().get("first_seq").is_none());
+        assert!(Lost::one(ts, false, None).note(&head(), ts, None).get("first_seq").is_none());
 
         let host = scratch("lost-host");
         let mut writer = Writer {

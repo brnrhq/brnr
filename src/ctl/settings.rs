@@ -47,7 +47,7 @@ pub(super) fn config_get(a: &Args) -> Result<ExitCode, String> {
         })
         .collect();
     let (_, status) = session_status(&a.positional[0])?;
-    let id = s(&status["session_id"]).to_owned();
+    let id = s(&status["session"]).to_owned();
     let options = status["config"].as_array().map_or(&[][..], Vec::as_slice);
     let mut rows: Vec<Value> = options
         .iter()
@@ -168,7 +168,7 @@ pub(super) fn config_set(a: &Args) -> Result<ExitCode, String> {
     let (mode, model, thought_level) =
         (a.value("--mode"), a.value("--model"), a.value("--thought-level"));
     let (host, status) = session_status(&a.positional[0])?;
-    let id = s(&status["session_id"]).to_owned();
+    let id = s(&status["session"]).to_owned();
     let req = json!({
         "cmd": "set_config",
         "session": id,
@@ -215,7 +215,7 @@ pub(super) fn commands(a: &Args) -> Result<ExitCode, String> {
         .map(|c| json!({ "command": c["name"], "hint": c["input"]["hint"], "description": c["description"] }))
         .collect();
     if json_out {
-        print_json(&json!({ "session": status["session_id"], "commands": commands }))?;
+        print_json(&json!({ "session": status["session"], "commands": commands }))?;
         return Ok(ExitCode::SUCCESS);
     }
     if commands.is_empty() {

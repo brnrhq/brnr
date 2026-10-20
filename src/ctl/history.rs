@@ -33,10 +33,10 @@ pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
     let last = a.number("--last");
     let events = events_arg(a, &default_events())?;
     let (follow, json_out) = (a.has("--follow"), a.json);
-    // A gap in the transcript (`records-skipped`, ADR 10.1) is always told: it
+    // A gap in the transcript (`records_skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
     let wanted = |e: &Value| {
-        e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
+        e["event"] == "records_skipped" || events.iter().any(|name| e["event"] == name.as_str())
     };
     let show = Show { options: render::Options { session: false, time: true }, json_out };
     let target = a.positional[0].clone();
@@ -119,7 +119,8 @@ impl Show {
     ) -> Result<(usize, bool), String> {
         let mut shown = 0;
         for event in events {
-            let end = to_end && (event["event"] == "exited" || event["event"] == "session_closed");
+            let end = to_end
+                && (event["event"] == "process_exited" || event["event"] == "session_closed");
             shown += if wanted(&event) { self.print(&event)? } else { 0 };
             if end {
                 return Ok((shown, true));
