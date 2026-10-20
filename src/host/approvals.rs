@@ -1,7 +1,7 @@
 //! Approvals and elicitations (ADR 4.5): the agent's requests to its
 //! client, kept until they are answered, and the one way each ends, whoever
-//! answers it: the editor, a bridge or the CLI, a cancel of its turn, or
-//! `response_timeout`.
+//! answers it: the editor, a bridge or the CLI, a cancel of its turn,
+//! `response_timeout`, or the agent itself, giving up on it.
 //!
 //! It does no I/O. A request goes in as the agent asks it
 //! ([`Approvals::ask`]), an answer as a call, and what the host is to do
@@ -24,9 +24,13 @@
 //! - One the editor was shown that the host answered is withdrawn from it,
 //!   and the editor's late answer dropped, so the agent never gets two
 //!   (ADR 2.5, 7.1).
-//!
-//! Nothing ends a request the agent stops waiting for, its turn ended or
-//! its `$/cancel_request` (#162): that would be one more way in here.
+//! - The agent's `$/cancel_request` ends one held, `by: agent`: headless,
+//!   the host answers it as a cancelled request is answered; in an editor's
+//!   session the editor has the notification too, and its answer goes on
+//!   to the agent, with no event of its own (ADR 4.5). One answered
+//!   already, or an id of none, ends nothing.
+//! - A turn that ends ends none of its requests: ACP has the agent cancel
+//!   what it no longer waits for (ADR 4.5).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -149,9 +153,10 @@ pub(super) struct Client {
 }
 
 /// Who answered a request, as its `permission_resolved` or
-/// `elicitation_resolved` says (ADR 5.9): `by`, `editor` or `control`; the
-/// connection that asked (`peer`), where there is one; and why, where it
-/// wasn't asked: its turn cancelled (`cancel`), or its time up (`timeout`).
+/// `elicitation_resolved` says (ADR 5.9): `by`, `editor`, `agent` (its own
+/// `$/cancel_request`) or `control`; the connection that asked (`peer`),
+/// where there is one; and why, where it wasn't asked: its turn cancelled
+/// (`cancel`), or its time up (`timeout`).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Who {
     pub(super) by: &'static str,
@@ -161,6 +166,7 @@ pub(super) struct Who {
 
 impl Who {
     pub(super) const EDITOR: Who = Who { by: "editor", peer: None, reason: None };
+    pub(super) const AGENT: Who = Who { by: "agent", peer: None, reason: None };
 
     /// A bridge's or the CLI's answer, through connection `peer`.
     pub(super) fn peer(peer: Option<String>) -> Who {
@@ -187,7 +193,7 @@ pub(super) struct Resolved {
     /// result.
     pub(super) answer: Value,
     /// The host's reply to the agent; none for the editor's answer, which
-    /// goes on as the editor wrote it.
+    /// goes on as the editor wrote it, nor for one the editor is to answer.
     pub(super) reply: Option<Value>,
     /// The host answered one the editor was shown: it is withdrawn from the
     /// editor, told `how` and by whom (see experimental.rs).
@@ -204,6 +210,11 @@ pub(super) enum EditorAnswer {
     /// One the host answered already: dropped, as the agent must not get a
     /// second answer.
     Late(Answered),
+    /// One the agent cancelled with `$/cancel_request` (see
+    /// [`Approvals::give_up`]): it goes on to the agent as the editor wrote
+    /// it, recorded in the request's session, with no event: the request's
+    /// was the agent's.
+    GivenUp(Option<String>),
     /// Neither: an answer to a request the host couldn't read, or to none.
     /// It goes on, and the agent ignores what it never asked (ADR 2.5).
     Unknown,
@@ -247,6 +258,10 @@ enum End {
     Host(Answer),
     /// The editor, with the `result` it sent.
     Editor(Value),
+    /// Nobody yet: the agent cancelled it in an editor's session, and the
+    /// editor, which has the agent's notification, answers it. What a
+    /// cancelled request is answered stands in for its answer.
+    Agent(Answer),
 }
 
 /// The agent's requests to its client that are unanswered, and what is
@@ -258,6 +273,9 @@ pub(super) struct Approvals {
     /// Requests the host answered that the editor was shown, by key, until
     /// the editor answers them too.
     answered: HashMap<String, Answered>,
+    /// Requests the agent cancelled in an editor's session, by key, with
+    /// their session, until the editor answers them.
+    given_up: HashMap<String, Option<String>>,
     /// The last handle's number, of each kind.
     permissions: u64,
     elicitations: u64,
@@ -321,10 +339,33 @@ impl Approvals {
             let resolved = self.end(pos, End::Editor(result), &Who::EDITOR, false);
             return EditorAnswer::Resolved(Box::new(resolved));
         }
+        if let Some(session) = self.given_up.remove(key) {
+            return EditorAnswer::GivenUp(session);
+        }
         match self.answered.remove(key) {
             Some(answered) => EditorAnswer::Late(answered),
             None => EditorAnswer::Unknown,
         }
+    }
+
+    /// The agent's `$/cancel_request` of its request `key` (ADR 4.5): one
+    /// brnr holds ends, `by: agent`. Headless, the host answers it as ACP
+    /// answers a cancelled request, `cancelled` or `cancel`; with an editor,
+    /// which has the notification too, the editor answers it. None for one
+    /// answered already, or an id of none: nothing waits to end.
+    pub(super) fn give_up(&mut self, key: &str, client: Client) -> Option<Resolved> {
+        let pos = self.requests.iter().position(|r| r.key == key && r.handle.is_some())?;
+        let answer = if self.requests[pos].is_elicitation() {
+            Answer::Result(json!({ "action": "cancel" }))
+        } else {
+            Answer::Outcome(json!({ "outcome": "cancelled" }), "cancelled")
+        };
+        if !client.editor {
+            return Some(self.end(pos, End::Host(answer), &Who::AGENT, false));
+        }
+        let resolved = self.end(pos, End::Agent(answer), &Who::AGENT, false);
+        self.given_up.insert(resolved.req.key.clone(), resolved.req.session.clone());
+        Some(resolved)
     }
 
     /// Answers request `handle` of `kind` in `session` (none: one outside
@@ -438,6 +479,9 @@ impl Approvals {
                 };
                 (result.clone(), Some(json!({ "result": result })), Some(how))
             }
+            // Nothing to withdraw either: the agent did.
+            End::Agent(Answer::Outcome(outcome, how)) => (outcome, None, Some(how)),
+            End::Agent(Answer::Result(result)) => (result, None, None),
         };
         if req.is_elicitation()
             && answer["action"] != "accept"
@@ -477,7 +521,14 @@ impl Approvals {
     /// How deeply what it keeps of the agent's requests nests (see
     /// `Host::holds`).
     pub(super) fn holds(&self) -> usize {
-        let Approvals { requests, answered: _, permissions: _, elicitations: _, urls: _ } = self;
+        let Approvals {
+            requests,
+            answered: _,
+            given_up: _,
+            permissions: _,
+            elicitations: _,
+            urls: _,
+        } = self;
         requests.iter().map(AgentRequest::holds).max().unwrap_or(0)
     }
 }
@@ -707,7 +758,7 @@ mod tests {
     #[test]
     fn adr_0004_every_way_a_request_ends_leaves_nothing_behind() {
         type Ending = fn(&mut Approvals);
-        let endings: [(&str, Ending, bool); 7] = [
+        let endings: [(&str, Ending, bool); 9] = [
             ("accepted", |t| drop(elicit(t, "e1", "accept").unwrap()), true),
             ("declined", |t| drop(elicit(t, "e1", "decline").unwrap()), false),
             ("cancelled", |t| drop(elicit(t, "e1", "cancel").unwrap()), false),
@@ -715,6 +766,12 @@ mod tests {
             ("timed out", |t| drop(t.time_out("e1", HEADLESS).unwrap()), false),
             ("editor accepted", |t| drop(editor(t, 1, json!({ "action": "accept" }))), true),
             ("editor declined", |t| drop(editor(t, 1, json!({ "action": "decline" }))), false),
+            ("by the agent", |t| drop(t.give_up(&id_key(&json!(1)), HEADLESS)), false),
+            (
+                "by the agent, with an editor",
+                |t| drop(t.give_up(&id_key(&json!(1)), EDITOR)),
+                false,
+            ),
         ];
         for (how, end, kept) in endings {
             let mut t = Approvals::default();
@@ -743,6 +800,50 @@ mod tests {
         assert!(matches!(t.time_out("p4", HEADLESS), Some(Timeout::Resolved(_))));
         assert!(handles(&t).is_empty());
         assert_eq!(t.next_deadline(), None);
+    }
+
+    #[test]
+    fn adr_0004_the_agents_cancel_ends_only_what_waits() {
+        let key = |id: u64| id_key(&json!(id));
+        let mut t = Approvals::default();
+        t.ask(permission(1, "s", &["allow_once"]), None, "headless");
+        t.ask(url(2, "s", "u1"), None, "headless");
+        // Headless, brnr answers it as a cancelled request is answered.
+        let r = t.give_up(&key(1), HEADLESS).unwrap();
+        assert_eq!(
+            r.reply.unwrap(),
+            json!({ "result": { "outcome": { "outcome": "cancelled" } } })
+        );
+        let event = r.event.unwrap();
+        assert_eq!((&event["answer"], &event["by"]), (&"cancelled".into(), &"agent".into()));
+        assert_eq!((&event["peer"], &event["reason"]), (&Value::Null, &Value::Null));
+        let r = t.give_up(&key(2), HEADLESS).unwrap();
+        assert_eq!(r.reply.unwrap(), json!({ "result": { "action": "cancel" } }));
+        assert_eq!(r.event.unwrap()["by"], "agent");
+        assert!(!t.waiting("s"));
+        // Answered already, or never asked: nothing waits to end.
+        assert!(t.give_up(&key(1), HEADLESS).is_none());
+        assert!(t.give_up(&key(9), HEADLESS).is_none());
+        assert!(allow(&mut t, "p1", HEADLESS).is_err(), "answered after it ended");
+        t.ask(permission(3, "s", &["allow_once"]), None, "headless");
+        allow(&mut t, "p2", HEADLESS).unwrap();
+        assert!(t.give_up(&key(3), HEADLESS).is_none());
+
+        // With an editor, the editor answers it: no reply, nothing to
+        // withdraw, and its answer goes on, with no event.
+        t.ask(permission(4, "s", &["allow_once"]), None, "editor");
+        let other = AgentRequest::new(json!(5), "fs/read_text_file".into(), None, Value::Null);
+        t.ask(other, None, "editor");
+        let r = t.give_up(&key(4), EDITOR).unwrap();
+        assert!(r.reply.is_none() && r.withdraw.is_none());
+        assert_eq!(r.event.unwrap()["answer"], "cancelled");
+        assert!(handles(&t).is_empty());
+        let cancelled = json!({ "outcome": { "outcome": "cancelled" } });
+        assert!(matches!(editor(&mut t, 4, cancelled), EditorAnswer::GivenUp(Some(s)) if s == "s"));
+        assert!(matches!(editor(&mut t, 4, json!({})), EditorAnswer::Unknown));
+        // One brnr doesn't hold is the editor's to end.
+        assert!(t.give_up(&key(5), EDITOR).is_none());
+        assert!(matches!(editor(&mut t, 5, json!({})), EditorAnswer::Resolved(_)));
     }
 
     #[test]

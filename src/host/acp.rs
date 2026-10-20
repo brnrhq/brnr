@@ -38,6 +38,10 @@
 //!   them (ADR 4.5, see elicitation.rs). Anything else gets "method not
 //!   found": `fs` and `terminal` too, which a headless process doesn't
 //!   offer (ADR 2.7 in docs/adr).
+//! - The agent's `$/cancel_request` for a permission request or an
+//!   elicitation it asked ends it, `by: agent` (ADR 4.5): headless, the
+//!   host answers it `cancelled` or `cancel`; an editor gets the
+//!   notification as it came, and its answer goes on to the agent.
 //! - While a `session/load`, headless or the editor's, replays a session's
 //!   history (ADR 5.6): if brnr has a transcript of the session, the replayed
 //!   updates are neither recorded nor turned into events, as the transcript
@@ -367,6 +371,9 @@ impl Host {
                     // Answered by the host already (a cancel, an allow or
                     // reject): the agent must not get a second answer.
                     EditorAnswer::Late(answered) => return self.late_answer(&id, answered, &msg),
+                    // The agent cancelled it, and the editor answers as ACP
+                    // has it: on to the agent, as it is (ADR 4.5).
+                    EditorAnswer::GivenUp(given_up) => session = given_up,
                     // It answers a request the host couldn't read, or none:
                     // it goes on, and the agent ignores an answer to
                     // something it never asked (ADR 2.5 in docs/adr).
@@ -673,6 +680,7 @@ impl Host {
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.agent_response(&id_key(&id), &msg, line),
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
+            (Some(method), None) if method == "$/cancel_request" => self.agent_cancel(&msg, line),
             (method, None) => {
                 let mut session = param_session(&msg);
                 let mut completed = None;
@@ -712,6 +720,22 @@ impl Host {
                     self.emit(event);
                 }
             }
+        }
+    }
+
+    /// The agent's `$/cancel_request`: a permission request or an
+    /// elicitation it no longer waits for ends, `by: agent` (ADR 4.5, see
+    /// approvals.rs). The notification is recorded in the request's
+    /// session, live whatever a load replays, and goes on to an editor as it
+    /// came; then the host's answer, headless, and the event.
+    fn agent_cancel(&mut self, msg: &Map<String, Value>, line: &[u8]) {
+        let named = msg.get("params").and_then(|p| p.get("requestId"));
+        let given_up = named.and_then(|id| self.approvals.give_up(&id_key(id), self.client()));
+        let session = given_up.as_ref().and_then(|r| r.req.session.clone());
+        self.record(session.or_else(|| param_session(msg)).as_deref(), Dir::AgentToEditor, line);
+        self.send_link(frame::DATA, line);
+        if let Some(resolved) = given_up {
+            self.resolved(resolved);
         }
     }
 

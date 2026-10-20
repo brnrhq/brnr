@@ -94,6 +94,12 @@ with environment variables:
                     elicitation scoped to the authenticate request (no
                     session), and answers once that is answered: {} for an
                     accept, an error otherwise
+  GIVE_UP=<file>    once this file exists, sends $/cancel_request for each
+                    permission request and elicitation it has open, then
+                    deletes the file, reading on meanwhile; it still takes
+                    their answers as it would have
+  ASK_AND_END=1     a turn that asks permission or for input ends at once,
+                    its requests left open; their answers end nothing
 
 An elicitation is asked only of a client whose initialize advertised its mode
 (clientCapabilities.elicitation.form or .url, an object): otherwise the turn
@@ -542,6 +548,8 @@ def run(mid, sid, text):
         n = int(words[2]) if first == "perm" and len(words) > 2 else 1
         for _ in range(n):
             ask(mid, sid, kind)
+        if env("ASK_AND_END"):
+            end_turn(mid)
     else:
         end_turn(mid)
 
@@ -642,6 +650,20 @@ def elicit(mid, sid, how, depth=()):
             sys.stdout.flush()
         return
     send(msg)
+    if env("ASK_AND_END"):
+        eliciting[request] = (None, sid, params.get("elicitationId"))
+        end_turn(mid)
+
+
+def give_up(gate):
+    """Each time gate exists: $/cancel_request for every request it has
+    open, then the gate goes."""
+    while True:
+        while not os.path.exists(gate):
+            time.sleep(0.05)
+        for request in list(asking) + list(eliciting):
+            send({"jsonrpc": "2.0", "method": "$/cancel_request", "params": {"requestId": request}})
+        os.remove(gate)
 
 
 def elicited(mid, msg):
@@ -661,7 +683,8 @@ def elicited(mid, msg):
             error(turn, -32000, "Login not completed")
         return
     say(sid, "elicited " + json.dumps(answer, sort_keys=True))
-    end_turn(turn)
+    if turn is not None:
+        end_turn(turn)
 
 
 def running_tool(sid, twice=False):
@@ -679,7 +702,7 @@ def running_tool(sid, twice=False):
 def ask(mid, sid, kind):
     """Asks permission for a tool call of kind, in prompt mid's turn."""
     request = f"perm-{len(asking) + 1}"
-    asking[request] = mid
+    asking[request] = None if env("ASK_AND_END") else mid
     options = [
         {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
         {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
@@ -769,6 +792,8 @@ using = {}  # such a request's id -> (prompt id, session, what, steps left, anyw
 told = set()  # the prompts whose turns use_client has said something in
 eliciting = {}  # elicitation request id -> (prompt id, session, elicitation id)
 elicit_modes = {}  # the client's clientCapabilities.elicitation
+if env("GIVE_UP"):
+    threading.Thread(target=give_up, args=(env("GIVE_UP"),), daemon=True).start()
 
 for line in sys.stdin.buffer:
     if env("RAW_LOG"):
@@ -1018,7 +1043,7 @@ for line in sys.stdin.buffer:
         elicited(mid, msg)
     elif method is None and mid in asking:
         turn = asking.pop(mid)
-        if turn not in asking.values():
+        if turn is not None and turn not in asking.values():
             end_turn(turn)
     elif method is not None and mid is not None:
         error(mid, -32601, f"Method not found: {method}")

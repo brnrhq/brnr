@@ -91,7 +91,8 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
   config options and commands `value` is a JSON merge patch by id or name.
 - `permission_resolved`: `answer` is `allowed`, `rejected` or `cancelled`
   (null for an editor's answer of a kind brnr doesn't know), `option_kind`
-  the chosen option's kind, `by` who answered (`editor` or `control`),
+  the chosen option's kind, `by` who answered (`editor` or `control`, or
+  `agent` when the agent gave the request up itself, `$/cancel_request`),
   `peer` the connection that answered (`socket#18`, a bridge's name), and
   `reason` `cancel` or `timeout` when brnr answered for its turn's cancel or
   its time.

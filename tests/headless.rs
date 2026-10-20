@@ -5229,6 +5229,61 @@ fn adr_0004_an_editors_elicitation_is_seen_and_reaches_the_editor() {
     assert_eq!(answers, [serde_json::json!({ "action": "accept", "content": content })]);
 }
 
+/// In an editor's session the agent's `$/cancel_request` reaches the
+/// editor as the agent sent it, and the editor's answer reaches the agent
+/// as the editor sent it. The request ends with one `*_resolved` event,
+/// `by: agent`; the editor's answer makes none.
+#[test]
+fn adr_0004_an_editor_gets_the_agents_cancel_and_answers_it() {
+    let env = Env::new("ex-giveup");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("GIVE_UP", gate.to_str().unwrap());
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &[]);
+    let resolved = |name: &str| -> Vec<Value> {
+        let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "all"]);
+        (log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()))
+            .filter(|e| e["event"] == name)
+            .collect()
+    };
+    let answers = |id: &str| -> Vec<Value> {
+        (env.calls().into_iter())
+            .filter(|c| c["id"] == id && c.get("method").is_none())
+            .map(|c| c["result"].clone())
+            .collect()
+    };
+    for (prompt, asked, request, list, answer) in [
+        (
+            3,
+            "session/request_permission",
+            "perm-1",
+            "permission",
+            r#"{"outcome":{"outcome":"cancelled"}}"#,
+        ),
+        (4, "elicitation/create", "elicit-1", "elicitation", r#"{"action":"cancel"}"#),
+    ] {
+        let text = if list == "permission" { "perm edit" } else { "elicit form" };
+        writeln!(to_agent, "{}", editor_prompt(prompt, text)).unwrap();
+        message(&mut from_agent, |m| m["method"] == asked);
+        let requests = || env.ok(&[list, "requests", "sess-1"]);
+        assert!(requests().contains(if list == "permission" { "p1" } else { "e1" }));
+        fs::write(&gate, "").unwrap();
+        let cancel = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+        let sent = serde_json::json!({ "jsonrpc": "2.0", "method": "$/cancel_request",
+                                       "params": { "requestId": request } });
+        assert_eq!(cancel, sent, "changed on its way");
+        assert!(wait_for(Duration::from_secs(5), || requests() == "nothing waiting\n"));
+        let result: Value = serde_json::from_str(answer).unwrap();
+        let reply = serde_json::json!({ "jsonrpc": "2.0", "id": request, "result": result });
+        writeln!(to_agent, "{reply}").unwrap();
+        assert_eq!(response(&mut from_agent, prompt)["result"]["stopReason"], "end_turn");
+        assert_eq!(answers(request), [result], "{list}: not the editor's answer");
+        let events = resolved(&format!("{list}_resolved"));
+        assert_eq!(events.len(), 1, "{list}: {events:?}");
+        let who = (&events[0]["by"], &events[0]["peer"], &events[0]["reason"]);
+        assert_eq!(who, (&"agent".into(), &Value::Null, &Value::Null), "{list}: {events:?}");
+    }
+}
+
 /// The agent answers a change of mode or config option only to the host,
 /// which asked; the editor is sent the update itself (ADR 6.2).
 #[test]

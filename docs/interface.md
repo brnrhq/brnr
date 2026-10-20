@@ -424,6 +424,10 @@ ACP message's of the host, the same in the transcript (a raw ACP record has
 it before `dir`); session events have `session`. Every name and fixed value
 is snake_case, named subject first (ADR 5.9). Who acted is `by` (`editor`,
 `agent` or `control`), the connection that asked `peer`, and why `reason`.
+`by: agent` is on a `permission_resolved` or `elicitation_resolved` whose
+request the agent cancelled with `$/cancel_request` (ADR 4.5): headless,
+brnr answered it `cancelled` or `cancel`; an editor answers its own. It is no
+longer pending, and an `allow`, `reject` or `elicitation` for it fails.
 `peer_cut_off` (`peer`, `last_queued_seq`) tells the other peers that one was
 cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,

@@ -148,6 +148,16 @@ brnr's own conventions:
 
 ### Fixed
 
+- A permission request or an elicitation the agent cancels with
+  `$/cancel_request` ends: it is gone from `permission requests`,
+  `elicitation requests` and a bridge's `pending`, the session is no longer
+  `waiting` (so `stop_when_idle` counts again), and its
+  `permission_resolved` or `elicitation_resolved` says `by: agent`.
+  Headless, brnr answers it `cancelled` or `cancel`, as ACP has a cancelled
+  request answered; in an editor's session the editor gets the
+  notification and answers it. An answer to it after that fails and sends
+  nothing. brnr passed the notification over, and the request stayed
+  listed, waiting for an answer the agent no longer took (ADR 4.5, #308).
 - What reads transcripts holds every part of their path to the rules they
   are written by: `session list`, `event log`, `session resume`, `session
   delete`, catching up and `doctor` don't look in, or read through, a

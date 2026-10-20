@@ -320,6 +320,13 @@ that. `response_timeout` has no default (P4): without it, a request nobody
 answers waits as long as the process runs. An unattended run, with nobody to
 answer (a script, CI, a worker left alone), must set it.
 
+The agent can give up on a request itself (`$/cancel_request`): it is no
+longer waiting, `permission_resolved` says `by: agent`, and brnr answers it
+`cancelled`, as ACP has it; an answer to it after that fails, and nothing is
+sent. On an editor's session the editor gets the agent's notification and
+answers it. A turn that ends with its request unanswered doesn't end the
+request: it waits as any does, and the session stays `waiting`.
+
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `permission show`
 says when a command has any. `--json` has the text as the agent sent it. On an
@@ -354,10 +361,11 @@ doesn't know can only be declined or cancelled. One asked outside any session
 
 `response_timeout` covers elicitations too: one nobody answered is answered
 `cancel`, never `decline` or `accept`, and `elicitation show` says when. `prompt
-cancel` answers the session's elicitations `cancel` too. On an editor's
-session the request reaches the editor as the agent sent it, and is seen
-(`elicitation_request`, `elicitation_resolved`) as approvals are; answering it
-here is the experimental `elicitation`.
+cancel` answers the session's elicitations `cancel` too, and one the agent
+gives up on (`$/cancel_request`) is answered `cancel`, `by: agent`, as an
+approval is. On an editor's session the request reaches the editor as the
+agent sent it, and is seen (`elicitation_request`, `elicitation_resolved`) as
+approvals are; answering it here is the experimental `elicitation`.
 
 ### Settings
 
@@ -549,7 +557,8 @@ acted is `by`: `editor`, `agent` or `control` (brnr's commands, bridges and
 timers); beside it, `peer` is the connection that asked, where brnr knows
 one (`socket#7`, a bridge's name), and `reason` is why, a word
 (`permission_resolved` by `control`: `peer` for `brnr permission allow`,
-`reason` `timeout` or `cancel` otherwise). Every name is snake_case (ADR
+`reason` `timeout` or `cancel` otherwise; by `agent` when the agent gave the
+request up with `$/cancel_request`). Every name is snake_case (ADR
 5.9). For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
