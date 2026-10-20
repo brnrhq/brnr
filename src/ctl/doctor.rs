@@ -37,9 +37,11 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsStr;
-use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::ffi::{CString, OsStr};
+use std::fs::{self, File};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -167,18 +169,18 @@ fn runtime_dir(r: &mut Report) -> Option<Vec<Running>> {
         );
         r.line(Level::Fail, what, msg);
     }
-    match fs::symlink_metadata(&dir) {
-        Err(_) => {
+    match Found::at(None, dir.clone(), true) {
+        None => {
             r.line(Level::Ok, what, format!("{} (created on first use)", dir.display()));
             return Some(Vec::new());
         }
-        Ok(meta) => match private_problem(&meta, true) {
+        Some(found) => match found.problem() {
             None => r.line(Level::Ok, what, format!("{}: private", dir.display())),
             Some(problem) => {
-                if r.fix && fixable(&meta, true) && chmod(&dir, 0o700) {
+                if r.fix && found.make_private() {
                     r.line(Level::Ok, what, format!("{}: {problem}; fixed", dir.display()));
                 } else {
-                    let hint = if fixable(&meta, true) { " (brnr doctor --fix)" } else { "" };
+                    let hint = if found.fixable() { " (brnr doctor --fix)" } else { "" };
                     let msg = format!("{}: {problem}; brnr won't use it{hint}", dir.display());
                     r.line(Level::Fail, what, msg);
                     return None;
@@ -315,50 +317,36 @@ fn sun_path_len() -> usize {
 fn transcripts(r: &mut Report) {
     let what = "transcripts";
     let root = paths::state_dir();
-    let Ok(meta) = fs::symlink_metadata(&root) else {
+    let Some(top) = Found::at(None, root.clone(), true) else {
         r.line(Level::Ok, what, format!("{} (created on first use)", root.display()));
         return;
     };
     // Every directory and file brnr writes: the root, hosts/ and projects/
-    // with their files, and each project folder's files. Nothing is looked
-    // at, or made private, through a symlink (ADR 9.3): one is a problem
-    // itself.
-    let below = meta.is_dir();
-    let mut paths = vec![(root.clone(), meta)];
-    for sub in ["hosts", "projects"].into_iter().filter(|_| below) {
-        let dir = root.join(sub);
-        let Ok(meta) = fs::symlink_metadata(&dir) else { continue };
-        let is_dir = meta.is_dir();
-        paths.push((dir.clone(), meta));
-        if !is_dir {
-            continue;
-        }
-        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let Ok(meta) = entry.path().symlink_metadata() else { continue };
-            let is_dir = meta.is_dir();
-            paths.push((entry.path(), meta));
-            if sub == "projects" && is_dir {
-                for file in fs::read_dir(entry.path()).into_iter().flatten().flatten() {
-                    if let Ok(meta) = file.path().symlink_metadata() {
-                        paths.push((file.path(), meta));
-                    }
-                }
-            }
+    // with their files, and each project folder's files, each opened from
+    // the one above it as readers open them (ADR 9.3). Nothing is looked
+    // at, or made private, through a symlink: one is a problem itself.
+    let mut below = Vec::new();
+    for sub in ["hosts", "projects"] {
+        let Some(dir) = top.child(OsStr::new(sub), true) else { continue };
+        let entries = dir.children();
+        below.push(dir);
+        for entry in entries {
+            let files = if sub == "projects" { entry.children() } else { Vec::new() };
+            below.push(entry);
+            below.extend(files);
         }
     }
-    let open: Vec<&(PathBuf, fs::Metadata)> =
-        paths.iter().filter(|(_, m)| private_problem(m, m.is_dir()).is_some()).collect();
+    let paths: Vec<Found> = std::iter::once(top).chain(below).collect();
+    let open: Vec<(&Found, String)> =
+        paths.iter().filter_map(|f| Some((f, f.problem()?))).collect();
     if open.is_empty() {
         let msg = format!("{}: private ({} paths)", root.display(), paths.len());
         return r.line(Level::Ok, what, msg);
     }
-    let fixable: Vec<_> = open.iter().filter(|(_, m)| fixable(m, m.is_dir())).collect();
-    let example = open[0].0.display();
+    let fixable: Vec<&Found> = open.iter().map(|(f, _)| *f).filter(|f| f.fixable()).collect();
+    let example = format!("{} {}", open[0].0.path.display(), open[0].1);
     if r.fix && !fixable.is_empty() {
-        let fixed = fixable
-            .iter()
-            .filter(|(p, m)| chmod(p, if m.is_dir() { 0o700 } else { 0o600 }))
-            .count();
+        let fixed = fixable.iter().filter(|f| f.make_private()).count();
         r.line(Level::Ok, what, format!("made {fixed} paths private under {}", root.display()));
         if fixed < open.len() {
             let msg = format!("{} paths are not yours to fix, e.g. {example}", open.len() - fixed);
@@ -366,12 +354,90 @@ fn transcripts(r: &mut Report) {
         }
     } else {
         let hint = if fixable.is_empty() { "" } else { " (brnr doctor --fix)" };
-        let msg = format!(
-            "{} of {} paths can be read by others, e.g. {example}{hint}",
-            open.len(),
-            paths.len()
-        );
+        let msg =
+            format!("{} of {} paths aren't private, e.g. {example}{hint}", open.len(), paths.len());
         r.line(Level::Warn, what, msg);
+    }
+}
+
+/// A path that should be private, as doctor finds it: opened without
+/// following a symlink, from the directory above it where there is one
+/// (`openat`, `O_NOFOLLOW`), and looked at through what was opened
+/// (`fstat`), so what is checked, listed and made private is what was
+/// opened, whatever is put at its name meanwhile. One that can't be opened
+/// so, such as a symlink, has no `file`: its metadata is its name's, for
+/// the message only, and it isn't fixed.
+struct Found {
+    path: PathBuf,
+    meta: fs::Metadata,
+    /// Whether it should be a directory: the state directory, `hosts` and
+    /// `projects` should; what is in them should be what it is.
+    dir: bool,
+    file: Option<File>,
+}
+
+impl Found {
+    /// `path`, opened from `parent` (by its name there) or, with none, as
+    /// it is; `None` if there is nothing there.
+    fn at(parent: Option<&File>, path: PathBuf, dir: bool) -> Option<Found> {
+        let flags = libc::O_RDONLY
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | libc::O_NOCTTY
+            | if dir { libc::O_DIRECTORY } else { 0 };
+        let opened = match parent {
+            None => File::options().read(true).custom_flags(flags).open(&path),
+            Some(parent) => {
+                let name = CString::new(path.file_name()?.as_bytes()).ok()?;
+                sys::openat(parent.as_fd(), &name, flags, 0)
+            }
+        };
+        let file = opened.ok();
+        let meta = match &file {
+            Some(file) => file.metadata().ok()?,
+            None => fs::symlink_metadata(&path).ok()?,
+        };
+        Some(Found { path, meta, dir, file })
+    }
+
+    /// `name` in this directory, if it was opened as one.
+    fn child(&self, name: &OsStr, dir: bool) -> Option<Found> {
+        let parent = self.file.as_ref().filter(|_| self.meta.is_dir())?;
+        Found::at(Some(parent), self.path.join(name), dir)
+    }
+
+    /// What is in this directory, listed through what was opened, in order;
+    /// nothing if it wasn't opened as a directory.
+    fn children(&self) -> Vec<Found> {
+        let Some(file) = self.file.as_ref().filter(|_| self.meta.is_dir()) else {
+            return Vec::new();
+        };
+        let mut names = sys::names(file).unwrap_or_default();
+        names.sort();
+        let found = names.iter().filter_map(|name| {
+            let mut found = self.child(OsStr::from_bytes(name.as_bytes()), false)?;
+            found.dir = found.file.is_some() && found.meta.is_dir();
+            Some(found)
+        });
+        found.collect()
+    }
+
+    fn problem(&self) -> Option<String> {
+        private_problem(&self.meta, self.dir)
+    }
+
+    /// Whether `--fix` may make it private: it was opened, and is the
+    /// user's and what it should be.
+    fn fixable(&self) -> bool {
+        self.file.is_some() && fixable(&self.meta, self.dir)
+    }
+
+    /// Makes it private through what was opened (`fchmod`), never by its
+    /// name. Whether it was.
+    fn make_private(&self) -> bool {
+        let mode = if self.dir { 0o700 } else { 0o600 };
+        let set = |f: &File| f.set_permissions(fs::Permissions::from_mode(mode)).is_ok();
+        self.fixable() && self.file.as_ref().is_some_and(set)
     }
 }
 
@@ -396,10 +462,6 @@ fn private_problem(meta: &fs::Metadata, dir: bool) -> Option<String> {
 /// Only what is ours and what it claims to be gets chmod'ed.
 fn fixable(meta: &fs::Metadata, dir: bool) -> bool {
     !meta.file_type().is_symlink() && meta.is_dir() == dir && meta.uid() == sys::uid()
-}
-
-fn chmod(path: &Path, mode: u32) -> bool {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).is_ok()
 }
 
 // ---- config --------------------------------------------------------------
@@ -867,4 +929,43 @@ fn tilde(text: &str) -> String {
     let folder: String =
         home.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     text.replace(home, "~").replace(&format!("{folder}-"), "~-")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    /// `--fix` makes private what it opened and looked at, never what is at
+    /// its name by then (ADR 9.3): a file swapped for a symlink after it was
+    /// looked at leaves what the link points at as it was.
+    #[test]
+    fn adr_0009_fix_changes_what_was_opened_not_its_name() {
+        let dir = std::env::temp_dir().join(format!("brnr-doctor-{}-swap", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mode = |p: &Path| fs::symlink_metadata(p).unwrap().mode() & 0o777;
+        let open = |p: &Path| fs::set_permissions(p, fs::Permissions::from_mode(0o644)).unwrap();
+        let (file, moved, outside) = (dir.join("s.jsonl"), dir.join("moved"), dir.join("outside"));
+        fs::write(&file, "{}\n").unwrap();
+        fs::write(&outside, "secret\n").unwrap();
+        open(&file);
+        open(&outside);
+
+        let top = Found::at(None, dir.clone(), true).unwrap();
+        let found = top.children().into_iter().find(|f| f.path == file).unwrap();
+        assert_eq!(found.problem().as_deref(), Some("has mode 644"));
+        fs::rename(&file, &moved).unwrap();
+        symlink(&outside, &file).unwrap();
+        assert!(found.make_private());
+        assert_eq!((mode(&moved), mode(&outside)), (0o600, 0o644));
+
+        // Looked at again, the symlink is a problem itself, and not fixed.
+        let found = top.children().into_iter().find(|f| f.path == file).unwrap();
+        assert_eq!(found.problem().as_deref(), Some("is a symlink"));
+        assert!(!found.fixable() && !found.make_private());
+        assert_eq!(mode(&outside), 0o644);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

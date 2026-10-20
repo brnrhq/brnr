@@ -2,7 +2,7 @@
 //! safe functions. The others are `unsafe` where they are made, each with why
 //! it is sound there.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
 use std::mem::ManuallyDrop;
@@ -161,6 +161,68 @@ pub(crate) fn mkdirat(dir: BorrowedFd, name: &CStr, mode: mode_t) -> io::Result<
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The names in the directory `dir` is open on, but `.` and `..`, all of
+/// them each time, read through the descriptor (fdopendir(3) of a
+/// duplicate), not by a path that could name another directory by now.
+pub(crate) fn names(dir: &File) -> io::Result<Vec<CString>> {
+    // SAFETY: fcntl(2) with F_DUPFD_CLOEXEC takes an open descriptor and a
+    // number, and returns a new descriptor or -1.
+    let fd = unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a descriptor of ours that nothing else holds; on
+    // success the DIR owns it, and closedir closes it.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        let e = io::Error::last_os_error();
+        // SAFETY: fdopendir failed, so `fd` is still ours alone to close.
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    // The duplicate shares the offset of `dir`, which an earlier listing
+    // left at the end.
+    // SAFETY: `stream` is open.
+    unsafe { libc::rewinddir(stream) };
+    let mut names = Vec::new();
+    let result = loop {
+        // SAFETY: errno is this thread's; readdir(3) sets it only on an
+        // error, so it is cleared to tell one from the end.
+        unsafe { *errno() = 0 };
+        // SAFETY: `stream` is open until closedir below; the entry readdir
+        // returns is valid until the next call on it, and its name is
+        // copied before then.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            // SAFETY: as above.
+            let e = unsafe { *errno() };
+            break if e == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(e)) };
+        }
+        // SAFETY: d_name is a NUL-terminated string within the entry.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if !matches!(name.to_bytes(), b"." | b"..") {
+            names.push(name.to_owned());
+        }
+    };
+    // SAFETY: `stream` is open, and closed once, here.
+    unsafe { libc::closedir(stream) };
+    result.map(|()| names)
+}
+
+/// This thread's errno.
+#[cfg(target_os = "macos")]
+fn errno() -> *mut c_int {
+    // SAFETY: __error(3) takes nothing and returns this thread's errno.
+    unsafe { libc::__error() }
+}
+
+/// This thread's errno.
+#[cfg(not(target_os = "macos"))]
+fn errno() -> *mut c_int {
+    // SAFETY: __errno_location takes nothing and returns this thread's errno.
+    unsafe { libc::__errno_location() }
 }
 
 /// Removes the name `name` from the directory `dir`, as unlinkat(2) does
