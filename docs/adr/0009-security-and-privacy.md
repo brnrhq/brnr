@@ -3,11 +3,13 @@
 Draft 2026-10-19. Implemented. Factor: N1 (ADR 1). Brings together former
 ADRs 25, 53 and 59 (docs/adr/README.md maps them).
 
-What brnr records and where: secrets kept out of what it writes, session
-ids made safe file names, and transcripts written only where only the user
-can read them. Security comes first (N1). docs/threat-model.md says, for
-each trust boundary, what enforces each claim and what the gaps are: B6
-for 9.1, B4 for 9.2, B2 for 9.3.
+What brnr records and where, and what it reads: secrets kept out of what
+it writes, session ids made safe file names, transcripts written only
+where only the user can read them, and the config file read only where
+only the user can change or read it. Security comes first (N1).
+docs/threat-model.md says, for each trust boundary, what enforces each
+claim and what the gaps are: B6 for 9.1, B4 for 9.2, B2 for 9.3, B7 for
+9.4.
 
 ## 9.1 Secrets are redacted in what brnr records
 
@@ -180,6 +182,81 @@ points (N1).
 - A setting to allow group-readable transcripts: P13 is "only you", and a
   copy shares as well.
 
+## 9.4 The config file is read only if only you can change or read it
+
+- Before brnr reads the config file (`$BRNR_CONFIG`, else
+  `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml`),
+  it checks the file and the folder it is in, and refuses:
+  - a file or folder that isn't the user's own;
+  - a file or folder that the group or others can write;
+  - a file that the group or others can read, whatever it holds;
+  - a file that isn't a regular file (a FIFO is refused, not waited on);
+  - on macOS, a file or folder with an access control list (`ls -le`),
+    which can let others in whatever the mode says: `chmod -N` removes it.
+    Any ACL is refused, a `deny` one too, as one rule (N4). On Linux an
+    ACL's grants show in the mode's group bits, its mask, which are
+    checked.
+- A symlink is followed, as dotfile setups have them: what is checked is the
+  file it resolves to, and that file's folder. The link's own folder, and
+  the folders above, aren't checked.
+- Both are checked through what the file is read from: the folder is opened,
+  the file is opened from it without following a symlink (`openat`,
+  `O_NOFOLLOW`), and each is checked by `fstat` of what was opened. What is
+  checked is what is read.
+- The error names the path, says why, with the owner or the mode it has,
+  and gives the command that fixes it, one line for each problem:
+  `brnr: /home/u/.config/brnr/config.toml: it can be read by the group and
+  others (mode 644), and may hold secrets, so brnr won't read the config:
+  chmod go-rw /home/u/.config/brnr/config.toml`. For a symlink it names the
+  file it links to (`…/config.toml: /home/u/dotfiles/brnr.toml, which it
+  links to, can be …`); for the folder, `its folder … can be written by
+  others (mode 757) …: chmod go-w …`; for another user's, `it is owned by
+  uid 0, not you (uid 501) …: sudo chown 501 …`.
+- brnr never changes the file, its folder or their modes itself (P4), and
+  `brnr doctor --fix` doesn't either. `brnr doctor` fails its config check
+  with the same problems.
+- Every command reads the config through one function, `config::load_all`,
+  so the check covers each: `brnr acp`, `session new`, `session resume`,
+  what takes `--profile`, and `doctor`.
+- No config file (and no folder) is no config, as before: defaults apply.
+- There is no override.
+
+**Consequences.**
+
+- A config file written with a common umask (0644) now fails every command
+  that reads it until it is `chmod go-rw`'ed. This breaks setups that
+  worked: the CHANGELOG says so.
+- A config kept in a shared dotfiles repository works through a symlink to
+  a private file; a checkout others can read doesn't.
+
+**Why.** The config file names the commands brnr runs as the user: the
+agent, bridges, MCP servers' commands. One others can write lets them run
+code as the user. Its MCP servers' `env` and `headers` (ADR 6.3) hold
+tokens, which 9.1 keeps out of everything brnr records; one others can
+read gives them away anyway. N1 says only the user can reach brnr's files,
+and that includes what brnr reads as well as what it writes (P13). ssh
+refuses its keys on the same terms.
+
+**Considered.**
+
+- Refusing a file others can read only when it holds MCP `env` or
+  `headers`: a secret can also be in an MCP server's `args` or `url`, or a
+  bridge's command line, and two rules are harder to know than one (N4).
+- Making it private, as 9.3 does for transcripts: brnr writes transcripts,
+  but the config is the user's own file, which brnr only reads. Changing
+  its mode is picking for the user (P4); the error gives the one command
+  that does it.
+- A warning, and reading it anyway: the command would run what others
+  could have written. Security comes first (N1), and an explicit check that
+  fails, fails (P7).
+- Not following a symlink, as 9.3 doesn't for transcripts: dotfile setups
+  link the config, and what matters is the file read and who can change
+  it, which are checked through what is read. A folder above that others
+  can write can swap in only another folder, which is then checked.
+- Checking the folders up to `/`: they aren't brnr's, and a home directory
+  others can search is common.
+- A setting to allow a config the group can read: P13 is "only you".
+
 ## Tests
 
 Run `cargo test --release adr_0009_`. Named claims, by section:
@@ -235,3 +312,24 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_a_symlinked_transcript_is_never_read`: a session whose
       events file is a symlink, or in a symlinked project folder, isn't
       listed or logged.
+- 9.4:
+  - [tests/security.rs](../../tests/security.rs):
+    - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config
+      file the group or others can read or write, and one in a folder they
+      can write, fail `session new` and `brnr acp` before an agent starts,
+      saying the path, the mode and the `chmod` that fixes it; the modes
+      stay as they were.
+    - `adr_0009_a_config_of_another_users_is_refused`: root's `/etc/hosts`
+      as the config is refused for its owner and its folder's, with the
+      `chown` (skipped as root).
+    - `adr_0009_a_symlinked_config_is_checked_where_it_points`: a link to a
+      private file is read; to one others can read, refused, naming that
+      file.
+    - `adr_0009_a_config_with_an_acl_is_refused` (macOS): a config file,
+      and its folder, with an access control list are refused with the
+      `chmod -N` that removes it, and the ACL stays.
+    - `adr_0009_a_missing_config_is_no_config`.
+  - [tests/doctor.rs](../../tests/doctor.rs):
+    `adr_0009_doctor_fails_a_config_others_can_reach`: the file and the
+    folder fail the config check with their fixes, `--fix` changes
+    neither, and a missing config and a symlink to a private one are ok.

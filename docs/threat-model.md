@@ -30,12 +30,16 @@ says what is in scope for a report; the principles cited are
 - **Secrets.** The values of a profile's or an editor's MCP servers' `env`
   and `headers` (tokens, `Authorization`), which go to the agent in the
   requests that open a session (ADR 9.1).
+- **The config file.** `config.toml` names the commands brnr runs as the
+  user (the agent, bridges, MCP servers) and holds the profiles' MCP
+  secrets (ADR 6.3). Whoever can write it runs code as the user; whoever
+  can read it has the secrets.
 
 ## Actors
 
 | Actor | Trusted with | Where it stands |
 |---|---|---|
-| Other local users | nothing | outside: kept out of the runtime directory, sockets, transcripts and session locks by file modes (P13) |
+| Other local users | nothing | outside: kept out of the runtime directory, sockets, transcripts and session locks by file modes, and a config file they can read or write is refused (P13) |
 | Root | everything | outside brnr's reach; can do anything as any user |
 | Processes running as the same user | everything the user can do | **inside** the boundary (P13): see below |
 | The editor | its session, and serving the agent's file and terminal requests (`fs/*`, `terminal/*`) | inside; it runs `brnr acp`, and its bytes pass unchanged (P1); what it reads, writes and runs for the agent is its own to allow (ADR 2.7) |
@@ -72,6 +76,8 @@ the user from their own processes.
                           ~/.brnr, 0700 ── transcripts and host logs, 0600;
                                            session locks, sessions/ 0700
                                    (B2; secrets redacted, B6)
+                ~/.config/brnr ── config.toml: read only if only the user
+                                  can change or read it (B7)
 ```
 
 - **B1**, the runtime directory and the control sockets: between other local
@@ -84,6 +90,8 @@ the user from their own processes.
   its permission requests reach brnr's files, terminal and approvals.
 - **B5**, bridges and `event notify` commands: the edge of the machine.
 - **B6**, secrets: what brnr records and sends of the MCP servers' values.
+- **B7**, the config file: between other local users and what brnr runs
+  and the secrets it holds.
 
 ## Claims
 
@@ -161,6 +169,13 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows (for a log an older brnr wrote), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste` |
 | `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted` |
 
+### B7: the config file is only the user's
+
+| Claim | Enforced by | Tested by |
+|---|---|---|
+| Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/config.rs), from `load_all`, the one place the config is read; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
+| `doctor` fails a config file others can reach, with the same problems and fixes, and `--fix` doesn't change it. | `config_file` (src/ctl/doctor.rs), through `load_all` | `doctor.rs`: `adr_0009_doctor_fails_a_config_others_can_reach` |
+
 ### The adapters and the release
 
 | Claim | Enforced by | Tested by |
@@ -203,6 +218,11 @@ What brnr doesn't enforce, or doesn't test, today.
 - **Another user's file in the state directory is tested only as `/`.**
   Making one takes root, so the ownership check is tested with `/` as the
   state directory; a file of another user's beneath it is refused by the
+  same check, untested.
+- **Another user's config is tested only as root's `/etc/hosts`.** Making
+  a file or folder of another user's takes root, so the ownership check is
+  tested with a file and folder that are both root's, and skipped as root;
+  a private file of the user's in a folder of another's is refused by the
   same check, untested.
 - **A session whose transcript is refused is served unrecorded.** Logging
   never stops forwarding (P1, P6), so the session goes on; only the host
