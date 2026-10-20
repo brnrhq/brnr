@@ -1,54 +1,50 @@
-//! Reading ACP lines as RFC 8259 has them (ADR 2.5 in docs/adr).
+//! Reading ACP lines as RFC 8259 has them, to a fixed depth (ADR 2.5 in
+//! docs/adr).
 //!
-//! serde_json refuses two kinds of text RFC 8259's grammar allows: a string
-//! with a lone surrogate escape (`"\ud83d"`, what `JSON.stringify` makes of a
-//! title cut in the middle of an emoji), and nesting deeper than 128.
-//! [`parse`] reads both. In the copy it returns, a lone surrogate is U+FFFD
-//! and there is no depth limit; the line itself is forwarded as it came.
-//!
-//! A deep value takes a deep stack, to parse and also to clone, show or drop
-//! afterwards. [`depth`] says how deep a line goes, [`nesting`] how deep
-//! values go, and [`on_stack`] runs code on a stack that takes values that
-//! deep; [`holding`] runs code with a value, and lets go of it, on one.
+//! serde_json refuses a string with a lone surrogate escape (`"\ud83d"`,
+//! what `JSON.stringify` makes of a title cut in the middle of an emoji),
+//! which RFC 8259's grammar allows. [`parse`] reads it: in the copy it
+//! returns, a lone surrogate is U+FFFD; the line itself is forwarded as it
+//! came. It reads nesting as deep as it is told to, and no deeper: a line
+//! from the agent, the editor or a peer to [`DEPTH`], one brnr wrote to
+//! [`OWN_DEPTH`]. Either is a fixed number that any thread's stack takes, to
+//! parse a value and to clone, show or drop it afterwards; [`depth`] says how
+//! deep a line goes, so that one past it is told apart from one that isn't
+//! JSON.
 //!
 //! [`members`] finds a top-level member in the line itself, so that a
 //! request's id is changed there and the rest goes on byte for byte (ADR 2.4).
 
 use std::ops::Range;
-use std::panic;
-use std::thread;
 
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 
-/// Nesting any thread's stack takes: serde_json's own limit.
-pub(crate) const SHALLOW: usize = 128;
+/// How deep a line from the agent, the editor or a peer may nest for brnr
+/// to read it: 128 levels, about what serde_json reads by default (127), so
+/// as deep as what reads ACP with it, the Rust SDK and editors built on it.
+pub const DEPTH: usize = 128;
 
-/// Stack per level of nesting. The deepest use is parsing an object: about
-/// 1 KiB a level, 3 KiB in a debug build. Built under a sanitizer (`--cfg
-/// sanitized`), frames are bigger: 5 KiB under AddressSanitizer, whose
-/// redzones pad every one.
-const FRAME: usize = if cfg!(sanitized) {
-    24 << 10
-} else if cfg!(debug_assertions) {
-    8 << 10
-} else {
-    4 << 10
-};
+/// How deep a line brnr wrote may nest for brnr to read it: an event, an
+/// answer of the host's, a record. Each wraps what the host read, at most
+/// [`DEPTH`] deep, in a few levels of its own; twice [`DEPTH`] leaves room
+/// for that many times over, and any thread's stack still takes it.
+pub const OWN_DEPTH: usize = 2 * DEPTH;
 
-/// Stack for everything else a thread does: a spawned thread's default.
-const BASE: usize = 2 << 20;
-
-/// `text` as brnr interprets it, if it is JSON at all. Run it on a stack
-/// that takes [`depth`]`(text)`.
-pub fn parse<T: DeserializeOwned>(text: &[u8]) -> Option<T> {
+/// `text` as brnr interprets it, if it is JSON at all and nests no deeper
+/// than `most`.
+pub fn parse<T: DeserializeOwned>(text: &[u8], most: usize) -> Option<T> {
+    debug_assert!(most >= DEPTH, "{most}");
+    // What serde_json reads on its own nests 127 deep at most.
     if let Ok(value) = serde_json::from_slice(text) {
         return Some(value);
     }
     let mut fixed = None;
-    scan(text, |at| {
+    let deepest = scan(text, |at| {
         fixed.get_or_insert_with(|| text.to_vec())[at..at + 6].copy_from_slice(br"\uFFFD");
     });
+    if deepest > most {
+        return None;
+    }
     let mut de = serde_json::Deserializer::from_slice(fixed.as_deref().unwrap_or(text));
     de.disable_recursion_limit();
     let value = T::deserialize(&mut de).ok()?;
@@ -61,54 +57,14 @@ pub fn depth(text: &[u8]) -> usize {
     scan(text, |_| {})
 }
 
-/// How deeply the deepest of `values` nests, as [`depth`] counts their
-/// text. It doesn't recurse, so any stack takes it.
-pub(crate) fn nesting<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
-    let mut deepest = 0;
-    let mut todo: Vec<_> = values.into_iter().map(|v| (v, 0)).collect();
-    while let Some((value, depth)) = todo.pop() {
-        match value {
-            Value::Array(items) => todo.extend(items.iter().map(|v| (v, depth + 1))),
-            Value::Object(members) => todo.extend(members.values().map(|v| (v, depth + 1))),
-            _ => continue,
+/// `Err` if `text`, `what` it is, nests deeper than `most`, saying so.
+pub(crate) fn within(text: &[u8], most: usize, what: &str) -> Result<(), String> {
+    match depth(text) {
+        depth if depth > most => {
+            Err(format!("{what} nests {depth} deep, past the {most} brnr reads"))
         }
-        deepest = deepest.max(depth + 1);
+        _ => Ok(()),
     }
-    deepest
-}
-
-/// Runs `f` on a stack that takes values nested `depth` deep: this thread's,
-/// up to `SHALLOW`, else a thread's of its own. `None` if there is no such
-/// stack to be had.
-pub fn on_stack<R: Send>(depth: usize, f: impl FnOnce() -> R + Send) -> Option<R> {
-    if depth <= SHALLOW {
-        return Some(f());
-    }
-    let size = depth.checked_mul(FRAME)?.checked_add(BASE)?;
-    thread::scope(|scope| {
-        let thread = thread::Builder::new().stack_size(size).spawn_scoped(scope, f).ok()?;
-        Some(thread.join().unwrap_or_else(|e| panic::resume_unwind(e)))
-    })
-}
-
-/// Runs `f` with `value` on a stack that takes it (see [`on_stack`]), where
-/// `f` lets go of it too. `Err` says there is no such stack to be had; then
-/// `value` is kept until the process exits, rather than let go of here.
-pub(crate) fn holding<R: Send>(
-    value: Value,
-    f: impl FnOnce(Value) -> R + Send,
-) -> Result<R, String> {
-    let depth = nesting([&value]);
-    let mut value = Some(value);
-    let held = on_stack(depth, || f(value.take().unwrap()));
-    // Not taken: no stack to be had, to let go of it on either.
-    std::mem::forget(value);
-    held.ok_or_else(|| format!("no stack to be had for a message {depth} deep"))
-}
-
-/// Lets go of `value` on a stack that takes it, as [`holding`] does.
-pub(crate) fn free(value: Value) {
-    let _ = holding(value, drop);
 }
 
 /// The deepest nesting in `text`, calling `lone` with where each lone
@@ -265,12 +221,14 @@ fn is_low(unit: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use serde_json::{Value, json};
 
     use super::*;
 
     fn read(text: &str) -> Option<Value> {
-        parse(text.as_bytes())
+        parse(text.as_bytes(), DEPTH)
     }
 
     #[test]
@@ -288,8 +246,6 @@ mod tests {
         assert_eq!(read(r#""\\ud83d""#), Some(json!(r"\ud83d")));
         assert_eq!(read(r#"["\"[", "\ud83d"]"#), Some(json!(["\"[", "\u{fffd}"])));
         assert_eq!(depth(br#"[{"a": "[[[{{"}, "\"]]"]"#), 2);
-        assert_eq!(nesting([&json!([{ "a": "[[[{{" }, "\"]]"]), &json!({})]), 2);
-        assert_eq!(nesting([&json!("[")]), 0);
     }
 
     #[test]
@@ -321,27 +277,43 @@ mod tests {
         assert_eq!(replace(text, &found, br#""w""#), br#"{"id":"w", "id" :"w","x":3}"#);
     }
 
-    #[test]
-    fn nesting_has_no_limit() {
-        let n = 20_000;
-        let text = format!("{}1{}", "[".repeat(n), "]".repeat(n));
-        assert_eq!(depth(text.as_bytes()), n);
-        let back = on_stack(n, || {
-            let value: Value = parse(text.as_bytes()).unwrap();
-            assert_eq!(nesting([&value]), n);
-            value.to_string()
-        });
-        assert_eq!(back.as_deref(), Some(text.as_str()));
+    /// Arrays nested `n` deep around `inner`.
+    fn deep(n: usize, inner: &str) -> String {
+        format!("{}{inner}{}", "[".repeat(n), "]".repeat(n))
     }
 
     #[test]
-    fn adr_0002_a_value_is_let_go_of_on_a_stack_that_takes_it() {
-        // Deeper than a test thread's stack takes, to drop or show.
-        let n = 200_000;
-        let text = format!("{}1{}", "[".repeat(n), "]".repeat(n));
-        let value: Value = on_stack(n, || parse(text.as_bytes())).flatten().unwrap();
-        let shown = holding(value, |value| value.to_string());
-        assert_eq!(shown.as_deref(), Ok(text.as_str()));
-        free(on_stack(n, || parse(text.as_bytes())).flatten().unwrap());
+    fn adr_0002_a_line_is_read_to_its_limit_and_no_deeper() {
+        for most in [DEPTH, OWN_DEPTH] {
+            let at = deep(most, "1");
+            assert_eq!(depth(at.as_bytes()), most);
+            let value: Option<Value> = parse(at.as_bytes(), most);
+            assert_eq!(value.map(|v| v.to_string()).as_deref(), Some(at.as_str()), "{most}");
+            assert_eq!(parse::<Value>(deep(most + 1, "1").as_bytes(), most), None, "{most}");
+            // With a lone surrogate in it, too.
+            let lone = deep(most, r#""\ud83d""#);
+            let read = parse::<Value>(lone.as_bytes(), most).map(|v| v.to_string());
+            assert_eq!(read, Some(deep(most, "\"\u{fffd}\"")), "{most}");
+        }
+        assert_eq!(parse::<Value>(deep(DEPTH + 1, "1").as_bytes(), DEPTH), None);
+        assert_eq!(parse::<Value>(deep(1_000_000, "1").as_bytes(), OWN_DEPTH), None);
+    }
+
+    /// Any thread's stack takes a value at the limit: one of a spawned
+    /// thread's default size (2 MiB) reads it, objects and arrays, clones
+    /// it, shows it (indented too) and lets go of it.
+    #[test]
+    fn adr_0002_any_stack_takes_a_value_at_the_limit() {
+        let n = OWN_DEPTH / 2;
+        let text = format!("{}1{}", r#"{"a":["#.repeat(n), "]}".repeat(n));
+        assert_eq!(depth(text.as_bytes()), OWN_DEPTH);
+        let read = thread::Builder::new().stack_size(2 << 20).spawn(move || {
+            let value: Value = parse(text.as_bytes(), OWN_DEPTH).unwrap();
+            let copy = value.clone();
+            assert!(serde_json::to_string_pretty(&copy).unwrap().len() > text.len());
+            drop(copy);
+            assert_eq!(value.to_string(), text);
+        });
+        read.unwrap().join().unwrap();
     }
 }

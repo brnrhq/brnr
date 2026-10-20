@@ -144,6 +144,7 @@ pub(crate) const EVENTS: &[&str] = &[
     "session_deleted",
     "history",
     "line_too_long",
+    "line_too_deep",
     "peer_cut_off",
     "process_exited",
     "acp",
@@ -414,10 +415,8 @@ impl Host {
         self.sink.msg(session, dir, bytes, Some(seq));
         if self.peers.values().any(|p| p.wants("acp")) {
             let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-            // As the host reads it, where this stack takes it (see json.rs).
-            let msg = (json::depth(body) <= self.stack)
-                .then(|| json::parse::<Value>(body))
-                .flatten()
+            // As the host reads it (see json.rs).
+            let msg = json::parse::<Value>(body, json::DEPTH)
                 .unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
             let event =
                 json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg });
@@ -768,8 +767,7 @@ impl Host {
         let mut report = self.info.clone();
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
-        // Counted, not described: a description copies each request's tool
-        // call, which can nest a million deep (ADR 2.5).
+        // Counted: `pending` describes them.
         report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
         report["elicitations"] =
             json!(self.approvals.held().filter(|r| r.is_elicitation()).count());

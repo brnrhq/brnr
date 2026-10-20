@@ -478,7 +478,7 @@ fn adr_0008_queue_clear_flags() {
     assert_eq!(dropped("context_dropped"), texts("context"));
     for flag in ["--clear", "--clear-context"] {
         let err = env.fails(&["queue", "list", "sess-1", flag]);
-        assert_eq!(err, format!("brnr: unknown option: {flag}\n"));
+        assert!(err.starts_with(&format!("brnr: unknown option: {flag}\nusage:\n")), "{err}");
     }
     assert!(env.fails(&["queue", "clear", "sess-1", "--all"]).contains("unknown option: --all"));
 }
@@ -4283,7 +4283,10 @@ fn adr_0008_old_commands_are_unknown() {
     ];
     for cmd in old {
         let err = env.fails(&[cmd, "sess-1"]);
-        assert!(err.starts_with(&format!("brnr: unknown command: {cmd} ")), "{cmd}: {err}");
+        // `queue` and `config` are groups now, and `sess-1` no verb of them.
+        let group = ["queue", "config"].contains(&cmd);
+        let unknown = if group { format!("{cmd} sess-1") } else { cmd.to_owned() };
+        assert!(err.starts_with(&format!("brnr: unknown command: {unknown}\n")), "{cmd}: {err}");
     }
     assert_eq!(env.prompts(), ["reply hi"], "nothing was sent");
     assert!(env.calls_of("session/fork").is_empty() && env.calls_of("session/close").is_empty());
@@ -4438,7 +4441,7 @@ fn adr_0008_a_prompts_words_are_never_options() {
     assert!(err.contains("unknown option: --bogus"), "{err}");
     for args in [&["sess-1", "-", "--wait"][..], &["sess-1", "--", "-", "more"]] {
         let out = env.run_with_stdin(&[&["prompt", "send"][..], args].concat(), b"reply hi");
-        assert_eq!(code(&out), 1, "{args:?}");
+        assert_eq!(code(&out), 2, "{args:?}");
         assert!(stderr(&out).contains("- reads the prompt from stdin"), "{}", stderr(&out));
     }
     let out = env.run_with_stdin(&["prompt", "send", "sess-1", "--wait", "-"], b"reply from stdin");
@@ -4463,7 +4466,8 @@ fn adr_0008_a_flag_is_never_a_session_or_pid() {
         (&["process", "stop", &env.pid(), "--bogus"], "--bogus"),
     ] {
         let err = env.fails(args);
-        assert_eq!(err, format!("brnr: unknown option: {flag}\n"), "{args:?}");
+        let said = format!("brnr: unknown option: {flag}\nusage:\n");
+        assert!(err.starts_with(&said), "{args:?}: {err}");
     }
     for (args, usage) in [
         (&["process", "stop"][..], "brnr process stop <pid> [--json]"),
@@ -4497,7 +4501,7 @@ fn adr_0008_a_single_dash_word_is_an_argument() {
 }
 
 /// Every command says which option it doesn't know, `session list`,
-/// `process list`, `doctor` and `skill` too, rather than printing its usage.
+/// `process list`, `doctor` and `skill` too, before its usage.
 #[test]
 fn adr_0008_an_unknown_option_is_said() {
     let env = Env::new("c-listopt");
@@ -4509,10 +4513,165 @@ fn adr_0008_an_unknown_option_is_said() {
         &["skill", "install", "--bogus"],
         &["session", "new", "--bogus"],
     ] {
-        assert_eq!(env.fails(args), "brnr: unknown option: --bogus\n", "{args:?}");
+        let err = env.fails(args);
+        assert!(err.starts_with("brnr: unknown option: --bogus\nusage:\n"), "{args:?}: {err}");
     }
     let err = env.fails(&["session", "list", "sess-1"]);
     assert!(err.starts_with("usage:\n  brnr session list "), "{err}");
+}
+
+/// Every command `brnr --help` lists, as its words: `brnr <group> <verb>`
+/// and the commands outside the groups, `skill install` too.
+fn every_command(env: &Env) -> Vec<Vec<String>> {
+    let mut commands: Vec<Vec<String>> = Vec::new();
+    for line in env.ok(&["--help"]).lines() {
+        let Some(rest) = line.strip_prefix("  brnr ") else { continue };
+        let words: Vec<String> = (rest.split_whitespace())
+            .take_while(|w| !w.starts_with(['[', '<', '(', '-']))
+            .map(str::to_owned)
+            .collect();
+        if !words.is_empty() && !commands.contains(&words) {
+            commands.push(words);
+        }
+    }
+    commands.push(vec!["skill".into(), "install".into()]);
+    commands
+}
+
+/// A usage error exits 2 in every command, `brnr acp` too, its usage on
+/// stderr and nothing on stdout, and nothing done (ADR 8.3): an unknown
+/// option, an argument missing or one too many, a value a flag can't take,
+/// flags that don't go together, `brnr` or a group with no command, an
+/// unknown command or verb.
+#[test]
+fn adr_0008_a_usage_error_exits_2() {
+    let env = Env::new("c-usage2");
+    let commands = every_command(&env);
+    assert!(commands.len() > 30, "{commands:?}");
+    let mut cases: Vec<Vec<String>> = (commands.iter())
+        .map(|c| c.iter().map(String::as_str).chain(["--bogus"]).map(str::to_owned).collect())
+        .collect();
+    let more: &[&[&str]] = &[
+        &[],
+        &["session"],
+        &["event"],
+        &["nope"],
+        &["-x"],
+        &["queue", "nope"],
+        &["session", "status"],
+        &["session", "status", "a", "b"],
+        &["process", "stop"],
+        &["queue", "show", "s"],
+        &["skill", "-x"],
+        &["skill", "nope"],
+        &["skill", "approvals", "more"],
+        &["doctor", "extra"],
+        &["doctor", "--fix", "--report"],
+        &["event", "wait", "s", "--for", "nope"],
+        &["event", "wait", "s", "--timeout", "soon"],
+        &["event", "log", "s", "--last", "x"],
+        &["event", "log", "s", "--events", "nope"],
+        &["event", "watch"],
+        &["event", "watch", "s", "--pid", "1"],
+        &["event", "notify", "s"],
+        &["event", "notify", "--stdin", "s", "--", "true"],
+        &["session", "list", "--include", "nope"],
+        &["session", "list", "--"],
+        &["session", "new", "--timeout", "5"],
+        &["session", "new", "--quiet"],
+        &["session", "new", "--wait"],
+        &["session", "new", "--take-over"],
+        &["session", "new", "--prompt", " "],
+        &["session", "new", "--option", "x"],
+        &["session", "new", "--mode", "a", "--mode", "b"],
+        &["session", "new", "--pid", "1", "--strict"],
+        &["prompt", "send", "s"],
+        &["prompt", "send", "s", "--timeout", "5", "hi"],
+        &["prompt", "send", "s", "--steer", "--interrupt", "hi"],
+        &["prompt", "send", "s", "--replace", "hi"],
+        &["prompt", "send", "s", "-", "more"],
+        &["config", "set", "s"],
+        &["config", "set", "s", "--option", "x"],
+        &["elicitation", "accept", "s", "r", "--field", "x"],
+        &["elicitation", "accept", "s", "r", "--field", "x=1", "-"],
+        &["elicitation", "show", "r"],
+        &["acp", "--profile"],
+        &["acp", "--strict=1"],
+    ];
+    cases.extend(more.iter().map(|c| c.iter().map(|w| w.to_string()).collect()));
+    for args in &cases {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = env.run(&args);
+        let err = stderr(&out);
+        assert_eq!(code(&out), 2, "{args:?}: {err}");
+        assert_eq!(stdout(&out), "", "{args:?}");
+        let usage = if args.first() == Some(&"acp") { "usage: brnr acp " } else { "usage:\n" };
+        let pointer = "brnr --help lists every command";
+        assert!(err.contains(usage) || err.ends_with(&format!("{pointer}\n")), "{args:?}: {err}");
+        if args.last() == Some(&"--bogus") {
+            assert!(err.starts_with("brnr"), "{args:?}: {err}");
+            assert!(err.contains(": unknown option: --bogus\n"), "{args:?}: {err}");
+        }
+    }
+    assert!(env.hosts().is_empty(), "nothing is done, and no process started");
+    let err = env.fails(&["nope"]);
+    assert_eq!(err, "brnr: unknown command: nope\nbrnr --help lists every command\n");
+    let err = env.fails(&["session", "status", "s", "--bogus"]);
+    let usage =
+        "usage:\n  brnr session status <session> [--json]\n(brnr --help for every command)\n";
+    assert_eq!(err, format!("brnr: unknown option: --bogus\n{usage}"));
+}
+
+/// `--help` and `-h` print the usage on stdout and exit 0 in every command:
+/// `brnr`, a group, a verb, `brnr acp`, `doctor`, `skill` and `skill
+/// install`; `brnr acp`'s names its arguments as `brnr --help` does.
+#[test]
+fn adr_0008_help_exits_0_on_stdout() {
+    let env = Env::new("c-help0");
+    let mut commands = every_command(&env);
+    commands.push(vec![]);
+    for group in
+        ["process", "session", "prompt", "queue", "permission", "elicitation", "config", "event"]
+    {
+        commands.push(vec![group.to_owned()]);
+    }
+    for command in &commands {
+        for help in ["--help", "-h"] {
+            let args: Vec<&str> = command.iter().map(String::as_str).chain([help]).collect();
+            let out = env.run(&args);
+            assert_eq!((code(&out), stderr(&out)), (0, String::new()), "{args:?}");
+            assert!(stdout(&out).starts_with("usage:"), "{args:?}: {}", stdout(&out));
+        }
+    }
+    // As an option, before any `--`: `--strict -h` too, but not a flag's value.
+    let acp = env.ok(&["acp", "--strict", "--help"]);
+    assert!(acp.starts_with("usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
+    let out = env.run(&["acp", "--profile", "-h"]);
+    assert_ne!(code(&out), 0, "-h, the profile");
+    assert_eq!(stdout(&out), "");
+    let help = env.ok(&["--help"]);
+    assert!(help.contains("  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
+    assert!(env.ok(&["skill", "-h"]).starts_with("usage:\n  brnr skill "));
+    assert!(env.ok(&["doctor", "--help"]).starts_with("usage:\n  brnr doctor "));
+}
+
+/// An operation that fails exits 1, not 2: its command line was right.
+#[test]
+fn adr_0008_a_failed_operation_exits_1() {
+    let env = Env::new("c-fail1");
+    for args in [
+        &["session", "status", "nosuch"][..],
+        &["prompt", "send", "nosuch", "hi"],
+        &["event", "wait", "nosuch"],
+        &["process", "stop", "1"],
+        &["session", "new", "--profile", "nosuch"],
+    ] {
+        let out = env.run(args);
+        assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(!stderr(&out).contains("usage:"), "{args:?}: {}", stderr(&out));
+    }
+    let out = env.run_with_stdin(&["prompt", "send", "nosuch", "-"], b"");
+    assert_eq!(code(&out), 1, "stdin isn't the command line: {}", stderr(&out));
 }
 
 /// `config get` lists every config option, its category, value and
@@ -5596,7 +5755,8 @@ fn adr_0008_skill_prints_the_skill_and_its_references() {
         &["skill", "orchestrate", "--json"],
         &["skill", "--json", "setup"],
     ] {
-        assert_eq!(env.fails(args), "brnr: unknown option: --json\n", "{args:?}");
+        let err = env.fails(args);
+        assert!(err.starts_with("brnr: unknown option: --json\nusage:\n"), "{args:?}: {err}");
     }
     assert!(env.fails(&["skill", "-x"]).contains("brnr skill [<reference>"));
     assert!(env.fails(&["skill", "orchestrate", "setup"]).contains("brnr skill [<reference>"));

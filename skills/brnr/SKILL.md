@@ -30,7 +30,9 @@ the brnr that printed it (`brnr skill`).
    `session status`. The exit
    status is the result: 0 the turn ended normally, 1 it failed, stopped or
    its message was dropped, 124 your timeout passed (the worker goes on), 3
-   brnr cut the wait off and couldn't catch up on what it missed.
+   brnr cut the wait off and couldn't catch up on what it missed. Any
+   command exits 2 when its command line is wrong, having done nothing: fix
+   it from the usage on stderr.
 4. **Approvals and elicitations belong to the user.** Don't `permission allow` or
    `reject`, nor `elicitation accept`, `decline` or `cancel`, unless the
    user told you to, explicitly, for that session and that kind of request.

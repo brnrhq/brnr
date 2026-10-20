@@ -34,9 +34,15 @@ Most commands are `brnr <group> <verb>`, grouped by what they act on:
 `process`, `session`, `prompt`, `queue`, `permission`, `elicitation`, `config`
 and `event`
 ([ADR 8.1](adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
-`brnr <group> --help` prints one group's syntax, as does a group without a
-verb (exiting 1). `brnr <group> <verb> --help` (or `-h`, anywhere before a
-`--` and, for `prompt send`, before the prompt) prints that command's. An
+`brnr <group> --help` prints one group's syntax; a group without a verb is
+a usage error. `brnr <group> <verb> --help` (or `-h`, anywhere before a
+`--` and, for `prompt send`, before the prompt) prints that command's. Help
+goes to stdout and exits 0 in every command, `brnr acp`, `doctor` and
+`skill` too. A usage error (an unknown command, verb or option, an argument
+missing or one too many, a value a flag can't take, flags that don't go
+together) does nothing, says what was wrong and the command's usage on
+stderr, and exits 2
+([ADR 8.3](adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status)). An
 option a command doesn't take fails as unknown, never read as its
 `<session>` or `<pid>`; a word with one dash, such as `-x`, is an argument
 (but for `brnr skill`). A command brnr doesn't have, such as the names these
@@ -269,11 +275,12 @@ can give a situation that has none a code of its own.
 
 | Context | Result |
 |---|---|
-| Ordinary CLI command | 0 on success; 1 for invalid arguments or an operation failure. |
+| Every command | 2 for a usage error: what the command line alone shows wrong, with nothing done and the usage on stderr. 0 for `--help` or `-h`, the usage on stdout. |
+| Ordinary CLI command | 0 on success; 1 for an operation failure (a session, process or profile that isn't there, an agent's error, a file that can't be read). |
 | `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`elicitation`/`exit` succeeds when its requested condition occurs. |
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `event watch`, `event notify`, `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 3 when the process cut the command off for falling behind and it couldn't catch up from the transcript: what it missed is an `events_missed` note, with `ts`, `host_id` and `pid` as an event has them, `after_seq` the last event it got, `until_seq` where it subscribed again, or, if subscribing again failed each time, where the process said it cut the command off (null only for a process gone, or one that said no position, as `error` then says), and `error`, why ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). `event watch` prints it as its last event; the others say it on stderr. |
-| `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
+| `brnr acp` | A usage error exits 2; a config error or a host startup failure exits 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
 | `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
@@ -431,8 +438,8 @@ longer pending, and an `allow`, `reject` or `elicitation` for it fails.
 `peer_cut_off` (`peer`, `last_queued_seq`) tells the other peers that one was
 cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,
-approvals, elicitations, config patches and process exits. `process_exited` and `line_too_long`
-are process events. Notes are what brnr adds to a stream of events, and are
+approvals, elicitations, config patches and process exits. `process_exited`, `line_too_long`
+and `line_too_deep` are process events. Notes are what brnr adds to a stream of events, and are
 never sent on the socket: `records_skipped` (a gap in a transcript, in `event
 log`) and `events_missed` (what a command couldn't catch up on, on its
 stdout). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config
@@ -525,6 +532,5 @@ default, are not. Stable error codes (#205) are covered once they land.
 
 Security fixes are made on the latest major version; see
 [SECURITY.md](../SECURITY.md). Before 1.0.0-rc.1, the names and shapes of
-`--json` output (#150), the exit code of a usage error (decided in ADR 8.3, made
-by #310) and flags and config keys spelled two ways (decided in ADR 8.1 and
-6.1, renamed by #311) are still being settled.
+`--json` output (#150) and flags and config keys spelled two ways (decided
+in ADR 8.1 and 6.1, renamed by #311) are still being settled.

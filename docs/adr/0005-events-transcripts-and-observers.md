@@ -789,7 +789,8 @@ Fields:
   `last_active`). A duration is in whole seconds, its name with no unit,
   as ADR 8.1 decides for #154: `uptime`, `turn_elapsed`, `timeout_left`,
   `stop_when_idle`. A size is in bytes by the same rule (`line_too_long`'s
-  `limit`).
+  `limit`). A depth is in levels of nesting, and its name says so
+  (`line_too_deep`'s `max_depth`), as it is no size.
 - A file brnr writes is `<which>_log` (`events_log`, `acp_log`,
   `host_log`); any other file or directory is `path`. `log` alone is the
   profile's setting (ADR 6.1), never a file.
@@ -822,7 +823,7 @@ socket's replies (`uptime_seconds`, `turn_seconds`, `timeout_seconds`),
 
 ### Renames
 
-Events (`EVENTS`). The other 23 keep their names.
+Events (`EVENTS`). The other 24 keep their names.
 
 | Old | New | |
 |---|---|---|
@@ -882,7 +883,6 @@ Records in the host log only (not covered, ADR 8.4):
 | `open-failed` | `open_failed` |
 | `session-log-failed` | `session_log_failed` |
 | `made-private` | `path_made_private` |
-| `line-too-deep` | `line_too_deep` |
 | `peer-dropped` | `peer_dropped` |
 | `timeout-failed` | `timeout_failed` |
 

@@ -150,15 +150,15 @@ and by the prompt's text:
                     first, and answers once each is answered
   odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
                     surrogate (the title ends in half an emoji), deep (the
-                    input nests n deep, 10000 by default), title (the title
-                    does) or garbled (the line isn't JSON)
+                    input nests so that the line is n deep, 129 by default:
+                    just past brnr's limit) or garbled (the line isn't JSON)
   fail [tool]       the turn fails; with tool, a tool call (t2) running
   elicit <how>      asks for input (elicitation/create), how being form (a
                     form of every field type, scoped to the session), tool
                     (the same, scoped to tool call t1), url (a URL to open,
                     elicitation id el-<n>), other (a mode _other ACP
                     doesn't have) or deep [<n>] (a form whose message nests
-                    n deep, 10000 by default)
+                    so that the line is n deep, 129 by default)
   verbatim          writes VERBATIM, then a line that isn't JSON, then answers
   client            uses its client's file system, then its terminal, as far
                     as initialize offered them (clientCapabilities
@@ -521,8 +521,7 @@ def run(mid, sid, text):
         how = words[1] if len(words) > 1 else "surrogate"
         request = f"perm-{len(asking) + 1}"
         asking[request] = mid
-        titles = {"surrogate": "Edit " + chr(0xD83D), "title": "TITLE"}
-        title = titles.get(how, "Edit src/lib.rs")
+        title = "Edit " + chr(0xD83D) if how == "surrogate" else "Edit src/lib.rs"
         tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
         options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
         params = {"sessionId": sid, "toolCall": tool, "options": options}
@@ -534,9 +533,10 @@ def run(mid, sid, text):
                 "params": params,
             }
         )
-        if how in ("deep", "title"):
-            n = int(words[2]) if len(words) > 2 else 10000
-            line = line.replace('"INPUT"' if how == "deep" else '"TITLE"', "[" * n + "]" * n)
+        if how == "deep":
+            # The line, its params and the tool call are 3 levels.
+            n = (int(words[2]) if len(words) > 2 else 129) - 3
+            line = line.replace('"INPUT"', "[" * n + "]" * n)
         elif how == "garbled":
             line = line[:-1]
         sys.stdout.write(line + "\n")
@@ -622,7 +622,8 @@ FORM = {
 
 def elicit(mid, sid, how, depth=()):
     """Asks for input in prompt mid's turn, if the client advertised the mode;
-    deep: with its message nested depth deep (10000 if none)."""
+    deep: with its message nested so that the line is depth deep (129 if
+    none)."""
     mode = "url" if how == "url" else "_other" if how == "other" else "form"
     if mode != "_other" and elicit_modes.get(mode) is None:
         say(sid, f"not asked: {mode} not advertised")
@@ -641,8 +642,9 @@ def elicit(mid, sid, how, depth=()):
     eliciting[request] = (mid, sid, params.get("elicitationId"))
     msg = {"jsonrpc": "2.0", "id": request, "method": "elicitation/create", "params": params}
     if how == "deep":
-        # Too deep for json.dumps: put in as text.
-        n = int(depth[0]) if depth else 10000
+        # Too deep for json.dumps: put in as text. The line and its params
+        # are 2 levels.
+        n = (int(depth[0]) if depth else 129) - 2
         params["message"] = "MESSAGE"
         with sending:
             line = json.dumps(msg).replace('"MESSAGE"', "[" * n + "]" * n)

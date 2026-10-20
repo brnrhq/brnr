@@ -37,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::host::{EVENTS, NOTES, QUIET};
-use crate::{json, lock, log, paths, render, transcript};
+use crate::{lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -168,7 +168,9 @@ const START_GRACE: Duration = Duration::from_secs(10);
 
 /// The control commands: everything but `acp` and `host`. A group's
 /// commands are `brnr <group> <verb>`; the others, one word. Each verb's
-/// arguments are read as [`args::VERBS`] has them, before it runs.
+/// arguments are read as [`args::VERBS`] has them, before it runs. Help
+/// asked for goes to stdout and exits 0; a usage error, the command's usage
+/// on stderr, exits 2, nothing done; a failure exits 1 (ADR 8.3).
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
     let cmd = args.first().map_or("", String::as_str);
     let grouped = GROUPS.contains(&cmd);
@@ -180,7 +182,7 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         _ => (verb, rest),
     };
     let result = match args::spec(cmd, verb) {
-        Some(spec) if grouped && spec.asks_help(rest) => {
+        Some(spec) if spec.asks_help(rest) => {
             outln!("{}", usage_of(cmd, verb));
             Ok(ExitCode::SUCCESS)
         }
@@ -190,10 +192,9 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
                 outln!("{}", usage_of(group, None));
                 Ok(ExitCode::SUCCESS)
             }
-            (group, Some(verb)) if grouped => Err(args::Error::Message(format!(
-                "unknown command: {group} {verb}\n{}",
-                usage_of(group, None)
-            ))),
+            (group, Some(verb)) if grouped => {
+                Err(args::Error::Invalid(format!("unknown command: {group} {verb}")))
+            }
             ("-h" | "--help", _) => {
                 outln!("{USAGE}");
                 Ok(ExitCode::SUCCESS)
@@ -204,64 +205,73 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
             }
             (_, None) if grouped => Err(args::Error::Usage),
             ("", _) => Err(args::Error::Usage),
-            (cmd, _) => Err(args::Error::Message(format!(
-                "unknown command: {cmd} (brnr --help for every command)"
-            ))),
+            (cmd, _) => Err(args::Error::Invalid(format!("unknown command: {cmd}"))),
         },
     };
     match result {
         Ok(code) => code,
-        Err(args::Error::Usage) => {
-            eprintln!("{}", usage_of(cmd, verb));
-            ExitCode::FAILURE
-        }
-        Err(args::Error::Message(msg)) => {
-            errln!("brnr: {msg}");
-            ExitCode::FAILURE
+        Err(e) => {
+            match &e {
+                args::Error::Usage => eprintln!("{}", usage_of(cmd, verb)),
+                args::Error::Invalid(msg) => {
+                    errln!("brnr: {msg}");
+                    eprintln!("{}", usage_of(cmd, verb));
+                }
+                args::Error::Failed(msg) => errln!("brnr: {msg}"),
+            }
+            ExitCode::from(e.code())
         }
     }
 }
 
 /// Runs the verb `spec` is, with its arguments `a`.
 fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
-    let done = |r: Result<(), String>| r.map(|()| ExitCode::SUCCESS);
-    let code = match (spec.cmd, spec.verb) {
+    match (spec.cmd, spec.verb) {
         ("process", Some("list")) => done(ps(a)),
         ("process", Some("stop")) => done(stop(a)),
-        ("session", Some("new")) => talk::new(a),
-        ("session", Some("resume")) => talk::resume(a),
-        ("session", Some("list")) => sessions::list(a),
+        ("session", Some("new")) => code(talk::new(a)),
+        ("session", Some("resume")) => code(talk::resume(a)),
+        ("session", Some("list")) => code(sessions::list(a)),
         ("session", Some("status")) => done(status(a)),
-        ("session", Some("fork")) => settings::fork(a),
-        ("session", Some("close")) => settings::close(a),
-        ("session", Some("delete")) => delete::delete(a),
-        ("prompt", Some("send")) => talk::send(a),
-        ("prompt", Some("cancel")) => talk::cancel(a),
-        ("prompt", Some("commands")) => settings::commands(a),
-        ("queue", Some("list")) => talk::queue_list(a),
-        ("queue", Some("show")) => talk::queue_show(a),
-        ("queue", Some("drop")) => talk::queue_drop(a),
-        ("queue", Some("clear")) => talk::queue_clear(a),
+        ("session", Some("fork")) => code(settings::fork(a)),
+        ("session", Some("close")) => code(settings::close(a)),
+        ("session", Some("delete")) => code(delete::delete(a)),
+        ("prompt", Some("send")) => code(talk::send(a)),
+        ("prompt", Some("cancel")) => code(talk::cancel(a)),
+        ("prompt", Some("commands")) => code(settings::commands(a)),
+        ("queue", Some("list")) => code(talk::queue_list(a)),
+        ("queue", Some("show")) => code(talk::queue_show(a)),
+        ("queue", Some("drop")) => code(talk::queue_drop(a)),
+        ("queue", Some("clear")) => code(talk::queue_clear(a)),
         ("permission", Some("requests")) => done(pending(a)),
-        ("permission", Some("show")) => show::show(a),
+        ("permission", Some("show")) => code(show::show(a)),
         ("permission", Some(verb @ ("allow" | "reject"))) => done(answer(a, verb)),
         ("elicitation", Some("requests")) => done(elicitation::requests(a)),
         ("elicitation", Some("show")) => done(elicitation::show(a)),
         ("elicitation", Some(verb @ ("accept" | "decline" | "cancel"))) => {
             done(elicitation::answer(a, verb))
         }
-        ("config", Some("get")) => settings::config_get(a),
-        ("config", Some("set")) => settings::config_set(a),
-        ("event", Some("log")) => history::log(a),
-        ("event", Some("watch")) => watch(a),
-        ("event", Some("notify")) => notify::notify(a),
-        ("event", Some("wait")) => talk::wait(a),
+        ("config", Some("get")) => code(settings::config_get(a)),
+        ("config", Some("set")) => code(settings::config_set(a)),
+        ("event", Some("log")) => code(history::log(a)),
+        ("event", Some("watch")) => code(watch(a)),
+        ("event", Some("notify")) => code(notify::notify(a)),
+        ("event", Some("wait")) => code(talk::wait(a)),
         ("doctor", None) => done(doctor::main(a)),
-        ("skill", None) => return skill::skill(a).map(|()| ExitCode::SUCCESS),
+        ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
         (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
-    };
-    Ok(code?)
+    }
+}
+
+/// A verb's result, its error a usage error or a failure.
+fn code<E: Into<args::Error>>(r: Result<ExitCode, E>) -> Result<ExitCode, args::Error> {
+    r.map_err(Into::into)
+}
+
+/// The result of a verb that exits 0 when it succeeds.
+fn done<E: Into<args::Error>>(r: Result<(), E>) -> Result<ExitCode, args::Error> {
+    code(r.map(|()| ExitCode::SUCCESS))
 }
 
 /// The command `args` are, for a bug report: a group's with its verb.
@@ -285,7 +295,8 @@ fn out(text: &str) {
 
 /// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
 /// group `cmd`'s `verb`, or of every command in the group without one (or
-/// with one it doesn't have). All of it for a command there is none of.
+/// with one it doesn't have). All of it for no command, and where to find
+/// it for a command there is none of.
 fn usage_of(cmd: &str, verb: Option<&str>) -> String {
     let in_group = |verb: Option<&str>| {
         let mut lines = Vec::new();
@@ -308,8 +319,10 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
     if lines.is_empty() && verb.is_some() {
         lines = in_group(None);
     }
-    if lines.is_empty() {
-        return USAGE.to_owned();
+    match (lines.is_empty(), cmd) {
+        (true, "") => return USAGE.to_owned(),
+        (true, _) => return "brnr --help lists every command".to_owned(),
+        _ => {}
     }
     // `session new` and `resume` share their flags, listed once.
     if lines.iter().any(|l| l.contains("<new flags>")) {
@@ -703,23 +716,11 @@ fn pending(a: &Args) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    // A request nests as deep as the agent made it: read as the host reads
-    // the agent's line, and listed and let go of on a stack that takes it
-    // (ADR 2.5), also when a process asked after it fails.
     let mut rows = Vec::new();
     for host in chosen {
-        let more = host.pending(|pending| {
-            pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
-        });
-        match more {
-            Ok(more) => rows.extend(more),
-            Err(e) => {
-                json::free(Value::Array(rows));
-                return Err(e);
-            }
-        }
+        rows.extend(host.pending()?.approvals(only.as_deref()).map(pending_row));
     }
-    json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
+    list_pending(&Value::Array(rows), json_out)
 }
 
 /// A permission request as `permission requests` lists it.
@@ -807,9 +808,12 @@ fn answer(a: &Args, cmd: &str) -> Result<(), String> {
 /// falling behind, it catches up from the transcript and goes on; unable to,
 /// it ends with what it missed, an `events_missed` note, and exits 3 (ADR
 /// 69).
-fn watch(a: &Args) -> Result<ExitCode, String> {
+fn watch(a: &Args) -> Result<ExitCode, args::Error> {
     let (session, pid, json_out) = (a.positional.first(), a.value("--pid"), a.json);
     let mut events = events_arg(a, &default_events())?;
+    if session.is_some() == pid.is_some() {
+        return Err(args::Error::Invalid("give a <session> or --pid <pid>".into()));
+    }
     let hosts = discover()?;
     let (host, only_session) = session_or_pid(&hosts, session.map(String::as_str), pid)?;
     // `process_exited` (and for a session, `session_closed`) is how watch tells the
@@ -847,21 +851,17 @@ fn watch(a: &Args) -> Result<ExitCode, String> {
                     let _ = show(note);
                     return Ok(ExitCode::from(catch_up::MISSED));
                 }
-                None => return Err(why),
+                None => return Err(why.into()),
             },
         };
-        // Shown and let go of on a stack that takes it (ADR 2.5). Whether
-        // it ends the watch: the end, or stdout closed.
-        let ended = conn.deep(event, |_, event| {
-            let name = event["event"].as_str().unwrap_or_default();
-            if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
-                && only != session
-            {
-                return false;
-            }
-            (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name)
-        })?;
-        if ended {
+        let name = event["event"].as_str().unwrap_or_default();
+        if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
+            && only != session
+        {
+            continue;
+        }
+        // The end, or stdout closed, ends the watch.
+        if (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name) {
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -872,8 +872,9 @@ fn watch(a: &Args) -> Result<ExitCode, String> {
 /// does without `--events`), `all` for every event. A note's name is taken
 /// too, and left out of what is asked for: a note is shown whatever was
 /// chosen (ADR 5.9), so `--events records_skipped` alone shows only notes.
-fn events_arg(a: &Args, default: &[String]) -> Result<Vec<String>, String> {
-    let events = a.value_as("--events", |list| events_in(list, default))?;
+fn events_arg(a: &Args, default: &[String]) -> Result<Vec<String>, args::Error> {
+    let events = a.value_as("--events", |list| events_in(list, default));
+    let events = events.map_err(args::Error::Invalid)?;
     let mut events = events.unwrap_or_else(|| default.to_vec());
     events.retain(|e| !NOTES.contains(&e.as_str()));
     Ok(events)
