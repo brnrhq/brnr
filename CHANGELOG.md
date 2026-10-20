@@ -80,8 +80,12 @@ brnr's own conventions:
   delete`, catching up and `doctor` don't look in, or read through, a
   symlinked `$BRNR_HOME/projects`, `hosts` or state directory, nor read a
   transcript or host log with another hard link or of another user's, and
-  `doctor --fix` makes nothing private through one. A symlinked `projects`
-  listed the sessions in whatever it pointed at (ADR 9.3, #302).
+  `doctor --fix` makes nothing private through one: it changes a mode
+  through what it opened, not by name. A symlinked `projects` listed the
+  sessions in whatever it pointed at (ADR 9.3, #302).
+- `brnr doctor` warns of a state directory, `hosts` or `projects` that
+  isn't a directory, where it said a private one was fine, and names the
+  problem of the path it gives as an example (ADR 9.3).
 - A flag's value is never taken as a request for help: `brnr session new
   --prompt -h` sends `-h` as the prompt, where it printed the usage, as
   `prompt send` already did (ADR 8.1).
