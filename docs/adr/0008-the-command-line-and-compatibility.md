@@ -533,10 +533,10 @@ is one major so far, so no support period for older majors is set; it will
 be, by a record that amends this one, once a second major exists.
 
 The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes),
-#151 (event and transcript record names), #153 (the exit code of a usage
-error, `--help`) and #154 (flags and config keys spelled two ways) still
-settle names and shapes, breaking as P9 allows. What they settle is what
-1.0.0 promises.
+#314 (the renames of ADR 5.9's naming scheme for events and records), #153
+(the exit code of a usage error, `--help`) and #154 (flags and config keys
+spelled two ways) still settle names and shapes, breaking as P9 allows.
+What they settle is what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise

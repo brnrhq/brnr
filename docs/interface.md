@@ -505,6 +505,8 @@ default, are not. Stable error codes (#205) are covered once they land.
 
 Security fixes are made on the latest major version; see
 [SECURITY.md](../SECURITY.md). Before 1.0.0-rc.1, the names and shapes of
-`--json` output (#150), events and transcript records (#151), the exit code
-of a usage error (#153) and flags and config keys spelled two ways (#154)
-are still being settled.
+`--json` output (#150), the names of events, transcript records and their
+fields (decided in
+[ADR 5.9](adr/0005-events-transcripts-and-observers.md#59-events-records-and-their-fields-follow-one-naming-scheme),
+renamed by #314), the exit code of a usage error (#153) and flags and config
+keys spelled two ways (#154) are still being settled.

@@ -251,8 +251,8 @@ Events:
   `elicitation_request` by default (ADR 5.8). `prompt send --wait`
   announces one on stderr, with how to see it and answer it.
 - The events' shapes follow what the code does (snake_case keys, the
-  agent's values as sent); when #149, #150 and #151 land, they follow
-  those decisions.
+  agent's values as sent); when #149 and #150 land, and ADR 5.9's renames
+  (#314), they follow those decisions.
 
 Listing and showing:
 

@@ -1,8 +1,8 @@
 # 5. Events, transcripts and observers
 
-Draft 2026-10-19. Implemented. Factor: F3, F5 (ADR 1). Brings together
-former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36 (docs/adr/README.md maps
-them).
+Draft 2026-10-19. Implemented, but 5.9, one naming scheme, is decided, not
+implemented yet (#314). Factor: F3, F5 (ADR 1). Brings together former ADRs
+22, 55, 20, 23, 24, 48, 57, 35 and 36 (docs/adr/README.md maps them).
 
 What a brnr process says about its sessions, and what it keeps: the events
 the host emits, the transcripts it writes, and what observes them, `event
@@ -632,6 +632,306 @@ notifications stopped without a word (P3).
 - The process writing to a started bridge's stdin only once it
   subscribes: ADR 5.7.
 
+## 5.9 Events, records and their fields follow one naming scheme
+
+Decided, not implemented yet (#314). Resolves #151. #150's `--json`
+shapes, #205's error codes and #70's transcript contract take their names
+from it.
+
+Names:
+
+- Every name brnr makes in its JSON is snake_case, lowercase ASCII words
+  joined by `_`: the names of events and records (their `event`), their
+  fields, the values of a field with a fixed list (`by`, `reason`,
+  `state`, `status`, `owner`), and #205's error codes. Kebab-case is the
+  command line's, for commands and flags. A handle's value is the handle
+  (`m3`, `socket#7`).
+- What brnr passes on from ACP keeps ACP's spelling (P1): the message in an
+  `acp` event (`sessionId`), the ACP objects an event carries whole
+  (`tool_call` in `permission_request`, `options`, `outcome`, `schema`),
+  and ACP's values (`end_turn`, `allow_once`, `in_progress`). An `acp`
+  event's `dir` is two parties joined by `->` (`editor->agent`); the
+  agent's stderr, which has no second party, is `agent_stderr`.
+- An event or a record is named subject first:
+  - for what was said or asked, by the thing: `agent_message`,
+    `tool_call`, `plan`, `usage`, `permission_request`, `history`, `acp`;
+  - for what happened, or became true, by its subject and a past
+    participle or a predicate: `turn_ended`, `session_closed`,
+    `peer_cut_off`, `line_too_long`; a failure is `<subject>_failed`, with
+    an `error`.
+
+  Never a bare verb (`exited`, `send`) or the present tense (`stopping`).
+  The subject is the noun the command line and the ADRs use for the
+  thing, one noun for one thing: `process` for the brnr process (`host`
+  stays only in `host_id` and `host_log`, its run and its file),
+  `session`, `turn`, `message`, `context`, `peer`, `bridge`, `editor`,
+  `agent`, … It is plural only where one record stands for several
+  (`records_skipped`, `events_missed`, `capabilities_dropped`).
+
+Kinds:
+
+- Every name in an `event` field is in one namespace, of three kinds, told
+  apart by the list a name is in, not by how it is spelled:
+  - events (`EVENTS` in src/host/control.rs): what the host emits to
+    bridges and records in transcripts (ADR 5.1);
+  - notes (`NOTES` beside it): what brnr adds to a stream of events and
+    the host never emits: `records_skipped`, the logger's, in transcripts,
+    and `events_missed`, a command's, on its stdout (ADR 10.2);
+  - records: the other lines of the events files and the host log, for
+    brnr's own reading (`session_opened`, `process_started`, …).
+- `--events` takes events and notes, so every name `event log --json` or
+  `event watch --json` can print is one it takes, and `--events
+  records_skipped` alone lists a transcript's gaps. A note is still shown
+  whatever `--events` chose (P3). `subscribe` and a bridge's `events` take
+  events only, and refuse a note (P7): the host never sends one.
+- Every line `event log --json` and `event watch --json` print has
+  `event`, `ts`, `host_id` and `pid`; a session's also has `session`, and
+  an event its `seq`. The logger writes them into its notes, as the host
+  does into its events. `pid` is new on events: the brnr process's, as
+  `--pid`, `BRNR_PID` and every `--json` have it; `host_id` stays, to tell
+  runs apart, as pids are reused.
+- Host-log records follow the scheme too, though ADR 8.4 doesn't cover
+  them: the host log holds events as well, and `doctor` and the catch-up
+  (ADR 10.2) read it.
+
+Fields:
+
+- A field means one thing, and has one type, wherever it is: a word isn't
+  an object somewhere else, an id isn't an object, text isn't a word. A
+  name that is a count in one place and a list in another (`held`,
+  `context`, `dropped`) is #150's to settle.
+- A thing the commands take as an argument is named by the bare noun, and
+  holds its handle: `session`, `message`, `request`, `pid` (the brnr
+  process's) and `peer` (a connection's label, a started bridge's too).
+  Any other id is `<thing>_id`: `host_id` (the run), `tool_call_id`,
+  `elicitation_id`, `option_id`, `scope_request_id`, `rpc_id` (a JSON-RPC
+  message's `id`). Any other process's pid is `<whose>_pid` (`agent_pid`,
+  `proxy_pid`, `bridge_pid`).
+- `by` is who acted: `editor`, `agent` or `control` (brnr's commands, its
+  bridges, and its own timers). Beside it, `peer` is the connection that
+  asked, where brnr knows one. `reason` is why, a word from the event's own
+  list. Text for people is `error` (#205's `message`), never `reason`.
+- A position is `seq`, or ends in `_seq` (`first_seq`, `last_queued_seq`).
+  A time is an RFC 3339 time in UTC to the microsecond: `ts` is the
+  record's own, any other is named for its moment (`since`, `until`,
+  `last_active`). Durations and sizes are named as #154 decides.
+- A file brnr writes is `<which>_log` (`events_log`, `acp_log`,
+  `host_log`); any other file or directory is `path`.
+- A boolean is an adjective or a past participle (`recorded`, `relayed`,
+  `answerable`), with no `is_`.
+
+What takes its names from this:
+
+- #205: an error code is snake_case, subject first, as a record's name is:
+  `session_not_found`, `session_closing`, `profile_invalid`. Its kebab-case
+  examples followed the records' names, which this replaces. An agent's
+  JSON-RPC error, as `turn_ended` and `session delete --json` carry it
+  today, is ACP's, its `code` a number (F1); #205 says how brnr's own
+  errors stand beside it. Until it lands, `error` stays as it is.
+- #150: `--json` fields follow these rules: `session`, never `session_id`;
+  ids, `by`, `reason`, positions, times and files as above. #150 settles
+  each concept's shape.
+- #70: the record heads and the records named here are the names its
+  transcript contract holds to; it decides what each record promises, and
+  how a format is marked.
+- A name added later, of an event, a note, a record, a field or a value,
+  is made by these rules: #229's subagent fields, #308's `by: agent`.
+
+The renames below are all of them, so that #314 is mechanical: each is
+made outright, with no alias (P9), and is **Breaking:** in the changelog.
+
+### Renames
+
+Events (`EVENTS`). The other 23 keep their names.
+
+| Old | New | |
+|---|---|---|
+| `exited` | `process_exited` | the one bare verb; it is the process's (ADR 5.1) |
+
+Notes (`NOTES`), new to `--events`:
+
+| Old | New |
+|---|---|
+| `records-skipped` | `records_skipped` |
+| `events-missed` | `events_missed` |
+
+Records in a session's events file (and, for some, the host log):
+
+| Old | New |
+|---|---|
+| `session-opened` | `session_opened` |
+| `send` (`mode` `prompt`, `steer`, `interrupt`) | `message_accepted` |
+| `send` (`mode` `context`) | `context_accepted` |
+| `cancel` | `cancel_requested` |
+| `open-abandoned` | `open_abandoned` |
+| `idle-timeout` | `idle_timed_out` |
+| `context-attached` | `context_attached` |
+| `editor-response-dropped` | `editor_response_dropped` |
+| `steer-refused` | `steer_refused` |
+| `steer-after-turn` | `steer_after_turn` |
+
+Records in the host log only (not covered, ADR 8.4):
+
+| Old | New |
+|---|---|
+| `started` | `process_started` |
+| `stopping` | `stop_requested` |
+| `signal` | `signal_relayed` |
+| `host-signal` | `signal_received` |
+| `panic` | `process_panicked` |
+| `exited` (a start abandoned) | `process_exited` |
+| `host-stderr` | `process_stderr` |
+| `start-abandoned` | `start_abandoned` |
+| `start-failed` | `start_failed` |
+| `test-ready-held` | `test_ready_held` |
+| `drop-held-failed` | `drop_held_failed` |
+| `display-stopped` | `display_stopped` |
+| `bridge-started` | `bridge_started` |
+| `bridge-stderr` | `bridge_stderr` |
+| `bridge-exited` | `bridge_exited` |
+| `editor-closed-stdin` | `editor_stdin_closed` |
+| `editor-stopped-reading` | `editor_stopped_reading` |
+| `editor-disconnected` | `editor_disconnected` |
+| `editor-cancel-dropped` | `editor_cancel_dropped` |
+| `editor-request-refused` | `editor_request_refused` |
+| `not-sent-to-editor` | `editor_message_dropped` |
+| `agent-stdout-ended` | `agent_stdout_ended` |
+| `capabilities-dropped` | `capabilities_dropped` |
+| `lock-failed` | `lock_failed` |
+| `session-shared` | `session_shared` |
+| `open-failed` | `open_failed` |
+| `session-log-failed` | `session_log_failed` |
+| `made-private` | `path_made_private` |
+| `line-too-deep` | `line_too_deep` |
+| `peer-dropped` | `peer_dropped` |
+| `timeout-failed` | `timeout_failed` |
+
+Fields and values, by the new names:
+
+| Where | Old | New |
+|---|---|---|
+| every record's head | `session_id`, `host_pid` | `session`, `pid` |
+| every event | — | `pid` |
+| `message_dropped`, `context_dropped` | `by` | `reason`, its values as they were |
+| `session_closed` | `by`: `close`, `idle`, `editor` | `by: control, reason: close`; `by: control, reason: idle`; `by: editor, reason: close` |
+| `session_deleted` | `by: delete` | `by: control` |
+| `permission_resolved`, `elicitation_resolved` | `by`: a peer's label, `timeout`, `cancel` | `by: control, peer: <label>`; `by: control, reason: timeout`; `by: control, reason: cancel`; `peer` and `reason` null where none |
+| `process_exited` | `status`, `reason` | `exit_status`, `error` |
+| `peer_cut_off`, `peer_dropped`, the `was_cut_off` reply | `last_queued` | `last_queued_seq` |
+| `elicitation_request`, `pending`'s `elicitations`, `elicitation show` and `elicitation requests --json` | `message`, `tool_call` (an id), `scope_request` | `text`, `tool_call_id`, `scope_request_id` |
+| `records_skipped` | `acp` | `acp_count`; it gains `ts`, `host_id`, `pid`, and `session` in a session's file |
+| `events_missed` | `after`, `until` | `after_seq`, `until_seq`; it gains `pid` |
+| `session_opened` | in the events file `cwd`, `host_log`, `acp_log`; in the host log `session_id`, `file`, `acp_file` | in both: `session`, `cwd`, `events_log`, `acp_log`, `host_log`, and `forked_from` for a fork |
+| `cancel_requested` (a timeout's) | `by: timeout` | `by: control, reason: timeout` |
+| `context_attached` | `to: editor-prompt` | `to: editor_prompt` |
+| `steer_refused` | `answer` (the agent's response) | `response` |
+| `editor_response_dropped`, `editor_request_refused`, `editor_message_dropped` | `id` | `rpc_id` |
+| `editor_cancel_dropped` | `request_id` | `rpc_id` |
+| `editor_request_refused`, `editor_message_dropped`, `lock_failed`, `session_shared`, `open_failed`, `session_log_failed` | `session_id` | `session` |
+| `editor_message_dropped` | `reason: "the agent's stdout has ended"` | `reason: agent_stdout_ended` |
+| `peer_dropped` | `reason: "fell behind"` | `reason: fell_behind` |
+| `capabilities_dropped` | `dropped` | `capabilities` |
+| `session_log_failed` | `file` | `path` |
+| `process_started` | `request` (the start's) | `start_request` |
+| `bridge_started`, `bridge_stderr`, `bridge_exited` | `bridge` | `peer` |
+| `bridge_started` | `pid` | `bridge_pid` |
+| `bridge_exited` | `status` (a code or null) | `exit_status`, as `process_exited`'s: `{code}`, `{signal}` or null |
+| `acp`'s `dir`, a raw record's `dir` | `agent-stderr` | `agent_stderr` |
+| the bridge `status` reply's `sessions` | `session_id`, `log` | `session`, `events_log` |
+| `event notify`'s environment | `BRNR_SESSION_ID` | `BRNR_SESSION` |
+
+`BRNR_EVENT`, `--events`, a bridge's `events`, and `event wait`'s and
+`event notify`'s endings use the new names.
+
+**Why.** At b41a8c5 the 24 events are snake_case, and 35 record names are
+kebab-case and 6 are one bare word, in the same `event` field and often the
+same file. So:
+
+- `event log --json` prints `records-skipped`, which `--events` refuses,
+  and `event watch --json` ends with `events-missed`.
+- Events name the session `session`; the record heads, the host-log
+  records, the bridge `status` reply and `event notify` (`BRNR_SESSION_ID`)
+  say `session_id`. Events carry `host_id` but no `pid`, which every other
+  `--json` names the process by.
+- `by` is a party in `user_message` and `turn_ended` (`editor`, `control`),
+  a cause in `message_dropped` (`cancel`, `queue`, `steer`), both in
+  `session_closed` (`idle`, `editor`), and a peer's label or a timer in
+  `permission_resolved` (`socket#7`, `timeout`).
+- `until` is a time in `records-skipped` and a position in
+  `events-missed`; `tool_call` is ACP's object in `permission_request` and
+  an id in `elicitation_request`; `message` is a handle (`m3`) in
+  `message_dropped` and the agent's text in `elicitation_request`;
+  `status` is a word in replies and an object in `exited`; `reason` is
+  text in `exited` and `peer-dropped` and a word nowhere.
+- `session-opened` names a session's files `host_log` and `acp_log` in the
+  events file, `file` and `acp_file` in the host log, and the `status`
+  reply names one `log`.
+
+A script that reads `event log --json`, or a bridge, has to know two
+spellings, and which field means what in which event (F5, P4). One stream
+is one vocabulary (P5), and a rule a reader can learn once is fewer
+concepts (N4). From 1.0.0 events, transcripts and `--json` are covered
+(ADR 8.4), and every one of these would wait for 2.0; before it, a rename
+is made outright (P9). snake_case, because the events, every field and
+ACP's values already are, and because jq, Python and Rust read it as a name
+without quoting (in jq `.records-skipped` is a subtraction).
+
+**Consequences.**
+
+- Every bridge, `event notify` command and script that reads events
+  changes once, before 1.0.0. The changelog says how, entry by entry.
+- A transcript an older brnr wrote keeps its names, and brnr doesn't read
+  them (P9): its head has `session_id`, so `session list` and
+  `session resume` pass it over. Nothing is lost silently (P3): `doctor`
+  lists it, and `event log` of it says an older brnr wrote it. Once #70
+  marks a transcript's format, that is a check of the format, not of a
+  field.
+- The other ADRs, the README, docs/interface.md, the skill and the site
+  name the old forms until #314 lands, and change with it.
+- A bridge's `events` naming a note, which a profile may have now as
+  `records-skipped`, fails to load.
+
+**Considered.**
+
+- kebab-case for everything, as the records and #205's proposal have it:
+  the events, which bridges use and ADR 8.4 covers, and every field are
+  snake_case already, and kebab-case names aren't names to jq, Python or
+  Rust.
+- Two spellings on purpose, snake_case for events and kebab-case for
+  notes and records, to tell the kinds apart: the reader would have to
+  know what the spelling means (P4), and a name that moves between kinds,
+  as `records_skipped` does into `--events`, would be renamed. The lists
+  say the kind.
+- camelCase, as ACP: brnr's events have been snake_case from the start
+  (ADR 4.4 kept them so), ACP's own values are snake_case, and ACP's names
+  stay inside the ACP objects brnr passes on, so the two never meet in one
+  object.
+- `session_id` everywhere, as the records and ACP's `sessionId`: the
+  events, every `--json` and the commands' `<session>` say `session`, and
+  more readers know those than the record heads.
+- A `kind` field, or a prefix (`note.records_skipped`, `host.started`):
+  one more field for every reader, when the file and the lists say it.
+- Verb first (`end_turn`, `close_session`): reads as a command, and
+  `end_turn` is ACP's stop reason. Present tense (`turn_end`): a noun,
+  read as a thing.
+- `agent_exited` for `exited`: its `exit_status` is the agent's, but the
+  event is the process's (ADR 5.1), comes after a panic with no status,
+  and the command line names processes (`process list`, `--pid`).
+- Keeping `by` for both who and why, documented per event: `by ==
+  "editor"` and `by == "idle"` are answers to two questions, and #308 adds
+  `agent`.
+- Leaving the host-log names as they are, as ADR 8.4 doesn't cover them:
+  two rules in one file, which holds events too and is read by `doctor`
+  and the catch-up.
+- `acp_message` for `acp`, `history_replayed` for `history`: a thing is
+  named by a noun, and these are short and in every example.
+- One record for `peer_dropped` and `peer_cut_off`: the record is written
+  when the peer is cut off, the event once the others have the line that
+  cut it off, which an exit can prevent, and the catch-up reads the
+  record. Two records at two times keep two names.
+- A unit in the names of durations and sizes (`_seconds`, `_bytes`): #154
+  names them, and this follows it.
+
 ## Tests
 
 Run `cargo test --release adr_0005_`. Named claims, by section:
@@ -741,3 +1041,4 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_notify_cut_off_as_a_bridge_stops_its_command`,
   `adr_0005_notify_stopped_stops_its_command`,
   `adr_0005_notify_cuts_what_the_environment_cant_hold`.
+- 5.9: not implemented yet; its tests come with #314.
