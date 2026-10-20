@@ -933,8 +933,7 @@ fn tilde(text: &str) -> String {
     if home.is_empty() {
         return text.to_owned();
     }
-    let folder: String =
-        home.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let folder = paths::claude_project_key(Path::new(home));
     text.replace(home, "~").replace(&format!("{folder}-"), "~-")
 }
 

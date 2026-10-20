@@ -49,8 +49,9 @@ Files:
   own: `~/.brnr/projects/<folder>/<session id>.jsonl`, its events, and
   `<session id>.acp.jsonl` beside it, the raw ACP. `<folder>` is the cwd
   with every non-alphanumeric character replaced by `-` (as in
-  `~/.claude/projects`). The session id in the names is escaped, one name
-  per id, so distinct sessions never share a transcript (ADR 9.2).
+  `~/.claude/projects`), then `-` and a hash of the cwd, so each cwd has a
+  folder of its own. The session id in the names is escaped, one name per
+  id, so distinct sessions never share a transcript (ADR 9.2).
 - Each process also has a host log, `~/.brnr/hosts/<run id>.jsonl`, for
   what belongs to no session (ACP before a session exists, the agent's
   stderr).

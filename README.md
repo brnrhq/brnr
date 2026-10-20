@@ -840,8 +840,12 @@ and a session id become names (below) are fixed for 1.x (ADR 3.9); what the
 host logs and the locks contain isn't (ADR 8.4).
 
 `<folder>` is the session's cwd with every non-alphanumeric character replaced
-by `-`, as in `~/.claude/projects`, so a claude-agent-acp session's events
-file has the same folder and name as Claude Code's own transcript. In
+by `-`, as in `~/.claude/projects`, then `-` and 8 hex digits, a hash of the
+cwd (`-Users-me-src-3db3a304` for `/Users/me/src`), so `/a-b` and `/a/b` have
+a folder each. A claude-agent-acp session's events file has the same name as
+Claude Code's own transcript, in a folder whose name starts with Claude
+Code's. A transcript an earlier brnr wrote in a folder without the hash stays
+there, and a session resumed in the cwd it began in goes on in it (ADR 9.2). In
 `<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
 digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
 sessions never share a file. The events are the ones bridges get, `exited`
