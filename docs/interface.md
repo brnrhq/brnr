@@ -508,5 +508,6 @@ Security fixes are made on the latest major version; see
 `--json` output (#150), the names of events, transcript records and their
 fields (decided in
 [ADR 5.9](adr/0005-events-transcripts-and-observers.md#59-events-records-and-their-fields-follow-one-naming-scheme),
-renamed by #314), the exit code of a usage error (#153) and flags and config
-keys spelled two ways (#154) are still being settled.
+renamed by #314), the exit code of a usage error (decided in ADR 8.3, made
+by #310) and flags and config keys spelled two ways (decided in ADR 8.1 and
+6.1, renamed by #311) are still being settled.

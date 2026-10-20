@@ -1,7 +1,9 @@
 # 4. Turns, messages and the agent's requests
 
-Draft 2026-10-19. Implemented. Factor: F3 (ADR 1). Brings together former
-ADRs 17, 56, 18, 19, 71, 27, 68, 29 and 30 (docs/adr/README.md maps them).
+Draft 2026-10-19. Implemented, but for 4.5's request the agent cancels
+(#162), decided, not implemented yet (#308). Factor: F3 (ADR 1).
+Brings together former ADRs 17, 56, 18, 19, 71, 27, 68, 29 and 30
+(docs/adr/README.md maps them).
 
 How a headless session carries the user's messages into turns, and how the
 agent's requests to the user reach someone who can answer them: message
@@ -348,6 +350,34 @@ One timeout:
   `cancel`, as it answers its permission requests `cancelled`: the turn
   they were asked in is gone, and nothing is left waiting unsaid (P3).
 
+A request the agent gives up on (#162), decided, not implemented yet
+(#308):
+
+- The agent's `$/cancel_request` for a permission request or an
+  elicitation it sent ends the request, in brnr's role either way. It is
+  no longer waiting: not in `permission requests`, `elicitation requests`
+  or a bridge's `pending`, and not counted in the session's `waiting`.
+  Its `permission_resolved` (`answer: cancelled`) or
+  `elicitation_resolved` (`action: cancel`) says `by: agent`. An answer
+  to it after that, from a command or a bridge, fails as one to a request
+  that isn't waiting, and nothing is sent.
+- Headless, brnr is the receiver ACP names, and answers the request the
+  agent cancelled, as ACP requires: a permission request with the outcome
+  `cancelled`, an elicitation with the action `cancel`, the answers a
+  cancelled request has.
+- In an editor's session the notification reaches the editor unchanged
+  (P1), and the editor's answer reaches the agent unchanged. The event
+  says `by: agent` once; the editor's answer makes none.
+- A `$/cancel_request` for a request already answered, or for an id brnr
+  holds no request of, ends nothing: there is nothing waiting to end.
+- A turn that ends while a request of it is still waiting is the agent's
+  fault: ACP has the agent cancel what it no longer waits for. brnr
+  doesn't end the request for it (F1, ADR 4.6). The request waits, as any
+  request does, until it is answered, `response_timeout` passes or
+  `prompt cancel` cancels it; meanwhile the session is `waiting`, and
+  `stop_when_idle` doesn't count (ADR 3.8). What the agent does wrong
+  shows, as it would without brnr.
+
 Editor sessions (ADR 7.1):
 
 - A permission request or an elicitation passes through to the editor
@@ -381,6 +411,16 @@ a timeout sends differs because ACP's answers differ: a permission request
 has no outcome for "nobody chose"; an elicitation has `cancel` for exactly
 that. One number covers both: a second would be one more setting to get
 wrong for the same question.
+
+`$/cancel_request` is stable ACP (no unstable feature gates it in
+`agent-client-protocol-schema` 1.10.2), and ACP has its receiver answer
+the request it names. Passed over, as brnr does now, a request the agent
+gave up on stays listed: the session is `waiting` and never idle, and
+`permission allow` answers an agent that no longer asks (#162). A correct
+client acts on it (F1). A turn that ends with a request unanswered is
+another case: nothing in ACP ends the request, and ending it would be
+brnr making up for the agent (F1), as answering a request the agent never
+answers would be (ADR 4.6).
 
 **Consequences.**
 
@@ -419,6 +459,16 @@ wrong for the same question.
 - `brnr elicitation answer <action>`: ADR 8.1's rule is ACP's verbs.
 - Holding an elicitation of a mode brnr doesn't know as nothing: it would
   wait unseen; held, it can be shown, declined or cancelled.
+- Passing the agent's `$/cancel_request` over, as ACP lets a receiver of a
+  `$/` notification do: brnr can act on it, and a request left listed
+  misleads whoever answers it (P3).
+- Answering the cancelled request with the error `-32800`: ACP allows it,
+  but a permission request and an elicitation each have an answer for a
+  cancelled request, and brnr already sends those for `prompt cancel`.
+- Ending the requests of a turn that ended, answered `cancelled`: it makes
+  up for an agent that doesn't follow ACP (F1), and hides that it doesn't.
+- Waiting until either adapter is shown to cancel a request or end a turn
+  with one open: the rule is ACP's, whichever agent does it.
 
 ## 4.6 Requests the agent answers
 

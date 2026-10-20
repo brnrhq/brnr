@@ -1,7 +1,8 @@
 # 6. Settings and profiles
 
-Draft 2026-10-19. Implemented. Factor: F3 (ADR 1). Brings together former
-ADRs 33, 58, 28, 31 and 32 (docs/adr/README.md maps them).
+Draft 2026-10-19. Implemented, but for 6.1's names spelled one way (#154),
+decided, not implemented yet (#311). Factor: F3 (ADR 1). Brings together
+former ADRs 33, 58, 28, 31 and 32 (docs/adr/README.md maps them).
 
 How a brnr process is set up: the profiles in `config.toml`, a start's
 flags over its profile, the agent's mode, model and config options, MCP
@@ -61,6 +62,23 @@ features = ["shared_sessions"]      # process management (ADR 3.10)
   key, and the flat layout fail to load (P7, P9). `brnr doctor` says which
   and where.
 
+One name, one meaning, one spelling in config too (#154, ADR 8.1),
+decided, not implemented yet (#311); the example above is what brnr
+reads until then:
+
+- `log` takes strings only: `"all"` (the default), `"events"` or `"off"`.
+  `"off"` replaces `false`, and `true` and `false` fail to load.
+- A command in config is one shape, a program and its arguments:
+  `command`, a string, and `args`, a list, with `env` where it takes one.
+  An MCP server keeps this form, which is ACP's `McpServerStdio` (F1,
+  ADR 6.3), and a bridge takes it too, in place of its argv list:
+  `command = "brnr"`, `args = ["event", "notify", "--stdin", "--", …]`.
+  `agent` stays a list, the agent's argument vector, as `-- <agent>
+  [args...]` is on the command line: another name, with one meaning.
+- A duration is in whole seconds, with no unit in its name
+  (`response_timeout`, `stop_when_idle`), as on the command line and in
+  `--json` (ADR 8.1).
+
 A start (`session new` or `session resume`, with `--pid` too) has two
 sources of settings: its flags (`--mode`, `--model`, `--thought-level`,
 `--option <o>=<v>`) and its profile's headless `mode`, `model`,
@@ -98,7 +116,10 @@ role in the config makes a misplaced key an error (P7). Which option is the
 model or the mode is known only once the agent has opened the session and
 listed its options, so the flags and the profile can only be merged then.
 Merging by id earlier let a profile's model option override `--model`, and
-the start succeeded without saying so (P3).
+the start succeeded without saying so (P3). `log` mixes strings and a
+boolean, and `command` is a string in an MCP server and a list in a
+bridge, in one file (#154): a key with two types is one more thing to get
+wrong (F5, P5). ACP has the MCP server's form, so brnr's own takes it.
 
 **Consequences.**
 
@@ -117,6 +138,13 @@ the start succeeded without saying so (P3).
   profile's value briefly current.
 - The last flag winning a conflict within the flags: a guess at what was
   meant (P4); the user can drop one.
+- `log = false` beside the strings, as a boolean for "nothing": one key
+  with two types. `"none"` for it: `"off"` says that logging is off, not
+  that there are no records.
+- A bridge's `command` and the MCP server's both argv lists: the MCP form
+  is ACP's (F1), passed on in `session/new` as it is.
+- Keeping both shapes under one name (#154): a key whose type depends on
+  where it is.
 
 ## 6.2 Mode, model and config options
 
