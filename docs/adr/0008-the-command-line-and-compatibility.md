@@ -967,7 +967,10 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_flags_value_is_never_a_positional`,
   `adr_0008_every_flag_is_in_its_verbs_usage`,
   `adr_0008_positionals_and_unknown_options`,
-  `adr_0008_a_prompt_starts_after_the_session`.
+  `adr_0008_a_prompt_starts_after_the_session`. Not covered by a Rust
+  test: the names spelled one way (`--option-id`, `--prompt`, durations
+  with no unit, #154), decided, not implemented yet; their tests come with
+  #311.
 - 8.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,
@@ -989,7 +992,9 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_wait_returns_when_the_session_goes_idle`,
   `adr_0008_wait_on_an_idle_session_reports_the_last_turn`,
   `adr_0008_huge_timeouts_are_never`, `adr_0008_wait_for_permission`,
-  `adr_0008_wait_for_exit`.
+  `adr_0008_wait_for_exit`. Not covered by a Rust test: usage errors and
+  help the same in every command (#153), decided, not implemented yet;
+  their tests come with #310.
 - 8.4: none: it is a promise that applies from 1.0.0.
 - 8.5: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
