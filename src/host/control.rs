@@ -759,6 +759,8 @@ impl Host {
                 let mut e = elicitation::describe(r);
                 e["request"] = json!(r.held());
                 e["session"] = json!(r.session);
+                // The process, which names one outside any session.
+                e["pid"] = json!(std::process::id());
                 e["owner"] = json!(owner);
                 e["answerable"] = json!(why_not.is_none());
                 e["why_not"] = json!(why_not);
@@ -776,8 +778,9 @@ impl Host {
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
         // Counted, not described: a description copies each request's tool
         // call, which can nest a million deep (ADR 2.5).
-        report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
-        report["elicitations"] =
+        report["pending_count"] =
+            json!(self.approvals.held().filter(|r| r.is_permission()).count());
+        report["elicitation_count"] =
             json!(self.approvals.held().filter(|r| r.is_elicitation()).count());
         report["uptime"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
@@ -819,10 +822,12 @@ impl Host {
                     "busy": busy,
                     "turn_elapsed": s.turns.running_for().map(|d| d.as_secs()),
                     "prompts": s.turns.prompts(),
-                    "held": s.turns.held(),
-                    "context": s.turns.context().len(),
-                    "pending": pending,
-                    "elicitations": elicitations,
+                    // Counts, named so: `held` and `context` are the
+                    // queue's lists (ADR 8.2).
+                    "held_count": s.turns.held(),
+                    "context_count": s.turns.context().len(),
+                    "pending_count": pending,
+                    "elicitation_count": elicitations,
                     "shared": s.shared(),
                     "lock_error": s.lock_error(),
                     "last_turn": s.turns.last_turn(),

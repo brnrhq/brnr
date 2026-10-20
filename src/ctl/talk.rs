@@ -69,7 +69,7 @@ const TURN_EVENTS: &[&str] = &[
 /// agent's messages as they come (or, with `json`, the turn as one object at
 /// the end: `{session, message, reply, stop_reason, error, tokens, dropped}`
 /// and `json`'s fields), and returns the turn's exit status: 1, too, for a
-/// message dropped before it was sent (`dropped` says why). Approvals and
+/// message dropped before it was sent (`dropped` has it, and why). Approvals and
 /// elicitations on the way are announced on stderr, with how to answer them.
 pub(super) fn wait_for_message(
     conn: &mut Conn,
@@ -148,6 +148,8 @@ pub(super) fn wait_for_message(
 /// The turn as `--json` prints it, from the event that ended it
 /// (`turn_ended`, or `message_dropped` for a message never sent): `out` with
 /// `{session, message, reply, stop_reason, error, tokens, dropped}`.
+/// `dropped` is the messages dropped, as `prompt cancel` and `queue` have
+/// them (ADR 8.2): none, or the one whose drop ended the wait.
 fn print_turn(
     mut out: Value,
     session: &str,
@@ -155,8 +157,12 @@ fn print_turn(
     reply: &[String],
     end: &Value,
 ) -> Result<(), String> {
-    let dropped =
-        if end["event"] == "message_dropped" { end["reason"].clone() } else { Value::Null };
+    let dropped = match end["event"] == "message_dropped" {
+        true => {
+            json!([{ "message": end["message"], "text": end["text"], "reason": end["reason"] }])
+        }
+        false => json!([]),
+    };
     for (k, v) in [
         ("session", json!(session)),
         ("message", json!(message)),
@@ -821,16 +827,23 @@ pub(super) fn wait(a: &Args) -> Result<ExitCode, Error> {
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
     let mut conn = Conn::open(host)?;
-    Ok(wait_on(&mut conn, &session, &what, deadline(timeout), json_out)?)
+    Ok(wait_on(&mut conn, &session, &what, deadline(timeout), json_out, host.info())?)
 }
 
-/// `event wait` on `conn`, the process's, for `what` of `session`.
+/// `event wait` on `conn`, the process's (`process`, its status), for `what`
+/// of `session`. What ended it is printed as text, or with `--json` in one
+/// shape for each `what`, whatever ended the wait or whether it held already
+/// (ADR 8.3): for `idle` the session's state, `{session, state, last_turn}`;
+/// for `turn` its `turn_ended`; for `permission` and `elicitation` the
+/// request, as `permission show` and `elicitation show` print it; for
+/// `exit` the `process_exited` event.
 fn wait_on(
     conn: &mut Conn,
     session: &str,
     what: &str,
     deadline: Option<Instant>,
     json_out: bool,
+    process: &Value,
 ) -> Result<ExitCode, String> {
     // Subscribed before looking, so nothing happens unseen in between.
     let events = [
@@ -850,45 +863,44 @@ fn wait_on(
         outln!("{text}");
         Ok(())
     };
-    let idle_now = json!({ "event": "idle", "session": session });
-    // How the last turn ended, as `shallow_turn` has it: a wait for `idle`
-    // that ends on an idle or a closed session exits as if it had waited
-    // for that turn (see ADR 8.3 in docs/adr).
+    // The session's state, for `idle`: `idle`, or `inactive` once closed,
+    // as `session list` has it, and how its last turn ended, whole as
+    // `session status` has it (`turn`, its JSON).
+    let state = |state: &str, turn: &str, text: String| -> Result<(), String> {
+        if !json_out {
+            outln!("{text}");
+            return Ok(());
+        }
+        // As deep as the agent made the turn's error (ADR 2.5).
+        let shown = json::on_stack(json::depth(turn.as_bytes()), || {
+            let turn: Value = json::parse(turn.as_bytes()).unwrap_or_default();
+            print_json(&json!({ "session": session, "state": state, "last_turn": turn }))
+        });
+        shown.ok_or("no stack to be had for the last turn")?
+    };
+    // How the last turn ended, as `shallow_turn` has it, and whole: a wait
+    // for `idle` that ends on an idle or a closed session exits as if it
+    // had waited for that turn (see ADR 8.3 in docs/adr).
     let mut last_turn = Value::Null;
+    let mut whole = "null".to_owned();
     // What the process answers, and each event, is used and let go of on a
     // stack that takes it (ADR 2.5).
     match what {
-        "permission" | "elicitation" => {
-            let found = conn.pending(|pending| {
-                let found = match what {
-                    "permission" => {
-                        pending.approvals(Some(session)).next().map(|p| (p, describe_permission(p)))
-                    }
-                    _ => pending
-                        .elicitations(Some(session))
-                        .next()
-                        .map(|e| (e, describe_elicitation(e))),
-                };
-                found.map(|(e, text)| done(e, text)).transpose()
-            });
-            let found = match found {
-                Ok(found) => found?,
-                Err(why) => return conn.ended(why),
-            };
-            if found.is_some() {
-                return Ok(ExitCode::SUCCESS);
-            }
-        }
+        "permission" | "elicitation" => match waiting(conn, session, what, &done) {
+            Ok(Some(())) => return Ok(ExitCode::SUCCESS),
+            Ok(None) => {}
+            Err(why) => return conn.ended(why),
+        },
         "idle" => {
-            let (is_idle, turn) = match idle(conn, session) {
+            let (now, turn, turn_whole) = match idle(conn, session) {
                 Ok(idle) => idle,
                 Err(why) => return conn.ended(why),
             };
-            if is_idle {
-                done(&idle_now, "idle".into())?;
+            if let Some(now) = now {
+                state(now, &turn_whole, idle_text(now, &turn))?;
                 return Ok(ended_as(&turn));
             }
-            last_turn = turn;
+            (last_turn, whole) = (turn, turn_whole);
         }
         _ => {}
     }
@@ -901,7 +913,17 @@ fn wait_on(
             }
             Err(why) if conn.missed().is_some() => return conn.ended(why),
             Err(_) if what == "exit" => {
-                let gone = json!({ "event": "process_exited", "exit_status": null });
+                // Gone without saying how (killed): the event it would have
+                // sent, with what brnr knows of it.
+                let gone = json!({
+                    "event": "process_exited",
+                    "exit_status": null,
+                    "error": "the process went without saying how it exited",
+                    "ts": crate::log::rfc3339(std::time::SystemTime::now()),
+                    "host_id": process["host_id"],
+                    "pid": process["host_pid"],
+                    "seq": null,
+                });
                 done(&gone, render::exited(&gone["exit_status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
@@ -917,19 +939,22 @@ fn wait_on(
                 // A closed session counts as idle; there is no next turn or
                 // approval in it to wait for.
                 ("session_closed", "idle") if mine(&e) => {
-                    done(&e, format!("idle: session closed ({})", render::who(&e)))?;
+                    let text = format!("inactive: session closed ({})", render::who(&e));
+                    state("inactive", &whole, text)?;
                     return Ok(Some(ended_as(&last_turn)));
                 }
                 ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
                     return Err("the session closed".into());
                 }
-                ("permission_request", "permission") if mine(&e) => {
-                    done(&e, describe_permission(&e))?;
-                    return Ok(Some(ExitCode::SUCCESS));
-                }
-                ("elicitation_request", "elicitation") if mine(&e) => {
-                    done(&e, describe_elicitation(&e))?;
-                    return Ok(Some(ExitCode::SUCCESS));
+                // One is waiting, unless answered since: what is waiting now
+                // is what `permission show` or `elicitation show` prints.
+                ("permission_request", "permission") | ("elicitation_request", "elicitation")
+                    if mine(&e) =>
+                {
+                    return match waiting(conn, session, what, &done) {
+                        Ok(found) => Ok(found.map(|()| ExitCode::SUCCESS)),
+                        Err(why) => conn.ended(why).map(Some),
+                    };
                 }
                 ("turn_ended", "turn") if mine(&e) => {
                     let how = e["stop_reason"].as_str().unwrap_or("error");
@@ -937,12 +962,12 @@ fn wait_on(
                     return Ok(Some(turn_status(&e)));
                 }
                 ("turn_ended", "idle") if mine(&e) => {
-                    last_turn = shallow_turn(&e);
-                    let is_idle = match idle(conn, session) {
-                        Ok((is_idle, _)) => is_idle,
+                    (last_turn, whole) = (shallow_turn(&e), whole_turn(&e));
+                    let now = match idle(conn, session) {
+                        Ok((now, ..)) => now,
                         Err(why) => return conn.ended(why).map(Some),
                     };
-                    if is_idle {
+                    if let Some(now) = now {
                         // Behind the session, the turns that ended after
                         // this one are queued, before the status that says
                         // it is idle: it went idle after the last of them.
@@ -951,8 +976,8 @@ fn wait_on(
                         return conn.deep(e, |conn, e| {
                             let ended = |q: &&Value| q["event"] == "turn_ended" && mine(q);
                             let e = conn.queued().rev().find(ended).cloned().unwrap_or(e);
-                            let how = e["stop_reason"].as_str().unwrap_or("error");
-                            done(&e, format!("idle: {how}"))?;
+                            let turn = shallow_turn(&e);
+                            state(now, &whole_turn(&e), idle_text(now, &turn))?;
                             Ok(Some(turn_status(&e)))
                         })?;
                     }
@@ -967,18 +992,57 @@ fn wait_on(
     }
 }
 
-/// Whether the session is idle, with no turn running and nothing held (a
-/// closed one counts), and how its last turn ended, as `shallow_turn` has
-/// it (null for one that has closed).
-fn idle(conn: &mut Conn, session: &str) -> Result<(bool, Value), String> {
+/// The first permission request (`what` `permission`) or elicitation
+/// waiting in `session`, printed by `done` as `permission show` or
+/// `elicitation show` prints it; `Ok(None)` if none is. `Err`: no answer.
+fn waiting(
+    conn: &mut Conn,
+    session: &str,
+    what: &str,
+    done: &(dyn Fn(&Value, String) -> Result<(), String> + Sync),
+) -> Result<Option<()>, String> {
+    conn.pending(|pending| {
+        let found = match what {
+            "permission" => {
+                pending.approvals(Some(session)).next().map(|p| (p, describe_permission(p)))
+            }
+            _ => pending.elicitations(Some(session)).next().map(|e| (e, describe_elicitation(e))),
+        };
+        found.map(|(e, text)| done(e, text)).transpose()
+    })?
+}
+
+/// What `event wait` says of a session whose state is `state` and whose
+/// last turn ended as `turn` says: `idle`, `idle: end_turn`.
+fn idle_text(state: &str, turn: &Value) -> String {
+    match turn.is_object() {
+        true => format!("{state}: {}", turn["stop_reason"].as_str().unwrap_or("error")),
+        false => state.to_owned(),
+    }
+}
+
+/// Whether the session is idle, with no turn running and nothing held:
+/// its state then, `idle`, or `inactive` for one that has closed; and how
+/// its last turn ended, as `shallow_turn` has it and whole, as JSON (null
+/// for one that has closed).
+fn idle(conn: &mut Conn, session: &str) -> Result<(Option<&'static str>, Value, String), String> {
     let status = conn.call(json!({ "cmd": "status" }))?;
     conn.deep(status, |_, status| match session_in(&status, session) {
         Some(s) => {
-            let is_idle = s["busy"] != true && s["held"].as_u64().unwrap_or(0) == 0;
-            (is_idle, shallow_turn(&s["last_turn"]))
+            let is_idle = s["busy"] != true && s["held_count"].as_u64().unwrap_or(0) == 0;
+            (is_idle.then_some("idle"), shallow_turn(&s["last_turn"]), s["last_turn"].to_string())
         }
-        None => (true, Value::Null),
+        None => (Some("inactive"), Value::Null, "null".to_owned()),
     })
+}
+
+/// A turn (`turn_ended`, or status's `last_turn`) as `last_turn` has it,
+/// `{stop_reason, error, tokens}`, as JSON: text, so that it is let go of on
+/// any stack (ADR 2.5).
+fn whole_turn(turn: &Value) -> String {
+    let fields = ["stop_reason", "error", "tokens"];
+    let fields = fields.iter().map(|k| format!("{}:{}", json!(k), turn[*k]));
+    format!("{{{}}}", fields.collect::<Vec<_>>().join(","))
 }
 
 /// Of a turn (`turn_ended`, or status's `last_turn`), what `turn_status`
@@ -1125,7 +1189,7 @@ mod tests {
             [("permission", "pending"), ("elicitation", "pending"), ("idle", "status")]
         {
             let (mut conn, process) = cut_off_at(cmd);
-            let ended = wait_on(&mut conn, "s", what, None, true);
+            let ended = wait_on(&mut conn, "s", what, None, true, &Value::Null);
             assert_eq!(ended, Ok(ExitCode::from(MISSED)), "--for {what}");
             let note = conn.missed().unwrap();
             assert_eq!((&note["event"], &note["after_seq"]), (&json!("events_missed"), &json!(11)));

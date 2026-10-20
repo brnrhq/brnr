@@ -191,7 +191,8 @@ subagents. Neither is in the protocol.
   brnr sees the changed form as unknown counts or no `usage` until it is
   read again here; it doesn't fail. A stabilized `usage` can then be read
   with the schema's type.
-- `tokens` is one of the names #150 and #151 settle, as ADR 10.2's are.
+- `tokens` is named as ADR 5.9 has it (#151), and shaped as ADR 8.2 has
+  it (#150), as ADR 10.2's names are.
 
 **Considered.**
 
@@ -256,7 +257,8 @@ Events:
   `elicitation_request` by default (ADR 5.8). `prompt send --wait`
   announces one on stderr, with how to see it and answer it.
 - The events' names follow ADR 5.9 (snake_case, the agent's values as
-  sent); when #149 and #150 land, their shapes follow those decisions.
+  sent), and their shapes ADR 8.2 (#150); when #149 lands, they follow its
+  decision too.
 
 Listing and showing:
 
@@ -328,7 +330,8 @@ brnr elicitation requests [<session>] | show <session> <request>
 Socket and bridges (ADR 5.7):
 
 - `pending` answers with `elicitations` beside `pending`, each in full,
-  with `answerable` and `why_not`.
+  with `answerable` and `why_not`, and an elicitation with its process's
+  `pid`, which names one outside any session.
 - `allow` and `reject`, with `always` and `option_id`, answer a permission
   request (ADR 8.1). `elicitation {session, request, action:
   accept|decline|cancel, content?}` answers an elicitation, `session` null
@@ -394,8 +397,8 @@ Editor sessions (ADR 7.1):
   brnr"); the editor's late answer is dropped, and it is told who answered
   first, as `permission` does.
 
-Status: `session status` counts `elicitations` beside `pending`, and a
-session with one waiting is `waiting`.
+Status: `session status` counts them, `elicitation_count` beside
+`pending_count` (ADR 8.2), and a session with one waiting is `waiting`.
 
 **Why.** A policy of brnr's own for headless approvals (ask, auto-allow or
 auto-deny, by ACP tool kind) overlapped the agent's own mode, which already

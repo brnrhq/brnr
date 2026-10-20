@@ -766,8 +766,9 @@ Fields:
 
 - A field means one thing, and has one type, wherever it is: a word isn't
   an object somewhere else, an id isn't an object, text isn't a word. A
-  name that is a count in one place and a list in another (`held`,
-  `context`, `dropped`) is #150's to settle.
+  name is a count or a list, never both: a count of what is listed
+  elsewhere is `<what>_count` (`acp_count`, `held_count`), and `dropped`
+  is a list everywhere (ADR 8.2, #150).
 - A thing the commands take as an argument is named by the bare noun, and
   holds its handle: `session`, `message`, `request`, `pid` (the brnr
   process's) and `peer` (a connection's label, a started bridge's too).
@@ -805,8 +806,8 @@ What takes its names from this:
   today, is ACP's, its `code` a number (F1); #205 says how brnr's own
   errors stand beside it. Until it lands, `error` stays as it is.
 - #150: `--json` fields follow these rules: `session`, never `session_id`;
-  ids, `by`, `reason`, positions, times and files as above. #150 settles
-  each concept's shape.
+  ids, `by`, `reason`, positions, times and files as above. ADR 8.2
+  settles each concept's shape.
 - #70: the record heads and the records named here are the names its
   transcript contract holds to; it decides what each record promises, and
   how a format is marked.
@@ -919,7 +920,7 @@ Fields and values, by the new names:
 | `acp`'s `dir`, a raw record's `dir` | `agent-stderr` | `agent_stderr` |
 | the bridge `status` reply's `sessions` | `session_id`, `log` | `session`, `events_log` |
 | `event notify`'s environment | `BRNR_SESSION_ID` | `BRNR_SESSION` |
-| `permission requests --json`'s `options` | `option` | `option_id`, as ADR 8.1's `--option-id` |
+| `permission requests --json`'s `options` | `{option, kind}` | ACP's options whole, `{optionId, name, kind}`, as `permission show` has them (ADR 8.2) |
 
 `BRNR_EVENT`, `--events`, a bridge's `events`, and `event wait`'s and
 `event notify`'s endings use the new names.

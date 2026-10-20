@@ -366,15 +366,26 @@ fn ps(a: &Args) -> Result<(), String> {
         .iter()
         .map(|host| {
             let info = host.info();
-            // One that doesn't answer serves what it holds the locks of.
+            // One that doesn't answer serves what it holds the locks of; its
+            // sessions are rows of `session list`, with their state only.
             let sessions: Vec<Value> = match host.status {
-                Some(_) => host.sessions().iter().map(|s| s["session"].clone()).collect(),
-                None => host.held(&locks).into_iter().map(Value::from).collect(),
+                Some(_) => host
+                    .sessions()
+                    .iter()
+                    .map(|s| json!({ "session": s["session"], "state": s["state"] }))
+                    .collect(),
+                None => host
+                    .held(&locks)
+                    .into_iter()
+                    .map(|s| json!({ "session": s, "state": "unreachable" }))
+                    .collect(),
             };
             json!({
                 "pid": host.id().parse::<u64>().ok(),
-                "owner": if host.status.is_some() { info["owner"].clone() } else { json!("unreachable") },
-                "agent": agent_name(&info["agent"]),
+                "state": process_state(host),
+                // Who owns its sessions; not known of one that doesn't answer.
+                "owner": info["owner"],
+                "agent": agent(host),
                 "sessions": sessions,
                 "uptime": info["uptime"],
                 "cwd": info["cwd"],
@@ -382,7 +393,7 @@ fn ps(a: &Args) -> Result<(), String> {
         })
         .collect();
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(&json!({ "processes": rows }));
     }
     if rows.is_empty() {
         outln!("no brnr processes");
@@ -391,20 +402,33 @@ fn ps(a: &Args) -> Result<(), String> {
     // Each session has a cwd of its own (brnr session list); the process's
     // is only where the editor happened to start it, so the table leaves it
     // to --json.
-    let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
+    let mut table = vec![["PID", "STATE", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
         let sessions: Vec<String> =
-            r["sessions"].as_array().into_iter().flatten().map(text).collect();
+            r["sessions"].as_array().into_iter().flatten().map(|s| text(&s["session"])).collect();
         table.push([
             r["pid"].to_string(),
-            text(&r["owner"]),
-            text(&r["agent"]),
+            text(&r["state"]),
+            r["owner"].as_str().unwrap_or("-").to_owned(),
+            r["agent"]["program"].as_str().unwrap_or("?").to_owned(),
             if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
             r["uptime"].as_u64().map_or("?".to_owned(), duration),
         ]);
     }
     print_table(table);
     Ok(())
+}
+
+/// A process's `state` in `process list`: `starting`, `running`,
+/// `stopping`, or `unreachable` for one that doesn't answer, as `session
+/// list` has a session in it (ADR 8.2).
+fn process_state(host: &Host) -> &'static str {
+    match &host.status {
+        None => "unreachable",
+        Some(st) if st["stopping"] == true => "stopping",
+        Some(st) if st["starting"] == true => "starting",
+        Some(_) => "running",
+    }
 }
 
 fn stop(a: &Args) -> Result<(), String> {
@@ -496,11 +520,29 @@ fn forked_from(s: &Value) -> Value {
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
-fn agent_name(argv: &Value) -> String {
-    let Some(program) = argv.as_array().and_then(|a| a.first()).and_then(Value::as_str) else {
-        return "?".to_owned();
-    };
-    Path::new(program).file_name().map_or(program.to_owned(), |f| f.to_string_lossy().into_owned())
+/// The file name of `argv`'s program, if it has one.
+fn program(argv: &Value) -> Option<String> {
+    let program = argv.as_array().and_then(|a| a.first()).and_then(Value::as_str)?;
+    let name = Path::new(program).file_name();
+    Some(name.map_or(program.to_owned(), |f| f.to_string_lossy().into_owned()))
+}
+
+/// The agent as every `--json` has it (ADR 8.2): `program`, the file name
+/// of the command brnr ran, from `argv`; `name` and `version`, what it says
+/// it is in `initialize` (`agentInfo`, `info`). Each null where brnr doesn't
+/// know it.
+fn agent_of(argv: &Value, info: &Value) -> Value {
+    json!({
+        "program": program(argv),
+        "name": info["name"].as_str(),
+        "version": info["version"].as_str(),
+    })
+}
+
+/// The agent process `host` runs.
+fn agent(host: &Host) -> Value {
+    let info = host.info();
+    agent_of(&info["agent"], &info["agent_info"])
 }
 
 fn status(a: &Args) -> Result<(), String> {
@@ -512,28 +554,21 @@ fn status(a: &Args) -> Result<(), String> {
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;
-    let shared_by: Vec<u64> = hosts
+    let shared_pids: Vec<u64> = hosts
         .iter()
         .filter(|h| h.sessions().iter().any(shares))
         .filter_map(|h| h.id().parse().ok())
         .collect();
-    let mut agent = json!({ "program": agent_name(&st["agent"]) });
-    // What the agent says it is, in initialize: the npm package and version
-    // of an adapter.
-    if let (Some(name), Some(version)) =
-        (st["agent_info"]["name"].as_str(), st["agent_info"]["version"].as_str())
-    {
-        agent["name"] = json!(name);
-        agent["version"] = json!(version);
-    }
     let report = json!({
         "session": id,
         "title": x["title"],
         "pid": host.id().parse::<u64>().ok(),
-        "agent": agent,
+        // What the agent says it is, in initialize: the npm package and
+        // version of an adapter.
+        "agent": agent(host),
         "owner": st["owner"],
-        "held_by": lock::holder(&id),
-        "shared_by": shared_by,
+        "lock_pid": lock::holder(&id),
+        "shared_pids": shared_pids,
         // An editor's session served without its lock (ADR 3.9).
         "lock_error": x["lock_error"],
         "cwd": x["cwd"],
@@ -544,10 +579,10 @@ fn status(a: &Args) -> Result<(), String> {
         "model": x["model"],
         "tools": x["tools"],
         "plan": x["plan"],
-        "pending": x["pending"],
-        "elicitations": x["elicitations"],
-        "held": x["held"],
-        "context": x["context"],
+        "pending_count": x["pending_count"],
+        "elicitation_count": x["elicitation_count"],
+        "held_count": x["held_count"],
+        "context_count": x["context_count"],
         "usage": x["usage"],
         // How the last turn ended, and the tokens the agent said it used
         // (ADR 4.4).
@@ -574,8 +609,10 @@ fn describe_status(x: &Value, arg: &str) -> String {
     out.push('\n');
     let a = &x["agent"];
     let mut agent = text(&a["program"]);
-    if let (Some(name), Some(version)) = (a["name"].as_str(), a["version"].as_str()) {
-        agent.push_str(&format!(" ({name} {version})"));
+    match (a["name"].as_str(), a["version"].as_str()) {
+        (Some(name), Some(version)) => agent.push_str(&format!(" ({name} {version})")),
+        (Some(name), None) => agent.push_str(&format!(" ({name})")),
+        _ => {}
     }
     out.push_str(&format!(
         "process {}: {agent}, {}, up {}\n",
@@ -583,16 +620,16 @@ fn describe_status(x: &Value, arg: &str) -> String {
         text(&x["owner"]),
         duration(x["uptime"].as_u64().unwrap_or(0))
     ));
-    let shared_by: Vec<String> =
-        x["shared_by"].as_array().into_iter().flatten().map(Value::to_string).collect();
-    if !shared_by.is_empty() {
-        let held = match x["held_by"].as_u64() {
+    let shared_pids: Vec<String> =
+        x["shared_pids"].as_array().into_iter().flatten().map(Value::to_string).collect();
+    if !shared_pids.is_empty() {
+        let held = match x["lock_pid"].as_u64() {
             Some(pid) => format!("process {pid}'s"),
             None => "no process's (none holds it now)".to_owned(),
         };
         out.push_str(&format!(
             "shared by process {}: the transcript is {held}, and has none of what happens there\n",
-            shared_by.join(", ")
+            shared_pids.join(", ")
         ));
     }
     if x["lock_error"].is_string() {
@@ -622,7 +659,7 @@ fn describe_status(x: &Value, arg: &str) -> String {
     // turn's start is known.
     let working = x["turn_elapsed"].as_u64().map(|secs| format!("working for {}", duration(secs)));
     let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
-    let input = pending("elicitations").is_some() && pending("pending").is_none();
+    let input = pending("elicitation_count").is_some() && pending("pending_count").is_none();
     let waiting = if input { "input" } else { "an approval" };
     match (x["state"].as_str(), working) {
         (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
@@ -644,13 +681,14 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if x["plan"].is_array() {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
-    if let Some(n) = pending("pending") {
+    if let Some(n) = pending("pending_count") {
         out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
     }
-    if let Some(n) = pending("elicitations") {
+    if let Some(n) = pending("elicitation_count") {
         out.push_str(&format!("{n} elicitation(s) waiting: brnr elicitation requests {arg}\n"));
     }
-    let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
+    let count = |key: &str| x[key].as_u64().unwrap_or(0);
+    let (held, context) = (count("held_count"), count("context_count"));
     if held + context > 0 {
         out.push_str(&format!(
             "held: {held} message(s), {context} context (brnr queue list {arg})\n"
@@ -735,28 +773,24 @@ fn pending(a: &Args) -> Result<(), String> {
     json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
 }
 
-/// A permission request as `permission requests` lists it.
+/// A permission request as `permission requests` lists it: `permission
+/// show`'s object, with fewer fields, the agent's options whole as ACP has
+/// them (ADR 8.2).
 fn pending_row(p: &Value) -> Value {
-    let options: Vec<Value> = p["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|o| json!({ "option_id": o["optionId"], "kind": o["kind"] }))
-        .collect();
     json!({
         "session": p["session"],
         "request": p["request"],
         "owner": p["owner"],
         "kind": p["kind"],
         "title": p["title"],
-        "options": options,
+        "options": p["options"],
     })
 }
 
 /// The permission requests' `rows`, as a table or `--json`.
 fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(rows);
+        return print_json(&json!({ "requests": rows }));
     }
     let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
@@ -770,7 +804,7 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|o| format!("{}={}", text(&o["option_id"]), text(&o["kind"])))
+            .map(|o| format!("{}={}", text(&o["optionId"]), text(&o["kind"])))
             .collect();
         table.push([
             text(&r["session"]),
@@ -976,7 +1010,7 @@ mod tests {
         assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
         assert_eq!(state("waiting", Value::Null), "waiting for an approval");
         // Waiting for an elicitation only (ADR 4.5).
-        let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
+        let x = json!({ "session": "s", "state": "waiting", "pending_count": 0, "elicitation_count": 1 });
         assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
     }
 }

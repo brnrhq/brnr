@@ -376,7 +376,9 @@ fn adr_0009_a_symlinked_transcript_is_never_read() {
     symlink(&outside, env.dir.join("home/projects/linked")).unwrap();
     fs::write(outside.join("target"), text.replace("old-1", "link-2")).unwrap();
     symlink(outside.join("target"), project.join("link-2.jsonl")).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let ids: Vec<&str> =
         list.as_array().unwrap().iter().filter_map(|r| r["session"].as_str()).collect();
     assert_eq!(ids, ["old-1"], "{list}");
@@ -401,14 +403,13 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
         symlink(outside.join(sub), home.join(sub)).unwrap();
     };
     let list = || -> Vec<Value> {
-        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"]))
-            .unwrap()
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
             .as_array()
             .unwrap()
             .clone()
     };
     let shown = list();
-    assert!(shown.len() == 1 && shown[0]["agent"] == "fake_agent.py", "{shown:?}");
+    assert!(shown.len() == 1 && shown[0]["agent"]["program"] == "fake_agent.py", "{shown:?}");
 
     link("hosts");
     // A process that died without recording it, its log readable by others.
@@ -418,9 +419,11 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
     chmod(&dead, 0o644);
     let shown = list();
     // The agent is named in the host log only.
-    assert!(shown.len() == 1 && shown[0]["agent"] == "?", "its host log was read: {shown:?}");
+    let unknown = json!({ "program": null, "name": null, "version": null });
+    assert!(shown.len() == 1 && shown[0]["agent"] == unknown, "its host log was read: {shown:?}");
     let checks: Value = serde_json::from_slice(&env.run(&["doctor", "--json"]).stdout).unwrap();
-    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    let check =
+        checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
     assert_eq!(check["message"], "no process died without recording it (0 logs)", "{check}");
     let report = env.run(&["doctor", "--report", "--json"]);
     let report: Value = serde_json::from_slice(&report.stdout).unwrap();

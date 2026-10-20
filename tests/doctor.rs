@@ -426,7 +426,7 @@ fn a_stopped_host_with_a_full_backlog_is_running() {
     assert!(text.contains(&warning), "{text}");
     assert!(!text.contains("removed"), "{text}");
     assert!(socket.exists() && env.hosts().len() == 1, "{text}");
-    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let list = serde_json::from_slice::<Value>(&list.stdout).unwrap()["sessions"].clone();
     assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
 }
 
@@ -502,7 +502,8 @@ fn a_death_without_a_record_is_reported() {
     // The same check in JSON.
     let out = env.run(&["doctor", "--json"]);
     let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    let check =
+        checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
     assert_eq!(check["level"], "info", "{check}");
     assert!(check["message"].as_str().unwrap().contains(run), "{check}");
 }

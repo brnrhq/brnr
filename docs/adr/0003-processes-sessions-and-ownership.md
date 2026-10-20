@@ -85,9 +85,11 @@ rely on them.
   shorter handles are the shell's. The agent's own title for a session
   (`session_info_update`) is shown in `session list` and `session status`
   to tell sessions apart, and is never something to type.
-- `brnr process list` lists brnr's processes: pid, agent, owner (`editor`,
-  `headless`, or `unreachable` for one that doesn't answer, whose sessions
-  are those it holds the locks of, ADR 3.9), uptime and sessions.
+- `brnr process list` lists brnr's processes: pid, state (`starting`,
+  `running`, `stopping`, or `unreachable` for one that doesn't answer,
+  whose sessions are those it holds the locks of, ADR 3.9), owner
+  (`editor` or `headless`, unknown for one that doesn't answer), agent,
+  uptime and sessions (ADR 8.2).
 - `brnr process stop <pid>` stops a process and its agent: the agent's
   stdin is closed, then SIGTERM goes to its process group after 5 s, then
   SIGKILL after 5 s more. Ending one session is `brnr session close`

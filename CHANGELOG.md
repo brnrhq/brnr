@@ -45,6 +45,9 @@ brnr's own conventions:
   `records_skipped` note has `ts`, `host_id`, `pid` and, in a session's
   file, `session`, and `events_missed` has `pid`; `subscribe`'s answer has
   `pid` too (ADR 5.9, #314).
+- `elicitation show --json`, and the elicitations in the socket's `pending`
+  answer, have the process's `pid`, as `elicitation requests --json`'s rows
+  do (ADR 8.2, #150).
 - `--events` takes the notes' names, `records_skipped` and
   `events_missed`, which are shown whatever it chose: `event log
   --events records_skipped` lists only a transcript's gaps (ADR 5.9,
@@ -146,8 +149,7 @@ brnr's own conventions:
   (`session`, `cwd`, `events_log`, `acp_log`, `host_log`, `forked_from`);
   the bridge `status` reply's sessions have `session` and `events_log`
   where they had `session_id` and `log`; `event notify`'s
-  `BRNR_SESSION_ID` is `BRNR_SESSION`; `permission requests --json`'s
-  options have `option_id` where they had `option`; and in the host log
+  `BRNR_SESSION_ID` is `BRNR_SESSION`; and in the host log
   `bridge` is `peer`, `bridge_started`'s `pid` `bridge_pid`,
   `bridge_exited`'s `status` `exit_status` (`{code}`, `{signal}` or
   null), `capabilities_dropped`'s `dropped` `capabilities`, the editor
@@ -179,6 +181,47 @@ brnr's own conventions:
   is: `command = "brnr"` and `args = ["event", "notify", …]`, not
   `command = ["brnr", "event", "notify", …]`. A list `command` fails to
   load, as `brnr doctor` says (ADR 6.1, #311).
+- **Breaking:** a command that lists prints an object, not a bare array:
+  `process list --json` is `{processes}`, `session list --json`
+  `{sessions}`, `permission requests --json` and `elicitation requests
+  --json` `{requests}`, and `doctor --json` `{checks}`, as `doctor --report
+  --json` has it. `jq '.[]'` is `jq '.sessions[]'` (ADR 8.2, #150).
+- **Breaking:** `dropped` is the messages dropped, each `{message, text,
+  reason}` as its `message_dropped` event has it: `--wait --json`'s is a
+  list, empty or with the message whose drop ended the wait, where it was
+  the reason or null; `prompt cancel`'s and `queue`'s, and the socket's
+  `cancel` and `queue` replies, have each message's `reason` (ADR 8.2,
+  #150).
+- **Breaking:** `permission requests --json` has the agent's options whole,
+  `{optionId, name, kind}`, as `permission show` has them, not `{option,
+  kind}` (ADR 8.2, #150).
+- **Breaking:** `agent` is `{program, name, version}` in `process list`,
+  `session list` and `session status`: `.agent` in the lists is
+  `.agent.program`. `name` and `version` are what the agent says it is in
+  `initialize` (`agentInfo`), null where brnr doesn't know them; `session
+  status` left them out (ADR 8.2, #150, #335).
+- **Breaking:** `process list --json`'s `owner` is `editor` or `headless`,
+  null for a process that doesn't answer, which its new `state` says:
+  `starting`, `running`, `stopping` or `unreachable`. Its `sessions` are
+  `{session, state}`, as `session list` has them, not ids (ADR 8.2, #150).
+- **Breaking:** `session status --json` counts with `held_count`,
+  `context_count`, `pending_count` and `elicitation_count`, not `held`,
+  `context`, `pending` and `elicitations`, which are lists in `queue list`
+  and `pending`; so does the socket's `status` reply, for the process and
+  each session. `held_by` is `lock_pid`, `shared_by` `shared_pids`, and the
+  host log's `session_shared` has `lock_pid` (ADR 8.2, #150).
+- **Breaking:** `event wait --json` prints one shape for each `--for`,
+  however the wait ended: `idle` `{session, state, last_turn}` (`state`
+  `idle`, or `inactive` once closed), not `{"event": "idle"}` or the event
+  that ended the wait; `permission` and `elicitation` the request as
+  `permission show` and `elicitation show` print it, also when it came
+  while the command waited; `turn` the `turn_ended` event; `exit` the
+  `process_exited` event, which for a process killed has `ts`, `host_id`,
+  `pid`, and `exit_status` and `seq` null, and `error` (ADR 8.3, #150).
+  Text says `idle: <stop reason>` for a session idle already too.
+- **Breaking:** `session fork --json`'s `from` is `forked_from`, and
+  `session delete --json`'s `recorded` is `recorded_in`: `recorded` is
+  `history`'s boolean (ADR 8.2, #150).
 
 ### Fixed
 

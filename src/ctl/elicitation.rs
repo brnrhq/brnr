@@ -84,12 +84,12 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
     // requests` does.
     let mut rows = Vec::new();
     for host in chosen {
-        let pid = host.id().parse::<u64>().ok();
         let more = host.pending(|pending| {
+            // `elicitation show`'s object, with fewer fields (ADR 8.2).
             let row = |e: &Value| {
                 json!({
                     "session": e["session"],
-                    "pid": pid,
+                    "pid": e["pid"],
                     "request": e["request"],
                     "owner": e["owner"],
                     "mode": e["mode"],
@@ -113,7 +113,7 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
 /// The elicitations' `rows`, as a table or `--json`.
 fn list(rows: &Value, json_out: bool) -> Result<(), String> {
     if json_out {
-        return print_json(rows);
+        return print_json(&json!({ "requests": rows }));
     }
     let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {

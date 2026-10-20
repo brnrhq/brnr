@@ -125,7 +125,7 @@ pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
             "session": id,
             "deleted": answer.is_ok(),
             "error": answer.as_ref().err(),
-            "recorded": paths(&recorded),
+            "recorded_in": paths(&recorded),
             "purged": paths(&purged),
             "failed": failed,
         }))?;

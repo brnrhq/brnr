@@ -318,7 +318,7 @@ mod tests {
         assert!(h.sent().agent.is_empty(), "a prompt went while a steer was unanswered");
         let status = h.bridge(&serde_json::json!({ "cmd": "status" })).unwrap();
         assert_eq!(
-            (&status["sessions"][0]["state"], &status["sessions"][0]["held"]),
+            (&status["sessions"][0]["state"], &status["sessions"][0]["held_count"]),
             (&"idle".into(), &1.into())
         );
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-5","result":{"outcome":"injected"}}"#);

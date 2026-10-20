@@ -240,7 +240,9 @@ pub(super) fn fork(a: &Args) -> Result<ExitCode, String> {
     let response = host.call_agent(&json!({ "cmd": "fork", "session": from }))?;
     let session = text(&response["session"]);
     if json_out {
-        print_json(&json!({ "session": session, "from": from }))?;
+        // The session it came from, as `session status` and `session list`
+        // name it (ADR 8.2).
+        print_json(&json!({ "session": session, "forked_from": from }))?;
     } else {
         outln!("forked {from} into {session}");
     }

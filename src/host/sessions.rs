@@ -374,7 +374,7 @@ impl Host {
         match hold {
             Hold::Shared(pid) => {
                 let event =
-                    json!({ "event": "session_shared", "session": session, "held_by": pid });
+                    json!({ "event": "session_shared", "session": session, "lock_pid": pid });
                 self.sink.note(None, event);
             }
             Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),

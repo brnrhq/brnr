@@ -1889,7 +1889,9 @@ fn metadata_names_its_own_socket() {
     let mut meta = env.hosts()[0].clone();
     meta["id"] = "4242".into();
     fs::write(env.dir.join("run/4242.json"), meta.to_string()).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
 }
 
@@ -2010,9 +2012,15 @@ fn adr_0005_transcripts_are_two_files() {
     let host = fs::read_dir(env.dir.join("home/hosts")).unwrap().next().unwrap().unwrap().path();
     assert!(records(&host).iter().any(|r| r["msg"]["method"] == "initialize"));
     // One session, for session list and session resume.
-    let list: Value =
-        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
-            .unwrap();
+    let list = serde_json::from_str::<Value>(&env.ok(&[
+        "session",
+        "list",
+        "--include",
+        "inactive",
+        "--json",
+    ]))
+    .unwrap()["sessions"]
+        .clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!(list[0]["session"], "sess-1");
     let cwd = fs::canonicalize(&env.dir).unwrap();
@@ -2054,9 +2062,15 @@ fn adr_0009_distinct_ids_never_share_a_transcript() {
             records(&dir.join(name)).iter().map(|r| r["session"].clone()).collect();
         assert!(ids.iter().all(|id| *id == ids[0]), "{name}: {ids:?}");
     }
-    let list: Value =
-        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
-            .unwrap();
+    let list = serde_json::from_str::<Value>(&env.ok(&[
+        "session",
+        "list",
+        "--include",
+        "inactive",
+        "--json",
+    ]))
+    .unwrap()["sessions"]
+        .clone();
     let mut listed: Vec<&str> =
         list.as_array().unwrap().iter().map(|r| r["session"].as_str().unwrap()).collect();
     listed.sort();
@@ -2087,7 +2101,9 @@ fn adr_0009_distinct_ids_never_share_a_lock() {
     let mut want = COLLIDING.to_vec();
     want.sort();
     assert_eq!(locked.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), want);
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let rows = list.as_array().unwrap();
     assert_eq!(rows.len(), COLLIDING.len(), "{list}");
     for (id, pid) in &locked {
@@ -2139,8 +2155,8 @@ fn adr_0005_a_transcript_cut_short_is_still_its_sessions() {
     let (dir, _) = project(&env);
     let file = dir.join("sess-1.jsonl");
     let listed = || -> Value {
-        serde_json::from_str(&env.ok(&["session", "list", "--include", "inactive", "--json"]))
-            .unwrap()
+        let args = ["session", "list", "--include", "inactive", "--json"];
+        serde_json::from_str::<Value>(&env.ok(&args)).unwrap()["sessions"].clone()
     };
     // Ending in a newline, as written: the last record is `exited`.
     let whole = fs::read(&file).unwrap();
@@ -3323,7 +3339,9 @@ fn adr_0003_an_editors_fork_keeps_its_source() {
     writeln!(to_agent, "{fork}").unwrap();
     assert_eq!(response(&mut from_agent, 3)["result"]["sessionId"], "sess-2");
 
-    let rows: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let rows =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let row = |id: &str| {
         let found = rows.as_array().unwrap().iter().find(|r| r["session"] == id).cloned();
         found.unwrap_or_else(|| panic!("no {id}: {rows}"))
@@ -3360,6 +3378,40 @@ fn editor_delete(id: u64, session: &str) -> String {
 /// editor: in the transcript of one no process has open, which stays, and
 /// in that of one open there, which then closes (ADR 8.1). One the agent
 /// didn't delete records nothing.
+/// The agent is one object wherever it is printed, `{program, name,
+/// version}`: `program` the command brnr ran, `name` and `version` the
+/// `agentInfo` it gave in `initialize`, in `session status`, `process list`
+/// and `session list` alike; null where it gave none (ADR 8.2, ADR 11.3).
+#[test]
+fn adr_0008_the_agent_is_what_it_says_it_is() {
+    for (said, name, version) in
+        [(true, json!("fake-agent"), json!("1.2.3")), (false, json!(null), json!(null))]
+    {
+        let env = Env::new(&format!("agent-info-{said}"));
+        let env = if said { env } else { env.agent("NO_AGENT_INFO", "1") };
+        env.start(&[]);
+        let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+        let agent = json!({ "program": "fake_agent.py", "name": name, "version": version });
+        let status = json(&["session", "status", "sess-1", "--json"]);
+        assert_eq!(status["agent"], agent, "{said}");
+        let process = json(&["process", "list", "--json"])["processes"][0].clone();
+        assert_eq!(process["agent"], agent, "{said}");
+        let row = json(&["session", "list", "--json"])["sessions"][0].clone();
+        assert_eq!(row["agent"], agent, "{said}");
+        let text = env.ok(&["session", "status", "sess-1"]);
+        let line = format!(
+            "process {}: fake_agent.py{}, headless",
+            env.pid(),
+            match said {
+                true => " (fake-agent 1.2.3)",
+                false => "",
+            }
+        );
+        assert!(text.contains(&line), "{said}: {text}");
+        env.stop();
+    }
+}
+
 #[test]
 fn adr_0008_an_editors_delete_is_recorded() {
     let env = Env::new("ed-delete");
@@ -3743,7 +3795,7 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     assert!(response(&mut from_agent, 3)["result"].is_object());
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
-    assert_eq!(status["held_by"], editor_process(&env)["host_pid"]);
+    assert_eq!(status["lock_pid"], editor_process(&env)["host_pid"]);
     let _ = editor.kill();
 }
 
@@ -3848,7 +3900,7 @@ fn adr_0003_an_editors_session_that_cant_be_locked_is_passed_through() {
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     let why = status["lock_error"].as_str().unwrap_or_default().to_owned();
     assert!(why.starts_with(&format!("{}: ", lock.display())), "{status}");
-    assert_eq!(status["held_by"], Value::Null);
+    assert_eq!(status["lock_pid"], Value::Null);
     let text = env.ok(&["session", "status", "sess-1"]);
     assert!(text.contains(&format!("not locked: {why}; nothing stops")), "{text}");
     assert!(env.ok(&["event", "log", "sess-1"]).contains("from the editor"));
@@ -3882,10 +3934,10 @@ fn adr_0003_shared_sessions_let_an_editor_load_a_held_session() {
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
     assert_eq!(
-        (status["pid"].to_string(), status["held_by"].to_string()),
+        (status["pid"].to_string(), status["lock_pid"].to_string()),
         (headless.clone(), headless)
     );
-    assert_eq!(status["shared_by"], serde_json::json!([shared["host_pid"]]));
+    assert_eq!(status["shared_pids"], serde_json::json!([shared["host_pid"]]));
     let text = env.ok(&["session", "status", "sess-1"]);
     assert!(text.contains(&format!("shared by process {}", shared["host_pid"])), "{text}");
     // Its turn isn't in the session's transcript, but in its host log.
@@ -4162,7 +4214,7 @@ fn adr_0005_a_failed_load_leaves_a_resumed_session_open() {
     fs::write(&later, "").unwrap();
     assert!(response(&mut from_agent, 2)["error"].is_object());
     let status = status_of(&env, "old-1");
-    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    assert_eq!(status["lock_pid"], editor_process(&env)["host_pid"], "{status}");
     let prompt = json!([{ "type": "text", "text": "reply still here" }]);
     let params = json!({ "sessionId": "old-1", "prompt": prompt });
     writeln!(to_agent, "{}", request_with_id("4", "session/prompt", params)).unwrap();
@@ -4210,7 +4262,7 @@ fn adr_0005_a_load_answered_after_its_close_reopens_the_session() {
     fs::write(&later, "").unwrap();
     assert!(response(&mut from_agent, 2)["result"].is_object());
     let status = status_of(&env, "old-1");
-    assert_eq!(status["held_by"], editor_process(&env)["host_pid"], "{status}");
+    assert_eq!(status["lock_pid"], editor_process(&env)["host_pid"], "{status}");
     let ends = logged(&env, "old-1", "session_closed,session_reopened");
     let ends: Vec<(&Value, &Value)> = ends.iter().map(|e| (&e["event"], &e["by"])).collect();
     let said = [
@@ -4394,8 +4446,10 @@ fn adr_0002_a_lone_surrogate_is_read() {
     writeln!(to_agent, "{}", editor_prompt(3, "odd surrogate")).unwrap();
     let request = line_with(&mut from_agent, "session/request_permission");
     assert!(request.contains(r#""title": "Edit \ud83d""#), "{request}");
-    let pending: Value =
-        serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
+    let pending =
+        serde_json::from_str::<Value>(&env.ok(&["permission", "requests", "sess-1", "--json"]))
+            .unwrap()["requests"]
+            .clone();
     assert_eq!(pending[0]["title"], "Edit \u{fffd}", "{pending}");
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
@@ -4471,8 +4525,10 @@ fn adr_0002_a_deep_request_is_listed() {
         let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
         writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {depth}"))).unwrap();
         line_with(&mut from_agent, "session/request_permission");
-        let pending: Value =
-            serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
+        let pending =
+            serde_json::from_str::<Value>(&env.ok(&["permission", "requests", "sess-1", "--json"]))
+                .unwrap()["requests"]
+                .clone();
         assert_eq!(pending[0]["request"], "p1", "{depth}: {pending}");
         assert_eq!(pending[0]["title"], "Edit src/lib.rs", "{depth}: {pending}");
         let text = env.ok(&["permission", "requests", "sess-1"]);
@@ -4801,7 +4857,8 @@ fn adr_0002_an_answer_the_host_cant_place_reaches_the_agent() {
     writeln!(to_agent, "{}", editor_prompt(3, "odd garbled")).unwrap();
     let request = line_with(&mut from_agent, "session/request_permission");
     assert!(serde_json::from_str::<Value>(&request).is_err(), "{request}");
-    assert_eq!(env.ok(&["permission", "requests", "sess-1", "--json"]).trim(), "[]");
+    let pending = env.ok(&["permission", "requests", "sess-1", "--json"]);
+    assert_eq!(serde_json::from_str::<Value>(&pending).unwrap(), json!({ "requests": [] }));
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
 }
@@ -5226,8 +5283,10 @@ fn adr_0004_an_editors_elicitation_is_seen_and_reaches_the_editor() {
         (&"form".into(), &"About you".into()),
         "{asked}"
     );
-    let pending: Value =
-        serde_json::from_str(&env.ok(&["elicitation", "requests", "sess-1", "--json"])).unwrap();
+    let pending =
+        serde_json::from_str::<Value>(&env.ok(&["elicitation", "requests", "sess-1", "--json"]))
+            .unwrap()["requests"]
+            .clone();
     assert_eq!((&pending[0]["request"], &pending[0]["owner"]), (&"e1".into(), &"editor".into()));
     let err = env.fails(&["elicitation", "decline", "sess-1", "e1"]);
     let says = "`elicitation` on an editor's session is experimental; enable it with \

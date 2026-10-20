@@ -269,7 +269,12 @@ Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `event log`, `event watch`
 and `session new --foreground`. `session close --json` is `{session}`, and
 `process stop --json` `{pid, status}`; `event notify`, whose output is its
-command's, has none.
+command's, has none. One thing has one name and one shape in all of them
+([ADR 8.2](docs/adr/0008-the-command-line-and-compatibility.md#82-same-data-in-text-and-json)):
+a list is an object (`{"sessions": [...]}`, `{"processes": [...]}`,
+`{"requests": [...]}`, `{"checks": [...]}`), its rows the detail's objects
+with fewer fields; `dropped` is always the messages dropped; `agent` is
+always `{program, name, version}`; a count is `<what>_count`.
 
 ### Waiting, for scripts
 
@@ -293,7 +298,11 @@ its last turn ended. While `prompt send --wait` and `session new --wait`
 wait, approvals and elicitations are announced on stderr; `session new --wait`
 says `started …` there too, so stdout is the reply and nothing else. With `--json`, the turn is one object at its end:
 `session`, `message`, `reply`, `stop_reason`, `error`, `tokens`, `dropped`
-(and `pid`, for `session new` and `resume`).
+(and `pid`, for `session new` and `resume`). `event wait --json` prints one
+shape for each `--for`, whether the wait ended at once or later: for `idle`
+`{session, state, last_turn}`, for `turn` the `turn_ended` event, for
+`permission` and `elicitation` the request as `permission show` and
+`elicitation show` print it, for `exit` the `process_exited` event.
 
 ### Approvals
 
@@ -402,7 +411,7 @@ brnr session delete $s --purge     # and brnr's transcript of it goes too
 brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here
-brnr process list                  # brnr's processes: pid, owner, agent, sessions
+brnr process list                  # brnr's processes: pid, state, owner, agent, sessions
 brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5 s apart
 ```
 
@@ -411,7 +420,7 @@ A process holds a lock for each session it serves
 write one transcript contend for one lock however each found its runtime
 directory), so which process has a session is known without asking it. A
 process that doesn't answer (within 5 seconds) still has its sessions:
-`session list` and `process list` show them `unreachable`, commands on them
+`session list` and `process list` show them `unreachable` (`state`), commands on them
 say the process isn't answering, and `session resume` refuses them, naming
 the process, as it does any session that is running. A process started with
 another runtime directory (`BRNR_DIR`; a cron job without `XDG_RUNTIME_DIR`,
@@ -981,7 +990,7 @@ warning. So is its list of the files an older brnr wrote, transcripts and
 host logs, which this one doesn't read (ADR 5.9). `--fix` makes the runtime directory and transcripts private (only
 what you own, never through a symlink) and removes what processes that are
 gone left behind; it leaves logs alone. It exits non-zero if a check fails;
-`--json` prints the checks, each a `level`, `check` and `message`.
+`--json` prints `{checks}`, each a `level`, `check` and `message`.
 
 `--report` prints, instead of the checks, what a bug report needs, as
 Markdown to paste into an issue: brnr's version, the OS, the adapters, the

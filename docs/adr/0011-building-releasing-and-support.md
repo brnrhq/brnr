@@ -103,7 +103,9 @@ running binary's own directory is in the Cellar, away from the adapters.
 - The adapters say what they were built from (`--version`, compiled in),
   and `brnr doctor` shows it. For npm-installed adapters doctor shows the
   version from the `package.json` their bin link leads to. `brnr session
-  status` shows what the agent says it is in `initialize` (`agentInfo`).
+  status` shows what the agent says it is in `initialize`: ACP's
+  `agentInfo`, as its `agent`'s `name` and `version`, beside `program`
+  (ADR 8.2).
 - Dependabot opens a pull request for new releases of the two packages,
   weekly; the next brnr release ships them. A nightly workflow
   (`canary.yml`) builds the newest releases first, without moving the pins,

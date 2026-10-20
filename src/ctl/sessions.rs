@@ -21,7 +21,7 @@ use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::args::{self, Error::Invalid};
 use super::client::{Host, discover};
-use super::{Args, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
+use super::{Args, agent, agent_of, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -83,7 +83,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
     // Joined on the id, exactly: never on which recorded agent the command
     // line might be (P4). The agent's title and time, where it gives them.
     let ours = rows.len();
-    let program = asked.as_ref().map(|a| agent_name(&json!(a)));
+    let program = agent_of(&json!(asked), &Value::Null);
     for x in listed {
         let id = x.session_id.to_string();
         let mut known = false;
@@ -140,7 +140,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
         }
     }
     if json_out {
-        print_json(&json!(rows))?;
+        print_json(&json!({ "sessions": rows }))?;
         return Ok(ExitCode::SUCCESS);
     }
     if rows.is_empty() {
@@ -168,7 +168,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
             cell(&r["title"]),
             cell(&r["state"]),
             r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
-            cell(&r["agent"]),
+            cell(&r["agent"]["program"]),
             cell(&r["source"]),
             r["last_active"].as_str().map_or("-".to_owned(), when),
             cell(&r["forked_from"]),
@@ -220,7 +220,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
     let mut rows = Vec::new();
     for host in hosts {
         let pid = host.id().parse::<u64>().ok();
-        let agent = agent_name(&host.info()["agent"]);
+        let agent = agent(host);
         for s in host.sessions() {
             rows.push(json!({
                 "session": s["session"],
@@ -257,7 +257,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "unreachable",
             "pid": held.pid,
-            "agent": null,
+            "agent": agent_of(&Value::Null, &Value::Null),
             "source": "brnr",
             "last_active": null,
             "forked_from": null,
@@ -270,7 +270,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "inactive",
             "pid": null,
-            "agent": agent_name(&p["agent"]),
+            "agent": agent_of(&p["agent"], &Value::Null),
             "source": "brnr",
             "last_active": p["last_active"],
             "forked_from": p["forked_from"],

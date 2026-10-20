@@ -28,8 +28,8 @@
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata, sockets and locks. It never touches anything it
 //! would refuse to use, nor any log, nor the config file (P4). The exit status is non-zero if a check
-//! failed. `--json` prints the checks as a list of `{level, check,
-//! message}`.
+//! failed. `--json` prints the checks as `{checks}`, a list of `{level,
+//! check, message}`.
 //!
 //! `--report` prints, instead of the checks, a bug report to read and then
 //! paste into an issue (ADR 11.5): brnr's version, the OS, the adapters, the
@@ -127,7 +127,9 @@ pub(crate) fn main(a: &Args) -> Result<(), Error> {
         };
     }
     if r.json {
-        outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
+        // An object, as `--report --json` is, with room to grow (ADR 8.2).
+        let checks = json!({ "checks": r.checks });
+        outln!("{}", serde_json::to_string_pretty(&checks).unwrap());
         return match r.failed {
             0 => Ok(()),
             n => Err(format!("{n} check{} failed", plural(n)).into()),

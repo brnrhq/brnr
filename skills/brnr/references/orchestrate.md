@@ -49,12 +49,14 @@ brnr event wait $s --for turn --timeout 900 --json
 brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?"
 ```
 
-`event wait` prints what ended it (`{"event": "idle", "session": …}`, or
-the `turn_ended` event). `prompt send --wait` prints the turn as one object
+`event wait` prints one shape for each `--for`, however the wait ended: for
+`idle` the session's state (`{"session": …, "state": "idle", "last_turn":
+{"stop_reason": "end_turn", …}}`, `state` `inactive` if it closed), for
+`turn` the `turn_ended` event. `prompt send --wait` prints the turn as one object
 at its end:
 
 ```json
-{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}, "dropped": null}
+{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}, "dropped": []}
 ```
 
 **Read.** The reply is in `prompt send --wait`'s `reply`. For what the worker did
@@ -157,7 +159,7 @@ brnr prompt cancel $s --json
   message in full; `brnr queue drop $s <message>` drops one, and
   `brnr queue clear $s` all of it (`--messages` or `--context`: only those).
 - `prompt cancel` stops the running turn and drops what is held (`dropped` lists
-  them; `--keep-held` keeps them). Each dropped message is one you sent and
+  them, each `{message, text, reason}`; `--keep-held` keeps them). Each dropped message is one you sent and
   the worker never got: say so if it mattered.
 
 ## Processes

@@ -194,7 +194,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Idle,
         Says(r#""status": "delivered""#),
     ),
-    ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""state": "idle""#)),
     (
         r#"brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?""#,
         Idle,
@@ -218,12 +218,12 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Turn,
         Says(r#""status": "held""#),
     ),
-    ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""state": "idle""#)),
     ("brnr event wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
     (
         r#"brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?""#,
         Idle,
-        Says(r#""dropped": null"#),
+        Says(r#""dropped": []"#),
     ),
     (
         "brnr session new --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md",
@@ -415,7 +415,8 @@ fn adr_0008_every_toml_block_loads() {
         env.write_config(&text);
         let out = env.run(&["doctor", "--json"]);
         let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let config = checks.as_array().unwrap().iter().find(|c| c["check"] == "config").unwrap();
+        let config =
+            checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "config").unwrap();
         if config["level"] != "ok" {
             problems.push(format!("{at}: {}", config["message"]));
         }

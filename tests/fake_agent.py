@@ -26,6 +26,7 @@ with environment variables:
   NO_RESUME=1       offer session/load but not session/resume
   RESUME_FAIL=1     session/resume answers with an error
   NO_LOAD=1         don't offer session/load
+  NO_AGENT_INFO=1   initialize says no agentInfo
   NO_HISTORY=1      session/load replays nothing
   FULL_HISTORY=1    session/load also replays a tool call it never finished,
                     and the session's commands
@@ -817,6 +818,8 @@ for line in sys.stdin.buffer:
             "authMethods": methods,
             "agentInfo": info,
         }
+        if env("NO_AGENT_INFO"):
+            del answer["agentInfo"]
         if env("PROTOCOL_VERSION") == "missing":
             del answer["protocolVersion"]
         elif env("PROTOCOL_VERSION"):

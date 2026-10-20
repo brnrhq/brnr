@@ -182,7 +182,7 @@ if with_brnr:
         )
 
     doctor = run_brnr("doctor", "--json")
-    checks = {c["check"]: c for c in json.loads(doctor.stdout or "[]")}
+    checks = {c["check"]: c for c in json.loads(doctor.stdout or "{}").get("checks", [])}
     for name, (package, _) in adapters.items():
         # After its path, which may be out's through a symlink.
         want = f"/{name} ({package} {pins[package]})"
@@ -197,6 +197,7 @@ if with_brnr:
         listed = json.loads(sessions.stdout) if sessions.returncode == 0 else None
     except json.JSONDecodeError:
         listed = None
+    listed = listed.get("sessions") if isinstance(listed, dict) else None
     if not isinstance(listed, list):
         print(
             f"FAIL brnr session list -- brnr-claude-adapter: {sessions.stdout + sessions.stderr!r}"
@@ -243,24 +244,24 @@ if with_brnr:
     )
     parent = parent and parent["session"]
     fork = parent and step(
-        "brnr session fork", ("session", "fork", parent, "--json"), {"from": parent}
+        "brnr session fork", ("session", "fork", parent, "--json"), {"forked_from": parent}
     )
     if fork:
         fork = fork["session"]
         step(
             "brnr prompt send to the fork, in the process that forked it",
-            ("prompt", "send", fork, *wait, "Reply ok."),
+            ("prompt", "send", fork, *wait, "--prompt", "Reply ok."),
             *replied,
         )
         step("brnr session close the fork", ("session", "close", fork, "--json"), {"session": fork})
         step(
             "brnr prompt send to its parent, after",
-            ("prompt", "send", parent, *wait, "Reply ok."),
+            ("prompt", "send", parent, *wait, "--prompt", "Reply ok."),
             *replied,
         )
     # Only this scratch BRNR_DIR's processes: the one session new started.
     processes = run_brnr("process", "list", "--json")
-    for process in json.loads(processes.stdout or "[]"):
+    for process in json.loads(processes.stdout or "{}").get("processes", []):
         run_brnr("process", "stop", str(process["pid"]))
     shutil.rmtree(scratch, ignore_errors=True)
 sys.exit(1 if failed else 0)
