@@ -89,6 +89,15 @@ brnr's own conventions:
   `status` lists it as closing meanwhile. Its lock went at once, and a
   resume in another process could write before those records (ADR 5.5,
   #291).
+- The editor's `session/resume` that the agent fails, of a session the
+  editor closed moments before, holds the session's lock until the
+  process has written the close's records, 2 s at most, as a failed load
+  does. Its lock went at once, and a resume in another process could write
+  before the `session_closed` (ADR 5.5, #304).
+- Messages and context held in a session whose load the agent fails, or in
+  one the agent opened that isn't the process's to serve, are dropped with
+  their `message_dropped` and `context_dropped` events, `by` `close`, with
+  no `session_closed` after; they went without a word (P3, ADR 5.2, #304).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork

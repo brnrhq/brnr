@@ -2728,6 +2728,54 @@ fn adr_0005_an_editors_failed_load_holds_its_lock_until_written() {
     let _ = editor.kill();
 }
 
+/// The editor closing its session while the logger is behind, then resuming
+/// it within the 2 s its close holds the lock, a resume the agent fails: the
+/// resume took that lock back, and its process holds it still until the
+/// close's records are written, as a failed load does (ADR 5.5, #304).
+#[test]
+fn adr_0005_an_editors_failed_resume_holds_its_lock_until_written() {
+    let env = Env::new("ed-resumeheld");
+    let stall = env.dir.join("stall");
+    let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy()).agent("RESUME_FAIL", "1");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    fs::write(&stall, "").unwrap();
+    let close = request_with_id("3", "session/close", json!({ "sessionId": "sess-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 3)["result"].is_object());
+    let resume = editor_load(&env, 4, "sess-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    assert!(response(&mut from_agent, 4)["error"].is_object());
+    let lock = env.dir.join("home/sessions/sess-1.lock");
+    let held = fs::read_to_string(&lock).unwrap_or_default();
+    let held: Value = serde_json::from_str(&held).unwrap_or_default();
+    assert_eq!(held["pid"], env.host_pid(), "let go of before its close was written");
+    fs::remove_file(&stall).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || !lock.exists()), "not let go of");
+    let _ = editor.kill();
+}
+
+/// Context held for a session whose load the agent fails is dropped with
+/// its `context_dropped`, `by` `close`, as at any end of the session here,
+/// though no `session_closed` follows: the session never opened (P3,
+/// ADR 5.2, ADR 5.6, #304).
+#[test]
+fn adr_0005_a_failed_load_drops_its_held_context() {
+    let env = Env::new("ed-loadctx");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap()).agent("LOAD_FAIL", "1");
+    env.write_config("[profiles.default.editor]\nexperimental = [\"context\"]\n");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    update(&mut from_agent, "session_info_update");
+    env.ok(&["prompt", "send", "old-1", "--context", "held context"]);
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["error"].is_object());
+    let ends = logged(&env, "old-1", "context_dropped,session_closed");
+    let ends: Vec<_> = ends.iter().map(|e| (&e["event"], &e["text"], &e["by"])).collect();
+    assert_eq!(ends, [(&"context_dropped".into(), &"held context".into(), &"close".into())]);
+    let _ = editor.kill();
+}
+
 /// A session served and closed while the disk is too slow for its records,
 /// all of them skipped, its close's too: its events file holds only its
 /// opening, which isn't a transcript of it, and its process doesn't count

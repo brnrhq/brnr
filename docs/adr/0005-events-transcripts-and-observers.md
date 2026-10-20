@@ -184,8 +184,11 @@ there (#61).
 - `session_closed {session, by}`, `by` one of `close` (`session close`,
   `session resume --take-over`), `idle` (`stop_when_idle`, ADR 3.8) and
   `editor` (the editor's own `session/close`). Messages and context still
-  held in the session are dropped first. A process exiting is `exited`,
-  which is in every session's file already, and isn't also
+  held in the session are dropped first. A session whose load the agent
+  failed (ADR 5.6), or one the agent opened that isn't the process's to
+  serve (ADR 3.9), drops what it holds the same way, `by` `close`, with
+  no `session_closed` after: it never opened here. A process exiting is
+  `exited`, which is in every session's file already, and isn't also
   `session_closed`.
 - `prompt send --wait` and `session new --wait` whose message is dropped
   exit 1, saying `m3 was dropped (cancel)` on stderr and
@@ -657,7 +660,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_sessions_files_are_read_merged_as_they_grow`.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
-  `adr_0005_editor_close_is_an_event`;
+  `adr_0005_editor_close_is_an_event`,
+  `adr_0005_a_failed_load_drops_its_held_context`;
   [tests/cli.rs](../../tests/cli.rs):
   `adr_0005_send_wait_on_a_dropped_message`,
   `adr_0005_queue_lists_and_drops`,
@@ -688,7 +692,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_close_resumed_in_its_process_is_answered_once_written`,
   `adr_0005_a_closing_session_is_read_once_written_and_said_to_be_closing`,
   `adr_0005_a_failed_load_is_written_before_the_session_is_resumed`,
-  `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`;
+  `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`,
+  `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`;
   [tests/cli.rs](../../tests/cli.rs):
   `adr_0005_log_shows_what_the_process_has_recorded`.
 - 5.6: [tests/cli.rs](../../tests/cli.rs):

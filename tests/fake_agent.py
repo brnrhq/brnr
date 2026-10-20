@@ -24,6 +24,7 @@ with environment variables:
   PERMISSION=1      ask permission (kind edit) before answering a prompt
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
+  RESUME_FAIL=1     session/resume answers with an error
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   FULL_HISTORY=1    session/load also replays a tool call it never finished,
@@ -892,7 +893,9 @@ for line in sys.stdin.buffer:
             method == "session/load" and env("LOAD_GATE") and not os.path.exists(env("LOAD_GATE"))
         ):
             time.sleep(0.01)
-        if method == "session/resume":
+        if method == "session/resume" and env("RESUME_FAIL"):
+            error(mid, -32603, "Can't resume the session")
+        elif method == "session/resume":
             result(mid, settings({}))
         elif env("LOAD_LATER"):
             later = (env("LOAD_LATER"), mid, sid)
