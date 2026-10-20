@@ -343,7 +343,7 @@ mod tests {
     /// the same place: running (most commands), resume without and with
     /// `--take-over`, with `--pid` of another process, delete, event log.
     #[test]
-    fn each_place_is_refused_in_the_same_words() {
+    fn adr_0003_each_place_is_refused_in_the_same_words() {
         let elsewhere = PathBuf::from("/run/other");
         let other = host(9, serving(&[], &[]));
         let cases = [
@@ -453,7 +453,7 @@ mod tests {
     /// session that has ended is looked for only when nothing holds or
     /// serves it (it reads every transcript).
     #[test]
-    fn the_lock_decides_and_closing_comes_before_opening() {
+    fn adr_0003_the_lock_decides_and_closing_comes_before_opening() {
         let hosts = [host(7, serving(&[], &["s"])), host(8, serving(&[open("s")], &[]))];
         let (s, looked) = find(&hosts, Some((7, None)), ended());
         assert!(matches!(s.place, Place::Closing(h) if h.id() == "7") && !looked);
@@ -472,7 +472,7 @@ mod tests {
     /// refused, `--take-over` or not, whatever state it is in there; closing
     /// there, it is closing.
     #[test]
-    fn a_resume_into_its_own_process_is_refused() {
+    fn adr_0003_a_resume_into_its_own_process_is_refused() {
         for status in [serving(&[open("s")], &[]), serving(&[], &[]), None] {
             let hosts = [host(7, status)];
             for take_over in [false, true] {
@@ -496,7 +496,7 @@ mod tests {
 
     /// A process that keeps no transcript (`log = false`) has none to read.
     #[test]
-    fn a_session_without_a_transcript_has_none_to_read() {
+    fn adr_0005_a_session_without_a_transcript_has_none_to_read() {
         let hosts = [host(7, serving(&[json!({ "session_id": "s", "log": null })], &[]))];
         let (s, _) = find(&hosts, Some((7, None)), None);
         assert_eq!(

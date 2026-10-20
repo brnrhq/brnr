@@ -12,7 +12,8 @@
 //!   with no newline;
 //! - `B`: the rest is a bridge's request, a JSON object: `send`, `cancel`,
 //!   `queue` and `status` are taken (see `Harness::bridge`);
-//! - `T`: time passes (permission requests and idle sessions time out);
+//! - `T`: time passes (permission requests, idle sessions and a start
+//!   that hasn't committed time out);
 //! - `Z`: the editor closes its stdin, and sends nothing more.
 //!
 //! A headless host has no editor: `E`, `e` and `Z` do nothing there.

@@ -79,11 +79,12 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
         }
     };
     // Read, listed and let go of on a stack that takes what the agent sent
-    // (ADR 2.5), as `permission requests` does.
+    // (ADR 2.5), also when a process asked after it fails, as `permission
+    // requests` does.
     let mut rows = Vec::new();
     for host in chosen {
         let pid = host.id().parse::<u64>().ok();
-        rows.extend(host.pending(|pending| {
+        let more = host.pending(|pending| {
             let row = |e: &Value| {
                 json!({
                     "session": e["session"],
@@ -96,7 +97,14 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
                 })
             };
             pending.elicitations(only.as_deref()).map(row).collect::<Vec<_>>()
-        })?);
+        });
+        match more {
+            Ok(more) => rows.extend(more),
+            Err(e) => {
+                json::free(Value::Array(rows));
+                return Err(e);
+            }
+        }
     }
     json::holding(Value::Array(rows), |rows| list(&rows, json_out))?
 }

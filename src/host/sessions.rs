@@ -186,10 +186,10 @@ impl Sessions {
         self.claimed.insert(session.to_owned(), hold);
     }
 
-    /// The agent didn't open `session`, claimed: its lock goes at once, as
-    /// nothing was recorded under it.
-    pub(super) fn unclaim(&mut self, session: &str) {
-        self.claimed.remove(session);
+    /// `session`, claimed, isn't to be opened: how it was held, for its
+    /// lock to go (see [`Host::claim_failed`]).
+    pub(super) fn unclaim(&mut self, session: &str) -> Option<Hold> {
+        self.claimed.remove(session)
     }
 
     /// A start that fails: nobody is to know of a session it was opening,
@@ -419,15 +419,24 @@ impl Host {
 
     /// The agent failed to open `session`, a load or a resume of it: one
     /// open for a load closes (`Ending::LoadFailed`), and one only claimed
-    /// is let go of, the peer in `answer` answered with its reply once what
-    /// was recorded of it is written (ADR 5.5). Whether this process held
-    /// it at all.
+    /// is let go of (see [`Self::claim_failed`]), the peer in `answer`
+    /// answered with its reply once what was recorded of it is written
+    /// (ADR 5.5). Whether this process held it at all.
     pub(super) fn open_failed(&mut self, session: &str, answer: Option<(u64, Value)>) -> bool {
         if let Some(i) = self.find(session) {
             self.close_session(i, Ending::LoadFailed, answer);
             return true;
         }
-        let Some(hold) = self.sessions.claimed.remove(session) else { return false };
+        self.claim_failed(session, answer)
+    }
+
+    /// The agent failed to open `session`, claimed and not open: it is let
+    /// go of, and the peer in `answer` answered with its reply, once what was
+    /// recorded of it is written. A lock the claim took back from a close
+    /// here goes after that close's records (ADR 5.5). Whether it was
+    /// claimed.
+    pub(super) fn claim_failed(&mut self, session: &str, answer: Option<(u64, Value)>) -> bool {
+        let Some(hold) = self.sessions.unclaim(session) else { return false };
         let answers =
             answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
         self.sessions.let_go(session.to_owned(), hold, answers.into_iter().collect(), &self.sink);
@@ -483,7 +492,9 @@ mod tests {
         table.claim("s1", Hold::Owner(None));
         table.claim("s2", Hold::Shared(7));
         assert!(table.knows("s1") && table.knows("s2"));
-        table.unclaim("s1");
+        // How it was held, for its lock to go; once.
+        assert!(matches!(table.unclaim("s1"), Some(Hold::Owner(None))));
+        assert!(table.unclaim("s1").is_none());
         assert!(!table.knows("s1"));
         table.unclaim_all();
         assert!(!table.knows("s2"));

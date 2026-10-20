@@ -61,7 +61,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::fs::{DirBuilder, File, OpenOptions, Permissions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
@@ -75,7 +75,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::{paths, sys, transcript};
+use crate::{json, paths, sys, transcript};
 
 /// What may be queued for the logger before records are skipped.
 const LOG_BYTES: usize = 64 << 20;
@@ -564,7 +564,7 @@ impl Writer {
         if self.sessions.contains_key(&session) {
             return;
         }
-        let path = paths::session_log(cwd, &session);
+        let path = session_log(cwd, &session);
         let now = SystemTime::now();
         let events = match self.open_file(now, &path) {
             Ok(out) => out,
@@ -849,10 +849,11 @@ pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
 
 /// A record of a host log or transcript with what [`redacted`] and
 /// `Request::recorded` redact redacted (ADR 9.1 in docs/adr), as brnr
-/// records it now: for one an older brnr wrote, shown again.
+/// records it now: for one an older brnr wrote, shown again. Run it on a
+/// stack that takes `record`.
 pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
-        && let Ok(msg) = serde_json::from_slice(&bytes)
+        && let Some(msg) = json::parse(&bytes)
     {
         record["msg"] = msg;
     }
@@ -973,6 +974,29 @@ fn at(path: &Path, err: io::Error) -> io::Error {
         Some(libc::ENXIO) => refused(path, "is not a regular file"),
         _ => io::Error::new(err.kind(), format!("{}: {err}", path.display())),
     }
+}
+
+/// `session`'s events file in `cwd` (ADR 9.2): `paths::session_log`, unless
+/// that doesn't exist and its file under the folder name of before ADR 9.2's
+/// hash (`paths::claude_project_key`) does, and began in `cwd`, as its first
+/// record says: a session of then, opened again, goes on in its own
+/// transcript instead of starting another. Read as transcripts are (ADR
+/// 9.3): not through a symlink, nor in a symlinked folder, and only a
+/// regular file. The one rule kept for files of the earlier layout.
+pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
+    let path = paths::session_log(cwd, session);
+    if fs::symlink_metadata(&path).is_ok() {
+        return path;
+    }
+    let old = paths::claude_session_log(cwd, session);
+    // Not looked in through a symlinked folder, as transcripts aren't.
+    let folder = old.parent().and_then(|f| fs::symlink_metadata(f).ok());
+    let first = folder.is_some_and(|m| m.is_dir()).then(|| transcript::first(&old)).flatten();
+    let began = first.as_ref().and_then(|r| r["event"]["cwd"].as_str());
+    // The cwd as a string, as the logger records it.
+    let one = |cwd: &str| paths::without_trailing_slash(Path::new(cwd)).to_owned();
+    let here = began.is_some_and(|b| one(b) == one(&cwd.to_string_lossy()));
+    if here { old } else { path }
 }
 
 /// Records `event` in each of `session`'s events files

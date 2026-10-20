@@ -386,7 +386,55 @@ fn adr_0009_a_symlinked_transcript_is_never_read() {
     }
 }
 
-// ---- the agent's text (P8) ---------------------------------------------
+/// Nor through a symlinked `hosts` or `projects` in the state directory
+/// (ADR 9.3): `session list` doesn't read a host log there, `doctor` neither
+/// reads, shows nor makes private one there, and a session whose folder is
+/// there isn't listed or logged.
+#[test]
+fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
+    let env = Env::new("s-readlinkdir");
+    served_once(&env);
+    let (home, outside) = (env.dir.join("home"), env.dir.join("outside"));
+    fs::create_dir(&outside).unwrap();
+    let link = |sub: &str| {
+        fs::rename(home.join(sub), outside.join(sub)).unwrap();
+        symlink(outside.join(sub), home.join(sub)).unwrap();
+    };
+    let list = || -> Vec<Value> {
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"]))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let shown = list();
+    assert!(shown.len() == 1 && shown[0]["agent"] == "fake_agent.py", "{shown:?}");
+
+    link("hosts");
+    // A process that died without recording it, its log readable by others.
+    let dead = outside.join("hosts/dead.jsonl");
+    fs::write(&dead, "{\"ts\":\"t\",\"host_id\":\"dead\",\"event\":{\"event\":\"started\"}}\n")
+        .unwrap();
+    chmod(&dead, 0o644);
+    let shown = list();
+    // The agent is named in the host log only.
+    assert!(shown.len() == 1 && shown[0]["agent"] == "?", "its host log was read: {shown:?}");
+    let checks: Value = serde_json::from_slice(&env.run(&["doctor", "--json"]).stdout).unwrap();
+    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    assert_eq!(check["message"], "no process died without recording it (0 logs)", "{check}");
+    let report = env.run(&["doctor", "--report", "--json"]);
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["host_logs"], json!([]), "{report}");
+    env.run(&["doctor", "--fix"]);
+    assert_eq!(mode(&dead), 0o644, "made private through the link");
+
+    link("projects");
+    assert_eq!(list(), Vec::<Value>::new());
+    let err = env.fails(&["event", "log", "old-1"]);
+    assert!(err.contains("no session old-1 "), "{err}");
+}
+
+// ---- the agent's text (P8)---------------------------------------------
 
 /// A session id is the agent's text: as a file name it can't leave the
 /// project folder or the locks' directory, and it is shown escaped.
