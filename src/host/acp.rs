@@ -818,7 +818,11 @@ impl Host {
                         replay.opened = false;
                     }
                 } else {
-                    self.sessions.unclaim(&session); // Its lock goes (see `attach`).
+                    // Its lock (see `attach`) goes once what was recorded
+                    // under it is written: a close's here, if the resume
+                    // took it back from one (ADR 5.5). One open already
+                    // stays open.
+                    self.claim_failed(&session, None);
                 }
                 Some(session)
             }

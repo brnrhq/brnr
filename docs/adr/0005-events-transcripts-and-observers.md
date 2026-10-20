@@ -184,8 +184,11 @@ there (#61).
 - `session_closed {session, by}`, `by` one of `close` (`session close`,
   `session resume --take-over`), `idle` (`stop_when_idle`, ADR 3.8) and
   `editor` (the editor's own `session/close`). Messages and context still
-  held in the session are dropped first. A process exiting is `exited`,
-  which is in every session's file already, and isn't also
+  held in the session are dropped first. A session whose load the agent
+  failed (ADR 5.6), or one the agent opened that isn't the process's to
+  serve (ADR 3.9), drops what it holds the same way, `by` `close`, with
+  no `session_closed` after: it never opened here. A process exiting is
+  `exited`, which is in every session's file already, and isn't also
   `session_closed`.
 - `prompt send --wait` and `session new --wait` whose message is dropped
   exit 1, saying `m3 was dropped (cancel)` on stderr and
@@ -650,6 +653,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_closing_sessions_closes_their_files`;
   [src/log.rs](../../src/log.rs):
   `adr_0005_a_closed_session_has_its_records_and_then_no_file`;
+  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  `adr_0005_a_session_without_a_transcript_has_none_to_read`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
@@ -657,7 +662,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_sessions_files_are_read_merged_as_they_grow`.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
-  `adr_0005_editor_close_is_an_event`;
+  `adr_0005_editor_close_is_an_event`,
+  `adr_0005_a_failed_load_drops_its_held_context`;
   [tests/cli.rs](../../tests/cli.rs):
   `adr_0005_send_wait_on_a_dropped_message`,
   `adr_0005_queue_lists_and_drops`,
@@ -688,9 +694,16 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_close_resumed_in_its_process_is_answered_once_written`,
   `adr_0005_a_closing_session_is_read_once_written_and_said_to_be_closing`,
   `adr_0005_a_failed_load_is_written_before_the_session_is_resumed`,
-  `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`;
+  `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`,
+  `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`,
+  `adr_0005_an_editors_failed_load_holds_its_lock_until_written`;
   [tests/cli.rs](../../tests/cli.rs):
-  `adr_0005_log_shows_what_the_process_has_recorded`.
+  `adr_0005_log_shows_what_the_process_has_recorded`. That a session
+  closing in its process is said to be closing, not opening, by every
+  command that refuses it is ADR 3.9's
+  `adr_0003_the_lock_decides_and_closing_comes_before_opening` and
+  `adr_0003_each_place_is_refused_in_the_same_words`
+  ([src/ctl/ownership.rs](../../src/ctl/ownership.rs)).
 - 5.6: [tests/cli.rs](../../tests/cli.rs):
   `adr_0005_a_first_load_records_the_replayed_history`,
   `adr_0005_a_load_without_the_transcript_records_the_history`,

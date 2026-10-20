@@ -892,8 +892,10 @@ state directory included (set `BRNR_HOME` to where one points instead), and
 what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),
 and a session whose file can't be is served without it, with a
-`session-log-failed` record in the host log saying why. There is no
-override; `log = false` writes no transcripts.
+`session-log-failed` record in the host log saying why. What reads them
+(`session list`, `event log`, `doctor`, …) keeps the same rules: nothing is
+read through a symlink, nor what isn't yours or has another hard link. There
+is no override; `log = false` writes no transcripts.
 
 ## Adapters
 

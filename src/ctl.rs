@@ -703,12 +703,19 @@ fn pending(a: &Args) -> Result<(), String> {
     };
     // A request nests as deep as the agent made it: read as the host reads
     // the agent's line, and listed and let go of on a stack that takes it
-    // (ADR 2.5).
+    // (ADR 2.5), also when a process asked after it fails.
     let mut rows = Vec::new();
     for host in chosen {
-        rows.extend(host.pending(|pending| {
+        let more = host.pending(|pending| {
             pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
-        })?);
+        });
+        match more {
+            Ok(more) => rows.extend(more),
+            Err(e) => {
+                json::free(Value::Array(rows));
+                return Err(e);
+            }
+        }
     }
     json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
 }

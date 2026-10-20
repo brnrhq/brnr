@@ -240,8 +240,10 @@ are best written with the change, by whoever made it (P9).
     that is another one, each with how it ended (`exited`, `brnr panicked`,
     `running`, `died without recording it`). A line longer than 4000
     characters is cut, saying how much more there was. Each line that is a
-    record has what ADR 9.1 redacts redacted again, for a log an older brnr
-    wrote; it is otherwise as recorded.
+    record, read as transcripts are (ADR 2.5: also one nested past 128),
+    has what ADR 9.1 redacts redacted again, for a log an older brnr
+    wrote; it is otherwise as recorded. A line too deep for any stack to
+    be had is not shown, and says so.
   - Everywhere, the home directory is `~`, as a path and as the start of a
     project folder's name.
 - `doctor --report --json` is one object with the same data (P5, ADR 8.2):
@@ -438,5 +440,6 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
   `adr_0011_a_panic_prints_a_link_to_report_it`;
   [tests/doctor.rs](../../tests/doctor.rs):
   `adr_0011_the_report_is_what_to_paste`,
+  `adr_0011_the_report_redacts_a_deep_line`,
   `adr_0011_the_report_shows_a_death_without_a_record`.
 - 11.6, 11.7: none; see the sections.

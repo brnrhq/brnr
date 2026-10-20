@@ -75,6 +75,22 @@ brnr's own conventions:
 
 ### Fixed
 
+- What reads transcripts holds every part of their path to the rules they
+  are written by: `session list`, `event log`, `session resume`, `session
+  delete`, catching up and `doctor` don't look in, or read through, a
+  symlinked `$BRNR_HOME/projects`, `hosts` or state directory, nor read a
+  transcript or host log with another hard link or of another user's, and
+  `doctor --fix` makes nothing private through one: it changes a mode
+  through what it opened, not by name. A symlinked `projects` listed the
+  sessions in whatever it pointed at (ADR 9.3, #302).
+- `brnr doctor` warns of a state directory, `hosts` or `projects` that
+  isn't a directory, where it said a private one was fine, and names the
+  problem of the path it gives as an example (ADR 9.3).
+- `doctor --report` redacts the MCP secrets (ADR 9.1) in a host-log line
+  nested deeper than 128, and shows it as a record, as it shows the others;
+  it showed such a line as written, so an older brnr's unredacted secret in
+  it was in the report. The line is read as transcripts are (ADR 2.5, ADR
+  11.5, #303).
 - A flag's value is never taken as a request for help: `brnr session new
   --prompt -h` sends `-h` as the prompt, where it printed the usage, as
   `prompt send` already did (ADR 8.1).
@@ -92,6 +108,15 @@ brnr's own conventions:
   `status` lists it as closing meanwhile. Its lock went at once, and a
   resume in another process could write before those records (ADR 5.5,
   #291).
+- The editor's `session/resume` that the agent fails, of a session the
+  editor closed moments before, holds the session's lock until the
+  process has written the close's records, 2 s at most, as a failed load
+  does. Its lock went at once, and a resume in another process could write
+  before the `session_closed` (ADR 5.5, #304).
+- Messages and context held in a session whose load the agent fails, or in
+  one the agent opened that isn't the process's to serve, are dropped with
+  their `message_dropped` and `context_dropped` events, `by` `close`, with
+  no `session_closed` after; they went without a word (P3, ADR 5.2, #304).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
   opens the session it forks. `adapters/check.py --brnr` checks a fork
@@ -144,6 +169,10 @@ brnr's own conventions:
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
+- `brnr permission requests` and `elicitation requests`, with no session,
+  say a process failed when one does after another held a request nested
+  about a million deep, where they overflowed their stack and aborted: what
+  was read already is let go of on a stack that takes it (ADR 2.5, #301).
 - `brnr event log` shows a record nested deeper than 128, such as a deep
   `permission_request`, as `event watch` showed it live, where it said the
   line `isn't a record brnr can read, not shown`. `session list`, `session

@@ -138,10 +138,11 @@ impl Harness {
         &mut self.host
     }
 
-    /// Time passes: unanswered permission requests and idle sessions time
-    /// out.
+    /// Time passes: unanswered permission requests, idle sessions and a
+    /// start that hasn't committed time out.
     pub fn tick(&mut self) {
         self.now += TICK;
+        self.host.fire_start_timer(self.now);
         self.host.fire_permission_timers(self.now);
         self.host.fire_idle_timers(self.now);
     }
@@ -262,6 +263,34 @@ mod tests {
         assert_eq!(sent.start[0]["session"], "fuzz-start");
         assert!(h.host.start_done);
         assert!(sent.agent[0].windows(14).any(|w| w == b"session/prompt"));
+    }
+
+    #[test]
+    fn adr_0003_a_step_answered_after_the_start_failed_goes_no_further() {
+        let init = br#"{"jsonrpc":"2.0","id":"brnr-1","result":{"protocolVersion":1,"authMethods":[{"id":"login","name":"Log in"}]}}"#;
+        // The start times out with its `initialize`, or its `authenticate`,
+        // unanswered; the answer comes after.
+        for (auth, late, next) in [
+            (false, &init[..], "brnr-2"),
+            (true, br#"{"jsonrpc":"2.0","id":"brnr-2","result":{}}"#, "brnr-3"),
+        ] {
+            let mut h = Harness::headless(false, None);
+            if auth {
+                h.host.start.as_mut().unwrap().auth = Some("login".into());
+                h.agent_line(init);
+                assert!(h.sent().agent[1].windows(12).any(|w| w == b"authenticate"));
+            }
+            h.tick();
+            let sent = h.sent();
+            assert_eq!(sent.start.len(), 1);
+            assert_eq!(sent.start[0]["error"], "timed out waiting for the session");
+            let seq = h.host.seq;
+            h.agent_line(late);
+            assert!(h.sent().agent.is_empty(), "the agent was sent a step after the start failed");
+            // The answer is recorded, and nothing after it.
+            assert_eq!(h.host.seq, seq + 1, "a step was recorded after the start failed");
+            assert!(!h.host.outbound.waiting(next), "{next} is waiting for an answer");
+        }
     }
 
     /// The start's session, its prompt `brnr-4` running, with an agent that
