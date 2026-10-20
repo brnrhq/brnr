@@ -161,8 +161,9 @@ at launch (P10).
   options are set, and before the agent gets the prompt (`message` is the
   prompt's `m<n>`, ADR 4.1). Until then anything failing (a setup step, the
   timeout, the command going away) stops the process, and the prompt is
-  never sent. After it the process sends the prompt, and the session runs
-  on its own whatever the command does (P14).
+  never sent; nor is the next step when the agent answers one after that.
+  After it the process sends the prompt, and the session runs on its own
+  whatever the command does (P14).
 - The commit is the report's write succeeding. Nothing else is written on
   the channel before it, so the event loop writes the report itself, in one
   write that doesn't wait. A write that fails (the command has gone, its
@@ -725,6 +726,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_large_prompt_from_stdin`.
   - [tests/chaos.rs](../../tests/chaos.rs):
     `adr_0003_seeded_setup_failure_never_commits_a_prompt`.
+  - [src/host/fuzz.rs](../../src/host/fuzz.rs):
+    `adr_0003_a_step_answered_after_the_start_failed_goes_no_further`.
 - 3.5:
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0003_foreground_start_failure_is_reported`,
