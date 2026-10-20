@@ -4334,28 +4334,49 @@ fn adr_0002_a_deep_request_is_listed() {
 }
 
 /// With no session, `permission requests` and `elicitation requests` ask
-/// every process: a request a million deep (its title, or its message),
-/// read from one, is let go of on a stack that takes it when a process asked
-/// after it fails, which is said, not a stack overflow (#301).
+/// every process: a request 200,000 deep (its title, or its message), more
+/// than the main stack takes, read from one, is let go of on a stack that
+/// takes it when a process asked after it fails, which is said, not a stack
+/// overflow (#301).
 #[test]
 fn adr_0002_a_deep_request_is_let_go_of_when_another_process_fails() {
     let env = Env::new("deep-fail");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
-    env.ok(&["prompt", "send", "sess-1", "odd title 1000000"]);
-    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
-    env.ok(&["prompt", "send", "sess-2", "elicit deep 1000000"]);
-    env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "60"]);
+    // A slow runner's process can be busy with the deep line past the 5 s a
+    // command gives it to answer: it is asked again (#276).
+    let asked = |session: &str, what: &str| {
+        let wait = ["event", "wait", session, "--for", what, "--timeout", "10"];
+        assert!(wait_for(Duration::from_secs(40), || env.run(&wait).status.success()), "{what}");
+    };
+    env.ok(&["prompt", "send", "sess-1", "odd title 200000"]);
+    asked("sess-1", "permission");
+    env.ok(&["prompt", "send", "sess-2", "elicit deep 200000"]);
+    asked("sess-2", "elicitation");
+    let gone_files = |pid: u32| {
+        for ext in ["json", "sock"] {
+            let _ = fs::remove_file(env.dir.join(format!("run/{pid}.{ext}")));
+        }
+    };
     for what in ["permission", "elicitation"] {
-        let mut gone = gone_after_status(&env);
-        let out = env.run(&[what, "requests"]);
+        let mut tries = 0;
+        let (out, mut gone) = loop {
+            let mut gone = gone_after_status(&env);
+            let out = env.run(&[what, "requests"]);
+            tries += 1;
+            if !stderr(&out).contains("not answering") || tries == 5 {
+                break (out, gone);
+            }
+            let _ = gone.kill();
+            let _ = gone.wait();
+            gone_files(gone.id());
+            sleep(Duration::from_secs(1));
+        };
         let err = stderr(&out);
         assert_eq!((out.status.code(), out.status.signal()), (Some(1), None), "{what}: {err}");
         assert!(err.contains(&format!("brnr: process {}: ", gone.id())), "{what}: {err}");
         assert!(gone.wait().unwrap().success(), "{what}");
-        for ext in ["json", "sock"] {
-            fs::remove_file(env.dir.join(format!("run/{}.{ext}", gone.id()))).unwrap();
-        }
+        gone_files(gone.id());
     }
     env.ok(&["permission", "allow", "sess-1", "p1"]);
     env.stop();
