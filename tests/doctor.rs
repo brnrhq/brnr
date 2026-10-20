@@ -224,7 +224,7 @@ cwd = "/no/such/dir"
 command = ["true"]
 events = ["nope"]
 "#;
-    write(&env.dir.join("none.toml"), config, 0o600);
+    env.write_config(config);
 
     let (ok, text) = doctor(&env, &[]);
     assert!(!ok, "{text}");
@@ -241,7 +241,7 @@ events = ["nope"]
 fn misplaced_keys_fail() {
     let env = Env::new("dr-layout");
     let config = "[profiles.old]\ncwd = \"/tmp\"\nresponse_timeout = 5\n\n[profiles.ok.editor]\nexperimental = [\"nope\"]\n";
-    write(&env.dir.join("none.toml"), config, 0o600);
+    env.write_config(config);
     let (ok, text) = doctor(&env, &[]);
     assert!(!ok, "{text}");
     let fails = lines(&text, "FAIL  config");
@@ -261,11 +261,7 @@ fn misplaced_keys_fail() {
         "{text}"
     );
 
-    write(
-        &env.dir.join("none.toml"),
-        "[profiles.ok]\nagent = [\"true\"]\nstrict = true\n\n[profiles.ok.editor]\nexperimental = [\"send\", \"permission\"]\nclient_capabilities = [\"fs\"]\necho_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n",
-        0o600,
-    );
+    env.write_config("[profiles.ok]\nagent = [\"true\"]\nstrict = true\n\n[profiles.ok.editor]\nexperimental = [\"send\", \"permission\"]\nclient_capabilities = [\"fs\"]\necho_as = \"user_message_chunk\"\nfeatures = [\"shared_sessions\"]\n");
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "{text}");
     assert!(
@@ -274,11 +270,7 @@ fn misplaced_keys_fail() {
     );
 
     // The headless `config` is `options` now (ADR 8.1), with no alias.
-    write(
-        &env.dir.join("none.toml"),
-        "[profiles.old.headless]\nconfig = { effort = \"high\" }\n",
-        0o600,
-    );
+    env.write_config("[profiles.old.headless]\nconfig = { effort = \"high\" }\n");
     let (ok, text) = doctor(&env, &[]);
     assert!(!ok, "{text}");
     let fails = lines(&text, "FAIL  config");
@@ -287,10 +279,53 @@ fn misplaced_keys_fail() {
     assert!(fails[0].contains(says), "{text}");
 }
 
+/// A config file others can read or write, or in a folder they can write,
+/// fails its check with the `chmod` that fixes it, and `--fix` leaves it as
+/// it is: brnr doesn't change the user's config (ADR 9.4, P4). A missing one,
+/// and a symlink to a private one, are fine.
+#[test]
+fn adr_0009_doctor_fails_a_config_others_can_reach() {
+    let env = Env::new("dr-config-modes");
+    let (ok, text) = doctor(&env, &[]);
+    assert!(
+        text.contains("ok    config: ") && text.contains("(none; defaults apply)"),
+        "{ok} {text}"
+    );
+
+    env.write_config(
+        "[profiles.x]
+agent = [\"true\"]\n",
+    );
+    let (path, dir) = (env.config(), env.config().parent().unwrap().to_owned());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+    for args in [&[][..], &["--fix"]] {
+        let (ok, text) = doctor(&env, args);
+        assert!(!ok, "{text}");
+        let fails = lines(&text, "FAIL  config");
+        assert_eq!(fails.len(), 2, "{text}");
+        let says = "it can be read by the group and others (mode 644), and may hold secrets";
+        assert!(fails[0].contains(says), "{text}");
+        assert!(fails[0].ends_with(&format!("chmod go-rw {}", path.display())), "{text}");
+        assert!(fails[1].contains("can be written by the group and others (mode 777)"), "{text}");
+        assert!(fails[1].contains("chmod go-w "), "{text}");
+        assert!(!text.contains("profile x"), "{text}");
+        assert_eq!((mode(&path), mode(&dir)), (0o644, 0o777));
+    }
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let link = env.dir.join("link.toml");
+    symlink(&path, &link).unwrap();
+    let out = env.brnr(&["doctor"]).env("BRNR_CONFIG", &link).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(&format!("ok    config: {}: 1 profiles", link.display())), "{text}");
+}
+
 #[test]
 fn unparseable_config_fails() {
     let env = Env::new("dr-toml");
-    write(&env.dir.join("none.toml"), "[profiles.x]\nagnet = 1\n", 0o600);
+    env.write_config("[profiles.x]\nagnet = 1\n");
     let (ok, text) = doctor(&env, &[]);
     assert!(!ok);
     assert!(text.contains("FAIL  config"), "{text}");

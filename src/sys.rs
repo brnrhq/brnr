@@ -19,6 +19,38 @@ pub(crate) fn kill(pid: pid_t, sig: c_int) -> bool {
     unsafe { libc::kill(pid, sig) == 0 }
 }
 
+/// Whether `file` has an extended ACL. On macOS one grants access its mode
+/// doesn't show (`ls -le`); on Linux an ACL's grants show in the mode's
+/// group bits, its mask, so there is none to look for apart.
+#[cfg(target_os = "macos")]
+pub(crate) fn has_acl(file: &File) -> io::Result<bool> {
+    // libSystem's, from <sys/acl.h>; the libc crate doesn't have them.
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: c_int, kind: c_int) -> *mut libc::c_void;
+        fn acl_free(acl: *mut libc::c_void) -> c_int;
+    }
+    const ACL_TYPE_EXTENDED: c_int = 0x0000_0100;
+    // SAFETY: acl_get_fd_np takes a descriptor and a type, any of which is
+    // a valid argument (a bad one is an error), and returns memory of its
+    // own or null.
+    let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
+    if acl.is_null() {
+        let e = io::Error::last_os_error();
+        return if e.raw_os_error() == Some(libc::ENOENT) { Ok(false) } else { Err(e) };
+    }
+    // SAFETY: `acl` is what acl_get_fd_np allocated, freed once, here.
+    unsafe { acl_free(acl) };
+    Ok(true)
+}
+
+/// Whether `file` has an extended ACL. On macOS one grants access its mode
+/// doesn't show (`ls -le`); on Linux an ACL's grants show in the mode's
+/// group bits, its mask, so there is none to look for apart.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn has_acl(_file: &File) -> io::Result<bool> {
+    Ok(false)
+}
+
 /// Whether `pid` has exited: it is gone, isn't the user's, or is a zombie
 /// its parent hasn't reaped yet, which `kill(pid, 0)` can't tell from a
 /// live process (a host is reparented, and nothing may reap it soon).
