@@ -3140,15 +3140,18 @@ fn adr_0003_acp_is_what_an_editor_runs() {
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
 
 /// `brnr acp` resolves the profile itself: a config error is the editor's
-/// to see, on its stderr, and no process starts.
+/// to see, on its stderr, and no process starts. It exits 1, a failure, as
+/// the control commands do for it, not 2, a usage error (ADR 8.3).
 #[test]
 fn adr_0003_acp_reports_a_config_error() {
     let env = Env::new("ed-config");
     env.write_config("[profiles.default]\nresponse_timeout = 600\n");
     let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
+    let out = env.brnr(&["session", "new", "--", AGENT]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "the same code: {}", stderr(&out));
     assert!(err.contains("profiles.default: response_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }

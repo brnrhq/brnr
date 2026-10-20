@@ -65,6 +65,8 @@ brnr's own conventions:
   first word (ADR 8.3).
 - `brnr acp --help` names its arguments `<p>` and `<agent>`, as `brnr
   --help` does (ADR 8.3).
+- **Breaking:** `brnr acp` exits 1 for a config error, not 2, as the
+  control commands do: 2 is a usage error only (ADR 8.3, #338).
 - **Breaking:** brnr reads a line nested up to 128 levels (`[[1]]` is 2),
   about what serde_json and ACP's Rust SDK read, where it read any depth on
   a thread whose stack it sized to the line. A deeper line from the agent or

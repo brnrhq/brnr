@@ -483,7 +483,7 @@ where P5 allows one, and a script could not see what a person sees.
     depends on anything else is a failure, 1: a session, process or
     profile that isn't there, a mode or option the agent doesn't have, a
     file that can't be read, a prompt on stdin that is empty. `brnr acp`
-    exits 2 for a config error still, which #338 decides.
+    too: a config error there exits 1, as in `session new` (#338).
   - `--help` and `-h` print the usage on stdout and exit 0, wherever they
     are taken (ADR 8.1): `brnr`, a group without a verb
     (`brnr session --help`), a verb, `brnr acp`, `doctor` and `skill`
@@ -524,7 +524,10 @@ the same code whatever the machine holds (P5), and a script that gets 2
 knows retrying can't help. Saying what was wrong before the usage serves
 both of 8.1's needs: the option named, and the command's form to fix it
 by. A command brnr doesn't have has no usage of its own, and all of
-`brnr --help` for a typo buries the one line that matters.
+`brnr --help` for a typo buries the one line that matters. An editor's
+process reads the same config as `session new`, and nothing in what an
+editor does with the code needs it to differ: the editor shows stderr
+either way (ADR 3.3), so one situation keeps one code (P5).
 
 **Considered.**
 
@@ -541,6 +544,8 @@ by. A command brnr doesn't have has no usage of its own, and all of
 - A usage error only for what the parser catches, every other check a
   failure: `--timeout` without `--wait` would then exit 1 while
   `--timeout soon` exits 2, two codes for one kind of mistake.
+- `brnr acp` exiting 2 for a config error, as it did: the same config
+  error would exit 2 there and 1 in `session new`.
 - Making the adapters' `--help` print a usage without starting ACP (as a
   comment on #153 asked): it would change upstream's program past what
   ADR 11.1 adds, for an interface ADR 8.4 doesn't cover.
