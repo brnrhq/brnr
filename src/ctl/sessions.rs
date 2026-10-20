@@ -406,12 +406,11 @@ impl Asked {
                 .recv_timeout(wait)
                 .map_err(|_| (None, format!("the agent didn't answer {method}")))?;
             // As the host reads it (see json.rs): a title cut mid-emoji is no
-            // reason to miss the answer.
+            // reason to miss the answer. One too deep may be the answer: as
+            // the client, brnr refuses it, and says so (ADR 2.5).
             let line = line.as_bytes();
-            let Some(Some(msg)) = json::on_stack(json::depth(line), || json::parse::<Value>(line))
-            else {
-                continue;
-            };
+            json::within(line, json::DEPTH, "a line of the agent's").map_err(|e| (None, e))?;
+            let Some(msg) = json::parse::<Value>(line, json::DEPTH) else { continue };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
                     let code = schema::read::<Error>(error).map(|e| e.code);

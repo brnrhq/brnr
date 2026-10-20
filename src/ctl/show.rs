@@ -14,17 +14,14 @@ pub(super) fn show(a: &Args) -> Result<ExitCode, String> {
     let (arg, request, json_out) = (&a.positional[0], &a.positional[1], a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    // As deep as the agent made it: shown, and let go of, on a stack that
-    // takes it (ADR 2.5).
-    host.pending(|pending| {
-        let p = pending.approval(&session, request);
-        let p = p.ok_or(format!("no pending request {request} in {arg}"))?;
-        if json_out {
-            return print_json(p);
-        }
+    let pending = host.pending()?;
+    let p = pending.approval(&session, request);
+    let p = p.ok_or(format!("no pending request {request} in {arg}"))?;
+    if json_out {
+        print_json(p)?;
+    } else {
         describe(p, &session, arg, request);
-        Ok(())
-    })??;
+    }
     Ok(ExitCode::SUCCESS)
 }
 

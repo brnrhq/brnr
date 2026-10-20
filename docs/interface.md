@@ -434,8 +434,8 @@ is snake_case, named subject first (ADR 5.9). Who acted is `by` (`editor`,
 `peer_cut_off` (`peer`, `last_queued_seq`) tells the other peers that one was
 cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,
-approvals, elicitations, config patches and process exits. `process_exited` and `line_too_long`
-are process events. Notes are what brnr adds to a stream of events, and are
+approvals, elicitations, config patches and process exits. `process_exited`, `line_too_long`
+and `line_too_deep` are process events. Notes are what brnr adds to a stream of events, and are
 never sent on the socket: `records_skipped` (a gap in a transcript, in `event
 log`) and `events_missed` (what a command couldn't catch up on, on its
 stdout). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config

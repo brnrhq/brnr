@@ -228,21 +228,62 @@ mod tests {
         assert!(h.host.with_stderr("timed out").ends_with("\n  login required: ok"));
     }
 
+    /// A line `depth` deep: a JSON-RPC request `id` for `method`, whose tool
+    /// call's input nests the rest of the way.
+    fn deep(id: &str, method: &str, depth: usize) -> Vec<u8> {
+        let n = depth - 3;
+        let input = format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let params =
+            format!(r#"{{"sessionId":"s","toolCall":{{"toolCallId":"t","rawInput":{input}}}}}"#);
+        let line =
+            format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"{method}","params":{params}}}"#);
+        assert_eq!(json::depth(line.as_bytes()), depth);
+        line.into_bytes()
+    }
+
     #[test]
-    fn adr_0002_the_stack_is_as_deep_as_what_the_host_holds() {
+    fn adr_0002_the_host_holds_nothing_of_a_line_past_the_limit() {
+        const ASK: &str = "session/request_permission";
         let mut h = Harness::editor(false, false);
-        let deep = format!("{}{}", "[".repeat(20000), "]".repeat(20000));
-        // Passed on, and nothing kept of it: the next event takes no stack
-        // of its own.
-        h.agent_line(format!(r#"{{"jsonrpc":"2.0","method":"_x","params":{deep}}}"#).as_bytes());
-        assert!(h.host.deepest <= json::SHALLOW, "{}", h.host.deepest);
-        // A request is kept until the editor answers it.
-        let ask = format!(r#"{{"jsonrpc":"2.0","id":"r1","method":"_ask","params":{deep}}}"#);
-        h.agent_line(ask.as_bytes());
-        assert!(h.host.deepest >= 20000, "{}", h.host.deepest);
-        h.editor_bytes(b"{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{}}\n");
-        assert!(h.host.deepest <= json::SHALLOW, "{}", h.host.deepest);
-        assert_eq!(h.sent().agent, vec![b"{\"jsonrpc\":\"2.0\",\"id\":\"r1\",\"result\":{}}\n"]);
+        // At the limit, the agent's request is read, and held until the
+        // editor answers it; the editor's goes with an id of the host's.
+        let mut ask = deep("r1", ASK, json::DEPTH);
+        ask.push(b'\n');
+        h.agent_line(&ask);
+        assert_eq!(h.sent().editor, vec![(frame::DATA, ask.clone())]);
+        assert_eq!(h.host.approvals.held().count(), 1);
+        let mut asked = deep("e1", "_ask", json::DEPTH);
+        asked.push(b'\n');
+        h.editor_bytes(&asked);
+        let sent = h.sent().agent;
+        assert!(sent[0].starts_with(br#"{"jsonrpc":"2.0","id":"brnr-1","#), "not rewritten");
+        assert!(h.host.outbound.waiting(r#""brnr-1""#));
+        // Past it, neither is read: each goes on byte for byte, the
+        // editor's with its own id, and neither is held.
+        let mut ask = deep("r2", ASK, json::DEPTH + 1);
+        ask.push(b'\n');
+        h.agent_line(&ask);
+        assert_eq!(h.sent().editor, vec![(frame::DATA, ask)]);
+        assert_eq!(h.host.approvals.held().count(), 1);
+        let mut asked = deep("e2", "_ask", json::DEPTH + 1);
+        asked.push(b'\n');
+        h.editor_bytes(&asked);
+        assert_eq!(h.sent().agent, vec![asked]);
+        assert!(!h.host.outbound.waiting(r#""brnr-2""#));
+        // A million deep is no different.
+        let mut ask = deep("r3", ASK, 1_000_000);
+        ask.push(b'\n');
+        h.agent_line(&ask);
+        assert_eq!(h.sent().editor.len(), 1);
+        assert_eq!(h.host.approvals.held().count(), 1);
+
+        // Headless, the agent's is dropped.
+        let mut h = Harness::headless(false, None);
+        h.sent();
+        h.agent_line(&deep("r1", ASK, json::DEPTH + 1));
+        let sent = h.sent();
+        assert!(sent.agent.is_empty() && sent.editor.is_empty());
+        assert_eq!(h.host.approvals.held().count(), 0);
     }
 
     #[test]

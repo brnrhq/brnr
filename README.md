@@ -538,13 +538,14 @@ show the same events, live or read back from the transcript:
 | `session_deleted` | the agent deleted the session, `by` `control` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), how many of them are (`recorded_updates`: fewer only when the session closed while its load was unanswered), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
+| `line_too_deep` | a line `from` the `agent` or `editor` nested past `max_depth` (128 levels), unread and unrecorded: `relayed` to the other side with an editor, dropped headless |
 | `peer_cut_off` | a `peer` (a watcher, a bridge) cut off for falling behind, and the last event it was sent (`last_queued_seq`) |
 | `process_exited` | the agent exited, and the process with it: its `exit_status`, and an `error` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
 Each has `ts`, `host_id` (the process's run) and `pid` (the process), and
-names its session; `process_exited` and `line_too_long` are the process's,
-and are in every session's transcript; `peer_cut_off` is the process's too,
+names its session; `process_exited`, `line_too_long` and `line_too_deep` are
+the process's, and are in every session's transcript; `peer_cut_off` is the process's too,
 in its host log. Each has its position, `seq`: one more than the last
 event's or ACP message's of its process, live and in the transcript. Who
 acted is `by`: `editor`, `agent` or `control` (brnr's commands, bridges and
@@ -838,6 +839,14 @@ unread and unrecorded, to the editor or the agent unchanged, or is dropped
 headless, and a `line_too_long` event says so. The agent's stderr
 goes on as it is written, newline or not, 64 KiB at most at a time, every
 byte.
+
+However deep the lines: brnr reads a line nested up to 128 levels (`[[1]]`
+is 2), about what serde_json, and so ACP's Rust SDK, reads. A deeper one is
+treated as a long one: it goes on unread and unrecorded with an editor, is
+dropped headless, and a `line_too_deep` event says so; brnr tracks nothing
+of it, so a permission request that deep isn't listed or answerable from
+outside. brnr's commands read what brnr itself wrote (answers, events,
+transcripts) up to 256 levels, and say so, and fail, past that (ADR 2.5).
 
 ## Transcripts
 
