@@ -75,7 +75,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
-use crate::{paths, sys, transcript};
+use crate::{json, paths, sys, transcript};
 
 /// What may be queued for the logger before records are skipped.
 const LOG_BYTES: usize = 64 << 20;
@@ -849,10 +849,11 @@ pub(crate) fn redact_mcp_servers(servers: &mut Value) -> bool {
 
 /// A record of a host log or transcript with what [`redacted`] and
 /// `Request::recorded` redact redacted (ADR 9.1 in docs/adr), as brnr
-/// records it now: for one an older brnr wrote, shown again.
+/// records it now: for one an older brnr wrote, shown again. Run it on a
+/// stack that takes `record`.
 pub(crate) fn redact_record(record: &mut Value) {
     if let Some(bytes) = record.get("msg").and_then(Value::as_object).and_then(redacted)
-        && let Ok(msg) = serde_json::from_slice(&bytes)
+        && let Some(msg) = json::parse(&bytes)
     {
         record["msg"] = msg;
     }

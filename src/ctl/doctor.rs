@@ -46,7 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::host::check_bridge;
-use crate::{bug, config, lock, log, paths, signals, spawn, sys, transcript};
+use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::client::{Host, Probe, gone, probe, read_meta};
 use super::{Args, text, when};
@@ -828,13 +828,20 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
 
 /// A host log's line as the report shows it: with what brnr redacts
 /// redacted again (a log written before it did), cut short if it is long.
+/// A record is read as transcripts are, however deep it nests, and shown,
+/// and let go of, on a stack that takes it.
 fn report_line(line: &[u8]) -> String {
-    let text = match serde_json::from_slice::<Value>(line) {
-        Ok(mut record) => {
-            log::redact_record(&mut record);
-            record.to_string()
-        }
-        Err(_) => String::from_utf8_lossy(line).into_owned(),
+    let depth = json::depth(line);
+    let shown = json::on_stack(depth, || {
+        let mut record = transcript::record(line)?;
+        log::redact_record(&mut record);
+        Some(record.to_string())
+    });
+    let text = match shown {
+        Some(Some(text)) => text,
+        Some(None) => String::from_utf8_lossy(line).into_owned(),
+        // Not shown as it came: it may hold what brnr redacts.
+        None => format!("(a line {depth} deep, not shown: no stack to be had to read it)"),
     };
     let chars = text.chars().count();
     if chars <= REPORT_LINE_CHARS {

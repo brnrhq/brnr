@@ -581,6 +581,36 @@ fn adr_0011_the_report_is_what_to_paste() {
     assert!(env.fails(&["doctor", "--fix", "--report"]).contains("don't go together"));
 }
 
+/// A host log's line nested deeper than serde_json's 128 is read as
+/// transcripts are (ADR 2.5): the report shows it as a record, its secrets
+/// redacted (ADR 9.1), not as the text an older brnr wrote.
+#[test]
+fn adr_0011_the_report_redacts_a_deep_line() {
+    let env = Env::new("dr-rdeep");
+    let secret = "s3cret-deep-value";
+    let hosts = env.dir.join("home/hosts");
+    mkdir(&env.dir.join("home"), 0o700);
+    mkdir(&hosts, 0o700);
+    let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    let opened = format!(
+        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
+    );
+    let exited = r#"{"ts":"t","event":{"event":"exited","status":0,"reason":"stopped"}}"#;
+    write(&hosts.join("20260101T000000-1.jsonl"), &format!("{opened}\n{exited}\n"), 0o600);
+
+    let out = env.run(&["doctor", "--report", "--json"]);
+    let report: Value = serde_json::from_slice(&out.stdout).expect("a report");
+    let lines = report["host_logs"][0]["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 2, "{report}");
+    let shown = lines[0].as_str().unwrap();
+    assert!(!shown.contains(secret), "{shown}");
+    assert!(shown.contains(r#""env":[{"name":"TOKEN","value":"<redacted>"}]"#), "{shown}");
+    assert!(shown.contains(&format!(r#""_meta":{{"deep":{deep}}}"#)), "{shown}");
+    let out = env.run(&["doctor", "--report"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains(secret) && text.contains(shown), "{text}");
+}
+
 /// A process killed without a word is the one the report shows, besides
 /// the latest.
 #[test]

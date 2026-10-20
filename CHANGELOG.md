@@ -72,6 +72,11 @@ brnr's own conventions:
   transcript or host log with another hard link or of another user's, and
   `doctor --fix` makes nothing private through one. A symlinked `projects`
   listed the sessions in whatever it pointed at (ADR 9.3, #302).
+- `doctor --report` redacts the MCP secrets (ADR 9.1) in a host-log line
+  nested deeper than 128, and shows it as a record, as it shows the others;
+  it showed such a line as written, so an older brnr's unredacted secret in
+  it was in the report. The line is read as transcripts are (ADR 2.5, ADR
+  11.5, #303).
 - A flag's value is never taken as a request for help: `brnr session new
   --prompt -h` sends `-h` as the prompt, where it printed the usage, as
   `prompt send` already did (ADR 8.1).
