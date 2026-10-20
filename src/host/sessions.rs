@@ -168,14 +168,6 @@ impl Sessions {
         self.open.is_empty()
     }
 
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Sessions { open, claimed: _, closed_loads: _, letting_go: _, under_editor: _ } = self;
-        open.iter().map(Session::holds).max().unwrap_or(0)
-    }
-
     /// Whether `session` is this process's already: open, or claimed.
     pub(super) fn knows(&self, session: &str) -> bool {
         self.open.iter().any(|s| s.id == session) || self.claimed.contains_key(session)

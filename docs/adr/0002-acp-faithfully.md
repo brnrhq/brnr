@@ -124,8 +124,9 @@ as version 1 is a guess (P4). Resolves #66.
 - The crate's stable types are what P1 and strict mode (ADR 2.1) mean by
   stable ACP; strict mode's stable methods are the crate's. Its unstable
   features stay off.
-- The crate parses with serde_json too, so reading lone surrogates and
-  deep nesting stays brnr's own work (ADR 2.5).
+- The crate parses with serde_json too, so reading lone surrogates, and
+  nesting past serde_json's 127 levels up to brnr's limit, stays brnr's
+  own work (ADR 2.5).
 - A message the types don't know (an extension method, a newer field) is
   still forwarded untouched, and interpreted as far as brnr can (P4).
 
@@ -189,9 +190,9 @@ the other's request (GHSA-84pw-hh9c-w2m8).
 
 **Consequences.**
 
-- A request in a line the host doesn't read (one that isn't JSON, or past
-  32 MiB, ADR 2.5 and 10.3, or what the editor wrote after its last
-  newline) reaches the agent with the editor's id, untracked. Should that
+- A request in a line the host doesn't read (one that isn't JSON, nested
+  past 128 or past 32 MiB, ADR 2.5 and 10.3, or what the editor wrote
+  after its last newline) reaches the agent with the editor's id, untracked. Should that
   id be one the host has given a request still waiting, the answer is
   taken for that request's: the editor can only bring that about with an
   id it wasn't told, and with a line nobody can read.
@@ -218,63 +219,135 @@ the other's request (GHSA-84pw-hh9c-w2m8).
 - Random host ids: no better than a prefix for the lines the host reads,
   and unneeded for them.
 
-## 2.5 Lines brnr can't parse
+## 2.5 Lines brnr can't parse, and how deep a line may nest
 
-- The host reads every RFC 8259 text. In the copy it interprets, a lone
-  surrogate becomes U+FFFD, and there is no depth limit (serde_json's
-  `unbounded_depth`, with the stack grown as needed: for a line that deep,
-  and for what comes after it, events and timers alike, while the host
-  keeps something of it). The line itself is forwarded byte for byte, as
-  always. This stays brnr's own work with the official schema types
-  (ADR 2.3): they parse with serde_json.
-- The CLI reads the host's answers the same way. `brnr permission
-  requests` and `show`, and `elicitation requests` and `show`, list and
-  show a request the host holds however deep it nests (#239). With no
-  session they ask every process, and what was read from each is let go
-  of on a stack that takes it once listed, or, when a process asked after
-  it fails, before that failure is said (#301).
-  The commands that read events (`prompt send --wait`, `event wait`,
-  `event watch`, `event notify`, what they catch up on from the
-  transcript, ADR 10.2, and `event log`) don't drop an event nested past
-  128 (#250), and use and let go of each event, and each answer of the
-  host's they read, on a stack that takes it, as the host does, so one as
-  deep as the host holds is followed too (#252). With no such stack to be
-  had, they say so and exit non-zero (P3). What a transcript is, for
-  `session list`, `session resume` and `doctor` (ADR 5.1), is read from a
-  record that deep too, leaving out what nests past 128, which none of
-  them looks at.
+- The host reads every RFC 8259 text nested up to 128 levels (an array or
+  object is one level, as `[[1]]` is two). In the copy it interprets, a
+  lone surrogate becomes U+FFFD. The line itself is forwarded byte for
+  byte, as always. This stays brnr's own work with the official schema
+  types (ADR 2.3): they parse with serde_json, which reads 127 levels, and
+  no lone surrogate.
+- A line nested deeper than 128 isn't read, as a line past 32 MiB isn't
+  (ADR 10.3):
+  - with an editor it goes on as it came, to the agent or the editor
+    (P1). The host treats it as a line it can't parse (below): nothing of
+    it is tracked;
+  - headless, from the agent, it is dropped: brnr is the client, and
+    refuses what it can't read (P4).
+
+  Either way it isn't recorded as raw ACP (what ADR 9.1 redacts in it
+  can't be found), and a `line_too_deep` event (`from`: `agent` or
+  `editor`; `max_depth`: 128, in levels; `relayed`: whether it went on) says
+  so: in every session's events file, to watchers and bridges, and in the
+  foreground (P3). As `line_too_long`, it belongs to no session.
+- What the host keeps of a line nests no deeper than 128, and what it
+  writes (events, answers, records) wraps that in a few levels of its own.
+  The CLI reads what brnr wrote up to 256 levels, twice the limit: the
+  host's answers and events (`permission requests` and `show`,
+  `elicitation requests` and `show`, `status` for `discover`, `prompt send
+  --wait`, `event wait`, `event watch`, `event notify`, from the socket or
+  `--stdin`), and transcripts (`event log`, the catch-up of ADR 10.2, and
+  what a transcript is for `session list`, `session resume` and `doctor`,
+  ADR 5.1). A line deeper than that is none this brnr wrote: a command
+  that reads it as an answer or an event says so ("its answer nests 300
+  deep, past the 256 brnr reads") and exits non-zero (P3); a record that
+  deep is passed over as one brnr can't read, as a broken one is, and
+  `event log` and `doctor --report` say so.
+- `session list` with an agent named (ADR 3.2) is the agent's client too:
+  a line from it nested past 128 fails the command, which says so.
+- Both limits are fixed numbers, the same everywhere, and every thread's
+  stack takes a value that deep, to read it and to copy, show or let go of
+  it. No thread is made, or sized, for a line.
 - A line past 32 MiB isn't read either: with an editor it goes on as it
   comes; headless it is dropped, and a `line_too_long` event says so
   (ADR 10.3).
 - An editor's request the host reads goes with an id of the host's
   (ADR 2.4), so an answer to it the host can't read reaches the editor
   with that id.
-- For a line that isn't JSON at all, nothing is tracked. The host keeps
-  the ids of agent requests it answered itself (permission requests
-  cancelled, or answered from outside, ADR 7.1), and drops only the
-  editor's late answers to those, telling the editor in the session that
-  its late answer was dropped, and who answered first (ADR 7.1). An
-  answer from the editor with any other unknown id goes to the agent,
-  which ignores an answer to something it never asked.
+- For a line that isn't JSON at all, or nests too deep, nothing is
+  tracked. The host keeps the ids of agent requests it answered itself
+  (permission requests cancelled, or answered from outside, ADR 7.1), and
+  drops only the editor's late answers to those, telling the editor in the
+  session that its late answer was dropped, and who answered first
+  (ADR 7.1). An answer from the editor with any other unknown id goes to
+  the agent, which ignores an answer to something it never asked.
 - Lines aren't scanned for ids (P4), and nothing is withheld from the
   editor (P1). An editor ignores a response to a request it never sent. A
   host request whose answer can't be read goes unanswered: a start fails
   at its timeout (ADR 3.4), and for a bridge's request `brnr` stops
   waiting after 120 s (ADR 4.6; the host itself never gives up).
-- An editor prompt that isn't JSON isn't counted as a turn; nothing hangs
-  on it.
+- An editor prompt the host doesn't read isn't counted as a turn; nothing
+  hangs on it.
 
 **Why.** A line the host can't read goes untracked: an agent's request in
-it gets an editor's answer the host doesn't know, and a turn can hang.
-The cases that happen aren't broken JSON. A lone surrogate (`"\ud83d"`,
-what `JSON.stringify` makes of a title cut in the middle of an emoji) is
-allowed by RFC 8259's grammar, which only calls its meaning
-unpredictable; nesting deeper than 128 is serde_json's limit, not JSON's.
+it gets an editor's answer the host doesn't know, and a turn can hang. So
+the host reads what RFC 8259 allows and serde_json doesn't. A lone
+surrogate (`"\ud83d"`, what `JSON.stringify` makes of a title cut in the
+middle of an emoji) is allowed by RFC 8259's grammar, which only calls its
+meaning unpredictable: the case that happens. Nesting has no limit in RFC
+8259 either, but reading a value takes stack in proportion to its depth,
+and so do copying, showing and letting go of it. Until #268, brnr read
+any depth on a thread whose stack was sized to the line (depth × 4 KiB):
+a 32 MiB line of `[` asked for 128 GiB of stack, and while the host held
+a deep value each event and each timer ran on a thread of its own. That
+put faithfulness (F1) over reliability (N2), which ADR 1 ranks first:
+what the agent or the editor sends chose the host's threads and their
+stacks (P6). A fixed limit keeps them bounded, and is documented, so brnr
+doesn't guess (P4): in the proxy role a line past it passes through
+untouched, as one brnr can't parse does (P1); in the client role it is
+refused; either way it is said (P3).
+
+Why 128: it is what serde_json reads by default, so ACP's Rust SDK and the
+editors and agents built on serde_json already refuse a line deeper. A
+line past it is one such a client couldn't read without brnr. ACP's own
+messages nest a few levels, and what an agent puts inside them (a tool
+call's input, an elicitation's schema) nests about as deep as what made it.
+
+Why the CLI has a limit of its own: brnr's lines wrap what the host read
+(an `acp` event in one level, `pending`'s request in three, `status`'s
+`last_turn.error` in four). With one limit for both, the CLI would refuse
+what the host wrote about a line at the limit, or the host would read
+less than 128. Twice the limit leaves room for that many times over, and
+any stack still takes it. The CLI still needs a limit: a transcript an
+older brnr wrote, or a process that isn't this brnr, can nest deeper.
+
+**Consequences.**
+
+- An agent that nests a line past 128 works with an editor, which gets
+  every byte, but brnr tracks nothing of the line: a permission request
+  that deep isn't listed, can't be answered from outside and doesn't time
+  out, and a prompt's answer that deep doesn't end the turn for watchers.
+  Headless, its request reaches no one, and the turn waits until it is
+  cancelled (`prompt cancel`). Agents and editors built on serde_json
+  fail on such a line anyway.
+- What `--json` prints indented (`event wait --json`, `permission show
+  --json`) is small: indenting grows as the square of the depth, about
+  35 KB of spaces at 128 levels, where a line a million deep was about
+  2 TB (#259).
+- No thread of brnr's is sized to what it reads, and the stack a value
+  takes is known: about 1 KiB a level to read an object, so 256 KiB at
+  256 levels, an eighth of a spawned thread's 2 MiB.
 
 **Considered.**
 
-- Pulling the `id` and `method` out of a broken line leniently: a guess
-  that would have to be right about every way JSON can break.
+- Any depth, on a stack sized to the line (brnr until #268): faithful to
+  what RFC 8259 allows (F1), but the agent or the editor chooses how much
+  stack the host takes, and how many threads (N2, P6).
+- A deeper limit (1000, or 10,000): a value that deep needs a stack sized
+  for it again, or a parser that doesn't recurse, and serde's derive,
+  clone, show and drop all recurse; nothing ACP sends needs it.
+- serde_json's limit as it is (127): the number would be serde_json's to
+  change, not documented by brnr, and brnr's own lines, which wrap the
+  agent's, nest deeper.
+- One limit for the host and the CLI: see Why.
+- Reading without recursion, with a parser of brnr's own: no stack to
+  size, but every use of the value recurses as well, and it is one more
+  thing to keep (N4).
+- Cutting a deep line, or putting a marker in place of what is too deep:
+  it changes the editor's bytes (P1), and headless it is a guess at what
+  the rest meant (P4).
+- Pulling the `id` and `method` out of a broken or deep line leniently: a
+  guess that would have to be right about every way JSON can break.
 - Also keeping agent lines that contain `"id":"brnr-` from the editor: a
   heuristic, which withholds the editor's bytes.
 - Leaving serde_json's limits and only forwarding unknown ids: the lone
@@ -483,7 +556,7 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_an_update_the_schema_doesnt_know_changes_nothing`;
   [src/schema.rs](../../src/schema.rs):
   `adr_0002_what_the_adapters_send_is_read_as_the_schemas_types`,
-  `adr_0002_a_deep_part_reads_on_the_stack_json_rs_gives_it`,
+  `adr_0002_a_part_of_a_line_at_the_limit_reads_as_its_type`,
   `adr_0002_what_the_types_dont_take_is_left_to_value`,
   `adr_0002_stable_is_what_the_schema_has_without_its_unstable_features`.
 - 2.4: [tests/headless.rs](../../tests/headless.rs):
@@ -499,26 +572,28 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   [tests/security.rs](../../tests/security.rs):
   `adr_0003_acp_passes_bytes_unchanged` (ADR 3.1's), which checks that
   only the ids change.
-- 2.5: [src/host/fuzz.rs](../../src/host/fuzz.rs):
-  `adr_0002_the_stack_is_as_deep_as_what_the_host_holds`;
-  [src/json.rs](../../src/json.rs):
-  `adr_0002_a_value_is_let_go_of_on_a_stack_that_takes_it`;
+- 2.5: [src/json.rs](../../src/json.rs):
+  `adr_0002_a_line_is_read_to_its_limit_and_no_deeper`,
+  `adr_0002_any_stack_takes_a_value_at_the_limit`;
+  [src/host/fuzz.rs](../../src/host/fuzz.rs):
+  `adr_0002_the_host_holds_nothing_of_a_line_past_the_limit`;
   [src/ctl/client.rs](../../src/ctl/client.rs):
-  `adr_0002_pending_is_read_however_deep`;
+  `adr_0002_an_answer_is_read_to_the_limit_and_no_deeper`,
+  `adr_0002_a_status_with_an_error_at_the_limit_is_an_answer`;
   [tests/headless.rs](../../tests/headless.rs):
-  `adr_0002_a_lone_surrogate_is_read`, `adr_0002_deep_nesting_is_read`,
-  `adr_0002_a_deep_request_that_times_out_is_answered`,
+  `adr_0002_a_lone_surrogate_is_read`, `adr_0002_a_line_at_the_limit_is_read`,
+  `adr_0002_a_line_past_the_limit_passes_through_unread`,
+  `adr_0002_headless_a_line_past_the_limit_is_dropped_and_said`,
   `adr_0002_an_answer_the_host_cant_place_reaches_the_agent`,
   `adr_0002_a_late_answer_to_a_cancelled_request_is_dropped`,
   `adr_0002_a_deep_request_is_listed`,
   `adr_0002_a_deep_request_is_shown`,
-  `adr_0002_a_deep_request_is_let_go_of_when_another_process_fails`,
   `adr_0002_a_deep_request_is_followed`,
   `adr_0002_a_deep_request_is_notified`,
   `adr_0002_a_deep_event_is_caught_up`,
   `adr_0002_a_deep_request_is_logged`;
   [src/transcript.rs](../../src/transcript.rs):
-  `adr_0002_a_deep_record_is_read`.
+  `adr_0002_a_record_is_read_to_the_limit_and_no_deeper`.
 - 2.6: [tests/security.rs](../../tests/security.rs):
   `adr_0002_the_editors_stdout_ends_with_the_agents`,
   `adr_0002_stderr_comes_as_it_is_written`,

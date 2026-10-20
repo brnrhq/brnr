@@ -65,6 +65,23 @@ brnr's own conventions:
   first word (ADR 8.3).
 - `brnr acp --help` names its arguments `<p>` and `<agent>`, as `brnr
   --help` does (ADR 8.3).
+- **Breaking:** `brnr acp` exits 1 for a config error, not 2, as the
+  control commands do: 2 is a usage error only (ADR 8.3, #338).
+- **Breaking:** brnr reads a line nested up to 128 levels (`[[1]]` is 2),
+  about what serde_json and ACP's Rust SDK read, where it read any depth on
+  a thread whose stack it sized to the line. A deeper line from the agent or
+  the editor is treated as one past 32 MiB: with an editor it goes on unread
+  and unrecorded, headless it is dropped, and a new `line_too_deep` event
+  (`from`, `max_depth`, `relayed`) says so; brnr tracks nothing of it, so a
+  permission request that deep isn't listed, answered from outside or timed
+  out. The commands read what brnr wrote (answers, events, transcripts) up
+  to 256 levels, and fail, saying so, past it. No event or timer runs on a
+  thread of its own any more, and `--json` output indented stays small
+  (ADR 2.5, #268, #259).
+- A process whose `status` answer has an agent's turn error nested past
+  128 is answering: the commands that look for processes (`session list`,
+  `permission requests`, …) no longer pass it over as not answering
+  (ADR 2.5, #323).
 - **Breaking:** brnr refuses a config file that isn't yours, or that the
   group or others can read or write, or whose folder isn't yours or they
   can write, or, on macOS, either with an access control list (`chmod
@@ -182,6 +199,16 @@ brnr's own conventions:
 
 ### Fixed
 
+- A permission request or an elicitation the agent cancels with
+  `$/cancel_request` ends: it is gone from `permission requests`,
+  `elicitation requests` and a bridge's `pending`, the session is no longer
+  `waiting` (so `stop_when_idle` counts again), and its
+  `permission_resolved` or `elicitation_resolved` says `by: agent`.
+  Headless, brnr answers it `cancelled` or `cancel`, as ACP has a cancelled
+  request answered; in an editor's session the editor gets the
+  notification and answers it. An answer to it after that fails and sends
+  nothing. brnr passed the notification over, and the request stayed
+  listed, waiting for an answer the agent no longer took (ADR 4.5, #308).
 - What reads transcripts holds every part of their path to the rules they
   are written by: `session list`, `event log`, `session resume`, `session
   delete`, catching up and `doctor` don't look in, or read through, a

@@ -129,7 +129,7 @@ a session, and picking one for the user hid that.
   (`start_request`), secrets redacted (ADR 9.1): every process records
   what it was asked to do.
 - A config error under `brnr acp` is reported on the editor's stderr as
-  `brnr acp: …`, as the process's own failures are.
+  `brnr acp: …`, as the process's own failures are, and exits 1 (ADR 8.3).
 
 **Consequences.** There is one way to get a prompt to a process. The
 agent's command isn't in the process's argv, so killing processes by the

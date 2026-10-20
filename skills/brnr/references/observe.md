@@ -55,7 +55,8 @@ brnr event watch $s --events turn_ended,permission_request --json
 ## The events
 
 Every event has `event`, `ts`, `host_id` (the process's run) and `pid` (the
-process); all but `process_exited` and `line_too_long` have `session`. Every
+process); all but `process_exited`, `line_too_long` and `line_too_deep` have
+`session`. Every
 name is snake_case. Who acted is `by` (`editor`, `agent` or `control`), the
 connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
 `host_id`, `pid` and `seq` left out here):
@@ -91,7 +92,8 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
   config options and commands `value` is a JSON merge patch by id or name.
 - `permission_resolved`: `answer` is `allowed`, `rejected` or `cancelled`
   (null for an editor's answer of a kind brnr doesn't know), `option_kind`
-  the chosen option's kind, `by` who answered (`editor` or `control`),
+  the chosen option's kind, `by` who answered (`editor` or `control`, or
+  `agent` when the agent gave the request up itself, `$/cancel_request`),
   `peer` the connection that answered (`socket#18`, a bridge's name), and
   `reason` `cancel` or `timeout` when brnr answered for its turn's cancel or
   its time.
@@ -129,6 +131,10 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
 - `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
   brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
   said, such as the answer to a turn, is lost. It is the process's.
+- `line_too_deep`: a line from the agent (or the editor) nested past 128
+  levels (`max_depth`), which brnr didn't read, as `line_too_long`.
+  Headless it was dropped: a permission request in it reaches no one, and
+  the turn waits until it is cancelled. It is the process's.
 - `process_exited`: the agent's process ended, and brnr's with it
   (`exit_status`), with an `error` when brnr itself crashed. It is the
   process's, not one session's.

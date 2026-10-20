@@ -279,7 +279,7 @@ can give a situation that has none a code of its own.
 | `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`elicitation`/`exit` succeeds when its requested condition occurs. |
 | `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
 | `event watch`, `event notify`, `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 3 when the process cut the command off for falling behind and it couldn't catch up from the transcript: what it missed is an `events_missed` note, with `ts`, `host_id` and `pid` as an event has them, `after_seq` the last event it got, `until_seq` where it subscribed again, or, if subscribing again failed each time, where the process said it cut the command off (null only for a process gone, or one that said no position, as `error` then says), and `error`, why ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). `event watch` prints it as its last event; the others say it on stderr. |
-| `brnr acp` | Invalid invocation/profile resolution exits 2; host startup failures exit 1; after startup the proxy follows the agent's exit/signal status. |
+| `brnr acp` | A usage error exits 2; a config error or a host startup failure exits 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
 | `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
@@ -430,11 +430,15 @@ ACP message's of the host, the same in the transcript (a raw ACP record has
 it before `dir`); session events have `session`. Every name and fixed value
 is snake_case, named subject first (ADR 5.9). Who acted is `by` (`editor`,
 `agent` or `control`), the connection that asked `peer`, and why `reason`.
+`by: agent` is on a `permission_resolved` or `elicitation_resolved` whose
+request the agent cancelled with `$/cancel_request` (ADR 4.5): headless,
+brnr answered it `cancelled` or `cancel`; an editor answers its own. It is no
+longer pending, and an `allow`, `reject` or `elicitation` for it fails.
 `peer_cut_off` (`peer`, `last_queued_seq`) tells the other peers that one was
 cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,
-approvals, elicitations, config patches and process exits. `process_exited` and `line_too_long`
-are process events. Notes are what brnr adds to a stream of events, and are
+approvals, elicitations, config patches and process exits. `process_exited`, `line_too_long`
+and `line_too_deep` are process events. Notes are what brnr adds to a stream of events, and are
 never sent on the socket: `records_skipped` (a gap in a transcript, in `event
 log`) and `events_missed` (what a command couldn't catch up on, on its
 stdout). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config

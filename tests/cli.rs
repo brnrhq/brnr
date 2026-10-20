@@ -3593,6 +3593,103 @@ fn adr_0004_prompt_cancel_cancels_the_sessions_elicitations() {
     assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
 }
 
+/// What a bridge's `pending` has of the process: its permission requests
+/// and its elicitations.
+fn pending(env: &Env) -> Value {
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(conn, "{}", json!({ "cmd": "pending", "req_id": "p" })).unwrap();
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap();
+    json!([answer["pending"], answer["elicitations"]])
+}
+
+/// A permission request or an elicitation the agent cancels with
+/// `$/cancel_request` ends, `by: agent`: gone from the lists, `pending` and
+/// the session's `waiting`, answered `cancelled` or `cancel` as ACP has a
+/// cancelled request answered, and an answer to it after that fails and
+/// sends nothing.
+#[test]
+fn adr_0004_a_request_the_agent_cancels_ends_by_the_agent() {
+    let env = Env::new("c-giveup");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&[]);
+    let state = |env: &Env| {
+        let status = env.ok(&["session", "status", "sess-1", "--json"]);
+        serde_json::from_str::<Value>(&status).unwrap()["state"].clone()
+    };
+    let by_agent = |e: &Value| {
+        assert_eq!(
+            (&e["by"], &e["peer"], &e["reason"]),
+            (&"agent".into(), &Value::Null, &Value::Null)
+        )
+    };
+
+    ask(&env);
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
+    assert_eq!(pending(&env)[0].as_array().unwrap().len(), 1);
+    assert_eq!(state(&env), "waiting");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    idle(&env);
+    assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
+    assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    assert_eq!(pending(&env), json!([[], []]));
+    assert_eq!(state(&env), "idle");
+    let event = &resolved(&env)[0];
+    assert_eq!(event["answer"], "cancelled", "{event}");
+    by_agent(event);
+    let err = env.fails(&["permission", "allow", "sess-1", "p1"]);
+    assert!(err.contains("no pending request p1 in session sess-1"), "{err}");
+    assert_eq!(answers(&env).len(), 1, "sent after it ended");
+
+    elicit(&env, "form");
+    assert!(env.ok(&["elicitation", "requests"]).contains("e1"));
+    assert_eq!(pending(&env)[1].as_array().unwrap().len(), 1);
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
+    idle(&env);
+    assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
+    assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
+    assert_eq!(pending(&env), json!([[], []]));
+    assert_eq!(state(&env), "idle");
+    let event = &events_named(&env, "elicitation_resolved")[0];
+    assert_eq!(event["action"], "cancel", "{event}");
+    by_agent(event);
+    let err = env.fails(&["elicitation", "decline", "sess-1", "e1"]);
+    assert!(err.contains("no pending elicitation e1 in session sess-1"), "{err}");
+    assert_eq!(elicited(&env).len(), 1, "sent after it ended");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("permission p1 cancelled, by agent"), "{log}");
+    assert!(log.contains("elicitation e1 cancelled, by agent"), "{log}");
+}
+
+/// A turn that ends with its request still waiting ends nothing: the
+/// request is still listed and the session `waiting`, and `stop_when_idle`
+/// doesn't count, until the agent cancels it (ADR 3.8).
+#[test]
+fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
+    let env = Env::new("c-askandend");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    // Busy from the start, so idle time counts only once the turn ends.
+    env.start(&["--stop-when-idle", "1", "--prompt", "perm edit"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    let ended = || events_named(&env, "turn_ended").len() == 1;
+    assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+    sleep(Duration::from_secs(2));
+    assert_eq!(env.hosts().len(), 1, "stopped with a request waiting");
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["state"], "waiting", "{status}");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
+}
+
 // ---- lifecycle -----------------------------------------------------------
 
 #[test]

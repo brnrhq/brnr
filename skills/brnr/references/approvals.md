@@ -7,7 +7,9 @@ waits for `brnr permission allow` or `brnr permission reject`, or for
 `response_timeout` in the profile, which rejects it once, or cancels its
 turn. An elicitation waits the same way, and the timeout answers it `cancel`.
 `response_timeout` has no default: a worker left to run unattended needs it
-set, or its turn waits for an answer that never comes.
+set, or its turn waits for an answer that never comes. The agent can give a
+request up itself: then it is gone from the lists, its `*_resolved` event says
+`by: agent`, and an answer to it fails.
 
 ## The rule
 
