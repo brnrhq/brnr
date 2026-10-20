@@ -316,6 +316,15 @@ Configuration is TOML. [Profiles](../README.md#profiles) gives a complete
 example. Unknown keys, keys in the wrong section, and unknown feature/action
 names fail to load. `doctor` validates every profile.
 
+The file loads only if it is the user's own and neither the group nor others
+can read or write it, and its folder is the user's own and neither can write
+it; a symlink is followed, and the file it resolves to and that file's folder
+are checked. Otherwise every command that reads it fails, naming the path,
+the owner or mode, and the `chmod` or `chown` that fixes it, and `doctor`
+fails its config check the same way; brnr never changes the file's mode. A
+missing file is no configuration
+([ADR 9.4](adr/0009-security-and-privacy.md#94-the-config-file-is-read-only-if-only-you-can-change-or-read-it)).
+
 **Covered** from 1.0.0: the TOML below, its sections, keys, values and
 names; the environment variables below, `BRNR_DIR` as where the runtime
 directory is, not what is in it; the `BRNR_*` variables `event notify`
