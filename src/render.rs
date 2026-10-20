@@ -89,7 +89,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
         // Allowed, rejected or cancelled (ADR 8.1), with the option and its
         // kind; an editor's answer of a kind brnr doesn't know, answered.
         "permission_resolved" => {
-            let (request, by) = (s(&e["request"]), s(&e["by"]));
+            let (request, by) = (s(&e["request"]), who(e));
             match (e["answer"].as_str(), e["outcome"]["optionId"].as_str()) {
                 (Some("cancelled"), _) => format!("permission {request} cancelled, by {by}"),
                 (answer, Some(option)) => format!(
@@ -119,11 +119,11 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 Some("url") => format!("url: {}", s(&e["url"])),
                 mode => mode.unwrap_or("?").to_owned(),
             };
-            format!("elicitation {}{editor}: {} [{how}]", s(&e["request"]), s(&e["message"]))
+            format!("elicitation {}{editor}: {} [{how}]", s(&e["request"]), s(&e["text"]))
         }
         // Accepted (with the content), declined or cancelled, and by whom.
         "elicitation_resolved" => {
-            let (request, by) = (s(&e["request"]), s(&e["by"]));
+            let (request, by) = (s(&e["request"]), who(e));
             let action = match e["action"].as_str() {
                 Some("accept") => "accepted".to_owned(),
                 Some("decline") => "declined".to_owned(),
@@ -151,16 +151,16 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             format!("{} ({}){}", turn(e, "turn"), s(&e["by"]), turn_tokens(&e["tokens"]))
         }
         "message_dropped" => {
-            format!("dropped {} ({}): {}", s(&e["message"]), s(&e["by"]), s(&e["text"]))
+            format!("dropped {} ({}): {}", s(&e["message"]), who(e), s(&e["text"]))
         }
-        "context_dropped" => format!("dropped context ({}): {}", s(&e["by"]), s(&e["text"])),
-        "session_closed" => format!("session closed ({})", s(&e["by"])),
+        "context_dropped" => format!("dropped context ({}): {}", who(e), s(&e["text"])),
+        "session_closed" => format!("session closed ({})", who(e)),
         // A load the agent answered after the session's close (ADR 5.6).
         "session_reopened" => {
             format!("session reopened ({}): its load was answered after its close", s(&e["by"]))
         }
         // The agent's copy deleted; brnr's transcript stays (ADR 8.1).
-        "session_deleted" => format!("session deleted ({})", s(&e["by"])),
+        "session_deleted" => format!("session deleted ({})", who(e)),
         // What a load replayed, and whether it is in the transcript as
         // replayed events or was there already (ADR 5.6).
         "history" => {
@@ -187,12 +187,12 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
         }
         // A gap in the transcript: records a slow disk made brnr skip, or a
         // full one failed to take (ADR 10.1).
-        "records-skipped" => {
+        "records_skipped" => {
             let at = |v: &Value| v.as_str().and_then(|t| t.get(11..19)).unwrap_or("?").to_owned();
             let mut what = format!(
                 "{} records not written ({} of them raw ACP), {} to {}",
                 e["count"],
-                e["acp"].as_u64().unwrap_or(0),
+                e["acp_count"].as_u64().unwrap_or(0),
                 at(&e["since"]),
                 at(&e["until"]),
             );
@@ -207,21 +207,21 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             format!(
                 "{} cut off, behind: sent nothing after event {}",
                 s(&e["peer"]),
-                e["last_queued"]
+                e["last_queued_seq"]
             )
         }
         // What a command cut off couldn't catch up on, and why (ADR 10.2).
-        "events-missed" => {
-            let until = match e["until"].as_u64() {
+        "events_missed" => {
+            let until = match e["until_seq"].as_u64() {
                 Some(until) => format!(" up to {until}"),
                 None => String::new(),
             };
-            format!("cut off: events after {}{until} missed: {}", e["after"], s(&e["error"]))
+            format!("cut off: events after {}{until} missed: {}", e["after_seq"], s(&e["error"]))
         }
-        // With a reason when brnr itself died (a panic, ADR 3.7).
-        "exited" => match e["reason"].as_str() {
-            Some(reason) => format!("{}; {reason}", exited(&e["status"])),
-            None => exited(&e["status"]),
+        // With the error when brnr itself died (a panic, ADR 3.7).
+        "process_exited" => match e["error"].as_str() {
+            Some(error) => format!("{}; {error}", exited(&e["exit_status"])),
+            None => exited(&e["exit_status"]),
         },
         // An ACP message (`--events acp`): the direction and the message.
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
@@ -243,7 +243,7 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
     Some(format!("{prefix}{}", what.replace('\n', &format!("\n{indent}"))))
 }
 
-/// How the agent ended, as an `exited` event's `status` has it (ADR 3.7):
+/// How the agent ended, as a `process_exited` event's `exit_status` has it (ADR 3.7):
 /// `agent exited with code 1`, `agent killed by SIGTERM`, or `agent exited
 /// (status unknown)` for a status brnr didn't get.
 pub(crate) fn exited(status: &Value) -> String {
@@ -253,6 +253,18 @@ pub(crate) fn exited(status: &Value) -> String {
         format!("agent killed by {}", signal(sig))
     } else {
         "agent exited (status unknown)".to_owned()
+    }
+}
+
+/// Who acted, as text shows it (ADR 5.9): the connection that asked, else
+/// the party if it isn't brnr (`editor`, `agent`), else why brnr did, else
+/// `control`.
+pub(crate) fn who(e: &Value) -> String {
+    match (e["peer"].as_str(), e["by"].as_str(), e["reason"].as_str()) {
+        (Some(peer), _, _) => peer.to_owned(),
+        (None, Some(by), _) if by != "control" => by.to_owned(),
+        (None, _, Some(reason)) => reason.to_owned(),
+        (None, by, None) => by.unwrap_or("?").to_owned(),
     }
 }
 
@@ -703,11 +715,12 @@ mod tests {
         let changed = json!({ "review": { "name": "review" }, "compact": null });
         let commands = json!({ "event": "session_changed", "what": "commands", "value": changed });
         assert_eq!(shown(commands), "commands: +review -compact");
-        let dropped =
-            json!({ "event": "message_dropped", "message": "m3", "text": "later", "by": "queue" });
+        let dropped = json!({ "event": "message_dropped", "message": "m3", "text": "later", "reason": "queue" });
         assert_eq!(shown(dropped), "dropped m3 (queue): later");
-        let closed = json!({ "event": "session_closed", "by": "idle" });
+        let closed = json!({ "event": "session_closed", "by": "control", "reason": "idle" });
         assert_eq!(shown(closed), "session closed (idle)");
+        let closed = json!({ "event": "session_closed", "by": "editor", "reason": "close" });
+        assert_eq!(shown(closed), "session closed (editor)");
         let reopened = json!({ "event": "session_reopened", "by": "editor" });
         let said = "session reopened (editor): its load was answered after its close";
         assert_eq!(shown(reopened), said);
@@ -734,17 +747,20 @@ mod tests {
         let failed =
             json!({ "event": "turn_ended", "error": { "message": "boom" }, "by": "control" });
         assert_eq!(shown(failed), "turn failed: boom (control)");
-        let exited = |status: Value| shown(json!({ "event": "exited", "status": status }));
+        let exited =
+            |status: Value| shown(json!({ "event": "process_exited", "exit_status": status }));
         assert_eq!(exited(json!({ "code": 0 })), "agent exited with code 0");
         assert_eq!(exited(json!({ "code": 1 })), "agent exited with code 1");
         assert_eq!(exited(json!({ "signal": libc::SIGTERM })), "agent killed by SIGTERM");
         assert_eq!(exited(json!({ "signal": libc::SIGKILL })), "agent killed by SIGKILL");
         assert_eq!(exited(json!({ "signal": 99 })), "agent killed by signal 99");
         assert_eq!(exited(Value::Null), "agent exited (status unknown)");
-        let panicked = json!({ "event": "exited", "status": null, "reason": "brnr panicked" });
+        let panicked =
+            json!({ "event": "process_exited", "exit_status": null, "error": "brnr panicked" });
         assert_eq!(shown(panicked), "agent exited (status unknown); brnr panicked");
         let id = "0199a6f2-7b4c-7d21-9e3f-5a8b1c2d3e4f";
-        let e = json!({ "event": "session_closed", "session": id, "by": "idle" });
+        let e =
+            json!({ "event": "session_closed", "session": id, "by": "control", "reason": "idle" });
         let line = event(&e, &Options { session: true, time: false }).unwrap();
         assert_eq!(line, format!("{id}  session closed (idle)"));
     }
@@ -774,16 +790,18 @@ mod tests {
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
         let schema = json!({ "properties": { "name": {}, "color": {} } });
         let form = json!({ "event": "elicitation_request", "request": "e1", "mode": "form",
-                           "message": "Which?", "schema": schema, "owner": "headless" });
+                           "text": "Which?", "schema": schema, "owner": "headless" });
         assert_eq!(shown(form), "elicitation e1: Which? [form: name color]");
         let url = json!({ "event": "elicitation_request", "request": "e2", "mode": "url",
-                          "message": "Log in", "url": "https://x.example/a", "owner": "editor" });
+                          "text": "Log in", "url": "https://x.example/a", "owner": "editor" });
         assert_eq!(shown(url), "elicitation e2 (in the editor): Log in [url: https://x.example/a]");
         let accepted = json!({ "event": "elicitation_resolved", "request": "e1", "action": "accept",
-                               "content": { "name": "ab", "count": 7 }, "by": "socket#3" });
+                               "content": { "name": "ab", "count": 7 }, "by": "control",
+                               "peer": "socket#3", "reason": null });
         assert_eq!(shown(accepted), "elicitation e1 accepted (name=ab count=7), by socket#3");
         let cancelled = json!({ "event": "elicitation_resolved", "request": "e1",
-                                "action": "cancel", "content": null, "by": "timeout" });
+                                "action": "cancel", "content": null, "by": "control",
+                                "peer": null, "reason": "timeout" });
         assert_eq!(shown(cancelled), "elicitation e1 cancelled, by timeout");
         let done =
             json!({ "event": "elicitation_completed", "request": "e2", "elicitation_id": "el-1" });

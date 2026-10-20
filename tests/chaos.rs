@@ -132,7 +132,7 @@ fn adr_0003_seeded_setup_failure_never_commits_a_prompt() {
             agent.gone();
             descendant.gone();
             assert!(env.prompts().is_empty());
-            assert!(logs(&env).contains("\"event\":\"exited\""));
+            assert!(logs(&env).contains("\"event\":\"process_exited\""));
             assert!(env.ok(&["doctor", "--fix"]).contains("no process died without recording it"));
         }
     }
@@ -151,7 +151,7 @@ fn adr_0003_seeded_agent_crash_records_death_and_releases_session() {
         host.gone();
         agent.gone();
         descendant.gone();
-        assert!(logs(&env).contains("\"event\":\"exited\""));
+        assert!(logs(&env).contains("\"event\":\"process_exited\""));
         recovered(&env, false);
     }
 }
@@ -168,7 +168,7 @@ fn adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session() {
         host.signal(libc::SIGKILL);
         host.gone();
         agent.gone(); // The severed output pipe, without test-assisted cleanup.
-        assert!(!logs(&env).contains("\"event\":\"exited\""));
+        assert!(!logs(&env).contains("\"event\":\"process_exited\""));
         recovered(&env, true);
     }
 }
@@ -238,7 +238,7 @@ fn adr_0005_killed_bridge_mid_turn_leaves_owner_and_lock_intact() {
         marker(&env);
         bridge.signal(libc::SIGKILL);
         bridge.gone();
-        assert!(wait_for(WAIT, || logs(&env).contains("bridge-exited")));
+        assert!(wait_for(WAIT, || logs(&env).contains("bridge_exited")));
         assert!(host.running() && agent.running());
         assert!(env.ok(&["doctor", "--fix"]).contains("no process died without recording it"));
         assert_eq!(env.host_pid(), host.pid);

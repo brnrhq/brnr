@@ -31,7 +31,7 @@ login stay the agent's.
 - An `injected` answer puts the message in that turn: its `user_message`
   names the turn's prompt, and the `turn_ended`, when it goes, lists it. A
   `promptRequired` answer holds the message as ADR 4.2 says, ahead of what
-  is held. An error, or any other answer, is a `message_dropped`, `by`
+  is held. An error, or any other answer, is a `message_dropped`, its `reason`
   `steer` (ADR 5.2). Then the held `turn_ended` goes, and then the next
   held message.
 - While a turn's `turn_ended` waits, no other turn starts. `prompt send`
@@ -39,7 +39,7 @@ login stay the agent's.
   held as ADR 4.2 has it, but with no turn to cancel (status `held`, no
   `session/cancel`). `prompt send --steer` is steered into that turn.
 - `prompt cancel`, closing the session and the agent exiting drop
-  unanswered steers (`message_dropped`, `by` `cancel`, `close` or `exit`),
+  unanswered steers (`message_dropped`, its `reason` `cancel`, `close` or `exit`),
   and then the held `turn_ended` goes. Every accepted message ends in one
   `turn_ended` that lists it, or in one `message_dropped`, whatever the
   order of the answers.
@@ -47,11 +47,11 @@ login stay the agent's.
   turn's own answer exits as that turn does. What the agent said before it
   answered isn't shown as the message's reply: `--wait` prints what follows
   the message's `user_message`. The transcript has it.
-- `steer-after-turn` in the host log is for an `injected` answer with no
+- `steer_after_turn` in the host log is for an `injected` answer with no
   turn at all. A steer brnr sends only while a turn runs or waits, so it
-  can't get one; if it does, the message is dropped, `by` `steer`, never
+  can't get one; if it does, the message is dropped, `reason` `steer`, never
   left without an end. The editor's own steers (ADR 7.1) have no message
-  id; one answered with no turn is logged `steer-after-turn`.
+  id; one answered with no turn is logged `steer_after_turn`.
 
 **Why.** `prompt send --wait` must know which turn answers its message,
 even when the message is held, steered into a running turn, or sent after
@@ -238,23 +238,25 @@ Events:
 
 - `permission_request`, and `permission_resolved`, which says `allowed` or
   `rejected`, and which kind (ADR 8.1).
-- `elicitation_request` carries the request's `message`, `mode` (`form`,
-  `url`, or another the agent names), `scope` (`session`, `tool_call` or
-  `request`) with the `tool_call` or `scope_request` it names, the form's
+- `elicitation_request` carries the request's `text` (ACP's `message`),
+  `mode` (`form`, `url`, or another the agent names), `scope` (`session`,
+  `tool_call` or `request`) with the `tool_call_id` or `scope_request_id`
+  it names, the form's
   `schema` (the `requestedSchema` as sent), and a URL mode's `url` and
   `elicitation_id`; `owner` says `headless` or `editor`.
 - `elicitation_resolved` carries the `action` sent (`accept`, `decline`,
   `cancel`, or an editor's other action), the `content` an accept carried,
-  and `by` (a connection or bridge, `editor`, `cancel` or `timeout`).
+  and who and why, as `permission_resolved` has them (ADR 5.9): `by`
+  `editor`, or `control` with the connection or bridge that answered
+  (`peer`) or `reason` `cancel` or `timeout`.
 - `elicitation_completed` is the agent's `elicitation/complete`, the URL's
   flow done, with the `elicitation_id` and the handle it belonged to.
 - `event wait --for permission` and `--for elicitation` wait for one
   (ADR 8.3). `event notify` runs its command for `permission_request` and
   `elicitation_request` by default (ADR 5.8). `prompt send --wait`
   announces one on stderr, with how to see it and answer it.
-- The events' shapes follow what the code does (snake_case keys, the
-  agent's values as sent); when #149 and #150 land, and ADR 5.9's renames
-  (#314), they follow those decisions.
+- The events' names follow ADR 5.9 (snake_case, the agent's values as
+  sent); when #149 and #150 land, their shapes follow those decisions.
 
 Listing and showing:
 
@@ -345,9 +347,9 @@ One timeout:
   answered `cancelled`, as ACP requires. Never `reject_always`, and never
   an allow.
 - An elicitation nobody answered in time is answered `cancel`, `by`
-  `timeout`: never `decline`, which says the user said no, nor `accept`.
+  `control`, `reason` `timeout`: never `decline`, which says the user said no, nor `accept`.
 - `prompt cancel` answers the session's pending elicitations `cancel`, `by`
-  `cancel`, as it answers its permission requests `cancelled`: the turn
+  `control`, `reason` `cancel`, as it answers its permission requests `cancelled`: the turn
   they were asked in is gone, and nothing is left waiting unsaid (P3).
 
 A request the agent gives up on (#162), decided, not implemented yet

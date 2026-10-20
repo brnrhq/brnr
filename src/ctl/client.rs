@@ -178,7 +178,7 @@ fn keep(answer: Value) -> Result<Value, String> {
 
 /// Session `id` in a process's `status` answer, if it serves it.
 pub(super) fn session_in<'a>(status: &'a Value, id: &str) -> Option<&'a Value> {
-    status["sessions"].as_array()?.iter().find(|s| s["session_id"] == id)
+    status["sessions"].as_array()?.iter().find(|s| s["session"] == id)
 }
 
 /// What waits for an answer in a process, as its `pending` answer has it:
@@ -658,14 +658,14 @@ impl Conn {
     }
 
     /// Asks the process whether it cut `peer` off: if it did, the last
-    /// position then (`last_queued`), if it says; none if it didn't, or
+    /// position then (`last_queued_seq`), if it says; none if it didn't, or
     /// answers with an error. `Err` if it doesn't answer: it hung up, as one
     /// that is stopping does (#275).
     fn was_cut_off(&mut self, peer: &str) -> Result<Option<Option<u64>>, String> {
         let req = json!({ "cmd": "was_cut_off", "peer": peer });
         let asked = self.answer_until(req, None)?.ok_or("the process closed the connection")?;
         let cut = asked["ok"] == true && asked["cut_off"] == true;
-        Ok(cut.then(|| asked["last_queued"].as_u64()))
+        Ok(cut.then(|| asked["last_queued_seq"].as_u64()))
     }
 
     /// The connection has ended (`why`) before the end the command waits
@@ -1037,6 +1037,7 @@ mod tests {
         conn.follow = Some(Follow {
             socket,
             host_id: "h".into(),
+            pid: json!(7),
             host_log,
             peer: "socket#0".into(),
             events: vec!["turn_ended".into()],
@@ -1049,7 +1050,7 @@ mod tests {
         assert!(conn.next_event(None).is_err());
         let note = conn.missed().unwrap();
         assert_eq!(note["error"], "cut off 4 times in a row while catching up", "{note}");
-        assert_eq!((note["after"].as_u64(), note["until"].as_u64()), (Some(40), Some(50)));
+        assert_eq!((note["after_seq"].as_u64(), note["until_seq"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1107,6 +1108,7 @@ mod tests {
         conn.follow = Some(Follow {
             socket,
             host_id: "h".into(),
+            pid: json!(7),
             host_log,
             peer: "socket#0".into(),
             events: vec!["turn_ended".into()],
@@ -1156,7 +1158,7 @@ mod tests {
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
         let record =
             |event: Value| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event }));
-        let dropped = record(json!({ "event": "peer-dropped", "peer": "socket#0" }));
+        let dropped = record(json!({ "event": "peer_dropped", "peer": "socket#0" }));
         let events: String =
             (11..=12).map(|n| record(json!({ "event": "turn_ended", "seq": n }))).collect();
         fs::write(&host_log, dropped + &events).unwrap();
@@ -1173,6 +1175,7 @@ mod tests {
         conn.follow = Some(Follow {
             socket,
             host_id: "h".into(),
+            pid: json!(7),
             host_log,
             peer: "socket#0".into(),
             events: vec!["turn_ended".into()],
@@ -1194,11 +1197,11 @@ mod tests {
     /// meanwhile (its socket refuses) is caught up with to its end, so that
     /// `until` is null only for a process that has gone. One that stays
     /// gives up at the 4th, `until` where it said it cut the peer off
-    /// (`last_queued`, 30), or null with the error saying why if it said no
+    /// (`last_queued_seq`, 30), or null with the error saying why if it said no
     /// position.
     #[test]
     fn adr_0010_a_new_subscription_that_fails_is_one_more_cut_off() {
-        // A process that says it cut the peer off (`last_queued`) and fails
+        // A process that says it cut the peer off (`last_queued_seq`) and fails
         // each new subscription (no `seq`, or an error), then, after
         // `serves` connections, goes or (`stays`) only stops answering.
         let process = |name: &str, last_queued: Option<u64>, serves: usize, stays: bool| {
@@ -1206,7 +1209,7 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
-            let exited = json!({ "event": "exited", "status": 0, "seq": 12 });
+            let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 12 });
             let record = json!({ "ts": "t", "host_id": "h", "event": exited });
             fs::write(&host_log, format!("{record}\n")).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
@@ -1221,7 +1224,7 @@ mod tests {
                         asked.push(format!("{k}:{}", req["cmd"].as_str().unwrap()));
                         let mut answer = match req["cmd"].as_str().unwrap() {
                             "was_cut_off" => {
-                                json!({ "ok": true, "cut_off": true, "last_queued": last_queued })
+                                json!({ "ok": true, "cut_off": true, "last_queued_seq": last_queued })
                             }
                             "subscribe" if k % 2 == 1 => {
                                 json!({ "ok": true, "peer": format!("socket#{k}"), "host_id": "h" })
@@ -1249,9 +1252,10 @@ mod tests {
             conn.follow = Some(Follow {
                 socket,
                 host_id: "h".into(),
+                pid: json!(7),
                 host_log,
                 peer: "socket#0".into(),
-                events: vec!["exited".into()],
+                events: vec!["process_exited".into()],
                 session: None,
                 last: 10,
                 tries: 0,
@@ -1269,7 +1273,7 @@ mod tests {
         // Gone after two: caught up to its end from the transcript.
         let (mut conn, thread, dir) = process("gone", Some(30), 2, false);
         let caught = conn.next_event(None).unwrap().unwrap();
-        assert_eq!((&caught["event"], &caught["seq"]), (&json!("exited"), &json!(12)));
+        assert_eq!((&caught["event"], &caught["seq"]), (&json!("process_exited"), &json!(12)));
         assert!(conn.missed().is_none());
         once(thread.join().unwrap(), 2);
         let _ = fs::remove_dir_all(&dir);
@@ -1278,9 +1282,9 @@ mod tests {
         for (name, last_queued) in [("stays", Some(30)), ("nowhere", None)] {
             let (mut conn, thread, dir) = process(name, last_queued, tries, true);
             assert!(conn.next_event(None).is_err());
-            let note = conn.missed().expect("no events-missed note").clone();
+            let note = conn.missed().expect("no events_missed note").clone();
             assert_eq!(
-                (note["after"].as_u64(), note["until"].as_u64()),
+                (note["after_seq"].as_u64(), note["until_seq"].as_u64()),
                 (Some(10), last_queued),
                 "{note}"
             );
@@ -1302,7 +1306,7 @@ mod tests {
         assert!(conn.call(json!({ "cmd": "status" })).is_err());
         let note = conn.missed().unwrap();
         assert_eq!(
-            (note["after"].as_u64(), note["until"].as_u64()),
+            (note["after_seq"].as_u64(), note["until_seq"].as_u64()),
             (Some(11), Some(20)),
             "{note}"
         );

@@ -42,6 +42,10 @@ background, or prefer `event wait` when what you want is the end of a turn.
 `--events` takes event names, `all`, and `default`, comma-separated, for
 `event log`, `event watch` and `event notify` alike. Without it, `event log`
 and `event watch` leave out the quiet ones: `acp`, `agent_thought`, `usage` and `tool_progress`.
+It takes brnr's two notes too, which are shown whatever it chose:
+`records_skipped`, a gap in the transcript, and `events_missed`, what a
+command cut off couldn't catch up on. `--events records_skipped` alone lists
+a transcript's gaps.
 
 ```sh
 brnr event log $s --events default,agent_thought --json
@@ -50,8 +54,11 @@ brnr event watch $s --events turn_ended,permission_request --json
 
 ## The events
 
-Every event has `event`, `ts` and `host_id`; all but `exited` and
-`line_too_long` have `session`. As brnr prints them:
+Every event has `event`, `ts`, `host_id` (the process's run) and `pid` (the
+process); all but `process_exited` and `line_too_long` have `session`. Every
+name is snake_case. Who acted is `by` (`editor`, `agent` or `control`), the
+connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
+`host_id`, `pid` and `seq` left out here):
 
 ```json
 {"event": "user_message", "session": "0f6c…", "by": "control", "message": "m1", "text": "fix the failing tests"}
@@ -63,17 +70,17 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 {"event": "usage", "session": "0f6c…", "usage": {"used": 12345, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}}}
 {"event": "session_changed", "session": "0f6c…", "what": "title", "value": "Fix the failing tests"}
 {"event": "permission_request", "session": "0f6c…", "request": "p1", "owner": "headless", "title": "Edit src/lib.rs", "kind": "edit", "tool_call": {}, "options": []}
-{"event": "permission_resolved", "session": "0f6c…", "request": "p1", "answer": "allowed", "option_kind": "allow_once", "outcome": {"outcome": "selected", "optionId": "allow"}, "by": "socket#18"}
-{"event": "elicitation_request", "session": "0f6c…", "request": "e1", "owner": "headless", "mode": "form", "message": "Which branch?", "scope": "session", "tool_call": null, "scope_request": null, "schema": {}, "url": null, "elicitation_id": null}
-{"event": "elicitation_resolved", "session": "0f6c…", "request": "e1", "action": "accept", "content": {"branch": "main"}, "by": "socket#18"}
+{"event": "permission_resolved", "session": "0f6c…", "request": "p1", "answer": "allowed", "option_kind": "allow_once", "outcome": {"outcome": "selected", "optionId": "allow"}, "by": "control", "peer": "socket#18", "reason": null}
+{"event": "elicitation_request", "session": "0f6c…", "request": "e1", "owner": "headless", "mode": "form", "text": "Which branch?", "scope": "session", "tool_call_id": null, "scope_request_id": null, "schema": {}, "url": null, "elicitation_id": null}
+{"event": "elicitation_resolved", "session": "0f6c…", "request": "e1", "action": "accept", "content": {"branch": "main"}, "by": "control", "peer": "socket#18", "reason": null}
 {"event": "elicitation_completed", "session": "0f6c…", "request": "e2", "elicitation_id": "login-1"}
 {"event": "turn_ended", "session": "0f6c…", "by": "control", "messages": ["m1"], "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}}
-{"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "by": "cancel"}
-{"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "by": "close"}
-{"event": "session_closed", "session": "0f6c…", "by": "idle"}
-{"event": "session_deleted", "session": "0f6c…", "by": "delete"}
+{"event": "message_dropped", "session": "0f6c…", "message": "m4", "text": "also update the changelog", "reason": "cancel"}
+{"event": "context_dropped", "session": "0f6c…", "text": "the API key is in .env.local", "reason": "close"}
+{"event": "session_closed", "session": "0f6c…", "by": "control", "reason": "idle"}
+{"event": "session_deleted", "session": "0f6c…", "by": "control"}
 {"event": "history", "session": "0f6c…", "updates": 42, "recorded": true, "recorded_updates": 42, "loads": 1}
-{"event": "exited", "status": {"code": 0}}
+{"event": "process_exited", "exit_status": {"code": 0}}
 ```
 
 - `user_message`: a message sent to the agent, `by` the `editor` or
@@ -84,8 +91,10 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   config options and commands `value` is a JSON merge patch by id or name.
 - `permission_resolved`: `answer` is `allowed`, `rejected` or `cancelled`
   (null for an editor's answer of a kind brnr doesn't know), `option_kind`
-  the chosen option's kind, `by` who answered (`editor`, `cancel`,
-  `timeout`, or a connection).
+  the chosen option's kind, `by` who answered (`editor` or `control`),
+  `peer` the connection that answered (`socket#18`, a bridge's name), and
+  `reason` `cancel` or `timeout` when brnr answered for its turn's cancel or
+  its time.
 - `turn_ended`: `stop_reason` (`end_turn`, `cancelled`, …) or an `error`
   (`{code, message}`), the `messages` the turn carried, and `tokens`: the
   counts the agent reported for the turn (`total`, `input`, `output`,
@@ -94,16 +103,17 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
   when the answer has no `usage` object. brnr adds nothing up; what the counts
   cover (subagents, earlier model calls) is the agent's to say. `usage` is the
   context window, not a turn's tokens.
-- `message_dropped`: `by` `cancel`, `queue`, `close`, `exit` or `steer`;
-  `context_dropped`: `by` `queue`, `close` or `exit`. Each is something you
-  sent that the agent never got.
-- `session_closed`: `by` `close`, `idle` (`--stop-when-idle`) or `editor`.
+- `message_dropped`: its `reason` `cancel`, `queue`, `close`, `exit` or
+  `steer`; `context_dropped`: `queue`, `close` or `exit`. Each is something
+  you sent that the agent never got.
+- `session_closed`: `by` `control`, `reason` `close` or `idle`
+  (`--stop-when-idle`); or `by` `editor`.
 - `session_reopened`: `by` `editor`: the agent answered an editor's load
   of the session with success after it answered the session's close, so the
   session is open again. A watcher has ended at the `session_closed`; watch
   it again to follow it.
 - `session_deleted`: the agent deleted its copy of the session, `by`
-  `delete` (`brnr session delete`) or the `editor`. brnr's transcript stays,
+  `control` (`brnr session delete`) or the `editor`. brnr's transcript stays,
   and `event log` still reads it.
 - `history`: a `session/load` replayed the session's history (`updates`).
   `recorded: true` when brnr had no transcript of it: the history is in the
@@ -119,15 +129,16 @@ Every event has `event`, `ts` and `host_id`; all but `exited` and
 - `line_too_long`: a line from the agent (or the editor) over 32 MiB, which
   brnr didn't read. Headless it was dropped (`relayed: false`): whatever it
   said, such as the answer to a turn, is lost. It is the process's.
-- `exited`: the agent's process ended (`status`), with a `reason` when brnr
-  itself crashed. It is the process's, not one session's.
+- `process_exited`: the agent's process ended, and brnr's with it
+  (`exit_status`), with an `error` when brnr itself crashed. It is the
+  process's, not one session's.
 - `acp`: every ACP message, raw; only with `--events all` or by name.
 
 ## Notifications
 
 `event notify` runs a command for each event: by default `permission_request`,
-`turn_ended` and `exited`. The event is in the command's environment
-(`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION_ID`,
+`turn_ended` and `process_exited`. The event is in the command's environment
+(`BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`, `BRNR_SESSION`,
 `BRNR_REQUEST`, `BRNR_PID`) and, as JSON, on its stdin, never on its command
 line. It runs until the session closes.
 

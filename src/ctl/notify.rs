@@ -8,7 +8,7 @@
 //!
 //! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr event watch` would
 //!   show it; `BRNR_TITLE`: the session's title, else its id;
-//! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's or an elicitation's
+//! - `BRNR_SESSION`, `BRNR_REQUEST` (an approval's or an elicitation's
 //!   handle),
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
@@ -18,7 +18,7 @@
 //!
 //! `--events` is read as for `event watch`, but its default (and `default`)
 //! is `permission_request`, `elicitation_request` (ADR 4.5), `turn_ended`,
-//! `exited`. It exits when the process
+//! `process_exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
@@ -37,12 +37,12 @@
 //! bridge in a profile it is
 //! `command = ["brnr", "event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
 //! is the one the process gives it. The bridge's `events`, if the profile
-//! limits them, must include `agent_message`, `session_changed` and `exited`
-//! for the environment and the end. Its stdin ending before `exited` is being
+//! limits them, must include `agent_message`, `session_changed` and `process_exited`
+//! for the environment and the end. Its stdin ending before `process_exited` is being
 //! cut off; the process cuts off a bridge that falls behind with SIGTERM, and a
-//! started bridge's stderr is in the host log (`bridge-stderr`): a started
+//! started bridge's stderr is in the host log (`bridge_stderr`): a started
 //! bridge doesn't catch up (ADR 10.2). On the socket, the connection closing
-//! before `exited` is being cut off, which notify also looks for while a
+//! before `process_exited` is being cut off, which notify also looks for while a
 //! command runs, and asks the process about.
 
 use std::collections::{HashMap, VecDeque};
@@ -66,7 +66,7 @@ use super::client::{Conn, discover};
 use super::{Args, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] =
-    &["permission_request", "elicitation_request", "turn_ended", "exited"];
+    &["permission_request", "elicitation_request", "turn_ended", "process_exited"];
 
 /// The most of the agent's text one variable gets. Linux refuses to start a
 /// program with a variable over 128 KiB, and macOS one whose environment and
@@ -95,7 +95,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
     // Agent messages and titles are tracked for the environment, and the
     // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
-    for extra in ["agent_message", "session_changed", "session_closed", "exited"] {
+    for extra in ["agent_message", "session_changed", "session_closed", "process_exited"] {
         if !wanted.contains(&extra) {
             wanted.push(extra);
         }
@@ -172,7 +172,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                     ("BRNR_EVENT", name.clone()),
                     ("BRNR_TEXT", env_text(&text.unwrap_or_default())),
                     ("BRNR_TITLE", env_text(&title)),
-                    ("BRNR_SESSION_ID", session.clone()),
+                    ("BRNR_SESSION", session.clone()),
                     ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
                     ("BRNR_MESSAGE", env_text(&message)),
                     ("BRNR_PID", process.clone()),
@@ -233,10 +233,10 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
     ended
 }
 
-/// Whether `e` is the last event notify waits for: `exited`, or with `only`
+/// Whether `e` is the last event notify waits for: `process_exited`, or with `only`
 /// that session's `session_closed`.
 fn ends(e: &Value, only: Option<&str>) -> bool {
-    e["event"] == "exited"
+    e["event"] == "process_exited"
         || (e["event"] == "session_closed" && only.is_some_and(|s| e["session"] == s))
 }
 
@@ -419,7 +419,7 @@ impl Events {
             let sessions = status["sessions"].as_array().into_iter().flatten();
             sessions
                 .filter_map(|s| {
-                    Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
+                    Some((s["session"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
                 })
                 .collect::<HashMap<String, String>>()
         })?;
@@ -606,7 +606,7 @@ mod tests {
         let (rest, _, cut) = events.source.rest();
         assert_eq!((rest.len(), &rest[0]["seq"], cut), (1, &Value::from(11), true));
         assert!(events.source.next().is_err());
-        assert_eq!(events.source.missed().unwrap()["after"], 11);
+        assert_eq!(events.source.missed().unwrap()["after_seq"], 11);
         process.join().unwrap();
     }
 }

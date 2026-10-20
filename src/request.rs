@@ -188,7 +188,7 @@ impl Request {
         stdin.write_all(&serde_json::to_vec(self)?)
     }
 
-    /// The request as the host log's `started` record holds it: the values
+    /// The request as the host log's `process_started` record holds it: the values
     /// of the MCP servers' `env` and `headers` redacted (ADR 9.1).
     pub(crate) fn recorded(&self) -> Value {
         let mut request = serde_json::to_value(self).unwrap_or_default();

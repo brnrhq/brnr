@@ -12,8 +12,8 @@
 //! another hard link. What is written there is refused anyway; read, it
 //! would be whatever the link points at.
 //!
-//! A record is a line that is a JSON object: `{"ts","host_id","host_pid",
-//! "proxy_pid","agent_pid"[,"session_id"],…}`, then `"event":{…}` for a
+//! A record is a line that is a JSON object: `{"ts","host_id","pid",
+//! "proxy_pid","agent_pid"[,"session"],…}`, then `"event":{…}` for a
 //! host event, or `["seq",]"dir"` and `"msg"` (`"raw"` for a line that
 //! wasn't JSON) for an ACP message. It is read as the host reads ACP
 //! (ADR 2.5): a lone surrogate is U+FFFD, and there is no depth limit, so a
@@ -22,6 +22,12 @@
 //! process that died mid-write, at a file's end or before what another
 //! process wrote, or broken otherwise. A line cut short is never taken for
 //! a record: an object ends only at its last byte.
+//!
+//! A record an older brnr wrote, its head naming the process `host_pid` and
+//! the session `session_id`, isn't read (ADR 5.9, P9): its names are not
+//! this brnr's. A file of them is no transcript to `session list`, `session
+//! resume` or a load; `event log` and `doctor` say an older brnr wrote it
+//! (P3).
 
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
@@ -184,11 +190,31 @@ pub(crate) fn record(line: &[u8]) -> Option<Value> {
     json::parse::<Value>(line).filter(Value::is_object)
 }
 
-/// `line` as a record, if it is one, without its members, and its event's,
-/// that nest deeper than any stack takes: what a transcript is (its session,
-/// cwd and process, and when) comes from the rest. Read, and let go of, on a
-/// stack that takes it; none if there is no such stack to be had.
+/// Whether `record` is one an older brnr wrote (ADR 5.9): its head has
+/// `host_pid` or `session_id`, where this brnr's has `pid` and `session`.
+pub(crate) fn older(record: &Value) -> bool {
+    record.get("host_pid").is_some() || record.get("session_id").is_some()
+}
+
+/// Whether the file at `path` is one an older brnr wrote: its first record
+/// is ([`older`]).
+pub(crate) fn by_an_older_brnr(path: &Path) -> bool {
+    let Ok(file) = open(path) else { return false };
+    let mut lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
+    lines.find_map(|line| any_head(&line)).is_some_and(|r| older(&r))
+}
+
+/// `line` as a record of this brnr's, if it is one, without its members,
+/// and its event's, that nest deeper than any stack takes: what a
+/// transcript is (its session, cwd and process, and when) comes from the
+/// rest. Read, and let go of, on a stack that takes it; none if there is no
+/// such stack to be had, or it is an older brnr's ([`older`]).
 pub(crate) fn head(line: &[u8]) -> Option<Value> {
+    any_head(line).filter(|r| !older(r))
+}
+
+/// [`head`], an older brnr's record too.
+fn any_head(line: &[u8]) -> Option<Value> {
     json::on_stack(json::depth(line), || {
         let mut record = record(line)?;
         let fits = |most: usize| move |_: &String, v: &mut Value| json::nesting([&*v]) <= most;
@@ -215,10 +241,11 @@ pub(crate) fn event(mut record: Value) -> Option<Value> {
     let mut event = Map::new();
     event.insert("event".into(), "acp".into());
     event.insert("dir".into(), record["dir"].take());
-    event.insert("session".into(), record["session_id"].take());
+    event.insert("session".into(), record["session"].take());
     event.insert("msg".into(), msg);
     event.insert("ts".into(), record["ts"].take());
     event.insert("host_id".into(), record["host_id"].take());
+    event.insert("pid".into(), record["pid"].take());
     if record["seq"].is_u64() {
         event.insert("seq".into(), record["seq"].take());
     }
@@ -250,7 +277,7 @@ pub(crate) fn position(line: &[u8]) -> Option<u64> {
         (Some(event), dir) if dir.is_none_or(|d| event < d) => {
             last(&line[line.len().saturating_sub(32)..]).filter(|_| line.ends_with(b"}}"))
         }
-        // `…,"session_id":…,"seq":12,"dir":…`: an ACP message's, before it.
+        // `…,"session":…,"seq":12,"dir":…`: an ACP message's, before it.
         (_, Some(dir)) => last(&head[..dir]),
         _ => None,
     }
@@ -284,12 +311,12 @@ pub(crate) fn tail(path: &Path, bytes: u64) -> Option<Vec<Vec<u8>>> {
 
 /// Whether the events file at `path` holds a record of its session beyond
 /// its openings, which makes it a transcript of the session to a load (ADR
-/// 5.6): a load that failed leaves one holding only `session-opened`
+/// 5.6): a load that failed leaves one holding only `session_opened`
 /// records. Read up to the first other record.
 pub(crate) fn has_records(path: &Path) -> bool {
     let Ok(file) = open(path) else { return false };
     let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
-    lines.filter_map(|line| head(&line)).any(|r| r["event"]["event"] != "session-opened")
+    lines.filter_map(|line| head(&line)).any(|r| r["event"]["event"] != "session_opened")
 }
 
 /// The lines of a file, last first, each with where it starts, read
@@ -437,6 +464,8 @@ struct Tail {
     partial: Vec<u8>,
     /// How many lines were read whole.
     lines: usize,
+    /// It was said that an older brnr wrote the file.
+    older: bool,
 }
 
 impl Tail {
@@ -447,12 +476,13 @@ impl Tail {
             file: BufReader::new(file),
             partial: Vec::new(),
             lines: 0,
+            older: false,
         })
     }
 
     /// The records appended since the last read as events ([`event`]), with
     /// when each was written. A line that isn't one is passed over, and said
-    /// (ADR 5.1).
+    /// (ADR 5.1); an older brnr's records too, said once (ADR 5.9).
     fn read(&mut self) -> Result<Vec<(String, Value)>, String> {
         let mut read = Vec::new();
         loop {
@@ -469,11 +499,23 @@ impl Tail {
             let depth = json::depth(&line);
             let one = json::on_stack(depth, || {
                 let record = record(&line)?;
+                if older(&record) {
+                    return Some(Err(()));
+                }
                 let ts = record["ts"].as_str().unwrap_or_default().to_owned();
-                Some((ts, event(record)?))
+                Some(Ok((ts, event(record)?)))
             });
             match one {
-                Some(Some(one)) => read.push(one),
+                Some(Some(Ok(one))) => read.push(one),
+                Some(Some(Err(()))) if !self.older => {
+                    self.older = true;
+                    say(&format!(
+                        "brnr: {}: an older brnr wrote it, in names this one doesn't read (ADR \
+                         5.9); its records are not shown",
+                        self.path.display()
+                    ));
+                }
+                Some(Some(Err(()))) => {}
                 Some(None) => say(&format!(
                     "brnr: {}:{} isn't a record brnr can read, not shown",
                     self.path.display(),
@@ -531,7 +573,7 @@ mod tests {
     fn adr_0009_a_transcript_is_read_only_where_it_could_be_written() {
         let (home, outside) = (scratch("walk"), scratch("walk-outside"));
         let projects = home.join("projects");
-        let record = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        let record = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         fs::write(outside.join("s.jsonl"), format!("{record}\n")).unwrap();
         for folder in ["-a", "-b"] {
             fs::create_dir_all(projects.join(folder)).unwrap();
@@ -568,7 +610,7 @@ mod tests {
     #[test]
     fn adr_0009_every_part_of_a_transcripts_path_is_the_users_own() {
         let (home, outside) = (scratch("parts"), scratch("parts-outside"));
-        let record = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        let record = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         fs::create_dir_all(outside.join("projects/-w")).unwrap();
         fs::create_dir_all(outside.join("hosts")).unwrap();
         for file in ["projects/-w/s.jsonl", "hosts/h.jsonl"] {
@@ -638,15 +680,15 @@ mod tests {
     #[test]
     fn adr_0002_a_deep_record_is_read() {
         let path = scratch("deep").join("s.jsonl");
-        let opened = r#"{"ts":"1","session_id":"s","event":{"event":"session-opened","cwd":"/w"}}"#;
+        let opened = r#"{"ts":"1","session":"s","event":{"event":"session_opened","cwd":"/w"}}"#;
         for depth in [200, 10_000] {
             let request = format!(
-                r#"{{"ts":"2","host_id":"h","session_id":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
+                r#"{{"ts":"2","host_id":"h","session":"s","msg":{0},"event":{{"event":"permission_request","request":"p1","tool_call":{0}}}}}"#,
                 deep(depth)
             );
             fs::write(&path, format!("{opened}\n{request}\n")).unwrap();
             let read = last(&path, |_| true).unwrap();
-            let want = json!({ "ts": "2", "host_id": "h", "session_id": "s",
+            let want = json!({ "ts": "2", "host_id": "h", "session": "s",
                 "event": { "event": "permission_request", "request": "p1" } });
             assert_eq!(read, want, "{depth}");
             assert!(has_records(&path), "{depth}");
@@ -682,18 +724,18 @@ mod tests {
     /// a line that wasn't JSON as its text.
     #[test]
     fn adr_0005_a_record_is_the_event_watch_showed() {
-        let host = json!({ "ts": "t", "host_id": "h", "session_id": "s",
+        let host = json!({ "ts": "t", "host_id": "h", "session": "s",
             "event": { "event": "agent_message", "text": "hi", "seq": 3 } });
         assert_eq!(event(host), Some(json!({ "event": "agent_message", "text": "hi", "seq": 3 })));
-        let acp = json!({ "ts": "t", "host_id": "h", "host_pid": 1, "session_id": "s", "seq": 4,
+        let acp = json!({ "ts": "t", "host_id": "h", "pid": 1, "session": "s", "seq": 4,
             "dir": "agent->editor", "msg": { "id": 1 } });
-        let want = r#"{"event":"acp","dir":"agent->editor","session":"s","msg":{"id":1},"ts":"t","host_id":"h","seq":4}"#;
+        let want = r#"{"event":"acp","dir":"agent->editor","session":"s","msg":{"id":1},"ts":"t","host_id":"h","pid":1,"seq":4}"#;
         assert_eq!(event(acp).unwrap().to_string(), want);
         // The copy of a `session/new` in a session's raw file.
-        let copy = json!({ "ts": "t", "host_id": "h", "session_id": "s", "dir": "editor->agent",
+        let copy = json!({ "ts": "t", "host_id": "h", "session": "s", "dir": "editor->agent",
             "msg": { "method": "session/new" } });
         assert_eq!(event(copy).unwrap().get("seq"), None);
-        let raw = json!({ "ts": "t", "host_id": "h", "dir": "agent-stderr", "raw": "oops" });
+        let raw = json!({ "ts": "t", "host_id": "h", "dir": "agent_stderr", "raw": "oops" });
         let raw = event(raw).unwrap();
         assert_eq!((&raw["msg"], &raw["session"]), (&json!("oops"), &Value::Null));
         assert_eq!(event(json!({ "ts": "t", "host_id": "h", "event": {} })), None);
@@ -750,11 +792,11 @@ mod tests {
     fn adr_0010_a_records_position_is_read_from_its_end_or_head() {
         let event = br#"{"ts":"t","host_id":"h","event":{"event":"agent_message","text":"\"seq\":9","x":{"seq":7},"seq":12}}"#;
         assert_eq!(position(event), Some(12));
-        let acp = br#"{"ts":"t","host_id":"h","session_id":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
+        let acp = br#"{"ts":"t","host_id":"h","session":"s","seq":13,"dir":"agent->editor","msg":{"seq":1}}"#;
         assert_eq!(position(acp), Some(13));
-        let note = br#"{"ts":"t","host_id":"h","event":{"event":"records-skipped","count":1}}"#;
+        let note = br#"{"ts":"t","host_id":"h","event":{"event":"records_skipped","count":1}}"#;
         assert_eq!(position(note), None);
-        let raw = br#"{"ts":"t","host_id":"h","dir":"agent-stderr","msg":"x"}"#;
+        let raw = br#"{"ts":"t","host_id":"h","dir":"agent_stderr","msg":"x"}"#;
         assert_eq!(position(raw), None);
     }
 
@@ -764,8 +806,8 @@ mod tests {
     #[test]
     fn adr_0005_only_openings_are_no_transcript() {
         let path = scratch("openings").join("s.jsonl");
-        let opened = r#"{"ts":"t","session_id":"s","event":{"event":"session-opened"}}"#;
-        let other = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        let opened = r#"{"ts":"t","session":"s","event":{"event":"session_opened"}}"#;
+        let other = r#"{"ts":"t","session":"s","event":{"event":"user_message"}}"#;
         let cases = [
             ("", false),
             (&format!("{opened}\n"), false),

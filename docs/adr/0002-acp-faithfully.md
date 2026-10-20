@@ -170,7 +170,7 @@ ACP v2's draft behind `unstable_protocol_v2`, and no runtime.
 - The editor's `$/cancel_request` names one of its own requests by its
   id: it goes to the agent with that request's id there. One naming an id
   the host gave a request, which the editor was never told, doesn't go,
-  and the host log says so (`editor-cancel-dropped`): it can't be the
+  and the host log says so (`editor_cancel_dropped`): it can't be the
   editor's to cancel. One naming neither goes as it came, for a request in
   a line the host couldn't read (ADR 2.5).
 - What brnr records of a request and its answer is as the agent had them,
@@ -288,13 +288,14 @@ unpredictable; nesting deeper than 128 is serde_json's limit, not JSON's.
   proxy ends its stdout. Its fd 1 is left open on /dev/null, so no file
   opened later can take its place. The same happens when the editor
   stopped reading and the host closed the agent's stdout for it
-  (ADR 3.1). The host log records `agent-stdout-ended`.
+  (ADR 3.1). The host log records `agent_stdout_ended`.
 - The editor's stdout is the agent's (ADR 3.1). Once it has ended, brnr
   writes nothing more there of its own. A line it would have written (a
   message's tool call, ADR 7.2; a refusal of a load, ADR 3.9; the
   `$/cancel_request` that withdraws a request answered from outside,
   ADR 7.1) isn't sent, and the host log says so with
-  `not-sent-to-editor`, its reason, session, method and id (P3). What the
+  `editor_message_dropped`, its `reason` (`agent_stdout_ended`), `session`,
+  `method` and `rpc_id` (P3). What the
   line was about still happens: a message sent from outside still reaches
   the agent's stdin, which is open. Only the editor's copy is lost, as
   the agent's answer to it would be.
@@ -368,7 +369,7 @@ and updates that no agent stands behind.
 
 - By default, `brnr acp` removes `fs` and `terminal` from the editor's
   `initialize`, as ACP v2 does (F2). The host log notes
-  `capabilities-dropped`, with what it dropped. The agent answers as to a
+  `capabilities_dropped`, with what it dropped. The agent answers as to a
   client that has neither.
 - A profile passes them by name, in its editor part (ADR 6.1):
   `client_capabilities = ["fs", "terminal"]`, or one of them. Each passes

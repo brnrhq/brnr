@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::{lock, paths};
+use crate::{lock, paths, transcript};
 
 use super::client::{Host, discover};
 use super::inactive_sessions;
@@ -87,7 +87,7 @@ struct Files<'a> {
 /// Session `id` among `hosts`, as its lock says (ADR 3.9).
 pub(super) fn locate<'a>(hosts: &'a [Host], id: &str) -> Session<'a> {
     let holder = lock::holder(id).map(|pid| (pid, lock::holder_dir(id)));
-    let past = || inactive_sessions(hosts).into_iter().find(|p| p["session_id"] == id);
+    let past = || inactive_sessions(hosts).into_iter().find(|p| p["session"] == id);
     Session { id: id.to_owned(), place: place(hosts, id, holder, past) }
 }
 
@@ -194,7 +194,7 @@ impl<'a> Session<'a> {
                 let s = host.session(&id).unwrap_or(&Value::Null);
                 let status = host.info();
                 let past = json!({
-                    "session_id": id,
+                    "session": id,
                     "cwd": s["cwd"],
                     "agent": status["agent"],
                     "profile": status["profile"],
@@ -234,18 +234,32 @@ impl<'a> Session<'a> {
             Place::Open(host) | Place::Shared(host) => {
                 let s = host.session(&self.id);
                 let events = s
-                    .and_then(|s| s["log"].as_str())
+                    .and_then(|s| s["events_log"].as_str())
                     .ok_or("this process keeps no transcript (log = false)")?;
                 let acp = s.and_then(|s| s["acp_log"].as_str()).map(PathBuf::from);
                 Ok(Files { events: PathBuf::from(events), acp, host: Some(host) })
             }
             Place::Inactive(past) => {
-                let events = PathBuf::from(past["log"].as_str().unwrap_or_default());
+                let events = PathBuf::from(past["events_log"].as_str().unwrap_or_default());
                 Ok(Files { acp: Some(paths::acp_log(&events)), events, host: None })
             }
+            // Passed over as no transcript, and said to be an older brnr's
+            // (ADR 5.9, P3).
+            Place::Unknown => match older_transcript(&self.id) {
+                Some(path) => Err(format!(
+                    "{}: an older brnr wrote it, in names this one doesn't read (ADR 5.9)",
+                    path.display()
+                )),
+                None => Err(said),
+            },
             _ => Err(said),
         }
     }
+}
+
+/// A transcript of session `id` that an older brnr wrote, if there is one.
+fn older_transcript(id: &str) -> Option<PathBuf> {
+    transcript::of_session(id).into_iter().find(|path| transcript::by_an_older_brnr(path))
 }
 
 /// The running session `id` names: its process, and its id.
@@ -317,7 +331,7 @@ mod tests {
     }
 
     fn open(id: &str) -> Value {
-        json!({ "session_id": id, "cwd": "/w", "log": "/l/s.jsonl", "acp_log": "/l/s.acp.jsonl" })
+        json!({ "session": id, "cwd": "/w", "events_log": "/l/s.jsonl", "acp_log": "/l/s.acp.jsonl" })
     }
 
     /// Session `s` among `hosts`, its lock held by `holder`, and as ended
@@ -336,7 +350,7 @@ mod tests {
     }
 
     fn ended() -> Option<Value> {
-        Some(json!({ "session_id": "s", "log": "/l/s.jsonl", "cwd": "/w" }))
+        Some(json!({ "session": "s", "events_log": "/l/s.jsonl", "cwd": "/w" }))
     }
 
     /// Each place, and what each command says of it, the same words for
@@ -421,7 +435,7 @@ mod tests {
             Ok(Resume::TakeOver(h, past)) => {
                 assert_eq!(
                     past,
-                    json!({ "session_id": "s", "cwd": "/w", "agent": ["a"], "profile": "p" })
+                    json!({ "session": "s", "cwd": "/w", "agent": ["a"], "profile": "p" })
                 );
                 Ok(format!("take over {}", h.id()))
             }
@@ -497,7 +511,7 @@ mod tests {
     /// A process that keeps no transcript (`log = false`) has none to read.
     #[test]
     fn adr_0005_a_session_without_a_transcript_has_none_to_read() {
-        let hosts = [host(7, serving(&[json!({ "session_id": "s", "log": null })], &[]))];
+        let hosts = [host(7, serving(&[json!({ "session": "s", "events_log": null })], &[]))];
         let (s, _) = find(&hosts, Some((7, None)), None);
         assert_eq!(
             s.files().err().as_deref(),

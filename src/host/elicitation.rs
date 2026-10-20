@@ -18,26 +18,26 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::approvals::AgentRequest;
+use super::approvals::{AgentRequest, Who};
 use crate::schema::{
     self, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationContentValue, ElicitationMode, ElicitationPropertySchema,
     ElicitationSchema, ElicitationScope, MultiSelectItems,
 };
 
-/// A request as the events and `pending` describe it: `mode`, `message`,
-/// `scope` (`session`, `tool_call` or `request`) with the `tool_call` or
-/// `scope_request` it names, a form's `schema`, a URL's `url` and
+/// A request as the events and `pending` describe it: `mode`, `text` (ACP's
+/// `message`), `scope` (`session`, `tool_call` or `request`) with the
+/// `tool_call_id` or `scope_request_id` it names, a form's `schema`, a URL's `url` and
 /// `elicitation_id`. A request the schema doesn't take is described as far
 /// as its fields allow.
 pub(super) fn describe(req: &AgentRequest) -> Value {
     let params = &req.params;
     let mut d = json!({
         "mode": params["mode"],
-        "message": params["message"],
+        "text": params["message"],
         "scope": if params.get("requestId").is_some() { "request" } else { "session" },
-        "tool_call": params["toolCallId"],
-        "scope_request": params["requestId"],
+        "tool_call_id": params["toolCallId"],
+        "scope_request_id": params["requestId"],
         "schema": params["requestedSchema"],
         "url": params["url"],
         "elicitation_id": params["elicitationId"],
@@ -50,17 +50,17 @@ pub(super) fn describe(req: &AgentRequest) -> Value {
             _ => return d,
         };
         d["mode"] = json!(mode);
-        d["message"] = json!(read.message);
+        d["text"] = json!(read.message);
         match scope {
             ElicitationScope::Session(s) => {
                 d["scope"] = json!(if s.tool_call_id.is_some() { "tool_call" } else { "session" });
-                d["tool_call"] = json!(s.tool_call_id);
-                d["scope_request"] = Value::Null;
+                d["tool_call_id"] = json!(s.tool_call_id);
+                d["scope_request_id"] = Value::Null;
             }
             ElicitationScope::Request(r) => {
                 d["scope"] = json!("request");
-                d["tool_call"] = Value::Null;
-                d["scope_request"] = json!(r.request_id);
+                d["tool_call_id"] = Value::Null;
+                d["scope_request_id"] = json!(r.request_id);
             }
             _ => {}
         }
@@ -89,15 +89,16 @@ pub(super) fn request_event(req: &AgentRequest, owner: &str) -> Value {
 /// `elicitation_resolved` for `req`, answered with `action` (ACP's:
 /// `accept`, `decline`, `cancel`, or whatever an editor sent) and, for an
 /// accept, its `content`, by `by`.
-pub(super) fn resolved_event(req: &AgentRequest, result: &Value, by: &str) -> Value {
-    json!({
+pub(super) fn resolved_event(req: &AgentRequest, result: &Value, by: &Who) -> Value {
+    let mut event = json!({
         "event": "elicitation_resolved",
         "session": req.session,
         "request": req.held(),
         "action": result["action"],
         "content": result["content"],
-        "by": by,
-    })
+    });
+    by.add_to(&mut event);
+    event
 }
 
 /// The response for `action`: `accept` with `content` checked against the

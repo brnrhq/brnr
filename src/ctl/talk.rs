@@ -61,7 +61,7 @@ const TURN_EVENTS: &[&str] = &[
     "turn_ended",
     "message_dropped",
     "session_closed",
-    "exited",
+    "process_exited",
 ];
 
 /// Follows the turn that answers `message` until it ends, printing the
@@ -114,7 +114,7 @@ pub(super) fn wait_for_message(
                     let request = e["request"].as_str().unwrap_or("?");
                     errln!(
                         "brnr: waiting for input {request}: {} (brnr elicitation show {arg} {request}; brnr elicitation accept {arg} {request})",
-                        e["message"].as_str().unwrap_or("?")
+                        e["text"].as_str().unwrap_or("?")
                     );
                 }
                 "turn_ended" if carries(&e, message) => {
@@ -127,13 +127,13 @@ pub(super) fn wait_for_message(
                     if let Some(out) = json.take() {
                         print_turn(out, session, message, &reply, &e)?;
                     }
-                    errln!("brnr: {message} was dropped ({})", e["by"].as_str().unwrap_or("?"));
+                    errln!("brnr: {message} was dropped ({})", e["reason"].as_str().unwrap_or("?"));
                     return Ok(Some(ExitCode::FAILURE));
                 }
                 "session_closed" if ours => {
                     return Err("the session closed before the turn ended".into());
                 }
-                "exited" => return Err("the agent exited before the turn ended".into()),
+                "process_exited" => return Err("the agent exited before the turn ended".into()),
                 _ => {}
             }
             Ok(None)
@@ -154,7 +154,8 @@ fn print_turn(
     reply: &[String],
     end: &Value,
 ) -> Result<(), String> {
-    let dropped = if end["event"] == "message_dropped" { end["by"].clone() } else { Value::Null };
+    let dropped =
+        if end["event"] == "message_dropped" { end["reason"].clone() } else { Value::Null };
     for (k, v) in [
         ("session", json!(session)),
         ("message", json!(message)),
@@ -414,14 +415,14 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             // One holding only openings, which a load that failed leaves,
             // isn't a transcript of it (ADR 5.6).
             Resume::Inactive(past) => {
-                let file = past["log"].as_str().map(Path::new);
+                let file = past["events_log"].as_str().map(Path::new);
                 transcript = file.is_some_and(transcript::has_records);
                 Some(past)
             }
             Resume::Unknown => None,
         };
         if let Some(past) = found {
-            a.resume = past["session_id"].as_str().map(str::to_owned);
+            a.resume = past["session"].as_str().map(str::to_owned);
             resume_cwd = past["cwd"].as_str().map(str::to_owned);
             if a.agent.is_empty() {
                 a.agent = past["agent"]
@@ -821,8 +822,13 @@ fn wait_on(
     json_out: bool,
 ) -> Result<ExitCode, String> {
     // Subscribed before looking, so nothing happens unseen in between.
-    let events =
-        ["turn_ended", "permission_request", "elicitation_request", "session_closed", "exited"];
+    let events = [
+        "turn_ended",
+        "permission_request",
+        "elicitation_request",
+        "session_closed",
+        "process_exited",
+    ];
     conn.subscribe(&events, Some(session))?;
     let mine = |e: &Value| e["session"] == session;
     // What ended the wait: printed as text, or with --json as itself.
@@ -884,23 +890,23 @@ fn wait_on(
             }
             Err(why) if conn.missed().is_some() => return conn.ended(why),
             Err(_) if what == "exit" => {
-                let gone = json!({ "event": "exited", "status": null });
-                done(&gone, render::exited(&gone["status"]))?;
+                let gone = json!({ "event": "process_exited", "exit_status": null });
+                done(&gone, render::exited(&gone["exit_status"]))?;
                 return Ok(ExitCode::SUCCESS);
             }
             Err(e) => return Err(e),
         };
         let ended = conn.deep(e, |conn, e| -> Result<Option<ExitCode>, String> {
             match (e["event"].as_str().unwrap_or_default(), what) {
-                ("exited", "exit") => {
-                    done(&e, render::exited(&e["status"]))?;
+                ("process_exited", "exit") => {
+                    done(&e, render::exited(&e["exit_status"]))?;
                     return Ok(Some(ExitCode::SUCCESS));
                 }
-                ("exited", _) => return Err("the agent exited".into()),
+                ("process_exited", _) => return Err("the agent exited".into()),
                 // A closed session counts as idle; there is no next turn or
                 // approval in it to wait for.
                 ("session_closed", "idle") if mine(&e) => {
-                    done(&e, format!("idle: session closed ({})", text(&e["by"])))?;
+                    done(&e, format!("idle: session closed ({})", render::who(&e)))?;
                     return Ok(Some(ended_as(&last_turn)));
                 }
                 ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
@@ -987,7 +993,7 @@ fn describe_permission(p: &Value) -> String {
 }
 
 fn describe_elicitation(e: &Value) -> String {
-    format!("elicitation {}: {}", text(&e["request"]), text(&e["message"]))
+    format!("elicitation {}: {}", text(&e["request"]), text(&e["text"]))
 }
 
 // ---- cancel and queue ----------------------------------------------------
@@ -1111,7 +1117,7 @@ mod tests {
             let ended = wait_on(&mut conn, "s", what, None, true);
             assert_eq!(ended, Ok(ExitCode::from(MISSED)), "--for {what}");
             let note = conn.missed().unwrap();
-            assert_eq!((&note["event"], &note["after"]), (&json!("events-missed"), &json!(11)));
+            assert_eq!((&note["event"], &note["after_seq"]), (&json!("events_missed"), &json!(11)));
             process.join().unwrap();
         }
     }
@@ -1132,7 +1138,7 @@ mod tests {
         let (socket, host_log, file) =
             (dir.join("h.sock"), dir.join("host.jsonl"), dir.join("s.jsonl"));
         let record = |event: Value| json!({ "ts": "t", "host_id": "h", "event": event });
-        let opened = json!({ "event": "session-opened", "session_id": "s", "file": file });
+        let opened = json!({ "event": "session_opened", "session": "s", "events_log": file });
         fs::write(&host_log, format!("{}\n", record(opened))).unwrap();
         let event = |seq: u64, name: &str, text: &str| {
             let mut e = json!({ "event": name, "session": "s", "host_id": "h", "seq": seq });
@@ -1240,10 +1246,10 @@ mod tests {
         let note = conn.missed().unwrap();
         assert_eq!(
             (&note["event"], &note["peer"]),
-            (&json!("events-missed"), &json!("socket#start"))
+            (&json!("events_missed"), &json!("socket#start"))
         );
         assert_eq!(
-            (note["after"].as_u64(), note["until"].as_u64()),
+            (note["after_seq"].as_u64(), note["until_seq"].as_u64()),
             (Some(10), Some(20)),
             "{note}"
         );

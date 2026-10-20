@@ -280,7 +280,7 @@ fn adr_0004_cancel_drops_held_messages_and_says_so() {
         events(&env, "sess-1").into_iter().filter(|e| e["event"] == "message_dropped").collect();
     assert_eq!(dropped.len(), 1, "{dropped:?}");
     assert_eq!((&dropped[0]["message"], &dropped[0]["text"]), (&"m2".into(), &"later".into()));
-    assert_eq!(dropped[0]["by"], "cancel");
+    assert_eq!(dropped[0]["reason"], "cancel");
     assert!(env.ok(&["event", "log", "sess-1"]).contains("dropped m2 (cancel): later"));
 }
 
@@ -362,7 +362,7 @@ fn adr_0005_queue_lists_and_drops() {
     let dropped: Vec<(Value, Value)> = events(&env, "sess-1")
         .into_iter()
         .filter(|e| e["event"] == "message_dropped")
-        .map(|e| (e["message"].clone(), e["by"].clone()))
+        .map(|e| (e["message"].clone(), e["reason"].clone()))
         .collect();
     assert_eq!(dropped, [("m2".into(), "queue".into()), ("m3".into(), "queue".into())]);
 }
@@ -652,6 +652,157 @@ fn adr_0005_log_shows_only_the_events_asked_for() {
             .contains(r#"unknown event "nope""#)
     );
     assert!(env.fails(&["event", "log", "sess-1", "--raw"]).contains("unknown option: --raw"));
+}
+
+/// The names `--events` takes, as its error lists them: events and notes.
+fn names_events_takes(env: &Env) -> Vec<String> {
+    let err = env.fails(&["event", "log", "sess-1", "--events", "nope"]);
+    let list = &err[err.find('(').unwrap() + 1..err.rfind(')').unwrap()];
+    list.split([',', ';']).map(|n| n.trim().rsplit(' ').next().unwrap().to_owned()).collect()
+}
+
+/// What `event log --json` and `event watch --json` print is named in
+/// snake_case, each name one `--events` takes, and every line has `ts`,
+/// `host_id` and the process's `pid`; a session's has its `session`, and an
+/// event its `seq` (ADR 5.9).
+#[test]
+fn adr_0005_every_line_printed_is_named_and_placed_alike() {
+    let env = Env::new("c-names");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let pid = env.pid();
+    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_millis(500));
+    env.ok(&["prompt", "send", "sess-1", "--wait", "reply again"]);
+    let taken = names_events_takes(&env);
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(15)), "watch kept running");
+    let watched = stdout(&watch.wait_with_output().unwrap());
+    let logged = env.ok(&["event", "log", "sess-1", "--json", "--events", "all"]);
+    assert!(watched.lines().count() > 2 && logged.lines().count() > 4, "{watched}{logged}");
+    for line in watched.lines().chain(logged.lines()) {
+        let e: Value = serde_json::from_str(line).unwrap();
+        let name = e["event"].as_str().unwrap();
+        assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'), "{line}");
+        assert!(taken.iter().any(|t| t == name), "--events doesn't take {name}: {taken:?}");
+        assert!(e["ts"].is_string() && e["host_id"].is_string(), "{line}");
+        assert_eq!(e["pid"].to_string(), pid, "{line}");
+        assert!(e["session"].is_null() || e["session"] == "sess-1", "{line}");
+        // The copy of a `session/new` in the raw file has no position.
+        let copy = name == "acp" && e["msg"]["method"] == "session/new";
+        assert!(e["seq"].is_u64() || copy, "{line}");
+    }
+    assert!(logged.contains(r#""event":"process_exited""#), "{logged}");
+}
+
+/// A note is no event: `--events` takes its name, and shows notes alone
+/// with it; a profile's bridge whose `events` names one fails to load, and
+/// `subscribe` to one is refused, as the host never sends one (ADR 5.9).
+#[test]
+fn adr_0005_a_note_is_taken_by_events_and_refused_by_subscribe() {
+    let env = Env::new("c-notes");
+    let bridge =
+        "[[profiles.default.bridges]]\ncommand = [\"true\"]\nevents = [\"records_skipped\"]\n";
+    env.write_config(bridge);
+    let err = env.fails(&new_args(&[]));
+    assert!(err.contains(r#""records_skipped" is a note, which the host never sends"#), "{err}");
+    env.write_config("");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let socket = env.dir.join(format!("run/{}.sock", env.pid()));
+    let mut conn = UnixStream::connect(socket).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(conn, r#"{{"cmd":"subscribe","events":["turn_ended","events_missed"]}}"#).unwrap();
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains(r#""events_missed" is a note"#), "{answer}");
+    // No gap in this transcript: nothing to show.
+    for names in ["records_skipped", "records_skipped,events_missed"] {
+        assert_eq!(env.ok(&["event", "log", "sess-1", "--events", names]), "", "{names}");
+    }
+    env.stop();
+}
+
+/// Who acted is `by`, the connection that asked `peer`, and why `reason`
+/// (ADR 5.9): a permission request answered by a peer, by a cancel, and by
+/// the timeout; a held message dropped by the cancel; a session closed by
+/// `session close`.
+#[test]
+fn adr_0005_who_acted_and_why_are_by_peer_and_reason() {
+    let who = |e: &Value| (e["by"].clone(), e["peer"].clone(), e["reason"].clone());
+    let env = Env::new("c-who");
+    env.start(&[]);
+    let waiting = |request: &str| {
+        let listed = || env.ok(&["permission", "requests", "sess-1"]).contains(request);
+        assert!(wait_for(Duration::from_secs(5), listed), "{request} not asked");
+    };
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    waiting("p1");
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    idle(&env);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    waiting("p2");
+    env.ok(&["prompt", "send", "sess-1", "reply later"]);
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    settled(&env);
+    env.ok(&["session", "close", "sess-1"]);
+    let story = events(&env, "sess-1");
+    let one = |f: &dyn Fn(&Value) -> bool| story.iter().find(|e| f(e)).cloned().unwrap();
+    let by_peer = one(&|e| e["event"] == "permission_resolved" && e["request"] == "p1");
+    let (by, peer, reason) = who(&by_peer);
+    assert_eq!((by, reason), ("control".into(), Value::Null), "{by_peer}");
+    assert!(peer.as_str().unwrap().starts_with("socket#"), "{by_peer}");
+    let by_cancel = one(&|e| e["event"] == "permission_resolved" && e["request"] == "p2");
+    assert_eq!(who(&by_cancel), ("control".into(), Value::Null, "cancel".into()), "{by_cancel}");
+    let dropped = one(&|e| e["event"] == "message_dropped");
+    assert_eq!((dropped.get("by"), &dropped["reason"]), (None, &"cancel".into()), "{dropped}");
+    let closed = one(&|e| e["event"] == "session_closed");
+    assert_eq!((&closed["by"], &closed["reason"]), (&"control".into(), &"close".into()));
+
+    let env = Env::new("c-who-timeout");
+    env.start(&["--response-timeout", "1"]);
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()));
+    settled(&env);
+    let timed_out = events_named(&env, "permission_resolved").remove(0);
+    assert_eq!(who(&timed_out), ("control".into(), Value::Null, "timeout".into()), "{timed_out}");
+    env.stop();
+}
+
+/// A transcript an older brnr wrote, its head naming the session
+/// `session_id`, isn't read (ADR 5.9, P9): `session list` passes it over,
+/// `event log` of it says an older brnr wrote it, and `doctor` lists it (P3).
+#[test]
+fn adr_0005_a_transcript_an_older_brnr_wrote_isnt_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("c-older");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let home = env.dir.join("home");
+    let folder = home.join("projects").join(folder_of(&cwd));
+    fs::create_dir_all(&folder).unwrap();
+    for dir in [&home, &home.join("projects"), &folder] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let head = r#"{"ts":"2026-10-01T00:00:00.000000Z","host_id":"20261001T000000-1","host_pid":1,"proxy_pid":null,"agent_pid":2,"session_id":"old-1","#;
+    let opened = json!({ "event": "session-opened", "cwd": cwd });
+    let said = json!({ "event": "user_message", "session": "old-1", "text": "hi", "seq": 1 });
+    let path = folder.join("old-1.jsonl");
+    fs::write(&path, format!("{head}\"event\":{opened}}}\n{head}\"event\":{said}}}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let list = env.ok(&["session", "list", "--include", "inactive", "--json"]);
+    assert!(!list.contains("old-1"), "{list}");
+    let err = env.fails(&["event", "log", "old-1"]);
+    let says =
+        format!("{}: an older brnr wrote it, in names this one doesn't read", path.display());
+    assert!(err.contains(&says), "{err}");
+    let out = env.run(&["doctor", "--json"]);
+    let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let older = checks.as_array().unwrap().iter().find(|c| c["check"] == "older files");
+    let older = older.expect("no older files check");
+    assert_eq!(older["level"], "info", "{older}");
+    assert!(older["message"].as_str().unwrap().contains(&path.to_string_lossy().into_owned()));
 }
 
 #[test]
@@ -1790,11 +1941,12 @@ fn session_files(folder: &Path) -> [Vec<u8>; 2] {
     ["s-1.jsonl", "s-1.acp.jsonl"].map(|f| fs::read(folder.join(f)).unwrap())
 }
 
-/// A session whose transcript is under the earlier rule's folder name, and
-/// began in its cwd, resumed, goes on in those two files: it doesn't split
-/// into two transcripts (ADR 9.2).
+/// A session whose transcript is under the earlier rule's folder name, an
+/// older brnr's, resumed in the cwd it began in, writes in that cwd's own
+/// folder, and the old files stay as they were: brnr doesn't read an older
+/// brnr's names, so it doesn't add to its files either (ADR 9.2, ADR 5.9).
 #[test]
-fn adr_0009_a_transcript_under_the_old_rule_is_continued() {
+fn adr_0009_a_transcript_under_the_old_rule_is_left_as_it_was() {
     let env = Env::new("c-old-rule");
     let cwd = env.dir.join("w");
     fs::create_dir(&cwd).unwrap();
@@ -1802,29 +1954,8 @@ fn adr_0009_a_transcript_under_the_old_rule_is_continued() {
     let old = under_the_old_rule(&env, &cwd);
     let before = session_files(&old);
     resumed_and_closed(&env, &[]);
-    for (was, is) in before.iter().zip(session_files(&old)) {
-        assert!(is.len() > was.len() && is.starts_with(was), "not continued");
-    }
-    let name = old.file_name().unwrap().to_string_lossy();
-    assert_eq!(project_folders(&env), [name], "a new folder");
-    // Opened twice, in one file.
-    let text = fs::read_to_string(old.join("s-1.jsonl")).unwrap();
-    assert_eq!(text.matches(r#""event":"session-opened""#).count(), 2, "{text}");
-}
-
-/// A file under the earlier rule's folder name whose transcript began in
-/// another cwd isn't continued: `<dir>/x-y`'s `s-1`, resumed in `<dir>/x/y`,
-/// which the earlier rule named alike, is written in `<dir>/x/y`'s own
-/// folder, and the old file stays as it was (ADR 9.2).
-#[test]
-fn adr_0009_another_cwds_transcript_under_the_old_rule_is_not_continued() {
-    let env = Env::new("c-old-rule-other");
-    let [(x_y, _), (x_slash_y, _)] = alike(&env);
-    let old = under_the_old_rule(&env, &x_y);
-    let before = session_files(&old);
-    resumed_and_closed(&env, &["--cwd", &x_slash_y]);
     assert!(session_files(&old) == before, "continued");
-    assert_eq!(folder_files(&env, &x_slash_y), ["s-1.jsonl"]);
+    assert_eq!(folder_files(&env, &cwd), ["s-1.jsonl"]);
 }
 
 /// `--include` keeps sessions by state: `active` those open in a process,
@@ -1958,9 +2089,9 @@ fn adr_0003_a_fork_keeps_its_source() {
         serde_json::from_str(text.lines().next().unwrap()).unwrap()
     };
     let (fork, parent) = (first("sess-2"), first("sess-1"));
-    assert_eq!(fork["event"]["event"], "session-opened", "{fork}");
+    assert_eq!(fork["event"]["event"], "session_opened", "{fork}");
     assert_eq!(fork["event"]["forked_from"], "sess-1", "{fork}");
-    assert_eq!(parent["event"]["event"], "session-opened", "{parent}");
+    assert_eq!(parent["event"]["event"], "session_opened", "{parent}");
     assert!(parent["event"].get("forked_from").is_none(), "{parent}");
 
     // Resumed in a process that doesn't know it was a fork, its transcript
@@ -2109,7 +2240,8 @@ fn adr_0005_idle_close_is_an_event() {
     env.ok(&["session", "fork", "sess-1"]);
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
     let closed = events(&env, "sess-1").into_iter().find(|e| e["event"] == "session_closed");
-    assert_eq!(closed.expect("no session_closed")["by"], "idle");
+    let closed = closed.expect("no session_closed");
+    assert_eq!((&closed["by"], &closed["reason"]), (&"control".into(), &"idle".into()));
 }
 
 /// Context held for a next prompt that won't come is told as it goes: by
@@ -2129,7 +2261,7 @@ fn adr_0005_dropped_context_is_an_event() {
     let dropped = |session: &str| -> Vec<(Value, Value)> {
         (events(&env, session).into_iter())
             .filter(|e| e["event"] == "context_dropped")
-            .map(|e| (e["text"].clone(), e["by"].clone()))
+            .map(|e| (e["text"].clone(), e["reason"].clone()))
             .collect()
     };
     let in_one: Vec<(Value, Value)> =
@@ -2478,7 +2610,7 @@ fn adr_0003_take_over_moves_a_session() {
     let story = events(&env, "sess-1");
     let at = |f: &dyn Fn(&Value) -> bool| story.iter().position(f);
     let cancelled = at(&|e| e["event"] == "turn_ended" && e["stop_reason"] == "cancelled");
-    let closed = at(&|e| e["event"] == "session_closed" && e["by"] == "close");
+    let closed = at(&|e| e["event"] == "session_closed" && e["reason"] == "close");
     let resumed = at(&|e| e["event"] == "user_message" && e["text"] == "reply here");
     let order =
         matches!((cancelled, closed, resumed), (Some(a), Some(b), Some(c)) if a < b && b < c);
@@ -2741,7 +2873,7 @@ fn adr_0004_show_explains_a_permission_request() {
     let pending: Value =
         serde_json::from_str(&env.ok(&["permission", "requests", "--json"])).unwrap();
     assert_eq!(pending[0]["session"], "sess-1");
-    assert_eq!(pending[0]["options"][0]["option"], "allow");
+    assert_eq!(pending[0]["options"][0]["option_id"], "allow");
     assert!(
         env.fails(&["permission", "allow", "sess-1"]).contains("usage:"),
         "a request is needed"
@@ -3034,7 +3166,11 @@ fn adr_0004_requests_and_show_list_an_elicitation() {
     assert!(!show.contains("if nobody answers"), "no timeout, yet: {show}");
     let json: Value =
         serde_json::from_str(&env.ok(&["elicitation", "show", "sess-1", "e1", "--json"])).unwrap();
-    assert_eq!((&json["scope"], &json["tool_call"]), (&"tool_call".into(), &"t1".into()));
+    assert_eq!((&json["scope"], &json["tool_call_id"]), (&"tool_call".into(), &"t1".into()));
+    assert_eq!(
+        (&json["text"], &json["scope_request_id"]),
+        (&"Tell me about you".into(), &Value::Null)
+    );
     assert_eq!(json["schema"]["required"], json!(["name", "color"]), "{json}");
     assert_eq!((&json["answerable"], &json["owner"]), (&Value::Bool(true), &"headless".into()));
 
@@ -3117,7 +3253,8 @@ fn adr_0004_accept_checks_fields_against_the_schema() {
     assert_eq!(elicited(&env), [json!({ "action": "accept", "content": content })]);
     let resolved = &events_named(&env, "elicitation_resolved")[0];
     assert_eq!((&resolved["action"], &resolved["content"]), (&"accept".into(), &content));
-    assert!(resolved["by"].as_str().unwrap().starts_with("socket#"), "{resolved}");
+    assert_eq!((&resolved["by"], &resolved["reason"]), (&"control".into(), &Value::Null));
+    assert!(resolved["peer"].as_str().unwrap().starts_with("socket#"), "{resolved}");
     // From stdin, typed already; with --json, what was sent.
     elicit(&env, "form");
     let input = br#"{"name": "cd", "color": "red", "count": 4, "tags": ["c"]}"#;
@@ -3290,7 +3427,7 @@ for line in sys.stdin:
         (&Value::Bool(true), &"accept".into())
     );
     let resolved = seen.iter().find(|e| e["event"] == "elicitation_resolved").unwrap();
-    assert!(resolved["by"].as_str().unwrap_or_default().contains("python3"), "{resolved}");
+    assert!(resolved["peer"].as_str().unwrap_or_default().contains("python3"), "{resolved}");
 }
 
 /// An elicitation scoped to a request outside any session (a login, during
@@ -3342,7 +3479,9 @@ fn adr_0004_prompt_cancel_cancels_the_sessions_elicitations() {
     settled(&env);
     assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
     let resolved = &events_named(&env, "elicitation_resolved")[0];
-    assert_eq!((&resolved["action"], &resolved["by"]), (&"cancel".into(), &"cancel".into()));
+    let who = (&resolved["by"], &resolved["peer"], &resolved["reason"]);
+    assert_eq!(resolved["action"], "cancel");
+    assert_eq!(who, (&"control".into(), &Value::Null, &"cancel".into()), "{resolved}");
     assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
 }
 
@@ -3756,7 +3895,7 @@ fn adr_0005_notify_works_as_a_bridge() {
     // As a bridge, it is told its process in $BRNR_PID.
     let script = env.dir.join("notify.sh");
     let line = format!(
-        "exec {:?} event notify --pid \"$BRNR_PID\" -- sh -c 'echo $BRNR_EVENT $BRNR_SESSION_ID >> {:?}'\n",
+        "exec {:?} event notify --pid \"$BRNR_PID\" -- sh -c 'echo $BRNR_EVENT $BRNR_SESSION >> {:?}'\n",
         env!("CARGO_BIN_EXE_brnr"),
         out.display().to_string()
     );
@@ -3779,10 +3918,8 @@ fn adr_0005_notify_works_as_a_bridge() {
 fn adr_0005_notify_reads_stdin_as_a_bridge() {
     let env = Env::new("c-notifystdin");
     let out = env.dir.join("notified");
-    let script = format!(
-        "echo \"$BRNR_EVENT $BRNR_SESSION_ID $BRNR_PID $BRNR_TITLE\" >> '{}'",
-        out.display()
-    );
+    let script =
+        format!("echo \"$BRNR_EVENT $BRNR_SESSION $BRNR_PID $BRNR_TITLE\" >> '{}'", out.display());
     let config = format!(
         "[[profiles.default.bridges]]\ncommand = [\"brnr\", \"event\", \"notify\", \"--stdin\", \"--\", \"sh\", \"-c\", {script:?}]\n"
     );
@@ -3799,7 +3936,7 @@ fn adr_0005_notify_reads_stdin_as_a_bridge() {
     assert_eq!(fs::read_to_string(&out).unwrap(), turns);
     env.stop();
     assert!(wait_for(Duration::from_secs(10), || lines() == 4), "no exited notification");
-    assert_eq!(fs::read_to_string(&out).unwrap(), format!("{turns}exited  {pid} \n"));
+    assert_eq!(fs::read_to_string(&out).unwrap(), format!("{turns}process_exited  {pid} \n"));
     let err = env.fails(&["event", "notify", "--stdin", "sess-1", "--", "true"]);
     assert!(err.contains("--stdin takes no <session> or --pid"), "{err}");
 }
@@ -3809,7 +3946,7 @@ fn adr_0005_notify_reads_stdin_as_a_bridge() {
 #[test]
 fn adr_0005_notify_stdin_ends_with_its_input() {
     let env = Env::new("c-notifystdinend");
-    let exited = r#"{"event":"exited","status":{"code":0}}"#;
+    let exited = r#"{"event":"process_exited","exit_status":{"code":0}}"#;
     let out = env.run_with_stdin(
         &["event", "notify", "--stdin", "--", "true"],
         format!("not an event\n{exited}\n").as_bytes(),
@@ -3871,23 +4008,23 @@ fn adr_0005_notify_cut_off_as_a_bridge_stops_its_command() {
         dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
     };
     for _ in 0..8 {
-        if log().contains(r#""event":"peer-dropped""#) {
+        if log().contains(r#""event":"peer_dropped""#) {
             break;
         }
         env.ok(&["prompt", "send", "sess-1", "--wait", "big 6000000"]);
     }
-    let exited = || log().contains(r#""event":"bridge-exited""#);
+    let exited = || log().contains(r#""event":"bridge_exited""#);
     assert!(wait_for(Duration::from_secs(15), exited), "notify kept running: {}", log().len());
     let records: Vec<Value> = log().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let said: Vec<&str> = records
         .iter()
-        .filter(|r| r["event"]["event"] == "bridge-stderr")
+        .filter(|r| r["event"]["event"] == "bridge_stderr")
         .filter_map(|r| r["event"]["text"].as_str())
         .collect();
     let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
     assert!(said.contains(&want), "{said:?}");
-    let exit = records.iter().find(|r| r["event"]["event"] == "bridge-exited").unwrap();
-    assert_eq!(exit["event"]["status"], 1, "{exit}");
+    let exit = records.iter().find(|r| r["event"]["event"] == "bridge_exited").unwrap();
+    assert_eq!(exit["event"]["exit_status"], json!({ "code": 1 }), "{exit}");
     assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
     // The session carries on without it.
     assert_eq!(env.ok(&["prompt", "send", "sess-1", "--wait", "reply still here"]), "still here\n");
@@ -3949,7 +4086,7 @@ fn adr_0010_notify_cut_off_catches_up_once_its_command_is_done() {
         let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
         dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
     };
-    let dropped = || log().contains(r#""event":"peer-dropped""#);
+    let dropped = || log().contains(r#""event":"peer_dropped""#);
     assert!(wait_for(Duration::from_secs(10), dropped), "notify wasn't cut off");
     fs::write(&gate, "").unwrap();
     let lines = || fs::read_to_string(&out).unwrap_or_default().lines().count();
@@ -3958,7 +4095,7 @@ fn adr_0010_notify_cut_off_catches_up_once_its_command_is_done() {
     assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
     let done = notify.wait_with_output().unwrap();
     assert!(done.status.success(), "notify: {}", stderr(&done));
-    assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended\n".repeat(5) + "exited\n");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended\n".repeat(5) + "process_exited\n");
 }
 
 /// A message too big for a command's environment is cut there (the event on
@@ -4865,7 +5002,7 @@ fn adr_0008_pid_opening_keeps_the_process_running() {
     let out = env.run(&["session", "new", "--pid", &pid, "--wait", "--prompt", "reply two"]);
     assert_eq!((code(&out), stdout(&out)), (0, "two\n".into()), "{}", stderr(&out));
     let closed = events(&env, "sess-1").into_iter().find(|e| e["event"] == "session_closed");
-    assert_eq!(closed.unwrap()["by"], "idle");
+    assert_eq!(closed.unwrap()["reason"], "idle");
 
     // Closed while the agent is still opening the new one.
     let env = Env::new("c-pid-open-close");
@@ -5079,10 +5216,10 @@ fn adr_0008_delete_keeps_the_transcript() {
     assert_eq!(deletes[0]["params"], serde_json::json!({ "sessionId": "sess-1" }));
     assert!(env.hosts().is_empty(), "a process was started");
     let log = env.ok(&["event", "log", "sess-1"]);
-    assert!(log.contains("agent: first") && log.contains("session deleted (delete)"), "{log}");
+    assert!(log.contains("agent: first") && log.contains("session deleted (control)"), "{log}");
     let deleted = logged(&env, "sess-1", "session_deleted");
     assert_eq!(deleted.len(), 1, "{deleted:?}");
-    assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"delete".into(), &Value::Null));
+    assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"control".into(), &Value::Null));
     assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
     let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
     assert_eq!(list[0]["session"], "sess-1", "{list}");
@@ -5103,7 +5240,7 @@ fn adr_0008_delete_keeps_the_transcript() {
 /// written to, whichever before it couldn't, and one that couldn't is said
 /// and fails the command. A symlinked project folder isn't looked in, and a
 /// transcript others could read is made private first, which is said: the
-/// command has no host log for `made-private` (ADR 9.3).
+/// command has no host log for `path_made_private` (ADR 9.3).
 #[test]
 fn adr_0008_delete_records_in_each_transcript_it_can() {
     use std::os::unix::fs::{PermissionsExt, symlink};
@@ -5137,7 +5274,7 @@ fn adr_0008_delete_records_in_each_transcript_it_can() {
         refused.join("sess-1.jsonl").display()
     );
     assert!(err.contains(&want), "{err}");
-    let want = format!("brnr: made-private: {} (its mode was 644)", mine.display());
+    let want = format!("brnr: path_made_private: {} (its mode was 644)", mine.display());
     assert!(err.contains(&want), "{err}");
     assert!(!err.contains("+linked") && !err.contains("outside"), "{err}");
     assert_eq!(fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o600);

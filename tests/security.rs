@@ -159,7 +159,7 @@ fn session_locks(env: &Env, mode: u32) -> PathBuf {
 
 /// Whether the one host log says a session's lock couldn't be taken.
 fn lock_failed(env: &Env) -> bool {
-    let wait = || everything_in(&env.dir.join("home/hosts")).contains(r#""event":"lock-failed""#);
+    let wait = || everything_in(&env.dir.join("home/hosts")).contains(r#""event":"lock_failed""#);
     wait_for(Duration::from_secs(5), wait)
 }
 
@@ -174,7 +174,7 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
     private_dir_error(&stderr(&env.run(&resume_args("old-1", &[]))));
     assert!(env.calls_of("session/resume").is_empty());
     private_dir_error(&env.fails(&new_args(&[])));
-    assert!(lock_failed(&env), "no lock-failed");
+    assert!(lock_failed(&env), "no lock_failed");
     assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
 
     let env = Env::new("s-locklink");
@@ -186,7 +186,7 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
     assert!(!env.run(&resume_args("old-1", &[])).status.success());
     let err = env.fails(&new_args(&[]));
     assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
-    assert!(lock_failed(&env), "no lock-failed");
+    assert!(lock_failed(&env), "no lock_failed");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
 }
 
@@ -285,11 +285,11 @@ fn served_once(env: &Env) -> PathBuf {
     project.path()
 }
 
-/// Each `made-private` event in the host logs: the path, and its mode.
+/// Each `path_made_private` event in the host logs: the path, and its mode.
 fn made_private(env: &Env) -> Vec<(PathBuf, String)> {
     let text = everything_in(&env.dir.join("home/hosts"));
     let records = text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
-    let events = records.map(|r| r["event"].clone()).filter(|e| e["event"] == "made-private");
+    let events = records.map(|r| r["event"].clone()).filter(|e| e["event"] == "path_made_private");
     events
         .map(|e| (e["path"].as_str().unwrap().into(), e["mode"].as_str().unwrap().into()))
         .collect()
@@ -340,8 +340,8 @@ fn adr_0009_a_symlinked_transcript_is_never_followed() {
     fs::remove_file(&events).unwrap();
     symlink(&victim, &events).unwrap();
     env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
-    let failed = || everything_in(&env.dir.join("home/hosts")).contains("session-log-failed");
-    assert!(wait_for(Duration::from_secs(5), failed), "no session-log-failed");
+    let failed = || everything_in(&env.dir.join("home/hosts")).contains("session_log_failed");
+    assert!(wait_for(Duration::from_secs(5), failed), "no session_log_failed");
     let hosts = everything_in(&env.dir.join("home/hosts"));
     let why = format!("{}: is a symlink, so brnr won't write a transcript there", events.display());
     assert!(hosts.contains(&why), "{hosts}");
@@ -768,12 +768,12 @@ fn adr_0010_was_cut_off_says_where_never_what() {
         let dir = fs::read_dir(env.dir.join("home/hosts")).unwrap();
         dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect::<String>()
     };
-    let dropped = || log().contains(r#""event":"peer-dropped""#);
+    let dropped = || log().contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
     kill(watch.id() as i32, libc::SIGCONT);
     assert!(cut, "the watcher wasn't cut off");
     let records: Vec<Value> = log().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let note = records.iter().find(|r| r["event"]["event"] == "peer-dropped").unwrap();
+    let note = records.iter().find(|r| r["event"]["event"] == "peer_dropped").unwrap();
     let peer = note["event"]["peer"].as_str().unwrap();
 
     let socket = env.dir.join("run").join(format!("{}.sock", env.pid()));
@@ -786,10 +786,10 @@ fn adr_0010_was_cut_off_says_where_never_what() {
     };
     let answer = ask(peer);
     let keys: Vec<&String> = answer.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["ok", "peer", "cut_off", "last_queued"], "{answer}");
+    assert_eq!(keys, ["ok", "peer", "cut_off", "last_queued_seq"], "{answer}");
     assert_eq!(
-        (&answer["cut_off"], &answer["last_queued"]),
-        (&json!(true), &note["event"]["last_queued"])
+        (&answer["cut_off"], &answer["last_queued_seq"]),
+        (&json!(true), &note["event"]["last_queued_seq"])
     );
     assert_eq!(ask("socket#0")["cut_off"], false);
 

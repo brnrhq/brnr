@@ -262,7 +262,7 @@ are best written with the change, by whoever made it (P9).
   - a detached host has no terminal (its stderr is its host log): when its
     start fails with the panic, `brnr session new`, `brnr session resume`
     and `brnr acp` print the link after the reason. A detached host's panic
-    later on is the `exited` reason that watchers and `event wait` see, and
+    later on is the `process_exited` error that watchers and `event wait` see, and
     the host log `doctor --report` shows. It has no link, which would be
     noise in every event a panic ends.
 - The bug form asks for `brnr doctor --report`, not `doctor --json`.
@@ -278,7 +278,7 @@ the user chose to paste (#23, #24).
 **Consequences.**
 
 - The report shows the host log's lines as they are, prompts included (the
-  `started` record has the request, ADR 3.3): only what brnr knows is
+  `process_started` record has the `start_request`, ADR 3.3): only what brnr knows is
   secret is redacted. The comment at its top, the README and the form say
   to read it first.
 - A panic that keeps the hook from running (an abort, ADR 3.7) prints no

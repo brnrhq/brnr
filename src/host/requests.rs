@@ -525,7 +525,7 @@ impl Host {
 
     pub(super) fn fail_start(&mut self, error: &str) {
         self.sessions.unclaim_all();
-        self.sink.note(None, json!({ "event": "start-failed", "error": error }));
+        self.sink.note(None, json!({ "event": "start_failed", "error": error }));
         self.startup_failed(error);
         self.begin_stop();
     }
@@ -626,7 +626,7 @@ impl Host {
         }
         // Not there, or dropped as its answer was queued.
         if !self.peers.contains_key(&peer) {
-            self.sink.note(Some(&session), json!({ "event": "open-abandoned" }));
+            self.sink.note(Some(&session), json!({ "event": "open_abandoned" }));
             return self.abandon_open(&session, peer, req_id, "nobody is waiting for it".into());
         }
         self.sessions[i].opening = false;
@@ -654,8 +654,7 @@ impl Host {
     /// keeps it open, and the answer names it (P3). A stopping process can't
     /// tell the agent any more: the session ends with it.
     fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: String) {
-        self.sink
-            .note(None, json!({ "event": "open-failed", "session_id": session, "error": error }));
+        self.sink.note(None, json!({ "event": "open_failed", "session": session, "error": error }));
         if self.agent_in.is_none() {
             return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
         }
