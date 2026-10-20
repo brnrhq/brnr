@@ -492,7 +492,9 @@ mod tests {
         table.claim("s1", Hold::Owner(None));
         table.claim("s2", Hold::Shared(7));
         assert!(table.knows("s1") && table.knows("s2"));
-        table.unclaim("s1");
+        // How it was held, for its lock to go; once.
+        assert!(matches!(table.unclaim("s1"), Some(Hold::Owner(None))));
+        assert!(table.unclaim("s1").is_none());
         assert!(!table.knows("s1"));
         table.unclaim_all();
         assert!(!table.knows("s2"));

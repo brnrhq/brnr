@@ -75,7 +75,7 @@ fn readable_transcripts_are_made_private() {
     let (ok, text) = doctor(&env, &[]);
     assert!(ok, "warnings alone don't fail: {text}");
     assert_eq!(lines(&text, "warn").len(), 1, "{text}");
-    assert!(text.contains("5 of 5 paths can be read by others"), "{text}");
+    assert!(text.contains("5 of 5 paths aren't private, e.g. "), "{text}");
 
     let (ok, text) = doctor(&env, &["--fix"]);
     assert!(ok, "{text}");
@@ -87,6 +87,40 @@ fn readable_transcripts_are_made_private() {
     assert_eq!(mode(&project.join("s.acp.jsonl")), 0o600);
     let (_, text) = doctor(&env, &[]);
     assert!(lines(&text, "warn").is_empty(), "{text}");
+}
+
+/// A state directory, `hosts` or `projects` that isn't a directory is a
+/// problem, however private: brnr won't write a transcript there (ADR 9.3).
+/// `--fix` leaves it, and what a symlink there points at, as they are.
+#[test]
+fn a_state_part_that_is_not_a_directory_is_a_problem() {
+    let env = Env::new("dr-notdir");
+    let home = env.dir.join("home");
+    let says = |args: &[&str], what: &str| {
+        let (_, text) = doctor(&env, args);
+        assert!(text.contains(&format!("warn  transcripts: {what}")), "{text}");
+    };
+    write(&home, "", 0o600);
+    says(&[], &format!("1 of 1 paths aren't private, e.g. {} is not a directory", home.display()));
+
+    fs::remove_file(&home).unwrap();
+    mkdir(&home, 0o700);
+    mkdir(&home.join("hosts"), 0o700);
+    let projects = home.join("projects");
+    write(&projects, "", 0o600);
+    let not_dir =
+        format!("1 of 3 paths aren't private, e.g. {} is not a directory", projects.display());
+    says(&[], &not_dir);
+    says(&["--fix"], &not_dir);
+    assert!(projects.is_file());
+
+    let (link, outside) = (home.join("hosts/x.jsonl"), env.dir.join("outside.jsonl"));
+    write(&outside, "{}\n", 0o644);
+    symlink(&outside, &link).unwrap();
+    let linked = format!("2 of 4 paths aren't private, e.g. {} is a symlink", link.display());
+    says(&[], &linked);
+    says(&["--fix"], &linked);
+    assert_eq!(mode(&outside), 0o644);
 }
 
 #[test]

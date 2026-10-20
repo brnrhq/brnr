@@ -141,7 +141,11 @@ whose file systems ignore case and Unicode normalization by default,
   other hard links isn't looked in or read, and a FIFO isn't waited on. One
   read through a link would be whatever the link points at, taken for a
   session of the user's. Reading makes nothing private: `doctor` warns of
-  what others can reach, and `--fix` doesn't look below a symlink either.
+  what others can reach, and of a state directory, `hosts` or `projects`
+  that isn't a directory, however private. It opens each path the same
+  way, lists a directory through what it opened, and `--fix` makes private
+  only what it opened, through it (`fchmod`): it doesn't look below a
+  symlink, nor change what is put at a name after it looked.
   `transcript.rs` holds every read.
 - There is no override. `log = false` (ADR 5.1) is the way to write
   nothing, and a transcript to share is copied out.
