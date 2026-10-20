@@ -56,9 +56,13 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   - `session list`, `event log` and `session resume` find a transcript by
     the id its records carry, not by its file name. The original id is in
     every record and in the lock file.
-  - `session list --cwd` keeps a session by the cwd its records name,
-    not by its folder, so two cwds that share a folder each list only
-    their own (#120).
+  - `session list --cwd` keeps brnr's rows by the cwd their records name,
+    not by their folder, so two cwds that share a folder each list only
+    their own (#120). With an agent named, its rows are what its
+    `session/list` returns for that cwd, joined on the id: a session open
+    in a process that the agent lists there is kept whatever its recorded
+    cwd. An `unreachable` one, whose cwd its process doesn't say, is the
+    cwd's if the agent lists it there or its transcript began there.
 - An id whose name doesn't fit in a file name (255 bytes with the
   `.acp.jsonl`; an escaped byte takes three) is not supported. Its
   transcript fails to open and the host log says so, and its lock can't be
