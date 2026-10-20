@@ -34,7 +34,6 @@ use std::time::Instant;
 use serde_json::{Map, Value, json};
 
 use super::{elicitation, id_key};
-use crate::json;
 use crate::schema::{self, PermissionOptionKind};
 
 /// The most URL elicitations kept waiting for their completion: past that,
@@ -110,13 +109,6 @@ impl AgentRequest {
             self.params["toolCall"]["title"].as_str()
         };
         title.unwrap_or("the request").to_owned()
-    }
-
-    /// How deeply what it keeps of the request nests (see `Host::holds`).
-    pub(super) fn holds(&self) -> usize {
-        let AgentRequest { id, params, key: _, method: _, session: _, handle: _, deadline: _ } =
-            self;
-        json::nesting([id, params])
     }
 }
 
@@ -444,13 +436,6 @@ impl Approvals {
     /// The earliest deadline, for the event loop's wake-up.
     pub(super) fn next_deadline(&self) -> Option<Instant> {
         self.requests.iter().filter_map(|r| r.deadline).min()
-    }
-
-    /// How deeply what it keeps of the agent's requests nests (see
-    /// `Host::holds`).
-    pub(super) fn holds(&self) -> usize {
-        let Approvals { requests, answered: _, permissions: _, elicitations: _, urls: _ } = self;
-        requests.iter().map(AgentRequest::holds).max().unwrap_or(0)
     }
 }
 

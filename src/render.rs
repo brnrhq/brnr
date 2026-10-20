@@ -185,6 +185,12 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
             let what = if e["relayed"] == true { "passed on unread" } else { "dropped" };
             format!("a line from the {} over {} bytes, {what}", s(&e["from"]), e["limit"])
         }
+        // A line nested too deep to read: passed on unread, or dropped
+        // (ADR 2.5).
+        "line_too_deep" => {
+            let what = if e["relayed"] == true { "passed on unread" } else { "dropped" };
+            format!("a line from the {} nested past {} levels, {what}", s(&e["from"]), e["limit"])
+        }
         // A gap in the transcript: records a slow disk made brnr skip, or a
         // full one failed to take (ADR 10.1).
         "records-skipped" => {
@@ -722,6 +728,9 @@ mod tests {
         assert_eq!(shown(loads), said);
         let replayed = json!({ "event": "user_message", "text": "old", "replayed": true });
         assert_eq!(shown(replayed), "(replayed) user: old");
+        let deep =
+            json!({ "event": "line_too_deep", "from": "agent", "limit": 128, "relayed": false });
+        assert_eq!(shown(deep), "a line from the agent nested past 128 levels, dropped");
     }
 
     /// What JSON has as a value, text says in words: an error's message, not

@@ -37,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::host::{EVENTS, QUIET};
-use crate::{json, lock, log, paths, render, transcript};
+use crate::{lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -701,23 +701,11 @@ fn pending(a: &Args) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    // A request nests as deep as the agent made it: read as the host reads
-    // the agent's line, and listed and let go of on a stack that takes it
-    // (ADR 2.5), also when a process asked after it fails.
     let mut rows = Vec::new();
     for host in chosen {
-        let more = host.pending(|pending| {
-            pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
-        });
-        match more {
-            Ok(more) => rows.extend(more),
-            Err(e) => {
-                json::free(Value::Array(rows));
-                return Err(e);
-            }
-        }
+        rows.extend(host.pending()?.approvals(only.as_deref()).map(pending_row));
     }
-    json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
+    list_pending(&Value::Array(rows), json_out)
 }
 
 /// A permission request as `permission requests` lists it.
@@ -845,18 +833,14 @@ fn watch(a: &Args) -> Result<ExitCode, String> {
                 None => return Err(why),
             },
         };
-        // Shown and let go of on a stack that takes it (ADR 2.5). Whether
-        // it ends the watch: the end, or stdout closed.
-        let ended = conn.deep(event, |_, event| {
-            let name = event["event"].as_str().unwrap_or_default();
-            if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
-                && only != session
-            {
-                return false;
-            }
-            (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name)
-        })?;
-        if ended {
+        let name = event["event"].as_str().unwrap_or_default();
+        if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
+            && only != session
+        {
+            continue;
+        }
+        // The end, or stdout closed, ends the watch.
+        if (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name) {
             return Ok(ExitCode::SUCCESS);
         }
     }

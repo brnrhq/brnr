@@ -107,7 +107,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
         Events::open(stdin, session.as_deref(), pid.as_deref(), &wanted)?;
     // Looked at while a command runs, until the process hangs up.
     let mut hangup = source.socket().0;
-    let (tx, mut rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let (ask, asks) = mpsc::channel();
     let t = tx.clone();
     thread::spawn(move || read_events(source, asks, t));
@@ -119,7 +119,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
     // why there was no more.
     let mut ahead: VecDeque<Value> = VecDeque::new();
     let mut end: Option<String> = None;
-    let ended = loop {
+    loop {
         let e = if let Some(e) = ahead.pop_front() {
             e
         } else if let Some(why) = end.take() {
@@ -142,16 +142,12 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                 }
             }
         };
-        // Run for, and let go of, on a stack that takes it (ADR 2.5). How
-        // notify ends, if it does here.
-        let ended = json::holding(e, |e| -> Option<Result<ExitCode, String>> {
-            // Mutably: this may run on a thread of its own, and a `Receiver`
-            // isn't `Sync`.
-            let rx = &mut rx;
+        // How notify ends, if it does here.
+        let ended: Option<Result<ExitCode, String>> = 'run: {
             let name = e["event"].as_str().unwrap_or_default().to_owned();
             let session = e["session"].as_str().unwrap_or_default().to_owned();
             if only.as_deref().is_some_and(|s| !session.is_empty() && s != session) {
-                return None;
+                break 'run None;
             }
             match name.as_str() {
                 "agent_message" => {
@@ -186,8 +182,8 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                             running.take().unwrap().reap();
                         }
                         Ok(Msg::Signal(sig)) => {
-                            let stopped = running.take().map(|r| r.stop(rx));
-                            return Some(Err(cut_off(
+                            let stopped = running.take().map(|r| r.stop(&rx));
+                            break 'run Some(Err(cut_off(
                                 &render::signal(sig.into()),
                                 stopped.as_deref(),
                             )));
@@ -200,9 +196,8 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                             draining = false;
                             let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
                             if !end_too && !cut {
-                                json::free(Value::Array(rest));
-                                let stopped = running.take().map(|r| r.stop(rx));
-                                return Some(Err(cut_off(&why, stopped.as_deref())));
+                                let stopped = running.take().map(|r| r.stop(&rx));
+                                break 'run Some(Err(cut_off(&why, stopped.as_deref())));
                             }
                             ahead.extend(rest);
                             if end_too {
@@ -221,16 +216,11 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                 }
             }
             ends(&e, only.as_deref()).then_some(Ok(ExitCode::SUCCESS))
-        });
-        match ended {
-            Ok(None) => {}
-            Ok(Some(ended)) => break ended,
-            Err(why) => break Err(why),
+        };
+        if let Some(ended) = ended {
+            break ended;
         }
-    };
-    // What it read ahead may be deep too.
-    json::free(Value::Array(ahead.into()));
-    ended
+    }
 }
 
 /// Whether `e` is the last event notify waits for: `exited`, or with `only`
@@ -286,10 +276,8 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
     for ask in asks {
         if matches!(ask, Ask::Rest) {
             let (rest, why, cut) = source.rest();
-            // Not sent, notify has ended: let go of here.
-            if let Err(mpsc::SendError(Msg::Rest(rest, ..))) = tx.send(Msg::Rest(rest, why, cut)) {
-                json::free(Value::Array(rest));
-            }
+            // Not sent: notify has ended.
+            let _ = tx.send(Msg::Rest(rest, why, cut));
             if cut {
                 continue;
             }
@@ -301,10 +289,8 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
                     let (socket, made) = source.socket();
                     let socket = socket.filter(|_| made != told);
                     told = made;
-                    // Not sent, notify has ended: let go of here.
-                    if let Err(mpsc::SendError(Msg::Event(e, _))) = tx.send(Msg::Event(e, socket)) {
-                        json::free(e);
-                    }
+                    // Not sent: notify has ended.
+                    let _ = tx.send(Msg::Event(e, socket));
                     break;
                 }
                 Ok(None) => {}
@@ -414,15 +400,12 @@ impl Events {
             Err(_) if conn.missed().is_some() => Value::Null,
             Err(why) => return Err(why),
         };
-        // Read and let go of on a stack that takes it (ADR 2.5).
-        let titles = conn.deep(status, |_, status| {
-            let sessions = status["sessions"].as_array().into_iter().flatten();
-            sessions
-                .filter_map(|s| {
-                    Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
-                })
-                .collect::<HashMap<String, String>>()
-        })?;
+        let sessions = status["sessions"].as_array().into_iter().flatten();
+        let titles = sessions
+            .filter_map(|s| {
+                Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
+            })
+            .collect::<HashMap<String, String>>();
         Ok(Events {
             source: Source::Socket(Box::new(conn)),
             process: process.to_owned(),
@@ -442,14 +425,12 @@ impl Source {
                 let mut line = Vec::new();
                 match stdin.lock().read_until(b'\n', &mut line) {
                     Ok(0) => Err("stdin closed".into()),
-                    // As the host reads it (see json.rs), as the socket's.
-                    // A line that isn't an event is let go of there too.
+                    // As brnr reads what it wrote (see json.rs), as the
+                    // socket's: one too deep is none brnr wrote, and is said.
                     Ok(_) => {
-                        let depth = json::depth(&line);
-                        let event =
-                            || json::parse::<Value>(&line).filter(|e| e.get("event").is_some());
-                        json::on_stack(depth, event)
-                            .ok_or_else(|| format!("no stack to be had for a message {depth} deep"))
+                        json::within(&line, json::OWN_DEPTH, "a line on stdin")?;
+                        let event = json::parse::<Value>(&line, json::OWN_DEPTH);
+                        Ok(event.filter(|e| e.get("event").is_some()))
                     }
                     Err(e) => Err(format!("stdin: {e}")),
                 }
@@ -580,8 +561,6 @@ impl Running {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Done(done)) if done == pid => break,
                 // Stopped while draining: what is left goes with it.
-                Ok(Msg::Rest(rest, ..)) => json::free(Value::Array(rest)),
-                Ok(Msg::Event(e, _)) => json::free(e),
                 Ok(_) => {}
                 Err(_) => break,
             }

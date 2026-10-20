@@ -195,34 +195,6 @@ impl Session {
         }
     }
 
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Session {
-            turns,
-            state,
-            closing,
-            id: _,
-            cwd: _,
-            forked_from: _,
-            agent_text: _,
-            agent_text_kind: _,
-            agent_message_id: _,
-            replay: _,
-            idle_since: _,
-            idle_done: _,
-            last_active: _,
-            hold: _,
-            opening: _,
-        } = self;
-        let req_id = match closing {
-            Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
-            Some(Close::Sent) | None => None,
-        };
-        json::nesting(req_id).max(turns.holds()).max(state.holds())
-    }
-
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
     }
@@ -277,6 +249,21 @@ impl Host {
         }));
     }
 
+    /// Whether `line` from `from` nests past `json::DEPTH`, and if it does,
+    /// says so (ADR 2.5): as a line too long, it goes on unread with an
+    /// editor, and headless (from the agent) it is dropped. Either way it
+    /// isn't recorded: what would be redacted in it can't be found.
+    fn too_deep(&mut self, from: &str, line: &[u8]) -> bool {
+        if json::depth(line) <= json::DEPTH {
+            return false;
+        }
+        let relayed = from == "editor" || self.link.is_some();
+        self.emit_to_sessions(json!({
+            "event": "line_too_deep", "from": from, "limit": json::DEPTH, "relayed": relayed,
+        }));
+        true
+    }
+
     /// A part of a line from the agent past `LINE_BYTES`, `first` where it
     /// passed it: as `too_long` says.
     pub(super) fn agent_part(&mut self, bytes: Vec<u8>, first: bool) {
@@ -286,19 +273,13 @@ impl Host {
         self.send_link_owned(frame::DATA, bytes);
     }
 
-    fn editor_line(&mut self, line: Vec<u8>) {
-        let depth = json::depth(&line);
-        let mut line = Some(line);
-        let read = self.deep(depth, |host| {
-            let line = line.take().unwrap();
-            let msg = host.read(&line, depth);
-            host.editor_message(line, msg);
-        });
-        if read.is_none() {
-            // No stack to read it on: as a line that isn't JSON.
-            self.sink.note(None, json!({ "event": "line-too-deep", "depth": depth }));
-            self.editor_message(line.take().unwrap(), None);
+    fn editor_line(&mut self, mut line: Vec<u8>) {
+        if self.too_deep("editor", &line) {
+            line.push(b'\n');
+            return self.write_agent(&line);
         }
+        let msg = json::parse(&line, json::DEPTH);
+        self.editor_message(line, msg);
     }
 
     fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
@@ -425,7 +406,7 @@ impl Host {
     /// What the editor sent after its last line, as it closed its stdin: it
     /// goes to the agent as it is, and is recorded as a line would be.
     pub(super) fn record_editor_rest(&mut self, rest: &[u8]) {
-        let msg = (json::depth(rest) <= self.stack).then(|| json::parse::<Value>(rest)).flatten();
+        let msg = json::parse::<Value>(rest, json::DEPTH);
         let recorded = msg.as_ref().and_then(Value::as_object).and_then(log::redacted);
         self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));
     }
@@ -651,16 +632,11 @@ impl Host {
 
     pub(super) fn agent_line(&mut self, line: &[u8]) {
         let body = line.strip_suffix(b"\n").unwrap_or(line);
-        let depth = json::depth(body);
-        let read = self.deep(depth, |host| {
-            let msg = host.read(body, depth);
-            host.agent_message(line, msg);
-        });
-        if read.is_none() {
-            // No stack to read it on: as a line that isn't JSON.
-            self.sink.note(None, json!({ "event": "line-too-deep", "depth": depth }));
-            self.agent_message(line, None);
+        if self.too_deep("agent", body) {
+            return self.send_link(frame::DATA, line);
         }
+        let msg = json::parse(body, json::DEPTH);
+        self.agent_message(line, msg);
     }
 
     fn agent_message(&mut self, line: &[u8], msg: Option<Value>) {

@@ -741,10 +741,9 @@ fn recorded_exit(path: &Path) -> Option<bool> {
 fn recorded(lines: &[Vec<u8>], event: &str) -> bool {
     let quoted = format!("\"{event}\"");
     let quoted = quoted.as_bytes();
-    lines
-        .iter()
-        .filter(|line| line.windows(quoted.len()).any(|w| w == quoted))
-        .any(|line| transcript::head(line).is_some_and(|record| record["event"]["event"] == event))
+    lines.iter().filter(|line| line.windows(quoted.len()).any(|w| w == quoted)).any(|line| {
+        transcript::record(line).is_some_and(|record| record["event"]["event"] == event)
+    })
 }
 
 /// The sessions each run had open when it last wrote to them, by run id:
@@ -891,20 +890,18 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
 
 /// A host log's line as the report shows it: with what brnr redacts
 /// redacted again (a log written before it did), cut short if it is long.
-/// A record is read as transcripts are, however deep it nests, and shown,
-/// and let go of, on a stack that takes it.
+/// A record is read as transcripts are, to `json::OWN_DEPTH`.
 fn report_line(line: &[u8]) -> String {
-    let depth = json::depth(line);
-    let shown = json::on_stack(depth, || {
-        let mut record = transcript::record(line)?;
-        log::redact_record(&mut record);
-        Some(record.to_string())
-    });
-    let text = match shown {
-        Some(Some(text)) => text,
-        Some(None) => String::from_utf8_lossy(line).into_owned(),
-        // Not shown as it came: it may hold what brnr redacts.
-        None => format!("(a line {depth} deep, not shown: no stack to be had to read it)"),
+    let text = match transcript::record(line) {
+        Some(mut record) => {
+            log::redact_record(&mut record);
+            record.to_string()
+        }
+        None => match json::within(line, json::OWN_DEPTH, "a line") {
+            // Not shown as it came: it may hold what brnr redacts.
+            Err(why) => format!("({why}, not shown)"),
+            Ok(()) => String::from_utf8_lossy(line).into_owned(),
+        },
     };
     let chars = text.chars().count();
     if chars <= REPORT_LINE_CHARS {

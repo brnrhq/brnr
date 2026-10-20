@@ -13,7 +13,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::{json, render};
+use crate::render;
 
 use super::client::{Host, Pending};
 use super::{Args, discover, print_json, print_table, process, read_stdin, running_session, text};
@@ -78,35 +78,24 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    // Read, listed and let go of on a stack that takes what the agent sent
-    // (ADR 2.5), also when a process asked after it fails, as `permission
-    // requests` does.
     let mut rows = Vec::new();
     for host in chosen {
         let pid = host.id().parse::<u64>().ok();
-        let more = host.pending(|pending| {
-            let row = |e: &Value| {
-                json!({
-                    "session": e["session"],
-                    "pid": pid,
-                    "request": e["request"],
-                    "owner": e["owner"],
-                    "mode": e["mode"],
-                    "scope": e["scope"],
-                    "message": e["message"],
-                })
-            };
-            pending.elicitations(only.as_deref()).map(row).collect::<Vec<_>>()
-        });
-        match more {
-            Ok(more) => rows.extend(more),
-            Err(e) => {
-                json::free(Value::Array(rows));
-                return Err(e);
-            }
-        }
+        let pending = host.pending()?;
+        let row = |e: &Value| {
+            json!({
+                "session": e["session"],
+                "pid": pid,
+                "request": e["request"],
+                "owner": e["owner"],
+                "mode": e["mode"],
+                "scope": e["scope"],
+                "message": e["message"],
+            })
+        };
+        rows.extend(pending.elicitations(only.as_deref()).map(row));
     }
-    json::holding(Value::Array(rows), |rows| list(&rows, json_out))?
+    list(&Value::Array(rows), json_out)
 }
 
 /// The elicitations' `rows`, as a table or `--json`.
@@ -140,16 +129,13 @@ pub(super) fn show(a: &Args) -> Result<(), String> {
     let json_out = a.json;
     let hosts = discover()?;
     let (target, request) = locate(&hosts, a)?;
-    // As deep as the agent made it, with the rest of what waits there:
-    // shown, and let go of, on a stack that takes it (ADR 2.5).
-    target.host.pending(|pending| {
-        let e = find(pending, &target, &request)?;
-        if json_out {
-            return print_json(e);
-        }
-        describe(e, &target, &request);
-        Ok(())
-    })?
+    let pending = target.host.pending()?;
+    let e = find(&pending, &target, &request)?;
+    if json_out {
+        return print_json(e);
+    }
+    describe(e, &target, &request);
+    Ok(())
 }
 
 /// Prints elicitation `e`, `request` at `target`, in full.

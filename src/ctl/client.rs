@@ -1,18 +1,17 @@
 //! How the commands reach a running brnr process: over its control socket
-//! (ADR 3.9), each answer read as the host reads the agent's line and used
-//! on a stack that takes it (ADR 2.5), a subscription caught up once the
-//! process cuts it off (ADR 10.2).
+//! (ADR 3.9), each answer and event read as brnr reads what it wrote
+//! (ADR 2.5), a subscription caught up once the process cuts it off
+//! (ADR 10.2).
 //!
 //! [`discover`] finds the processes, asking each for its status, one after
 //! another. A [`Host`] is one of them: [`Host::call`] asks it something and
 //! waits for the answer, [`Host::pending`] has what waits for an answer
 //! there, and [`Conn::open`] subscribes to its events and asks it things on
 //! the same connection. An answer is the process's `ok` and `error` taken
-//! off: an error it says is the command's. What the agent sent nests as
-//! deep as the agent made it, so what holds it (`pending`, events) is used
-//! in a closure, run on a stack that takes it, where it is let go of too;
-//! what [`Host::call`] returns is brnr's own, and is refused past
-//! [`json::SHALLOW`], what any stack takes.
+//! off: an error it says is the command's. What the agent sent nests no
+//! deeper than [`json::DEPTH`], and the host wraps it in a few levels of its
+//! own: a line past [`json::OWN_DEPTH`] is none the host makes, and is
+//! refused, and said (P3).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -88,33 +87,17 @@ impl Host {
         self.kept(req, AGENT_WAIT)
     }
 
-    /// The answer to `req`, waiting `wait` for it, kept: as deep as any
-    /// stack takes, as brnr's own answers are.
+    /// The answer to `req`, waiting `wait` for it. `Err`: the process's
+    /// error, or why there is no answer to use, which names the process.
     fn kept(&self, req: &Value, wait: Duration) -> Result<Value, String> {
-        self.ask(req, wait, keep)?.map_err(|e| format!("process {}: {e}", self.id()))
-    }
-
-    /// What waits for an answer in the process, for `f`, which runs on a
-    /// stack that takes it (ADR 2.5).
-    pub(super) fn pending<R: Send>(
-        &self,
-        f: impl FnOnce(&Pending) -> R + Send,
-    ) -> Result<R, String> {
-        self.ask(&json!({ "cmd": "pending" }), ANSWER_WAIT, |answer| f(&Pending::from(answer)))
-    }
-
-    /// Asks `req`, waiting `wait` for the answer, and runs `f` with it (see
-    /// [`read`]). `Err`: the process's error, or why there is no
-    /// answer to use, which names the process.
-    fn ask<R: Send>(
-        &self,
-        req: &Value,
-        wait: Duration,
-        f: impl FnOnce(Value) -> R + Send,
-    ) -> Result<R, String> {
         let named = |e: String| format!("process {}: {e}", self.id());
         let line = self.exchange(req, wait).map_err(|e| named(e.to_string()))?;
-        read(&line, f).map_err(named)?
+        read(&line).map_err(named)?
+    }
+
+    /// What waits for an answer in the process.
+    pub(super) fn pending(&self) -> Result<Pending, String> {
+        self.kept(&json!({ "cmd": "pending" }), ANSWER_WAIT).map(Pending::from)
     }
 
     /// A request and the line that answers it, waiting up to `timeout` for
@@ -138,21 +121,13 @@ impl Host {
     }
 }
 
-/// Runs `f` with the answer `line` without its envelope, read as the host
-/// reads the agent's line (see json.rs), on a stack that takes it, where
-/// `f` lets go of it. `Err`: why it can't be read; `Ok(Err)`: the process's
-/// `error`.
-fn read<R: Send>(
-    line: &str,
-    f: impl FnOnce(Value) -> R + Send,
-) -> Result<Result<R, String>, String> {
+/// The answer `line` without its envelope, read as brnr reads what it
+/// wrote, to `json::OWN_DEPTH` (ADR 2.5). `Err`: why it can't be read;
+/// `Ok(Err)`: the process's `error`.
+fn read(line: &str) -> Result<Result<Value, String>, String> {
     let line = line.as_bytes();
-    let depth = json::depth(line);
-    let read = json::on_stack(depth, || {
-        let answer = json::parse(line).ok_or("its answer isn't JSON")?;
-        Ok(unwrapped(answer).map(f))
-    });
-    read.unwrap_or_else(|| Err(format!("no stack to be had for an answer {depth} deep")))
+    json::within(line, json::OWN_DEPTH, "its answer")?;
+    Ok(unwrapped(json::parse(line, json::OWN_DEPTH).ok_or("its answer isn't JSON")?))
 }
 
 /// An answer, `ok`, without `ok` and `req_id`; else the `error` it says.
@@ -167,22 +142,13 @@ fn unwrapped(mut answer: Value) -> Result<Value, String> {
     Ok(answer)
 }
 
-/// An answer to keep past the stack it was read on: one nested deeper than
-/// any stack takes is refused, there.
-fn keep(answer: Value) -> Result<Value, String> {
-    match json::nesting([&answer]) {
-        depth if depth > json::SHALLOW => Err(format!("its answer is {depth} deep")),
-        _ => Ok(answer),
-    }
-}
-
 /// Session `id` in a process's `status` answer, if it serves it.
 pub(super) fn session_in<'a>(status: &'a Value, id: &str) -> Option<&'a Value> {
     status["sessions"].as_array()?.iter().find(|s| s["session_id"] == id)
 }
 
 /// What waits for an answer in a process, as its `pending` answer has it:
-/// permission requests and elicitations, as deep as the agent made them.
+/// permission requests and elicitations.
 pub(super) struct Pending {
     approvals: Vec<Value>,
     elicitations: Vec<Value>,
@@ -282,9 +248,9 @@ pub(super) fn probe(path: &Path, host: &Host) -> Probe {
     let pid = host.meta["host_pid"].as_i64().unwrap_or(0);
     let socket = path.with_extension("sock");
     match host.exchange(&json!({ "cmd": "status" }), ANSWER_WAIT) {
-        Ok(line) => match read(&line, keep) {
-            Ok(Ok(Ok(status))) => Probe::Answered(status),
-            Ok(Ok(Err(why)) | Err(why)) | Err(why) => Probe::Silent(why),
+        Ok(line) => match read(&line) {
+            Ok(Ok(status)) => Probe::Answered(status),
+            Ok(Err(why)) | Err(why) => Probe::Silent(why),
         },
         Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
         // Running, but accepting nothing: its backlog is full (`made`).
@@ -405,17 +371,11 @@ pub(super) fn read_meta(path: &Path) -> Option<Value> {
 /// requests: responses are matched by `req_id`, and events that arrive in
 /// between are kept for `next_event`. Cut off by the process for falling
 /// behind, it catches up from the transcript and goes on live on a new
-/// connection (ADR 10.2, see catch_up.rs). What it reads may nest as deep as
-/// the agent made it: [`Conn::deep`] uses it and lets go of it on a stack
-/// that takes it (ADR 2.5).
+/// connection (ADR 10.2, see catch_up.rs).
 pub(super) struct Conn {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     events: VecDeque<Value>,
-    /// How deep what it read, and may still hold in `events`, nests.
-    deepest: usize,
-    /// How deep the stack it runs on takes (see `deep`).
-    stack: usize,
     next_req: u64,
     /// The process's socket, to subscribe on again.
     socket: Option<PathBuf>,
@@ -442,8 +402,6 @@ impl Conn {
             reader: BufReader::new(stream),
             writer,
             events: VecDeque::new(),
-            deepest: 0,
-            stack: json::SHALLOW,
             next_req: 0,
             socket: None,
             follow: None,
@@ -501,50 +459,14 @@ impl Conn {
         Ok(ExitCode::from(MISSED))
     }
 
-    /// Runs `f` with `value` on a stack that takes it and what the connection
-    /// holds: this one, or a thread's of its own (see json.rs). `f` lets go of
-    /// `value` there. `Err` says there is no such stack to be had (P3); then
-    /// `value` is kept until the process exits, rather than let go of here.
-    pub(super) fn deep<R: Send>(
-        &mut self,
-        value: Value,
-        f: impl FnOnce(&mut Conn, Value) -> R + Send,
-    ) -> Result<R, String> {
-        let need = json::nesting([&value]).max(self.deepest);
-        let mut value = Some(value);
-        let result = if need <= self.stack {
-            Some(f(self, value.take().unwrap()))
-        } else {
-            let outer = self.stack;
-            let result = json::on_stack(need, || {
-                self.stack = need;
-                f(self, value.take().unwrap())
-            });
-            self.stack = outer;
-            result
-        };
-        // Not taken: no stack to be had, to let go of it on either.
-        std::mem::forget(value);
-        // What was deep may be gone, as in the host's `deep`.
-        if self.deepest > json::SHALLOW {
-            self.deepest = json::nesting(&self.events);
-        }
-        result.ok_or_else(|| format!("no stack to be had for a message {need} deep"))
-    }
-
     /// A request whose failure is an error, and its answer.
     pub(super) fn call(&mut self, req: Value) -> Result<Value, String> {
         self.call_until(req, None)?.ok_or_else(|| "the process closed the connection".into())
     }
 
-    /// What waits for an answer in the process, for `f`, which runs on a
-    /// stack that takes it, as [`Conn::deep`] runs.
-    pub(super) fn pending<R: Send>(
-        &mut self,
-        f: impl FnOnce(&Pending) -> R + Send,
-    ) -> Result<R, String> {
-        let answer = self.call(json!({ "cmd": "pending" }))?;
-        self.deep(answer, |_, answer| f(&Pending::from(answer)))
+    /// What waits for an answer in the process.
+    pub(super) fn pending(&mut self) -> Result<Pending, String> {
+        self.call(json!({ "cmd": "pending" })).map(Pending::from)
     }
 
     /// The events read and not yet taken, oldest first.
@@ -591,10 +513,9 @@ impl Conn {
             if msg["req_id"] == id.as_str() {
                 return Ok(Some(msg));
             }
+            // Else an answer to another request.
             if msg.get("event").is_some() {
                 self.events.push_back(msg);
-            } else {
-                json::free(msg); // An answer to another request.
             }
         }
     }
@@ -612,7 +533,7 @@ impl Conn {
             match self.read(deadline) {
                 Ok(None) => return Ok(None),
                 Ok(Some(msg)) if msg.get("event").is_some() => return Ok(Some(msg)),
-                Ok(Some(msg)) => json::free(msg), // A response nobody waits for.
+                Ok(Some(_)) => {} // A response nobody waits for.
                 Err(why) => self.catch_up(why)?,
             }
         }
@@ -626,8 +547,7 @@ impl Conn {
         let why = loop {
             match self.read(None) {
                 Ok(Some(msg)) if msg.get("event").is_some() => rest.push(msg),
-                Ok(Some(msg)) => json::free(msg),
-                Ok(None) => {}
+                Ok(Some(_)) | Ok(None) => {}
                 Err(why) => break why,
             }
         };
@@ -740,7 +660,6 @@ impl Conn {
             Err(e) => return Err(self.give_up(&f, until, &e)),
         };
         f.last = until.or(caught.last().and_then(|e| e["seq"].as_u64())).unwrap_or(f.last);
-        self.deepest = self.deepest.max(json::nesting(&caught));
         self.events.extend(caught);
         let Some(mut conn) = live else { return Ok(()) };
         if !conn.events.is_empty() {
@@ -751,7 +670,6 @@ impl Conn {
             f.last = f.last.max(seq);
         }
         self.events.append(&mut conn.events);
-        self.deepest = self.deepest.max(conn.deepest);
         std::mem::swap(&mut self.reader, &mut conn.reader);
         std::mem::swap(&mut self.writer, &mut conn.writer);
         self.reconnects += 1;
@@ -805,13 +723,12 @@ impl Conn {
             // Cut short: the process cut the connection off mid-line.
             Ok(_) if !line.ends_with('\n') => Err("the process closed the connection".into()),
             Ok(_) => {
-                // As the host reads it (see json.rs): an event carries what
-                // the agent sent as deep as it nested it (ADR 2.5).
+                // As brnr reads what it wrote (ADR 2.5): one too deep is
+                // none the process makes, and is said; one that isn't JSON
+                // is passed over.
                 let line = line.as_bytes();
-                let depth = json::depth(line);
-                let msg = json::on_stack(depth, || json::parse::<Value>(line));
-                let msg = msg.flatten().unwrap_or(Value::Null);
-                self.deepest = self.deepest.max(depth);
+                json::within(line, json::OWN_DEPTH, "a line of the process's")?;
+                let msg = json::parse(line, json::OWN_DEPTH).unwrap_or(Value::Null);
                 if let (Some(f), Some(seq)) = (&mut self.follow, msg["seq"].as_u64())
                     && msg.get("event").is_some()
                 {
@@ -834,13 +751,6 @@ impl Conn {
     #[cfg(test)]
     pub(super) fn socket_path(&self) -> Option<PathBuf> {
         self.socket.clone()
-    }
-}
-
-impl Drop for Conn {
-    /// What it still holds may be deep: let go of on a stack that takes it.
-    fn drop(&mut self) {
-        json::free(Value::Array(std::mem::take(&mut self.events).into()));
     }
 }
 
@@ -921,10 +831,12 @@ mod tests {
 
     /// What `call` gets is the answer without its envelope; an error the
     /// process says is the command's as it says it; and an answer that isn't
-    /// JSON, or too deep to keep, is refused, naming the process.
+    /// JSON, or nested past what brnr reads of its own, is refused, naming
+    /// the process.
     #[test]
     fn a_call_is_answered_or_says_why_not() {
-        let deep = format!(r#"{{"ok":true,"x":{}{}}}"#, "[".repeat(200), "]".repeat(200));
+        let n = json::OWN_DEPTH;
+        let deep = format!(r#"{{"ok":true,"x":{}{}}}"#, "[".repeat(n), "]".repeat(n));
         let answers = [
             r#"{"ok":true,"req_id":"r","status":"stopping"}"#,
             r#"{"ok":false,"error":"no session s"}"#,
@@ -936,25 +848,26 @@ mod tests {
         assert_eq!(host.call(&json!({ "cmd": "stop" })), Err("no session s".into()));
         let isnt = Err("process 7: its answer isn't JSON".into());
         assert_eq!(host.call_agent(&json!({ "cmd": "fork" })), isnt);
-        let deep = Err("process 7: its answer is 201 deep".into());
+        let deep = Err("process 7: its answer nests 257 deep, past the 256 brnr reads".into());
         assert_eq!(host.call(&json!({ "cmd": "queue" })), deep);
         let asked: Vec<Value> =
             process.join().unwrap().into_iter().map(|r| r["cmd"].clone()).collect();
         assert_eq!(asked, ["stop", "stop", "fork", "queue"]);
     }
 
-    /// `pending` is read however deep what the agent sent nests (ADR 2.5),
-    /// and finds a request by its session and handle: an elicitation outside
-    /// any session by none.
+    /// `pending` is read as deep as brnr writes it, what the agent sent at
+    /// the depth limit and a few levels of the host's own (ADR 2.5), and
+    /// finds a request by its session and handle: an elicitation outside any
+    /// session by none. One level more is refused, and said.
     #[test]
-    fn adr_0002_pending_is_read_however_deep() {
-        for depth in [200, 1_000_000] {
+    fn adr_0002_an_answer_is_read_to_the_limit_and_no_deeper() {
+        for depth in [json::OWN_DEPTH - 4, json::OWN_DEPTH - 3] {
             let input = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
             let answer = format!(
                 r#"{{"ok":true,"pending":[{{"session":"s","request":"p1","tool_call":{{"rawInput":{input}}}}},{{"session":"t","request":"p1"}}],"elicitations":[{{"session":null,"request":"e1"}},{{"session":"s","request":"e2"}}]}}"#
             );
             let (host, process) = answering(&format!("pending-{depth}"), vec![answer]);
-            let found = host.pending(|pending| {
+            let found = host.pending().map(|pending| {
                 // Each as `<session>:<request>`, `-` for none.
                 let named = |items: &mut dyn Iterator<Item = &Value>| -> Vec<String> {
                     let name = |v: &Value| v["session"].as_str().unwrap_or("-").to_owned();
@@ -963,7 +876,7 @@ mod tests {
                         .collect()
                 };
                 (
-                    pending.approval("s", "p1").map(|p| json::nesting([p])),
+                    pending.approval("s", "p1").map(|p| p["tool_call"]["rawInput"].is_array()),
                     named(&mut pending.approvals(None)),
                     named(&mut pending.approvals(Some("t"))),
                     named(&mut pending.elicitations(None)),
@@ -973,16 +886,43 @@ mod tests {
                 )
             });
             let want = (
-                Some(depth + 2),
+                Some(true),
                 vec!["s:p1".to_owned(), "t:p1".to_owned()],
                 vec!["t:p1".to_owned()],
                 vec!["-:e1".to_owned(), "s:e2".to_owned()],
                 vec!["s:e2".to_owned()],
                 [true, false, true],
             );
-            assert_eq!(found, Ok(want), "{depth}");
+            match depth {
+                d if d + 4 == json::OWN_DEPTH => assert_eq!(found, Ok(want)),
+                _ => {
+                    let past = "process 7: its answer nests 257 deep, past the 256 brnr reads";
+                    assert_eq!(found.err().as_deref(), Some(past));
+                }
+            }
             assert_eq!(process.join().unwrap(), [json!({ "cmd": "pending" })]);
         }
+    }
+
+    /// A `status` answer nested past serde_json's 128, as one with an
+    /// agent's turn error at the depth limit is, is the process answering
+    /// (#323), so `discover` lists it as it is.
+    #[test]
+    fn adr_0002_a_status_with_an_error_at_the_limit_is_an_answer() {
+        let n = json::DEPTH - 1;
+        let error =
+            format!(r#"{{"code":-32603,"message":"m","data":{}{}}}"#, "[".repeat(n), "]".repeat(n));
+        let status = format!(r#"{{"ok":true,"sessions":[{{"last_turn":{{"error":{error}}}}}]}}"#);
+        assert!(json::depth(status.as_bytes()) > json::DEPTH);
+        let (host, process) = answering("status-deep", vec![status]);
+        match probe(Path::new("/nonexistent/7.json"), &host) {
+            Probe::Answered(status) => {
+                assert_eq!(status["sessions"][0]["last_turn"]["error"]["code"], -32603);
+            }
+            Probe::Silent(why) => panic!("silent: {why}"),
+            Probe::Gone => panic!("gone"),
+        }
+        assert_eq!(process.join().unwrap(), [json!({ "cmd": "status" })]);
     }
 
     /// A process that cuts every new connection off again once it has

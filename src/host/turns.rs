@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use super::text_block;
-use crate::json;
 
 /// A message accepted by the host and not yet sent as a prompt.
 #[derive(Clone)]
@@ -159,25 +158,6 @@ impl Turns {
             context: Vec::new(),
             last_turn: None,
         }
-    }
-
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Turns {
-            interrupts,
-            held,
-            steering,
-            ended,
-            last_turn,
-            session: _,
-            prompts: _,
-            started: _,
-            context: _,
-        } = self;
-        let blocks = interrupts.iter().chain(held).chain(steering).flat_map(|h| &h.blocks);
-        json::nesting(blocks.chain(ended).chain(last_turn))
     }
 
     /// What its turns are doing (see [`Activity`]).

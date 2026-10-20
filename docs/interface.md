@@ -424,8 +424,8 @@ the host, the same in the transcript (a raw ACP record has it before `dir`);
 session events have `session`. `peer_cut_off` (`peer`, `last_queued`) tells
 the other peers that one was cut off. The [event catalogue](../README.md#events)
 lists every event and its meaning, including message/turn correlation,
-approvals, elicitations, config patches and process exits. `exited` and `line_too_long`
-are process events. `session_changed` carries `what` and `value`; config
+approvals, elicitations, config patches and process exits. `exited`, `line_too_long`
+and `line_too_deep` are process events. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
 `session_reopened` follows a `session_closed` when the agent answered an
 editor's load of the session with success after its close: the session is

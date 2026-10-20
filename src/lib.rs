@@ -96,7 +96,7 @@ pub mod internals {
         }
     }
     pub mod json {
-        pub use crate::json::{depth, members, on_stack, parse, replace};
+        pub use crate::json::{DEPTH, OWN_DEPTH, depth, members, parse, replace};
     }
     pub mod log {
         pub use crate::log::rfc3339;

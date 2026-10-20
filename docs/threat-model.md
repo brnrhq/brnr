@@ -166,7 +166,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0009_a_profiles_mcp_secrets_are_redacted`, `adr_0009_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted`, `adr_0003_acp_passes_bytes_unchanged`, `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0009_secrets_are_redacted_keys_and_structure_stay` |
-| `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows (for a log an older brnr wrote), a line nested past 128 too, read as transcripts are (ADR 2.5), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs), `record` (src/transcript.rs), `redact_record` (src/log.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste`, `adr_0011_the_report_redacts_a_deep_line` |
+| `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows (for a log an older brnr wrote), a line nested past 128 too, read as transcripts are (ADR 2.5: to 256; a deeper one isn't shown), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs), `record` (src/transcript.rs), `redact_record` (src/log.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste`, `adr_0011_the_report_redacts_a_deep_line` |
 | `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted` |
 
 ### B7: the config file is only the user's
@@ -290,8 +290,8 @@ What brnr doesn't enforce, or doesn't test, today.
   agent's does (ADR 2.6), which `adr_0002_stdout_and_stderr_end_on_their_own`
   checks; the rest isn't tested.
 - **Requests in lines the host can't read keep the editor's id.** A
-  request the host doesn't read (not JSON, past 32 MiB, or what the editor
-  wrote after its last newline) reaches the agent untracked, with the
+  request the host doesn't read (not JSON, past 32 MiB, nested past 128,
+  or what the editor wrote after its last newline) reaches the agent untracked, with the
   editor's id. If the editor gave it an id the host has given a request
   still waiting, which it was never told, the answer is taken for that
   request's (ADR 2.4). Not tested.

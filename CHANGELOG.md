@@ -43,6 +43,21 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** brnr reads a line nested up to 128 levels (`[[1]]` is 2),
+  about what serde_json and ACP's Rust SDK read, where it read any depth on
+  a thread whose stack it sized to the line. A deeper line from the agent or
+  the editor is treated as one past 32 MiB: with an editor it goes on unread
+  and unrecorded, headless it is dropped, and a new `line_too_deep` event
+  (`from`, `limit`, `relayed`) says so; brnr tracks nothing of it, so a
+  permission request that deep isn't listed, answered from outside or timed
+  out. The commands read what brnr wrote (answers, events, transcripts) up
+  to 256 levels, and fail, saying so, past it. No event or timer runs on a
+  thread of its own any more, and `--json` output indented stays small
+  (ADR 2.5, #268, #259).
+- A process whose `status` answer has an agent's turn error nested past
+  128 is answering: the commands that look for processes (`session list`,
+  `permission requests`, …) no longer pass it over as not answering
+  (ADR 2.5, #323).
 - **Breaking:** brnr refuses a config file that isn't yours, or that the
   group or others can read or write, or whose folder isn't yours or they
   can write, or, on macOS, either with an access control list (`chmod
