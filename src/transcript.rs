@@ -5,10 +5,12 @@
 //! A session's events file is `projects/<folder>/<name>.jsonl` under the
 //! state directory, its raw ACP `<name>.acp.jsonl` beside it, and a host
 //! log `hosts/<run id>.jsonl` (paths.rs). A transcript is read only where
-//! the logger could have written it (ADR 9.3): a symlinked project folder
-//! isn't looked in, as `log::purge` doesn't, and a symlink, or what isn't a
-//! regular file, isn't read ([`open`]). What is written through one is
-//! refused anyway; read, it would be whatever the link points at.
+//! the logger could have written it (ADR 9.3), by its rules for every part
+//! of the path ([`open`]): nothing is looked in or read through a symlink,
+//! the state directory, `projects`, `hosts` and a project folder included,
+//! nor is what isn't the user's own directory or regular file, or has
+//! another hard link. What is written there is refused anyway; read, it
+//! would be whatever the link points at.
 //!
 //! A record is a line that is a JSON object: `{"ts","host_id","host_pid",
 //! "proxy_pid","agent_pid"[,"session_id"],…}`, then `"event":{…}` for a
@@ -21,15 +23,18 @@
 //! process wrote, or broken otherwise. A line cut short is never taken for
 //! a record: an object ends only at its last byte.
 
+use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind};
 use std::mem::{replace, take};
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::{json, paths, render};
+use crate::{json, paths, render, sys};
 
 /// How much of a file a read backwards takes at a time.
 const CHUNK: u64 = 64 * 1024;
@@ -58,31 +63,119 @@ fn of_session_in(root: &Path, session: &str) -> Vec<PathBuf> {
     files.filter(|path| fs::symlink_metadata(path).is_ok_and(|m| m.is_file())).collect()
 }
 
+/// The host logs under the state directory (`hosts/<run id>.jsonl`), in
+/// order.
+pub(crate) fn host_logs() -> Vec<PathBuf> {
+    let mut found = entries(&paths::state_dir(), "hosts", |t| t.is_file());
+    found.retain(|p| p.extension().is_some_and(|e| e == "jsonl"));
+    found
+}
+
 /// The project folders under `root`, a state directory, in order; not one
 /// that is a symlink.
 fn folders(root: &Path) -> Vec<PathBuf> {
-    let entries = fs::read_dir(root.join("projects")).into_iter().flatten().flatten();
-    let dirs = entries.filter(|e| e.file_type().is_ok_and(|t| t.is_dir()));
-    let mut found: Vec<PathBuf> = dirs.map(|e| e.path()).collect();
+    entries(root, "projects", |t| t.is_dir())
+}
+
+/// What is in `root`'s `sub` that is `kind`, in order (none that is a
+/// symlink): none if `root` or `sub` isn't a directory of the user's, as
+/// the logger would refuse to write there ([`walk`]). The names are listed
+/// by path; what is then read is opened from `root` again ([`open`]).
+fn entries(root: &Path, sub: &str, kind: fn(&fs::FileType) -> bool) -> Vec<PathBuf> {
+    if walk(root, &[OsStr::new(sub)], false).is_err() {
+        return Vec::new();
+    }
+    let entries = fs::read_dir(root.join(sub)).into_iter().flatten().flatten();
+    let mut found: Vec<PathBuf> =
+        entries.filter(|e| e.file_type().is_ok_and(|t| kind(&t))).map(|e| e.path()).collect();
     found.sort();
     found
 }
 
-/// Opens the transcript at `path` to read it: not through a symlink, and
-/// only a regular file (a FIFO put there is refused, not waited on).
+/// Opens the transcript at `path` to read it, by the logger's rules for
+/// writing it (ADR 9.3, `log::open_private`): from the state directory it
+/// is in (above `hosts/<file>` or `projects/<folder>/<file>`; for a file
+/// laid out otherwise, its folder), each part opened from the one before
+/// without following a symlink, and checked through what was opened. A
+/// symlink, one that isn't a directory or regular file, one of another
+/// user's, or a file with another hard link is refused; a FIFO is refused,
+/// not waited on. Nothing is made private: reading changes nothing.
 pub(crate) fn open(path: &Path) -> io::Result<File> {
-    let flags = libc::O_NOFOLLOW | libc::O_NONBLOCK;
-    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path);
-    // A symlink is ELOOP; what it is is looked at only for the message.
-    let link = || fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    let file = opened.map_err(|e| match e.raw_os_error() {
-        Some(libc::ELOOP) if link() => io::Error::new(e.kind(), "is a symlink"),
-        _ => e,
-    })?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(ErrorKind::InvalidInput, "is not a regular file"));
+    let up = |n| path.ancestors().nth(n).filter(|p| !p.as_os_str().is_empty());
+    let named = |n, name: &str| up(n).and_then(Path::file_name).is_some_and(|f| f == name);
+    // A project folder is a cwd's key, never `hosts` (paths::project_key).
+    let n = match (named(1, "hosts"), named(2, "projects")) {
+        (true, _) => 2,
+        (_, true) => 3,
+        _ => 1,
+    };
+    let root = up(n).unwrap_or(Path::new("."));
+    let names: Vec<&OsStr> = path.strip_prefix(root).unwrap_or(path).iter().collect();
+    walk(root, &names, true)
+}
+
+/// Opens `names` below the directory `root`, each from the one before
+/// (`openat`, `O_NOFOLLOW`), checking each through what was opened (so what
+/// is checked is what is read): `root` and each but the last a directory,
+/// and the last a regular file with no other name if `file`, all the
+/// user's. An error names the part it is about, but for the last, which the
+/// caller names as the path it opened.
+fn walk(root: &Path, names: &[&OsStr], file: bool) -> io::Result<File> {
+    let dirs = libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    let opened = OpenOptions::new().read(true).custom_flags(dirs).open(root);
+    let mut here = root.to_owned();
+    let mut at = check(opened, &here, false, names.is_empty())?;
+    for (i, name) in names.iter().enumerate() {
+        here.push(name);
+        let last = i + 1 == names.len();
+        let Ok(c_name) = CString::new(name.as_bytes()) else {
+            return Err(refused(&here, last, "is not a plain path"));
+        };
+        if matches!(name.to_str(), Some("." | "..")) {
+            return Err(refused(&here, last, "is not a plain path"));
+        }
+        let flags = match last && file {
+            true => libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            false => libc::O_RDONLY | dirs,
+        };
+        at = check(sys::openat(at.as_fd(), &c_name, flags, 0), &here, last && file, last)?;
     }
-    Ok(file)
+    Ok(at)
+}
+
+/// `opened`, the part of a transcript's path at `path`, if it is what
+/// [`walk`] takes: a regular file with no other name (`file`) or a
+/// directory, the user's.
+fn check(opened: io::Result<File>, path: &Path, file: bool, last: bool) -> io::Result<File> {
+    // A symlink is ELOOP, or ENOTDIR on macOS for a directory; what it is is
+    // looked at only for the message.
+    let link = || fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let opened = opened.map_err(|e| match e.raw_os_error() {
+        Some(libc::ELOOP | libc::ENOTDIR) if link() => refused(path, last, "is a symlink"),
+        Some(libc::ENOTDIR) => refused(path, last, "is not a directory"),
+        _ if last => e,
+        _ => io::Error::new(e.kind(), format!("{}: {e}", path.display())),
+    })?;
+    let meta = opened.metadata()?;
+    if file && !meta.is_file() {
+        return Err(refused(path, last, "is not a regular file"));
+    } else if !file && !meta.is_dir() {
+        return Err(refused(path, last, "is not a directory"));
+    } else if meta.uid() != sys::uid() {
+        return Err(refused(path, last, &format!("is owned by uid {}", meta.uid())));
+    } else if file && meta.nlink() != 1 {
+        // Another name for it could be anywhere: it would be read as a
+        // transcript of the user's.
+        return Err(refused(path, last, &format!("has {} hard links", meta.nlink())));
+    }
+    Ok(opened)
+}
+
+/// Why the part of a transcript's path at `path` isn't read: of the path
+/// opened, if it is the `last` part, else naming the part.
+fn refused(path: &Path, last: bool, why: &str) -> io::Error {
+    let why = if last { why.to_owned() } else { format!("{} {why}", path.display()) };
+    io::Error::new(ErrorKind::InvalidInput, why)
 }
 
 /// `line` as a record, if it is one. Run it on a stack that takes
@@ -464,6 +557,44 @@ mod tests {
             assert_eq!(open(what).unwrap_err().to_string(), "is not a regular file");
         }
         assert!(first(&projects.join("-a/s.jsonl")).is_some());
+        let _ = fs::remove_dir_all(home);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    /// Each part of a transcript's path is held to the logger's rules (ADR
+    /// 9.3): from the state directory it is in, a symlinked `projects`,
+    /// `hosts` or state directory isn't looked in or read through, nor a
+    /// file with another hard link, nor what is another user's.
+    #[test]
+    fn adr_0009_every_part_of_a_transcripts_path_is_the_users_own() {
+        let (home, outside) = (scratch("parts"), scratch("parts-outside"));
+        let record = r#"{"ts":"t","session_id":"s","event":{"event":"user_message"}}"#;
+        fs::create_dir_all(outside.join("projects/-w")).unwrap();
+        fs::create_dir_all(outside.join("hosts")).unwrap();
+        for file in ["projects/-w/s.jsonl", "hosts/h.jsonl"] {
+            fs::write(outside.join(file), format!("{record}\n")).unwrap();
+        }
+        let linked = home.join("linked");
+        symlink(&outside, &linked).unwrap();
+        for sub in ["projects", "hosts"] {
+            symlink(outside.join(sub), home.join(sub)).unwrap();
+        }
+        assert_eq!(events_files_in(&home), Vec::<PathBuf>::new());
+        assert_eq!(of_session_in(&home, "s"), Vec::<PathBuf>::new());
+        assert_eq!(events_files_in(&linked), Vec::<PathBuf>::new());
+        let refused = |path: &Path| open(path).unwrap_err().to_string();
+        for (file, part) in [("projects/-w/s.jsonl", "projects"), ("hosts/h.jsonl", "hosts")] {
+            let want = format!("{} is a symlink", home.join(part).display());
+            assert_eq!(refused(&home.join(file)), want);
+            assert_eq!(refused(&linked.join(file)), format!("{} is a symlink", linked.display()));
+            assert!(first(&outside.join(file)).is_some(), "{file}");
+        }
+        let other = outside.join("hosts/other.jsonl");
+        fs::hard_link(outside.join("hosts/h.jsonl"), &other).unwrap();
+        assert_eq!(refused(&other), "has 2 hard links");
+        if sys::uid() != 0 {
+            assert_eq!(refused(Path::new("/usr/bin/env")), "/usr/bin is owned by uid 0");
+        }
         let _ = fs::remove_dir_all(home);
         let _ = fs::remove_dir_all(outside);
     }

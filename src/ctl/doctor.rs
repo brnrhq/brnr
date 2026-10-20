@@ -319,12 +319,19 @@ fn transcripts(r: &mut Report) {
         return;
     };
     // Every directory and file brnr writes: the root, hosts/ and projects/
-    // with their files, and each project folder's files.
+    // with their files, and each project folder's files. Nothing is looked
+    // at, or made private, through a symlink (ADR 9.3): one is a problem
+    // itself.
+    let below = meta.is_dir();
     let mut paths = vec![(root.clone(), meta)];
-    for sub in ["hosts", "projects"] {
+    for sub in ["hosts", "projects"].into_iter().filter(|_| below) {
         let dir = root.join(sub);
         let Ok(meta) = fs::symlink_metadata(&dir) else { continue };
+        let is_dir = meta.is_dir();
         paths.push((dir.clone(), meta));
+        if !is_dir {
+            continue;
+        }
         for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
             let Ok(meta) = entry.path().symlink_metadata() else { continue };
             let is_dir = meta.is_dir();
@@ -619,21 +626,16 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
     };
     let running: Vec<&str> =
         hosts.iter().filter_map(|(host, _)| host.meta["host_id"].as_str()).collect();
-    let dir = paths::state_dir().join("hosts");
     let mut logs = 0;
     let mut died: Vec<(SystemTime, String)> = Vec::new();
-    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "jsonl") {
-            continue;
-        }
+    for path in transcript::host_logs() {
         let Some(run) = path.file_stem().and_then(OsStr::to_str) else { continue };
         logs += 1;
         if running.contains(&run) || recorded_exit(&path) != Some(false) {
             continue;
         }
         // Appended to only: when it was last modified is its last record.
-        let written = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+        let written = fs::symlink_metadata(&path).and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
         died.push((written, run.to_owned()));
     }
     if died.is_empty() {
@@ -787,16 +789,12 @@ fn bug_report(r: &Report, hosts: Option<&[Running]>) {
 fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     let running: Option<Vec<&str>> =
         hosts.map(|h| h.iter().filter_map(|(host, _)| host.meta["host_id"].as_str()).collect());
-    let dir = paths::state_dir().join("hosts");
-    let mut logs: Vec<(SystemTime, String, PathBuf)> = fs::read_dir(&dir)
+    let mut logs: Vec<(SystemTime, String, PathBuf)> = transcript::host_logs()
         .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .filter_map(|e| {
-            let run = e.path().file_stem()?.to_str()?.to_owned();
-            let written = e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
-            Some((written, run, e.path()))
+        .filter_map(|path| {
+            let run = path.file_stem()?.to_str()?.to_owned();
+            let written = fs::symlink_metadata(&path).and_then(|m| m.modified());
+            Some((written.unwrap_or(UNIX_EPOCH), run, path))
         })
         .collect();
     // The latest first; of two written in the same instant, the later run.

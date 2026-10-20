@@ -65,6 +65,13 @@ brnr's own conventions:
 
 ### Fixed
 
+- What reads transcripts holds every part of their path to the rules they
+  are written by: `session list`, `event log`, `session resume`, `session
+  delete`, catching up and `doctor` don't look in, or read through, a
+  symlinked `$BRNR_HOME/projects`, `hosts` or state directory, nor read a
+  transcript or host log with another hard link or of another user's, and
+  `doctor --fix` makes nothing private through one. A symlinked `projects`
+  listed the sessions in whatever it pointed at (ADR 9.3, #302).
 - A flag's value is never taken as a request for help: `brnr session new
   --prompt -h` sends `-h` as the prompt, where it printed the usage, as
   `prompt send` already did (ADR 8.1).
