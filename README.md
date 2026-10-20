@@ -758,6 +758,14 @@ Without `--profile`, the `default` profile applies, if there is one. A key in
 the wrong part, an unknown key and an unknown name fail to load, saying where
 the key goes; `brnr doctor` checks every profile.
 
+The file names the commands brnr runs and can hold secrets, so brnr reads it
+only if it is yours and only you can read and write it, and its folder is
+yours and only you can write it: `chmod 600` the file, `chmod 700` the
+folder. Otherwise every command that reads it fails, saying which path, why,
+and the `chmod` or `chown` that fixes it; brnr doesn't change it for you. A
+symlink is followed, and the file it points at, and its folder, are checked
+([ADR 9.4](docs/adr/0009-security-and-privacy.md#94-the-config-file-is-read-only-if-only-you-can-change-or-read-it)).
+
 ## Bridges
 
 A bridge is any process that speaks brnr's JSON-lines protocol: one started by
@@ -964,7 +972,7 @@ the panic, and in the foreground by the process itself.
 | Variable | Default |
 |---|---|
 | `BRNR_HOME` | `~/.brnr` (transcripts and session locks) |
-| `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` |
+| `BRNR_CONFIG` | `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml` (brnr refuses one others can read or write) |
 | `BRNR_DIR` | `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>` (sockets and metadata; brnr refuses one others can use) |
 | `BRNR_START_TIMEOUT` | `120`: seconds a start has to commit |
 
