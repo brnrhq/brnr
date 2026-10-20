@@ -4,7 +4,8 @@ Draft 2026-10-19. Implemented. Factor: N1 (ADR 1). Brings together former
 ADRs 25, 53 and 59 (docs/adr/README.md maps them).
 
 What brnr records and where, and what it reads: secrets kept out of what
-it writes, session ids made safe file names, transcripts written only
+it writes, session ids made safe file names and each cwd a folder of its
+own, transcripts written only
 where only the user can read them, and the config file read only where
 only the user can change or read it. Security comes first (N1).
 docs/threat-model.md says, for each trust boundary, what enforces each
@@ -37,7 +38,7 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
 - Not recording these requests at all: the record of the session's opening
   would be lost.
 
-## 9.2 One file name per session id
+## 9.2 One file name per session id, one folder per cwd
 
 - A session id becomes a file name by escaping, not replacing: lowercase
   ASCII letters, digits, `-` and `_` stay as they are, and every other byte
@@ -54,10 +55,32 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
     folder (ADR 3.9).
   - Its transcript is `projects/<folder>/<name>.jsonl` and
     `<name>.acp.jsonl` (ADR 5.1), one per id and folder. A session resumed
-    in another folder writes in that one.
+    in another cwd writes in that one's folder.
   - `session list`, `event log` and `session resume` find a transcript by
     the id its records carry, not by its file name. The original id is in
     every record and in the lock file.
+  - `session list --cwd` keeps brnr's rows by the cwd their records name,
+    not by their folder, so two cwds whose hashes collide (below) each list
+    only their own. With an agent named, its rows are what its
+    `session/list` returns for that cwd, joined on the id: a session open
+    in a process that the agent lists there is kept whatever its recorded
+    cwd. An `unreachable` one, whose cwd its process doesn't say, is the
+    cwd's if the agent lists it there or its transcript began there.
+- A cwd's folder is `<claude>-<hash>` (`paths::project_key`, #120):
+  - `<claude>` is the cwd as `~/.claude/projects` names it: every
+    character but ASCII letters and digits is `-`. The folder sorts and
+    reads next to Claude Code's (`-Users-me-src-3db3a304` beside
+    `-Users-me-src`).
+  - `<hash>` is the low 32 bits of FNV-1a 64 over the cwd's bytes, as 8
+    lowercase hex digits. brnr computes it itself, so it can't change with
+    a crate or with Rust; it is fixed for 1.x (ADR 3.9, ADR 8.4).
+  - The cwd is taken as given, its trailing `/` removed (`/` stays `/`).
+    No symlink is resolved and the file system isn't asked, so a cwd's
+    folder is the same however the file system changes.
+  - So `/a-b` and `/a/b` get two folders, and so do `/A` and `/a`, also
+    where the file system ignores case. `/` is `--860189fe`.
+  - Two cwds whose hashes collide share a folder. That is all a collision
+    does: their sessions stay apart by id, and each record names its cwd.
 - An id whose name doesn't fit in a file name (255 bytes with the
   `.acp.jsonl`; an escaped byte takes three) is not supported. Its
   transcript fails to open and the host log says so, and its lock can't be
@@ -69,16 +92,29 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   by the ids its records carry. A session with such an id, resumed, writes
   a new file under its escaped name. A file two sessions already share
   stays as it is.
+- A transcript in a folder of the earlier rule, `<claude>` alone, is
+  listed and read as any other. One rule is kept for those files, so that
+  a session doesn't split into two transcripts: when a process opens a
+  session in a cwd whose `<claude>-<hash>` file doesn't exist, but
+  `projects/<claude>/<name>.jsonl` does and its first record's `cwd` is
+  this cwd (the same trailing `/` removed), it goes on in that file and its
+  `.acp.jsonl`. Any other cwd's file there is left as it is, and the
+  session's transcript is in its own folder. That file is read as
+  transcripts are (ADR 9.3).
 
 **Consequences.**
 
-- A claude-agent-acp session's events file has the same folder and name as
-  Claude Code's own transcript.
+- A claude-agent-acp session's events file has the same name as Claude
+  Code's own transcript, in a folder whose name starts with Claude Code's
+  and a `-`: a tool joins the two by that prefix, not by the exact name.
 - Names of ids with capitals or other characters are longer and less
   readable. The id itself is in the records.
-- The project folder stays as `~/.claude/projects` has it, which can put
-  two cwds in one folder (`/a-b` and `/a/b`). Their sessions are still
-  apart, as ids are, and each record names its cwd.
+- The folder name alone doesn't say the cwd: two cwds that differ only
+  where Claude Code puts a `-` are told apart by the hash, and the records
+  say which is which.
+- A session of before the hash, resumed in the cwd it began in, keeps its
+  one transcript in the old folder; resumed in another cwd, it starts one in
+  that cwd's folder, as any session does.
 
 **Why.** A session id is the agent's text (P8), and it names the session's
 transcript and its lock. Replacing other bytes with `_` kept a name inside
@@ -86,6 +122,19 @@ its folder, but not the session's identity: `a/b` and `a_b` were one file,
 so two sessions wrote one transcript and contended for one lock. On macOS,
 whose file systems ignore case and Unicode normalization by default,
 `Sess-1` and `sess-1` were one file too.
+
+The folder, as `~/.claude/projects` names it, was one for `/a-b` and
+`/a/b`, and on macOS for `/A` and `/a`: two projects' transcripts in one
+folder, told apart only by reading them (#120). A hash of the exact cwd
+gives each its own, and keeps Claude Code's name in front, so the folders
+still sort and read alike. A hash is rejected above for session ids
+because a collision there put two sessions in one file. Here a collision
+puts two cwds in one folder, which is all the earlier rule did for every
+such pair: the sessions in it are still apart by id. Not resolving the cwd
+keeps the name a function of what the agent was told, with no file system
+call that could fail or change its answer. Leaving old files where they are
+keeps P9, and continuing the one file a session already has keeps it one
+transcript (P3).
 
 **Considered.**
 
@@ -95,8 +144,18 @@ whose file systems ignore case and Unicode normalization by default,
 - A hash of the id for every name: it is then not the agent's transcript's
   name.
 - Keeping capitals: one name per id on Linux, two ids in one file on macOS.
-- Escaping the project folder too: it would not be the agent's own folder
-  name, which joining with its transcripts relies on.
+- The exact name `~/.claude/projects` has (#120's first fix): one folder
+  for `/a-b` and `/a/b`, the cwds told apart only by the cwd each record
+  names, which every reader then has to check.
+- Escaping every byte of the cwd, as session ids are: one folder per cwd
+  with no collision, but not Claude Code's name, nor next to it.
+- A suffix only on a collision: the name of a folder would depend on which
+  cwd came first, and on what else is in `projects`, and the rule would be
+  two rules.
+- Resolving symlinks, or folding case on a file system that ignores it: a
+  file system call per name, whose answer changes as the file system does.
+- Moving old transcripts into the new folders: brnr doesn't rewrite what
+  it has written (P9).
 
 ## 9.3 Transcripts are written only where only you can read them
 
@@ -130,12 +189,22 @@ whose file systems ignore case and Unicode normalization by default,
     …`). For a session's file, the session is served without it and the
     host log has `session-log-failed` with the error (ADR 5.1).
   - A FIFO is opened without blocking, so it is refused, not waited on.
-- What reads a transcript reads it only where it could have been written:
-  `session list`, `event log`, `session resume`, `session delete`,
-  catching up (ADR 10.2) and `doctor` don't look in a symlinked project
-  folder, and don't read a transcript or host log that is a symlink (it
-  is opened `O_NOFOLLOW`) or isn't a regular file. One read through a link
-  would be whatever the link points at, taken for a session of the user's.
+- What reads a transcript reads it only where it could have been written,
+  by the same rules for every part of the path: `session list`, `event
+  log`, `session resume`, `session delete`, catching up (ADR 10.2) and
+  `doctor` open the state directory a transcript or host log is in, each
+  directory below it (`projects` and the project folder, or `hosts`) and
+  the file, each from the one above it (`openat`, `O_NOFOLLOW`), and check
+  each through what was opened (`fstat`). A symlink, one that isn't a
+  directory (or a regular file), one owned by someone else, or a file with
+  other hard links isn't looked in or read, and a FIFO isn't waited on. One
+  read through a link would be whatever the link points at, taken for a
+  session of the user's. Reading makes nothing private: `doctor` warns of
+  what others can reach, and of a state directory, `hosts` or `projects`
+  that isn't a directory, however private. It opens each path the same
+  way, lists a directory through what it opened, and `--fix` makes private
+  only what it opened, through it (`fchmod`): it doesn't look below a
+  symlink, nor change what is put at a name after it looked.
   `transcript.rs` holds every read.
 - There is no override. `log = false` (ADR 5.1) is the way to write
   nothing, and a transcript to share is copied out.
@@ -264,10 +333,29 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     `adr_0009_secrets_are_redacted_keys_and_structure_stay`.
 - 9.2:
   - [src/paths.rs](../../src/paths.rs):
-    `adr_0009_distinct_ids_get_distinct_names`.
+    - `adr_0009_distinct_ids_get_distinct_names`.
+    - `adr_0009_a_cwd_has_a_folder_of_its_own`: the names of `/`, `/a-b`,
+      `/a/b`, `/A`, `/a` and `/Users/me/src`, written down once; a trailing
+      `/` is the same cwd; `/a-b` and `/a/b`, `/A` and `/a` differ, also
+      folded to lowercase.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0009_distinct_ids_never_share_a_transcript`,
     `adr_0009_distinct_ids_never_share_a_lock`.
+  - [tests/cli.rs](../../tests/cli.rs):
+    - `adr_0009_cwds_alike_are_listed_apart`: `<dir>/x-y` and
+      `<dir>/x/y`, named alike by `~/.claude/projects`, have two folders,
+      each with only its own sessions' files, and each lists only its own
+      sessions with `--cwd`, closed, open, and open in a process that
+      doesn't answer, with an agent named or not.
+    - `adr_0009_cwds_alike_are_resumed_apart`: each one's session has its
+      own transcript, in its own folder, in `event log`, and `session
+      resume` opens it in its own cwd.
+    - `adr_0009_a_transcript_under_the_old_rule_is_continued`: a session's
+      two files, in the folder of the earlier rule, are appended to when it
+      is resumed in its cwd, and no new folder is made.
+    - `adr_0009_another_cwds_transcript_under_the_old_rule_is_not_continued`:
+      `<dir>/x-y`'s session, in that folder, resumed in `<dir>/x/y`, leaves
+      the old files as they were and writes in `<dir>/x/y`'s own folder.
 - 9.3:
   - [src/log.rs](../../src/log.rs):
     - `adr_0009_new_and_private_paths_are_opened_as_they_are`: what is
@@ -282,9 +370,13 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       file with another hard link, a FIFO, a file where a directory goes
       and another user's directory are refused.
   - [src/transcript.rs](../../src/transcript.rs):
-    `adr_0009_a_transcript_is_read_only_where_it_could_be_written`: a
-    symlinked project folder isn't looked in; a symlink, a FIFO and a
-    directory aren't read.
+    - `adr_0009_a_transcript_is_read_only_where_it_could_be_written`: a
+      symlinked project folder isn't looked in; a symlink, a FIFO and a
+      directory aren't read.
+    - `adr_0009_every_part_of_a_transcripts_path_is_the_users_own`: a
+      symlinked `projects`, `hosts` or state directory isn't looked in or
+      read through, nor is a file with another hard link or a directory of
+      another user's.
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`:
       a resumed session's events and raw ACP files, made 0644 beneath
@@ -297,6 +389,10 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_a_symlinked_transcript_is_never_read`: a session whose
       events file is a symlink, or in a symlinked project folder, isn't
       listed or logged.
+    - `adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read`: with
+      `hosts` a symlink, `session list` reads no host log and `doctor`
+      reads, shows and makes private none; with `projects` one too, its
+      session isn't listed or logged.
 - 9.4:
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config

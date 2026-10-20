@@ -101,6 +101,9 @@ pub mod internals {
     pub mod log {
         pub use crate::log::rfc3339;
     }
+    pub mod paths {
+        pub use crate::paths::{claude_project_key, project_key};
+    }
     pub mod schema {
         pub use crate::schema::{
             AgentCapabilities, AuthMethod, ListSessionsResponse, NewSessionResponse,

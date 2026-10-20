@@ -9,7 +9,8 @@
 //!   `projects/<folder>/<session id>.jsonl` per ACP session, its events,
 //!   and `<session id>.acp.jsonl` beside it, its raw ACP, where `<folder>`
 //!   is the session's cwd with every non-alphanumeric character turned
-//!   into `-` (as `~/.claude/projects` does); and `hosts/<host id>.jsonl`
+//!   into `-` (as `~/.claude/projects` does) and a hash of the cwd, one
+//!   folder per cwd (`project_key`, ADR 9.2); and `hosts/<host id>.jsonl`
 //!   for what belongs to no session.
 //!
 //!   Session locks go with the transcripts, `sessions/<session id>.lock`
@@ -25,8 +26,10 @@
 //! (ADR 3.9).
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
@@ -84,10 +87,17 @@ pub(crate) fn host_log(host_id: &str) -> PathBuf {
 }
 
 pub(crate) fn session_log(cwd: &Path, session: &str) -> PathBuf {
-    state_dir()
-        .join("projects")
-        .join(project_key(cwd))
-        .join(format!("{}.jsonl", file_name(session)))
+    in_folder(&project_key(cwd), session)
+}
+
+/// Where [`session_log`] was before ADR 9.2's hash: in the folder
+/// [`claude_project_key`] names.
+pub(crate) fn claude_session_log(cwd: &Path, session: &str) -> PathBuf {
+    in_folder(&claude_project_key(cwd), session)
+}
+
+fn in_folder(folder: &str, session: &str) -> PathBuf {
+    state_dir().join("projects").join(folder).join(format!("{}.jsonl", file_name(session)))
 }
 
 /// Where the session locks are (see lock.rs): with the transcripts, so
@@ -131,10 +141,43 @@ pub(crate) fn is_events_log(path: &Path) -> bool {
     name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl")
 }
 
-/// The folder name a project's logs go in: its path with every character
-/// other than ASCII letters and digits replaced by `-`.
-pub(crate) fn project_key(cwd: &Path) -> String {
+/// The folder name a session's logs go in, one per cwd (ADR 9.2):
+/// `<claude>-<hash>`, `<claude>` the cwd as `~/.claude/projects` names it
+/// and `<hash>` the low 32 bits of FNV-1a 64 over its bytes, as 8 lowercase
+/// hex digits. The cwd is taken as given, with no trailing `/`
+/// ([`without_trailing_slash`]):
+/// nothing is looked up on the file system, so the name is the same however
+/// the file system changes. Two cwds whose hashes collide share a folder:
+/// their sessions stay apart by id, and each record names its cwd.
+pub fn project_key(cwd: &Path) -> String {
+    let cwd = without_trailing_slash(cwd);
+    format!("{}-{:08x}", claude_project_key(cwd), fnv1a(cwd.as_os_str().as_bytes()) as u32)
+}
+
+/// `cwd` as `~/.claude/projects` names its folder: every character other
+/// than ASCII letters and digits replaced by `-`. It was the whole folder
+/// name before ADR 9.2's hash, and a transcript of then is still continued
+/// there (log.rs).
+pub fn claude_project_key(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// `cwd` without its trailing `/`s, but `/` itself as it is: the cwd a
+/// folder is named for.
+pub(crate) fn without_trailing_slash(cwd: &Path) -> &Path {
+    let bytes = cwd.as_os_str().as_bytes();
+    let end = bytes.iter().rposition(|&b| b != b'/').map_or(bytes.len().min(1), |i| i + 1);
+    Path::new(OsStr::from_bytes(&bytes[..end]))
+}
+
+/// FNV-1a 64 of `bytes`. Written here, not `DefaultHasher`, whose output
+/// may change with Rust: a folder's name never may within 1.x (ADR 8.4).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash = (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// `BRNR_DIR=<dir>` as a shell reads it, `dir` one word whatever is in it:
@@ -195,6 +238,27 @@ mod tests {
         assert_eq!(name("a/b"), ("a%2fb.jsonl".into(), "a%2fb.acp.jsonl".into()));
         // Not session `x`'s raw file.
         assert_eq!(name("x.acp"), ("x%2eacp.jsonl".into(), "x%2eacp.acp.jsonl".into()));
+    }
+
+    /// The folder names, written down once: the rule is fixed for 1.x
+    /// (ADR 3.9), so these never change.
+    #[test]
+    fn adr_0009_a_cwd_has_a_folder_of_its_own() {
+        let key = |cwd: &str| project_key(Path::new(cwd));
+        assert_eq!(key("/"), "--860189fe");
+        assert_eq!(key("/a-b"), "-a-b-b38a6786");
+        assert_eq!(key("/a/b"), "-a-b-b38ee0cc");
+        assert_eq!(key("/A"), "-A-b49d0f8d");
+        assert_eq!(key("/a"), "-a-b49cd92d");
+        assert_eq!(key("/Users/me/src"), "-Users-me-src-3db3a304");
+        // A trailing `/` is the same cwd.
+        assert_eq!(key("/a/b/"), key("/a/b"));
+        assert_eq!(key("/a/b//"), key("/a/b"));
+        assert_eq!(key("//"), key("/"));
+        // Alike as `~/.claude/projects` names them, apart here; `/A` and
+        // `/a` too, where the file system ignores case.
+        assert_ne!(key("/a-b").to_lowercase(), key("/a/b").to_lowercase());
+        assert_ne!(key("/A").to_lowercase(), key("/a").to_lowercase());
     }
 
     /// Ids that the former `_` for anything unsafe, or a file system that

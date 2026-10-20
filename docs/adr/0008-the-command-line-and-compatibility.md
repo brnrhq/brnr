@@ -193,8 +193,17 @@ How words are read:
 
 `session delete` is `session/delete`:
 
-- It is refused for a session open in a process ("close it first"), and for
-  an agent without `sessionCapabilities.delete`, which isn't asked (P7). The
+- It is refused for a session open in a process: `sess-1 is running in
+  process 4466: close it first (brnr session close sess-1)`. A session a
+  process holds otherwise is refused in the words `session resume` uses
+  (ADR 3.9), with nothing to do about it offered: a holder that doesn't
+  answer (`sess-1 is running in process 4466, which is not answering`), is
+  opening it (`sess-1 is opening in process 4466`), is closing it (free once
+  its records are written, ADR 5.5), or isn't listed here (`…, which brnr
+  doesn't list`, or the runtime directory and the `BRNR_DIR=…` that reaches
+  it). A process that takes the session's lock after the command found it
+  free is said the same way. It is refused for an agent without
+  `sessionCapabilities.delete` too, which isn't asked (P7). The
   agent is the one brnr recorded for the session, or `--profile` or
   `-- <agent>` for one it hasn't; a session brnr has no transcript of needs
   its agent named, and nothing is recorded for it.
