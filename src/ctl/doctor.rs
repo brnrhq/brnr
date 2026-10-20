@@ -53,6 +53,7 @@ use serde_json::{Value, json};
 use crate::host::check_bridge;
 use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
 
+use super::args::Error;
 use super::client::{Host, Probe, gone, probe, read_meta};
 use super::{Args, text, when};
 
@@ -104,10 +105,10 @@ impl Report {
     }
 }
 
-pub(crate) fn main(a: &Args) -> Result<(), String> {
+pub(crate) fn main(a: &Args) -> Result<(), Error> {
     let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
-        return Err("--fix and --report don't go together".into());
+        return Err(Error::Invalid("--fix and --report don't go together".into()));
     }
     let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
@@ -122,14 +123,14 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
         bug_report(&r, hosts.as_deref());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     if r.json {
         outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     match (r.failed, r.warned) {
@@ -138,7 +139,7 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
             outln!("\n{n} warning{}", plural(n));
             Ok(())
         }
-        (n, _) => Err(format!("{n} check{} failed", plural(n))),
+        (n, _) => Err(format!("{n} check{} failed", plural(n)).into()),
     }
 }
 

@@ -25,13 +25,20 @@ use serde_json::Value;
 use crate::host::alive;
 use crate::{json, render, transcript};
 
+use super::args::Error;
 use super::{Args, default_events, events_arg, ownership};
 
 const POLL: Duration = Duration::from_millis(200);
 
-pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn log(a: &Args) -> Result<ExitCode, Error> {
     let last = a.number("--last");
     let events = events_arg(a, &default_events())?;
+    Ok(show(a, last, events)?)
+}
+
+/// `event log`, its arguments checked: the `events` of the session, from
+/// the `last`-th last message on.
+fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, String> {
     let (follow, json_out) = (a.has("--follow"), a.json);
     // A gap in the transcript (`records_skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).

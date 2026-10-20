@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{json, render};
 
+use super::args::Error::{self, Invalid};
 use super::client::{Host, Pending};
 use super::{Args, discover, print_json, print_table, process, read_stdin, running_session, text};
 
@@ -210,13 +211,13 @@ fn describe(e: &Value, target: &Target, request: &str) {
 
 /// `elicitation accept`, `decline` and `cancel` (`action`): the action sent,
 /// an accept's fields checked against the form by the process first.
-pub(super) fn answer(a: &Args, action: &str) -> Result<(), String> {
+pub(super) fn answer(a: &Args, action: &str) -> Result<(), Error> {
     let accept = action == "accept";
     let (json_out, stdin) = (a.json, accept && a.has("-"));
     let mut fields: Map<String, Value> = Map::new();
     for field in if accept { a.values("--field") } else { Vec::new() } {
-        let (name, value) =
-            field.split_once('=').ok_or(format!("--field {field}: not <name>=<value>"))?;
+        let (name, value) = (field.split_once('='))
+            .ok_or_else(|| Invalid(format!("--field {field}: not <name>=<value>")))?;
         // A field given again is a list's next value.
         let value = Value::String(value.to_owned());
         match fields.get_mut(name) {
@@ -227,13 +228,13 @@ pub(super) fn answer(a: &Args, action: &str) -> Result<(), String> {
             }
         }
     }
+    if stdin && !fields.is_empty() {
+        return Err(Invalid("give the fields with --field or on stdin (-), not both".into()));
+    }
     let hosts = discover()?;
     let (target, request) = locate(&hosts, a)?;
     let content = match (stdin, fields.is_empty()) {
-        (true, false) => {
-            return Err("give the fields with --field or on stdin (-), not both".into());
-        }
-        (true, true) => {
+        (true, _) => {
             let text = read_stdin()?;
             let value: Value =
                 serde_json::from_str(&text).map_err(|e| format!("stdin isn't JSON: {e}"))?;
@@ -255,12 +256,12 @@ pub(super) fn answer(a: &Args, action: &str) -> Result<(), String> {
     let response = target.host.call(&req)?;
     let result = &response["result"];
     if json_out {
-        return print_json(&json!({
+        return Ok(print_json(&json!({
             "session": target.session,
             "request": request,
             "action": result["action"],
             "content": result["content"],
-        }));
+        }))?);
     }
     let done = match action {
         "accept" => "accepted",

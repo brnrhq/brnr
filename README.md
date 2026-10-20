@@ -38,6 +38,8 @@ editor ──stdio── brnr acp ──socketpairs── brnr process ──pip
   a session through its process, over a Unix socket that only you can open.
   Most are a group, what they act on, and a verb: `brnr <group> --help` lists
   a group's ([ADR 8.1](docs/adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
+  `--help` exits 0, and a command used wrongly exits 2 with its usage on
+  stderr, having done nothing ([ADR 8.3](docs/adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status)).
 
 macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
 was considered, is in [docs/adr](docs/adr/README.md).

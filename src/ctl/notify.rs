@@ -61,6 +61,7 @@ use serde_json::Value;
 
 use crate::{host, json, render, signals, sys};
 
+use super::args::Error::{self, Invalid};
 use super::catch_up::MISSED;
 use super::client::{Conn, discover};
 use super::{Args, events_arg, session_or_pid};
@@ -83,15 +84,31 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 /// hung up the connection.
 const HANGUP_CHECK: Duration = Duration::from_millis(100);
 
-pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn notify(a: &Args) -> Result<ExitCode, Error> {
     let (session, pid) = (a.positional.first().cloned(), a.value("--pid").map(str::to_owned));
     let stdin = a.has("--stdin");
     let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
     let events = events_arg(a, &default)?;
     let command = a.rest.clone().unwrap_or_default();
     if command.is_empty() {
-        return Err("notify needs a command after --".into());
+        return Err(Invalid("notify needs a command after --".into()));
     }
+    match (stdin, session.is_some(), pid.is_some()) {
+        (true, false, false) | (false, true, false) | (false, false, true) => {}
+        (true, ..) => return Err(Invalid("--stdin takes no <session> or --pid".into())),
+        _ => return Err(Invalid("give a <session> or --pid <pid>, or --stdin".into())),
+    }
+    Ok(run(stdin, session, pid, events, command)?)
+}
+
+/// `event notify`, its arguments checked: `command` run for `events`.
+fn run(
+    stdin: bool,
+    session: Option<String>,
+    pid: Option<String>,
+    events: Vec<String>,
+    command: Vec<String>,
+) -> Result<ExitCode, String> {
     // Agent messages and titles are tracked for the environment, and the
     // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
@@ -385,9 +402,6 @@ impl Events {
         wanted: &[&str],
     ) -> Result<Events, String> {
         if stdin {
-            if session.is_some() || pid.is_some() {
-                return Err("--stdin takes no <session> or --pid".into());
-            }
             // Subscribed from the process's start, so every title is to come.
             let process = env::var("BRNR_PID").unwrap_or_default();
             let source = Source::Stdin(io::stdin());

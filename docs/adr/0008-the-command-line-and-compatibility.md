@@ -1,10 +1,9 @@
 # 8. The command line and compatibility
 
-Draft 2026-10-19. Implemented, but 8.4 is a promise that applies from
+Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
 1.0.0, 8.5's typed facade waits for #150, 8.6's evals with a real agent
-aren't done, and these are decided, not implemented yet: 8.1's names
-spelled one way (#154, #311) and 8.3's usage errors and help
-(#153, #310). Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+aren't done, and 8.1's names spelled one way (#154, #311) are decided, not
+implemented yet. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -89,15 +88,15 @@ How words are read:
   verb's `--help` or `-h`, before any `--`, prints its usage; after `--` it
   is the command's, and as a flag's value it is that value (`--prompt -h`
   sends `-h`). Help goes to stdout and exits 0, and a usage error goes to
-  stderr and exits 2, in every command, once #310 lands (ADR 8.3).
+  stderr and exits 2, in every command (ADR 8.3).
 - `prompt send`'s options go before its prompt: from the prompt's first
   word on, every word is the prompt's (`-h`, `--help`, `--wait`, `--json`
   too), sent as given. `-` (stdin) goes alone.
 - An option a command doesn't take fails as unknown, and nothing is done.
   It is never read as a `<session>` or `<pid>`: `session status --json`
   without a session is a usage error. Every command says an unknown option
-  (`session list`, `process list`, `doctor` and `skill` too), rather than
-  printing its usage. A word with one dash, such as `-x`, is an argument
+  (`session list`, `process list`, `doctor` and `skill` too), before its
+  usage. A word with one dash, such as `-x`, is an argument
   (`event log` has no `-f`).
 - Names that this tree replaced have no alias (P9), and the CHANGELOG lists
   them: such a command fails as unknown and does nothing; so do the
@@ -467,14 +466,24 @@ where P5 allows one, and a script could not see what a person sees.
   codes for `prompt send --wait`, `session new --wait` and
   `session resume --wait`. `event wait` on a session that is idle already
   exits as its last turn ended.
-- Usage errors and help, the same in every command (#153), decided, not
-  implemented yet (#310):
+- Usage errors and help, the same in every command (#153):
   - A usage error exits 2: an unknown command, verb or option, an argument
     missing or one too many, a value a flag can't take, `brnr` or a group
     with no command. Nothing is done, and the command's usage is printed
-    on stderr. `brnr acp` exits 2 so already. 1 stays an operation that
-    failed, so a script tells a mistake in its own command line from a
-    failure.
+    on stderr, after what was wrong where brnr can say it
+    (`brnr: unknown option: --bogus`); for a command brnr doesn't have,
+    `brnr --help lists every command` in place of all of it. `brnr acp`
+    exits 2 so already. 1 stays an operation that failed, so a script
+    tells a mistake in its own command line from a failure.
+  - A usage error is what the command line alone shows wrong, checked
+    before anything is read or done: flags that don't go together
+    (`--timeout` without `--wait`), a value not of the flag's form or not
+    one of its fixed choices (`--for`, `--events`, `--include`, `--option
+    <o>=<v>`, `brnr skill`'s references), an empty `--prompt`. What
+    depends on anything else is a failure, 1: a session, process or
+    profile that isn't there, a mode or option the agent doesn't have, a
+    file that can't be read, a prompt on stdin that is empty. `brnr acp`
+    exits 2 for a config error still, which #338 decides.
   - `--help` and `-h` print the usage on stdout and exit 0, wherever they
     are taken (ADR 8.1): `brnr`, a group without a verb
     (`brnr session --help`), a verb, `brnr acp`, `doctor` and `skill`
@@ -501,14 +510,21 @@ where P5 allows one, and a script could not see what a person sees.
 
 **Why.** A script or a supervising agent needs to wait for a turn without
 polling, and to know from the exit status alone how it ended (F5, P3). The
-control commands exit 1 for a usage error, the code of a failed operation,
-while `brnr acp` exits 2; `doctor --help` and `skill --help` print on stderr
-and exit 1, while a verb's `--help` prints on stdout and exits 0 (#153). An
+control commands exited 1 for a usage error, the code of a failed
+operation, while `brnr acp` exited 2; `doctor --help` and `skill --help`
+printed on stderr and exited 1, while a verb's `--help` printed on stdout
+and exited 0 (#153). An
 exit code is part of the interface (ADR 8.4), so one situation gets one code
 in every command (F5, P5). 2 is what many utilities exit for a usage error
 (`grep`, `ls`, the shell's builtins) and what `brnr acp` exits, and 0, 1, 3
 and 124 already have their meanings. Help asked for is the answer, so stdout
-and 0, as a verb's `--help` has it already.
+and 0, as a verb's `--help` had it already. The line between a usage error
+and a failure is what the command line alone shows, so the same words get
+the same code whatever the machine holds (P5), and a script that gets 2
+knows retrying can't help. Saying what was wrong before the usage serves
+both of 8.1's needs: the option named, and the command's form to fix it
+by. A command brnr doesn't have has no usage of its own, and all of
+`brnr --help` for a typo buries the one line that matters.
 
 **Considered.**
 
@@ -522,6 +538,9 @@ and 0, as a verb's `--help` has it already.
 - sysexits' 64 (`EX_USAGE`): few utilities use it, and `brnr acp` has 2.
 - Help on stderr: help asked for is the output, and `brnr --help | less`
   should work.
+- A usage error only for what the parser catches, every other check a
+  failure: `--timeout` without `--wait` would then exit 1 while
+  `--timeout soon` exits 2, two codes for one kind of mistake.
 - Making the adapters' `--help` print a usage without starting ACP (as a
   comment on #153 asked): it would change upstream's program past what
   ADR 11.1 adds, for an interface ADR 8.4 doesn't cover.
@@ -625,11 +644,11 @@ be, by a record that amends this one, once a second major exists.
 
 The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
 still settles names and shapes, breaking as P9 allows. #151 (event and
-transcript record names) is decided and made (ADR 5.9, #314); #153 (the
-exit code of a usage error, `--help`) and #154 (flags and config keys
-spelled two ways) are decided (ADR 8.3, ADR 8.1 and 6.1), and their
-changes, breaking too, land before it (#310, #311). What they settle is
-what 1.0.0 promises.
+transcript record names) is decided and made (ADR 5.9, #314), as is #153
+(the exit code of a usage error, `--help`: ADR 8.3, #310); #154 (flags and
+config keys spelled two ways) is decided (ADR 8.1 and 6.1), and its
+change, breaking too, lands before it (#311). What they settle is what
+1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise
@@ -1002,9 +1021,8 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_wait_returns_when_the_session_goes_idle`,
   `adr_0008_wait_on_an_idle_session_reports_the_last_turn`,
   `adr_0008_huge_timeouts_are_never`, `adr_0008_wait_for_permission`,
-  `adr_0008_wait_for_exit`. Not covered by a Rust test: usage errors and
-  help the same in every command (#153), decided, not implemented yet;
-  their tests come with #310.
+  `adr_0008_wait_for_exit`, `adr_0008_a_usage_error_exits_2`,
+  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`.
 - 8.4: none: it is a promise that applies from 1.0.0.
 - 8.5: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's

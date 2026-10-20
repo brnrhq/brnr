@@ -86,6 +86,7 @@ result:
 | 1 | it failed (`error`), stopped for another reason (`stop_reason`), its message was dropped (`dropped`), the agent exited, or the session closed first | tell the user what brnr said on stderr or in the JSON; don't retry quietly |
 | 124 | your `--timeout` passed | the worker is still going: wait again, `brnr prompt cancel`, or ask the user |
 | 3 | brnr cut the wait off for falling behind and couldn't catch up from the transcript (it says what it missed) | the worker is still going: wait again, and read `brnr event log` for what happened |
+| 2 | your command line was wrong (an unknown option, an argument missing, a value a flag can't take); nothing was done | fix it from the usage brnr printed on stderr; the same words fail the same way again |
 
 A worker waiting for an approval, or for input (an elicitation), doesn't end
 its turn: `event wait` runs until your timeout. `prompt send --wait` and

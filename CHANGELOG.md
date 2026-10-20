@@ -52,6 +52,19 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** a usage error exits 2, not 1, in every command: an unknown
+  command, verb or option, an argument missing or one too many, a value a
+  flag can't take (`event wait --for soon`, `--events nope`, `brnr skill
+  nope`), flags that don't go together (`--timeout` without `--wait`), or
+  `brnr` or a group with no command. Nothing is done; brnr says what was
+  wrong, then the command's usage, on stderr. An operation that fails still
+  exits 1. A script that took 1 for both tells them apart now (ADR 8.3).
+- **Breaking:** `--help` and `-h` print the usage on stdout and exit 0 in
+  every command: `doctor --help`, `skill --help` and `skill install --help`
+  printed on stderr and exited 1, and `brnr acp` took them only as its
+  first word (ADR 8.3).
+- `brnr acp --help` names its arguments `<p>` and `<agent>`, as `brnr
+  --help` does (ADR 8.3).
 - **Breaking:** brnr refuses a config file that isn't yours, or that the
   group or others can read or write, or whose folder isn't yours or they
   can write, or, on macOS, either with an access control list (`chmod

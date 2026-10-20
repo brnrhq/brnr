@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
+use super::args::Error::{self, Invalid};
 use super::client::Host;
 use super::{Args, discover, print_json, print_table, running_session, text};
 
@@ -162,7 +163,7 @@ fn choices(option: &Value) -> Vec<Value> {
 /// `config set`: `--mode`, `--model` and `--thought-level` find their option
 /// by category, `--option <o>=<v>` by id, resolved by the process as a
 /// start's settings are (ADR 6.1, ADR 8.1) and sent one at a time.
-pub(super) fn config_set(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn config_set(a: &Args) -> Result<ExitCode, Error> {
     let json_out = a.json;
     let options = options("--option", &a.values("--option"))?;
     let (mode, model, thought_level) =
@@ -190,16 +191,18 @@ pub(super) fn config_set(a: &Args) -> Result<ExitCode, String> {
 }
 
 /// `<option>=<value>` pairs, given with `flag`, by option; the same option
-/// twice with two values fails (ADR 6.1).
-pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, String>, String> {
+/// twice with two values is a usage error (ADR 6.1).
+pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, String>, Error> {
     let mut options = BTreeMap::new();
     for pair in pairs {
-        let (option, value) =
-            pair.split_once('=').ok_or(format!("{flag} takes <option>=<value>, not {pair}"))?;
+        let (option, value) = (pair.split_once('='))
+            .ok_or_else(|| Invalid(format!("{flag} takes <option>=<value>, not {pair}")))?;
         if let Some(was) = options.insert(option.to_owned(), value.to_owned())
             && was != value
         {
-            return Err(format!("{flag} {option}={was} and {flag} {option}={value} disagree"));
+            return Err(Invalid(format!(
+                "{flag} {option}={was} and {flag} {option}={value} disagree"
+            )));
         }
     }
     Ok(options)

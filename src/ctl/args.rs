@@ -133,6 +133,7 @@ impl Spec {
     }
 }
 
+use Error::Invalid;
 use Takes::{Count, Many, Nothing, One, Same, Seconds};
 
 const fn switch(name: &'static str) -> Flag {
@@ -257,18 +258,37 @@ pub(super) fn spec(cmd: &str, verb: Option<&str>) -> Option<&'static Spec> {
     VERBS.iter().find(|s| s.cmd == cmd && s.verb == verb)
 }
 
-/// Why arguments were refused.
+/// Why a command didn't do what it was asked (ADR 8.3): a usage error,
+/// which exits 2 with the command's usage on stderr, or a failure, 1.
 #[derive(Debug, PartialEq)]
 pub(super) enum Error {
     /// Used wrongly: the command line prints the verb's usage.
     Usage,
-    /// What the message says.
-    Message(String),
+    /// Used wrongly, as the message says: printed before the usage.
+    Invalid(String),
+    /// The operation failed, as the message says.
+    Failed(String),
+}
+
+impl Error {
+    /// The exit status it ends the command with.
+    pub(super) fn code(&self) -> u8 {
+        match self {
+            Error::Usage | Error::Invalid(_) => 2,
+            Error::Failed(_) => 1,
+        }
+    }
 }
 
 impl From<String> for Error {
     fn from(msg: String) -> Error {
-        Error::Message(msg)
+        Error::Failed(msg)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(msg: &str) -> Error {
+        Error::Failed(msg.to_owned())
     }
 }
 
@@ -295,16 +315,20 @@ impl Spec {
             if let Some(&Flag(name, takes)) = self.flags.iter().find(|f| f.0 == arg) {
                 let value = match takes {
                     Nothing => None,
-                    _ => Some(it.next().ok_or(format!("{name} needs {}", takes.what()))?.clone()),
+                    _ => Some(
+                        it.next()
+                            .ok_or_else(|| Invalid(format!("{name} needs {}", takes.what())))?
+                            .clone(),
+                    ),
                 };
                 if let Some(value) = &value {
-                    takes.check(name, value)?;
+                    takes.check(name, value).map_err(Invalid)?;
                 }
                 if let (Same(_), Some(value)) = (takes, &value)
                     && let Some(was) = a.value(name)
                     && was != value
                 {
-                    return Err(format!("{name} {was} and {name} {value} disagree").into());
+                    return Err(Invalid(format!("{name} {was} and {name} {value} disagree")));
                 }
                 a.given.push((name, value));
             } else if arg == "--json" && self.json {
@@ -312,7 +336,7 @@ impl Spec {
             } else if arg == "--" && self.rest != Rest::Nothing {
                 a.rest = Some(it.by_ref().cloned().collect());
             } else if arg.starts_with("--") {
-                return Err(format!("unknown option: {arg}").into());
+                return Err(Invalid(format!("unknown option: {arg}")));
             } else if a.positional.len() < self.positionals.len() {
                 a.positional.push(arg.clone());
             } else if self.rest == Rest::Words {
@@ -446,7 +470,7 @@ mod tests {
                     for args in [before, after] {
                         // A number's, though it isn't one.
                         let a = match spec.parse(&args) {
-                            Err(Error::Message(m)) if matches!(takes, Seconds | Count) => {
+                            Err(Error::Invalid(m)) if matches!(takes, Seconds | Count) => {
                                 assert!(m.starts_with(&format!("{flag}: not a number")), "{m}");
                                 assert!(m.ends_with(&format!(": {value}")), "{at} {args:?}: {m}");
                                 continue;
@@ -460,7 +484,7 @@ mod tests {
                     }
                 }
                 let alone = [positionals.clone(), vec![flag.to_owned()]].concat();
-                let needs = Error::Message(format!("{flag} needs {}", takes.what()));
+                let needs = Error::Invalid(format!("{flag} needs {}", takes.what()));
                 assert_eq!(spec.parse(&alone).err(), Some(needs), "{at}");
             }
         }
@@ -509,7 +533,7 @@ mod tests {
         assert_eq!(parse("session", "status", &[]).err(), Some(Error::Usage));
         assert_eq!(parse("session", "status", &["s", "t"]).err(), Some(Error::Usage));
         assert_eq!(parse("session", "status", &["-x"]).unwrap().positional, ["-x"]);
-        let unknown = |flag: &str| Some(Error::Message(format!("unknown option: {flag}")));
+        let unknown = |flag: &str| Some(Error::Invalid(format!("unknown option: {flag}")));
         assert_eq!(parse("session", "status", &["s", "--"]).err(), unknown("--"));
         assert_eq!(parse("event", "notify", &["s", "--json"]).err(), unknown("--json"));
         assert_eq!(parse("session", "new", &["--take-over", "--bogus"]).err(), unknown("--bogus"));
@@ -522,7 +546,7 @@ mod tests {
         assert_eq!(parse("elicitation", "show", &["r"]).err(), Some(Error::Usage));
         assert_eq!(parse("config", "set", &["s", "--json"]).err(), Some(Error::Usage));
         let err = parse("config", "set", &["s", "--mode", "a", "--mode", "b"]).err();
-        assert_eq!(err, Some(Error::Message("--mode a and --mode b disagree".into())));
+        assert_eq!(err, Some(Error::Invalid("--mode a and --mode b disagree".into())));
         let a = parse(
             "session",
             "new",
