@@ -40,16 +40,25 @@
 //! Without `--profile`, the `default` profile applies if there is one. A key
 //! in the wrong part, an unknown key or name, and the flat layout of before
 //! fail to load, saying which and where (P7, P9).
+//!
+//! The file names the commands brnr runs and may hold secrets, so it is read
+//! only if it is the user's own and nobody else can read or write it, nor
+//! write its folder (ADR 9.4): every command reads it through `load_all`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CString;
 use std::fmt;
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
-use crate::paths;
+use crate::{paths, sys};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -337,11 +346,7 @@ pub(crate) fn load(name: Option<&str>) -> Result<Profile, String> {
 /// wrong with it, each problem saying where.
 pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String>> {
     let path = paths::config_file();
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(vec![err.to_string()]),
-    };
+    let Some(text) = read_private(&path)? else { return Ok(None) };
     let at_line = |e: toml::de::Error| match e.span() {
         Some(span) => {
             format!("line {}: {}", text[..span.start].matches('\n').count() + 1, e.message())
@@ -355,6 +360,109 @@ pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String
     }
     let file: ConfigFile = toml::from_str(&text).map_err(|e| vec![at_line(e)])?;
     Ok(Some(file.profiles))
+}
+
+// ---- who can reach it ---------------------------------------------------
+
+/// The text of the config file at `path`, or `None` if there is none, read
+/// only if it is the user's own and nobody else can read or write it, and
+/// its folder is the user's own and nobody else can write it (ADR 9.4): it
+/// names the commands brnr runs, and may hold MCP servers' secrets. A
+/// symlink is followed, and what is checked is the file it resolves to and
+/// that file's folder, through the descriptors the file is read from. brnr
+/// changes neither (P4): each problem says what is wrong, and how to fix it.
+fn read_private(path: &Path) -> Result<Option<String>, Vec<String>> {
+    let real = match fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(vec![err.to_string()]),
+    };
+    let (Some(dir), Some(name)) = (real.parent(), real.file_name()) else {
+        return Err(vec![format!("{} is not a file", real.display())]);
+    };
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY;
+    let folder = OpenOptions::new().read(true).custom_flags(flags).open(dir).map_err(at(dir))?;
+    let name = CString::new(name.as_bytes()).map_err(|e| at(&real)(e.into()))?;
+    // Not blocked by a FIFO: a regular file ignores O_NONBLOCK.
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let mut file = match sys::openat(folder.as_fd(), &name, flags, 0) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(at(&real)(err)),
+    };
+    let linked = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let it = if linked { format!("{}, which it links to,", real.display()) } else { "it".into() };
+    let mut problems = Vec::new();
+    let shown = if linked { real.as_path() } else { path };
+    check_private(&file, &it, shown, false, &mut problems).map_err(at(shown))?;
+    let its_folder = format!("its folder {}", dir.display());
+    check_private(&folder, &its_folder, dir, true, &mut problems).map_err(at(dir))?;
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(at(&real))?;
+    Ok(Some(text))
+}
+
+/// An error reading at `path`, saying where.
+fn at(path: &Path) -> impl Fn(std::io::Error) -> Vec<String> + '_ {
+    move |err| vec![format!("{}: {err}", path.display())]
+}
+
+/// What is wrong with `opened`, the config file or its folder (`dir`) at
+/// `path`, called `what`: another user's, or others can write it, or (the
+/// file) read it. Each problem with the mode or owner it has, and the
+/// command that fixes it.
+fn check_private(
+    opened: &File,
+    what: &str,
+    path: &Path,
+    dir: bool,
+    problems: &mut Vec<String>,
+) -> std::io::Result<()> {
+    let meta = opened.metadata()?;
+    let (me, mode) = (sys::uid(), meta.mode() & 0o777);
+    let shell = paths::shell_word(&path.to_string_lossy());
+    let refused = "so brnr won't read the config";
+    if !dir && !meta.is_file() {
+        problems.push(format!("{what} is not a regular file, {refused}"));
+    }
+    if meta.uid() != me {
+        let fix = format!("sudo chown {me} {shell}");
+        problems.push(format!(
+            "{what} is owned by uid {}, not you (uid {me}), {refused}: {fix}",
+            meta.uid()
+        ));
+    }
+    let open = mode & if dir { 0o022 } else { 0o066 };
+    if open != 0 {
+        let who = match (open & 0o070 != 0, open & 0o007 != 0) {
+            (true, true) => "the group and others",
+            (true, false) => "the group",
+            _ => "others",
+        };
+        let (read, written) = (open & 0o044 != 0, open & 0o022 != 0);
+        let can = match (read, written) {
+            (true, true) => "read and written",
+            (true, false) => "read",
+            _ => "written",
+        };
+        let secrets = if read { ", and may hold secrets" } else { "" };
+        let fix = if dir { "go-w" } else { "go-rw" };
+        problems.push(format!(
+            "{what} can be {can} by {who} (mode {mode:o}){secrets}, {refused}: chmod {fix} {shell}"
+        ));
+    }
+    // macOS: an ACL can let others in whatever the mode says.
+    if sys::has_acl(opened)? {
+        let can = if dir { "change what is in it" } else { "read or write it" };
+        problems.push(format!(
+            "{what} has an access control list (ls -le), which can let others {can} \
+             whatever its mode, {refused}: chmod -N {shell}"
+        ));
+    }
+    Ok(())
 }
 
 // ---- the layout --------------------------------------------------------
