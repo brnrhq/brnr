@@ -793,6 +793,12 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`.
+  That a resume in another cwd starts a file in that folder is shown, for
+  a bridge's resume, by ADR 5.6's
+  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`
+  ([tests/cli.rs](../../tests/cli.rs)). Not covered by a Rust test: the
+  cwd of an id with files in more than one folder (#121), decided, not
+  implemented yet; its tests come with #309.
 - 3.12:
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_fork_and_close`,

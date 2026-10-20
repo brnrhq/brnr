@@ -248,7 +248,9 @@ Run `cargo test --release adr_0006_`. Named claims, by section:
   value that won), `adr_0006_start_settings_that_disagree_fail` (two
   values for one setting from the flags, or from the profile, fail before
   anything is set; a flag settles the profile's; the same value twice is
-  one).
+  one). Not covered by a Rust test: config's names spelled one way (`log`
+  as strings only, one shape for a command, durations with no unit),
+  decided, not implemented yet; their tests come with #311.
 - 6.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0006_mode_lists_and_switches`, `adr_0006_model_and_config`,
   `adr_0006_model_is_the_option_of_category_model`,

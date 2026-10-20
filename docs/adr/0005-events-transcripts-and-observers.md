@@ -92,8 +92,11 @@ Reading:
   recorded (ADR 5.5).
 - `event log` reads every file of the session, in every project folder,
   merged by their records' `ts` (#121), decided, not implemented yet
-  (#309). One process owns a session at a time (ADR 3.9), so the
-  records of two files don't overlap in time. `--last` counts in what is
+  (#309). One process owns a session at a time (ADR 3.9), and a record's
+  `ts` is when its process recorded it, not when it was written, so the
+  records of two files don't overlap in time. A closing process's last
+  records can be written after the next process's, past ADR 5.5's 2 s;
+  merged by `ts`, they still come before them. `--last` counts in what is
   merged; `--follow` follows the files the serving process writes.
 - What a transcript is for `session list`, `session resume` and `doctor`
   comes from the first and last records brnr can read in it. A line that
@@ -145,10 +148,11 @@ there (#61).
 A session's files in two folders are one session read as half of one:
 `event log` and `session resume` take the most recent file, and say
 nothing of the other (#121). An id is one session (ADR 9.2), so its
-transcript is every file of it. The files can't interleave, since one
-process owns the session at a time (ADR 3.9), and `ts` orders them. The
-newest record is where the session was last served, a fixed rule that
-doesn't depend on where the command runs (P4).
+transcript is every file of it. Their records don't interleave in time,
+since one process owns the session at a time (ADR 3.9), and `ts`, the
+time a record was recorded, orders them, even those a closing process
+writes late (ADR 5.5). The newest record is where the session was last
+served, a fixed rule that doesn't depend on where the command runs (P4).
 
 **Consequences.**
 
@@ -1009,7 +1013,10 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
   `adr_0005_a_record_is_the_event_watch_showed`,
-  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`.
+  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`. Not covered by
+  a Rust test: one session's files in more than one folder read as one
+  transcript (#121), decided, not implemented yet; its tests come with
+  #309.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
   `adr_0005_editor_close_is_an_event`;

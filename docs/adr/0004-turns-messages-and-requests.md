@@ -579,7 +579,9 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_a_request_scoped_elicitation_is_answered_by_pid`,
   `adr_0004_prompt_cancel_cancels_the_sessions_elicitations`;
   [src/render.rs](../../src/render.rs):
-  `adr_0004_elicitation_events_have_lines`.
+  `adr_0004_elicitation_events_have_lines`. Not covered by a Rust test:
+  a request the agent cancels with `$/cancel_request` (#162), decided, not
+  implemented yet; its tests come with #308.
 - 4.6: [tests/cli.rs](../../tests/cli.rs):
   `adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host`.
 - 4.7: [tests/cli.rs](../../tests/cli.rs):
