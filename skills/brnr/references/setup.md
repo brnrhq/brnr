@@ -75,8 +75,9 @@ on (`experimental` in the profile's `editor` part, in brnr's README).
 ## Profiles
 
 `~/.config/brnr/config.toml` (or `$BRNR_CONFIG`) holds profiles; without
-`--profile`, the `default` one applies, if there is one. A profile for
-workers:
+`--profile`, the `default` one applies, if there is one. brnr reads it only
+if only the user can read and write it (`chmod 600`, its folder `chmod
+700`), and says what to run otherwise. A profile for workers:
 
 ```toml
 [profiles.work]

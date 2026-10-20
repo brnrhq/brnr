@@ -43,6 +43,16 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** brnr refuses a config file that isn't yours, or that the
+  group or others can read or write, or whose folder isn't yours or they
+  can write, or, on macOS, either with an access control list (`chmod
+  -N` removes it), as ssh does its keys: the file names the commands brnr runs
+  and can hold MCP secrets. Every command that reads it fails, naming the
+  path, the owner or mode, and the `chmod` or `chown` that fixes it, and
+  `brnr doctor` fails its config check the same way; brnr doesn't change
+  the file. A config written as 0644 now fails: `chmod 600` it. A symlink
+  is followed, and the file it points at, and that file's folder, are
+  checked (ADR 9.4, #271).
 - The decision records are 11 topic records, each decision a numbered
   section, cited as `ADR T.k` (`ADR 3.9`: ownership is a per-session lock).
   Entries of releases before this one cite the former numbers, 1 to 71;
