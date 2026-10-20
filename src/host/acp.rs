@@ -38,6 +38,10 @@
 //!   them (ADR 4.5, see elicitation.rs). Anything else gets "method not
 //!   found": `fs` and `terminal` too, which a headless process doesn't
 //!   offer (ADR 2.7 in docs/adr).
+//! - The agent's `$/cancel_request` for a permission request or an
+//!   elicitation it asked ends it, `by: agent` (ADR 4.5): headless, the
+//!   host answers it `cancelled` or `cancel`; an editor gets the
+//!   notification as it came, and its answer goes on to the agent.
 //! - While a `session/load`, headless or the editor's, replays a session's
 //!   history (ADR 5.6): if brnr has a transcript of the session, the replayed
 //!   updates are neither recorded nor turned into events, as the transcript
@@ -195,34 +199,6 @@ impl Session {
         }
     }
 
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Session {
-            turns,
-            state,
-            closing,
-            id: _,
-            cwd: _,
-            forked_from: _,
-            agent_text: _,
-            agent_text_kind: _,
-            agent_message_id: _,
-            replay: _,
-            idle_since: _,
-            idle_done: _,
-            last_active: _,
-            hold: _,
-            opening: _,
-        } = self;
-        let req_id = match closing {
-            Some(Close::AfterTurn { req_id, .. }) => req_id.as_ref(),
-            Some(Close::Sent) | None => None,
-        };
-        json::nesting(req_id).max(turns.holds()).max(state.holds())
-    }
-
     pub(super) fn shared(&self) -> bool {
         matches!(self.hold, Hold::Shared(_))
     }
@@ -277,6 +253,21 @@ impl Host {
         }));
     }
 
+    /// Whether `line` from `from` nests past `json::DEPTH`, and if it does,
+    /// says so (ADR 2.5): as a line too long, it goes on unread with an
+    /// editor, and headless (from the agent) it is dropped. Either way it
+    /// isn't recorded: what would be redacted in it can't be found.
+    fn too_deep(&mut self, from: &str, line: &[u8]) -> bool {
+        if json::depth(line) <= json::DEPTH {
+            return false;
+        }
+        let relayed = from == "editor" || self.link.is_some();
+        self.emit_to_sessions(json!({
+            "event": "line_too_deep", "from": from, "max_depth": json::DEPTH, "relayed": relayed,
+        }));
+        true
+    }
+
     /// A part of a line from the agent past `LINE_BYTES`, `first` where it
     /// passed it: as `too_long` says.
     pub(super) fn agent_part(&mut self, bytes: Vec<u8>, first: bool) {
@@ -286,19 +277,13 @@ impl Host {
         self.send_link_owned(frame::DATA, bytes);
     }
 
-    fn editor_line(&mut self, line: Vec<u8>) {
-        let depth = json::depth(&line);
-        let mut line = Some(line);
-        let read = self.deep(depth, |host| {
-            let line = line.take().unwrap();
-            let msg = host.read(&line, depth);
-            host.editor_message(line, msg);
-        });
-        if read.is_none() {
-            // No stack to read it on: as a line that isn't JSON.
-            self.sink.note(None, json!({ "event": "line_too_deep", "depth": depth }));
-            self.editor_message(line.take().unwrap(), None);
+    fn editor_line(&mut self, mut line: Vec<u8>) {
+        if self.too_deep("editor", &line) {
+            line.push(b'\n');
+            return self.write_agent(&line);
         }
+        let msg = json::parse(&line, json::DEPTH);
+        self.editor_message(line, msg);
     }
 
     fn editor_message(&mut self, mut line: Vec<u8>, msg: Option<Value>) {
@@ -367,6 +352,9 @@ impl Host {
                     // Answered by the host already (a cancel, an allow or
                     // reject): the agent must not get a second answer.
                     EditorAnswer::Late(answered) => return self.late_answer(&id, answered, &msg),
+                    // The agent cancelled it, and the editor answers as ACP
+                    // has it: on to the agent, as it is (ADR 4.5).
+                    EditorAnswer::GivenUp(given_up) => session = given_up,
                     // It answers a request the host couldn't read, or none:
                     // it goes on, and the agent ignores an answer to
                     // something it never asked (ADR 2.5 in docs/adr).
@@ -425,7 +413,7 @@ impl Host {
     /// What the editor sent after its last line, as it closed its stdin: it
     /// goes to the agent as it is, and is recorded as a line would be.
     pub(super) fn record_editor_rest(&mut self, rest: &[u8]) {
-        let msg = (json::depth(rest) <= self.stack).then(|| json::parse::<Value>(rest)).flatten();
+        let msg = json::parse::<Value>(rest, json::DEPTH);
         let recorded = msg.as_ref().and_then(Value::as_object).and_then(log::redacted);
         self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));
     }
@@ -651,16 +639,11 @@ impl Host {
 
     pub(super) fn agent_line(&mut self, line: &[u8]) {
         let body = line.strip_suffix(b"\n").unwrap_or(line);
-        let depth = json::depth(body);
-        let read = self.deep(depth, |host| {
-            let msg = host.read(body, depth);
-            host.agent_message(line, msg);
-        });
-        if read.is_none() {
-            // No stack to read it on: as a line that isn't JSON.
-            self.sink.note(None, json!({ "event": "line_too_deep", "depth": depth }));
-            self.agent_message(line, None);
+        if self.too_deep("agent", body) {
+            return self.send_link(frame::DATA, line);
         }
+        let msg = json::parse(body, json::DEPTH);
+        self.agent_message(line, msg);
     }
 
     fn agent_message(&mut self, line: &[u8], msg: Option<Value>) {
@@ -673,6 +656,7 @@ impl Host {
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.agent_response(&id_key(&id), &msg, line),
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
+            (Some(method), None) if method == "$/cancel_request" => self.agent_cancel(&msg, line),
             (method, None) => {
                 let mut session = param_session(&msg);
                 let mut completed = None;
@@ -712,6 +696,22 @@ impl Host {
                     self.emit(event);
                 }
             }
+        }
+    }
+
+    /// The agent's `$/cancel_request`: a permission request or an
+    /// elicitation it no longer waits for ends, `by: agent` (ADR 4.5, see
+    /// approvals.rs). The notification is recorded in the request's
+    /// session, live whatever a load replays, and goes on to an editor as it
+    /// came; then the host's answer, headless, and the event.
+    fn agent_cancel(&mut self, msg: &Map<String, Value>, line: &[u8]) {
+        let named = msg.get("params").and_then(|p| p.get("requestId"));
+        let given_up = named.and_then(|id| self.approvals.give_up(&id_key(id), self.client()));
+        let session = given_up.as_ref().and_then(|r| r.req.session.clone());
+        self.record(session.or_else(|| param_session(msg)).as_deref(), Dir::AgentToEditor, line);
+        self.send_link(frame::DATA, line);
+        if let Some(resolved) = given_up {
+            self.resolved(resolved);
         }
     }
 
@@ -1352,8 +1352,7 @@ impl Host {
     /// an events file holding only openings, which a load that failed
     /// leaves, is none (ADR 5.6).
     pub(super) fn has_transcript(&self, session: &str) -> bool {
-        self.sink.recorded(session)
-            || transcript::of_session(session).iter().any(|p| transcript::has_records(p))
+        self.sink.recorded(session) || transcript::kept(session)
     }
 }
 

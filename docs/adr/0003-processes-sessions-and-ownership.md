@@ -1,8 +1,7 @@
 # 3. Processes, sessions and ownership
 
-Draft 2026-10-19. Implemented, but for 3.11's resume of an id with files in
-more than one folder (#121), decided, not implemented yet (#309); the cause
-of the deaths 3.7 records is still to be found. Factor: F3; N2 for how a
+Draft 2026-10-20. Implemented, but the cause of the deaths 3.7 records is
+still to be found. Factor: F3; N2 for how a
 process starts and dies (ADR 1). Brings together former ADRs 2, 13, 8, 7, 9,
 10, 11, 12, 3, 50, 65, 42, 14 and 16 (docs/adr/README.md maps them).
 
@@ -131,7 +130,7 @@ a session, and picking one for the user hid that.
   (`start_request`), secrets redacted (ADR 9.1): every process records
   what it was asked to do.
 - A config error under `brnr acp` is reported on the editor's stderr as
-  `brnr acp: …`, as the process's own failures are.
+  `brnr acp: …`, as the process's own failures are, and exits 1 (ADR 8.3).
 
 **Consequences.** There is one way to get a prompt to a process. The
 agent's command isn't in the process's argv, so killing processes by the
@@ -647,7 +646,7 @@ otherwise, kept apart from strict mode, which is about the protocol
   the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
   override them. Of an id with files in more than one project folder, they
   come from the newest record of them all, where the session was last served
-  (ADR 5.1, #121), decided, not implemented yet (#309). An id brnr doesn't
+  (ADR 5.1, #121). An id brnr doesn't
   know (one `session list` with an agent named shows) goes to the agent as
   given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
   `--` (or the profile's).
@@ -817,13 +816,14 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
-  `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`.
-  That a resume in another cwd starts a file in that folder is shown, for
-  a bridge's resume, by ADR 5.6's
-  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`
-  ([tests/cli.rs](../../tests/cli.rs)). Not covered by a Rust test: the
-  cwd of an id with files in more than one folder (#121), decided, not
-  implemented yet; its tests come with #309.
+  `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
+  `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
+  with files in two folders, #121). That a resume in another cwd starts a
+  file in that folder is shown, for a bridge's resume, by ADR 5.6's
+  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
+  for a start's by ADR 5.1's
+  `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`
+  ([tests/cli.rs](../../tests/cli.rs)).
 - 3.12:
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_fork_and_close`,

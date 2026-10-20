@@ -825,6 +825,23 @@ fn adr_0005_a_transcript_an_older_brnr_wrote_isnt_read() {
     let older = older.expect("no older files check");
     assert_eq!(older["level"], "info", "{older}");
     assert!(older["message"].as_str().unwrap().contains(&path.to_string_lossy().into_owned()));
+    // Beside a file of this brnr's in another folder, it is said and not
+    // read, and the session is the other file's (ADR 5.1).
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    closed_session(
+        &env,
+        "old-1",
+        &["--cwd", &other.to_string_lossy(), "--wait", "--prompt", "reply new"],
+    );
+    let out = env.run(&["event", "log", "old-1"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("agent: new") && !log.contains("user: hi"), "{log}");
+    let list = session_list(&env, &["--include", "inactive"]);
+    let rows: Vec<&Value> = list.iter().filter(|r| r["session"] == "old-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }
 
 #[test]
@@ -2199,6 +2216,123 @@ fn adr_0009_a_transcript_under_the_old_rule_is_left_as_it_was() {
     resumed_and_closed(&env, &[]);
     assert!(session_files(&old) == before, "continued");
     assert_eq!(folder_files(&env, &cwd), ["s-1.jsonl"]);
+}
+
+/// Session `s-1` in cwd `a`, resumed in `b` (`--cwd`), then in `a` again, a
+/// turn in each, its processes gone: files in two folders, the first
+/// written to before and after the second.
+fn in_two_folders(env: &Env) -> [String; 2] {
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(env, "s-1", &["--cwd", &a, "--wait", "--prompt", "reply one"]);
+    resumed_and_closed(env, &["--cwd", &b, "--wait", "--prompt", "reply two"]);
+    resumed_and_closed(env, &["--cwd", &a, "--wait", "--prompt", "reply three"]);
+    for dir in [&a, &b] {
+        assert_eq!(folder_files(env, dir), ["s-1.jsonl"], "{dir}");
+    }
+    [a, b]
+}
+
+/// One session's files in two folders are one transcript (ADR 5.1, #121):
+/// `event log` shows both files' records in `ts` order, in text, `--json`
+/// and with the raw ACP, and `--last` counts in what is merged; `session
+/// list` has one row of it.
+#[test]
+fn adr_0005_log_reads_a_sessions_files_in_every_folder_as_one() {
+    let env = Env::new("c-two-folders");
+    let [a, _] = in_two_folders(&env);
+    let log = env.ok(&["event", "log", "s-1", "--events", "agent_message"]);
+    let said: Vec<&str> = log.lines().map(|l| &l[10..]).collect();
+    assert_eq!(said, ["agent: one", "agent: two", "agent: three"], "{log}");
+    // Each process's records together, in the order the processes ran.
+    let runs = |events: &[Value]| {
+        let mut runs: Vec<&Value> = events.iter().map(|e| &e["host_id"]).collect();
+        runs.dedup();
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert!(runs[0] != runs[2], "{runs:?}");
+    };
+    let all = logged(&env, "s-1", "all");
+    runs(&all);
+    let asked: Vec<&Value> =
+        all.iter().filter(|e| e["event"] == "user_message").map(|e| &e["text"]).collect();
+    assert_eq!(asked, ["reply one", "reply two", "reply three"]);
+    let acp = logged(&env, "s-1", "acp");
+    let prompts: Vec<&Value> = acp
+        .iter()
+        .filter(|e| e["msg"]["method"] == "session/prompt")
+        .map(|e| &e["msg"]["params"]["prompt"][0]["text"])
+        .collect();
+    assert_eq!(prompts, ["reply one", "reply two", "reply three"], "{acp:?}");
+    runs(&acp);
+    let last = env.ok(&["event", "log", "s-1", "--last", "2", "--events", "agent_message"]);
+    let said: Vec<&str> = last.lines().map(|l| &l[10..]).collect();
+    assert_eq!(said, ["agent: two", "agent: three"], "{last}");
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((&rows[0]["state"], &rows[0]["cwd"]), (&"inactive".into(), &a.as_str().into()));
+}
+
+/// `session resume` of a session with files in two folders takes its cwd,
+/// agent and profile from the newest record of them all, where it was last
+/// served, and `session list` its row (ADR 3.11, ADR 5.1).
+#[test]
+fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
+    let env = Env::new("c-newest");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    env.write_config(&format!("[profiles.other]\nagent = [{:?}]\n", agent.to_string_lossy()));
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--profile", "other", "--", &other]);
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (&rows[0]["cwd"], &rows[0]["agent"]["program"]),
+        (&b.as_str().into(), &"other-agent.py".into())
+    );
+    // No --cwd, --profile or agent: the newest record's.
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], b.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!((&hosts[0]["profile"], &hosts[0]["agent"]), (&"other".into(), &json!([other])));
+    env.stop();
+}
+
+/// The trace in #121: a session resumed in another cwd, loaded, records
+/// none of the replay there, as brnr has its transcript in the first folder
+/// (ADR 5.6), and a `history` event says so; `event log` still shows the
+/// history, from the first folder's file (ADR 5.1).
+#[test]
+fn adr_0005_a_load_in_another_cwd_leaves_the_history_in_the_log() {
+    let env = Env::new("c-load-cwd").agent("NO_RESUME", "1");
+    let other = env.dir.join("other");
+    fs::create_dir(&other).unwrap();
+    let other = other.to_string_lossy().into_owned();
+    closed_session(&env, "s-1", &["--wait", "--prompt", "reply first"]);
+    resumed_and_closed(&env, &["--cwd", &other, "--wait", "--prompt", "reply again"]);
+    assert_eq!(env.calls_of("session/load")[0]["params"]["cwd"], other.as_str());
+    let history = logged(&env, "s-1", "history");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0]["recorded"], false, "{history:?}");
+    assert!(replayed(&env, "s-1").is_empty(), "{:?}", replayed(&env, "s-1"));
+    let log = env.ok(&["event", "log", "s-1"]);
+    assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
+    assert!(log.contains("not recorded: brnr's transcript has the session"), "{log}");
+    assert!(log.find("agent: first") < log.find("history:"), "{log}");
 }
 
 /// `--include` keeps sessions by state: `active` those open in a process,
@@ -3799,6 +3933,103 @@ fn adr_0004_prompt_cancel_cancels_the_sessions_elicitations() {
     assert_eq!(resolved["action"], "cancel");
     assert_eq!(who, (&"control".into(), &Value::Null, &"cancel".into()), "{resolved}");
     assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
+}
+
+/// What a bridge's `pending` has of the process: its permission requests
+/// and its elicitations.
+fn pending(env: &Env) -> Value {
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(conn, "{}", json!({ "cmd": "pending", "req_id": "p" })).unwrap();
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap();
+    json!([answer["pending"], answer["elicitations"]])
+}
+
+/// A permission request or an elicitation the agent cancels with
+/// `$/cancel_request` ends, `by: agent`: gone from the lists, `pending` and
+/// the session's `waiting`, answered `cancelled` or `cancel` as ACP has a
+/// cancelled request answered, and an answer to it after that fails and
+/// sends nothing.
+#[test]
+fn adr_0004_a_request_the_agent_cancels_ends_by_the_agent() {
+    let env = Env::new("c-giveup");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&[]);
+    let state = |env: &Env| {
+        let status = env.ok(&["session", "status", "sess-1", "--json"]);
+        serde_json::from_str::<Value>(&status).unwrap()["state"].clone()
+    };
+    let by_agent = |e: &Value| {
+        assert_eq!(
+            (&e["by"], &e["peer"], &e["reason"]),
+            (&"agent".into(), &Value::Null, &Value::Null)
+        )
+    };
+
+    ask(&env);
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
+    assert_eq!(pending(&env)[0].as_array().unwrap().len(), 1);
+    assert_eq!(state(&env), "waiting");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    idle(&env);
+    assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
+    assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    assert_eq!(pending(&env), json!([[], []]));
+    assert_eq!(state(&env), "idle");
+    let event = &resolved(&env)[0];
+    assert_eq!(event["answer"], "cancelled", "{event}");
+    by_agent(event);
+    let err = env.fails(&["permission", "allow", "sess-1", "p1"]);
+    assert!(err.contains("no pending request p1 in session sess-1"), "{err}");
+    assert_eq!(answers(&env).len(), 1, "sent after it ended");
+
+    elicit(&env, "form");
+    assert!(env.ok(&["elicitation", "requests"]).contains("e1"));
+    assert_eq!(pending(&env)[1].as_array().unwrap().len(), 1);
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
+    idle(&env);
+    assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
+    assert_eq!(env.ok(&["elicitation", "requests"]), "nothing waiting\n");
+    assert_eq!(pending(&env), json!([[], []]));
+    assert_eq!(state(&env), "idle");
+    let event = &events_named(&env, "elicitation_resolved")[0];
+    assert_eq!(event["action"], "cancel", "{event}");
+    by_agent(event);
+    let err = env.fails(&["elicitation", "decline", "sess-1", "e1"]);
+    assert!(err.contains("no pending elicitation e1 in session sess-1"), "{err}");
+    assert_eq!(elicited(&env).len(), 1, "sent after it ended");
+    let log = env.ok(&["event", "log", "sess-1"]);
+    assert!(log.contains("permission p1 cancelled, by agent"), "{log}");
+    assert!(log.contains("elicitation e1 cancelled, by agent"), "{log}");
+}
+
+/// A turn that ends with its request still waiting ends nothing: the
+/// request is still listed and the session `waiting`, and `stop_when_idle`
+/// doesn't count, until the agent cancels it (ADR 3.8).
+#[test]
+fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
+    let env = Env::new("c-askandend");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    // Busy from the start, so idle time counts only once the turn ends.
+    env.start(&["--stop-when-idle", "1", "--prompt", "perm edit"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    let ended = || events_named(&env, "turn_ended").len() == 1;
+    assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+    sleep(Duration::from_secs(2));
+    assert_eq!(env.hosts().len(), 1, "stopped with a request waiting");
+    assert!(env.ok(&["permission", "requests"]).contains("p1"));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["state"], "waiting", "{status}");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
+    assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
 }
 
 // ---- lifecycle -----------------------------------------------------------

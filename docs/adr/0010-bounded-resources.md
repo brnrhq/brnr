@@ -393,7 +393,10 @@ What is bounded, and what isn't:
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
   - the foreground's display (ADR 3.5);
-  - the proxy reads the editor 64 KiB at a time.
+  - the proxy reads the editor 64 KiB at a time;
+  - how deep a line may nest for brnr to read it: 128 levels for what the
+    agent, the editor or a peer sends, 256 for what brnr wrote, and so the
+    stack any value takes (ADR 2.5). No thread is sized to a line.
 - Not bounded by a count of bytes:
   - the agent's message or thought being assembled from its chunks, for an
     `agent_message` event: each chunk has been through the cap, and the

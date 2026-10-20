@@ -331,6 +331,13 @@ that. `response_timeout` has no default (P4): without it, a request nobody
 answers waits as long as the process runs. An unattended run, with nobody to
 answer (a script, CI, a worker left alone), must set it.
 
+The agent can give up on a request itself (`$/cancel_request`): it is no
+longer waiting, `permission_resolved` says `by: agent`, and brnr answers it
+`cancelled`, as ACP has it; an answer to it after that fails, and nothing is
+sent. On an editor's session the editor gets the agent's notification and
+answers it. A turn that ends with its request unanswered doesn't end the
+request: it waits as any does, and the session stays `waiting`.
+
 Whatever brnr shows of the agent's text has its control characters escaped
 (`\u001b`), so a command can't be dressed up as another; `permission show`
 says when a command has any. `--json` has the text as the agent sent it. On an
@@ -365,10 +372,11 @@ doesn't know can only be declined or cancelled. One asked outside any session
 
 `response_timeout` covers elicitations too: one nobody answered is answered
 `cancel`, never `decline` or `accept`, and `elicitation show` says when. `prompt
-cancel` answers the session's elicitations `cancel` too. On an editor's
-session the request reaches the editor as the agent sent it, and is seen
-(`elicitation_request`, `elicitation_resolved`) as approvals are; answering it
-here is the experimental `elicitation`.
+cancel` answers the session's elicitations `cancel` too, and one the agent
+gives up on (`$/cancel_request`) is answered `cancel`, `by: agent`, as an
+approval is. On an editor's session the request reaches the editor as the
+agent sent it, and is seen (`elicitation_request`, `elicitation_resolved`) as
+approvals are; answering it here is the experimental `elicitation`.
 
 ### Settings
 
@@ -547,20 +555,22 @@ show the same events, live or read back from the transcript:
 | `session_deleted` | the agent deleted the session, `by` `control` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), how many of them are (`recorded_updates`: fewer only when the session closed while its load was unanswered), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |
+| `line_too_deep` | a line `from` the `agent` or `editor` nested past `max_depth` (128 levels), unread and unrecorded: `relayed` to the other side with an editor, dropped headless |
 | `peer_cut_off` | a `peer` (a watcher, a bridge) cut off for falling behind, and the last event it was sent (`last_queued_seq`) |
 | `process_exited` | the agent exited, and the process with it: its `exit_status`, and an `error` when brnr itself crashed |
 | `acp` | every ACP message, with its direction |
 
 Each has `ts`, `host_id` (the process's run) and `pid` (the process), and
-names its session; `process_exited` and `line_too_long` are the process's,
-and are in every session's transcript; `peer_cut_off` is the process's too,
+names its session; `process_exited`, `line_too_long` and `line_too_deep` are
+the process's, and are in every session's transcript; `peer_cut_off` is the process's too,
 in its host log. Each has its position, `seq`: one more than the last
 event's or ACP message's of its process, live and in the transcript. Who
 acted is `by`: `editor`, `agent` or `control` (brnr's commands, bridges and
 timers); beside it, `peer` is the connection that asked, where brnr knows
 one (`socket#7`, a bridge's name), and `reason` is why, a word
 (`permission_resolved` by `control`: `peer` for `brnr permission allow`,
-`reason` `timeout` or `cancel` otherwise). Every name is snake_case (ADR
+`reason` `timeout` or `cancel` otherwise; by `agent` when the agent gave the
+request up with `$/cancel_request`). Every name is snake_case (ADR
 5.9). For config options and commands, `session_changed` is a JSON merge
 patch by id or name: `{"model": "opus"}`, a command added, `null` for one gone.
 
@@ -675,8 +685,9 @@ events, saying how many (`… 120 events not shown`); stdout closing
 (`| head -1`) ends the display, not the session.
 
 `session resume` uses the agent's `session/resume` (or `session/load`), in the
-session's cwd, with the agent and profile it last had, and appends to the
-same transcript. A load replays the session's history: brnr records it, as
+session's cwd, with the agent and profile it last had (where it was last
+served, the newest record of all its files), and appends to the same
+transcript. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, whose transcript is gone, or whose loads all failed,
 leaving only their openings), so repeated loads don't record it twice. A
@@ -850,6 +861,14 @@ headless, and a `line_too_long` event says so. The agent's stderr
 goes on as it is written, newline or not, 64 KiB at most at a time, every
 byte.
 
+However deep the lines: brnr reads a line nested up to 128 levels (`[[1]]`
+is 2), about what serde_json, and so ACP's Rust SDK, reads. A deeper one is
+treated as a long one: it goes on unread and unrecorded with an editor, is
+dropped headless, and a `line_too_deep` event says so; brnr tracks nothing
+of it, so a permission request that deep isn't listed or answerable from
+outside. brnr's commands read what brnr itself wrote (answers, events,
+transcripts) up to 256 levels, and say so, and fail, past that (ADR 2.5).
+
 ## Transcripts
 
 Like the agents' own transcripts, keyed by project folder:
@@ -872,7 +891,10 @@ a folder each. A claude-agent-acp session's events file has the same name as
 Claude Code's own transcript, in a folder whose name starts with Claude
 Code's. A transcript an earlier brnr wrote in a folder without the hash stays
 there, and isn't read (below); a session resumed goes on in its cwd's folder
-(ADR 9.2). In
+(ADR 9.2). One resumed in another cwd (`--cwd`) so has a file in each
+folder, and they are one transcript: `event log` reads them all, merged by
+time, `session list` has one row of it, and `session resume` takes the cwd,
+agent and profile of the newest record of them all (ADR 5.1). In
 `<session id>`, as in a lock's name, every byte but lowercase ASCII letters,
 digits, `-` and `_` is `%` and two hex digits (`a/b` is `a%2fb`), so two
 sessions never share a file. The events are the ones bridges get, `process_exited`

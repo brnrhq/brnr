@@ -3204,15 +3204,18 @@ fn adr_0003_acp_is_what_an_editor_runs() {
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}"#;
 
 /// `brnr acp` resolves the profile itself: a config error is the editor's
-/// to see, on its stderr, and no process starts.
+/// to see, on its stderr, and no process starts. It exits 1, a failure, as
+/// the control commands do for it, not 2, a usage error (ADR 8.3).
 #[test]
 fn adr_0003_acp_reports_a_config_error() {
     let env = Env::new("ed-config");
     env.write_config("[profiles.default]\nresponse_timeout = 600\n");
     let out = env.brnr(&["acp", "--", AGENT]).stdin(Stdio::null()).output().unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(err.starts_with("brnr acp: "), "{err}");
+    let out = env.brnr(&["session", "new", "--", AGENT]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "the same code: {}", stderr(&out));
     assert!(err.contains("profiles.default: response_timeout is for brnr session new and resume only; it goes under [profiles.default.headless]"), "{err}");
     assert!(env.hosts().is_empty());
 }
@@ -4455,15 +4458,31 @@ fn adr_0002_a_lone_surrogate_is_read() {
     line_with(&mut from_agent, "end_turn");
 }
 
-/// So is nesting deeper than serde_json's 128: the host reads a request
-/// 20000 deep, and carries on once it is answered.
+/// brnr's depth limit (ADR 2.5): a line nested this deep is read, one
+/// level more isn't.
+const LIMIT: usize = 128;
+
+/// How the fake agent's `odd deep` request at the limit shows its input:
+/// the line's other 3 levels are its own, its params and the tool call.
+fn input_at_limit() -> String {
+    "[".repeat(LIMIT - 3)
+}
+
+/// The `line_too_deep` events in sess-1's transcript (ADR 2.5).
+fn too_deep(env: &Env) -> Vec<Value> {
+    let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "line_too_deep"]);
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// So is nesting past serde_json's own limit, up to brnr's: the host reads
+/// a request nested 128 deep, and carries on once it is answered.
 #[test]
-fn adr_0002_deep_nesting_is_read() {
+fn adr_0002_a_line_at_the_limit_is_read() {
     let env = Env::new("ed-deep");
     let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
-    writeln!(to_agent, "{}", editor_prompt(3, "odd deep 20000")).unwrap();
+    writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {LIMIT}"))).unwrap();
     let request = line_with(&mut from_agent, "session/request_permission");
-    assert!(request.contains(&"[".repeat(20000)), "the request was cut");
+    assert!(request.contains(&input_at_limit()), "the request was cut");
     let state = || {
         let status: Value =
             serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
@@ -4473,187 +4492,133 @@ fn adr_0002_deep_nesting_is_read() {
     writeln!(to_agent, "{ALLOW}").unwrap();
     line_with(&mut from_agent, "end_turn");
     assert_eq!(state(), "idle");
+    assert!(too_deep(&env).is_empty());
 }
 
-/// The response timeout answers a request a million deep (2 MB, the main
-/// thread's 8 MiB took 100000) on a stack that takes it, as an event is
-/// handled: its turn is cancelled, as a request with no `reject_once` has
-/// it (ADR 8.1), and the process lives on.
+/// With an editor, a line nested past the limit goes on unread, as one
+/// too long does: the agent's request reaches the editor byte for byte,
+/// and the host holds nothing of it, so the editor's answer, to an id the
+/// host doesn't know, goes to the agent; the editor's own line reaches the
+/// agent too. An event says so for each, and neither is recorded.
 #[test]
-fn adr_0002_a_deep_request_that_times_out_is_answered() {
-    let env = Env::new("deep-timeout");
-    env.write_config("[profiles.default.headless]\nresponse_timeout = 3\n");
-    env.start(&[]);
-    let pid = env.host_pid();
-    env.ok(&["prompt", "send", "sess-1", "--prompt", "odd deep 1000000"]);
-    let answer = || {
-        let ours = |c: &Value| c["id"] == "perm-1" && c.get("method").is_none();
-        env.calls().into_iter().find(ours).map(|c| c["result"]["outcome"].clone())
-    };
-    // Read, and waiting for an answer, before the timeout. A slow runner's
-    // process can be busy with the line past `status`'s 5 seconds: it isn't
-    // answering then, and is asked again. The timeout starts once the line
-    // is read, so the process answers that before it fires.
-    let waiting = || {
-        let out = env.run(&["session", "status", "sess-1", "--json"]);
-        let status = || serde_json::from_slice::<Value>(&out.stdout).unwrap();
-        out.status.success() && status()["state"] == "waiting"
-    };
-    assert!(wait_for(Duration::from_secs(15), waiting), "never asked");
-    let done = || answer().is_some() || !alive(pid);
-    assert!(wait_for(Duration::from_secs(15), done), "unanswered");
-    assert!(alive(pid), "the process died");
-    assert_eq!(answer().unwrap(), json!({ "outcome": "cancelled" }));
-    let ended = || env.ok(&["event", "log", "sess-1"]).contains("turn ended: ");
-    assert!(wait_for(Duration::from_secs(5), ended), "the turn didn't end");
-    // The request too, which `event log` read as no record (ADR 2.5).
-    let out = env.run(&["event", "log", "sess-1"]);
-    let (logged, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
-    assert!(err.is_empty(), "{err}");
-    assert!(logged.contains("permission p1: Edit src/lib.rs"), "{logged}");
-    assert!(logged.contains("permission p1 cancelled, by timeout"), "{logged}");
-    env.stop();
-}
-
-/// `brnr permission requests` reads the host's answer as the host reads the
-/// agent's line: a request nested past serde_json's 128 is listed, in text
-/// and `--json`, and one a million deep doesn't overflow brnr's stack.
-#[test]
-fn adr_0002_a_deep_request_is_listed() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("ed-deep-{depth}"));
-        let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
-        writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {depth}"))).unwrap();
-        line_with(&mut from_agent, "session/request_permission");
-        let pending =
-            serde_json::from_str::<Value>(&env.ok(&["permission", "requests", "sess-1", "--json"]))
-                .unwrap()["requests"]
-                .clone();
-        assert_eq!(pending[0]["request"], "p1", "{depth}: {pending}");
-        assert_eq!(pending[0]["title"], "Edit src/lib.rs", "{depth}: {pending}");
-        let text = env.ok(&["permission", "requests", "sess-1"]);
-        assert!(text.contains("p1") && text.contains("Edit src/lib.rs"), "{depth}: {text}");
-        writeln!(to_agent, "{ALLOW}").unwrap();
-        line_with(&mut from_agent, "end_turn");
+fn adr_0002_a_line_past_the_limit_passes_through_unread() {
+    let env = Env::new("ed-too-deep");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {}", LIMIT + 1))).unwrap();
+    let request = line_with(&mut from_agent, "session/request_permission");
+    assert!(request.contains(&format!(r#""rawInput": {}]"#, "[".repeat(LIMIT - 2))), "cut");
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
+    assert_eq!(pending, json!({ "requests": [] }));
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
+    let n = LIMIT;
+    let deep = format!(
+        r#"{{"jsonrpc":"2.0","method":"_deep","params":{}{}}}"#,
+        "[".repeat(n),
+        "]".repeat(n)
+    );
+    writeln!(to_agent, "{deep}").unwrap();
+    let calls = env.dir.join("calls");
+    let reached = || fs::read_to_string(&calls).is_ok_and(|c| c.contains(r#""_deep""#));
+    assert!(wait_for(Duration::from_secs(10), reached), "the editor's line didn't reach the agent");
+    let said = |n: usize| wait_for(Duration::from_secs(10), || too_deep(&env).len() == n);
+    assert!(said(2), "{:?}", too_deep(&env));
+    let events = too_deep(&env);
+    for (e, from) in events.iter().zip(["agent", "editor"]) {
+        assert_eq!(
+            (&e["from"], &e["max_depth"], &e["relayed"]),
+            (&json!(from), &json!(LIMIT), &json!(true))
+        );
     }
+    let acp = env.ok(&["event", "log", "sess-1", "--json", "--events", "acp"]);
+    assert!(!acp.contains("rawInput") && !acp.contains("_deep"), "recorded");
 }
 
-/// With no session, `permission requests` and `elicitation requests` ask
-/// every process: a request 200,000 deep (its title, or its message), more
-/// than the main stack takes, read from one, is let go of on a stack that
-/// takes it when a process asked after it fails, which is said, not a stack
-/// overflow (#301).
+/// Headless, brnr is the agent's client: a line nested past the limit is
+/// refused, dropped and said, as one too long is (ADR 10.3), a million deep
+/// too; the process goes on, and answers at once.
 #[test]
-fn adr_0002_a_deep_request_is_let_go_of_when_another_process_fails() {
-    let env = Env::new("deep-fail");
+fn adr_0002_headless_a_line_past_the_limit_is_dropped_and_said() {
+    let env = Env::new("too-deep");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
-    // A slow runner's process can be busy with the deep line past the 5 s a
-    // command gives it to answer: it is asked again (#276).
-    let asked = |session: &str, what: &str| {
-        let wait = ["event", "wait", session, "--for", what, "--timeout", "10"];
-        assert!(wait_for(Duration::from_secs(40), || env.run(&wait).status.success()), "{what}");
-    };
-    env.ok(&["prompt", "send", "sess-1", "--prompt", "odd title 200000"]);
-    asked("sess-1", "permission");
-    env.ok(&["prompt", "send", "sess-2", "--prompt", "elicit deep 200000"]);
-    asked("sess-2", "elicitation");
-    let gone_files = |pid: u32| {
-        for ext in ["json", "sock"] {
-            let _ = fs::remove_file(env.dir.join(format!("run/{pid}.{ext}")));
-        }
-    };
-    for what in ["permission", "elicitation"] {
-        let mut tries = 0;
-        let (out, mut gone) = loop {
-            let mut gone = gone_after_status(&env);
-            let out = env.run(&[what, "requests"]);
-            tries += 1;
-            if !stderr(&out).contains("not answering") || tries == 5 {
-                break (out, gone);
-            }
-            let _ = gone.kill();
-            let _ = gone.wait();
-            gone_files(gone.id());
-            sleep(Duration::from_secs(1));
-        };
-        let err = stderr(&out);
-        assert_eq!((out.status.code(), out.status.signal()), (Some(1), None), "{what}: {err}");
-        assert!(err.contains(&format!("brnr: process {}: ", gone.id())), "{what}: {err}");
-        assert!(gone.wait().unwrap().success(), "{what}");
-        gone_files(gone.id());
+    for (session, depth) in [("sess-1", LIMIT + 1), ("sess-2", 1_000_000)] {
+        env.ok(&["prompt", "send", session, "--prompt", &format!("odd deep {depth}")]);
     }
-    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    let said = || {
+        let log = env.ok(&["event", "log", "sess-2", "--json", "--events", "line_too_deep"]);
+        log.lines().count() == 2
+    };
+    assert!(wait_for(Duration::from_secs(20), said), "{:?}", too_deep(&env));
+    let events = too_deep(&env);
+    assert_eq!(events.len(), 2, "{events:?}");
+    let dropped =
+        |e: &Value| e["from"] == "agent" && e["relayed"] == false && e["max_depth"] == LIMIT;
+    assert!(events.iter().all(dropped), "{events:?}");
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["permission", "requests", "--json"])).unwrap();
+    assert_eq!(pending, json!({ "requests": [] }));
+    let text = env.ok(&["event", "log", "sess-1", "--events", "line_too_deep"]);
+    assert!(text.contains("a line from the agent nested past 128 levels, dropped"), "{text}");
     env.stop();
 }
 
-/// A process, as far as `discover` can tell, started after any other, so
-/// asked last: it answers its status, then exits, and what else it is asked
-/// fails. Its metadata and socket are the caller's to remove.
-fn gone_after_status(env: &Env) -> Child {
-    let script = r#"
-import json, os, socket, sys
-run, pid = sys.argv[1], os.getpid()
-path = f"{run}/{pid}.sock"
-listener = socket.socket(socket.AF_UNIX)
-listener.bind(path)
-listener.listen()
-meta = {"id": str(pid), "host_pid": pid, "socket": path, "started": "2999-01-01T00:00:00Z"}
-with open(f"{run}/{pid}.json", "w") as f:
-    json.dump(meta, f)
-print("ready", flush=True)
-conn, _ = listener.accept()
-conn.makefile().readline()
-conn.sendall(b'{"ok":true,"sessions":[]}\n')
-"#;
-    let mut child = Command::new("python3")
-        .args(["-c", script])
-        .arg(env.dir.join("run"))
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut ready = String::new();
-    BufReader::new(child.stdout.as_mut().unwrap()).read_line(&mut ready).unwrap();
-    assert_eq!(ready, "ready\n");
-    child
+/// `brnr permission requests` reads the host's answer as brnr reads what
+/// it wrote: a request nested at the limit, past serde_json's own, is
+/// listed, in text and `--json`.
+#[test]
+fn adr_0002_a_deep_request_is_listed() {
+    let env = Env::new("ed-deep-list");
+    let (_editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(3, &format!("odd deep {LIMIT}"))).unwrap();
+    line_with(&mut from_agent, "session/request_permission");
+    let pending: Value =
+        serde_json::from_str(&env.ok(&["permission", "requests", "sess-1", "--json"])).unwrap();
+    let pending = &pending["requests"];
+    assert_eq!(pending[0]["request"], "p1", "{pending}");
+    assert_eq!(pending[0]["title"], "Edit src/lib.rs", "{pending}");
+    let text = env.ok(&["permission", "requests", "sess-1"]);
+    assert!(text.contains("p1") && text.contains("Edit src/lib.rs"), "{text}");
+    writeln!(to_agent, "{ALLOW}").unwrap();
+    line_with(&mut from_agent, "end_turn");
 }
 
 /// So do `permission show`, and `elicitation requests` and `show`, whose
-/// answer has every request waiting in the process: a request nested past
-/// 128 is shown, in text and `--json`, and an elicitation beside one, or
-/// beside one a million deep, is listed and shown. Shown, a request is
-/// indented: a million deep would be a terabyte of it, so it is shown at
-/// 200 only.
+/// answer has every request waiting in the process: a request and an
+/// elicitation nested at the limit are shown, in text and `--json`.
+/// Indented, one at the limit is small (#259).
 #[test]
 fn adr_0002_a_deep_request_is_shown() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("deep-show-{depth}"));
-        env.start(&[]);
-        env.ok(&["session", "fork", "sess-1"]);
-        env.ok(&["prompt", "send", "sess-2", "--prompt", "elicit form"]);
-        env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
-        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
-        // A million deep is slow to read on a loaded runner: time enough.
-        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"]);
-        if depth == 200 {
-            let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
-            assert!(shown.starts_with("p1, session sess-1\nEdit src/lib.rs\n"), "{shown}");
-            assert!(shown.contains("input:\n  [\n    [\n"), "{shown}");
-            let shown = env.ok(&["permission", "show", "sess-1", "p1", "--json"]);
-            assert!(shown.contains(r#""request": "p1""#), "{shown}");
-            assert!(shown.matches('[').count() >= depth, "{} bytes", shown.len());
-        }
-        let listed = env.ok(&["elicitation", "requests"]);
-        let row = |l: &str| l.split_whitespace().take(2).eq(["sess-2", "e1"]);
-        assert!(listed.lines().any(row), "{depth}: {listed}");
-        let shown = env.ok(&["elicitation", "show", "sess-2", "e1"]);
-        assert!(shown.starts_with("e1, session sess-2\nTell me about you\n"), "{depth}: {shown}");
-        let shown = env.ok(&["elicitation", "show", "sess-2", "e1", "--json"]);
-        let shown: Value = serde_json::from_str(&shown).unwrap();
-        assert_eq!((&shown["request"], &shown["mode"]), (&"e1".into(), &"form".into()), "{depth}");
-        env.ok(&["permission", "allow", "sess-1", "p1"]);
-        env.stop();
-    }
+    let env = Env::new("deep-show");
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["prompt", "send", "sess-2", "--prompt", &format!("elicit deep {LIMIT}")]);
+    env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {LIMIT}")]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    let shown = env.ok(&["permission", "show", "sess-1", "p1"]);
+    assert!(shown.starts_with("p1, session sess-1\nEdit src/lib.rs\n"), "{shown}");
+    assert!(shown.contains("input:\n  [\n    [\n"), "{shown}");
+    let shown = env.ok(&["permission", "show", "sess-1", "p1", "--json"]);
+    assert!(shown.contains(r#""request": "p1""#), "{shown}");
+    assert!(shown.matches('[').count() >= LIMIT - 3, "{} bytes", shown.len());
+    assert!(shown.len() < 100_000, "{} bytes", shown.len());
+    let listed = env.ok(&["elicitation", "requests"]);
+    let row = |l: &str| l.split_whitespace().take(2).eq(["sess-2", "e1"]);
+    assert!(listed.lines().any(row), "{listed}");
+    let shown = env.ok(&["elicitation", "show", "sess-2", "e1", "--json"]);
+    let shown: Value = serde_json::from_str(&shown).unwrap_or_else(|_| {
+        // Past serde_json's own limit: as brnr reads it.
+        let mut de = serde_json::Deserializer::from_str(&shown);
+        de.disable_recursion_limit();
+        serde::Deserialize::deserialize(&mut de).unwrap()
+    });
+    assert_eq!((&shown["request"], &shown["mode"]), (&"e1".into(), &"form".into()));
+    assert!(shown["text"].is_array(), "{shown}");
+    env.ok(&["elicitation", "show", "sess-2", "e1"]);
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.stop();
 }
 
 /// Its stdout, read as it comes (a deep event fills a pipe), once it exits.
@@ -4666,186 +4631,162 @@ fn read_out(child: &mut Child) -> std::thread::JoinHandle<String> {
     })
 }
 
-/// What follows a session reads its events as the host reads the agent's
-/// line: a request nested past serde_json's 128 is announced by `prompt
-/// send --wait`, shown by `event watch`, as text and `--json`, and waited on
-/// by `event wait`, as it comes and once it is pending; and one a million
-/// deep doesn't overflow brnr's stack. `event wait --json` indents what it
-/// prints: a request a million deep would be a terabyte of it, so it is
-/// waited on so at 200 only.
+/// What follows a session reads its events as brnr reads what it wrote: a
+/// request nested at the limit is announced by `prompt send --wait`, shown
+/// by `event watch`, as text and `--json`, and waited on by `event wait`,
+/// as it comes and once it is pending. `event wait --json` indents what it
+/// prints, which for a request at the limit is small (#259).
 #[test]
 fn adr_0002_a_deep_request_is_followed() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("deep-follow-{depth}"));
-        env.start(&[]);
-        let watch = |json: &[&str]| {
-            let args = [&["event", "watch", "sess-1", "--events", "permission_request"], json];
-            let mut watch = env.brnr(&args.concat()).stdout(Stdio::piped()).spawn().unwrap();
-            let out = read_out(&mut watch);
-            (watch, out)
-        };
-        let (mut watch_json, shown_json) = watch(&["--json"]);
-        let (mut watch_text, shown_text) = watch(&[]);
-        // A million deep is slow to read on a loaded runner: time enough.
-        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "60"];
-        let mut wait = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-        let waited = read_out(&mut wait);
-        sleep(Duration::from_millis(300));
-        let prompt = format!("odd deep {depth}");
-        let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "60", "--prompt", &prompt];
-        let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
-        let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
-        let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
-        let notice = notice.unwrap_or_default();
-        assert!(notice.contains("approval p1: Edit src/lib.rs"), "{depth}: {notice}");
-        assert!(wait.wait().unwrap().success(), "{depth}: event wait failed");
-        let waited = waited.join().unwrap();
-        assert_eq!(waited.trim(), "approval p1: Edit src/lib.rs", "{depth}");
-        // Pending by now: from the process's answer, not an event.
-        let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "5"];
-        assert_eq!(env.ok(&args).trim(), "approval p1: Edit src/lib.rs", "{depth}");
-        if depth == 200 {
-            let waited = env.ok(&[&args[..], &["--json"]].concat());
-            assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
-        }
-        env.ok(&["permission", "allow", "sess-1", "p1"]);
-        let sent = send.wait().unwrap();
-        let said: Vec<String> = err.collect();
-        assert!(sent.success(), "{depth}: prompt send {sent}: {said:?}");
-        env.stop();
-        for watch in [&mut watch_json, &mut watch_text] {
-            assert!(wait_exit(watch, Duration::from_secs(15)), "{depth}: watch didn't end");
-            assert!(watch.wait().unwrap().success(), "{depth}: watch failed");
-        }
-        let shown = shown_json.join().unwrap();
-        assert!(shown.contains(&"[".repeat(depth)), "{depth}: watch showed {} bytes", shown.len());
-        let shown = shown_text.join().unwrap();
-        assert!(
-            shown.contains("permission p1: Edit src/lib.rs"),
-            "{depth}: watch showed {shown:?}"
-        );
+    let env = Env::new("deep-follow");
+    env.start(&[]);
+    let watch = |json: &[&str]| {
+        let args = [&["event", "watch", "sess-1", "--events", "permission_request"], json];
+        let mut watch = env.brnr(&args.concat()).stdout(Stdio::piped()).spawn().unwrap();
+        let out = read_out(&mut watch);
+        (watch, out)
+    };
+    let (mut watch_json, shown_json) = watch(&["--json"]);
+    let (mut watch_text, shown_text) = watch(&[]);
+    let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "30"];
+    let mut wait = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
+    let waited = read_out(&mut wait);
+    sleep(Duration::from_millis(300));
+    let prompt = format!("odd deep {LIMIT}");
+    let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "30", "--prompt", &prompt];
+    let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
+    let mut err = BufReader::new(send.stderr.take().unwrap()).lines().map_while(Result::ok);
+    let notice = err.find(|l| l.contains("waiting for approval") || l.contains("timed out"));
+    let notice = notice.unwrap_or_default();
+    assert!(notice.contains("approval p1: Edit src/lib.rs"), "{notice}");
+    assert!(wait.wait().unwrap().success(), "event wait failed");
+    assert_eq!(waited.join().unwrap().trim(), "approval p1: Edit src/lib.rs");
+    // Pending by now: from the process's answer, not an event.
+    let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "5"];
+    assert_eq!(env.ok(&args).trim(), "approval p1: Edit src/lib.rs");
+    let waited = env.ok(&[&args[..], &["--json"]].concat());
+    assert!(waited.contains(r#""request": "p1""#), "{} bytes", waited.len());
+    assert!(waited.len() < 100_000, "{} bytes", waited.len());
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    let sent = send.wait().unwrap();
+    let said: Vec<String> = err.collect();
+    assert!(sent.success(), "prompt send {sent}: {said:?}");
+    env.stop();
+    for watch in [&mut watch_json, &mut watch_text] {
+        assert!(wait_exit(watch, Duration::from_secs(15)), "watch didn't end");
+        assert!(watch.wait().unwrap().success(), "watch failed");
     }
+    let shown = shown_json.join().unwrap();
+    assert!(shown.contains(&input_at_limit()), "watch showed {} bytes", shown.len());
+    let shown = shown_text.join().unwrap();
+    assert!(shown.contains("permission p1: Edit src/lib.rs"), "watch showed {shown:?}");
 }
 
-/// So does `event notify`: its command runs for a request nested past 128,
-/// with the event whole on its stdin, from the socket and from `--stdin`,
-/// and for one a million deep too.
+/// So does `event notify`: its command runs for a request nested at the
+/// limit, with the event whole on its stdin, from the socket and from
+/// `--stdin`. On `--stdin`, a line nested past what brnr writes is none it
+/// wrote: notify says so, and fails.
 #[test]
 fn adr_0002_a_deep_request_is_notified() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("deep-notify-{depth}"));
-        env.start(&[]);
-        let deep = "[".repeat(depth);
-        let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
-        let out = env.dir.join("notified");
-        let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
-        let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
-        let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
-        sleep(Duration::from_millis(300));
-        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
-        assert!(wait_for(Duration::from_secs(10), || notified(&out)), "{depth}: not run");
-        env.ok(&["permission", "allow", "sess-1", "p1"]);
-        env.stop();
-        assert!(wait_exit(&mut notify, Duration::from_secs(15)), "{depth}: notify didn't end");
-        assert!(notify.wait().unwrap().success(), "{depth}: notify failed");
+    let env = Env::new("deep-notify");
+    env.start(&[]);
+    let deep = input_at_limit();
+    let notified = |out: &Path| fs::read_to_string(out).is_ok_and(|t| t.contains(&deep));
+    let out = env.dir.join("notified");
+    let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
+    let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
+    let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {LIMIT}")]);
+    assert!(wait_for(Duration::from_secs(10), || notified(&out)), "not run");
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.stop();
+    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify didn't end");
+    assert!(notify.wait().unwrap().success(), "notify failed");
 
-        let out = env.dir.join("notified-stdin");
-        let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
-        let request = format!(
-            r#"{{"event":"permission_request","request":"p1","tool_call":{deep}{}}}"#,
-            "]".repeat(depth)
-        );
-        // A line that isn't an event, as deep, is passed over.
-        let other = format!(r#"{{"note":{deep}{}}}"#, "]".repeat(depth));
-        let exited = r#"{"event":"process_exited","exit_status":{"code":0}}"#;
-        let input = format!("{other}\n{request}\n{exited}\n");
-        let args = ["event", "notify", "--stdin", "--events", "permission_request", "--"];
-        let args = [&args[..], &["sh", "-c", &script]].concat();
-        let ran = env.run_with_stdin(&args, input.as_bytes());
-        assert!(ran.status.success(), "{depth}: {}", stderr(&ran));
-        assert!(wait_for(Duration::from_secs(10), || notified(&out)), "{depth}: --stdin: not run");
-    }
+    let out = env.dir.join("notified-stdin");
+    let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
+    let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+    let request = |n: usize| {
+        format!(r#"{{"event":"permission_request","request":"p1","tool_call":{}}}"#, nested(n))
+    };
+    // A line that isn't an event, as deep, is passed over.
+    let other = format!(r#"{{"note":{}}}"#, nested(LIMIT));
+    let exited = r#"{"event":"process_exited","exit_status":{"code":0}}"#;
+    let args = ["event", "notify", "--stdin", "--events", "permission_request", "--"];
+    let args = [&args[..], &["sh", "-c", &script]].concat();
+    let input = format!("{other}\n{}\n{exited}\n", request(LIMIT - 3));
+    let ran = env.run_with_stdin(&args, input.as_bytes());
+    assert!(ran.status.success(), "--stdin: {}", stderr(&ran));
+    assert!(wait_for(Duration::from_secs(10), || notified(&out)), "--stdin: not run");
+    let input = format!("{}\n{exited}\n", request(256));
+    let ran = env.run_with_stdin(&args, input.as_bytes());
+    let err = stderr(&ran);
+    assert_eq!(ran.status.code(), Some(1), "{err}");
+    assert!(err.contains("a line on stdin nests 257 deep, past the 256 brnr reads"), "{err}");
 }
 
 /// And so does catching up (ADR 10.2): a watcher cut off before a request
-/// nested past 128, or a million deep, gets it from the transcript.
+/// nested at the limit gets it from the transcript.
 #[test]
 fn adr_0002_a_deep_event_is_caught_up() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("deep-catchup-{depth}"));
-        env.start(&[]);
-        let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
-        let mut watch =
-            env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        let stdout = BufReader::new(watch.stdout.take().unwrap());
-        let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
-        sleep(Duration::from_millis(300));
-        kill(watch.id() as i32, libc::SIGSTOP);
-        for _ in 0..2 {
-            env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
-        }
-        let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
-        let cut = wait_for(Duration::from_secs(10), dropped);
-        // Asked for once it is cut off: the request can only reach it from
-        // the transcript.
-        if cut {
-            env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
-            // A slow runner's process can be busy with the deep line past the
-            // 5 seconds a command gives it to answer, or past the wait's 10:
-            // it is asked again (#276). The request stays pending until it is
-            // answered, so a later wait sees it at once.
-            let asked = || {
-                let wait = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
-                env.run(&wait).status.success()
-            };
-            assert!(wait_for(Duration::from_secs(40), asked), "{depth}: never asked");
-            env.ok(&["permission", "allow", "sess-1", "p1"]);
-        }
-        kill(watch.id() as i32, libc::SIGCONT);
-        assert!(cut, "{depth}: the watcher wasn't cut off");
-        env.stop();
-        assert!(wait_exit(&mut watch, Duration::from_secs(30)), "{depth}: watch didn't end");
-        let mut err = String::new();
-        watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-        assert!(watch.wait().unwrap().success(), "{depth}: watch failed: {err}");
-        let lines: Vec<String> = lines.join().unwrap();
-        let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
-        let request = request.expect("no permission_request");
-        let raw = format!(r#""rawInput":{}"#, "[".repeat(depth));
-        assert!(request.contains(&raw), "{depth}: {} bytes", request.len());
+    let env = Env::new("deep-catchup");
+    env.start(&[]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = BufReader::new(watch.stdout.take().unwrap());
+    let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
+    sleep(Duration::from_millis(300));
+    kill(watch.id() as i32, libc::SIGSTOP);
+    for _ in 0..2 {
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
     }
+    let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
+    let cut = wait_for(Duration::from_secs(10), dropped);
+    // Asked for once it is cut off: the request can only reach it from the
+    // transcript.
+    if cut {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {LIMIT}")]);
+        env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+        env.ok(&["permission", "allow", "sess-1", "p1"]);
+    }
+    kill(watch.id() as i32, libc::SIGCONT);
+    assert!(cut, "the watcher wasn't cut off");
+    env.stop();
+    assert!(wait_exit(&mut watch, Duration::from_secs(30)), "watch didn't end");
+    let mut err = String::new();
+    watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    let status = watch.wait().unwrap();
+    assert!(status.success(), "watch failed ({status:?}): {err}");
+    let lines: Vec<String> = lines.join().unwrap();
+    let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
+    let request = request.expect("no permission_request");
+    let raw = format!(r#""rawInput":{}"#, input_at_limit());
+    assert!(request.contains(&raw), "{} bytes", request.len());
 }
 
-/// And so does `event log` (ADR 5.1): a request nested past 128, or a
-/// million deep, is shown from the transcript as `event watch` showed it,
-/// in text and `--json`, where it was said not to be a record brnr can read.
+/// And so does `event log` (ADR 5.1): a request nested at the limit is
+/// shown from the transcript as `event watch` showed it, in text and
+/// `--json`.
 #[test]
 fn adr_0002_a_deep_request_is_logged() {
-    for depth in [200, 1_000_000] {
-        let env = Env::new(&format!("deep-log-{depth}"));
-        env.start(&[]);
-        env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {depth}")]);
-        // A slow runner's process can be busy with the deep line past the
-        // 10 seconds of a wait: it is asked again, as it stays pending.
-        let asked = || {
-            let wait = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"];
-            env.run(&wait).status.success()
+    let env = Env::new("deep-log");
+    env.start(&[]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {LIMIT}")]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    let args = ["event", "log", "sess-1", "--events", "permission_request"];
+    for json_out in [false, true] {
+        let out = env.run(&[&args[..], if json_out { &["--json"] } else { &[] }].concat());
+        let (shown, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
+        assert!(out.status.success() && err.is_empty(), "{err}");
+        let want = match json_out {
+            true => format!(r#""rawInput":{}"#, input_at_limit()),
+            false => "permission p1: Edit src/lib.rs".to_owned(),
         };
-        assert!(wait_for(Duration::from_secs(40), asked), "{depth}: never asked");
-        let args = ["event", "log", "sess-1", "--events", "permission_request"];
-        for json_out in [false, true] {
-            let out = env.run(&[&args[..], if json_out { &["--json"] } else { &[] }].concat());
-            let (shown, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
-            assert!(out.status.success() && err.is_empty(), "{depth}: {err}");
-            let want = match json_out {
-                true => format!(r#""rawInput":{}"#, "[".repeat(depth)),
-                false => "permission p1: Edit src/lib.rs".to_owned(),
-            };
-            assert!(shown.contains(&want), "{depth}: event log showed {} bytes", shown.len());
-        }
-        env.ok(&["permission", "allow", "sess-1", "p1"]);
-        env.stop();
+        assert!(shown.contains(&want), "event log showed {} bytes", shown.len());
     }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.stop();
 }
 
 /// A request that isn't JSON at all can't be tracked, but its answer isn't
@@ -5337,6 +5278,61 @@ fn adr_0004_an_editors_elicitation_is_seen_and_reaches_the_editor() {
         .collect();
     let content = serde_json::json!({ "name": "ab", "color": "red" });
     assert_eq!(answers, [serde_json::json!({ "action": "accept", "content": content })]);
+}
+
+/// In an editor's session the agent's `$/cancel_request` reaches the
+/// editor as the agent sent it, and the editor's answer reaches the agent
+/// as the editor sent it. The request ends with one `*_resolved` event,
+/// `by: agent`; the editor's answer makes none.
+#[test]
+fn adr_0004_an_editor_gets_the_agents_cancel_and_answers_it() {
+    let env = Env::new("ex-giveup");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("GIVE_UP", gate.to_str().unwrap());
+    let (_editor, mut to_agent, mut from_agent) = eliciting_editor(&env, &[]);
+    let resolved = |name: &str| -> Vec<Value> {
+        let log = env.ok(&["event", "log", "sess-1", "--json", "--events", "all"]);
+        (log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()))
+            .filter(|e| e["event"] == name)
+            .collect()
+    };
+    let answers = |id: &str| -> Vec<Value> {
+        (env.calls().into_iter())
+            .filter(|c| c["id"] == id && c.get("method").is_none())
+            .map(|c| c["result"].clone())
+            .collect()
+    };
+    for (prompt, asked, request, list, answer) in [
+        (
+            3,
+            "session/request_permission",
+            "perm-1",
+            "permission",
+            r#"{"outcome":{"outcome":"cancelled"}}"#,
+        ),
+        (4, "elicitation/create", "elicit-1", "elicitation", r#"{"action":"cancel"}"#),
+    ] {
+        let text = if list == "permission" { "perm edit" } else { "elicit form" };
+        writeln!(to_agent, "{}", editor_prompt(prompt, text)).unwrap();
+        message(&mut from_agent, |m| m["method"] == asked);
+        let requests = || env.ok(&[list, "requests", "sess-1"]);
+        assert!(requests().contains(if list == "permission" { "p1" } else { "e1" }));
+        fs::write(&gate, "").unwrap();
+        let cancel = message(&mut from_agent, |m| m["method"] == "$/cancel_request");
+        let sent = serde_json::json!({ "jsonrpc": "2.0", "method": "$/cancel_request",
+                                       "params": { "requestId": request } });
+        assert_eq!(cancel, sent, "changed on its way");
+        assert!(wait_for(Duration::from_secs(5), || requests() == "nothing waiting\n"));
+        let result: Value = serde_json::from_str(answer).unwrap();
+        let reply = serde_json::json!({ "jsonrpc": "2.0", "id": request, "result": result });
+        writeln!(to_agent, "{reply}").unwrap();
+        assert_eq!(response(&mut from_agent, prompt)["result"]["stopReason"], "end_turn");
+        assert_eq!(answers(request), [result], "{list}: not the editor's answer");
+        let events = resolved(&format!("{list}_resolved"));
+        assert_eq!(events.len(), 1, "{list}: {events:?}");
+        let who = (&events[0]["by"], &events[0]["peer"], &events[0]["reason"]);
+        assert_eq!(who, (&"agent".into(), &Value::Null, &Value::Null), "{list}: {events:?}");
+    }
 }
 
 /// The agent answers a change of mode or config option only to the host,

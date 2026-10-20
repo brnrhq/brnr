@@ -27,7 +27,7 @@
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `event log`, `event watch` and `session new --foreground`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::host::{EVENTS, NOTES, QUIET};
-use crate::{json, lock, log, paths, render, transcript};
+use crate::{lock, log, paths, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -448,28 +448,25 @@ fn stop(a: &Args) -> Result<(), String> {
 // ---- sessions ------------------------------------------------------------
 
 /// Sessions with a transcript that no running process is serving, most
-/// recently active first. Only the first and last record of each events
-/// file are read: the first names the cwd, and the session it was forked
-/// from if it opened as a fork (ADR 3.12), the last says when and in which
-/// process the session was last active, or, if it is a deletion's, a record
-/// of no process's (ADR 8.1), the last that names a process does. That
-/// process's log says which agent it ran.
+/// recently active first, a row each, whatever folders its files are in
+/// (ADR 5.1). Only the first and last record of each events file are read:
+/// the session began where its oldest file's first record says, which names
+/// the session it was forked from if it opened as a fork (ADR 3.12); the
+/// newest record of them all says when and in which process the session was
+/// last active, and its file's first record in which cwd, or, if it is a
+/// deletion's, a record of no process's (ADR 8.1), the newest that names a
+/// process does. That process's log says which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
-    // A transcript is identified by its file (cwd folder + session id); a
-    // session id alone can repeat across folders.
-    let running: Vec<PathBuf> = hosts
-        .iter()
-        .flat_map(|h| {
-            h.sessions().iter().filter_map(|s| s["events_log"].as_str().map(PathBuf::from))
-        })
-        .collect();
-
-    // A session whose lock is held is running, whether its process answers
-    // or not.
-    let held: Vec<String> =
-        lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session).collect();
-    let mut started: HashMap<String, Value> = HashMap::new();
-    let mut past = Vec::new();
+    // One served by a process, or whose lock is held, is running, whatever
+    // folder its files are in, and whether its process answers or not.
+    let served =
+        hosts.iter().flat_map(|h| h.sessions().iter().filter_map(|s| s["session"].as_str()));
+    let mut running: HashSet<String> = served.map(str::to_owned).collect();
+    running.extend(lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session));
+    // By id: the oldest file's first record; and the newest a process
+    // recorded, when, its file and that file's first record.
+    type Newest = (Option<Value>, Value, Value, PathBuf);
+    let mut found: HashMap<String, (Value, Newest)> = HashMap::new();
     for file in transcript::events_files() {
         let (Some(first), Some(last)) =
             (transcript::first(&file), transcript::last(&file, |_| true))
@@ -477,7 +474,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
             continue;
         };
         let Some(session) = last["session"].as_str() else { continue };
-        if running.contains(&file) || held.iter().any(|s| s == session) {
+        if running.contains(session) {
             continue;
         }
         // The process that last served it: a deletion's record is no
@@ -486,6 +483,22 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
             true => Some(last.clone()),
             false => transcript::last(&file, |r| r["host_id"].is_string()),
         };
+        // When a process last served it: a deletion isn't activity.
+        let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
+        let Some((oldest, newest)) = found.get_mut(session) else {
+            found.insert(session.to_owned(), (first.clone(), (served, at, first, file)));
+            continue;
+        };
+        if first["ts"].as_str() < oldest["ts"].as_str() {
+            *oldest = first.clone();
+        }
+        if at.as_str() > newest.1.as_str() {
+            *newest = (served, at, first, file);
+        }
+    }
+    let mut started: HashMap<String, Value> = HashMap::new();
+    let mut past = Vec::new();
+    for (session, (oldest, (served, at, first, file))) in found {
         let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
         let host_id = host_id.unwrap_or_default().to_owned();
         let start = started
@@ -495,9 +508,8 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         past.push(json!({
             "session": session,
             "cwd": first["event"]["cwd"],
-            "forked_from": first["event"]["forked_from"],
-            // When a process last served it: a deletion isn't activity.
-            "last_active": served.as_ref().map_or(&last["ts"], |r| &r["ts"]),
+            "forked_from": oldest["event"]["forked_from"],
+            "last_active": at,
             "profile": info["profile"],
             "agent": info["agent"],
             "events_log": file.to_string_lossy(),
@@ -510,13 +522,15 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
 /// The session an open session `s` (as its process reports it) was forked
 /// from: as the process says, or, where it doesn't know (the fork resumed
 /// since, here or in another process), as its transcript's first record
-/// says (ADR 3.12). Null for one that isn't a fork, or whose transcript isn't
-/// kept.
+/// says, its oldest file's (ADR 3.12, ADR 5.1). Null for one that isn't a
+/// fork, or whose transcript isn't kept.
 fn forked_from(s: &Value) -> Value {
     if s["forked_from"].is_string() {
         return s["forked_from"].clone();
     }
-    let first = s["events_log"].as_str().and_then(|log| transcript::first(Path::new(log)));
+    let oldest = s["session"].as_str().and_then(|id| transcript::files_of(id).into_iter().next());
+    let first = oldest.or_else(|| s["events_log"].as_str().map(PathBuf::from));
+    let first = first.and_then(|log| transcript::first(&log));
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
@@ -754,23 +768,11 @@ fn pending(a: &Args) -> Result<(), String> {
             (vec![host], Some(id))
         }
     };
-    // A request nests as deep as the agent made it: read as the host reads
-    // the agent's line, and listed and let go of on a stack that takes it
-    // (ADR 2.5), also when a process asked after it fails.
     let mut rows = Vec::new();
     for host in chosen {
-        let more = host.pending(|pending| {
-            pending.approvals(only.as_deref()).map(pending_row).collect::<Vec<_>>()
-        });
-        match more {
-            Ok(more) => rows.extend(more),
-            Err(e) => {
-                json::free(Value::Array(rows));
-                return Err(e);
-            }
-        }
+        rows.extend(host.pending()?.approvals(only.as_deref()).map(pending_row));
     }
-    json::holding(Value::Array(rows), |rows| list_pending(&rows, json_out))?
+    list_pending(&Value::Array(rows), json_out)
 }
 
 /// A permission request as `permission requests` lists it: `permission
@@ -900,18 +902,14 @@ fn watch(a: &Args) -> Result<ExitCode, args::Error> {
                 None => return Err(why.into()),
             },
         };
-        // Shown and let go of on a stack that takes it (ADR 2.5). Whether
-        // it ends the watch: the end, or stdout closed.
-        let ended = conn.deep(event, |_, event| {
-            let name = event["event"].as_str().unwrap_or_default();
-            if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
-                && only != session
-            {
-                return false;
-            }
-            (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name)
-        })?;
-        if ended {
+        let name = event["event"].as_str().unwrap_or_default();
+        if let (Some(only), Some(session)) = (&only_session, event["session"].as_str())
+            && only != session
+        {
+            continue;
+        }
+        // The end, or stdout closed, ends the watch.
+        if (shown.iter().any(|e| e == name) && show(&event).is_err()) || ends.contains(&name) {
             return Ok(ExitCode::SUCCESS);
         }
     }
