@@ -203,7 +203,7 @@ field.
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON has the new `session` and `forked_from`, the session it was forked from. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; JSON object with the closed `session`. Errors on stderr. |
-| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (`agent_failed` with the agent's as `rpc_error`, or why there is no answer, else null), `recorded_in` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `path_made_private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
+| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files in every project folder, an older brnr's too, and those set aside beside them (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …), not the host logs, whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (`agent_failed` with the agent's as `rpc_error`, or why there is no answer, else null), `recorded_in` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `path_made_private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions, from the session's files in every project folder, merged by time; `--last` selects recent turns of what is merged and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
@@ -262,10 +262,10 @@ field.
   `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
   `session`, `message`, `reply` (string), `stop_reason`, `error`, `tokens`,
-  `dropped`, and `pid` for `session new` and `session resume`. `error` is
-  the turn's failure, `agent_failed` with the agent's as `rpc_error`
-  ([errors](#errors)); a missing error is null; `dropped` is empty, or the message, dropped before it was
-  sent, as `{message, text, reason}`. A command
+  `dropped`, and `pid` for `session new` and `session resume`. `error` is the
+  turn's failure, `agent_failed` with the agent's as `rpc_error`
+  ([errors](#errors)); a missing error is null; `dropped` is a list: empty, or it contains the message,
+  dropped before it was sent, as `{message, text, reason}`. A command
   may fail before a completion object is available.
 - `--foreground` instead stays attached, displaying event lines;
   `--json` makes them JSON lines and `--quiet` suppresses the display.
@@ -514,7 +514,7 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 | `subscribe` | Optional `events`: array of event names or string `"all"`; a note's name (`records_skipped`, `events_missed`) is refused, as the host never sends one. | `events`: actual subscribed names; `unknown_events`: the names asked for that this process doesn't have (a newer brnr's), left out of the subscription. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. `peer`, this connection's name (`socket#7`); `host_id`; `pid`; `seq`, the last event's position before the subscription. |
 | `was_cut_off` | `peer`, a connection's name as `subscribe` gave it. | `peer`; `cut_off`, whether the process cut that connection off for falling behind (of its last 64 cut-offs); `last_queued_seq`, the last position queued for it then, else null. A position only, never an event: catch up from the transcript ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). |
 | `pending` | None | `pending`: approval objects for the host's sessions; `elicitations`: elicitation objects, as `elicitation show --json` has them, each with the process's `pid`. |
-| `allow`, `reject` | `session`, `request`; optional `always` boolean, `option_id` string (the option's `optionId`). | `session`, `request`, `outcome`. |
+| `allow`, `reject` | `session`, `request`; optional `always` boolean, `option_id` string (the option's `optionId`; an `option_id` that isn't a string, null too, is refused, `command_invalid`; `option` is a field `allow` doesn't take, `command_unknown`). | `session`, `request`, `outcome`. |
 | `elicitation` | `session` (null for one outside any session), `request`, `action` (`accept`, `decline` or `cancel`); for an accept of a form, `content`: an object of the form's fields, checked against its schema before anything is sent. | `session`, `request`, `result`: the response sent to the agent (`action`, and an accept's `content`). |
 | `set_config` | `session`; optional `mode`, `model`, `thought_level` strings and `options` (object of option IDs to strings), at least one. Resolved and sent as `config set` does; answered once all are set, or with the first failure, which names what was already set. | `session`, `set` (`option`, `category`, `value` for each setting sent), `mode`, updated `config`. |
 | `fork` | `session`. | New `session` ID. |
@@ -546,8 +546,9 @@ lists every event and its meaning, including message/turn correlation,
 approvals, elicitations, config patches and process exits. `process_exited`, `line_too_long`
 and `line_too_deep` are process events. Notes are what brnr adds to a stream of events, and are
 never sent on the socket: `records_skipped` (a gap in a transcript, in `event
-log`) and `events_missed` (what a command couldn't catch up on, on its
-stdout). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config
+log`) and `events_missed` (what a command couldn't catch up on: `event
+watch` prints it on stdout as its last event, `event notify` and the
+`--wait` and `event wait` commands say it on stderr). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
 `session_reopened` follows a `session_closed` when the agent answered an
 editor's load of the session with success after its close: the session is
@@ -588,14 +589,19 @@ See [buffering and cutoffs](../README.md#when-a-reader-falls-behind) for the
 
 [Transcripts](../README.md#transcripts) documents the JSON-lines file paths,
 host/session identity fields, logging modes, redaction and `records_skipped`
-gap notes. A transcript an older brnr wrote, its records naming the session
-`session_id`, isn't read (ADR 5.9). Read history through `event log` where possible. A transcript is not
+gap notes. Every record starts with its `format`, 1 for all of 1.x; a
+record in another format, an older brnr's without one or a newer one's,
+isn't read, and `event log` and `doctor` say so (ADR 5.10). Nothing is
+appended to it: a session opened where one is in the way sets it aside,
+renamed `<name>.older.jsonl` (its raw ACP `<name>.older.acp.jsonl`), and
+starts a file of its own; a `session_log_moved` host-log record (`path`,
+`to`) says so. Read history through `event log` where possible. A transcript is not
 a guarantee of complete history: disk backlog/errors, disabled logging,
 and abrupt process death can lose records.
 
 **Covered** from 1.0.0: each session's events and raw ACP files, where they
-are under `$BRNR_HOME` and their records; a 1.x brnr reads what an earlier
-1.x wrote; and where each other file under `$BRNR_HOME` is. **Not
+are under `$BRNR_HOME` and their records, in format 1; a 1.x brnr reads
+what an earlier 1.x wrote (ADR 5.10); and where each other file under `$BRNR_HOME` is. **Not
 covered**: what host logs (`hosts/<run id>.jsonl`) and session lock files
 (`sessions/<id>.lock`) contain, and what is in the runtime directory:
 sockets and metadata files.

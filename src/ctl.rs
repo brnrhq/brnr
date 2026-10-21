@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 
 use crate::error::{self, Code};
 use crate::host::{EVENTS, NOTES, QUIET};
-use crate::{lock, log, paths, render, transcript};
+use crate::{lock, log, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -470,13 +470,17 @@ fn stop(a: &Args) -> Result<(), error::Error> {
 
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first, a row each, whatever folders its files are in
-/// (ADR 5.1). Only the first and last record of each events file are read:
+/// (ADR 5.1). Only the first and last records of each events file are read:
 /// the session began where its oldest file's first record says, which names
 /// the session it was forked from if it opened as a fork (ADR 3.12); the
 /// newest record of them all says when and in which process the session was
-/// last active, and its file's first record in which cwd, or, if it is a
-/// deletion's, a record of no process's (ADR 8.1), the newest that names a
-/// process does. That process's log says which agent it ran.
+/// last active, or, if it is a deletion's, a record of no process's (ADR
+/// 8.1), the newest that names a process does. That process's
+/// `session_opened`, the last in its file, says the cwd, profile and agent
+/// it served the session with (ADR 3.11): the transcript alone says it, not
+/// the host log (ADR 5.10). A file whose newest record is in a format this
+/// brnr doesn't read isn't one, as where the session was last served isn't
+/// known; `doctor` lists it (ADR 5.10).
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // One served by a process, or whose lock is held, is running, whatever
     // folder its files are in, and whether its process answers or not.
@@ -485,15 +489,12 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     let mut running: HashSet<String> = served.map(str::to_owned).collect();
     running.extend(lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session));
     // By id: the oldest file's first record; and the newest a process
-    // recorded, when, its file and that file's first record.
-    type Newest = (Option<Value>, Value, Value, PathBuf);
+    // recorded, when, and its file.
+    type Newest = (Option<Value>, Value, PathBuf);
     let mut found: HashMap<String, (Value, Newest)> = HashMap::new();
     for file in transcript::events_files() {
-        let (Some(first), Some(last)) =
-            (transcript::first(&file), transcript::last(&file, |_| true))
-        else {
-            continue;
-        };
+        let Some(last) = transcript::newest(&file).filter(transcript::readable) else { continue };
+        let Some(first) = transcript::first(&file) else { continue };
         let Some(session) = last["session"].as_str() else { continue };
         if running.contains(session) {
             continue;
@@ -507,32 +508,31 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         // When a process last served it: a deletion isn't activity.
         let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
         let Some((oldest, newest)) = found.get_mut(session) else {
-            found.insert(session.to_owned(), (first.clone(), (served, at, first, file)));
+            found.insert(session.to_owned(), (first, (served, at, file)));
             continue;
         };
         if first["ts"].as_str() < oldest["ts"].as_str() {
-            *oldest = first.clone();
+            *oldest = first;
         }
         if at.as_str() > newest.1.as_str() {
-            *newest = (served, at, first, file);
+            *newest = (served, at, file);
         }
     }
-    let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
-    for (session, (oldest, (served, at, first, file))) in found {
-        let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
-        let host_id = host_id.unwrap_or_default().to_owned();
-        let start = started
-            .entry(host_id.clone())
-            .or_insert_with(|| transcript::first(&paths::host_log(&host_id)).unwrap_or_default());
-        let info = &start["event"]["info"];
+    for (session, (oldest, (served, at, file))) in found {
+        let host_id = served.as_ref().map(|r| r["host_id"].clone());
+        let opening = |r: &Value| {
+            r["event"]["event"] == "session_opened" && host_id.as_ref() == Some(&r["host_id"])
+        };
+        let opened = transcript::last(&file, opening).unwrap_or_default();
+        let opened = &opened["event"];
         past.push(json!({
             "session": session,
-            "cwd": first["event"]["cwd"],
+            "cwd": opened["cwd"],
             "forked_from": oldest["event"]["forked_from"],
             "last_active": at,
-            "profile": info["profile"],
-            "agent": info["agent"],
+            "profile": opened["profile"],
+            "agent": opened["agent"],
             "events_log": file.to_string_lossy(),
         }));
     }
@@ -854,13 +854,12 @@ fn answer(a: &Args, cmd: &str) -> Result<(), error::Error> {
     let (option_id, always, json_out) = (a.value("--option-id"), a.has("--always"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let req = json!({
-        "cmd": cmd,
-        "session": session,
-        "request": request_id,
-        "always": always,
-        "option_id": option_id,
-    });
+    let mut req =
+        json!({ "cmd": cmd, "session": session, "request": request_id, "always": always });
+    // Absent, not null, without --option-id: the host refuses a null one.
+    if let Some(id) = option_id {
+        req["option_id"] = json!(id);
+    }
     let response = host.call(&req)?;
     let outcome = &response["outcome"];
     if json_out {

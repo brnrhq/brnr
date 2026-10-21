@@ -38,14 +38,15 @@ Events:
 - `session delete` writes `session_deleted` into the session's events
   file itself, a record of no process's (`host_id` null), and with
   `--purge` deletes both files (ADR 8.1).
-- Every record carries `ts`, `host_id`, `pid` (the brnr process),
-  `proxy_pid`, `agent_pid` and, in a session's files, `session`, for
-  joining. Every event, and every raw ACP record, has `seq`, its position
+- Every record starts with its `format` (ADR 5.10), then carries `ts`,
+  `host_id`, `pid` (the brnr process), `proxy_pid`, `agent_pid` and, in a
+  session's files, `session`, for joining. Every event, and every raw ACP record, has `seq`, its position
   in its process (ADR 10.2), and every event `pid` too (ADR 5.9).
 - A session's events file starts with `session_opened`, the same record as
-  the host log's: `session`, `cwd`, `events_log`, `acp_log` (null with
-  `log = "events"`), `host_log`, and `forked_from` for a fork. The host log
-  names each session's files there.
+  the host log's: `session`, `cwd`, `profile` and `agent` (the process's,
+  ADR 3.11), `events_log`, `acp_log` (null with `log = "events"`),
+  `host_log`, and `forked_from` for a fork. The host log names each
+  session's files there.
 
 Files:
 
@@ -89,15 +90,14 @@ Reading:
   message an `acp` event, and says so when there is none. `--events` and
   `--json` mean the same as for `event watch` (ADR 5.3), and `event log
   --json` is what a watcher got live. It shows a `records_skipped` gap
-  whatever `--events` chose. A transcript written before events existed
-  has none, and `event log` says so.
-- A record an older brnr wrote, its head naming the session `session_id`
-  and the process `host_pid`, isn't read: its names are not this brnr's
-  (ADR 5.9, P9). A file of them is no transcript: `session list` and
-  `session resume` pass it over, and a load records the history (ADR 5.6).
-  Nothing goes without a word (P3): `event log` of it says `<file>: an
-  older brnr wrote it, in names this one doesn't read (ADR 5.9)`, and
-  `doctor` lists every such file, transcripts and host logs, as info.
+  whatever `--events` chose.
+- A record in a format this brnr doesn't read, an older brnr's or a newer
+  one's, isn't read (ADR 5.10, P9). A file of them is no transcript:
+  `session list` and `session resume` pass it over, and a load records the
+  history (ADR 5.6). Nothing goes without a word (P3): `event log` of it
+  says `<file>: records an older brnr wrote, before transcripts had a
+  format, not read (ADR 5.10)`, and `doctor` lists every such file,
+  transcripts and host logs, as info.
 - `event log` of a running session first waits for what its process has
   recorded (ADR 5.5).
 - `event log` reads every file of the session, in every project folder,
@@ -110,7 +110,7 @@ Reading:
   merged; `--follow` follows the files the serving process writes. With
   `acp` chosen, each folder's raw file is merged with its events file,
   and a folder without one is said (`no raw ACP for <session> beside
-  <file>`). A file of the session an older brnr wrote, in any folder, is
+  <file>`). A file of the session in another format, in any folder, is
   said and not read (above). Of a session open in a process that logs
   nothing (`log = "off"`), what the other folders hold is shown, and
   `event log` says the process keeps no transcript of it.
@@ -123,7 +123,9 @@ Reading:
   all: `session resume` takes its cwd, agent and profile from that newest
   record (ADR 3.11), and `session list` its row, one per id (#121). That
   record is the newest a process recorded (a deletion's, ADR 8.1, is no
-  process's), and its cwd is the one its file's first record names. A
+  process's), and its cwd, profile and agent are those that process's
+  `session_opened` in its file names (ADR 5.10). A file whose newest
+  record is in a format brnr doesn't read is passed over (ADR 5.10). A
   line cut short is never taken for a record: a JSON object ends only at
   its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;
@@ -820,8 +822,8 @@ What takes its names from this:
   ids, `by`, `reason`, positions, times and files as above. ADR 8.2
   settles each concept's shape.
 - #70: the record heads and the records named here are the names its
-  transcript contract holds to; it decides what each record promises, and
-  how a format is marked.
+  transcript contract holds to; ADR 5.10 decides what each record
+  promises, and how a format is marked.
 - A name added later, of an event, a note, a record, a field or a value,
   is made by these rules: #229's subagent fields, #308's `by: agent`.
 
@@ -973,27 +975,43 @@ without quoting (in jq `.records-skipped` is a subtraction).
 - Every bridge, `event notify` command and script that reads events
   changes once, before 1.0.0. The changelog says how, entry by entry.
 - A transcript an older brnr wrote keeps its names, and brnr doesn't read
-  them (P9): its head has `session_id`, so `session list` and
-  `session resume` pass it over. Nothing is lost silently (P3): `doctor`
-  lists it, and `event log` of it says an older brnr wrote it. Once #70
-  marks a transcript's format, that is a check of the format, not of a
-  field. As #314 has it:
-  - A record is an older brnr's by its head: `session_id`, or a host
-    log's `host_pid`, where this brnr's has `session` and `pid`
-    (`transcript::older`). Such a record isn't read anywhere, so a file
-    of them is no transcript to a load either, which records the
-    history (ADR 5.6). A file is listed as one by its first record.
-  - `doctor` lists them as info under `older files`, transcripts and
-    host logs alike, and passes an older host log over where it looks
-    for a death nothing recorded (ADR 3.7) or for the report's logs
-    (ADR 11.5): read in this brnr's names, every one would lack
-    `process_exited`. A line of one in the report would be `(a record an
-    older brnr wrote, not shown)`: what an older brnr didn't redact
-    isn't shown either.
-  - A process doesn't append to an older brnr's transcript: ADR 9.2's
-    rule that went on in a file of the folder before the hash goes, as
-    every such file is an older brnr's, and what was appended would be
-    read without what came before it.
+  them (P9), so `session list` and `session resume` pass it over. Nothing
+  is lost silently (P3): `doctor` lists it, and `event log` of it says an
+  older brnr wrote it. ADR 5.10 marks a transcript's format, so that is a
+  check of the format, not of a field:
+  - A record is an older brnr's by its head: it has no `format`
+    (`transcript::readable`), whatever its fields. Such a record isn't
+    read anywhere, so a file of them is no transcript to a load either,
+    which records the history (ADR 5.6). A file is listed as one by its
+    first record, or its newest.
+  - `doctor` lists them as info under `file formats`, transcripts and
+    host logs alike, and passes such a host log over where it looks for
+    a death nothing recorded (ADR 3.7) or for the report's logs (ADR
+    11.5): read in this brnr's names, every one would lack
+    `process_exited`. A line of one in the report would be `(a record in
+    a format this brnr doesn't read, not shown)`: what an older brnr
+    didn't redact isn't shown either.
+  - A process doesn't append to an older brnr's transcript, nor to any
+    file in a format it doesn't read (ADR 5.10): ADR 9.2's rule that went
+    on in a file of the folder before the hash goes, as every such file is
+    an older brnr's, and what was appended would be read without what came
+    before it. No writer does (`log::appends_to`, the one test of it, is
+    the check `doctor`'s `file formats` makes: a file whose first or
+    newest record is in another format): a session opened where such a
+    file is in the way (one in its cwd's folder, written there before
+    #314, or a resume of a session brnr has no transcript of) renames that
+    file beside it, `<name>.older.jsonl` (`older-2`, … if taken; the raw
+    file `<name>.older.acp.jsonl`), and starts a file of its own, and the
+    host log's `session_log_moved` (`session`, `path`, `to`) says so (P3);
+    `doctor` still lists the renamed file. An event for a session no
+    process has open (`session delete`, an editor's deletion) passes such
+    a file over. A newer brnr's file is set aside the same, under the same
+    name: `older` says it is no file of this brnr's to go on with. Renamed
+    rather than left with the session's records in the host log, as a
+    refused file is (ADR 9.3): the session then has a transcript, which
+    its next resume finds, and a load records its history in it (ADR 5.6).
+    `session delete --purge` deletes the files set aside too, as every
+    file of the session's id (ADR 8.1, N1).
 - The CLI reads the bridge `status` reply's `sessions` in the new names,
   and `session list`'s rows of a transcript the same (`session`,
   `events_log`).
@@ -1046,6 +1064,175 @@ without quoting (in jq `.records-skipped` is a subtraction).
 - A unit in the names of durations and sizes (`_seconds`, `_bytes`): ADR
   8.1 decided against it for #154, one rule said once, and this follows
   it.
+
+## 5.10 What a transcript promises, and how its format is marked
+
+Resolves #70. ADR 5.1 to 5.6 decide what is recorded and how it is read;
+this section says what of it 1.x promises (ADR 8.4), and how a reader
+tells a format it reads from one it doesn't.
+
+What each stream is for, and what it leaves out:
+
+- **Events** (ADR 5.1 to 5.3) are the host's interpretation of ACP, the
+  one story (P5): what a bridge gets live, what `event watch --json` and
+  `event log --json` print, and, as the `event` of a record, what the
+  events file keeps. They are what scripts and bridges read. They are
+  summaries, not the conversation: `agent_message` and `agent_thought`
+  carry the text of the agent's chunks, whole, and nothing of a chunk
+  that isn't text (an image, audio, a resource); `user_message` carries a
+  prompt's text, other blocks as `[image]` or `[resource <uri>]`;
+  `tool_call` and `tool_progress` carry a call's id, title, kind, status
+  and locations, not its content (a diff, a terminal's output) nor its raw
+  input and output, and streamed output is no event (ADR 5.3).
+  `permission_request` carries ACP's `tool_call` and `options` whole. No
+  event carries what ADR 9.1 redacts; the agent's own text is as the agent
+  sent it, a secret in it included.
+- **Text** (`event watch`, `event log`, the foreground) is the events
+  shown for people, one line each, escaped (src/render.rs). It has nothing
+  the events don't (P5), and its wording isn't covered (ADR 8.4).
+- **Raw ACP** (`<id>.acp.jsonl`, `acp` events) is every ACP message of the
+  session, as it went, in order: each line embedded as it was (`raw`, a
+  string, for one that wasn't JSON), but for what ADR 9.1 redacts and a
+  line too long to read (ADR 10.3). It is what checks the interpretation,
+  and has what the events leave out. `log = "events"` leaves it out.
+- **The conversation** is the agent's (P2): what a resume or a load gives
+  back is what the agent keeps. brnr's transcript is a record of what
+  happened through brnr, not a history to restore: it isn't replayed to an
+  agent or an editor (ADR 5.1). What brnr reads back from it to resume a
+  session is the session's id, cwd, profile and agent (ADR 3.11).
+- **The host log** is the process's own record (ADR 5.1), for `doctor`
+  and the catch-up (ADR 10.2), and isn't covered (ADR 8.4). Nothing a
+  covered command reads of a session comes from it: `session_opened`
+  names the profile and agent in the events file too.
+
+What is known to be missing, and how:
+
+- Records a slow disk skipped, or a failed write lost: a `records_skipped`
+  note where they would have been (ADR 5.1, ADR 10.1).
+- A replay a load left out, as the transcript had the history: the
+  `history` event's `recorded: false`; one recorded is `replayed` (ADR 5.6).
+- Turns taken in the agent's own client, or under `log = "off"`: not
+  known, as brnr didn't see them (ADR 5.6). `event log` of a session open
+  in a process that logs nothing says so.
+- Records a process killed with SIGKILL hadn't written: not known (ADR
+  5.5); the file ends where its writes ended, partway through a line or
+  not, and is read to its last whole record (ADR 5.1).
+
+The format:
+
+- Every record's head starts with `format`, a number: `{"format":1,"ts":…,
+  "host_id":…,"pid":…,"proxy_pid":…,"agent_pid":…[,"session":…],…}`, in
+  the events files, the raw ACP files and the host logs alike, and in the
+  record `session delete` writes (ADR 8.1). It is the format of that
+  record, not of its file: a file is appended to by every process that
+  serves the session, of whatever brnr, and is read a record at a time,
+  backwards too (ADR 5.1).
+- Format 1 is ADR 5.1's and 5.9's: a record a JSON object on a line of its
+  own; its head as above, `ts` an RFC 3339 time in UTC to the microsecond,
+  always that wide, so that records are merged by comparing it as a string
+  (ADR 5.1); then `event`, an event as a bridge got it, a note or a record
+  (ADR 5.9), or, for an ACP message, `seq` where it has one, `dir` and
+  `msg` (or `raw`). `session_opened` names `session`, `cwd`, `profile`,
+  `agent` (the command the process ran, as a profile's `agent` and the
+  socket's `status` have it, ADR 6.1, ADR 8.2), `events_log`, `acp_log`,
+  `host_log` and `forked_from` for a fork. Where the files are is ADR
+  3.9's and 9.2's.
+- The format stays 1 for all of 1.x. What a 1.x release may add to it, as
+  ADR 8.4 allows (a field, an event, a record), is still format 1, and a
+  reader passes over what it doesn't know. What a format-1 reader couldn't
+  read (a field renamed, removed or of another type, another head, another
+  `ts`) is a new format, and waits for a major release.
+- A 1.x brnr reads format 1, whichever 1.x wrote it: `event log`, `session
+  list`, `session resume` and a load's "brnr has a transcript of the
+  session" (ADR 5.6), as a file mixing records of several 1.x releases.
+  `doctor` and the catch-up read the host logs by the same rule.
+- A record in a format brnr doesn't read, without `format` (an older
+  brnr's, before 1.0) or with another (a newer brnr's), isn't read, and
+  nothing goes without a word (P3):
+  - `event log` shows the records of the file it can read and says, once
+    per file, `<file>: records in format 2; this brnr reads format 1, not
+    shown (ADR 5.10)`, or `records an older brnr wrote, before transcripts
+    had a format`. Of a session none of whose files it can read, it fails,
+    saying so.
+  - `session list` passes over a file without a record it can read, and a
+    file whose newest record is in another format: where the session was
+    last served is in a record it can't read, and it doesn't guess from an
+    older one (P4). `session resume` of such a session says which files it
+    doesn't read, on stderr, and resumes the id as one brnr doesn't know
+    (ADR 3.11).
+  - A load counts only records it can read as a transcript (ADR 5.6): a
+    file of none records the history.
+  - `doctor` lists, as info under `file formats`, every transcript and
+    host log whose first or newest record is in another format.
+  - The catch-up of a process writing another format fails, saying so, and
+    the command says what it missed (ADR 10.2).
+- brnr doesn't migrate or rewrite a file in another format (ADR 5.1, P3),
+  nor keep a reader for one before 1.0 (P9). A major release that changes
+  the format decides whether it reads format 1 too.
+
+Identity: one session id is one session, whatever the agent, the folder,
+the process or the file (ADR 3.2, ADR 9.2): one lock (`sessions/<name>.lock`,
+ADR 3.9), its files in every project folder read as one (ADR 5.1), every
+record naming it in `session`, and every command taking it exact. A process
+is `pid` with `host_id`, its run, as pids are reused (ADR 5.9). An id is not
+scoped by the agent: two agents that gave one id would share a lock and a
+transcript, as ADR 9.2 says of any one id.
+
+Bridges: a bridge gets events, not records, and the format is the files'.
+What a started bridge gets is held to ADR 8.4's rule within a major
+(fields and events are added, never renamed or removed, and a bridge
+passes over what it doesn't know); which brnr it talks to is #149's to
+say.
+
+**Why.** A record must say what it is to be read safely. Before this, a
+reader knew an older brnr's record only by a field (`session_id`, ADR 5.9):
+that tells one format from one before it, needs a new rule for every
+change, and reads a newer brnr's records as this brnr's, a renamed field
+read as a missing one, a session resumed in the wrong cwd or with no
+agent, without a word (P3, P4). A number in every head is the one check,
+for any format, older or newer. In every record, as a file is appended to
+by every brnr that serves the session in its format (each 1.x, and a
+newer major that reads format 1), and read a record at a time: the last record backwards, the
+catch-up by position, a deletion's record that no process wrote. `session
+resume` took the profile and agent from the host log, which ADR 8.4
+doesn't cover and which a user can prune: pruning `~/.brnr/hosts` made a
+resume fail with `no agent` (#70). Named in `session_opened`, they are in
+the transcript, which is covered.
+
+**Consequences.**
+
+- Each record is 11 bytes longer.
+- A file written before this has no `format`, and isn't read (P9):
+  `doctor` lists it; ADR 5.9's check by field goes.
+- A session downgraded from a newer brnr, its newest records in a newer
+  format, is no session to `session list` here; `event log` shows what of
+  it this brnr can read. Opened here, it is set aside, `<name>.older.jsonl`,
+  and starts a file of this brnr's (ADR 5.9's `log::appends_to`).
+- The fixtures in tests/fixtures/transcripts are format 1 as 1.0 writes it,
+  frozen: every 1.x is tested against them.
+
+**Considered.**
+
+- A marker per segment, on `session_opened`: fewer bytes, but a record
+  read alone (the last, backwards; one the catch-up finds by position; a
+  deletion's) would need its segment's opening found first.
+- A first line per file: a file is appended to by several processes and
+  releases, and its first line says nothing of what came after.
+- brnr's version in the head: a reader would need a table from versions to
+  formats; which brnr a process is, is #149's.
+- Keeping the field check (`session_id`) and adding one per change: a rule
+  per format, and a newer brnr's records read as this one's.
+- Reading what can be read of a record in another format: a renamed field
+  read as missing is a guess (P4).
+- `session list` taking the newest record it can read, in a file a newer
+  brnr went on with: it would show, and resume, where the session was
+  before the newer brnr served it, and say nothing.
+- The profile and agent from the host log, as before: a resume would
+  depend on a file that isn't covered and can be pruned.
+- A session id scoped by its agent: the agent's command changes with its
+  path and version, and the same session would become two (ADR 3.2).
+- Migrating older files to format 1: brnr doesn't rewrite what it has
+  written (ADR 5.1, P9).
 
 ## Tests
 
@@ -1184,13 +1371,35 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_who_acted_and_why_are_by_peer_and_reason` (`session_closed`,
   `message_dropped`, and `permission_resolved` answered by a peer, a
   cancel and the timeout),
-  `adr_0005_a_transcript_an_older_brnr_wrote_isnt_read`, and
+  `adr_0005_a_transcript_in_another_format_isnt_read` (5.10's),
+  `adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript` (set aside
+  by a resume, an older brnr's and a newer one's, passed over by
+  `session delete`), and
   `adr_0005_notify_reads_stdin_as_a_bridge` (`BRNR_SESSION`, and
   `BRNR_EVENT=process_exited` at the end);
   [tests/headless.rs](../../tests/headless.rs):
-  `adr_0005_a_sessions_opening_is_the_same_in_both_files`, and
+  `adr_0005_a_sessions_opening_is_the_same_in_both_files`,
+  `adr_0005_an_editors_delete_passes_an_older_transcript_over`, and
   `adr_0010_a_stalled_disk_skips_records_and_says_so` (`--events
   records_skipped` shows the one gap, with `session`, `ts`, `host_id` and
   `pid`);
   [src/log.rs](../../src/log.rs):
   `adr_0005_a_gap_note_has_the_fields_of_an_event`.
+- 5.10: the fixtures in
+  [tests/fixtures/transcripts](../../tests/fixtures/transcripts), format 1
+  as 1.0 writes it, frozen; [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_every_record_brnr_writes_has_its_format` (events, raw ACP, the
+  host log and a deletion's record; `session_opened`'s profile and agent),
+  `adr_0005_a_format_1_transcript_is_read_by_every_1x_brnr` (`session
+  list`, `event log`, its raw ACP, `doctor`, and `session resume` from the
+  transcript alone, with no host log, its load's replay not recorded),
+  `adr_0005_a_transcript_in_another_format_isnt_read` (an older brnr's
+  without `format`, format 2, and a file a newer brnr went on with:
+  `session list`, `event log`, `session resume` and `doctor`),
+  `adr_0005_a_transcript_cut_short_is_read_to_its_last_whole_record`
+  (partial writes: a broken line and a cut end, and a resume appending on
+  a line of its own),
+  `adr_0005_a_transcript_of_openings_only_gets_the_history` (missing
+  history: the next load records it); [src/transcript.rs](../../src/transcript.rs):
+  `adr_0005_a_record_is_read_by_its_format`. The replay rules are 5.6's
+  tests.

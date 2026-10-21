@@ -1210,7 +1210,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let (socket, host_log, file) =
             (dir.join("h.sock"), dir.join("host.jsonl"), dir.join("s.jsonl"));
-        let record = |event: Value| json!({ "ts": "t", "host_id": "h", "event": event });
+        let record =
+            |event: Value| json!({ "format": 1, "ts": "t", "host_id": "h", "event": event });
         let opened = json!({ "event": "session_opened", "session": "s", "events_log": file });
         fs::write(&host_log, format!("{}\n", record(opened))).unwrap();
         let event = |seq: u64, name: &str, text: &str| {

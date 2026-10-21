@@ -769,13 +769,22 @@ impl Host {
         let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
+        // Absent, it picks by kind; anything but a string, null too, is
+        // refused: read as absent, the kind's option would be answered in
+        // place of the one named (ADR 8.1, P3). Its old name, `option`, is
+        // a field `allow` doesn't take (ADR 8.8).
+        let option_id = match req.get("option_id") {
+            None => None,
+            Some(Value::String(id)) => Some(id.as_str()),
+            Some(_) => return Err(invalid("option_id isn't a string")),
+        };
         let resolved = self.approvals.answer(
             Kind::Permission,
             &handle,
             Some(&session),
             &by,
             self.client(),
-            |r| approvals::choose(r, choice, always, req["option_id"].as_str()),
+            |r| approvals::choose(r, choice, always, option_id),
         )?;
         let outcome = resolved.answer.clone();
         self.resolved(resolved);
