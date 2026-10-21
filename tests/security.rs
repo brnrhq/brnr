@@ -1242,6 +1242,7 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
         assert!(err.contains(says), "{err}");
         assert!(err.contains("so brnr won't read the config"), "{err}");
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
+        code_is(&err, "config_invalid");
         let err =
             err.trim_end().strip_suffix(" [config_invalid]").unwrap_or_else(|| panic!("{err}"));
         assert!(err.contains("chmod -N ") && err.ends_with(&name), "{err}");

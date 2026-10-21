@@ -688,6 +688,9 @@ fn adr_0003_a_panic_while_starting_is_recorded() {
             ": a test asked for it [process_panicked]"
         };
         assert!(line.ends_with(ends), "{editor}: {err}");
+        if !editor {
+            code_is(line, "process_panicked");
+        }
         // Then the link to report it (ADR 11.5), once.
         let command = if editor { "acp" } else { "session%20new" };
         let link = format!("&what=%60brnr%20{command}%60%20panicked");
@@ -5046,6 +5049,7 @@ fn adr_0008_pid_refused_in_an_editors_process() {
     {
         let err = env.fails(args);
         let says = "the editor owns this process; open sessions there [process_owned_by_editor]";
+        code_is(&err, "process_owned_by_editor");
         assert!(err.contains(says), "{err}");
     }
     assert_eq!(env.calls_of("session/new").len(), 1);

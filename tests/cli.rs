@@ -445,13 +445,16 @@ fn adr_0008_queue_show() {
     let answer = ask(r#"{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}"#);
     let said =
         json!({ "code": "command_invalid", "message": "queue's show takes no drop or clear" });
+    code_is(&answer, "command_invalid");
     assert_eq!(answer["error"], said, "{answer}");
     for show in ["2", "true", "null"] {
         let answer =
             ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show},"clear":true}}"#));
         let said = json!({ "code": "command_invalid", "message": "show must be a message id" });
+        code_is(&answer, "command_invalid");
         assert_eq!(answer["error"], said, "{answer}");
         let answer = ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show}}}"#));
+        code_is(&answer, "command_invalid");
         assert_eq!(answer["error"], said, "{answer}");
     }
     // Showing drops nothing.
@@ -3810,6 +3813,7 @@ fn adr_0008_a_permissions_option_is_option_id() {
         let old = call(json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option": "b" }));
         assert_eq!(old["ok"], false, "{old}");
         let said = json!({ "code": "command_invalid", "message": format!("{cmd} takes option_id, not option") });
+        code_is(&old, "command_invalid");
         assert_eq!(old["error"], said, "{old}");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
@@ -3847,6 +3851,7 @@ fn adr_0008_a_permissions_option_id_is_a_string() {
             let refused = call(req);
             assert_eq!(refused["ok"], false, "{refused}");
             let said = json!({ "code": "command_invalid", "message": "option_id isn't a string" });
+            code_is(&refused, "command_invalid");
             assert_eq!(refused["error"], said, "{refused}");
         }
     }
@@ -5190,6 +5195,7 @@ fn adr_0008_old_socket_commands_are_unknown() {
         assert_eq!(answer["ok"], false, "{cmd}: {answer}");
         let said =
             json!({ "code": "command_unknown", "message": format!("unknown command: {cmd}") });
+        code_is(&answer, "command_unknown");
         assert_eq!(answer["error"], said, "{cmd}: {answer}");
     }
     let pending = env.ok(&["permission", "requests", "sess-1"]);
@@ -6020,6 +6026,7 @@ fn adr_0008_pid_settings_that_fail_close_the_session() {
     let err = env.fails(&args);
     let says = "brnr: setting model huge failed: bad option model=huge (already set: mode plan); \
                 sess-2 was closed [agent_failed]\n";
+    code_is(&err, "agent_failed");
     assert_eq!(err, says);
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
@@ -6215,6 +6222,7 @@ fn adr_0008_pid_take_over_refused_before_closing() {
     let err = env.fails(&["session", "resume", "--pid", &pid, "sess-1", "--take-over"]);
     let says = "brnr: the agent can't resume sessions (no session/resume or session/load) \
                 [capability_missing]\n";
+    code_is(&err, "capability_missing");
     assert_eq!(err, says);
     assert!(env.calls_of("session/close").is_empty());
     assert_eq!(lock_holder(&env, "sess-1"), holder);
@@ -6456,6 +6464,7 @@ fn adr_0008_delete_a_session_only_the_agent_knows() {
     assert!(err.contains("session/delete failed: Session not found: gone-1"), "{err}");
     // With --purge too, when there is no transcript to delete either.
     let err = env.fails(&["session", "delete", "gone-1", "--purge", "--", AGENT]);
+    code_is(&err, "agent_failed");
     assert!(
         err.ends_with(
             "Session not found: gone-1; brnr has no transcript of gone-1 [agent_failed]\n"
@@ -6574,6 +6583,7 @@ fn adr_0008_delete_purge_fails_when_the_agent_does() {
         "message": "session/delete failed: Can't delete stuck-1",
         "rpc_error": rpc,
     });
+    code_is(&json, "agent_failed");
     assert_eq!(json["error"], said, "{json}");
     assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
