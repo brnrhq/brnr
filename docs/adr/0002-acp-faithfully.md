@@ -242,6 +242,9 @@ the other's request (GHSA-84pw-hh9c-w2m8).
   foreground (P3). As `line_too_long`, it belongs to no session. So is
   what the editor sends after its last newline as it closes its stdin: a
   line too, it goes to the agent, and past 128 isn't recorded.
+- A line the host read is recorded as JSON (`msg`), as it came: at 128
+  levels too, past serde_json's 127, and with a lone surrogate. Only what
+  isn't JSON is a string in `raw` (ADR 5.1).
 - What the host keeps of a line nests no deeper than 128, and what it
   writes (events, answers, records) wraps that in a few levels of its own.
   The CLI reads what brnr wrote up to 256 levels, twice the limit: the
@@ -579,6 +582,8 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_any_stack_takes_a_value_at_the_limit`;
   [src/host/fuzz.rs](../../src/host/fuzz.rs):
   `adr_0002_the_host_holds_nothing_of_a_line_past_the_limit`;
+  [src/log.rs](../../src/log.rs):
+  `adr_0002_a_message_at_the_limit_is_recorded_as_json`;
   [src/ctl/client.rs](../../src/ctl/client.rs):
   `adr_0002_an_answer_is_read_to_the_limit_and_no_deeper`,
   `adr_0002_a_status_with_an_error_at_the_limit_is_an_answer`;

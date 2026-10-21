@@ -801,8 +801,12 @@ impl Out {
     }
 }
 
+/// `line` into `out` as a record's `"msg"` (ADR 5.1), as it came, if it is
+/// JSON as brnr reads it (json.rs): to a depth at which the record that
+/// holds it reads back, past serde_json's own 127, and with a lone
+/// surrogate (ADR 2.5). Else as a string in `"raw"`.
 fn embed(out: &mut Vec<u8>, line: &[u8]) {
-    if serde_json::from_slice::<Value>(line).is_ok() {
+    if json::parse::<Value>(line, json::OWN_DEPTH - 1).is_some() {
         out.extend_from_slice(b"\"msg\":");
         out.extend_from_slice(line);
     } else {
@@ -1618,6 +1622,22 @@ mod tests {
             assert!(err.to_string().starts_with("/: is owned by uid 0"), "{err}");
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A message the host read, at the limit and past serde_json's own, or
+    /// with a lone surrogate, is recorded as JSON, as `event watch` showed
+    /// it; only what isn't JSON is `raw` (ADR 2.5, ADR 5.1).
+    #[test]
+    fn adr_0002_a_message_at_the_limit_is_recorded_as_json() {
+        let at_limit = format!("{}{}", "[".repeat(json::DEPTH), "]".repeat(json::DEPTH));
+        let surrogate = r#"{"title":"\ud83d"}"#.to_owned();
+        for (line, key) in [(at_limit, "msg"), (surrogate, "msg"), ("{oops".to_owned(), "raw")] {
+            let mut out = b"{".to_vec();
+            embed(&mut out, line.as_bytes());
+            assert!(out.starts_with(format!(r#"{{"{key}":"#).as_bytes()), "{line}");
+            let record = crate::transcript::record(&out[..out.len() - 1]).expect("unread");
+            assert!(record[key].is_array() || record[key].is_object() || key == "raw", "{line}");
+        }
     }
 
     #[test]
