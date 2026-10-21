@@ -1073,6 +1073,16 @@ fn adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript() {
     assert_eq!(fs::read_to_string(&before_hash).unwrap(), kept);
 
     env.ok(&resume_args("old-1", &["--wait", "--prompt", "reply new"]));
+    // The process's logger writes behind the events the command waited on:
+    // it sets each file aside before it starts the new one, whose first
+    // record is this brnr's.
+    let ours = |file: &Path| {
+        let text = fs::read_to_string(file).unwrap_or_default();
+        let first = text.lines().next().and_then(|l| serde_json::from_str::<Value>(l).ok());
+        first.is_some_and(|r| r.get("session").is_some())
+    };
+    let both = || ours(&older) && ours(&older_raw);
+    assert!(wait_for(Duration::from_secs(10), both), "no new files");
     let set_aside = older.with_file_name("old-1.older.jsonl");
     let raw_aside = older.with_file_name("old-1.older.acp.jsonl");
     assert_eq!(fs::read_to_string(&set_aside).unwrap(), events);
