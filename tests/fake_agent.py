@@ -557,7 +557,9 @@ def run(mid, sid, text):
             line = line.replace('"INPUT"', "[" * n + "]" * n)
         elif how == "garbled":
             line = line[:-1]
-        open_request(asking, request, mid, line)
+        open_request(asking, request, None if env("ASK_AND_END") else mid, line)
+        if env("ASK_AND_END"):
+            end_turn(mid)
     elif first == "elicit":
         elicit(mid, sid, words[1] if len(words) > 1 else "form", words[2:3])
     elif first == "perm" or env("PERMISSION"):
@@ -662,12 +664,10 @@ def elicit(mid, sid, how, depth=()):
         # are 2 levels.
         n = (int(depth[0]) if depth else 129) - 2
         params["message"] = "MESSAGE"
-        line = json.dumps(msg).replace('"MESSAGE"', "[" * n + "]" * n)
-        open_request(eliciting, request, (mid, sid, params.get("elicitationId")), line)
-        return
-    open_request(eliciting, request, (mid, sid, params.get("elicitationId")), msg)
+        msg = json.dumps(msg).replace('"MESSAGE"', "[" * n + "]" * n)
+    turn = None if env("ASK_AND_END") else mid
+    open_request(eliciting, request, (turn, sid, params.get("elicitationId")), msg)
     if env("ASK_AND_END"):
-        eliciting[request] = (None, sid, params.get("elicitationId"))
         end_turn(mid)
 
 
