@@ -147,8 +147,8 @@ pub fn project_key(cwd: &Path) -> String {
 
 /// `cwd` as `~/.claude/projects` names its folder: every character other
 /// than ASCII letters and digits replaced by `-`. It was the whole folder
-/// name before ADR 9.2's hash, and a transcript of then is still continued
-/// there (log.rs).
+/// name before ADR 9.2's hash; a transcript of then is an older brnr's,
+/// which isn't continued (ADR 5.9).
 pub fn claude_project_key(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }

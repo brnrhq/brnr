@@ -3348,6 +3348,27 @@ fn adr_0008_an_editors_delete_is_recorded() {
     let _ = editor.kill();
 }
 
+/// An editor's deletion of a session no process has open isn't appended to
+/// a transcript of it an older brnr wrote (ADR 5.9): brnr doesn't read it,
+/// and the host log has the event.
+#[test]
+fn adr_0005_an_editors_delete_passes_an_older_transcript_over() {
+    let env = Env::new("ed-delete-older");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    // In any folder: an event for a session no process has open goes to
+    // each of its files.
+    let older = older_transcript(&env, "-a-folder", "old-1", &cwd, false);
+    let before = fs::read_to_string(&older).unwrap();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_delete(2, "old-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"], json!({}));
+    // Exiting, the process writes all it recorded first (ADR 5.5).
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "the editor's process stayed");
+    assert!(host_logs(&env).contains(r#""event":"session_deleted""#), "not in the host log");
+    assert_eq!(fs::read_to_string(&older).unwrap(), before);
+}
+
 /// When the editor goes, what the agent started goes too: its process
 /// group, as when it is stopped.
 #[test]

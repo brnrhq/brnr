@@ -473,7 +473,11 @@ See [buffering and cutoffs](../README.md#when-a-reader-falls-behind) for the
 [Transcripts](../README.md#transcripts) documents the JSON-lines file paths,
 host/session identity fields, logging modes, redaction and `records_skipped`
 gap notes. A transcript an older brnr wrote, its records naming the session
-`session_id`, isn't read (ADR 5.9). Read history through `event log` where possible. A transcript is not
+`session_id`, isn't read (ADR 5.9), and nothing is appended to it: a
+session opened where one is in the way sets it aside, renamed
+`<name>.older.jsonl` (its raw ACP `<name>.older.acp.jsonl`), and starts a
+file of its own; a `session_log_moved` host-log record (`path`, `to`) says
+so. Read history through `event log` where possible. A transcript is not
 a guarantee of complete history: disk backlog/errors, disabled logging,
 and abrupt process death can lose records.
 

@@ -21,7 +21,9 @@
 //! came from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
 //! files only for the sessions it has open; one opened again appends to
-//! them, starting with another `session_opened`.
+//! them, starting with another `session_opened`. Nothing is appended to a
+//! file an older brnr wrote ([`appends_to`]): one in the way of a session's
+//! file is set aside first ([`Writer::set_aside`]).
 //!
 //! What a record goes into, from the state directory down, is the user's own
 //! and private before anything is written to it (P13, ADR 9.3): a file or
@@ -540,7 +542,7 @@ impl Writer {
             }
             Cmd::Append { session, ts, event } => {
                 let record = self.head.record(ts, Some(&session), &event_body(event));
-                for path in transcript::of_session(&session) {
+                for path in transcript::of_session(&session).into_iter().filter(|p| appends_to(p)) {
                     let put = self.open_file(ts, &path).and_then(|mut out| out.put(&record));
                     if let Err(err) = put {
                         self.failed(ts, &session, &path, &err);
@@ -576,14 +578,15 @@ impl Writer {
         }
         let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
-        let events = match self.open_file(now, &path) {
-            Ok(out) => out,
-            Err(err) => return self.failed(now, &session, &path, &err),
-        };
+        let events =
+            match self.set_aside(now, &session, &path).and_then(|()| self.open_file(now, &path)) {
+                Ok(out) => out,
+                Err(err) => return self.failed(now, &session, &path, &err),
+            };
         let (mut acp, mut acp_path) = (None, None);
         if self.acp {
             let raw = paths::acp_log(&path);
-            match self.open_file(now, &raw) {
+            match self.set_aside(now, &session, &raw).and_then(|()| self.open_file(now, &raw)) {
                 Ok(out) => (acp, acp_path) = (Some(out), Some(raw.to_string_lossy().into_owned())),
                 Err(err) => self.failed(now, &session, &raw, &err),
             }
@@ -605,6 +608,28 @@ impl Writer {
         }
         self.note(now, Some(&session), event.clone());
         self.note(now, None, event);
+    }
+
+    /// Sets the file at `path`, one of `session`'s, aside if an older brnr
+    /// wrote it ([`appends_to`]), so that the session starts a file of its
+    /// own there (ADR 5.9): renamed beside it, `<name>.older.jsonl`
+    /// (`<name>.older.acp.jsonl` for a raw file; `older-2`, `older-3`, … if
+    /// that is taken), where `doctor` still lists it, and the host log has a
+    /// `session_log_moved` saying where to. A file it can't set aside is
+    /// left as it is, and not opened.
+    fn set_aside(&mut self, ts: SystemTime, session: &str, path: &Path) -> io::Result<()> {
+        if appends_to(path) {
+            return Ok(());
+        }
+        let to = aside(path)?;
+        let event = json!({
+            "event": "session_log_moved",
+            "session": session,
+            "path": path.to_string_lossy(),
+            "to": to.to_string_lossy(),
+        });
+        self.note(ts, None, event);
+        Ok(())
     }
 
     /// Opens `path` (see [`open_append`]), noting in the host log what it
@@ -872,6 +897,32 @@ pub(crate) fn redact_record(record: &mut Value) {
     }
 }
 
+/// Whether brnr appends to the transcript at `path`: not to one an older
+/// brnr wrote (ADR 5.9), whose records it doesn't read, and in which what
+/// it appended would be read without what came before it. The one test of
+/// it: a session's file is set aside ([`Writer::set_aside`]), and an event
+/// for a session no process has open passes it over.
+fn appends_to(path: &Path) -> bool {
+    !transcript::by_an_older_brnr(path)
+}
+
+/// Renames the file at `path`, `<name>.jsonl` or `<name>.acp.jsonl`, to the
+/// first of `<name>.older.…`, `<name>.older-2.…`, … that isn't taken; where
+/// to. A session's file name has no `.` (paths::file_name), so no session's
+/// file is named so.
+fn aside(path: &Path) -> io::Result<PathBuf> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let (stem, ext) = name.split_once('.').unwrap_or((&name, "jsonl"));
+    let older = |n: u32| if n == 1 { "older".to_owned() } else { format!("older-{n}") };
+    let free = |to: &PathBuf| {
+        std::fs::symlink_metadata(to).is_err_and(|e| e.kind() == ErrorKind::NotFound)
+    };
+    let mut names = (1..).map(|n| path.with_file_name(format!("{stem}.{}.{ext}", older(n))));
+    let to = names.find(free).expect("a name not taken");
+    std::fs::rename(path, &to).map_err(|e| at(path, e))?;
+    Ok(to)
+}
+
 /// What [`open_private`] made private: each path, and the mode it had.
 pub(crate) type Made = Vec<(PathBuf, u32)>;
 
@@ -1005,7 +1056,7 @@ pub(crate) fn record_in_transcripts(
     .into_bytes();
     record.extend_from_slice(&event_body(event));
     let (mut written, mut failed, mut made) = (Vec::new(), Vec::new(), Made::new());
-    for path in transcript::of_session(session) {
+    for path in transcript::of_session(session).into_iter().filter(|p| appends_to(p)) {
         let put = open_append(&path).and_then(|(mut out, opened)| {
             made.extend(opened);
             out.put(&record)

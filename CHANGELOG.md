@@ -112,7 +112,9 @@ brnr's own conventions:
   and `session resume` pass it over, `event log` of it says `an older brnr
   wrote it`, and `brnr doctor` lists it under `older files`. A session
   resumed starts a new transcript in its cwd's folder; nothing goes on in
-  an older brnr's file (ADR 5.9, ADR 9.2, #314).
+  an older brnr's file: one in the way is renamed `<name>.older.jsonl`,
+  which the host log's `session_log_moved` says, and `session delete`
+  passes one over (ADR 5.9, ADR 9.2, #314).
 - **Breaking:** `by` says who acted, `editor`, `agent` or `control`;
   `peer` which connection asked; `reason` why. `message_dropped` and
   `context_dropped` have `reason` where they had `by`; `session_closed`
