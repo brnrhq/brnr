@@ -4313,7 +4313,8 @@ fn adr_0004_a_request_the_agent_cancels_ends_by_the_agent() {
 
 /// A turn that ends with its request still waiting ends nothing: the
 /// request is still listed and the session `waiting`, and `stop_when_idle`
-/// doesn't count, until the agent cancels it (ADR 3.8).
+/// doesn't count, until the agent cancels it (ADR 3.8). The same for an
+/// elicitation, a nested one too.
 #[test]
 fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     let env = Env::new("c-askandend");
@@ -4333,6 +4334,23 @@ fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     fs::write(&gate, "").unwrap();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
     assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
+
+    // An elicitation too, one sent as a nested line (`elicit deep`) as well.
+    let env = Env::new("c-askdeep");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&["--prompt", "elicit deep 20"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "elicitation", "--timeout", "10"]);
+    let ended = || events_named(&env, "turn_ended").len() == 1;
+    assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+    assert!(env.ok(&["elicitation", "requests"]).contains("e1"));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["state"], "waiting", "{status}");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
+    assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
+    assert_eq!(events_named(&env, "turn_ended").len(), 1, "its answer ended a turn");
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -5476,7 +5494,7 @@ fn adr_0008_help_exits_0_on_stdout() {
     let acp = env.ok(&["acp", "--strict", "--help"]);
     assert!(acp.starts_with("usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
     let out = env.run(&["acp", "--profile", "-h"]);
-    assert_ne!(code(&out), 0, "-h, the profile");
+    assert_eq!(code(&out), 1, "-h, the profile");
     assert_eq!(stdout(&out), "");
     let help = env.ok(&["--help"]);
     assert!(help.contains("  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
