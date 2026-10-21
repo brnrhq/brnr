@@ -464,12 +464,13 @@ fn the_interface_reference_matches_cli_help() {
 }
 
 /// The error codes a test can't reach, with why (ADR 8.7). Every other
-/// code is asserted by a test: in tests/, or in a unit test in src/.
+/// code is asserted by a test, through `code_is`: in tests/, or in a unit
+/// test in src/.
 const UNREACHED: &[(&str, &str)] = &[];
 
 /// The error codes, as brnr has them, are the ones docs/interface.md and
-/// ADR 8.7 list, in the same order; and a test reaches each one, but those
-/// in [`UNREACHED`], with why (ADR 8.7).
+/// ADR 8.7 list, in the same order; and a test asserts that brnr reported
+/// each one, but those in [`UNREACHED`], with why (ADR 8.7).
 #[test]
 fn adr_0008_every_error_code_is_listed_and_reached() {
     let codes = brnr::internals::error::names();
@@ -485,39 +486,63 @@ fn adr_0008_every_error_code_is_listed_and_reached() {
     for (doc, heading) in [("docs/interface.md", "### Errors"), (adr, "## 8.7 ")] {
         assert_eq!(listed(doc, heading), codes, "{doc} lists other codes than src/error.rs");
     }
-    // What the tests assert: tests/, and the unit tests in src/ (after a
-    // module's `#[cfg(test)]`), but error.rs's own and this file's list.
+    // The tests: tests/, and the unit tests in src/ (after a module's
+    // `#[cfg(test)]`), but error.rs's own, which only reads codes back.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut tested = String::new();
+    let mut tests = String::new();
     let mut files = vec![root.join("src")];
     while let Some(path) = files.pop() {
         if path.is_dir() {
             files.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
         } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("src/error.rs") {
             let text = fs::read_to_string(&path).unwrap();
-            tested.push_str(text.split_once("#[cfg(test)]").map_or("", |(_, tests)| tests));
+            tests.push_str(text.split_once("#[cfg(test)]").map_or("", |(_, tests)| tests));
         }
     }
     for entry in fs::read_dir(root.join("tests")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests/docs.rs") {
-            tested.push_str(&fs::read_to_string(&path).unwrap());
+            tests.push_str(&fs::read_to_string(&path).unwrap());
         }
     }
+    let reached = asserted_codes(&tests);
     for code in &codes {
-        let reached = [format!("\"{code}\""), format!("[{code}]"), format!("Code::{code}")]
-            .iter()
-            .any(|form| tested.contains(form.as_str()));
         let why = UNREACHED.iter().find(|(c, _)| c == code);
-        match (reached, why) {
+        match (reached.iter().any(|r| r == code), why) {
             (true, Some(_)) => panic!("{code} is reached: take it out of UNREACHED"),
-            (false, None) => panic!("no test reaches {code}, and UNREACHED doesn't say why"),
+            (false, None) => panic!("no test asserts {code}, and UNREACHED doesn't say why"),
             _ => {}
         }
     }
     for (code, _) in UNREACHED {
         assert!(codes.contains(code), "UNREACHED has {code}, which brnr doesn't");
     }
+    let unknown: Vec<&String> = reached.iter().filter(|c| !codes.contains(&c.as_str())).collect();
+    assert!(unknown.is_empty(), "tests assert codes brnr doesn't have: {unknown:?}");
+}
+
+/// The codes `tests` asserts: each `code_is(said, code)` call's, where
+/// `code` is written out, `"name"` (tests/common's) or `Code::name`
+/// (error.rs's). A code only named (in a comment, a fixture, a request) or
+/// passed in a variable isn't one.
+fn asserted_codes(tests: &str) -> Vec<String> {
+    let code = tests.lines().filter(|l| !l.trim_start().starts_with("//"));
+    let code = code.collect::<Vec<_>>().join("\n");
+    let mut found: Vec<String> = (code.split("code_is(").skip(1))
+        .filter_map(|call| {
+            // The call, to the end of its statement.
+            let call = call.split(';').next()?.trim_end().strip_suffix(')')?;
+            let last = call.trim_end().trim_end_matches(',').rsplit(',').next()?.trim();
+            let name = match last.strip_prefix("Code::") {
+                Some(name) => name,
+                None => last.strip_prefix('"')?.strip_suffix('"')?,
+            };
+            Some(name.to_owned())
+        })
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 fn read(doc: &str) -> String {

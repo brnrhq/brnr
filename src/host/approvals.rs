@@ -875,7 +875,7 @@ mod tests {
         });
         let reject = reject.err().unwrap();
         assert!(reject.message.starts_with("p1 has no reject_once option"), "{reject}");
-        assert_eq!(reject.code, Code::answer_invalid);
+        crate::error::code_is(&reject, Code::answer_invalid);
         assert_eq!(handles(&t), ["p1"]);
     }
 

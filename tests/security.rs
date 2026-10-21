@@ -1130,7 +1130,7 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
         let new = env.fails(&new_args(&["--prompt", "hi"]));
         let acp = stderr(&env.run_with_stdin(&["acp", "--", AGENT], b""));
         // `brnr acp` says it to the editor's log, with no code (ADR 8.7).
-        assert!(new.trim_end().ends_with(" [config_invalid]"), "{new}");
+        code_is(&new, "config_invalid");
         for err in [&new, &acp] {
             assert!(err.contains(&format!("{}: ", path.display())), "{err}");
             assert!(err.contains(says), "{file:o} {dir:o}: {err}");

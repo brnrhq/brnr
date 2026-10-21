@@ -179,7 +179,7 @@ fn adr_0003_a_bad_request_is_refused() {
     assert_eq!(report["ok"], false);
     let error = &report["error"];
     assert!(error["message"].as_str().unwrap().contains("invalid start request"), "{report}");
-    assert_eq!(error["code"], "unclassified", "{report}");
+    code_is(error, "unclassified");
     assert!(env.hosts().is_empty() && env.calls().is_empty());
 }
 
@@ -523,6 +523,7 @@ fn adr_0003_failed_start_shows_the_agents_stderr() {
     let want = "the agent exited before the session started. \
                 The agent's last lines on stderr: [agent_exited]\n  Error: claude CLI not found\n";
     assert!(err.ends_with(want), "{err}");
+    code_is(&err, "agent_exited");
     let out = env.run(&new_args(&["--foreground", "--prompt", "hi"]));
     assert!(!out.status.success());
     assert_eq!(stderr(&out).matches("Error: claude CLI not found").count(), 2, "{}", stderr(&out));
@@ -547,6 +548,7 @@ fn adr_0002_a_timed_out_start_shows_the_line_stderr_is_in() {
     let want = "timed out waiting for the session. \
                 The agent's last lines on stderr: [start_timed_out]\n  login required: \n";
     assert!(stderr(&out).ends_with(want), "{}", stderr(&out));
+    code_is(&out, "start_timed_out");
 }
 
 /// Answering a permission request while the agent is being stopped can't
@@ -631,7 +633,7 @@ fn adr_0003_a_panic_is_recorded() {
 
         assert!(wait_for(Duration::from_secs(15), || !alive(host_pid)), "{on}: still running");
         assert!(wait_for(Duration::from_secs(5), || !alive(agent_pid)), "{on}: the agent lives on");
-        assert_eq!(exited["error"]["code"], "process_panicked", "{on}: {exited}");
+        code_is(&exited, "process_panicked");
         let reason = exited["error"]["message"].as_str().unwrap_or_default();
         assert!(reason.starts_with("brnr panicked at src/host/"), "{on}: {exited}");
         assert!(reason.ends_with(": a test asked for it"), "{on}: {exited}");
@@ -1023,6 +1025,7 @@ fn adr_0002_strict_mode_refuses_steering_and_fork() {
     let want = "--steer uses _session/steering, an ACP extension, which strict mode doesn't \
                 [strict_mode_refused]";
     assert!(err.contains(want), "{err}");
+    code_is(&err, "strict_mode_refused");
     let err = env.fails(&["session", "fork", "sess-1"]);
     let want = "session fork uses session/fork, unstable in ACP v1, which strict mode doesn't";
     assert!(err.contains(want), "{err}");
@@ -1368,6 +1371,7 @@ fn adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed() {
     let got = lines.join().unwrap();
     let note = got.last().unwrap();
     assert_eq!(note["event"], "events_missed", "{note}");
+    code_is(note, "transcript_not_kept");
     let said = json!({ "code": "transcript_not_kept", "message": "the process keeps no transcript (log = \"off\")" });
     assert_eq!(note["error"], said);
     let before = &got[got.len() - 2];
@@ -1749,7 +1753,7 @@ fn adr_0005_bad_request_line_is_answered() {
     let bad = next();
     let error = &bad["error"];
     assert!(error["message"].as_str().unwrap_or_default().starts_with("bad request"), "{bad}");
-    assert_eq!(error["code"], "command_invalid", "{bad}");
+    code_is(error, "command_invalid");
     let status = next();
     assert_eq!(
         (status["req_id"].as_i64(), status["ok"].as_bool()),
@@ -2577,7 +2581,8 @@ fn adr_0005_a_closing_session_is_read_once_written_and_said_to_be_closing() {
     let delete = ["session", "delete", "sess-1"];
     for args in [&resume_args("sess-1", &[])[..], &take_over, &here, &delete] {
         let err = env.fails(args);
-        assert!(err.contains(&said) && err.contains("[session_closing]"), "{args:?}: {err}");
+        assert!(err.contains(&said), "{args:?}: {err}");
+        code_is(&err, "session_closing");
     }
     let mut log = unstalled(&env, &["event", "log", "sess-1"]).spawn().unwrap();
     sleep(Duration::from_millis(300));
@@ -4986,10 +4991,11 @@ fn adr_0007_experimental_actions_are_refused_without_opt_in() {
              [\"{action}\"]` under `[profiles.default.editor]`"
         );
         assert!(err.contains(&says), "{args:?}: {err}");
-        assert!(err.contains("[experimental_disabled]"), "{args:?}: {err}");
+        code_is(&err, "experimental_disabled");
     }
     let err = env.fails(&["session", "fork", "sess-1"]);
-    assert!(err.contains("fork sessions there [process_owned_by_editor]"), "{err}");
+    assert!(err.contains("fork sessions there"), "{err}");
+    code_is(&err, "process_owned_by_editor");
     let observing: [&[&str]; 9] = [
         &["session", "status", "sess-1"],
         &["permission", "requests", "sess-1"],
@@ -5100,11 +5106,12 @@ fn adr_0007_send_to_an_editors_session_waits_for_no_turn() {
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 2));
     let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "more"]);
     assert!(err.contains("the editor controls this session's turns; one is running"), "{err}");
-    assert!(err.contains("[turn_owned_by_editor]"), "{err}");
+    code_is(&err, "turn_owned_by_editor");
     for flag in ["--steer", "--interrupt"] {
         let err = env.fails(&["prompt", "send", "sess-1", flag, "--prompt", "more"]);
         let says = format!("the editor controls this session's turns; {flag} is its call");
-        assert!(err.contains(&says) && err.contains("[turn_owned_by_editor]"), "{err}");
+        assert!(err.contains(&says), "{err}");
+        code_is(&err, "turn_owned_by_editor");
     }
     let err = env.fails(&["prompt", "cancel", "sess-1"]);
     assert!(err.contains("`cancel` on an editor's session is experimental"), "{err}");

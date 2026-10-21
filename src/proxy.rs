@@ -154,7 +154,10 @@ fn resolve(opts: Options, agent: Vec<String>, mask: Vec<c_int>) -> Result<Reques
         echo_as: profile.editor.echo_as,
         features: profile.editor.features.clone(),
     };
-    let mut request = Request::new(opts.profile, &profile, agent, cwd, Role::Editor(editor))?;
+    let role = Role::Editor(editor);
+    // The editor's log has the message alone (ADR 8.7).
+    let mut request =
+        Request::new(opts.profile, &profile, agent, cwd, role).map_err(|e| e.message)?;
     request.strict |= opts.strict;
     Ok(request)
 }

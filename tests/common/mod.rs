@@ -331,6 +331,62 @@ pub fn coded(value: &Value) {
     }
 }
 
+/// Asserts that `said` reports a failure whose code is `code` (ADR 8.7).
+/// The one way tests assert a code: tests/docs.rs counts a code as reached
+/// where a test calls this with it.
+pub fn code_is<S: Said + ?Sized>(said: &S, code: &str) {
+    said.has_code(code);
+}
+
+/// What brnr reported a failure in, for [`code_is`].
+pub trait Said {
+    /// Asserts that it reports one whose code is `code`.
+    fn has_code(&self, code: &str);
+}
+
+/// An error, `{code, message}`, or what has one as its `error` (a reply, an
+/// event, a turn), [`coded`].
+impl Said for Value {
+    fn has_code(&self, code: &str) {
+        let error = if self["code"].is_string() { self } else { &self["error"] };
+        coded(&json!({ "error": error }));
+        assert_eq!(error["code"], code, "{self}");
+    }
+}
+
+/// Text, on stderr or as an event shows it: a line ends with `[code]`.
+impl Said for str {
+    fn has_code(&self, code: &str) {
+        let tag = format!("[{code}]");
+        assert!(self.lines().any(|l| l.trim_end().ends_with(&tag)), "no {tag} in: {self}");
+    }
+}
+
+impl Said for String {
+    fn has_code(&self, code: &str) {
+        self.as_str().has_code(code);
+    }
+}
+
+/// A command that failed: exit 1, `brnr: <message> [code]` on stderr, and,
+/// where it printed nothing else, `{"error": {code, message}}` with
+/// `--json`.
+impl Said for Output {
+    fn has_code(&self, code: &str) {
+        let err = stderr(self);
+        assert_eq!(self.status.code(), Some(1), "{err}");
+        let text = String::from_utf8_lossy(&self.stdout);
+        let printed = serde_json::from_str::<Value>(&text).unwrap_or_default();
+        if printed.as_object().is_some_and(|o| o.len() == 1 && o.contains_key("error")) {
+            printed.has_code(code);
+            let line = format!("brnr: {} [{code}]", printed["error"]["message"].as_str().unwrap());
+            assert!(err.lines().any(|l| l == line), "{line}: {err}");
+        } else {
+            err.has_code(code);
+        }
+    }
+}
+
 /// The error a failed command printed with `--json` (ADR 8.7), `{code,
 /// message}`, [`coded`].
 pub fn json_error(out: &Output) -> Value {

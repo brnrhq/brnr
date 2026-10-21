@@ -305,13 +305,21 @@ pub(crate) fn command(args: &[String]) -> String {
 
 /// What [`outln!`] and [`out!`] print with.
 fn out(text: &str) {
-    PRINTED.store(true, Relaxed);
-    let mut stdout = io::stdout().lock();
-    match stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush()) {
+    match write_out(text) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => panic!("writing to stdout: {e}"),
     }
+}
+
+/// Writes `text`, [`render::clean`]ed, to stdout, and flushes it. All a
+/// command prints goes through here, so that [`failed`] knows whether it has
+/// printed any (a stream's events), and prints no `{"error"}` after it
+/// (ADR 8.7).
+fn write_out(text: &str) -> io::Result<()> {
+    PRINTED.store(true, Relaxed);
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush())
 }
 
 /// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
@@ -908,11 +916,7 @@ fn watch(a: &Args) -> Result<ExitCode, args::Error> {
     let options = render::Options { session: only_session.is_none(), time: true };
     let show = |event: &Value| {
         let text = if json_out { Some(event.to_string()) } else { render::event(event, &options) };
-        let mut out = io::stdout().lock();
-        match text {
-            Some(text) => writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()),
-            None => Ok(()),
-        }
+        text.map_or(Ok(()), |text| write_out(&format!("{text}\n")))
     };
     loop {
         let event = match conn.next_event(None) {
