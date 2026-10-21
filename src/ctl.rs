@@ -795,13 +795,12 @@ fn answer(a: &Args, cmd: &str) -> Result<(), String> {
     let (option_id, always, json_out) = (a.value("--option-id"), a.has("--always"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
-    let req = json!({
-        "cmd": cmd,
-        "session": session,
-        "request": request_id,
-        "always": always,
-        "option_id": option_id,
-    });
+    let mut req =
+        json!({ "cmd": cmd, "session": session, "request": request_id, "always": always });
+    // Absent, not null, without --option-id: the host refuses a null one.
+    if let Some(id) = option_id {
+        req["option_id"] = json!(id);
+    }
     let response = host.call(&req)?;
     let outcome = &response["outcome"];
     if json_out {

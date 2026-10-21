@@ -218,8 +218,11 @@ How words are read:
   deleted the session, and the command fails, but for `--purge` and an
   agent that doesn't have the session (below).
 - `--purge` also deletes brnr's transcript of the session (the events file
-  and `<id>.acp.jsonl`, ADR 5.1), not the process logs, which are shared,
-  whatever the agent answered. Nothing a symlink points at, nor an id that
+  and `<id>.acp.jsonl`, ADR 5.1) in every project folder, an older brnr's
+  too, and the older brnr's files set aside beside them
+  (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …, ADR 5.9): every file of
+  the session's id brnr finds, each said as it is deleted (N1, P3). Not
+  the process logs, which are shared, whatever the agent answered. Nothing a symlink points at, nor an id that
   climbs out of its folder, is deleted. With `--purge` the command succeeds
   only if the agent deleted the session or doesn't have it (ACP's
   `resource_not_found`, -32002), which is said; any other error, or no
@@ -318,6 +321,9 @@ wins, and the other form goes, with no alias (P9):
   ADR 8.3). The socket's `allow` and `reject` take `option_id` in place of
   `option`, and refuse `option`, answering nothing: ignored, it would let
   a bridge that names an option get the kind's option instead (P3, P7).
+  For the same reason an `option_id` that isn't a string (null, a number)
+  is refused, answering nothing, not read as absent; only an absent one
+  picks by kind.
 - The prompt is `--prompt <text> | -` wherever a command takes one:
   `session new`, `session resume` and `prompt send`
   (`prompt send <session> [flags] [--prompt <text> | -]`, with a prompt, a
@@ -962,6 +968,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_missing_or_doubled_kind_fails`,
   `adr_0008_option_must_be_on_the_verbs_side`,
   `adr_0008_a_permissions_option_is_option_id`,
+  `adr_0008_a_permissions_option_id_is_a_string`,
   `adr_0008_a_durations_name_has_no_unit`, `adr_0008_queue_show`,
   `adr_0008_queue_clear_flags`,
   `adr_0008_list_without_an_agent_is_brnrs_index`,
@@ -974,6 +981,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_delete_a_session_only_the_agent_knows`, `adr_0008_delete_purge`,
   `adr_0008_delete_purge_fails_when_the_agent_does`,
   `adr_0008_delete_purge_says_what_it_couldnt_delete`,
+  `adr_0008_purge_deletes_an_older_brnrs_files_too`,
   `adr_0008_delete_records_in_each_transcript_it_can`,
   `adr_0008_delete_refuses_an_open_session`,
   `adr_0008_delete_needs_an_agent_that_can_delete`,
@@ -997,6 +1005,8 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_purge_deletes_only_that_sessions_files`;
   [src/render.rs](../../src/render.rs):
   `adr_0008_a_deletion_is_shown_with_who_deleted`;
+  [src/paths.rs](../../src/paths.rs):
+  `adr_0008_a_sessions_files_are_its_own_and_those_set_aside`;
   [src/log.rs](../../src/log.rs):
   `adr_0008_a_time_is_read_with_its_offset_and_written_in_utc`,
   `adr_0008_what_isnt_an_rfc3339_time_isnt_read`;

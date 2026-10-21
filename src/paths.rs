@@ -126,6 +126,25 @@ pub(crate) fn acp_log(events: &Path) -> PathBuf {
     events.with_extension("acp.jsonl")
 }
 
+/// Whether `file`, a name in a project folder, is one of the session's whose
+/// file name is `name` ([`file_name`]): its events file, its raw ACP, or one
+/// of an older brnr's set aside beside them (`<name>.older.jsonl`,
+/// `<name>.older-2.acp.jsonl`, …; ADR 5.9). A session's file name has no
+/// `.`, so no other session's file is named so.
+pub(crate) fn is_sessions_file(name: &str, file: &str) -> bool {
+    let rest = file.strip_prefix(name).and_then(|r| r.strip_prefix('.'));
+    let Some(rest) = rest.and_then(|r| r.strip_suffix("jsonl")) else { return false };
+    let rest = rest.strip_suffix("acp.").unwrap_or(rest);
+    let Some(older) = rest.strip_prefix("older") else { return rest.is_empty() };
+    match older.strip_suffix('.') {
+        Some("") => true,
+        Some(n) => n
+            .strip_prefix('-')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+        None => false,
+    }
+}
+
 /// Whether `path`, in a project folder, is a session's events file.
 pub(crate) fn is_events_log(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -147,8 +166,8 @@ pub fn project_key(cwd: &Path) -> String {
 
 /// `cwd` as `~/.claude/projects` names its folder: every character other
 /// than ASCII letters and digits replaced by `-`. It was the whole folder
-/// name before ADR 9.2's hash, and a transcript of then is still continued
-/// there (log.rs).
+/// name before ADR 9.2's hash; a transcript of then is an older brnr's,
+/// which isn't continued (ADR 5.9).
 pub fn claude_project_key(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
@@ -278,6 +297,38 @@ mod tests {
         "\u{1f600}",
         "\u{1f601}",
     ];
+
+    /// A session's files are its own two and an older brnr's set aside
+    /// beside them; never another session's (ADR 5.9, ADR 8.1).
+    #[test]
+    fn adr_0008_a_sessions_files_are_its_own_and_those_set_aside() {
+        let ours = [
+            "s.jsonl",
+            "s.acp.jsonl",
+            "s.older.jsonl",
+            "s.older.acp.jsonl",
+            "s.older-2.jsonl",
+            "s.older-12.acp.jsonl",
+        ];
+        for file in ours {
+            assert!(is_sessions_file("s", file), "{file}");
+        }
+        let others = [
+            "s1.jsonl",
+            "s-1.older.jsonl",
+            "s.lock",
+            "s.jsonl.bak",
+            "s.older-.jsonl",
+            "s.older-x.jsonl",
+            "s.other.jsonl",
+            "s.acp.older.jsonl",
+            "s..jsonl",
+            "x.s.jsonl",
+        ];
+        for file in others {
+            assert!(!is_sessions_file("s", file), "{file}");
+        }
+    }
 
     #[test]
     fn adr_0009_distinct_ids_get_distinct_names() {
