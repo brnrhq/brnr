@@ -153,11 +153,30 @@ brnr's own conventions:
   `agent-stderr` is `agent_stderr` (ADR 5.9, #314).
 - **Breaking:** every record's head names the session `session` and the
   brnr process `pid`, where it had `session_id` and `host_pid`. A
-  transcript or host log an older brnr wrote isn't read: `session list`
-  and `session resume` pass it over, `event log` of it says `an older brnr
-  wrote it`, and `brnr doctor` lists it under `older files`. A session
+  transcript or host log an older brnr wrote isn't read (below). A session
   resumed starts a new transcript in its cwd's folder; nothing goes on in
-  an older brnr's file (ADR 5.9, ADR 9.2, #314).
+  an older brnr's file: one in the way is renamed `<name>.older.jsonl`,
+  which the host log's `session_log_moved` says, and `session delete`
+  passes one over. `session delete --purge` deletes the files set aside
+  too, every file of the session's id it finds, and lists each
+  (ADR 5.9, ADR 8.1, ADR 9.2, #314).
+- **Breaking:** every record of a transcript and a host log starts with
+  its format, `"format":1`, which stays 1 for all of 1.x. A record without
+  one, as every brnr before this wrote, or in another format, isn't read:
+  `session list` and `session resume` pass over its file, and a file whose
+  newest record is one; `event log` says `<file>: records an older brnr
+  wrote, before transcripts had a format, not shown (ADR 5.10)` (or `records
+  in format 2; this brnr reads format 1`); `session resume` says it too;
+  and `brnr doctor` lists such files under `file formats`, which replaces
+  `older files`. `event log` no longer guesses `no events in … (an older
+  brnr wrote it)`. Nothing is appended to such a file: one in the way of
+  a session's is set aside, `<name>.older.jsonl`, as an older brnr's is
+  (ADR 5.10, #70).
+- A session's `session_opened` names the process's `profile` and `agent`,
+  and `session list` and `session resume` take the session's cwd, profile
+  and agent from the `session_opened` of the process that last served it:
+  a session resumes from its transcript alone. Pruning `~/.brnr/hosts`
+  made `session resume` fail with `no agent` (ADR 3.11, ADR 5.10, #70).
 - **Breaking:** `by` says who acted, `editor`, `agent` or `control`;
   `peer` which connection asked; `reason` why. `message_dropped` and
   `context_dropped` have `reason` where they had `by`; `session_closed`
@@ -193,7 +212,8 @@ brnr's own conventions:
   `--option-id <id>`, ACP's `optionId`, not `--option <id>`, which is a
   config option's only and an unknown option there (exit 2). The socket's
   `allow` and `reject` take `option_id`, and refuse `option`, answering
-  nothing (ADR 8.1, #311).
+  nothing; an `option_id` that isn't a string, null too, is refused the
+  same, not read as absent (ADR 8.1, #311).
 - **Breaking:** `prompt send` takes its prompt as `--prompt <text>`, or
   `--prompt -` for stdin, as `session new` does: `brnr prompt send $s
   --prompt "fix it"`. Words after the session are a usage error (exit 2),
@@ -217,7 +237,10 @@ brnr's own conventions:
   before, it showed the newest file only, so a session loaded in another
   cwd showed none of its history. `session resume` takes its cwd, agent and
   profile from the newest record of them all, and `session list` has one
-  row of the session, with that record's cwd (ADR 5.1, ADR 3.11, #121).
+  row of the session, with that record's cwd. A script that read the
+  newest file's records only gets every folder's now, and a `--last` of
+  them: to read one folder's records alone, read the file the `events_log`
+  of its `session_opened` names (ADR 5.1, ADR 3.11, #121).
 - **Breaking:** a command that lists prints an object, not a bare array:
   `process list --json` is `{processes}`, `session list --json`
   `{sessions}`, `permission requests --json` and `elicitation requests
@@ -323,10 +346,6 @@ brnr's own conventions:
   (Ctrl-C, `kill`), and says on stderr how much of its records it didn't
   write; until then it waits for the disk, as before. A panic lets go of
   the process's sessions before it waits, as an exit does (ADR 5.5, #165).
-- A headless process no longer dies when `response_timeout` answers a
-  permission request nested deeper than its main thread's stack takes (a
-  million deep): the event loop's timers run on a stack that takes what the
-  host holds, as its events do (ADR 2.5, #189).
 - A bridge's load of a session (`session resume --pid`, an agent without
   `session/resume`) finds its transcript in any folder, and one the process
   served and closed moments before, its logger behind, where it recorded
@@ -350,28 +369,26 @@ brnr's own conventions:
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
   agent reported them again (ADR 3.12, ADR 5.1, #238).
-- `brnr permission requests` lists a request nested deeper than 128,
-  where it failed with `recursion limit exceeded`: it reads the host's
-  answer as the host reads the agent's line (ADR 2.5, #239).
+- `brnr permission requests` lists a request nested up to 128 levels, the
+  most the host reads, where one past serde_json's 127 failed with
+  `recursion limit exceeded` (ADR 2.5, #239).
 - `brnr prompt send --wait`, `event wait`, `event watch` and `event notify`
-  (from the socket and `--stdin`) see a permission request nested deeper
-  than 128, which they dropped without a word: they read events as the
-  host reads the agent's line (ADR 2.5, #250).
-- Those commands, and `session new --wait`, follow an event nested about a
-  million deep, where they overflowed their stack and aborted (exit 134):
-  each event is used and let go of on a stack that takes it, as the host
-  does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
-  #252).
-- `brnr permission show` shows a request nested deeper than 128, and
+  (from the socket and `--stdin`) see a permission request nested up to 128
+  levels, where one past serde_json's 127 was dropped without a word
+  (ADR 2.5, #250).
+- Those commands, and `session new --wait`, no longer overflow their stack
+  and abort (exit 134) on an event nested about a million deep: the host
+  sends none that deep, and a line nested past 256 levels they say they
+  can't read, and fail (ADR 2.5, #252).
+- `brnr permission show` shows a request nested up to 128 levels, and
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
-- `brnr permission requests` and `elicitation requests`, with no session,
-  say a process failed when one does after another held a request nested
-  about a million deep, where they overflowed their stack and aborted: what
-  was read already is let go of on a stack that takes it (ADR 2.5, #301).
-- `brnr event log` shows a record nested deeper than 128, such as a deep
-  `permission_request`, as `event watch` showed it live, where it said the
+- A message nested 128 levels, past serde_json's 127, or with a lone
+  surrogate, is in the raw ACP file as JSON (`msg`), as `event watch` showed
+  it, where it was a string in `raw` (ADR 2.5, ADR 5.1).
+- `brnr event log` shows a record nested deeper than 128, up to 256, such
+  as a deep `permission_request`, as `event watch` showed it live, where it said the
   line `isn't a record brnr can read, not shown`. `session list`, `session
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is

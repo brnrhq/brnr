@@ -15,6 +15,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 
+/// The transcript format this brnr writes (ADR 5.10), as its records say it.
+pub const FORMAT: u64 = 1;
+
 pub const AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
 
 /// How the link a panic prints starts (ADR 11.5).
@@ -347,9 +350,9 @@ fn printed_coded(out: Output) -> Output {
     out
 }
 
-/// Every events file and host log under `dir`, each record this brnr wrote
-/// (with `host_id`; a test's fixture of an older brnr's has none)
-/// [`coded`].
+/// Every events file and host log under `dir`, each record in the format
+/// this brnr writes (ADR 5.10; a test's fixture of an older or a newer
+/// brnr's is in another) [`coded`].
 fn recorded_coded(dir: &Path) {
     let entries = fs::read_dir(dir).into_iter().flatten().flatten();
     for entry in entries {
@@ -360,9 +363,43 @@ fn recorded_coded(dir: &Path) {
         } else if name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl") {
             let text = fs::read_to_string(&path).unwrap_or_default();
             let records = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok());
-            records.filter(|r| r.get("host_id").is_some()).for_each(|r| coded(&r));
+            records.filter(|r| r["format"] == FORMAT).for_each(|r| coded(&r));
         }
     }
+}
+
+/// Writes a transcript of `session` as an older brnr wrote it, its records
+/// without `format` (ADR 5.10) and naming the session `session_id` (ADR
+/// 5.9), in project folder `folder`
+/// under `env`'s state directory (made private, as brnr would), opened in
+/// `cwd`: its events file, and its raw ACP if `acp`. The events file's path.
+pub fn older_transcript(env: &Env, folder: &str, session: &str, cwd: &str, acp: bool) -> PathBuf {
+    let home = env.dir.join("home");
+    let dir = home.join("projects").join(folder);
+    fs::create_dir_all(&dir).unwrap();
+    for d in [&home, &home.join("projects"), &dir] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let head = format!(
+        r#"{{"ts":"2026-10-01T00:00:00.000000Z","host_id":"20261001T000000-1","host_pid":1,"proxy_pid":null,"agent_pid":2,"session_id":"{session}","#
+    );
+    let opened = json!({ "event": "session-opened", "cwd": cwd });
+    let said = json!({ "event": "user_message", "session": session, "text": "hi", "seq": 1 });
+    let path = dir.join(format!("{session}.jsonl"));
+    let mut files =
+        vec![(path.clone(), format!("{head}\"event\":{opened}}}\n{head}\"event\":{said}}}\n"))];
+    if acp {
+        let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "session/prompt" });
+        files.push((
+            dir.join(format!("{session}.acp.jsonl")),
+            format!("{head}\"dir\":\"in\",\"msg\":{msg}}}\n"),
+        ));
+    }
+    for (file, text) in files {
+        fs::write(&file, text).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    path
 }
 
 /// `word` in single quotes, as a shell reads it back.

@@ -228,7 +228,14 @@ impl<'a> Session<'a> {
                 ),
             })),
             Place::Inactive(past) => Ok(Resume::Inactive(past)),
-            Place::Unknown => Ok(Resume::Unknown),
+            // Resumed as an id brnr doesn't know (ADR 3.11), saying which of
+            // its files aren't read (ADR 5.10, P3).
+            Place::Unknown => {
+                for (path, why) in unread_transcripts(&id) {
+                    errln!("brnr: {}: {why}, not read (ADR 5.10)", path.display());
+                }
+                Ok(Resume::Unknown)
+            }
             _ => Err(said),
         }
     }
@@ -288,15 +295,15 @@ impl<'a> Session<'a> {
                 }
                 Ok(Files { files, host: None })
             }
-            // Passed over as no transcript, and said to be an older brnr's
-            // (ADR 5.9, P3).
-            Place::Unknown => match older_transcripts(id).first() {
-                Some(path) => Err(error::Error::new(
+            // A file whose newest records are in a format this brnr doesn't
+            // read is no session to `session list`, but what it can read is
+            // shown, and the rest said (ADR 5.10).
+            Place::Unknown if !files.is_empty() => Ok(Files { files, host: None }),
+            // Passed over as no transcript, and said (ADR 5.10, P3).
+            Place::Unknown => match unread_transcripts(id).first() {
+                Some((path, why)) => Err(error::Error::new(
                     Code::transcript_unsupported,
-                    format!(
-                        "{}: an older brnr wrote it, in names this one doesn't read (ADR 5.9)",
-                        path.display()
-                    ),
+                    format!("{}: {why}, not read (ADR 5.10)", path.display()),
                 )),
                 None => Err(said),
             },
@@ -314,12 +321,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The transcripts of session `id` that an older brnr wrote.
-fn older_transcripts(id: &str) -> Vec<PathBuf> {
-    transcript::of_session(id)
-        .into_iter()
-        .filter(|path| transcript::by_an_older_brnr(path))
-        .collect()
+/// The events files of session `id` with records in a format this brnr
+/// doesn't read (ADR 5.10), and which.
+fn unread_transcripts(id: &str) -> Vec<(PathBuf, String)> {
+    let files = transcript::of_session(id).into_iter();
+    files.filter_map(|path| transcript::unread_in(&path).map(|why| (path, why))).collect()
 }
 
 /// The running session `id` names: its process, and its id.
@@ -342,8 +348,8 @@ pub(super) fn taken(id: &str, pid: u32) -> String {
 /// The files of session `id`'s transcript, in every folder it has files in
 /// (ADR 5.1), oldest first: each one's events and raw ACP (none if its
 /// process records none); and the pid of the process serving it, if one
-/// is. The files of it an older brnr wrote are said, and not read (ADR
-/// 5.9). A running session's process is asked to have written what it
+/// is. What of it is in a format this brnr doesn't read is said, and not
+/// read (ADR 5.10). A running session's process is asked to have written what it
 /// recorded until now first: a thread of its own writes it, and what was
 /// just seen happen (a turn `session new --wait` reported) may not be there
 /// yet. One closing in its process is read once that process has written its
@@ -364,12 +370,11 @@ pub(super) fn transcript(id: &str) -> Result<(Vec<transcript::Files>, Option<i64
     if let Some(host) = files.host {
         written(host);
     }
-    for path in older_transcripts(id) {
-        errln!(
-            "brnr: {}: an older brnr wrote it, in names this one doesn't read (ADR 5.9); its \
-             records are not shown",
-            path.display()
-        );
+    // A file read says what it doesn't read as it reads it; one not read at
+    // all, here (ADR 5.10, P3).
+    let read = |path: &Path| files.files.iter().any(|f| same_file(&f.events, path));
+    for (path, why) in unread_transcripts(id).into_iter().filter(|(p, _)| !read(p)) {
+        errln!("brnr: {}: {why}, not shown (ADR 5.10)", path.display());
     }
     Ok((files.files, files.host.and_then(|h| h.meta["host_pid"].as_i64())))
 }

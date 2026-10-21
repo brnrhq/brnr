@@ -417,10 +417,9 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
     fs::write(&dead, "{\"ts\":\"t\",\"host_id\":\"dead\",\"event\":{\"event\":\"started\"}}\n")
         .unwrap();
     chmod(&dead, 0o644);
-    let shown = list();
-    // The agent is named in the host log only.
-    let unknown = json!({ "program": null, "name": null, "version": null });
-    assert!(shown.len() == 1 && shown[0]["agent"] == unknown, "its host log was read: {shown:?}");
+    // The session's agent is its transcript's, not the host log's (ADR
+    // 5.10): it is listed as before, and `doctor` shows the logs unread.
+    assert_eq!(list(), shown);
     let checks: Value = serde_json::from_slice(&env.run(&["doctor", "--json"]).stdout).unwrap();
     let check =
         checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();

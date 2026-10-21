@@ -86,17 +86,8 @@ fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, 
         // ACP held back (see `Reader::read`) is from before, too.
         reader.forget_held();
     }
-    let none = records.is_empty();
-    let no_events = !records.iter().any(|e| e["event"] != "acp");
     let shown_now = records.split_off(from);
-    let (shown, _) = show.all(shown_now, &wanted, false)?;
-    if shown == 0 && no_events && !none && !follow {
-        let paths: Vec<String> = files.iter().map(|f| f.events.display().to_string()).collect();
-        eprintln!(
-            "brnr: no events in {} (an older brnr wrote it); try --events acp",
-            paths.join(", ")
-        );
-    }
+    show.all(shown_now, &wanted, false)?;
     // A line cut short at the end is still being written while its process
     // runs; once it has gone, it is a record cut short (ADR 5.1).
     let has_gone = || !host_pid.is_some_and(alive);

@@ -1017,7 +1017,12 @@ mod tests {
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
         let event = |seq: u64| json!({ "event": "turn_ended", "seq": seq });
         let lines: String = (11..=13)
-            .map(|n| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event(n) })))
+            .map(|n| {
+                format!(
+                    "{}\n",
+                    json!({ "format": 1, "ts": "t", "host_id": "h", "event": event(n) })
+                )
+            })
             .collect();
         fs::write(&host_log, lines).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
@@ -1106,8 +1111,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
-        let record =
-            |event: Value| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event }));
+        let record = |event: Value| {
+            format!("{}\n", json!({ "format": 1, "ts": "t", "host_id": "h", "event": event }))
+        };
         let dropped = record(json!({ "event": "peer_dropped", "peer": "socket#0" }));
         let events: String =
             (11..=12).map(|n| record(json!({ "event": "turn_ended", "seq": n }))).collect();
@@ -1160,7 +1166,7 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
             let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 12 });
-            let record = json!({ "ts": "t", "host_id": "h", "event": exited });
+            let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": exited });
             fs::write(&host_log, format!("{record}\n")).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
             let at = socket.clone();

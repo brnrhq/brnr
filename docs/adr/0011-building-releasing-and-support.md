@@ -243,9 +243,10 @@ are best written with the change, by whoever made it (P9).
     `running`, `died without recording it`). A line longer than 4000
     characters is cut, saying how much more there was. Each line that is a
     record, read as transcripts are (ADR 2.5: nested up to 256), has what
-    ADR 9.1 redacts redacted again, for a log an older brnr wrote; it is
-    otherwise as recorded. A line nested deeper is not shown, and says
-    so.
+    ADR 9.1 redacts redacted again, whatever wrote it; it is otherwise as
+    recorded. A log in a format this brnr doesn't read isn't one of them,
+    and a record in one is not shown (ADR 5.10). A line nested deeper is
+    not shown, and says so.
   - Everywhere, the home directory is `~`, as a path and as the start of a
     project folder's name.
 - `doctor --report --json` is one object with the same data (P5, ADR 8.2):
