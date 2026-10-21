@@ -430,8 +430,9 @@ lists every event and its meaning, including message/turn correlation,
 approvals, elicitations, config patches and process exits. `process_exited` and `line_too_long`
 are process events. Notes are what brnr adds to a stream of events, and are
 never sent on the socket: `records_skipped` (a gap in a transcript, in `event
-log`) and `events_missed` (what a command couldn't catch up on, on its
-stdout). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config
+log`) and `events_missed` (what a command couldn't catch up on: `event
+watch` prints it on stdout as its last event, `event notify` and the
+`--wait` and `event wait` commands say it on stderr). `--events` takes them, and shows them whatever it chose. `session_changed` carries `what` and `value`; config
 and command changes use merge patches, with null removing an entry.
 `session_reopened` follows a `session_closed` when the agent answered an
 editor's load of the session with success after its close: the session is
