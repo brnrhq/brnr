@@ -7058,10 +7058,18 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
     assert!(message.ends_with("restart the agent in its editor to run this brnr"), "{message}");
 
     let args = ["event", "watch", "--pid", &pid, "--events", "turn_ended"];
-    let watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_secs(1));
+    let mut watch = env.brnr(&args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    // Its first line on stderr, read on a thread so that the wait for it
+    // is bounded; the watch goes on after it, so it is killed then.
+    let err = BufReader::new(watch.stderr.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(err.lines().next());
+    });
+    let first = rx.recv_timeout(Duration::from_secs(10));
     kill(watch.id() as i32, libc::SIGKILL);
-    let err = stderr(&watch.wait_with_output().unwrap());
+    watch.wait().unwrap();
+    let err = first.expect("no line on stderr in 10s").expect("stderr closed").unwrap();
     // What it was asked for: `turn_ended`, and `process_exited`, which a
     // watch ends with.
     let said = format!("brnr: process {pid} doesn't send turn_ended, process_exited; {newer}");
