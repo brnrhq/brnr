@@ -488,7 +488,8 @@ delete sessions (`sessionCapabilities.delete`). Only the agent's copy goes:
 brnr's transcript stays, still listed by `session list`, with a
 `session_deleted` in it, a record of no process's (its `host_id` null).
 `--purge` deletes the transcript too, the session's events file and raw ACP
-in each project folder under `BRNR_HOME`, and nothing else: the host logs
+in each project folder under `BRNR_HOME`, an older brnr's too, with those set
+aside beside them (`<id>.older.jsonl`, …), and nothing else: the host logs
 are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
@@ -895,7 +896,10 @@ its `events_log`, `acp_log` and `host_log`, and `forked_from` for a fork. A
 transcript an older brnr wrote, its records naming the session `session_id`
 and the process `host_pid`, isn't read: brnr reads only its own names (ADR
 5.9). `session list` and `session resume` pass it over, `event log` of it
-says an older brnr wrote it, and `brnr doctor` lists it. `log = "events"` leaves out the
+says an older brnr wrote it, and `brnr doctor` lists it. Nothing is appended to
+it: a session opened where one is in the way renames it `<name>.older.jsonl`
+(`<name>.older.acp.jsonl` for its raw file), which the host log's
+`session_log_moved` says, and starts a file of its own. `log = "events"` leaves out the
 raw file, most of the space; `log = false` writes nothing but the session
 locks.
 
