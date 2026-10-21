@@ -70,8 +70,9 @@ brnr's own conventions:
 - `subscribe` with an event the process doesn't have subscribes to the
   rest, and names it in its answer's `unknown_events`, so that a bridge
   written for a newer brnr gets an older process's events; it refused the
-  subscription, `event_unknown`, which is now only for a note's name
-  (ADR 8.8, #149).
+  subscription, `event_unknown`, which in `subscribe` is now only for a
+  note's name; a profile's bridge `events` still fail with it for an
+  event brnr doesn't have (ADR 8.8, #149).
 
 - **Breaking:** every error brnr reports as data is `{"code", "message"}`:
   a socket or bridge reply that fails is `{"ok": false, "error": {"code":
