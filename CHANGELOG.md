@@ -179,7 +179,8 @@ brnr's own conventions:
   `--option-id <id>`, ACP's `optionId`, not `--option <id>`, which is a
   config option's only and an unknown option there (exit 2). The socket's
   `allow` and `reject` take `option_id`, and refuse `option`, answering
-  nothing (ADR 8.1, #311).
+  nothing; an `option_id` that isn't a string, null too, is refused the
+  same, not read as absent (ADR 8.1, #311).
 - **Breaking:** `prompt send` takes its prompt as `--prompt <text>`, or
   `--prompt -` for stdin, as `session new` does: `brnr prompt send $s
   --prompt "fix it"`. Words after the session are a usage error (exit 2),

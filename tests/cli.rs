@@ -3187,6 +3187,37 @@ fn adr_0008_a_permissions_option_is_option_id() {
     assert_eq!(answers(&env)[1]["optionId"], "a");
 }
 
+/// The socket's `option_id`, if there, is a string: null or any other type
+/// is refused and answers nothing, not read as absent, which would answer
+/// the kind's one option in place of the one named (ADR 8.1, P3).
+#[test]
+fn adr_0008_a_permissions_option_id_is_a_string() {
+    let env = Env::new("c-optstr");
+    env.start(&[]);
+    ask(&env);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    let mut call = |req: Value| -> Value {
+        writeln!(conn, "{req}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    for cmd in ["allow", "reject"] {
+        for id in [json!(null), json!(1), json!(true), json!(["allow"]), json!({})] {
+            let req = json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option_id": id });
+            let refused = call(req);
+            assert_eq!(refused["ok"], false, "{refused}");
+            assert_eq!(refused["error"], "option_id isn't a string", "{refused}");
+        }
+    }
+    assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
+    let named =
+        call(json!({ "cmd": "allow", "session": "sess-1", "request": "p1", "option_id": "allow" }));
+    assert_eq!(named["outcome"], json!({ "outcome": "selected", "optionId": "allow" }), "{named}");
+}
+
 // ---- elicitations (ADR 4.5) -----------------------------------------------
 
 /// Sends `elicit <how>` to `session` and waits for its elicitation, as

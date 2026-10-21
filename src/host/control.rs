@@ -681,13 +681,21 @@ impl Host {
             let cmd = req["cmd"].as_str().unwrap_or("allow");
             return Err(format!("{cmd} takes option_id, not option"));
         }
+        // Absent, it picks by kind; anything but a string, null too, is
+        // refused: read as absent, the kind's option would be answered in
+        // place of the one named (ADR 8.1, P3).
+        let option_id = match req.get("option_id") {
+            None => None,
+            Some(Value::String(id)) => Some(id.as_str()),
+            Some(_) => return Err("option_id isn't a string".into()),
+        };
         let resolved = self.approvals.answer(
             Kind::Permission,
             &handle,
             Some(&session),
             &by,
             self.client(),
-            |r| approvals::choose(r, choice, always, req["option_id"].as_str()),
+            |r| approvals::choose(r, choice, always, option_id),
         )?;
         let outcome = resolved.answer.clone();
         self.resolved(resolved);

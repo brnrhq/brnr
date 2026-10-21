@@ -318,6 +318,9 @@ wins, and the other form goes, with no alias (P9):
   ADR 8.3). The socket's `allow` and `reject` take `option_id` in place of
   `option`, and refuse `option`, answering nothing: ignored, it would let
   a bridge that names an option get the kind's option instead (P3, P7).
+  For the same reason an `option_id` that isn't a string (null, a number)
+  is refused, answering nothing, not read as absent; only an absent one
+  picks by kind.
 - The prompt is `--prompt <text> | -` wherever a command takes one:
   `session new`, `session resume` and `prompt send`
   (`prompt send <session> [flags] [--prompt <text> | -]`, with a prompt, a
@@ -962,6 +965,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_missing_or_doubled_kind_fails`,
   `adr_0008_option_must_be_on_the_verbs_side`,
   `adr_0008_a_permissions_option_is_option_id`,
+  `adr_0008_a_permissions_option_id_is_a_string`,
   `adr_0008_a_durations_name_has_no_unit`, `adr_0008_queue_show`,
   `adr_0008_queue_clear_flags`,
   `adr_0008_list_without_an_agent_is_brnrs_index`,
