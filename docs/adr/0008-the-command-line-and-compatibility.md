@@ -1089,7 +1089,9 @@ Wherever brnr reports an error as data, it has one shape, `"error":
   `error` (ADR 8.3, 8.2), `session delete`'s `error`;
 - a command that fails, with `--json`: its stdout is `{"error": {code,
   message}}`, its one JSON value, unless it had printed its JSON before it
-  failed (a stream's events); then stderr alone says so.
+  failed (a stream's events); then stderr alone says so, and the stream
+  stays one value per line. A wait whose turn failed exits 1 having
+  printed the turn, whose `error` is the turn's (ADR 8.3).
 
 `code` is a word from the list below; `message` is for people. The
 rules:
@@ -1150,7 +1152,7 @@ The codes, by subject:
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
 | `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request, which an older brnr's process refuses (ADR 8.8). |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load (ADR 6.1, 9.4). |
-| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one (ADR 5.9). An event the process doesn't have is left out, and named (ADR 8.8). |
+| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one (ADR 5.9). An event brnr doesn't have, or a note, in a profile's bridge `events` (ADR 6.1). `subscribe` leaves out an event the process doesn't have, and names it (ADR 8.8). |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable (ADR 7.1). |
 | `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
 | `message_not_found` | No held message has that id (ADR 4.2). |
@@ -1356,8 +1358,8 @@ semver reading.
 
 - A flag added in 1.x fails against a process of an earlier 1.x, saying so
   and how to restart it, instead of doing nothing.
-- `event_unknown` is only a note's name in `subscribe`, and in a profile's
-  bridge `events`, an event that brnr doesn't have.
+- `event_unknown` is only a note's name in `subscribe`, and, in a
+  profile's bridge `events`, a note or an event that brnr doesn't have.
 - A release that adds to what the socket speaks makes `PROTOCOL`
   (src/host/control.rs) one more, and says so under Added in the changelog;
   docs/interface.md lists each request's fields.
@@ -1477,7 +1479,9 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
 - 8.7: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_a_failed_command_prints_its_error_as_json`,
   `adr_0008_no_error_is_reported_without_a_code`,
-  `adr_0008_a_starting_process_refuses_another_session`;
+  `adr_0008_a_starting_process_refuses_another_session`,
+  `adr_0008_a_failed_take_over_keeps_its_code`,
+  `adr_0008_an_error_after_a_stream_is_on_stderr_alone`;
   [tests/docs.rs](../../tests/docs.rs):
   `adr_0008_every_error_code_is_listed_and_reached`;
   [src/error.rs](../../src/error.rs):
@@ -1485,9 +1489,14 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
   `adr_0008_a_refusal_has_its_places_code`. tests/common's `coded` checks
   every error in what each test's commands print and each record their
-  processes write; the other codes are asserted where their failures are
-  tested (`[session_closing]`, `"command_unknown"`, …), which
-  `adr_0008_every_error_code_is_listed_and_reached` finds.
+  processes write. A test asserts a code with `code_is`
+  (tests/common's, on a command's output, its stderr, a reply, an event or
+  a record; error.rs's on an `Error` in a unit test), and
+  `adr_0008_every_error_code_is_listed_and_reached` counts a code as
+  reached only where a test calls `code_is` with it written out: so each
+  code is one some test has seen brnr report, or in its `UNREACHED`, with
+  why. A code named only in a comment, a fixture or a request doesn't
+  count.
 - 8.8: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_a_process_says_which_brnr_it_is`,
   `adr_0008_a_field_the_process_doesnt_have_is_refused`,

@@ -274,13 +274,12 @@ pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), erro
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");
     let req = json!({ "cmd": "close", "session": session, "take_over": to });
-    owner.call_agent(&req).map_err(|e| {
-        if owner.info()["owner"] == "editor" {
-            format!("{running}, an editor's: {e}")
-        } else {
-            format!("{running}, which didn't close it: {e}")
-        }
-    })?;
+    // Said where it failed, its code kept (ADR 8.7).
+    let whose = match owner.info()["owner"] == "editor" {
+        true => "an editor's",
+        false => "which didn't close it",
+    };
+    owner.call_agent(&req).map_err(|e| e.map(|m| format!("{running}, {whose}: {m}")))?;
     errln!("brnr: closed {session} in process {pid}");
     Ok(())
 }

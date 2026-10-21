@@ -18,7 +18,7 @@
 //! session's, once its process has written what it recorded until then
 //! (ADR 5.5).
 
-use std::io::{self, Write};
+use std::io;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
@@ -145,8 +145,7 @@ impl Show {
             render::event(event, &self.options)
         };
         let Some(text) = text else { return Ok(0) };
-        let mut out = io::stdout().lock();
-        match writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()) {
+        match super::write_out(&format!("{text}\n")) {
             Ok(()) => Ok(1),
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
             Err(e) => Err(e.into()),

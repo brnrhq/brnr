@@ -328,7 +328,8 @@ event that reports a failure (`turn_ended`, `process_exited`,
 `events_missed`, `records_skipped`), the `error` of `--wait`'s turn,
 `last_turn` and `session delete`, and a failed command with `--json`, whose
 stdout is `{"error": {code, message}}` unless it printed its JSON before it
-failed. On stderr a failure is `brnr: <message> [<code>]`. A usage error
+failed: a stream's events, or a wait's turn, which a failed turn's wait
+prints too (exit 1), its `error` in it. On stderr a failure is `brnr: <message> [<code>]`. A usage error
 (exit 2), a wait's timeout (124) and a cut-off (3) have their exit status
 instead; `doctor` exits 1 with its checks.
 
@@ -353,7 +354,7 @@ can add a code, for a new failure or for one that was `unclassified`.
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
 | `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request to an older brnr's process. |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load. |
-| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one. An event the process doesn't have isn't an error: `subscribe` names it in `unknown_events`. |
+| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one. An event brnr doesn't have, or a note, in a profile's bridge `events`. In `subscribe`, an event the process doesn't have isn't an error: it is named in `unknown_events`. |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable. |
 | `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
 | `message_not_found` | No held message has that id. |

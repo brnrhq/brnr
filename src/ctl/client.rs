@@ -716,17 +716,20 @@ impl Conn {
                     f.peer = peer;
                     break (Some(conn), Some(until));
                 }
-                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), e.into())),
+                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), e)),
                 Err((None, e)) if f.tries > TRIES => {
                     // Live, as far as it knows: up to where the process
                     // said it cut the peer off.
                     let known = cut.flatten();
                     let n = f.tries;
-                    let mut e = format!("cut off {n} times in a row while catching up ({e})");
-                    if known.is_none() {
-                        e.push_str("; the process says no position, so up to where is unknown");
-                    }
-                    return Err(self.give_up(&f, known, e.into()));
+                    let e = e.map(|m| {
+                        let mut e = format!("cut off {n} times in a row while catching up ({m})");
+                        if known.is_none() {
+                            e.push_str("; the process says no position, so up to where is unknown");
+                        }
+                        e
+                    });
+                    return Err(self.give_up(&f, known, e));
                 }
                 Err((None, _)) => {}
             }
@@ -761,14 +764,14 @@ impl Conn {
     /// it recorded until then: the new subscription's peer, and where it
     /// starts, which the transcript has everything up to. `Err` says why it
     /// can't, and where the new subscription starts once it has one.
-    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, String)> {
+    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, Error)> {
         let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
-        let answer = answer.map_err(|e| (None, e.message))?;
+        let answer = answer.map_err(|e| (None, e))?;
         let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
         let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
         let at = Some(next.last);
-        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e.message))?["lost"] == true {
+        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
             let why = "the process has records it couldn't write yet (a full disk?)";
             return Err((at, why.into()));
         }
@@ -882,6 +885,7 @@ pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, std::thread::JoinHandle<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::code_is;
     use std::env;
     use std::os::unix::net::UnixListener;
     use std::thread;
@@ -926,7 +930,9 @@ mod tests {
         let (mut host, process) = answering("skew", answers.map(String::from).to_vec());
         let fork = json!({ "cmd": "fork", "session": "s" });
         let said = |host: &Host| host.call(&fork).unwrap_err();
-        assert_eq!(said(&host), Error::new(Code::command_unknown, "unknown command: fork"));
+        let error = said(&host);
+        code_is(&error, Code::command_unknown);
+        assert_eq!(error, Error::new(Code::command_unknown, "unknown command: fork"));
 
         let newer = PROTOCOL + 1;
         host.meta["protocol"] = json!(newer);
@@ -939,10 +945,12 @@ mod tests {
              {restart}"
         );
         let error = said(&host);
-        assert_eq!(error.code, Code::command_unknown);
+        code_is(&error, Code::command_unknown);
         assert_eq!(error.message, format!("unknown command: fork; {note}"));
         // Not of the difference: as it is.
-        assert_eq!(said(&host), Error::new(Code::session_not_found, "no session s"));
+        let error = said(&host);
+        code_is(&error, Code::session_not_found);
+        assert_eq!(error, Error::new(Code::session_not_found, "no session s"));
 
         // An editor's, from before processes said their version.
         host.meta = json!({ "id": "7", "socket": host.meta["socket"], "proxy_pid": 5 });
@@ -952,6 +960,7 @@ mod tests {
         );
         assert_eq!(said(&host).message, format!("unknown command: fork; {note}"));
         let error = said(&host);
+        code_is(&error, Code::unclassified);
         assert_eq!(
             (error.code, error.message),
             (Code::unclassified, format!("unknown command: fork; {note}"))

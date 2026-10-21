@@ -65,7 +65,9 @@ codes! {
     command_unknown,
     /// The config file can't be read, isn't private, or doesn't load.
     config_invalid,
-    /// An event name the process doesn't have, or a note's, in `subscribe`.
+    /// A note's name in `subscribe`'s `events`; an event name brnr doesn't
+    /// have, or a note's, in a profile's bridge `events`. `subscribe` leaves
+    /// out an event the process doesn't have, and names it (ADR 8.8).
     event_unknown,
     /// An action on an editor's session that its profile doesn't enable
     /// (ADR 7.1).
@@ -233,6 +235,15 @@ impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Error {
         Error::new(Code::unclassified, err.to_string())
     }
+}
+
+/// Asserts that `error` has `code` (ADR 8.7): the one way unit tests assert
+/// a code, as tests/common's `code_is` is the integration tests'; the
+/// inventory in tests/docs.rs counts a code as reached where a test calls
+/// either with it.
+#[cfg(test)]
+pub(crate) fn code_is(error: &Error, code: Code) {
+    assert_eq!(error.code, code, "{error:?}");
 }
 
 #[cfg(test)]

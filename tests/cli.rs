@@ -367,7 +367,8 @@ fn adr_0005_queue_lists_and_drops() {
         serde_json::from_str(&env.ok(&["queue", "list", "sess-1", "--json"])).unwrap();
     assert_eq!(json["held"][0]["message"], "m3");
     let err = env.fails(&["queue", "drop", "sess-1", "m9"]);
-    assert!(err.contains("no held message m9 [message_not_found]"), "{err}");
+    assert!(err.contains("no held message m9"), "{err}");
+    code_is(&err, "message_not_found");
     assert_eq!(
         env.ok(&["queue", "clear", "sess-1", "--messages"]),
         "dropped m3: second\nnothing held\n"
@@ -444,13 +445,16 @@ fn adr_0008_queue_show() {
     let answer = ask(r#"{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}"#);
     let said =
         json!({ "code": "command_invalid", "message": "queue's show takes no drop or clear" });
+    code_is(&answer, "command_invalid");
     assert_eq!(answer["error"], said, "{answer}");
     for show in ["2", "true", "null"] {
         let answer =
             ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show},"clear":true}}"#));
         let said = json!({ "code": "command_invalid", "message": "show must be a message id" });
+        code_is(&answer, "command_invalid");
         assert_eq!(answer["error"], said, "{answer}");
         let answer = ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show}}}"#));
+        code_is(&answer, "command_invalid");
         assert_eq!(answer["error"], said, "{answer}");
     }
     // Showing drops nothing.
@@ -747,7 +751,7 @@ fn adr_0005_a_note_is_taken_by_events_and_refused_by_subscribe() {
         error["message"].as_str().unwrap().contains(r#""events_missed" is a note"#),
         "{answer}"
     );
-    assert_eq!(error["code"], "event_unknown", "{answer}");
+    code_is(error, "event_unknown");
     // No gap in this transcript: nothing to show.
     for names in ["records_skipped", "records_skipped,events_missed"] {
         assert_eq!(env.ok(&["event", "log", "sess-1", "--events", names]), "", "{names}");
@@ -953,9 +957,11 @@ fn adr_0005_a_transcript_in_another_format_isnt_read() {
     let newer_says =
         format!("{}: records in format 2; this brnr reads format 1, not read", newer.display());
     let err = env.fails(&["event", "log", "older-1"]);
-    assert!(err.contains(&older_says) && err.contains("[transcript_unsupported]"), "{err}");
+    assert!(err.contains(&older_says), "{err}");
+    code_is(&err, "transcript_unsupported");
     let err = env.fails(&["event", "log", "newer-1"]);
-    assert!(err.contains(&newer_says) && err.contains("[transcript_unsupported]"), "{err}");
+    assert!(err.contains(&newer_says), "{err}");
+    code_is(&err, "transcript_unsupported");
     let out = env.run(&["event", "log", "mixed-1"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let says =
@@ -1721,7 +1727,7 @@ fn adr_0006_mode_lists_and_switches() {
     assert_eq!(json["options"][0]["choices"][1], plan);
     let err = env.fails(&["config", "set", "sess-1", "--mode", "warp"]);
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
-    assert!(err.contains("[setting_invalid]"), "{err}");
+    code_is(&err, "setting_invalid");
     assert_eq!(env.calls_of("session/set_mode").len(), 1, "warp reached the agent");
 }
 
@@ -1928,7 +1934,7 @@ fn adr_0006_start_applies_mode_and_model_before_the_prompt() {
     let out = env.brnr(&new_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
-    assert!(err.contains("[setting_invalid]"), "{err}");
+    code_is(&err, "setting_invalid");
     let out = env.brnr(&new_args(&["--model", "huge"])).env("FIRST_SESSION", "2").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
@@ -2186,11 +2192,12 @@ fn adr_0008_list_joins_the_agents_sessions_on_id() {
 
     let err = env.fails(&["session", "list", "--profile", "nope"]);
     assert!(err.contains("no profile \"nope\""), "{err}");
-    assert!(err.contains("[profile_not_found]"), "{err}");
+    code_is(&err, "profile_not_found");
     let env = Env::new("c-list-nolist").agent("NO_LIST", "1");
     let out = env.run(&["session", "list", "--", AGENT]);
     assert_eq!(code(&out), 1);
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    code_is(&out, "capability_missing");
     assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions [capability_missing]\n");
 }
 
@@ -2878,7 +2885,7 @@ fn adr_0005_close_ends_what_follows_the_session() {
     assert_eq!(code(&turn), 1, "{}", stderr(&turn));
     assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
     let permission = permission.wait_with_output().unwrap();
-    assert_eq!(code(&permission), 1, "{}", stderr(&permission));
+    code_is(&permission, "session_closed");
     assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
     // The session is idle once its turn is cancelled, and the wait exits as
     // that turn ended.
@@ -3155,7 +3162,7 @@ fn adr_0003_a_new_session_that_cant_be_locked_isnt_started() {
         let out = env.run(&new_args(&["--json", "--prompt", "reply hi"]));
         assert_eq!(code(&out), 1, "{}", stdout(&out));
         // No code of its own: a file brnr can't lock (ADR 8.7).
-        assert_eq!(json_error(&out)["code"], "unclassified", "{}", stdout(&out));
+        code_is(&json_error(&out), "unclassified");
         let said = format!("the agent opened sess-1, which can't be locked: {}: ", lock.display());
         assert!(stderr(&out).contains(&said), "{}", stderr(&out));
         assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "left running");
@@ -3331,7 +3338,8 @@ fn adr_0003_a_silent_process_keeps_its_session() {
         "brnr: sess-1 is running in process {pid}, which is not answering [process_unreachable]\n"
     );
     for out in [&resume, &take_over, &delete] {
-        assert_eq!((code(out), stderr(out)), (1, refused.clone()));
+        code_is(out, "process_unreachable");
+        assert_eq!(stderr(out), refused);
     }
     let list = serde_json::from_slice::<Value>(&list.stdout).unwrap()["sessions"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
@@ -3563,7 +3571,8 @@ fn adr_0004_show_explains_a_permission_request() {
         "a request is needed"
     );
     let err = env.fails(&["permission", "allow", "sess-1", "p9"]);
-    assert!(err.contains("no pending request p9") && err.contains("[request_not_found]"), "{err}");
+    assert!(err.contains("no pending request p9"), "{err}");
+    code_is(&err, "request_not_found");
     let json: Value =
         serde_json::from_str(&env.ok(&["permission", "allow", "sess-1", "p1", "--json"])).unwrap();
     assert_eq!(json["outcome"]["optionId"], "allow");
@@ -3753,7 +3762,7 @@ fn adr_0008_option_must_be_on_the_verbs_side() {
         all.extend(&args[1..]);
         let err = env.fails(&all);
         assert!(err.contains(says), "{args:?}: {err}");
-        assert!(err.trim_end().ends_with("[answer_invalid]"), "{args:?}: {err}");
+        code_is(&err, "answer_invalid");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
     // A kind brnr doesn't know goes with either verb, which the event says.
@@ -3806,6 +3815,7 @@ fn adr_0008_a_permissions_option_is_option_id() {
         let message =
             format!("{cmd} doesn't take option (it takes session, request, always, option_id)");
         let said = json!({ "code": "command_unknown", "message": message });
+        code_is(&old, "command_unknown");
         assert_eq!(old["error"], said, "{old}");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
@@ -3843,6 +3853,7 @@ fn adr_0008_a_permissions_option_id_is_a_string() {
             let refused = call(req);
             assert_eq!(refused["ok"], false, "{refused}");
             let said = json!({ "code": "command_invalid", "message": "option_id isn't a string" });
+            code_is(&refused, "command_invalid");
             assert_eq!(refused["error"], said, "{refused}");
         }
     }
@@ -4336,7 +4347,8 @@ fn adr_0004_a_request_the_agent_cancels_ends_by_the_agent() {
 
 /// A turn that ends with its request still waiting ends nothing: the
 /// request is still listed and the session `waiting`, and `stop_when_idle`
-/// doesn't count, until the agent cancels it (ADR 3.8).
+/// doesn't count, until the agent cancels it (ADR 3.8). The same for an
+/// elicitation, a nested one too.
 #[test]
 fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     let env = Env::new("c-askandend");
@@ -4356,6 +4368,23 @@ fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     fs::write(&gate, "").unwrap();
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "kept running");
     assert_eq!(answers(&env), [json!({ "outcome": "cancelled" })]);
+
+    // An elicitation too, one sent as a nested line (`elicit deep`) as well.
+    let env = Env::new("c-askdeep");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&["--prompt", "elicit deep 20"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "elicitation", "--timeout", "10"]);
+    let ended = || events_named(&env, "turn_ended").len() == 1;
+    assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+    assert!(env.ok(&["elicitation", "requests"]).contains("e1"));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["state"], "waiting", "{status}");
+    fs::write(&gate, "").unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
+    assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
+    assert_eq!(events_named(&env, "turn_ended").len(), 1, "its answer ended a turn");
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -4563,7 +4592,7 @@ fn adr_0002_a_start_in_an_acp_version_brnr_doesnt_speak_fails() {
             let out = env.run(&new_args(&args));
             assert_eq!(code(&out), 1, "{version}: {}", stdout(&out));
             let error = json_error(&out);
-            assert_eq!(error["code"], "acp_version_unsupported", "{version}: {error}");
+            code_is(&error, "acp_version_unsupported");
             assert!(stderr(&out).contains(want.as_str()), "{version}: {}", stderr(&out));
             let methods: Vec<Value> = env.calls().iter().map(|c| c["method"].clone()).collect();
             assert_eq!(methods, ["initialize"], "{version}: sent after initialize");
@@ -5108,7 +5137,8 @@ fn adr_0003_ps_lists_the_processes() {
     // A session's watch and the process's.
     assert!(env.fails(&["event", "watch"]).contains("<session> or --pid"));
     let err = env.fails(&["process", "stop", "sess-1"]);
-    assert!(err.contains("no brnr process sess-1") && err.contains("[process_not_found]"), "{err}");
+    assert!(err.contains("no brnr process sess-1"), "{err}");
+    code_is(&err, "process_not_found");
     env.stop();
 }
 
@@ -5167,6 +5197,7 @@ fn adr_0008_old_socket_commands_are_unknown() {
         assert_eq!(answer["ok"], false, "{cmd}: {answer}");
         let said =
             json!({ "code": "command_unknown", "message": format!("unknown command: {cmd}") });
+        code_is(&answer, "command_unknown");
         assert_eq!(answer["error"], said, "{cmd}: {answer}");
     }
     let pending = env.ok(&["permission", "requests", "sess-1"]);
@@ -5257,7 +5288,7 @@ fn adr_0008_help_lists_the_groups_and_their_commands() {
     // As a flag's value, it is the value.
     let err = env.fails(&["prompt", "send", "nosuch", "--prompt", "--help"]);
     assert!(err.contains("no session nosuch"), "{err}");
-    assert!(err.contains("[session_not_found]"), "{err}");
+    code_is(&err, "session_not_found");
 }
 
 /// `prompt send`'s prompt is `--prompt <text>` or `--prompt -` (stdin), as a
@@ -5506,7 +5537,7 @@ fn adr_0008_help_exits_0_on_stdout() {
     let acp = env.ok(&["acp", "--strict", "--help"]);
     assert!(acp.starts_with("usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
     let out = env.run(&["acp", "--profile", "-h"]);
-    assert_ne!(code(&out), 0, "-h, the profile");
+    assert_eq!(code(&out), 1, "-h, the profile");
     assert_eq!(stdout(&out), "");
     let help = env.ok(&["--help"]);
     assert!(help.contains("  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
@@ -5747,7 +5778,7 @@ fn adr_0008_new_and_resume_replace_start() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "hi"]);
     assert!(err.contains("sess-1 isn't running: brnr session resume sess-1"), "{err}");
-    assert!(err.contains("[session_inactive]"), "{err}");
+    code_is(&err, "session_inactive");
 
     for (args, says) in [
         (new_args(&["--set", "model=large"]), "brnr: unknown option: --set"),
@@ -5868,7 +5899,7 @@ fn adr_0008_resume_in_a_running_process() {
         let args = [&["session", "resume", "--pid", &pid, "sess-1"], extra].concat();
         let err = env.fails(&args);
         assert!(err.contains(&format!("sess-1 is already open in process {pid}")), "{err}");
-        assert!(err.contains("[session_active]"), "{err}");
+        code_is(&err, "session_active");
     }
 
     // Held by another process: refused, then taken over.
@@ -5997,6 +6028,7 @@ fn adr_0008_pid_settings_that_fail_close_the_session() {
     let err = env.fails(&args);
     let says = "brnr: setting model huge failed: bad option model=huge (already set: mode plan); \
                 sess-2 was closed [agent_failed]\n";
+    code_is(&err, "agent_failed");
     assert_eq!(err, says);
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
@@ -6078,7 +6110,8 @@ fn adr_0008_pid_timeout_abandons_the_opening() {
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
-    assert_eq!((code(&out), stderr(&out)), (1, says.into()));
+    code_is(&out, "start_timed_out");
+    assert_eq!(stderr(&out), says);
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
 
@@ -6163,8 +6196,8 @@ fn adr_0008_pid_opening_in_a_stopping_process_fails() {
     assert!(wait_for(Duration::from_secs(10), opening), "the process wasn't asked");
     env.stop();
     let out = cmd.wait_with_output().unwrap();
-    let says = "brnr: the process is stopping [process_stopping]\n";
-    assert_eq!((code(&out), stderr(&out)), (1, says.into()));
+    code_is(&out, "process_stopping");
+    assert_eq!(stderr(&out), "brnr: the process is stopping [process_stopping]\n");
     assert!(env.prompts().is_empty());
 }
 
@@ -6191,6 +6224,7 @@ fn adr_0008_pid_take_over_refused_before_closing() {
     let err = env.fails(&["session", "resume", "--pid", &pid, "sess-1", "--take-over"]);
     let says = "brnr: the agent can't resume sessions (no session/resume or session/load) \
                 [capability_missing]\n";
+    code_is(&err, "capability_missing");
     assert_eq!(err, says);
     assert!(env.calls_of("session/close").is_empty());
     assert_eq!(lock_holder(&env, "sess-1"), holder);
@@ -6432,6 +6466,7 @@ fn adr_0008_delete_a_session_only_the_agent_knows() {
     assert!(err.contains("session/delete failed: Session not found: gone-1"), "{err}");
     // With --purge too, when there is no transcript to delete either.
     let err = env.fails(&["session", "delete", "gone-1", "--purge", "--", AGENT]);
+    code_is(&err, "agent_failed");
     assert!(
         err.ends_with(
             "Session not found: gone-1; brnr has no transcript of gone-1 [agent_failed]\n"
@@ -6550,6 +6585,7 @@ fn adr_0008_delete_purge_fails_when_the_agent_does() {
         "message": "session/delete failed: Can't delete stuck-1",
         "rpc_error": rpc,
     });
+    code_is(&json, "agent_failed");
     assert_eq!(json["error"], said, "{json}");
     assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
@@ -6784,33 +6820,37 @@ fn adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host() {
 #[test]
 fn adr_0008_a_failed_command_prints_its_error_as_json() {
     let env = Env::new("c-errors");
-    let failed = |out: &std::process::Output, code_: &str| {
-        assert_eq!(code(out), 1, "{}", stderr(out));
-        let error = json_error(out);
-        assert_eq!(error["code"], code_, "{error}");
-        let line = format!("brnr: {} [{code_}]", error["message"].as_str().unwrap());
-        assert!(stderr(out).lines().any(|l| l == line), "{line}: {}", stderr(out));
-    };
+    // A failure with `--json`: exit 1, `{"error"}` alone on stdout, and its
+    // message and code on stderr.
+    fn failed(out: &std::process::Output) -> &std::process::Output {
+        json_error(out);
+        out
+    }
     let none = env.run(&["session", "status", "nosuch", "--json"]);
-    failed(&none, "session_not_found");
+    code_is(failed(&none), "session_not_found");
     let text = env.run(&["session", "status", "nosuch"]);
     assert_eq!((code(&text), stdout(&text), stderr(&text)), (1, String::new(), stderr(&none)));
-    failed(&env.run(&["process", "stop", "999999", "--json"]), "process_not_found");
+    code_is(failed(&env.run(&["process", "stop", "999999", "--json"])), "process_not_found");
     let empty = env.run_with_stdin(&["prompt", "send", "sess-1", "--prompt", "-", "--json"], b"");
-    failed(&empty, "input_invalid");
+    code_is(failed(&empty), "input_invalid");
     let file = env.dir.join("nofile");
     let file = file.to_str().unwrap();
     let missing =
         env.run(&["prompt", "send", "sess-1", "--prompt", "hi", "--file", file, "--json"]);
-    failed(&missing, "input_invalid");
+    code_is(failed(&missing), "input_invalid");
     let nowhere = env.dir.join("nowhere");
     let agent = nowhere.to_str().unwrap();
     let out = env.run(&["session", "new", "--json", "--prompt", "hi", "--", agent]);
-    failed(&out, "agent_not_started");
+    code_is(failed(&out), "agent_not_started");
     env.write_config("[profiles.default]\n");
-    failed(&env.run(&new_args(&["--profile", "nope", "--json"])), "profile_not_found");
+    code_is(failed(&env.run(&new_args(&["--profile", "nope", "--json"]))), "profile_not_found");
     env.write_config("[profiles.default\n");
-    failed(&env.run(&new_args(&["--json"])), "config_invalid");
+    code_is(failed(&env.run(&new_args(&["--json"]))), "config_invalid");
+    env.write_config("");
+    code_is(failed(&env.run(&["session", "new", "--json"])), "agent_not_started");
+    // A bridge's events are checked as `subscribe`'s are.
+    env.write_config("[[profiles.default.bridges]]\ncommand = \"cat\"\nevents = [\"nope\"]\n");
+    code_is(failed(&env.run(&new_args(&["--json"]))), "event_unknown");
     env.write_config("");
     // A usage error is the command line's: exit 2, no JSON.
     let usage = env.run(&["session", "status", "nosuch", "--json", "--bogus"]);
@@ -6821,6 +6861,7 @@ fn adr_0008_a_failed_command_prints_its_error_as_json() {
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let turn: Value = serde_json::from_str(&stdout(&out)).unwrap();
     let rpc = json!({ "code": -32603, "message": "boom" });
+    code_is(&turn, "agent_failed");
     assert_eq!(
         turn["error"],
         json!({ "code": "agent_failed", "message": "boom", "rpc_error": rpc })
@@ -6844,31 +6885,66 @@ fn adr_0008_no_error_is_reported_without_a_code() {
     let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut reader = BufReader::new(conn.try_clone().unwrap());
+    // The reply to `line`, which fails.
     let mut ask = |line: &str| -> Value {
         writeln!(conn, "{line}").unwrap();
         let mut answer = String::new();
         reader.read_line(&mut answer).unwrap();
-        serde_json::from_str(&answer).unwrap()
-    };
-    let cases = [
-        ("not json", "command_invalid"),
-        (r#"{"req_id":1}"#, "command_invalid"),
-        (r#"{"cmd":"approve"}"#, "command_unknown"),
-        (r#"{"cmd":"status","nosuch":1}"#, "command_unknown"),
-        (r#"{"cmd":"subscribe","events":["events_missed"]}"#, "event_unknown"),
-        (r#"{"cmd":"send","text":"hi"}"#, "command_invalid"),
-        (r#"{"cmd":"send","session":"nosuch","text":"hi"}"#, "session_not_found"),
-        (r#"{"cmd":"queue","session":"sess-1","drop":"m9"}"#, "message_not_found"),
-        (r#"{"cmd":"allow","session":"sess-1","request":"p9"}"#, "request_not_found"),
-        (r#"{"cmd":"set_config","session":"sess-1","mode":"warp"}"#, "setting_invalid"),
-        (r#"{"cmd":"resume","session":"sess-1"}"#, "session_active"),
-    ];
-    for (line, want) in cases {
-        let answer = ask(line);
+        let answer: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(answer["ok"], false, "{line}: {answer}");
-        coded(&answer);
-        assert_eq!(answer["error"]["code"], want, "{line}: {answer}");
+        answer
+    };
+    code_is(&ask("not json"), "command_invalid");
+    code_is(&ask(r#"{"req_id":1}"#), "command_invalid");
+    code_is(&ask(r#"{"cmd":"approve"}"#), "command_unknown");
+    code_is(&ask(r#"{"cmd":"status","nosuch":1}"#), "command_unknown");
+    code_is(&ask(r#"{"cmd":"subscribe","events":["events_missed"]}"#), "event_unknown");
+    code_is(&ask(r#"{"cmd":"send","text":"hi"}"#), "command_invalid");
+    code_is(&ask(r#"{"cmd":"send","session":"nosuch","text":"hi"}"#), "session_not_found");
+    code_is(&ask(r#"{"cmd":"queue","session":"sess-1","drop":"m9"}"#), "message_not_found");
+    code_is(&ask(r#"{"cmd":"allow","session":"sess-1","request":"p9"}"#), "request_not_found");
+    code_is(&ask(r#"{"cmd":"set_config","session":"sess-1","mode":"warp"}"#), "setting_invalid");
+    code_is(&ask(r#"{"cmd":"resume","session":"sess-1"}"#), "session_active");
+}
+
+/// A take-over that fails says why with the code of what failed, not a
+/// catch-all: here the holder's agent can't close sessions (ADR 8.7).
+#[test]
+fn adr_0008_a_failed_take_over_keeps_its_code() {
+    let env = Env::new("c-take-code").agent("NO_CLOSE", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let out = env.run(&resume_args("sess-1", &["--take-over", "--json"]));
+    code_is(&out, "capability_missing");
+    let error = json_error(&out);
+    let said = format!("sess-1 is running in process {pid}, which didn't close it: ");
+    assert!(error["message"].as_str().unwrap().starts_with(&said), "{error}");
+    assert_eq!(env.hosts().len(), 1, "{}", stderr(&out));
+}
+
+/// A stream's command that fails once it has printed events says so on
+/// stderr alone: its stdout stays one event per line, with no `{"error"}`
+/// after them (ADR 8.7, ADR 8.2).
+#[test]
+fn adr_0008_an_error_after_a_stream_is_on_stderr_alone() {
+    let env = Env::new("c-stream-fails");
+    env.start(&[]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut out = BufReader::new(watch.stdout.take().unwrap());
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply live"]);
+    let mut first = String::new();
+    assert!(out.read_line(&mut first).unwrap() > 0, "watch printed nothing");
+    // Killed: it says nothing more, and the watch's connection ends.
+    kill(env.host_pid(), libc::SIGKILL);
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+    let ended = watch.wait_with_output().unwrap();
+    for line in first.lines().chain(rest.lines()) {
+        let event: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert!(event["event"].is_string(), "{line}");
     }
+    code_is(&ended, "unclassified");
 }
 
 /// A process that hasn't committed its start opens no other session in
@@ -6881,7 +6957,7 @@ fn adr_0008_a_starting_process_refuses_another_session() {
     let pid = env.pid();
     let out = env.run(&["session", "new", "--pid", &pid, "--json"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
-    assert_eq!(json_error(&out)["code"], "process_starting", "{}", stdout(&out));
+    code_is(&json_error(&out), "process_starting");
     assert!(first.wait().unwrap().success());
 }
 
@@ -6930,9 +7006,10 @@ fn adr_0008_a_field_the_process_doesnt_have_is_refused() {
     let answer = ask(&mut conn, req);
     let message = "send doesn't take priority (it takes session, text, blocks, mode, replace)";
     let said = json!({ "ok": false, "error": { "code": "command_unknown", "message": message }, "req_id": "r1" });
+    code_is(&answer, "command_unknown");
     assert_eq!(answer, said);
     let answer = ask(&mut conn, json!({ "cmd": "stop", "now": true }));
-    assert_eq!(answer["error"]["code"], "command_unknown", "{answer}");
+    code_is(&answer, "command_unknown");
     assert_eq!(answer["error"]["message"], "stop doesn't take now (it takes no fields)");
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply now"]);
     assert_eq!(env.prompts(), ["reply hi", "reply now"], "sent anyway");
@@ -7043,6 +7120,7 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
         "stop it (brnr process stop {pid}) and resume its sessions (brnr session resume \
          <session>) to run them in this brnr [unclassified]\n"
     );
+    code_is(&err, "unclassified");
     assert!(err.ends_with(&restart), "{err}");
 
     let env = Env::new("c-newer");
@@ -7050,8 +7128,8 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
     let pid = another_brnr(&env, meta, a_newer_brnrs_answer);
     let out = env.run(&["session", "fork", "sess-old", "--json"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
+    code_is(&out, "command_unknown");
     let error = json_error(&out);
-    assert_eq!(error["code"], "command_unknown", "{error}");
     let newer = format!("process {pid} runs a newer brnr (brnr 1000.0.0, protocol 1000)");
     let message = error["message"].as_str().unwrap();
     assert!(message.contains(&newer), "{message}");

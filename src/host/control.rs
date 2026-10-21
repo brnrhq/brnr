@@ -335,11 +335,11 @@ impl Peer {
     }
 }
 
-pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
+pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), Error> {
     if bridge.command.is_empty() {
         return Err("a bridge needs a command".into());
     }
-    check_events(bridge.events.as_deref().unwrap_or_default()).map_err(|e| e.message)
+    check_events(bridge.events.as_deref().unwrap_or_default())
 }
 
 /// A profile's bridge's `events`: each an event this brnr has. The profile

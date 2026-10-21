@@ -307,7 +307,8 @@ shape for each `--for`, whether the wait ended at once or later: for `idle`
 A command that fails exits 1 and says why on stderr, its error's code after
 the message (`brnr: no session s (see brnr session list) [session_not_found]`);
 with `--json` it prints the error as its JSON, `{"error": {"code": …,
-"message": …}}`. Scripts match the `code`, never the message:
+"message": …}}`. A wait that got its turn prints the turn instead, a
+failed one too (exit 1): its `error` says why. Scripts match the `code`, never the message:
 [the interface reference](docs/interface.md#errors) lists the codes, and
 `unclassified` promises nothing. Where the agent's answer failed, a turn's
 `error` too, the code is `agent_failed`, and `rpc_error` is the agent's

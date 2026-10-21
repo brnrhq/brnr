@@ -391,6 +391,7 @@ fn written(host: &Host) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::code_is;
 
     /// Process `pid`: answering with `status`, or not answering without.
     fn host(pid: u32, status: Option<Value>) -> Host {
@@ -591,27 +592,20 @@ mod tests {
     /// whichever command refuses it (ADR 8.7).
     #[test]
     fn adr_0008_a_refusal_has_its_places_code() {
-        let cases = [
-            (
-                vec![host(7, serving(&[open("s")], &[]))],
-                Some((7, None)),
-                None,
-                Code::session_active,
-            ),
-            (vec![host(7, serving(&[], &["s"]))], Some((7, None)), None, Code::session_closing),
-            (vec![host(7, serving(&[], &[]))], Some((7, None)), None, Code::session_opening),
-            (vec![host(7, None)], Some((7, None)), None, Code::process_unreachable),
-            (vec![], Some((7, None)), None, Code::process_unreachable),
-            (vec![], None, ended(), Code::session_inactive),
-            (vec![], None, None, Code::session_not_found),
-        ];
-        for (hosts, holder, past, code) in cases {
-            let (s, _) = find(&hosts, holder, past);
-            assert_eq!(s.said().code, code, "{}", s.said().message);
-        }
+        let said = |hosts: Vec<Host>, holder, past| find(&hosts, holder, past).0.said();
+        let active = vec![host(7, serving(&[open("s")], &[]))];
+        code_is(&said(active, Some((7, None)), None), Code::session_active);
+        let closing = vec![host(7, serving(&[], &["s"]))];
+        code_is(&said(closing, Some((7, None)), None), Code::session_closing);
+        let opening = vec![host(7, serving(&[], &[]))];
+        code_is(&said(opening, Some((7, None)), None), Code::session_opening);
+        code_is(&said(vec![host(7, None)], Some((7, None)), None), Code::process_unreachable);
+        code_is(&said(vec![], Some((7, None)), None), Code::process_unreachable);
+        code_is(&said(vec![], None, ended()), Code::session_inactive);
+        code_is(&said(vec![], None, None), Code::session_not_found);
         let hosts = [host(7, serving(&[open("s")], &[]))];
         let (s, _) = find(&hosts, Some((7, None)), None);
-        assert_eq!(s.delete().err().map(|e| e.code), Some(Code::session_active));
+        code_is(&s.delete().expect_err("refused"), Code::session_active);
     }
 
     /// A process that keeps no transcript (`log = "off"`) has none to read.
@@ -621,7 +615,7 @@ mod tests {
         let (s, _) = find(&hosts, Some((7, None)), None);
         let error = s.files().err().expect("refused");
         assert_eq!(error.message, "this process keeps no transcript (log = \"off\")");
-        assert_eq!(error.code, Code::transcript_not_kept);
+        code_is(&error, Code::transcript_not_kept);
         let (s, _) = find(&[], None, ended());
         let files = s.files().expect("files");
         assert_eq!(files.files[0].acp, Some(PathBuf::from("/l/s.acp.jsonl")));
