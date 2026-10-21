@@ -1030,6 +1030,82 @@ fn adr_0005_a_transcript_of_openings_only_gets_the_history() {
     env.stop();
 }
 
+/// brnr doesn't append to a transcript in a format it doesn't read, an
+/// older brnr's or a newer one's (ADR 5.9, ADR 5.10): a session opened where
+/// one is in the way sets it aside, beside it, and starts a file of its own,
+/// which the host log says (`session_log_moved`); `session delete` passes it
+/// over, as an event for a session no process has open does.
+#[test]
+fn adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript() {
+    let env = Env::new("c-older-append").agent("NO_RESUME", "1");
+    // The process's cwd, as it has it (/private/var on macOS).
+    let cwd = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    let older = older_transcript(&env, &folder_of(&cwd), "old-1", &cwd, true);
+    let older_raw = older.with_extension("acp.jsonl");
+    // One in a folder of before ADR 9.2's hash, which no process opens.
+    let before_hash = older_transcript(&env, "-before-the-hash", "old-1", &cwd, false);
+    let (events, raw, kept) = (
+        fs::read_to_string(&older).unwrap(),
+        fs::read_to_string(&older_raw).unwrap(),
+        fs::read_to_string(&before_hash).unwrap(),
+    );
+
+    let out = env.ok(&["session", "delete", "old-1", "--", AGENT]);
+    assert_eq!(out, "deleted old-1; brnr has no transcript of it\n");
+    assert_eq!(fs::read_to_string(&older).unwrap(), events);
+    assert_eq!(fs::read_to_string(&before_hash).unwrap(), kept);
+
+    env.ok(&resume_args("old-1", &["--wait", "--prompt", "reply new"]));
+    let set_aside = older.with_file_name("old-1.older.jsonl");
+    let raw_aside = older.with_file_name("old-1.older.acp.jsonl");
+    assert_eq!(fs::read_to_string(&set_aside).unwrap(), events);
+    assert_eq!(fs::read_to_string(&raw_aside).unwrap(), raw);
+    assert_eq!(fs::read_to_string(&before_hash).unwrap(), kept);
+    for file in [&older, &older_raw] {
+        let first = fs::read_to_string(file).unwrap();
+        let first: Value = serde_json::from_str(first.lines().next().unwrap()).unwrap();
+        assert_eq!(first["session"], "old-1", "{first}");
+        assert!(first.get("session_id").is_none(), "{first}");
+    }
+    assert!(env.ok(&["event", "log", "old-1"]).contains("agent: new"));
+    let hosts = fs::read_dir(env.dir.join("home/hosts")).unwrap().flatten();
+    let moved: Vec<Value> = hosts
+        .flat_map(|h| {
+            fs::read_to_string(h.path()).unwrap().lines().map(str::to_owned).collect::<Vec<_>>()
+        })
+        .map(|l| serde_json::from_str::<Value>(&l).unwrap()["event"].clone())
+        .filter(|e| e["event"] == "session_log_moved")
+        .collect();
+    let to = |e: &Value| (e["path"].clone(), e["to"].clone());
+    let want =
+        |from: &PathBuf, to: &PathBuf| (json!(from.to_string_lossy()), json!(to.to_string_lossy()));
+    assert_eq!(
+        moved.iter().map(to).collect::<Vec<_>>(),
+        [want(&older, &set_aside), want(&older_raw, &raw_aside)]
+    );
+    let listed = doctor_check(&env, "file formats")["message"].as_str().unwrap().to_owned();
+    assert!(listed.contains(&*set_aside.to_string_lossy()), "{listed}");
+    assert!(listed.contains(&*before_hash.to_string_lossy()), "{listed}");
+
+    // Deleted again, it is recorded in the session's own file only.
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let out = env.ok(&["session", "delete", "old-1", "--json"]);
+    let out: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(out["recorded_in"], json!([older.to_string_lossy()]), "{out}");
+    assert_eq!(fs::read_to_string(&before_hash).unwrap(), kept);
+
+    // A newer brnr's, its records in format 2, is set aside the same.
+    let newer = fixture(&env, "newer-1", &cwd);
+    let text = fs::read_to_string(&newer).unwrap();
+    env.ok(&resume_args("newer-1", &["--wait", "--prompt", "reply new"]));
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    assert_eq!(fs::read_to_string(newer.with_file_name("newer-1.older.jsonl")).unwrap(), text);
+    let now = fs::read_to_string(&newer).unwrap();
+    assert!(now.lines().all(|l| l.starts_with(r#"{"format":1,"#)), "{now}");
+}
+
 #[test]
 fn adr_0005_log_reads_an_inactive_session() {
     let env = Env::new("c-loginactive");
@@ -1325,8 +1401,9 @@ fn adr_0008_a_count_is_named_so() {
 
 /// `event wait --json` prints one shape for each `--for`, whatever ended
 /// the wait and whether it held when the wait began (ADR 8.3): `idle` the
-/// session's state, `permission` the request as `permission show` prints
-/// it, `turn` the `turn_ended` event, `exit` the `process_exited` event,
+/// session's state, `permission` and `elicitation` the request as
+/// `permission show` and `elicitation show` print it, `turn` the
+/// `turn_ended` event, `exit` the `process_exited` event,
 /// which the command makes, as far as it knows it, for a process killed
 /// before it could send one.
 #[test]
@@ -1379,6 +1456,15 @@ fn adr_0008_event_wait_prints_one_shape_for_each_condition() {
     let ended = waited(wait, 0);
     assert_eq!((&ended["event"], &ended["session"]), (&"turn_ended".into(), &"sess-1".into()));
     assert!(ended["seq"].is_u64() && ended["host_id"].is_string(), "{ended}");
+    // An elicitation as it comes, and once it is waiting: `elicitation show`'s.
+    let elicitation = ["event", "wait", "sess-1", "--for", "elicitation"];
+    let wait = spawn(&elicitation);
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "elicit form"]);
+    let came = waited(wait, 0);
+    let shown = json(&["elicitation", "show", "sess-1", "e1", "--json"]);
+    assert_eq!(came, shown);
+    assert_eq!(json(&[&elicitation[..], &["--json"]].concat()), shown);
     // A process killed says nothing: the command says it for it.
     let wait = spawn(&["event", "wait", "sess-1", "--for", "exit"]);
     sleep(Duration::from_millis(300));
@@ -3710,6 +3796,37 @@ fn adr_0008_a_permissions_option_is_option_id() {
     assert_eq!(env.ok(&["permission", "allow", "sess-1", "p2", "--option-id", "a"]), "p2 a\n");
     settled(&env);
     assert_eq!(answers(&env)[1]["optionId"], "a");
+}
+
+/// The socket's `option_id`, if there, is a string: null or any other type
+/// is refused and answers nothing, not read as absent, which would answer
+/// the kind's one option in place of the one named (ADR 8.1, P3).
+#[test]
+fn adr_0008_a_permissions_option_id_is_a_string() {
+    let env = Env::new("c-optstr");
+    env.start(&[]);
+    ask(&env);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    let mut call = |req: Value| -> Value {
+        writeln!(conn, "{req}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    for cmd in ["allow", "reject"] {
+        for id in [json!(null), json!(1), json!(true), json!(["allow"]), json!({})] {
+            let req = json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option_id": id });
+            let refused = call(req);
+            assert_eq!(refused["ok"], false, "{refused}");
+            assert_eq!(refused["error"], "option_id isn't a string", "{refused}");
+        }
+    }
+    assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
+    let named =
+        call(json!({ "cmd": "allow", "session": "sess-1", "request": "p1", "option_id": "allow" }));
+    assert_eq!(named["outcome"], json!({ "outcome": "selected", "optionId": "allow" }), "{named}");
 }
 
 // ---- elicitations (ADR 4.5) -----------------------------------------------
@@ -6332,6 +6449,43 @@ fn adr_0008_delete_purge() {
     assert_eq!(list, json!({ "sessions": [] }));
     // The host logs are shared, and stay.
     assert_eq!(fs::read_dir(env.dir.join("home/hosts")).unwrap().count(), hosts);
+}
+
+/// `--purge` deletes every file of the session brnr finds, an older brnr's
+/// too (N1): one set aside by a resume (ADR 5.9), its raw ACP beside it,
+/// and one in a folder no process opened again; never another session's.
+/// Each is said, as its own are.
+#[test]
+fn adr_0008_purge_deletes_an_older_brnrs_files_too() {
+    let env = Env::new("c-purge-older").agent("NO_RESUME", "1");
+    let cwd = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    let older = older_transcript(&env, &folder_of(&cwd), "old-1", &cwd, true);
+    let before_hash = older_transcript(&env, "-before-the-hash", "old-1", &cwd, true);
+    let other = older_transcript(&env, "-before-the-hash", "old-10", &cwd, false);
+    env.ok(&resume_args("old-1", &["--wait", "--prompt", "reply new"]));
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let folder = older.parent().unwrap();
+    let aside = folder.join("old-1.older.jsonl");
+    assert!(aside.exists(), "{:?}", transcript_files(&env));
+
+    let out = env.ok(&["session", "delete", "old-1", "--purge", "--json"]);
+    let out: Value = serde_json::from_str(&out).unwrap();
+    let purged: Vec<&str> =
+        out["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    let want = [
+        before_hash.clone(),
+        before_hash.with_extension("acp.jsonl"),
+        older.clone(),
+        older.with_extension("acp.jsonl"),
+        folder.join("old-1.older.acp.jsonl"),
+        aside,
+    ];
+    let want: Vec<String> = want.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert_eq!(purged, want, "{out}");
+    assert_eq!(out["failed"], json!([]), "{out}");
+    assert_eq!(transcript_files(&env), ["old-10.jsonl"]);
+    assert!(other.exists());
 }
 
 /// With `--purge`, an agent whose `session/delete` fails otherwise may still

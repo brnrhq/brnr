@@ -294,6 +294,40 @@ pub fn resume_args<'a>(session: &'a str, args: &[&'a str]) -> Vec<&'a str> {
     all
 }
 
+/// Writes a transcript of `session` as an older brnr wrote it, its records
+/// without `format` (ADR 5.10) and naming the session `session_id` (ADR
+/// 5.9), in project folder `folder`
+/// under `env`'s state directory (made private, as brnr would), opened in
+/// `cwd`: its events file, and its raw ACP if `acp`. The events file's path.
+pub fn older_transcript(env: &Env, folder: &str, session: &str, cwd: &str, acp: bool) -> PathBuf {
+    let home = env.dir.join("home");
+    let dir = home.join("projects").join(folder);
+    fs::create_dir_all(&dir).unwrap();
+    for d in [&home, &home.join("projects"), &dir] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let head = format!(
+        r#"{{"ts":"2026-10-01T00:00:00.000000Z","host_id":"20261001T000000-1","host_pid":1,"proxy_pid":null,"agent_pid":2,"session_id":"{session}","#
+    );
+    let opened = json!({ "event": "session-opened", "cwd": cwd });
+    let said = json!({ "event": "user_message", "session": session, "text": "hi", "seq": 1 });
+    let path = dir.join(format!("{session}.jsonl"));
+    let mut files =
+        vec![(path.clone(), format!("{head}\"event\":{opened}}}\n{head}\"event\":{said}}}\n"))];
+    if acp {
+        let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "session/prompt" });
+        files.push((
+            dir.join(format!("{session}.acp.jsonl")),
+            format!("{head}\"dir\":\"in\",\"msg\":{msg}}}\n"),
+        ));
+    }
+    for (file, text) in files {
+        fs::write(&file, text).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    path
+}
+
 /// `word` in single quotes, as a shell reads it back.
 pub fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))

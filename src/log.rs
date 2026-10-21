@@ -23,7 +23,10 @@
 //! came from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
 //! files only for the sessions it has open; one opened again appends to
-//! them, starting with another `session_opened`.
+//! them, starting with another `session_opened`. Nothing is appended to a
+//! file in a format this brnr doesn't read, an older brnr's or a newer
+//! one's ([`appends_to`]): one in the way of a session's file is set aside
+//! first ([`Writer::set_aside`]).
 //!
 //! What a record goes into, from the state directory down, is the user's own
 //! and private before anything is written to it (P13, ADR 9.3): a file or
@@ -545,7 +548,7 @@ impl Writer {
             }
             Cmd::Append { session, ts, event } => {
                 let record = self.head.record(ts, Some(&session), &event_body(event));
-                for path in transcript::of_session(&session) {
+                for path in transcript::of_session(&session).into_iter().filter(|p| appends_to(p)) {
                     let put = self.open_file(ts, &path).and_then(|mut out| out.put(&record));
                     if let Err(err) = put {
                         self.failed(ts, &session, &path, &err);
@@ -581,14 +584,15 @@ impl Writer {
         }
         let path = paths::session_log(cwd, &session);
         let now = SystemTime::now();
-        let events = match self.open_file(now, &path) {
-            Ok(out) => out,
-            Err(err) => return self.failed(now, &session, &path, &err),
-        };
+        let events =
+            match self.set_aside(now, &session, &path).and_then(|()| self.open_file(now, &path)) {
+                Ok(out) => out,
+                Err(err) => return self.failed(now, &session, &path, &err),
+            };
         let (mut acp, mut acp_path) = (None, None);
         if self.acp {
             let raw = paths::acp_log(&path);
-            match self.open_file(now, &raw) {
+            match self.set_aside(now, &session, &raw).and_then(|()| self.open_file(now, &raw)) {
                 Ok(out) => (acp, acp_path) = (Some(out), Some(raw.to_string_lossy().into_owned())),
                 Err(err) => self.failed(now, &session, &raw, &err),
             }
@@ -612,6 +616,28 @@ impl Writer {
         }
         self.note(now, Some(&session), event.clone());
         self.note(now, None, event);
+    }
+
+    /// Sets the file at `path`, one of `session`'s, aside if it is in a
+    /// format this brnr doesn't read ([`appends_to`]), so that the session
+    /// starts a file of its own there (ADR 5.9, ADR 5.10): renamed beside it, `<name>.older.jsonl`
+    /// (`<name>.older.acp.jsonl` for a raw file; `older-2`, `older-3`, … if
+    /// that is taken), where `doctor` still lists it, and the host log has a
+    /// `session_log_moved` saying where to. A file it can't set aside is
+    /// left as it is, and not opened.
+    fn set_aside(&mut self, ts: SystemTime, session: &str, path: &Path) -> io::Result<()> {
+        if appends_to(path) {
+            return Ok(());
+        }
+        let to = aside(path)?;
+        let event = json!({
+            "event": "session_log_moved",
+            "session": session,
+            "path": path.to_string_lossy(),
+            "to": to.to_string_lossy(),
+        });
+        self.note(ts, None, event);
+        Ok(())
     }
 
     /// Opens `path` (see [`open_append`]), noting in the host log what it
@@ -810,8 +836,12 @@ impl Out {
     }
 }
 
+/// `line` into `out` as a record's `"msg"` (ADR 5.1), as it came, if it is
+/// JSON as brnr reads it (json.rs): to a depth at which the record that
+/// holds it reads back, past serde_json's own 127, and with a lone
+/// surrogate (ADR 2.5). Else as a string in `"raw"`.
 fn embed(out: &mut Vec<u8>, line: &[u8]) {
-    if serde_json::from_slice::<Value>(line).is_ok() {
+    if json::parse::<Value>(line, json::OWN_DEPTH - 1).is_some() {
         out.extend_from_slice(b"\"msg\":");
         out.extend_from_slice(line);
     } else {
@@ -877,6 +907,34 @@ pub(crate) fn redact_record(record: &mut Value) {
     {
         redact_mcp_servers(servers);
     }
+}
+
+/// Whether brnr appends to the transcript at `path`: not to one whose first
+/// or newest record is in a format it doesn't read (ADR 5.10,
+/// `transcript::unread_in`), an older brnr's or a newer one's, whose records
+/// it doesn't read, and in which what it appended would be read without
+/// what came before it (ADR 5.9). The one test of it: a session's file is
+/// set aside ([`Writer::set_aside`]), and an event for a session no process
+/// has open passes it over.
+fn appends_to(path: &Path) -> bool {
+    transcript::unread_in(path).is_none()
+}
+
+/// Renames the file at `path`, `<name>.jsonl` or `<name>.acp.jsonl`, to the
+/// first of `<name>.older.…`, `<name>.older-2.…`, … that isn't taken; where
+/// to. A session's file name has no `.` (paths::file_name), so no session's
+/// file is named so.
+fn aside(path: &Path) -> io::Result<PathBuf> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let (stem, ext) = name.split_once('.').unwrap_or((&name, "jsonl"));
+    let older = |n: u32| if n == 1 { "older".to_owned() } else { format!("older-{n}") };
+    let free = |to: &PathBuf| {
+        std::fs::symlink_metadata(to).is_err_and(|e| e.kind() == ErrorKind::NotFound)
+    };
+    let mut names = (1..).map(|n| path.with_file_name(format!("{stem}.{}.{ext}", older(n))));
+    let to = names.find(free).expect("a name not taken");
+    std::fs::rename(path, &to).map_err(|e| at(path, e))?;
+    Ok(to)
 }
 
 /// What [`open_private`] made private: each path, and the mode it had.
@@ -1013,7 +1071,7 @@ pub(crate) fn record_in_transcripts(
     .into_bytes();
     record.extend_from_slice(&event_body(event));
     let (mut written, mut failed, mut made) = (Vec::new(), Vec::new(), Made::new());
-    for path in transcript::of_session(session) {
+    for path in transcript::of_session(session).into_iter().filter(|p| appends_to(p)) {
         let put = open_append(&path).and_then(|(mut out, opened)| {
             made.extend(opened);
             out.put(&record)
@@ -1029,7 +1087,8 @@ pub(crate) fn record_in_transcripts(
 
 /// Deletes `session`'s transcripts (ADR 8.1): in each project folder under
 /// the state directory, its events file and its raw ACP, named for its id
-/// (ADR 9.2), and nothing else: not the host logs, which are shared, nor
+/// (ADR 9.2), whoever wrote them, and an older brnr's set aside beside them
+/// (`paths::is_sessions_file`, ADR 5.9), and nothing else: not the host logs, which are shared, nor
 /// another session's files. The state directory, `projects` and each folder
 /// are opened without following a symlink, each from the one before, and
 /// the names removed from what was opened (`unlinkat`), so nothing outside
@@ -1061,7 +1120,7 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
         }
     };
     let name = paths::file_name(session);
-    let names = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
+    let own = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
     let entries = std::fs::read_dir(&projects_path).into_iter().flatten().flatten();
     let mut folders: Vec<_> = entries.map(|e| e.file_name()).collect();
     folders.sort();
@@ -1078,7 +1137,14 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
                 continue;
             }
         };
-        for file in &names {
+        // Its own files first, then an older brnr's set aside (ADR 5.9).
+        let listed = std::fs::read_dir(&path).into_iter().flatten().flatten();
+        let mut aside: Vec<String> = listed
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|f| paths::is_sessions_file(&name, f) && !own.contains(f))
+            .collect();
+        aside.sort();
+        for file in own.iter().chain(&aside) {
             // An escaped name has no NUL (ADR 9.2).
             let c_file = CString::new(file.as_str()).expect("an escaped name");
             match sys::unlinkat(dir.as_fd(), &c_file, 0) {
@@ -1630,6 +1696,22 @@ mod tests {
             assert!(err.to_string().starts_with("/: is owned by uid 0"), "{err}");
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A message the host read, at the limit and past serde_json's own, or
+    /// with a lone surrogate, is recorded as JSON, as `event watch` showed
+    /// it; only what isn't JSON is `raw` (ADR 2.5, ADR 5.1).
+    #[test]
+    fn adr_0002_a_message_at_the_limit_is_recorded_as_json() {
+        let at_limit = format!("{}{}", "[".repeat(json::DEPTH), "]".repeat(json::DEPTH));
+        let surrogate = r#"{"title":"\ud83d"}"#.to_owned();
+        for (line, key) in [(at_limit, "msg"), (surrogate, "msg"), ("{oops".to_owned(), "raw")] {
+            let mut out = b"{".to_vec();
+            embed(&mut out, line.as_bytes());
+            assert!(out.starts_with(format!(r#"{{"{key}":"#).as_bytes()), "{line}");
+            let record = crate::transcript::record(&out[..out.len() - 1]).expect("unread");
+            assert!(record[key].is_array() || record[key].is_object() || key == "raw", "{line}");
+        }
     }
 
     #[test]

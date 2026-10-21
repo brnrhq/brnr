@@ -986,10 +986,27 @@ without quoting (in jq `.records-skipped` is a subtraction).
     `process_exited`. A line of one in the report would be `(a record in
     a format this brnr doesn't read, not shown)`: what an older brnr
     didn't redact isn't shown either.
-  - A process doesn't append to an older brnr's transcript: ADR 9.2's
-    rule that went on in a file of the folder before the hash goes, as
-    every such file is an older brnr's, and what was appended would be
-    read without what came before it.
+  - A process doesn't append to an older brnr's transcript, nor to any
+    file in a format it doesn't read (ADR 5.10): ADR 9.2's rule that went
+    on in a file of the folder before the hash goes, as every such file is
+    an older brnr's, and what was appended would be read without what came
+    before it. No writer does (`log::appends_to`, the one test of it, is
+    the check `doctor`'s `file formats` makes: a file whose first or
+    newest record is in another format): a session opened where such a
+    file is in the way (one in its cwd's folder, written there before
+    #314, or a resume of a session brnr has no transcript of) renames that
+    file beside it, `<name>.older.jsonl` (`older-2`, … if taken; the raw
+    file `<name>.older.acp.jsonl`), and starts a file of its own, and the
+    host log's `session_log_moved` (`session`, `path`, `to`) says so (P3);
+    `doctor` still lists the renamed file. An event for a session no
+    process has open (`session delete`, an editor's deletion) passes such
+    a file over. A newer brnr's file is set aside the same, under the same
+    name: `older` says it is no file of this brnr's to go on with. Renamed
+    rather than left with the session's records in the host log, as a
+    refused file is (ADR 9.3): the session then has a transcript, which
+    its next resume finds, and a load records its history in it (ADR 5.6).
+    `session delete --purge` deletes the files set aside too, as every
+    file of the session's id (ADR 8.1, N1).
 - The CLI reads the bridge `status` reply's `sessions` in the new names,
   and `session list`'s rows of a transcript the same (`session`,
   `events_log`).
@@ -1169,8 +1186,8 @@ change, and reads a newer brnr's records as this brnr's, a renamed field
 read as a missing one, a session resumed in the wrong cwd or with no
 agent, without a word (P3, P4). A number in every head is the one check,
 for any format, older or newer. In every record, as a file is appended to
-by every brnr that serves the session (a resume after an upgrade, or a
-downgrade), and read a record at a time: the last record backwards, the
+by every brnr that serves the session in its format (each 1.x, and a
+newer major that reads format 1), and read a record at a time: the last record backwards, the
 catch-up by position, a deletion's record that no process wrote. `session
 resume` took the profile and agent from the host log, which ADR 8.4
 doesn't cover and which a user can prune: pruning `~/.brnr/hosts` made a
@@ -1184,7 +1201,8 @@ the transcript, which is covered.
   `doctor` lists it; ADR 5.9's check by field goes.
 - A session downgraded from a newer brnr, its newest records in a newer
   format, is no session to `session list` here; `event log` shows what of
-  it this brnr can read.
+  it this brnr can read. Opened here, it is set aside, `<name>.older.jsonl`,
+  and starts a file of this brnr's (ADR 5.9's `log::appends_to`).
 - The fixtures in tests/fixtures/transcripts are format 1 as 1.0 writes it,
   frozen: every 1.x is tested against them.
 
@@ -1348,11 +1366,15 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_who_acted_and_why_are_by_peer_and_reason` (`session_closed`,
   `message_dropped`, and `permission_resolved` answered by a peer, a
   cancel and the timeout),
-  `adr_0005_a_transcript_in_another_format_isnt_read` (5.10's), and
+  `adr_0005_a_transcript_in_another_format_isnt_read` (5.10's),
+  `adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript` (set aside
+  by a resume, an older brnr's and a newer one's, passed over by
+  `session delete`), and
   `adr_0005_notify_reads_stdin_as_a_bridge` (`BRNR_SESSION`, and
   `BRNR_EVENT=process_exited` at the end);
   [tests/headless.rs](../../tests/headless.rs):
-  `adr_0005_a_sessions_opening_is_the_same_in_both_files`, and
+  `adr_0005_a_sessions_opening_is_the_same_in_both_files`,
+  `adr_0005_an_editors_delete_passes_an_older_transcript_over`, and
   `adr_0010_a_stalled_disk_skips_records_and_says_so` (`--events
   records_skipped` shows the one gap, with `session`, `ts`, `host_id` and
   `pid`);

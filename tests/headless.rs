@@ -3461,6 +3461,27 @@ fn adr_0008_an_editors_delete_is_recorded() {
     let _ = editor.kill();
 }
 
+/// An editor's deletion of a session no process has open isn't appended to
+/// a transcript of it an older brnr wrote (ADR 5.9): brnr doesn't read it,
+/// and the host log has the event.
+#[test]
+fn adr_0005_an_editors_delete_passes_an_older_transcript_over() {
+    let env = Env::new("ed-delete-older");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    // In any folder: an event for a session no process has open goes to
+    // each of its files.
+    let older = older_transcript(&env, "-a-folder", "old-1", &cwd, false);
+    let before = fs::read_to_string(&older).unwrap();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_delete(2, "old-1")).unwrap();
+    assert_eq!(response(&mut from_agent, 2)["result"], json!({}));
+    // Exiting, the process writes all it recorded first (ADR 5.5).
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "the editor's process stayed");
+    assert!(host_logs(&env).contains(r#""event":"session_deleted""#), "not in the host log");
+    assert_eq!(fs::read_to_string(&older).unwrap(), before);
+}
+
 /// When the editor goes, what the agent started goes too: its process
 /// group, as when it is stopped.
 #[test]
@@ -4543,6 +4564,49 @@ fn adr_0002_a_line_past_the_limit_passes_through_unread() {
     }
     let acp = env.ok(&["event", "log", "sess-1", "--json", "--events", "acp"]);
     assert!(!acp.contains("rawInput") && !acp.contains("_deep"), "recorded");
+}
+
+/// So does what the editor sends after its last newline as it closes its
+/// stdin, nested past the limit: it reaches the agent, an event says so, and
+/// it is recorded nowhere, as what would be redacted in it can't be found
+/// (ADR 9.1).
+#[test]
+fn adr_0002_an_editors_rest_past_the_limit_passes_through_unread() {
+    let env = Env::new("ed-rest-deep");
+    let (mut editor, mut to_agent, _from_agent) = open_editor(&env);
+    let n = LIMIT + 1;
+    let deep = format!(
+        r#"{{"jsonrpc":"2.0","method":"_nested","params":{{"env":{{"TOKEN":"s3cret"}},"x":{}{}}}}}"#,
+        "[".repeat(n),
+        "]".repeat(n)
+    );
+    write!(to_agent, "{deep}").unwrap();
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "the editor's process stayed");
+    let calls = fs::read_to_string(env.dir.join("calls")).unwrap();
+    assert!(calls.contains(r#""_nested""#), "the editor's rest didn't reach the agent");
+    let events = too_deep(&env);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let e = &events[0];
+    assert_eq!(
+        (&e["from"], &e["max_depth"], &e["relayed"]),
+        (&json!("editor"), &json!(LIMIT), &json!(true))
+    );
+    let home = env.dir.join("home");
+    let files = [home.join("hosts"), home.join("projects")].into_iter().flat_map(|d| {
+        fs::read_dir(d).unwrap().flatten().flat_map(|e| match e.path().is_dir() {
+            true => fs::read_dir(e.path()).unwrap().flatten().map(|f| f.path()).collect(),
+            false => vec![e.path()],
+        })
+    });
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            !text.contains("_nested") && !text.contains("s3cret"),
+            "recorded in {}",
+            file.display()
+        );
+    }
 }
 
 /// Headless, brnr is the agent's client: a line nested past the limit is

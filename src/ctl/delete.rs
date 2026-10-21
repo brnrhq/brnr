@@ -11,8 +11,9 @@
 //!
 //! Without `--purge` the transcript stays, and `session_deleted` is appended
 //! to it, a record of no process's (`host_id` null: none has the session
-//! open). With it, the events file and the raw ACP are deleted (see
-//! `log::purge`), but not the host logs, which are shared, whatever the
+//! open). With it, the events file and the raw ACP are deleted, an older
+//! brnr's and those set aside beside them too (see `log::purge`), but not
+//! the host logs, which are shared, whatever the
 //! agent answered. An agent that doesn't have the session (ACP's
 //! `resource_not_found`) is said, and the command succeeds; any other error,
 //! or no answer, is said, and the command fails: the agent may still have
