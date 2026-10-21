@@ -4426,6 +4426,49 @@ fn adr_0002_a_line_past_the_limit_passes_through_unread() {
     assert!(!acp.contains("rawInput") && !acp.contains("_deep"), "recorded");
 }
 
+/// So does what the editor sends after its last newline as it closes its
+/// stdin, nested past the limit: it reaches the agent, an event says so, and
+/// it is recorded nowhere, as what would be redacted in it can't be found
+/// (ADR 9.1).
+#[test]
+fn adr_0002_an_editors_rest_past_the_limit_passes_through_unread() {
+    let env = Env::new("ed-rest-deep");
+    let (mut editor, mut to_agent, _from_agent) = open_editor(&env);
+    let n = LIMIT + 1;
+    let deep = format!(
+        r#"{{"jsonrpc":"2.0","method":"_nested","params":{{"env":{{"TOKEN":"s3cret"}},"x":{}{}}}}}"#,
+        "[".repeat(n),
+        "]".repeat(n)
+    );
+    write!(to_agent, "{deep}").unwrap();
+    drop(to_agent);
+    assert!(wait_exit(&mut editor, Duration::from_secs(15)), "the editor's process stayed");
+    let calls = fs::read_to_string(env.dir.join("calls")).unwrap();
+    assert!(calls.contains(r#""_nested""#), "the editor's rest didn't reach the agent");
+    let events = too_deep(&env);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let e = &events[0];
+    assert_eq!(
+        (&e["from"], &e["max_depth"], &e["relayed"]),
+        (&json!("editor"), &json!(LIMIT), &json!(true))
+    );
+    let home = env.dir.join("home");
+    let files = [home.join("hosts"), home.join("projects")].into_iter().flat_map(|d| {
+        fs::read_dir(d).unwrap().flatten().flat_map(|e| match e.path().is_dir() {
+            true => fs::read_dir(e.path()).unwrap().flatten().map(|f| f.path()).collect(),
+            false => vec![e.path()],
+        })
+    });
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            !text.contains("_nested") && !text.contains("s3cret"),
+            "recorded in {}",
+            file.display()
+        );
+    }
+}
+
 /// Headless, brnr is the agent's client: a line nested past the limit is
 /// refused, dropped and said, as one too long is (ADR 10.3), a million deep
 /// too; the process goes on, and answers at once.

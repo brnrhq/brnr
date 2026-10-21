@@ -404,8 +404,12 @@ impl Host {
     }
 
     /// What the editor sent after its last line, as it closed its stdin: it
-    /// goes to the agent as it is, and is recorded as a line would be.
+    /// goes to the agent as it is, and is recorded as a line would be; one
+    /// nested past `json::DEPTH` isn't, and is said, as `editor_line` has it.
     pub(super) fn record_editor_rest(&mut self, rest: &[u8]) {
+        if self.too_deep("editor", rest) {
+            return;
+        }
         let msg = json::parse::<Value>(rest, json::DEPTH);
         let recorded = msg.as_ref().and_then(Value::as_object).and_then(log::redacted);
         self.record(None, Dir::EditorToAgent, recorded.as_deref().unwrap_or(rest));

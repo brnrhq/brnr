@@ -239,7 +239,9 @@ the other's request (GHSA-84pw-hh9c-w2m8).
   can't be found), and a `line_too_deep` event (`from`: `agent` or
   `editor`; `max_depth`: 128, in levels; `relayed`: whether it went on) says
   so: in every session's events file, to watchers and bridges, and in the
-  foreground (P3). As `line_too_long`, it belongs to no session.
+  foreground (P3). As `line_too_long`, it belongs to no session. So is
+  what the editor sends after its last newline as it closes its stdin: a
+  line too, it goes to the agent, and past 128 isn't recorded.
 - What the host keeps of a line nests no deeper than 128, and what it
   writes (events, answers, records) wraps that in a few levels of its own.
   The CLI reads what brnr wrote up to 256 levels, twice the limit: the
@@ -583,6 +585,7 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   [tests/headless.rs](../../tests/headless.rs):
   `adr_0002_a_lone_surrogate_is_read`, `adr_0002_a_line_at_the_limit_is_read`,
   `adr_0002_a_line_past_the_limit_passes_through_unread`,
+  `adr_0002_an_editors_rest_past_the_limit_passes_through_unread`,
   `adr_0002_headless_a_line_past_the_limit_is_dropped_and_said`,
   `adr_0002_an_answer_the_host_cant_place_reaches_the_agent`,
   `adr_0002_a_late_answer_to_a_cancelled_request_is_dropped`,
