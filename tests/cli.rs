@@ -4722,7 +4722,7 @@ fn adr_0008_help_exits_0_on_stdout() {
     let acp = env.ok(&["acp", "--strict", "--help"]);
     assert!(acp.starts_with("usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
     let out = env.run(&["acp", "--profile", "-h"]);
-    assert_ne!(code(&out), 0, "-h, the profile");
+    assert_eq!(code(&out), 1, "-h, the profile");
     assert_eq!(stdout(&out), "");
     let help = env.ok(&["--help"]);
     assert!(help.contains("  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
