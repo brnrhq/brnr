@@ -740,7 +740,8 @@ Not covered: whatever isn't listed above, and in particular:
   (P13, ADR 3.9), and it is not an interface: it is how brnr's own
   commands and the bridges brnr starts reach a process. Its path
   (`$BRNR_DIR/<pid>.sock`), how processes are found, their metadata files
-  (`<pid>.json`), and connecting to it directly, by `BRNR_SOCKET` (which a
+  (`<pid>.json`, whose `brnr` and `protocol` are for brnr's own commands,
+  ADR 8.8), and connecting to it directly, by `BRNR_SOCKET` (which a
   started bridge has) or otherwise, have no promise. A client connected
   directly speaks the bridge protocol, but what it speaks, and whether it
   is answered, can change in any release.
@@ -772,8 +773,9 @@ be, by a record that amends this one, once a second major exists.
 The promise starts at 1.0.0. #150 (`--json` shapes) is decided and made
 (ADR 8.2), as are #151 (event and transcript record names: ADR 5.9, #314),
 #153 (the exit code of a usage error, `--help`: ADR 8.3, #310), and #154
-(flags and config keys spelled two ways: ADR 8.1 and 6.1, #311), and #205
-(error codes: ADR 8.7). What they settle is what 1.0.0 promises.
+(flags and config keys spelled two ways: ADR 8.1 and 6.1, #311), #205
+(error codes: ADR 8.7), and #149 (a process and the commands of different
+releases: ADR 8.8). What they settle is what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise
@@ -1137,9 +1139,9 @@ The codes, by subject:
 | `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one (ADR 8.1, 4.5). |
 | `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
-| `command_unknown` | A `cmd` the process doesn't have, which an older brnr's process says of a newer one's request (#149). |
+| `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request, which an older brnr's process refuses (ADR 8.8). |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load (ADR 6.1, 9.4). |
-| `event_unknown` | An event the process doesn't have, or a note, in `subscribe`'s `events` (ADR 5.9). |
+| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one (ADR 5.9). An event the process doesn't have is left out, and named (ADR 8.8). |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable (ADR 7.1). |
 | `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
 | `message_not_found` | No held message has that id (ADR 4.2). |
@@ -1224,8 +1226,129 @@ already reads; on stderr, a script would parse lines written for people.
   the same way, else a new one; `unclassified` only where no caller could
   act on it.
 - The typed facade (#215) returns the code with its error (ADR 8.5).
-- #149 answers a request an older process doesn't have with
-  `command_unknown`.
+- ADR 8.8 answers a request, or a field of one, that an older process
+  doesn't have with `command_unknown`, and the CLI says how to restart it.
+
+## 8.8 A process and the commands can be different brnrs
+
+Resolves #149.
+
+An editor's process lives as long as the editor's session, so after an
+upgrade (`brew upgrade brnr`) the new CLI routinely talks to an older
+process, and a bridge written for a newer brnr can be started by an older
+one. `brnr acp` starts its process from its own executable (ADR 3.1), so
+those two always match; the CLI and a process, and a bridge and its
+process, may not.
+
+- **A process says what it is.** `<pid>.json`, and so the socket's
+  `status`, which has the metadata, carry `brnr`, the version `brnr
+  --version` prints (`"1.0.0"`), and `protocol`, a number: the version of
+  what the socket speaks, its requests, their fields and replies, and its
+  events. It is 1 until the first release after 1.0.0 that adds to that;
+  each release that adds to it makes it one more. Within a major version
+  nothing else changes it, as the protocol of a bridge brnr starts is
+  covered (ADR 8.4): a process with a lower `protocol` has less than this
+  brnr, never something else. A major version that changes it otherwise
+  makes it one more too, and its `brnr` says it is another major.
+- **A request the process doesn't have is refused, `command_unknown`**: a
+  `cmd` it doesn't have, or a field of one it doesn't take (`send doesn't
+  take priority (it takes session, text, blocks, mode, replace)`), and
+  nothing is done. A request is done as asked, or not at all (P7), as a
+  config key brnr doesn't know fails the config (ADR 6.1). A caller that
+  can do without a newer field asks again without it.
+- **`subscribe` leaves out an event the process doesn't have, and names
+  it**, in its answer's `unknown_events`; the subscription is to the rest.
+  A note's name is still refused, `event_unknown` (ADR 5.9): no brnr's
+  process sends one, so asking for it is a mistake whatever the versions. A
+  profile's bridge `events` are read by the brnr that starts the bridge, as
+  the rest of the profile is, and an event it doesn't have fails the
+  profile (ADR 6.1).
+- **The CLI says what it found, and how to restart the process.** An error
+  from a process whose `protocol` isn't the CLI's has, after its message,
+  what the process is and what to do, where the error may come of the
+  difference: `command_unknown` from an older or a newer process, and every
+  error from a process with no `protocol`, a brnr from before this, whose
+  errors are text that can't be told apart (ADR 8.7). The code stays the
+  process's. A headless process is stopped (`brnr process stop <pid>`) and
+  its sessions resumed, which runs them in this brnr; an editor's is
+  restarted from its editor, whose `brnr acp` then is this brnr:
+
+  ```text
+  brnr: unknown command: fork; process 4242 runs an older brnr (brnr 1.0.0, protocol 1) than this one (brnr 1.1.0, protocol 2): stop it (brnr process stop 4242) and resume its sessions (brnr session resume <session>) to run them in this brnr [command_unknown]
+  ```
+
+  Events a command subscribed to that the process doesn't have are said on
+  stderr, with the same, and the command goes on with the rest.
+- **An older CLI and a newer process**: within a major version, the newer
+  process has every request, field and event the older CLI asks for, and
+  its replies only add fields, which the older CLI ignores (ADR 8.4); there
+  is nothing to tell. Across a major, the older CLI's requests that the
+  newer process doesn't have are refused, `command_unknown`, and said as
+  any error is; the CLI to use is the one installed.
+- **The socket stays outside the promise** (ADR 8.4). A client that
+  connects to it directly has none, nor has `<pid>.json`: `brnr` and
+  `protocol` are there for brnr's own commands, which do meet processes of
+  other releases. A bridge brnr starts has them in `status`'s reply, which
+  is covered as the rest of its protocol is. What brnr's commands read to
+  find and reach a process (its metadata's `id`, `socket`, `host_pid`,
+  `proxy_pid`, `started`, `brnr` and `protocol`, and the socket's path),
+  brnr changes within a major version only by adding to: its own rule, so
+  that the commands it ships keep reaching the processes it left running,
+  not a promise to anyone else.
+
+**Why.** Before this, nothing said which brnr was on either side (#149): an
+error was a bare string the CLI couldn't tell from another, so after an
+upgrade a command failed with `unknown command: X` and nothing said why or
+what to do (F5); a field an older process didn't know was ignored, because
+requests were read as untyped JSON, so a newer flag quietly did nothing
+(P3, P4); and `subscribe` refused a whole subscription for one name it
+didn't know, so a bridge written for 1.1 got no events from 1.0. Refusing a
+request the process can't do as asked keeps P7, and a request already done
+otherwise than asked can't be undone, which telling of it after wouldn't
+mend (N2). A subscription is a reader's list of what it will read, and a
+reader ignores the events it doesn't know (ADR 8.4): an event a process
+doesn't have is one it never sends, so nothing is lost by subscribing to
+the rest, and the answer says what was left out (P3). The CLI knows both
+sides, so it can say which is older and how to restart it; the code stays
+the process's, so a script's match doesn't change (ADR 8.7). `brnr` says
+which release a process is, for people and `doctor`; `protocol` says what
+it speaks, which most patch releases don't change, as one number that only
+grows within a major, so that "has it what I ask" is one comparison, not a
+semver reading.
+
+**Considered.**
+
+- `brnr` alone: a version string compared by semver rules, pre-releases
+  and all, where most releases don't change what the socket speaks.
+- A handshake on every connection, refused on a mismatch: one more round
+  trip for every command, and a refusal of everything where most requests
+  are the same in both.
+- Refusing every request from a CLI of another `protocol`: a 1.1 CLI can
+  list, watch and answer a 1.0 process, which this would stop.
+- Ignoring a field the process doesn't know and naming it in the reply
+  (`ignored`): the request is done by then, otherwise than asked; a prompt
+  sent can't be unsent.
+- A code of its own for an unknown field (`field_unknown`): a caller acts
+  on it as on an unknown command (the process is another brnr: restart it,
+  or do without), and ADR 8.7 gives a code per failure a caller can act on.
+- Refusing a subscription that names an event the process doesn't have, as
+  before: a bridge for 1.1 got nothing from 1.0.
+- Taking such an event out without naming it: P3.
+- What to do after every error from a process of another `protocol`: most
+  of its errors are its own (no such session, a setting the agent doesn't
+  offer), and the advice would be noise there.
+- Restarting the process for the user: it ends the editor's session or a
+  running turn; that is the user's to choose (P4, P11).
+
+**Consequences.**
+
+- A flag added in 1.x fails against a process of an earlier 1.x, saying so
+  and how to restart it, instead of doing nothing.
+- `event_unknown` is only a note's name in `subscribe`, and in a profile's
+  bridge `events`, an event that brnr doesn't have.
+- A release that adds to what the socket speaks makes `PROTOCOL`
+  (src/host/control.rs) one more, and says so under Added in the changelog;
+  docs/interface.md lists each request's fields.
 
 ## Tests
 
@@ -1349,3 +1472,12 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   processes write; the other codes are asserted where their failures are
   tested (`[session_closing]`, `"command_unknown"`, …), which
   `adr_0008_every_error_code_is_listed_and_reached` finds.
+- 8.8: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_a_process_says_which_brnr_it_is`,
+  `adr_0008_a_field_the_process_doesnt_have_is_refused`,
+  `adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have`,
+  `adr_0008_an_older_process_is_said_with_how_to_restart_it` (an unknown
+  command, from a process of another brnr), and
+  `adr_0008_old_socket_commands_are_unknown`;
+  [src/ctl/client.rs](../../src/ctl/client.rs):
+  `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`.

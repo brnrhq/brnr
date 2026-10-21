@@ -76,7 +76,7 @@ use crate::sys;
 
 use approvals::Approvals;
 use control::{Closer, Peer};
-pub(crate) use control::{EVENTS, NOTES, QUIET, check_bridge};
+pub(crate) use control::{EVENTS, NOTES, PROTOCOL, QUIET, check_bridge};
 use display::Display;
 use flow::{Backlog, LINE_BYTES};
 use lines::{Lines, Long, Piece};
@@ -688,6 +688,10 @@ impl Host {
         self.info = json!({
             "id": id,
             "host_id": self.host_id,
+            // What it is, for a newer or older brnr's commands to tell
+            // (ADR 8.8).
+            "brnr": env!("CARGO_PKG_VERSION"),
+            "protocol": control::PROTOCOL,
             "profile": profile,
             "host_pid": std::process::id(),
             "proxy_pid": proxy_pid,

@@ -351,9 +351,9 @@ can add a code, for a new failure or for one that was `unclassified`.
 | `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one. |
 | `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
-| `command_unknown` | A `cmd` the process doesn't have: it may be an older brnr's. |
+| `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request to an older brnr's process. |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load. |
-| `event_unknown` | An event the process doesn't have, or a note, in `subscribe`'s `events`. |
+| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one. An event the process doesn't have isn't an error: `subscribe` names it in `unknown_events`. |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable. |
 | `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
 | `message_not_found` | No held message has that id. |
@@ -480,6 +480,19 @@ failures have `ok:false` and an `error`, `{code, message}` (see
 [errors](#errors)): `{"ok":false,"error":{"code":"session_not_found","message":"no session sess-9"},"req_id":"r2"}`.
 CLI JSON results omit this protocol envelope. Malformed request lines receive an error;
 clients should also handle EOF/disconnection rather than wait indefinitely.
+A `cmd` the process doesn't have, or a field the table below doesn't list for
+it, is refused with `command_unknown`, and nothing is done: a process can be
+an older brnr than the one that wrote the request (an editor's lives as long
+as the editor's session), and does a request as asked or not at all.
+
+A process says what it is in `status` (and its metadata file): `brnr`, its
+version as `brnr --version` prints it, and `protocol`, the version of what the
+socket speaks, a number that grows by one with each release that adds a
+request, a field or an event, and only grows within a major version. The CLI
+compares it with its own, and an error that may come of a difference says
+which brnr the process is and how to restart it: a headless one with `brnr
+process stop <pid>` and `brnr session resume <session>`, an editor's from the
+editor ([ADR 8.8](adr/0008-the-command-line-and-compatibility.md#88-a-process-and-the-commands-can-be-different-brnrs)).
 
 Example exchange (IDs are illustrative; use a session served by this host):
 
@@ -493,15 +506,15 @@ ID with `turn_ended.messages` or `message_dropped.message`.
 
 | `cmd` | Additional request fields | Success reply, in addition to `ok` and optional `req_id` |
 |---|---|---|
-| `status` | None | Host metadata, owner, uptime, `starting` (until the first session commits), `stopping`, `closing` (the sessions it has closed, or failed to open, and holds the locks of until their records are written, ADR 5.5), the idle setting, `capabilities`, `pending_count` and `elicitation_count`, bridge labels, and `sessions` array, each with `session`, its transcript's `events_log` and `acp_log` (null where not kept), and its state, with `held_count`, `context_count`, `pending_count` and `elicitation_count`. |
+| `status` | None | Host metadata (with `brnr` and `protocol`), owner, uptime, `starting` (until the first session commits), `stopping`, `closing` (the sessions it has closed, or failed to open, and holds the locks of until their records are written, ADR 5.5), the idle setting, `capabilities`, `pending_count` and `elicitation_count`, bridge labels, and `sessions` array, each with `session`, its transcript's `events_log` and `acp_log` (null where not kept), and its state, with `held_count`, `context_count`, `pending_count` and `elicitation_count`. |
 | `logged` | None | Acknowledgment after earlier recorded data has been processed by the transcript writer, with `lost`: true when a file has lost records it hasn't noted yet (a full disk); inspect recorded gaps/errors for lost data. |
 | `send` | `session`; optional `text`, `blocks` (ACP content-block array), `mode` (`prompt`, `steer`, `interrupt`, `context`), `replace` (boolean). | `session`, `status`, `message`; context mode returns `status:"held"` without a message ID. |
 | `cancel` | `session`; optional boolean `keep_held`. | `session`, `status`, `dropped` objects (`message`, `text`, `reason`). |
 | `queue` | `session`; optional `drop` (message ID), `clear`, `clear_context` (booleans); or `show` (message ID) alone; a `show` that is not a message ID is refused. | `session`, `held`, `context`, `dropped`; with `show`, that message: `session`, `message`, `text`, `interrupt`, `attachments`, `blocks`. |
-| `subscribe` | Optional `events`: array of event names or string `"all"`; a note's name (`records_skipped`, `events_missed`) is refused, as the host never sends one. | `events`: actual subscribed names. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. `peer`, this connection's name (`socket#7`); `host_id`; `pid`; `seq`, the last event's position before the subscription. |
+| `subscribe` | Optional `events`: array of event names or string `"all"`; a note's name (`records_skipped`, `events_missed`) is refused, as the host never sends one. | `events`: actual subscribed names; `unknown_events`: the names asked for that this process doesn't have (a newer brnr's), left out of the subscription. Omitted/null means all except `acp`; empty array selects none. Selection is host-wide; filter session IDs on the client. `peer`, this connection's name (`socket#7`); `host_id`; `pid`; `seq`, the last event's position before the subscription. |
 | `was_cut_off` | `peer`, a connection's name as `subscribe` gave it. | `peer`; `cut_off`, whether the process cut that connection off for falling behind (of its last 64 cut-offs); `last_queued_seq`, the last position queued for it then, else null. A position only, never an event: catch up from the transcript ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). |
 | `pending` | None | `pending`: approval objects for the host's sessions; `elicitations`: elicitation objects, as `elicitation show --json` has them, each with the process's `pid`. |
-| `allow`, `reject` | `session`, `request`; optional `always` boolean, `option_id` string (the option's `optionId`; `option` is refused). | `session`, `request`, `outcome`. |
+| `allow`, `reject` | `session`, `request`; optional `always` boolean, `option_id` string (the option's `optionId`). | `session`, `request`, `outcome`. |
 | `elicitation` | `session` (null for one outside any session), `request`, `action` (`accept`, `decline` or `cancel`); for an accept of a form, `content`: an object of the form's fields, checked against its schema before anything is sent. | `session`, `request`, `result`: the response sent to the agent (`action`, and an accept's `content`). |
 | `set_config` | `session`; optional `mode`, `model`, `thought_level` strings and `options` (object of option IDs to strings), at least one. Resolved and sent as `config set` does; answered once all are set, or with the first failure, which names what was already set. | `session`, `set` (`option`, `category`, `value` for each setting sent), `mode`, updated `config`. |
 | `fork` | `session`. | New `session` ID. |

@@ -584,10 +584,15 @@ says it is missing (P3, #60).
   session in the running process, as `session new --pid` and `session
   resume --pid`), `fork`, `close`, `stop`, `logged` (ADR 5.5) and
   `was_cut_off` (ADR 10.2). Those about a session name it by its exact id.
+  A `cmd` the process doesn't have, or a field of one, is refused,
+  `command_unknown` (ADR 8.8).
   Events: as ADR 5.1, 5.2 and 5.3 list them, each naming its session;
   `process_exited` is the process's. `subscribe` and a profile bridge's
   `events` take events only: a note's name is refused, and fails the
-  profile (ADR 5.9).
+  profile (ADR 5.9). `subscribe` leaves out an event the process doesn't
+  have, and names it in `unknown_events`, so that a newer brnr's bridge
+  gets the events an older process has; a profile that names one fails
+  (ADR 8.8).
 - A request line that isn't valid UTF-8 is answered with an error, and the
   bridge stays (#15).
 - A started bridge's stderr goes to the host log (`bridge_stderr`, its
@@ -756,7 +761,8 @@ Kinds:
   `event watch --json` can print is one it takes, and `--events
   records_skipped` alone lists a transcript's gaps. A note is still shown
   whatever `--events` chose (P3). `subscribe` and a bridge's `events` take
-  events only, and refuse a note (P7): the host never sends one.
+  events only, and refuse a note (P7): the host never sends one. An event
+  the process doesn't have, `subscribe` leaves out and names (ADR 8.8).
 - Every line `event log --json` and `event watch --json` print has
   `event`, `ts`, `host_id` and `pid`; a session's also has `session`, and
   an event its `seq`. The logger writes them into its notes, as the host

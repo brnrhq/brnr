@@ -12,6 +12,11 @@
 //! deeper than [`json::DEPTH`], and the host wraps it in a few levels of its
 //! own: a line past [`json::OWN_DEPTH`] is none the host makes, and is
 //! refused, and said (P3).
+//!
+//! A process may be another brnr than this one: an editor's lives as long as
+//! the editor's session, past an upgrade. Its metadata says which brnr it is
+//! and what it speaks (`brnr`, `protocol`); an error that may come of the
+//! difference says so, and how to restart it ([`skewed`], ADR 8.8).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -24,7 +29,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::error::{self, Code, Error};
-use crate::host::alive;
+use crate::host::{PROTOCOL, alive};
 use crate::{json, lock, paths, render, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
@@ -96,7 +101,7 @@ impl Host {
         let unreachable =
             |e: io::Error| Error::new(Code::process_unreachable, named(e.to_string()));
         let line = self.exchange(req, wait).map_err(unreachable)?;
-        read(&line).map_err(|e| Error::from(named(e)))?
+        read(&line).map_err(|e| Error::from(named(e)))?.map_err(|e| skewed(e, &self.meta))
     }
 
     /// What waits for an answer in the process.
@@ -148,6 +153,48 @@ fn unwrapped(mut answer: Value) -> Result<Value, Error> {
         map.shift_remove("req_id");
     }
     Ok(answer)
+}
+
+/// How the process `meta` describes differs from this brnr, and what to do
+/// about it, where it speaks another protocol, or predates `protocol`
+/// (ADR 8.8); `None` where it speaks this brnr's.
+pub(super) fn skew(meta: &Value) -> Option<String> {
+    let theirs = meta["protocol"].as_u64();
+    if theirs == Some(PROTOCOL) {
+        return None;
+    }
+    let pid = meta["id"].as_str().unwrap_or("?");
+    let ours = format!("brnr {}, protocol {PROTOCOL}", env!("CARGO_PKG_VERSION"));
+    let what = match (theirs, meta["brnr"].as_str()) {
+        (Some(p), Some(v)) => {
+            let which = if p < PROTOCOL { "an older" } else { "a newer" };
+            format!("{which} brnr (brnr {v}, protocol {p}) than this one ({ours})")
+        }
+        _ => format!("an older brnr than this one ({ours}), from before processes said theirs"),
+    };
+    // An editor's process is the editor's `brnr acp`'s, which runs the brnr
+    // it was started as (ADR 3.1).
+    let restart = if meta["proxy_pid"].is_number() {
+        "restart the agent in its editor to run this brnr".to_owned()
+    } else {
+        format!(
+            "stop it (brnr process stop {pid}) and resume its sessions (brnr session resume \
+             <session>) to run them in this brnr"
+        )
+    };
+    Some(format!("process {pid} runs {what}: {restart}"))
+}
+
+/// `err`, from the process `meta` describes, with what [`skew`] says where
+/// it may come of the difference: `command_unknown` (a request, or a field
+/// of one, the process doesn't have), and any error from a process that
+/// predates `protocol`, whose errors are text that can't be told apart.
+pub(super) fn skewed(err: Error, meta: &Value) -> Error {
+    let may = err.code == Code::command_unknown || meta["protocol"].is_null();
+    match skew(meta) {
+        Some(note) if may => err.map(|m| format!("{m}; {note}")),
+        _ => err,
+    }
 }
 
 /// Session `id` in a process's `status` answer, if it serves it.
@@ -394,6 +441,9 @@ pub(super) struct Conn {
     missed: Option<Value>,
     /// How many times it has connected again.
     reconnects: u32,
+    /// The process's metadata, to say how it differs from this brnr
+    /// ([`skewed`]); none on the start channel, whose process is this brnr.
+    meta: Option<Value>,
 }
 
 impl Conn {
@@ -403,6 +453,7 @@ impl Conn {
         let stream = host.connect().map_err(unreachable)?;
         let mut conn = Conn::new(stream)?;
         conn.socket = host.meta["socket"].as_str().map(PathBuf::from);
+        conn.meta = Some(host.meta.clone());
         Ok(conn)
     }
 
@@ -418,6 +469,7 @@ impl Conn {
             follow: None,
             missed: None,
             reconnects: 0,
+            meta: None,
         })
     }
 
@@ -435,10 +487,26 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<(), Error> {
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }))?;
+        self.tell_unknown(&answer);
         if let Some(socket) = self.socket.clone() {
             self.follow = Follow::new(socket, &answer, events, session);
         }
         Ok(())
+    }
+
+    /// Says on stderr which of the events asked for the process doesn't have,
+    /// as its `subscribe` answer names them: an older brnr's (ADR 8.8). The
+    /// command goes on with the rest (P3).
+    fn tell_unknown(&self, answer: &Value) {
+        let unknown = answer["unknown_events"].as_array().filter(|u| !u.is_empty());
+        let Some(unknown) = unknown else { return };
+        let names: Vec<&str> = unknown.iter().filter_map(Value::as_str).collect();
+        let pid = self.meta.as_ref().and_then(|m| m["id"].as_str()).unwrap_or("?");
+        let mut said = format!("process {pid} doesn't send {}", names.join(", "));
+        if let Some(note) = self.meta.as_ref().and_then(skew) {
+            said = format!("{said}; {note}");
+        }
+        errln!("brnr: {said}");
     }
 
     /// Follows only `session`, which the subscription came before.
@@ -494,7 +562,11 @@ impl Conn {
         req: Value,
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, Error> {
-        self.answer_until(req, deadline)?.map(unwrapped).transpose()
+        let answer = self.answer_until(req, deadline)?.map(unwrapped).transpose();
+        match &self.meta {
+            Some(meta) => answer.map_err(|e| skewed(e, meta)),
+            None => answer,
+        }
     }
 
     /// The answer to `req` as the process gave it, error or not; `Err` only
@@ -834,7 +906,57 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
             asked
         });
-        (Host { meta: json!({ "id": "7", "socket": socket }), status: None }, process)
+        let meta = json!({ "id": "7", "socket": socket, "protocol": PROTOCOL });
+        (Host { meta, status: None }, process)
+    }
+
+    /// An error from a process that speaks another protocol than this
+    /// brnr's says so, and how to restart it, where it may come of the
+    /// difference: a request it doesn't have, or, from one that predates
+    /// `protocol`, any error, as its errors are text (ADR 8.8). One that
+    /// speaks this brnr's gets its errors as they are.
+    #[test]
+    fn adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it() {
+        let unknown =
+            r#"{"ok":false,"error":{"code":"command_unknown","message":"unknown command: fork"}}"#;
+        let missing =
+            r#"{"ok":false,"error":{"code":"session_not_found","message":"no session s"}}"#;
+        let text = r#"{"ok":false,"error":"unknown command: fork"}"#;
+        let answers = [unknown, unknown, missing, unknown, text];
+        let (mut host, process) = answering("skew", answers.map(String::from).to_vec());
+        let fork = json!({ "cmd": "fork", "session": "s" });
+        let said = |host: &Host| host.call(&fork).unwrap_err();
+        assert_eq!(said(&host), Error::new(Code::command_unknown, "unknown command: fork"));
+
+        let newer = PROTOCOL + 1;
+        host.meta["protocol"] = json!(newer);
+        host.meta["brnr"] = json!("9.0.0");
+        let ours = format!("brnr {}, protocol {PROTOCOL}", env!("CARGO_PKG_VERSION"));
+        let restart = "stop it (brnr process stop 7) and resume its sessions (brnr session \
+                       resume <session>) to run them in this brnr";
+        let note = format!(
+            "process 7 runs a newer brnr (brnr 9.0.0, protocol {newer}) than this one ({ours}): \
+             {restart}"
+        );
+        let error = said(&host);
+        assert_eq!(error.code, Code::command_unknown);
+        assert_eq!(error.message, format!("unknown command: fork; {note}"));
+        // Not of the difference: as it is.
+        assert_eq!(said(&host), Error::new(Code::session_not_found, "no session s"));
+
+        // An editor's, from before processes said their version.
+        host.meta = json!({ "id": "7", "socket": host.meta["socket"], "proxy_pid": 5 });
+        let note = format!(
+            "process 7 runs an older brnr than this one ({ours}), from before processes said \
+             theirs: restart the agent in its editor to run this brnr"
+        );
+        assert_eq!(said(&host).message, format!("unknown command: fork; {note}"));
+        let error = said(&host);
+        assert_eq!(
+            (error.code, error.message),
+            (Code::unclassified, format!("unknown command: fork; {note}"))
+        );
+        process.join().unwrap();
     }
 
     /// What `call` gets is the answer without its envelope; an error the

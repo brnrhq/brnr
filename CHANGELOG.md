@@ -52,8 +52,26 @@ brnr's own conventions:
   `events_missed`, which are shown whatever it chose: `event log
   --events records_skipped` lists only a transcript's gaps (ADR 5.9,
   #314).
+- A process says which brnr it is: its `<pid>.json` and the socket's
+  `status` have `brnr`, its version, and `protocol`, the version of what
+  its socket speaks. A command that fails because the process is another
+  brnr (an editor's process outlives `brew upgrade brnr`) says so, and how
+  to restart it: `brnr process stop <pid>` and `brnr session resume
+  <session>` for a headless one, the agent restarted in its editor for an
+  editor's. Events a command asked for that the process doesn't have are
+  said on stderr, and the command goes on (ADR 8.8, #149).
 
 ### Changed
+
+- **Breaking:** a socket or bridge request with a field its `cmd` doesn't
+  take is refused, `command_unknown`, and nothing is done; it was done
+  without it. `allow`'s and `reject`'s old `option` is such a field now,
+  `command_unknown`, not `command_invalid` (ADR 8.8, #149).
+- `subscribe` with an event the process doesn't have subscribes to the
+  rest, and names it in its answer's `unknown_events`, so that a bridge
+  written for a newer brnr gets an older process's events; it refused the
+  subscription, `event_unknown`, which is now only for a note's name
+  (ADR 8.8, #149).
 
 - **Breaking:** every error brnr reports as data is `{"code", "message"}`:
   a socket or bridge reply that fails is `{"ok": false, "error": {"code":

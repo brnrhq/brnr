@@ -10,6 +10,9 @@
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
+//! A `cmd` the process doesn't have, or a field of one ([`REQUESTS`]), is
+//! refused, `command_unknown`: a newer brnr's request, which would otherwise
+//! be done without what it asked (ADR 8.8, P7).
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
 //!   is in its transcript, which a logger thread writes (`brnr event log`,
@@ -26,7 +29,10 @@
 //!   message `show` (an id; anything else is refused) in full, its content
 //!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
-//!   (started bridges are subscribed from the start). The answer names the
+//!   (started bridges are subscribed from the start). An event the process
+//!   doesn't have is left out, and named in `unknown_events`, so that a newer
+//!   brnr's bridge gets the events this one has (ADR 8.8); a note is refused
+//!   (ADR 5.9). The answer names the
 //!   connection (`peer`), the process (`host_id`) and the last event before
 //!   it (`seq`): every event has a position, its `seq`, one more than the
 //!   last event's or ACP message's of the process (ADR 10.2)
@@ -150,6 +156,66 @@ pub(crate) const EVENTS: &[&str] = &[
     "process_exited",
     "acp",
 ];
+
+/// The version of what the socket speaks, its requests, their fields and
+/// replies, and the events, in `<pid>.json` and `status` beside brnr's own
+/// (ADR 8.8). One more in a release that adds to it; within a major version
+/// it only grows, as the bridge protocol is covered (ADR 8.4).
+pub(crate) const PROTOCOL: u64 = 1;
+
+/// Each request, and its fields but `cmd` and `req_id`, which every request
+/// may have. What isn't here the process doesn't have, and refuses
+/// (`command_unknown`, ADR 8.8).
+const REQUESTS: &[(&str, &[&str])] = &[
+    ("status", &[]),
+    ("logged", &[]),
+    ("send", &["session", "text", "blocks", "mode", "replace"]),
+    ("cancel", &["session", "keep_held"]),
+    ("queue", &["session", "drop", "clear", "clear_context", "show"]),
+    ("subscribe", &["events"]),
+    ("was_cut_off", &["peer"]),
+    ("pending", &[]),
+    ("allow", &["session", "request", "always", "option_id"]),
+    ("reject", &["session", "request", "always", "option_id"]),
+    ("elicitation", &["session", "request", "action", "content"]),
+    ("set_config", &["session", "mode", "model", "thought_level", "options"]),
+    ("fork", &["session"]),
+    ("close", &["session", "take_over"]),
+    ("new", &["cwd", "mode", "model", "thought_level", "options", "text", "blocks", "timeout"]),
+    (
+        "resume",
+        &[
+            "session",
+            "cwd",
+            "mode",
+            "model",
+            "thought_level",
+            "options",
+            "text",
+            "blocks",
+            "timeout",
+        ],
+    ),
+    ("stop", &[]),
+];
+
+/// `Err`: what of `req`, a `cmd` request, the process doesn't have: the
+/// command, or fields of it. Refused, not ignored: a newer brnr's field done
+/// without would be its request done otherwise than asked (ADR 8.8, P7).
+fn check_request(cmd: &str, req: &Value) -> Result<(), Error> {
+    let Some((_, fields)) = REQUESTS.iter().find(|(c, _)| *c == cmd) else {
+        return Err(Error::new(Code::command_unknown, format!("unknown command: {cmd}")));
+    };
+    let fields_of = req.as_object().into_iter().flat_map(|m| m.keys().map(String::as_str));
+    let unknown: Vec<&str> =
+        fields_of.filter(|f| !matches!(*f, "cmd" | "req_id") && !fields.contains(f)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let takes = if fields.is_empty() { "no fields".to_owned() } else { fields.join(", ") };
+    let error = format!("{cmd} doesn't take {} (it takes {takes})", unknown.join(", "));
+    Err(Error::new(Code::command_unknown, error))
+}
 
 /// Notes: what brnr adds to a stream of events, and the host never emits
 /// (ADR 5.9): the logger's gap in a transcript (ADR 10.1), and what a command
@@ -276,16 +342,26 @@ pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
     check_events(bridge.events.as_deref().unwrap_or_default()).map_err(|e| e.message)
 }
 
+/// A profile's bridge's `events`: each an event this brnr has. The profile
+/// is read by the brnr that starts the bridge, so a name it doesn't have is
+/// a mistake, as a config key it doesn't know is (ADR 6.1).
 fn check_events(events: &[String]) -> Result<(), Error> {
+    no_notes(events)?;
     match events.iter().find(|e| !EVENTS.contains(&e.as_str())) {
-        // The host never sends one (ADR 5.9).
-        Some(note) if NOTES.contains(&note.as_str()) => Err(Error::new(
-            Code::event_unknown,
-            format!("{note:?} is a note, which the host never sends: only events are"),
-        )),
         Some(bad) => Err(Error::new(
             Code::event_unknown,
             format!("unknown event {bad:?} (events: {})", EVENTS.join(", ")),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `Err` if `events` names a note, which no brnr's process sends (ADR 5.9).
+fn no_notes(events: &[String]) -> Result<(), Error> {
+    match events.iter().find(|e| NOTES.contains(&e.as_str())) {
+        Some(note) => Err(Error::new(
+            Code::event_unknown,
+            format!("{note:?} is a note, which the host never sends: only events are"),
         )),
         None => Ok(()),
     }
@@ -590,38 +666,37 @@ impl Host {
             return Err(invalid(format!("bad request: {}", err.as_str().unwrap_or_default())));
         }
         let now = |v: Result<Value, Error>| v.map(Some);
-        match req["cmd"].as_str() {
-            Some("status") => Ok(Some(self.status_report())),
-            Some("logged") => {
+        let Some(cmd) = req["cmd"].as_str() else { return Err(invalid("missing cmd")) };
+        check_request(cmd, req)?;
+        match cmd {
+            "status" => Ok(Some(self.status_report())),
+            "logged" => {
                 self.when_logged(peer, req.get("req_id").cloned());
                 Ok(None)
             }
-            Some("send") => now(self.send(req)),
-            Some("cancel") => now(self.cancel_turn(req)),
-            Some("queue") => now(self.queue(req)),
-            Some("subscribe") => now(self.subscribe(peer, req)),
-            Some("was_cut_off") => now(self.was_cut_off(req)),
-            Some("pending") => Ok(Some(json!({
+            "send" => now(self.send(req)),
+            "cancel" => now(self.cancel_turn(req)),
+            "queue" => now(self.queue(req)),
+            "subscribe" => now(self.subscribe(peer, req)),
+            "was_cut_off" => now(self.was_cut_off(req)),
+            "pending" => Ok(Some(json!({
                 "ok": true,
                 "pending": self.pending_permissions(),
                 "elicitations": self.pending_elicitations(),
             }))),
-            Some("allow") => now(self.answer(peer, req, Choice::Allow)),
-            Some("reject") => now(self.answer(peer, req, Choice::Reject)),
-            Some("elicitation") => now(self.elicitation(peer, req)),
-            Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
-            Some("new" | "resume") => self.open(peer, req).map(|()| None),
-            Some("stop") => {
+            "allow" => now(self.answer(peer, req, Choice::Allow)),
+            "reject" => now(self.answer(peer, req, Choice::Reject)),
+            "elicitation" => now(self.elicitation(peer, req)),
+            "set_config" | "fork" | "close" => self.agent_op(peer, req).map(|()| None),
+            "new" | "resume" => self.open(peer, req).map(|()| None),
+            "stop" => {
                 if self.status.is_some() {
                     return Err(Error::new(Code::agent_exited, "the agent has already exited"));
                 }
                 self.begin_stop();
                 Ok(Some(json!({ "ok": true, "status": "stopping" })))
             }
-            Some(other) => {
-                Err(Error::new(Code::command_unknown, format!("unknown command: {other}")))
-            }
-            None => Err(invalid("missing cmd")),
+            _ => Err(Error::new(Code::command_unknown, format!("unknown command: {cmd}"))),
         }
     }
 
@@ -662,7 +737,17 @@ impl Host {
             ),
             Some(_) => return Err(invalid("events must be a list")),
         };
-        check_events(events.as_deref().unwrap_or_default())?;
+        // An event this process doesn't have is a newer brnr's: left out and
+        // named, so that a newer bridge gets the events this one has
+        // (ADR 8.8). A note is no brnr's event, and is refused (ADR 5.9).
+        no_notes(events.as_deref().unwrap_or_default())?;
+        let (events, unknown): (Option<Vec<String>>, Vec<String>) = match events {
+            None => (None, Vec::new()),
+            Some(list) => {
+                let (known, unknown) = list.into_iter().partition(|e| EVENTS.contains(&e.as_str()));
+                (Some(known), unknown)
+            }
+        };
         let p = self.peers.get_mut(&peer).ok_or("connection gone")?;
         p.subscribed = true;
         p.events = events.clone();
@@ -673,7 +758,7 @@ impl Host {
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
         let pid = std::process::id();
         Ok(
-            json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
+            json!({ "ok": true, "events": names, "unknown_events": unknown, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
         )
     }
 
@@ -684,12 +769,6 @@ impl Host {
         let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
-        // Its old name, refused rather than ignored: the option it named
-        // would not be the one answered (ADR 8.1, P3).
-        if req.get("option").is_some() {
-            let cmd = req["cmd"].as_str().unwrap_or("allow");
-            return Err(invalid(format!("{cmd} takes option_id, not option")));
-        }
         let resolved = self.approvals.answer(
             Kind::Permission,
             &handle,

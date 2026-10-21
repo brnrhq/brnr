@@ -599,7 +599,8 @@ transcript) and `events_missed` (what a command cut off couldn't catch up
 on), which are shown whatever it chose: `--events records_skipped` alone
 shows only a transcript's gaps. A bridge's `events` and `subscribe` take
 events only; a note's name fails a profile's bridge, as the process never
-sends one.
+sends one. `subscribe` leaves out an event the process doesn't have (an
+older brnr's), and names it in its answer.
 Without it, `event watch`, `event log` and the foreground leave out the quiet
 ones, `acp`, `agent_thought`, `usage` and `tool_progress`, in text and JSON
 alike. Bridges get every event but `acp` unless they choose. Watching a
@@ -826,6 +827,15 @@ Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
+A request, or a field of one, that the process doesn't have is refused
+(`command_unknown`), never done without it.
+
+A process can be an older brnr than the one you run: an editor's lives as
+long as the editor's session, past `brew upgrade brnr`. `status` says which
+it is (`brnr`, its version, and `protocol`, what its socket speaks), and a
+command that fails because of the difference says so, and how to restart
+the process: `brnr process stop <pid>` and `brnr session resume <session>`
+for a headless one, the agent restarted in its editor for an editor's.
 
 A started bridge lasts until its process exits; its stdout closing only means
 it has no more requests. When the process stops, the bridge gets the last

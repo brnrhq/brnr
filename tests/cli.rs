@@ -3500,8 +3500,8 @@ fn adr_0008_option_must_be_on_the_verbs_side() {
 
 /// A permission request's option is `--option-id <id>`, ACP's `optionId`,
 /// and the socket's `option_id`: `--option` is a config option's, unknown to
-/// `permission allow` (exit 2), and the socket refuses `option`, nothing
-/// answered either way (ADR 8.1).
+/// `permission allow` (exit 2), and the socket refuses `option`, a field
+/// `allow` doesn't take (ADR 8.8), nothing answered either way (ADR 8.1).
 #[test]
 fn adr_0008_a_permissions_option_is_option_id() {
     let options = r#"[{"optionId": "a", "name": "A", "kind": "allow_once"},
@@ -3530,7 +3530,9 @@ fn adr_0008_a_permissions_option_is_option_id() {
     for cmd in ["allow", "reject"] {
         let old = call(json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option": "b" }));
         assert_eq!(old["ok"], false, "{old}");
-        let said = json!({ "code": "command_invalid", "message": format!("{cmd} takes option_id, not option") });
+        let message =
+            format!("{cmd} doesn't take option (it takes session, request, always, option_id)");
+        let said = json!({ "code": "command_unknown", "message": message });
         assert_eq!(old["error"], said, "{old}");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
@@ -6510,7 +6512,8 @@ fn adr_0008_no_error_is_reported_without_a_code() {
         ("not json", "command_invalid"),
         (r#"{"req_id":1}"#, "command_invalid"),
         (r#"{"cmd":"approve"}"#, "command_unknown"),
-        (r#"{"cmd":"subscribe","events":["nosuch"]}"#, "event_unknown"),
+        (r#"{"cmd":"status","nosuch":1}"#, "command_unknown"),
+        (r#"{"cmd":"subscribe","events":["events_missed"]}"#, "event_unknown"),
         (r#"{"cmd":"send","text":"hi"}"#, "command_invalid"),
         (r#"{"cmd":"send","session":"nosuch","text":"hi"}"#, "session_not_found"),
         (r#"{"cmd":"queue","session":"sess-1","drop":"m9"}"#, "message_not_found"),
@@ -6538,4 +6541,187 @@ fn adr_0008_a_starting_process_refuses_another_session() {
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     assert_eq!(json_error(&out)["code"], "process_starting", "{}", stdout(&out));
     assert!(first.wait().unwrap().success());
+}
+
+// ---- another brnr's process (ADR 8.8) -------------------------------------
+
+/// A connection to `env`'s one process, and a way to ask it something on
+/// it: the line that answers.
+fn asking(env: &Env) -> (UnixStream, impl FnMut(&mut UnixStream, Value) -> Value) {
+    let conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    let ask = move |conn: &mut UnixStream, req: Value| -> Value {
+        writeln!(conn, "{req}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    (conn, ask)
+}
+
+/// `<pid>.json` and `status` say which brnr the process is, as `brnr
+/// --version` says it, and the version of what its socket speaks.
+#[test]
+fn adr_0008_a_process_says_which_brnr_it_is() {
+    let env = Env::new("c-version");
+    env.start(&[]);
+    let version = env.ok(&["--version"]);
+    let version = version.trim().strip_prefix("brnr ").unwrap();
+    let meta = &env.hosts()[0];
+    assert_eq!(meta["brnr"], version, "{meta}");
+    assert!(meta["protocol"].as_u64().is_some_and(|p| p >= 1), "{meta}");
+    let (mut conn, mut ask) = asking(&env);
+    let status = ask(&mut conn, json!({ "cmd": "status" }));
+    assert_eq!((&status["brnr"], &status["protocol"]), (&meta["brnr"], &meta["protocol"]));
+}
+
+/// A field the process doesn't have is refused, `command_unknown`, as a
+/// command it doesn't have is, and nothing is done: a newer brnr's request,
+/// done without it, would be done otherwise than asked (P7).
+#[test]
+fn adr_0008_a_field_the_process_doesnt_have_is_refused() {
+    let env = Env::new("c-field");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let (mut conn, mut ask) = asking(&env);
+    let req = json!({ "cmd": "send", "session": "sess-1", "text": "reply later", "priority": "high", "req_id": "r1" });
+    let answer = ask(&mut conn, req);
+    let message = "send doesn't take priority (it takes session, text, blocks, mode, replace)";
+    let said = json!({ "ok": false, "error": { "code": "command_unknown", "message": message }, "req_id": "r1" });
+    assert_eq!(answer, said);
+    let answer = ask(&mut conn, json!({ "cmd": "stop", "now": true }));
+    assert_eq!(answer["error"]["code"], "command_unknown", "{answer}");
+    assert_eq!(answer["error"]["message"], "stop doesn't take now (it takes no fields)");
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply now"]);
+    assert_eq!(env.prompts(), ["reply hi", "reply now"], "sent anyway");
+    assert_eq!(env.hosts().len(), 1, "stopped anyway");
+}
+
+/// `subscribe` leaves out an event the process doesn't have, and names it:
+/// a newer brnr's bridge gets the events this one has.
+#[test]
+fn adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have() {
+    let env = Env::new("c-sub-newer");
+    env.start(&[]);
+    let (mut conn, mut ask) = asking(&env);
+    let req = json!({ "cmd": "subscribe", "events": ["turn_ended", "turn_paused"] });
+    let answer = ask(&mut conn, req);
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["events"], json!(["turn_ended"]), "{answer}");
+    assert_eq!(answer["unknown_events"], json!(["turn_paused"]), "{answer}");
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["event"], "turn_ended", "{event}");
+}
+
+/// A process of another brnr for `env`: its metadata `meta` in the runtime
+/// directory, as this test's pid (with no `host_pid` or `agent_pid`, which
+/// `Env` would kill), and its socket, answering each request as `answer`
+/// does, each connection kept open. Its pid.
+fn another_brnr(env: &Env, meta: Value, answer: fn(&Value) -> Value) -> String {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::net::UnixListener;
+    let run = env.dir.join("run");
+    let _ = fs::DirBuilder::new().mode(0o700).create(&run);
+    let pid = std::process::id().to_string();
+    let socket = run.join(format!("{pid}.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut meta = meta;
+    meta["id"] = json!(pid);
+    meta["socket"] = json!(socket);
+    meta["cwd"] = json!(env.dir);
+    meta["started"] = json!("2026-10-21T00:00:00.000000Z");
+    fs::write(run.join(format!("{pid}.json")), meta.to_string()).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut out = stream.try_clone().unwrap();
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let mut reply = answer(&req);
+                    reply["req_id"] = req["req_id"].clone();
+                    if writeln!(out, "{reply}").is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    pid
+}
+
+/// What an older brnr's process answers: its status, with one session; and
+/// every other request as a process from before #205 does, in text.
+fn an_older_brnrs_answer(req: &Value) -> Value {
+    match req["cmd"].as_str().unwrap() {
+        "status" => {
+            json!({ "ok": true, "owner": "headless", "sessions": [{ "session": "sess-old", "state": "idle" }] })
+        }
+        cmd => json!({ "ok": false, "error": format!("unknown command: {cmd}") }),
+    }
+}
+
+/// A newer brnr's: its status, a subscription to what it has, which isn't
+/// what was asked, and `command_unknown` for the rest.
+fn a_newer_brnrs_answer(req: &Value) -> Value {
+    match req["cmd"].as_str().unwrap() {
+        "status" => {
+            json!({ "ok": true, "owner": "editor", "sessions": [{ "session": "sess-old", "state": "idle" }] })
+        }
+        "subscribe" => {
+            json!({ "ok": true, "events": [], "unknown_events": req["events"], "peer": "socket#1", "host_id": "h", "seq": 0 })
+        }
+        "logged" => json!({ "ok": true, "lost": false }),
+        cmd => {
+            json!({ "ok": false, "error": { "code": "command_unknown", "message": format!("unknown command: {cmd}") } })
+        }
+    }
+}
+
+/// A command a process of another brnr doesn't have says so, and how to
+/// restart it to run this brnr: headless, by stopping it and resuming its
+/// sessions; an editor's, in its editor. One from before processes said
+/// their version answers in text, which can't be told apart, so its every
+/// error says it. An event it doesn't have is said on stderr, and the
+/// command goes on.
+#[test]
+fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
+    let env = Env::new("c-older");
+    let pid = another_brnr(&env, json!({}), an_older_brnrs_answer);
+    let out = env.run(&["session", "fork", "sess-old"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    let older =
+        format!("brnr: unknown command: fork; process {pid} runs an older brnr than this one");
+    assert!(err.starts_with(&older), "{err}");
+    assert!(err.contains("from before processes said theirs"), "{err}");
+    let restart = format!(
+        "stop it (brnr process stop {pid}) and resume its sessions (brnr session resume \
+         <session>) to run them in this brnr [unclassified]\n"
+    );
+    assert!(err.ends_with(&restart), "{err}");
+
+    let env = Env::new("c-newer");
+    let meta = json!({ "brnr": "1000.0.0", "protocol": 1000, "proxy_pid": 1 });
+    let pid = another_brnr(&env, meta, a_newer_brnrs_answer);
+    let out = env.run(&["session", "fork", "sess-old", "--json"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let error = json_error(&out);
+    assert_eq!(error["code"], "command_unknown", "{error}");
+    let newer = format!("process {pid} runs a newer brnr (brnr 1000.0.0, protocol 1000)");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains(&newer), "{message}");
+    assert!(message.ends_with("restart the agent in its editor to run this brnr"), "{message}");
+
+    let args = ["event", "watch", "--pid", &pid, "--events", "turn_ended"];
+    let watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    sleep(Duration::from_secs(1));
+    kill(watch.id() as i32, libc::SIGKILL);
+    let err = stderr(&watch.wait_with_output().unwrap());
+    // What it was asked for: `turn_ended`, and `process_exited`, which a
+    // watch ends with.
+    let said = format!("brnr: process {pid} doesn't send turn_ended, process_exited; {newer}");
+    assert!(err.starts_with(&said), "{err}");
 }
