@@ -261,8 +261,8 @@ field.
   startup diagnostics go to stderr. JSON is one object at completion with
   `session`, `message`, `reply` (string), `stop_reason`, `error`, `tokens`,
   `dropped`, and `pid` for `session new` and `session resume`. A missing
-  error is null; `dropped` is empty, or the message, dropped before it was
-  sent, as `{message, text, reason}`. A command
+  error is null; `dropped` is a list: empty, or it contains the message,
+  dropped before it was sent, as `{message, text, reason}`. A command
   may fail before a completion object is available.
 - `--foreground` instead stays attached, displaying event lines;
   `--json` makes them JSON lines and `--quiet` suppresses the display.

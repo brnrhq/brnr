@@ -1139,8 +1139,9 @@ fn adr_0008_a_count_is_named_so() {
 
 /// `event wait --json` prints one shape for each `--for`, whatever ended
 /// the wait and whether it held when the wait began (ADR 8.3): `idle` the
-/// session's state, `permission` the request as `permission show` prints
-/// it, `turn` the `turn_ended` event, `exit` the `process_exited` event,
+/// session's state, `permission` and `elicitation` the request as
+/// `permission show` and `elicitation show` print it, `turn` the
+/// `turn_ended` event, `exit` the `process_exited` event,
 /// which the command makes, as far as it knows it, for a process killed
 /// before it could send one.
 #[test]
@@ -1193,6 +1194,15 @@ fn adr_0008_event_wait_prints_one_shape_for_each_condition() {
     let ended = waited(wait, 0);
     assert_eq!((&ended["event"], &ended["session"]), (&"turn_ended".into(), &"sess-1".into()));
     assert!(ended["seq"].is_u64() && ended["host_id"].is_string(), "{ended}");
+    // An elicitation as it comes, and once it is waiting: `elicitation show`'s.
+    let elicitation = ["event", "wait", "sess-1", "--for", "elicitation"];
+    let wait = spawn(&elicitation);
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "elicit form"]);
+    let came = waited(wait, 0);
+    let shown = json(&["elicitation", "show", "sess-1", "e1", "--json"]);
+    assert_eq!(came, shown);
+    assert_eq!(json(&[&elicitation[..], &["--json"]].concat()), shown);
     // A process killed says nothing: the command says it for it.
     let wait = spawn(&["event", "wait", "sess-1", "--for", "exit"]);
     sleep(Duration::from_millis(300));
