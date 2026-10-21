@@ -214,10 +214,6 @@ brnr's own conventions:
   (Ctrl-C, `kill`), and says on stderr how much of its records it didn't
   write; until then it waits for the disk, as before. A panic lets go of
   the process's sessions before it waits, as an exit does (ADR 5.5, #165).
-- A headless process no longer dies when `response_timeout` answers a
-  permission request nested deeper than its main thread's stack takes (a
-  million deep): the event loop's timers run on a stack that takes what the
-  host holds, as its events do (ADR 2.5, #189).
 - A bridge's load of a session (`session resume --pid`, an agent without
   `session/resume`) finds its transcript in any folder, and one the process
   served and closed moments before, its logger behind, where it recorded
@@ -241,28 +237,26 @@ brnr's own conventions:
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
   agent reported them again (ADR 3.12, ADR 5.1, #238).
-- `brnr permission requests` lists a request nested deeper than 128,
-  where it failed with `recursion limit exceeded`: it reads the host's
-  answer as the host reads the agent's line (ADR 2.5, #239).
+- `brnr permission requests` lists a request nested up to 128 levels, the
+  most the host reads, where one past serde_json's 127 failed with
+  `recursion limit exceeded` (ADR 2.5, #239).
 - `brnr prompt send --wait`, `event wait`, `event watch` and `event notify`
-  (from the socket and `--stdin`) see a permission request nested deeper
-  than 128, which they dropped without a word: they read events as the
-  host reads the agent's line (ADR 2.5, #250).
-- Those commands, and `session new --wait`, follow an event nested about a
-  million deep, where they overflowed their stack and aborted (exit 134):
-  each event is used and let go of on a stack that takes it, as the host
-  does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
-  #252).
-- `brnr permission show` shows a request nested deeper than 128, and
+  (from the socket and `--stdin`) see a permission request nested up to 128
+  levels, where one past serde_json's 127 was dropped without a word
+  (ADR 2.5, #250).
+- Those commands, and `session new --wait`, no longer overflow their stack
+  and abort (exit 134) on an event nested about a million deep: the host
+  sends none that deep, and a line nested past 256 levels they say they
+  can't read, and fail (ADR 2.5, #252).
+- `brnr permission show` shows a request nested up to 128 levels, and
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
-- `brnr permission requests` and `elicitation requests`, with no session,
-  say a process failed when one does after another held a request nested
-  about a million deep, where they overflowed their stack and aborted: what
-  was read already is let go of on a stack that takes it (ADR 2.5, #301).
-- `brnr event log` shows a record nested deeper than 128, such as a deep
-  `permission_request`, as `event watch` showed it live, where it said the
+- A message nested 128 levels, past serde_json's 127, or with a lone
+  surrogate, is in the raw ACP file as JSON (`msg`), as `event watch` showed
+  it, where it was a string in `raw` (ADR 2.5, ADR 5.1).
+- `brnr event log` shows a record nested deeper than 128, up to 256, such
+  as a deep `permission_request`, as `event watch` showed it live, where it said the
   line `isn't a record brnr can read, not shown`. `session list`, `session
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is
