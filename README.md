@@ -304,6 +304,15 @@ shape for each `--for`, whether the wait ended at once or later: for `idle`
 `permission` and `elicitation` the request as `permission show` and
 `elicitation show` print it, for `exit` the `process_exited` event.
 
+A command that fails exits 1 and says why on stderr, its error's code after
+the message (`brnr: no session s (see brnr session list) [session_not_found]`);
+with `--json` it prints the error as its JSON, `{"error": {"code": …,
+"message": …}}`. Scripts match the `code`, never the message:
+[the interface reference](docs/interface.md#errors) lists the codes, and
+`unclassified` promises nothing. Where the agent's answer failed, a turn's
+`error` too, the code is `agent_failed`, and `rpc_error` is the agent's
+JSON-RPC error as it sent it.
+
 ### Approvals
 
 ```sh
@@ -547,7 +556,7 @@ show the same events, live or read back from the transcript:
 | `session_changed` | the title, mode, config options or commands: what changed |
 | `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
 | `elicitation_request`, `elicitation_resolved`, `elicitation_completed` | the agent asking for input: its `text`, `mode`, `scope` (with its `tool_call_id` or `scope_request_id`), a form's `schema` or a `url`; the `action` sent (`accept`, with its `content`, `decline` or `cancel`) and who sent it; the agent saying a URL's flow is done |
-| `turn_ended` | its `stop_reason` or `error`, the `tokens` the agent reported for it, and the `messages` it carried |
+| `turn_ended` | its `stop_reason` or `error` (`agent_failed`, with the agent's as `rpc_error`), the `tokens` the agent reported for it, and the `messages` it carried |
 | `message_dropped` | a message that never went, its `reason` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, its `reason` `queue`, `close` or `exit` |
 | `session_closed` | `by` `control`, its `reason` `close` (`brnr session close`, `--take-over`) or `idle`; or `by` `editor`, `reason` `close` |
@@ -813,7 +822,7 @@ environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `was_cut_off`, `pending`, `allow`, `reject`, `set_config`, `fork`, `new`,
-`resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); a failure is `{"ok": false, "error": {"code", "message"}}`, its code one of [these](docs/interface.md#errors); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.

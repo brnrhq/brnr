@@ -9,12 +9,15 @@ use serde_json::{Value, json};
 use super::args::Error::{self, Invalid};
 use super::client::Host;
 use super::{Args, discover, print_json, print_table, running_session, text};
+use crate::error::{self, Code};
 
 /// The running session `arg` names: its process and its status.
-fn session_status(arg: &str) -> Result<(Host, Value), String> {
+fn session_status(arg: &str) -> Result<(Host, Value), error::Error> {
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
-    let status = host.session(&id).cloned().ok_or("the process is not answering")?;
+    let unreachable =
+        || error::Error::new(Code::process_unreachable, "the process is not answering");
+    let status = host.session(&id).cloned().ok_or_else(unreachable)?;
     Ok((host.clone(), status))
 }
 
@@ -34,7 +37,7 @@ enum Wanted {
 /// (`option` null), as the agent gave them; `--mode`, `--model`,
 /// `--thought-level` and `--option <o>` narrow it to those, found as
 /// `config set` finds them (ADR 8.1).
-pub(super) fn config_get(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn config_get(a: &Args) -> Result<ExitCode, error::Error> {
     let json_out = a.json;
     // In the order given, `--option`'s ids among them.
     let mut ids = a.values("--option").into_iter();
@@ -99,7 +102,7 @@ pub(super) fn config_get(a: &Args) -> Result<ExitCode, String> {
                     .position(|r| r["option"] == o.as_str())
                     .ok_or(format!("the agent has no option {o}")),
             };
-            keep.push(found?);
+            keep.push(found.map_err(|e| error::Error::new(Code::setting_invalid, e))?);
         }
         keep.sort_unstable();
         keep.dedup();
@@ -208,7 +211,7 @@ pub(super) fn options(flag: &str, pairs: &[String]) -> Result<BTreeMap<String, S
     Ok(options)
 }
 
-pub(super) fn commands(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn commands(a: &Args) -> Result<ExitCode, error::Error> {
     let json_out = a.json;
     let (_, status) = session_status(&a.positional[0])?;
     let commands: Vec<Value> = status["commands"]
@@ -233,7 +236,7 @@ pub(super) fn commands(a: &Args) -> Result<ExitCode, String> {
 
 // ---- forking, closing ---------------------------------------------------
 
-pub(super) fn fork(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn fork(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let (host, from) = running_session(&hosts, arg)?;
@@ -249,7 +252,7 @@ pub(super) fn fork(a: &Args) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) fn close(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn close(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
@@ -267,7 +270,7 @@ pub(super) fn close(a: &Args) -> Result<ExitCode, String> {
 /// of it (ADR 3.9) for process `to` to resume. An editor's process does only if
 /// its profile enables the experimental `close`, and tells the editor where the
 /// session went (ADR 7.1).
-pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), String> {
+pub(super) fn take_over(owner: &Host, session: &str, to: u32) -> Result<(), error::Error> {
     let pid = owner.id();
     let running = format!("{session} is running in process {pid}");
     let req = json!({ "cmd": "close", "session": session, "take_over": to });

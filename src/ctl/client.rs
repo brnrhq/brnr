@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code, Error};
 use crate::host::alive;
 use crate::{json, lock, paths, render, sys};
 
@@ -78,25 +79,28 @@ impl Host {
     }
 
     /// A request whose failure is the command's failure, and its answer.
-    pub(super) fn call(&self, req: &Value) -> Result<Value, String> {
+    pub(super) fn call(&self, req: &Value) -> Result<Value, Error> {
         self.kept(req, ANSWER_WAIT)
     }
 
     /// [`Host::call`], for a request that waits on the agent.
-    pub(super) fn call_agent(&self, req: &Value) -> Result<Value, String> {
+    pub(super) fn call_agent(&self, req: &Value) -> Result<Value, Error> {
         self.kept(req, AGENT_WAIT)
     }
 
     /// The answer to `req`, waiting `wait` for it. `Err`: the process's
-    /// error, or why there is no answer to use, which names the process.
-    fn kept(&self, req: &Value, wait: Duration) -> Result<Value, String> {
+    /// error, or why there is no answer to use, which names the process: one
+    /// it can't be asked, or that it doesn't give, is unreachable.
+    fn kept(&self, req: &Value, wait: Duration) -> Result<Value, Error> {
         let named = |e: String| format!("process {}: {e}", self.id());
-        let line = self.exchange(req, wait).map_err(|e| named(e.to_string()))?;
-        read(&line).map_err(named)?
+        let unreachable =
+            |e: io::Error| Error::new(Code::process_unreachable, named(e.to_string()));
+        let line = self.exchange(req, wait).map_err(unreachable)?;
+        read(&line).map_err(|e| Error::from(named(e)))?
     }
 
     /// What waits for an answer in the process.
-    pub(super) fn pending(&self) -> Result<Pending, String> {
+    pub(super) fn pending(&self) -> Result<Pending, Error> {
         self.kept(&json!({ "cmd": "pending" }), ANSWER_WAIT).map(Pending::from)
     }
 
@@ -124,16 +128,20 @@ impl Host {
 /// The answer `line` without its envelope, read as brnr reads what it
 /// wrote, to `json::OWN_DEPTH` (ADR 2.5). `Err`: why it can't be read;
 /// `Ok(Err)`: the process's `error`.
-fn read(line: &str) -> Result<Result<Value, String>, String> {
+fn read(line: &str) -> Result<Result<Value, Error>, String> {
     let line = line.as_bytes();
     json::within(line, json::OWN_DEPTH, "its answer")?;
     Ok(unwrapped(json::parse(line, json::OWN_DEPTH).ok_or("its answer isn't JSON")?))
 }
 
-/// An answer, `ok`, without `ok` and `req_id`; else the `error` it says.
-fn unwrapped(mut answer: Value) -> Result<Value, String> {
+/// An answer, `ok`, without `ok` and `req_id`; else the `error` it says,
+/// with its code (ADR 8.7).
+fn unwrapped(mut answer: Value) -> Result<Value, Error> {
     if answer["ok"].as_bool() != Some(true) {
-        return Err(answer["error"].as_str().unwrap_or("request failed").to_owned());
+        return Err(match &answer["error"] {
+            Value::Null => Error::from("request failed"),
+            error => Error::of(error),
+        });
     }
     if let Some(map) = answer.as_object_mut() {
         map.shift_remove("ok");
@@ -250,7 +258,8 @@ pub(super) fn probe(path: &Path, host: &Host) -> Probe {
     match host.exchange(&json!({ "cmd": "status" }), ANSWER_WAIT) {
         Ok(line) => match read(&line) {
             Ok(Ok(status)) => Probe::Answered(status),
-            Ok(Err(why)) | Err(why) => Probe::Silent(why),
+            Ok(Err(why)) => Probe::Silent(why.message),
+            Err(why) => Probe::Silent(why),
         },
         Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
         // Running, but accepting nothing: its backlog is full (`made`).
@@ -388,8 +397,10 @@ pub(super) struct Conn {
 }
 
 impl Conn {
-    pub(super) fn open(host: &Host) -> Result<Conn, String> {
-        let stream = host.connect().map_err(|e| format!("process {}: {e}", host.id()))?;
+    pub(super) fn open(host: &Host) -> Result<Conn, Error> {
+        let unreachable =
+            |e| Error::new(Code::process_unreachable, format!("process {}: {e}", host.id()));
+        let stream = host.connect().map_err(unreachable)?;
         let mut conn = Conn::new(stream)?;
         conn.socket = host.meta["socket"].as_str().map(PathBuf::from);
         Ok(conn)
@@ -422,7 +433,7 @@ impl Conn {
         &mut self,
         events: &[&str],
         session: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }))?;
         if let Some(socket) = self.socket.clone() {
             self.follow = Follow::new(socket, &answer, events, session);
@@ -452,7 +463,7 @@ impl Conn {
     /// How a command ends that has got `Err(why)` from the connection: with
     /// [`MISSED`] once it has said what it missed, if it gave up catching
     /// up; else as `why`.
-    pub(super) fn ended(&self, why: String) -> Result<ExitCode, String> {
+    pub(super) fn ended(&self, why: Error) -> Result<ExitCode, Error> {
         let Some(note) = &self.missed else { return Err(why) };
         let text = render::event(note, &render::Options { session: false, time: false });
         errln!("brnr: {}", text.unwrap_or_default());
@@ -460,12 +471,12 @@ impl Conn {
     }
 
     /// A request whose failure is an error, and its answer.
-    pub(super) fn call(&mut self, req: Value) -> Result<Value, String> {
+    pub(super) fn call(&mut self, req: Value) -> Result<Value, Error> {
         self.call_until(req, None)?.ok_or_else(|| "the process closed the connection".into())
     }
 
     /// What waits for an answer in the process.
-    pub(super) fn pending(&mut self) -> Result<Pending, String> {
+    pub(super) fn pending(&mut self) -> Result<Pending, Error> {
         self.call(json!({ "cmd": "pending" })).map(Pending::from)
     }
 
@@ -482,7 +493,7 @@ impl Conn {
         &mut self,
         req: Value,
         deadline: Option<Instant>,
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<Option<Value>, Error> {
         self.answer_until(req, deadline)?.map(unwrapped).transpose()
     }
 
@@ -522,10 +533,7 @@ impl Conn {
 
     /// The next event; `Ok(None)` when `deadline` passes, `Err` when the
     /// connection closes, but for a cut-off it has caught up on.
-    pub(super) fn next_event(
-        &mut self,
-        deadline: Option<Instant>,
-    ) -> Result<Option<Value>, String> {
+    pub(super) fn next_event(&mut self, deadline: Option<Instant>) -> Result<Option<Value>, Error> {
         loop {
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
@@ -636,7 +644,7 @@ impl Conn {
                     f.peer = peer;
                     break (Some(conn), Some(until));
                 }
-                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), &e)),
+                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), e.into())),
                 Err((None, e)) if f.tries > TRIES => {
                     // Live, as far as it knows: up to where the process
                     // said it cut the peer off.
@@ -646,18 +654,18 @@ impl Conn {
                     if known.is_none() {
                         e.push_str("; the process says no position, so up to where is unknown");
                     }
-                    return Err(self.give_up(&f, known, &e));
+                    return Err(self.give_up(&f, known, e.into()));
                 }
                 Err((None, _)) => {}
             }
         };
         if f.tries > TRIES {
             let e = format!("cut off {} times in a row while catching up", f.tries);
-            return Err(self.give_up(&f, until, &e));
+            return Err(self.give_up(&f, until, e.into()));
         }
         let caught = match f.read(until) {
             Ok(caught) => caught,
-            Err(e) => return Err(self.give_up(&f, until, &e)),
+            Err(e) => return Err(self.give_up(&f, until, e)),
         };
         f.last = until.or(caught.last().and_then(|e| e["seq"].as_u64())).unwrap_or(f.last);
         self.events.extend(caught);
@@ -684,11 +692,11 @@ impl Conn {
     fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, String)> {
         let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
-        let answer = answer.map_err(|e| (None, e))?;
+        let answer = answer.map_err(|e| (None, e.message))?;
         let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
         let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
         let at = Some(next.last);
-        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
+        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e.message))?["lost"] == true {
             let why = "the process has records it couldn't write yet (a full disk?)";
             return Err((at, why.into()));
         }
@@ -696,11 +704,11 @@ impl Conn {
     }
 
     /// Gives up catching up: `missed` says what it missed, and why.
-    fn give_up(&mut self, f: &Follow, until: Option<u64>, why: &str) -> String {
-        let note = f.missed(until, why);
+    fn give_up(&mut self, f: &Follow, until: Option<u64>, why: error::Error) -> String {
+        let note = f.missed(until, &why);
         let text = render::event(&note, &render::Options { session: false, time: false });
         self.missed = Some(note);
-        text.unwrap_or_else(|| why.to_owned())
+        text.unwrap_or(why.message)
     }
 
     /// The next line, an event or a response (or the start channel's
@@ -839,13 +847,14 @@ mod tests {
         let deep = format!(r#"{{"ok":true,"x":{}{}}}"#, "[".repeat(n), "]".repeat(n));
         let answers = [
             r#"{"ok":true,"req_id":"r","status":"stopping"}"#,
-            r#"{"ok":false,"error":"no session s"}"#,
+            r#"{"ok":false,"error":{"code":"session_not_found","message":"no session s"}}"#,
             r#"{"ok":true"#,
             &deep,
         ];
         let (host, process) = answering("call", answers.map(String::from).to_vec());
         assert_eq!(host.call(&json!({ "cmd": "stop" })), Ok(json!({ "status": "stopping" })));
-        assert_eq!(host.call(&json!({ "cmd": "stop" })), Err("no session s".into()));
+        let none = Error::new(Code::session_not_found, "no session s");
+        assert_eq!(host.call(&json!({ "cmd": "stop" })), Err(none));
         let isnt = Err("process 7: its answer isn't JSON".into());
         assert_eq!(host.call_agent(&json!({ "cmd": "fork" })), isnt);
         let deep = Err("process 7: its answer nests 257 deep, past the 256 brnr reads".into());
@@ -897,7 +906,7 @@ mod tests {
                 d if d + 4 == json::OWN_DEPTH => assert_eq!(found, Ok(want)),
                 _ => {
                     let past = "process 7: its answer nests 257 deep, past the 256 brnr reads";
-                    assert_eq!(found.err().as_deref(), Some(past));
+                    assert_eq!(found.err().map(|e| e.message).as_deref(), Some(past));
                 }
             }
             assert_eq!(process.join().unwrap(), [json!({ "cmd": "pending" })]);
@@ -989,7 +998,8 @@ mod tests {
         assert_eq!(live["seq"], 11);
         assert!(conn.next_event(None).is_err());
         let note = conn.missed().unwrap();
-        assert_eq!(note["error"], "cut off 4 times in a row while catching up", "{note}");
+        let error = &note["error"]["message"];
+        assert_eq!(error, "cut off 4 times in a row while catching up", "{note}");
         assert_eq!((note["after_seq"].as_u64(), note["until_seq"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
         let _ = fs::remove_dir_all(&dir);
@@ -1228,7 +1238,7 @@ mod tests {
                 (Some(10), last_queued),
                 "{note}"
             );
-            let error = note["error"].as_str().unwrap();
+            let error = note["error"]["message"].as_str().unwrap();
             assert!(error.starts_with("cut off 4 times in a row while catching up"), "{note}");
             assert_eq!(error.contains("no position"), last_queued.is_none(), "{note}");
             once(thread.join().unwrap(), tries);

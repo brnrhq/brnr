@@ -37,7 +37,9 @@ use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
+use super::control::not_accepting;
 use super::{elicitation, id_key};
+use crate::error::{Code, Error};
 use crate::schema::{self, PermissionOptionKind};
 
 /// The most URL elicitations kept waiting for their completion: past that,
@@ -47,8 +49,6 @@ const URL_ELICITATIONS: usize = 1024;
 
 /// Why an answer from outside the editor isn't sent: the agent has exited,
 /// or its stdin is closed.
-const NOT_ACCEPTING: &str = "the agent is no longer accepting input";
-
 /// A request from the agent to its client.
 pub(super) struct AgentRequest {
     pub(super) key: String,
@@ -222,7 +222,7 @@ pub(super) enum Timeout {
         session: String,
     },
     /// It couldn't be answered, saying why.
-    Failed(String),
+    Failed(Error),
 }
 
 /// A request the host answered while the editor may answer it too: what
@@ -371,7 +371,7 @@ impl Approvals {
         by: &Who,
         client: Client,
         answer: impl FnOnce(&AgentRequest) -> Result<Answer, String>,
-    ) -> Result<Resolved, String> {
+    ) -> Result<Resolved, Error> {
         let pos = (self.requests.iter())
             .position(|r| {
                 r.kind() == Some(kind)
@@ -380,15 +380,18 @@ impl Approvals {
             })
             .ok_or_else(|| {
                 let what = if kind == Kind::Permission { "request" } else { "elicitation" };
-                match session {
+                let error = match session {
                     Some(session) => format!("no pending {what} {handle} in session {session}"),
                     None => format!("no pending {what} {handle} outside a session"),
-                }
+                };
+                Error::new(Code::request_not_found, error)
             })?;
         if !client.accepting {
-            return Err(NOT_ACCEPTING.to_owned());
+            return Err(not_accepting());
         }
-        let answer = answer(&self.requests[pos])?;
+        // What doesn't fit the request is the answer's (ADR 8.7).
+        let answer =
+            answer(&self.requests[pos]).map_err(|e| Error::new(Code::answer_invalid, e))?;
         Ok(self.end(pos, End::Host(answer), by, client.editor))
     }
 
@@ -442,10 +445,10 @@ impl Approvals {
                     choose(r, Choice::Reject, false, None)
                 })
             }
-            _ if !client.accepting => Err(NOT_ACCEPTING.to_owned()),
+            _ if !client.accepting => Err(not_accepting()),
             _ => match session {
                 Some(session) => return Some(Timeout::Cancel { session }),
-                None => Err("no reject_once option, and no session to cancel".to_owned()),
+                None => Err(Error::from("no reject_once option, and no session to cancel")),
             },
         };
         Some(resolved.map_or_else(Timeout::Failed, |r| Timeout::Resolved(Box::new(r))))
@@ -699,13 +702,13 @@ mod tests {
         t.held().filter_map(AgentRequest::held).collect()
     }
 
-    fn allow(t: &mut Approvals, handle: &str, client: Client) -> Result<Resolved, String> {
+    fn allow(t: &mut Approvals, handle: &str, client: Client) -> Result<Resolved, Error> {
         t.answer(Kind::Permission, handle, Some("s"), &b1(), client, |r| {
             choose(r, Choice::Allow, false, None)
         })
     }
 
-    fn elicit(t: &mut Approvals, handle: &str, action: &str) -> Result<Resolved, String> {
+    fn elicit(t: &mut Approvals, handle: &str, action: &str) -> Result<Resolved, Error> {
         t.answer(Kind::Elicitation, handle, Some("s"), &b1(), HEADLESS, |r| {
             elicitation::response(r, action, &Value::Null).map(Answer::Result)
         })
@@ -854,20 +857,25 @@ mod tests {
         let mut t = Approvals::default();
         t.ask(permission(1, "s", &["allow_once", "allow_always"]), None, "headless");
         let gone = Client { editor: false, accepting: false };
-        assert_eq!(
-            allow(&mut t, "p1", gone).err().unwrap(),
-            "the agent is no longer accepting input"
-        );
+        let not_accepting =
+            Error::new(Code::process_stopping, "the agent is no longer accepting input");
+        assert_eq!(allow(&mut t, "p1", gone).err().unwrap(), not_accepting);
         let other = t.answer(Kind::Permission, "p1", Some("t"), &b1(), HEADLESS, |r| {
             choose(r, Choice::Allow, false, None)
         });
-        assert_eq!(other.err().unwrap(), "no pending request p1 in session t");
+        let none = Error::new(Code::request_not_found, "no pending request p1 in session t");
+        assert_eq!(other.err().unwrap(), none);
         let e = elicit(&mut t, "p1", "cancel").err().unwrap();
-        assert_eq!(e, "no pending elicitation p1 in session s");
+        assert_eq!(
+            e,
+            Error::new(Code::request_not_found, "no pending elicitation p1 in session s")
+        );
         let reject = t.answer(Kind::Permission, "p1", Some("s"), &b1(), HEADLESS, |r| {
             choose(r, Choice::Reject, false, None)
         });
-        assert!(reject.err().unwrap().starts_with("p1 has no reject_once option"));
+        let reject = reject.err().unwrap();
+        assert!(reject.message.starts_with("p1 has no reject_once option"), "{reject}");
+        assert_eq!(reject.code, Code::answer_invalid);
         assert_eq!(handles(&t), ["p1"]);
     }
 

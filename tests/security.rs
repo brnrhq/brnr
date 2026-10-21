@@ -1130,12 +1130,15 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
         let new = env.fails(&new_args(&["--prompt", "hi"]));
         let acp = stderr(&env.run_with_stdin(&["acp", "--", AGENT], b""));
+        // `brnr acp` says it to the editor's log, with no code (ADR 8.7).
+        assert!(new.trim_end().ends_with(" [config_invalid]"), "{new}");
         for err in [&new, &acp] {
             assert!(err.contains(&format!("{}: ", path.display())), "{err}");
             assert!(err.contains(says), "{file:o} {dir:o}: {err}");
             assert!(err.contains("so brnr won't read the config"), "{err}");
             let fix = format!("chmod {fix} ");
-            assert!(err.contains(&fix) && err.trim_end().ends_with(&name), "{err}");
+            let err = err.trim_end().trim_end_matches(" [config_invalid]");
+            assert!(err.contains(&fix) && err.ends_with(&name), "{err}");
         }
         assert_eq!((mode(&path), mode(path.parent().unwrap())), (file, dir));
         assert!(env.hosts().is_empty() && env.calls().is_empty());
@@ -1240,7 +1243,9 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
         assert!(err.contains(says), "{err}");
         assert!(err.contains("so brnr won't read the config"), "{err}");
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(err.contains("chmod -N ") && err.trim_end().ends_with(&name), "{err}");
+        let err =
+            err.trim_end().strip_suffix(" [config_invalid]").unwrap_or_else(|| panic!("{err}"));
+        assert!(err.contains("chmod -N ") && err.ends_with(&name), "{err}");
         assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
         assert!(env.hosts().is_empty() && env.calls().is_empty());
         let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();

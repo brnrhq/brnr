@@ -785,7 +785,7 @@ Fields:
 - `by` is who acted: `editor`, `agent` or `control` (brnr's commands, its
   bridges, and its own timers). Beside it, `peer` is the connection that
   asked, where brnr knows one. `reason` is why, a word from the event's own
-  list. Text for people is `error` (#205's `message`), never `reason`.
+  list. Text for people is an error's `message` (ADR 8.7), never `reason`.
   `by: agent` says the agent ended its own request with
   `$/cancel_request`: its `permission_resolved` or `elicitation_resolved`
   has `peer` and `reason` null (ADR 4.5, #308).
@@ -806,11 +806,10 @@ Fields:
 What takes its names from this:
 
 - #205: an error code is snake_case, subject first, as a record's name is:
-  `session_not_found`, `session_closing`, `profile_invalid`. Its kebab-case
+  `session_not_found`, `session_closing`, `config_invalid`. Its kebab-case
   examples followed the records' names, which this replaces. An agent's
-  JSON-RPC error, as `turn_ended` and `session delete --json` carry it
-  today, is ACP's, its `code` a number (F1); #205 says how brnr's own
-  errors stand beside it. Until it lands, `error` stays as it is.
+  JSON-RPC error is ACP's, its `code` a number (F1); ADR 8.7 has it whole
+  as `rpc_error`, beside brnr's code, `agent_failed`.
 - #150: `--json` fields follow these rules: `session`, never `session_id`;
   ids, `by`, `reason`, positions, times and files as above. ADR 8.2
   settles each concept's shape.

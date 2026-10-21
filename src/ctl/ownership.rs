@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code};
 use crate::{lock, paths, transcript};
 
 use super::client::{Host, discover};
@@ -142,8 +143,22 @@ fn close_first(said: &str, id: &str) -> String {
 }
 
 impl<'a> Session<'a> {
-    /// Where it is, as each command refusing it says.
-    fn said(&self) -> String {
+    /// Where it is, as each command refusing it says, with the code a
+    /// script acts on (ADR 8.7).
+    fn said(&self) -> error::Error {
+        let code = match &self.place {
+            Place::Open(_) | Place::Shared(_) => Code::session_active,
+            Place::Silent(_) | Place::Unlisted(..) => Code::process_unreachable,
+            Place::Closing(_) => Code::session_closing,
+            Place::Opening(_) => Code::session_opening,
+            Place::Inactive(_) => Code::session_inactive,
+            Place::Unknown => Code::session_not_found,
+        };
+        error::Error::new(code, self.where_())
+    }
+
+    /// Where it is, in words.
+    fn where_(&self) -> String {
         let id = &self.id;
         match &self.place {
             Place::Open(host) | Place::Shared(host) => running_in(id, host.id()),
@@ -165,7 +180,7 @@ impl<'a> Session<'a> {
 
     /// The process serving it, for a command that acts on a running
     /// session: the one holding its lock, or one sharing it (ADR 3.9).
-    pub(super) fn running(&self) -> Result<&'a Host, String> {
+    pub(super) fn running(&self) -> Result<&'a Host, error::Error> {
         match self.place {
             Place::Open(host) | Place::Shared(host) => Ok(host),
             _ => Err(self.said()),
@@ -177,7 +192,11 @@ impl<'a> Session<'a> {
     /// holding it with `take_over` (ADR 3.9, ADR 3.11). `--take-over` is
     /// offered only where it can work: a holder that doesn't answer, is
     /// opening the session or isn't listed here can't be asked to close it.
-    pub(super) fn resume(self, into: Option<&Host>, take_over: bool) -> Result<Resume<'a>, String> {
+    pub(super) fn resume(
+        self,
+        into: Option<&Host>,
+        take_over: bool,
+    ) -> Result<Resume<'a>, error::Error> {
         let said = self.said();
         let id = self.id;
         match self.place {
@@ -187,7 +206,8 @@ impl<'a> Session<'a> {
             | Place::Silent(host)
                 if into.is_some_and(|to| to.id() == host.id()) =>
             {
-                Err(format!("{id} is already open in process {}", host.id()))
+                let error = format!("{id} is already open in process {}", host.id());
+                Err(error::Error::new(Code::session_active, error))
             }
             Place::Open(host) if take_over => {
                 let s = host.session(&id).unwrap_or(&Value::Null);
@@ -200,13 +220,13 @@ impl<'a> Session<'a> {
                 });
                 Ok(Resume::TakeOver(host, past))
             }
-            Place::Open(_) => Err(match into {
+            Place::Open(_) => Err(said.map(|said| match into {
                 None => format!("{said} (--take-over closes it there and resumes it here)"),
                 Some(to) => format!(
                     "{said} (--take-over closes it there and resumes it in process {})",
                     to.id()
                 ),
-            }),
+            })),
             Place::Inactive(past) => Ok(Resume::Inactive(past)),
             Place::Unknown => Ok(Resume::Unknown),
             _ => Err(said),
@@ -215,10 +235,10 @@ impl<'a> Session<'a> {
 
     /// What `session delete` may delete: a session no process has open, as
     /// brnr recorded it, if it did (ADR 8.1).
-    pub(super) fn delete(self) -> Result<Option<Value>, String> {
+    pub(super) fn delete(self) -> Result<Option<Value>, error::Error> {
         let said = self.said();
         match self.place {
-            Place::Open(_) | Place::Shared(_) => Err(close_first(&said, &self.id)),
+            Place::Open(_) | Place::Shared(_) => Err(said.map(|said| close_first(&said, &self.id))),
             Place::Inactive(past) => Ok(Some(past)),
             Place::Unknown => Ok(None),
             _ => Err(said),
@@ -228,7 +248,7 @@ impl<'a> Session<'a> {
     /// Its transcript's files, for `event log`: every folder's (ADR 5.1),
     /// with a running session's as its process says, and the process to ask
     /// `logged` first.
-    fn files(self) -> Result<Files<'a>, String> {
+    fn files(self) -> Result<Files<'a>, error::Error> {
         let said = self.said();
         let id = &self.id;
         let beside = |events: PathBuf| transcript::Files {
@@ -244,7 +264,8 @@ impl<'a> Session<'a> {
                 let Some(events) = s.and_then(|s| s["events_log"].as_str()).map(PathBuf::from)
                 else {
                     if files.is_empty() {
-                        return Err("this process keeps no transcript (log = \"off\")".into());
+                        let error = "this process keeps no transcript (log = \"off\")";
+                        return Err(error::Error::new(Code::transcript_not_kept, error));
                     }
                     errln!(
                         "brnr: process {} keeps no transcript of {id} (log = \"off\"): what it does \
@@ -270,9 +291,12 @@ impl<'a> Session<'a> {
             // Passed over as no transcript, and said to be an older brnr's
             // (ADR 5.9, P3).
             Place::Unknown => match older_transcripts(id).first() {
-                Some(path) => Err(format!(
-                    "{}: an older brnr wrote it, in names this one doesn't read (ADR 5.9)",
-                    path.display()
+                Some(path) => Err(error::Error::new(
+                    Code::transcript_unsupported,
+                    format!(
+                        "{}: an older brnr wrote it, in names this one doesn't read (ADR 5.9)",
+                        path.display()
+                    ),
                 )),
                 None => Err(said),
             },
@@ -302,7 +326,7 @@ fn older_transcripts(id: &str) -> Vec<PathBuf> {
 pub(super) fn running_session<'a>(
     hosts: &'a [Host],
     id: &str,
-) -> Result<(&'a Host, String), String> {
+) -> Result<(&'a Host, String), error::Error> {
     Ok((locate(hosts, id).running()?, id.to_owned()))
 }
 
@@ -324,7 +348,7 @@ pub(super) fn taken(id: &str, pid: u32) -> String {
 /// just seen happen (a turn `session new --wait` reported) may not be there
 /// yet. One closing in its process is read once that process has written its
 /// records, `session_closed` last, and let go of it (ADR 5.5).
-pub(super) fn transcript(id: &str) -> Result<(Vec<transcript::Files>, Option<i64>), String> {
+pub(super) fn transcript(id: &str) -> Result<(Vec<transcript::Files>, Option<i64>), error::Error> {
     let hosts = discover()?;
     // Answered once what it recorded before is written: the close's records,
     // and the lock gone with them.
@@ -476,7 +500,7 @@ mod tests {
                 ],
             }
         };
-        let resumed = |r: Result<Resume, String>| match r {
+        let resumed = |r: Result<Resume, error::Error>| match r {
             Ok(Resume::TakeOver(h, past)) => {
                 assert_eq!(
                     past,
@@ -506,6 +530,7 @@ mod tests {
                     }
                 }),
             ];
+            let got = got.map(|r| r.map_err(|e| e.message));
             let want = said(name).map(|r| r.map(str::to_owned));
             assert_eq!(got, want, "{name}");
         }
@@ -553,8 +578,35 @@ mod tests {
         assert_eq!(resumed_err(s.resume(Some(&hosts[0]), false)), "s is already open in process 8");
     }
 
-    fn resumed_err(r: Result<Resume, String>) -> String {
-        r.err().expect("refused")
+    fn resumed_err(r: Result<Resume, error::Error>) -> String {
+        r.err().expect("refused").message
+    }
+
+    /// Each place a command refuses a session in has its code, the same
+    /// whichever command refuses it (ADR 8.7).
+    #[test]
+    fn adr_0008_a_refusal_has_its_places_code() {
+        let cases = [
+            (
+                vec![host(7, serving(&[open("s")], &[]))],
+                Some((7, None)),
+                None,
+                Code::session_active,
+            ),
+            (vec![host(7, serving(&[], &["s"]))], Some((7, None)), None, Code::session_closing),
+            (vec![host(7, serving(&[], &[]))], Some((7, None)), None, Code::session_opening),
+            (vec![host(7, None)], Some((7, None)), None, Code::process_unreachable),
+            (vec![], Some((7, None)), None, Code::process_unreachable),
+            (vec![], None, ended(), Code::session_inactive),
+            (vec![], None, None, Code::session_not_found),
+        ];
+        for (hosts, holder, past, code) in cases {
+            let (s, _) = find(&hosts, holder, past);
+            assert_eq!(s.said().code, code, "{}", s.said().message);
+        }
+        let hosts = [host(7, serving(&[open("s")], &[]))];
+        let (s, _) = find(&hosts, Some((7, None)), None);
+        assert_eq!(s.delete().err().map(|e| e.code), Some(Code::session_active));
     }
 
     /// A process that keeps no transcript (`log = "off"`) has none to read.
@@ -562,10 +614,9 @@ mod tests {
     fn adr_0005_a_session_without_a_transcript_has_none_to_read() {
         let hosts = [host(7, serving(&[json!({ "session": "s", "events_log": null })], &[]))];
         let (s, _) = find(&hosts, Some((7, None)), None);
-        assert_eq!(
-            s.files().err().as_deref(),
-            Some("this process keeps no transcript (log = \"off\")")
-        );
+        let error = s.files().err().expect("refused");
+        assert_eq!(error.message, "this process keeps no transcript (log = \"off\")");
+        assert_eq!(error.code, Code::transcript_not_kept);
         let (s, _) = find(&[], None, ended());
         let files = s.files().expect("files");
         assert_eq!(files.files[0].acp, Some(PathBuf::from("/l/s.acp.jsonl")));

@@ -90,6 +90,13 @@ result:
 | 3 | brnr cut the wait off for falling behind and couldn't catch up from the transcript (it says what it missed) | the worker is still going: wait again, and read `brnr event log` for what happened |
 | 2 | your command line was wrong (an unknown option, an argument missing, a value a flag can't take); nothing was done | fix it from the usage brnr printed on stderr; the same words fail the same way again |
 
+A command that fails says why on stderr, `brnr: <message> [<code>]`, and with
+`--json` prints `{"error": {"code": …, "message": …}}`. Act on the `code`
+(`session_inactive`: resume it; `session_closing`: try again in a moment;
+`agent_failed`: the agent's own error, in `rpc_error`), never on the
+message; `unclassified` means nothing more than "failed". Tell the user
+either way.
+
 A worker waiting for an approval, or for input (an elicitation), doesn't end
 its turn: `event wait` runs until your timeout. `prompt send --wait` and
 `session new --wait` say on stderr when one comes (`brnr: waiting for

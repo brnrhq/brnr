@@ -58,8 +58,10 @@ impl Env {
         cmd
     }
 
+    /// `brnr <args>`: every error in the JSON it prints has a code
+    /// ([`coded`]).
     pub fn run(&self, args: &[&str]) -> Output {
-        self.brnr(args).output().unwrap()
+        printed_coded(self.brnr(args).output().unwrap())
     }
 
     pub fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> Output {
@@ -79,7 +81,7 @@ impl Env {
             Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
             result => result.unwrap(),
         }
-        out
+        printed_coded(out)
     }
 
     /// `brnr session new [args] -- fake_agent.py`, which must succeed.
@@ -222,6 +224,10 @@ impl Drop for Env {
         {
             kill(pid, libc::SIGKILL);
         }
+        // Every error the test's processes recorded has a code (ADR 8.7).
+        if !std::thread::panicking() {
+            recorded_coded(&self.dir);
+        }
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -292,6 +298,71 @@ pub fn resume_args<'a>(session: &'a str, args: &[&'a str]) -> Vec<&'a str> {
     all.extend_from_slice(args);
     all.extend_from_slice(&["--", AGENT]);
     all
+}
+
+/// Every error brnr has reported as data in `value`, a JSON value it printed
+/// or a line it wrote, is one as ADR 8.7 has it: `{code, message}`, the code
+/// one of brnr's, and `rpc_error`, if there, the agent's JSON-RPC error.
+/// Where brnr puts one: a reply's or a `--json` failure's `error`, an
+/// event's (a transcript record's `event`), `last_turn`'s, and a status's
+/// sessions'. What the agent sent is the agent's, and isn't looked into.
+pub fn coded(value: &Value) {
+    let codes = brnr::internals::error::names();
+    let check = |error: &Value| {
+        if error.is_null() {
+            return;
+        }
+        let code = error["code"].as_str().unwrap_or_else(|| panic!("no code: {value}"));
+        assert!(codes.contains(&code), "{code} isn't one of brnr's: {value}");
+        assert!(error["message"].is_string(), "no message: {value}");
+        if let Some(rpc) = error.get("rpc_error") {
+            assert_eq!(code, "agent_failed", "{value}");
+            assert!(rpc["code"].is_i64(), "the agent's isn't JSON-RPC's: {value}");
+        }
+    };
+    let turn = |v: &Value| check(&v["last_turn"]["error"]);
+    for v in [value, &value["event"]] {
+        check(&v["error"]);
+        turn(v);
+        v["sessions"].as_array().into_iter().flatten().for_each(turn);
+    }
+}
+
+/// The error a failed command printed with `--json` (ADR 8.7), `{code,
+/// message}`, [`coded`].
+pub fn json_error(out: &Output) -> Value {
+    let text = String::from_utf8_lossy(&out.stdout);
+    let printed: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+    assert!(printed["error"].is_object(), "{printed}");
+    printed["error"].clone()
+}
+
+/// `out`, its stdout's JSON, one value or one per line, [`coded`].
+fn printed_coded(out: Output) -> Output {
+    let text = String::from_utf8_lossy(&out.stdout);
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => coded(&value),
+        Err(_) => text.lines().filter_map(|l| serde_json::from_str(l).ok()).for_each(|v| coded(&v)),
+    }
+    out
+}
+
+/// Every events file and host log under `dir`, each record this brnr wrote
+/// (with `host_id`; a test's fixture of an older brnr's has none)
+/// [`coded`].
+fn recorded_coded(dir: &Path) {
+    let entries = fs::read_dir(dir).into_iter().flatten().flatten();
+    for entry in entries {
+        let path = entry.path();
+        let name = path.to_string_lossy();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            recorded_coded(&path);
+        } else if name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl") {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let records = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok());
+            records.filter(|r| r.get("host_id").is_some()).for_each(|r| coded(&r));
+        }
+    }
 }
 
 /// `word` in single quotes, as a shell reads it back.

@@ -77,6 +77,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+use crate::error::Error;
 use crate::{json, paths, sys, transcript};
 
 /// What may be queued for the logger before records are skipped.
@@ -269,7 +270,7 @@ impl Lost {
             note["last_seq"] = json!(last);
         }
         if let Some(error) = &self.error {
-            note["error"] = json!(error);
+            note["error"] = Error::from(error.as_str()).json();
         }
         note["ts"] = json!(rfc3339(ts));
         note["host_id"] = json!(head.ids.host_id);
@@ -630,7 +631,7 @@ impl Writer {
             "event": "session_log_failed",
             "session": session,
             "path": path.to_string_lossy(),
-            "error": err.to_string(),
+            "error": Error::from(err.to_string()).json(),
         });
         self.note(ts, None, event);
     }
@@ -1442,7 +1443,8 @@ mod tests {
         assert_eq!(skipped(&path), [(3, 1)]);
         let (since, until) = (rfc3339(t0), rfc3339(t0 + Duration::from_secs(2)));
         assert_eq!((&note["since"], &note["until"]), (&json!(since), &json!(until)));
-        assert!(note["error"].is_string(), "{note}");
+        assert!(note["error"]["message"].is_string(), "{note}");
+        assert_eq!(note["error"]["code"], "unclassified", "{note}");
         assert_eq!(lines[2].as_ref().unwrap()["event"]["event"], "back");
         let _ = std::fs::remove_file(path);
     }

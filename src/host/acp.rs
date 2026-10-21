@@ -95,6 +95,7 @@ use super::state::SessionState;
 use super::turns::{self, Activity, Do, Held, Turns};
 use super::{Host, id_key, text_block};
 use crate::config::{ClientCapability, EchoAs, Feature, Log};
+use crate::error::{Code, Error};
 use crate::lock;
 use crate::log::{self, Dir};
 use crate::schema::{self, ContentBlock, MessageId, NewSessionResponse, SessionUpdate};
@@ -205,11 +206,15 @@ impl Session {
 
     /// Why this process isn't the session's owner, if it isn't, to follow
     /// "which": a headless process doesn't serve such a session (ADR 3.9).
-    pub(super) fn not_owned(&self) -> Option<String> {
+    /// Another process's is `session_active`; one that can't be locked has
+    /// no code of its own.
+    pub(super) fn not_owned(&self) -> Option<Error> {
         match &self.hold {
             Hold::Owner(_) => None,
-            Hold::Shared(pid) => Some(format!("is running in process {pid}")),
-            Hold::Unlocked(why) => Some(format!("can't be locked: {why}")),
+            Hold::Shared(pid) => {
+                Some(Error::new(Code::session_active, format!("is running in process {pid}")))
+            }
+            Hold::Unlocked(why) => Some(Error::from(format!("can't be locked: {why}"))),
         }
     }
 
@@ -304,6 +309,7 @@ impl Host {
                     if let Some(sid) = &session
                         && let Some(error) = self.closed_error(sid, &method)
                     {
+                        let error = Error::new(Code::session_closed, error);
                         return self.refuse(id, sid, &method, &error);
                     }
                     // It goes with an id of the host's, which nobody else's
@@ -465,7 +471,7 @@ impl Host {
     /// is taken before the agent hears of it. One another process holds is
     /// refused, saying how to release it (ADR 3.9), unless the profile shares
     /// sessions (`shared_sessions`, ADR 3.10).
-    fn attach(&mut self, session: &str) -> Result<(), String> {
+    fn attach(&mut self, session: &str) -> Result<(), Error> {
         if self.sessions.knows(session) {
             return Ok(()); // Ours already.
         }
@@ -473,7 +479,7 @@ impl Host {
         if let Hold::Shared(pid) = hold
             && !self.features.contains(&Feature::SharedSessions)
         {
-            return Err(held_elsewhere(session, pid));
+            return Err(Error::new(Code::session_active, held_elsewhere(session, pid)));
         }
         self.sessions.claim(session, hold);
         Ok(())
@@ -560,18 +566,19 @@ impl Host {
     }
 
     /// Answers the editor's request `id` with an error in the agent's place:
-    /// the agent never hears of it.
-    fn refuse(&mut self, id: Value, session: &str, method: &str, error: &str) {
+    /// the agent never hears of it. The editor gets a JSON-RPC error, as ACP
+    /// has it; the host log has brnr's (ADR 8.7).
+    fn refuse(&mut self, id: Value, session: &str, method: &str, error: &Error) {
         let event = json!({
             "event": "editor_request_refused",
             "session": session,
             "rpc_id": id,
             "method": method,
-            "error": error,
+            "error": error.json(),
         });
         self.sink.note(None, event);
-        let msg =
-            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": error } });
+        let rpc = json!({ "code": -32603, "message": error.message });
+        let msg = json!({ "jsonrpc": "2.0", "id": id, "error": rpc });
         self.write_editor(None, &msg);
     }
 
@@ -763,8 +770,9 @@ impl Host {
     fn turn_answered(&mut self, session: &str, key: &str, msg: &Map<String, Value>) {
         let stop_reason = msg.get("result").and_then(|r| r.get("stopReason"));
         let tokens = turn_tokens(msg.get("result"));
-        let ended =
-            json!({ "stop_reason": stop_reason, "error": msg.get("error"), "tokens": tokens });
+        // The agent's error, whole, under brnr's (ADR 8.7).
+        let error = msg.get("error").map(|e| Error::agent(schema::error_message(e), e).json());
+        let ended = json!({ "stop_reason": stop_reason, "error": error, "tokens": tokens });
         let Some(i) = self.find(session) else {
             self.emit(turns::turn_ended(session, key, None, ended));
             return;
@@ -1227,8 +1235,7 @@ impl Host {
                     self.cancel(&session, &Who::because("timeout"));
                 }
                 Some(Timeout::Failed(err)) => {
-                    let event =
-                        json!({ "event": "timeout_failed", "request": handle, "error": err });
+                    let event = json!({ "event": "timeout_failed", "request": handle, "error": err.json() });
                     self.sink.note(None, event);
                 }
             }

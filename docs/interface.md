@@ -148,8 +148,10 @@ running turn, no session fork.
 
 Normal commands write results to stdout and diagnostics to stderr. On
 commands supporting `--json`, it selects structured data instead of the
-human-readable table or summary. It does not convert usage errors or
-ordinary diagnostics into JSON. Parse JSON, not human-readable columns.
+human-readable table or summary. A command that fails says so on stderr
+and, with `--json`, prints its [error](#errors) as its JSON, `{"error":
+{"code", "message"}}`; it does not convert usage errors or ordinary
+diagnostics into JSON. Parse JSON, not human-readable columns.
 Unknown or unavailable values may be null; agent-supplied objects vary
 with the agent's capabilities.
 
@@ -201,7 +203,7 @@ field.
 | `brnr session status` | Reads a running session's current state. | Detailed summary or JSON object; fields described below. |
 | `brnr session fork` | Copies a session into the same headless process, if supported. | New session acknowledgment; JSON has the new `session` and `forked_from`, the session it was forked from. |
 | `brnr session close` | Cancels and closes a session; the last headless session closing stops its host. | Closed-session acknowledgment; JSON object with the closed `session`. Errors on stderr. |
-| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (the agent's, else null), `recorded_in` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `path_made_private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
+| `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files (not the host logs) whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (`agent_failed` with the agent's as `rpc_error`, or why there is no answer, else null), `recorded_in` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `path_made_private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions, from the session's files in every project folder, merged by time; `--last` selects recent turns of what is merged and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
 | `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
@@ -260,8 +262,9 @@ field.
   `session resume --wait` and `prompt send --wait` write the reply on stdout; approvals and
   startup diagnostics go to stderr. JSON is one object at completion with
   `session`, `message`, `reply` (string), `stop_reason`, `error`, `tokens`,
-  `dropped`, and `pid` for `session new` and `session resume`. A missing
-  error is null; `dropped` is empty, or the message, dropped before it was
+  `dropped`, and `pid` for `session new` and `session resume`. `error` is
+  the turn's failure, `agent_failed` with the agent's as `rpc_error`
+  ([errors](#errors)); a missing error is null; `dropped` is empty, or the message, dropped before it was
   sent, as `{message, text, reason}`. A command
   may fail before a completion object is available.
 - `--foreground` instead stays attached, displaying event lines;
@@ -315,6 +318,66 @@ can give a situation that has none a code of its own.
 A failed control command does not imply the host or agent stopped. In
 particular, a wait timeout does not cancel its turn. The detailed wait
 rules are in [ADR 8.3](adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status).
+
+### Errors
+
+Wherever brnr reports an error as data, it is `"error": {"code", "message"}`
+([ADR 8.7](adr/0008-the-command-line-and-compatibility.md#87-an-error-is-a-stable-code-and-a-message)):
+a bridge or socket reply that fails (`{"ok": false, "error": {…}}`), an
+event that reports a failure (`turn_ended`, `process_exited`,
+`events_missed`, `records_skipped`), the `error` of `--wait`'s turn,
+`last_turn` and `session delete`, and a failed command with `--json`, whose
+stdout is `{"error": {code, message}}` unless it printed its JSON before it
+failed. On stderr a failure is `brnr: <message> [<code>]`. A usage error
+(exit 2), a wait's timeout (124) and a cut-off (3) have their exit status
+instead; `doctor` exits 1 with its checks.
+
+Where the agent's answer failed, the code is `agent_failed`, and
+`rpc_error` is the agent's JSON-RPC error, whole: `{"code": "agent_failed",
+"message": "session/new failed: Authentication required", "rpc_error":
+{"code": -32000, "message": "Authentication required"}}`. Its numeric code
+is ACP's; brnr's codes are words.
+
+**Covered** from 1.0.0: each code below and what it means. A minor release
+can add a code, for a new failure or for one that was `unclassified`.
+**Not covered**: `message`, and `unclassified`, which promises nothing.
+
+| Code | The failure |
+|---|---|
+| `acp_version_unsupported` | The agent speaks an ACP version brnr doesn't. |
+| `agent_exited` | The agent exited, and its process with it, before the command was done: a start, a wait, a request. |
+| `agent_failed` | The agent answered with a JSON-RPC error; `rpc_error` is that error, as the agent sent it. |
+| `agent_not_started` | No agent to start: none given or recorded, or its program can't be run. |
+| `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one. |
+| `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
+| `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
+| `command_unknown` | A `cmd` the process doesn't have: it may be an older brnr's. |
+| `config_invalid` | The config file can't be read, isn't private, or doesn't load. |
+| `event_unknown` | An event the process doesn't have, or a note, in `subscribe`'s `events`. |
+| `experimental_disabled` | An action on an editor's session its profile doesn't enable. |
+| `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
+| `message_not_found` | No held message has that id. |
+| `process_not_found` | No brnr process has that pid. |
+| `process_owned_by_editor` | An editor's process: no session is opened or forked in it. |
+| `process_panicked` | brnr itself failed, and its process ended: a bug to report. |
+| `process_starting` | The process hasn't committed its start. |
+| `process_stopping` | The process is stopping, or its agent takes no more input. |
+| `process_unreachable` | The process doesn't answer, or can't be reached from here (another `BRNR_DIR`). |
+| `profile_not_found` | The config has no profile of that name. |
+| `request_not_found` | No permission request or elicitation of that handle is waiting. |
+| `session_active` | The session is open in a process, where the command needs it not to be: close it first, or take it over. |
+| `session_closed` | The session closed before the command was done. |
+| `session_closing` | The session is closing; it is free once its records are written (2 s at most). |
+| `session_inactive` | The session isn't open in any process; it can be resumed. |
+| `session_not_found` | brnr knows no session of that id. |
+| `session_opening` | The session is opening, and takes no requests until it has. |
+| `setting_invalid` | A mode, model, thought level, config option or login method the agent doesn't offer, or a value it doesn't take. |
+| `start_timed_out` | The session didn't open in the time its start had. |
+| `strict_mode_refused` | Strict mode refuses what isn't stable ACP. |
+| `transcript_not_kept` | The process keeps no transcript to read, or no raw ACP (`log`). |
+| `transcript_unsupported` | The transcript is in a format this brnr doesn't read. |
+| `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs. |
+| `unclassified` | Anything else. It promises nothing: don't match it. |
 
 ## Editor transport
 
@@ -406,14 +469,16 @@ the events, and how long the bridge lasts. **Not covered**: the control
 socket, which is in the private runtime directory and is not an interface:
 its path, how processes and their metadata files are found, and a client
 connecting to it directly, which speaks this protocol today but has no
-promise and can change in any release; and the wording of `error`.
+promise and can change in any release; and the wording of an error's
+`message`.
 
 Send one UTF-8 JSON object followed by a newline per request. `cmd` is a
 command string; optional `req_id` is echoed unchanged in the reply. Use a
 unique request ID to match replies: asynchronous agent operations can finish
 later, and events may arrive between replies. Success replies have `ok:true`;
-failures have `ok:false` and a human-readable `error` string. CLI JSON results
-omit this protocol envelope. Malformed request lines receive an error;
+failures have `ok:false` and an `error`, `{code, message}` (see
+[errors](#errors)): `{"ok":false,"error":{"code":"session_not_found","message":"no session sess-9"},"req_id":"r2"}`.
+CLI JSON results omit this protocol envelope. Malformed request lines receive an error;
 clients should also handle EOF/disconnection rather than wait indefinitely.
 
 Example exchange (IDs are illustrative; use a session served by this host):
@@ -545,7 +610,7 @@ compatible within a major version, and anything they don't name is not
 covered ([ADR 8.4](adr/0008-the-command-line-and-compatibility.md#84-what-the-compatibility-promise-covers)). The
 library on crates.io is covered as part of the command line: its public API
 is a facade that mirrors it (#147, ADR 8.5); its internals, behind a feature that is off by
-default, are not. Stable error codes (#205) are covered once they land.
+default, are not. Error codes are covered ([errors](#errors)).
 
 - A minor release can add a command, flag, JSON field, event, event field,
   bridge request, config key, or an exit code for a situation that had

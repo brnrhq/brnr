@@ -26,14 +26,15 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::schema::ErrorCode;
+use crate::error::{self, Code};
+use crate::schema::{self, ErrorCode};
 use crate::{lock, log};
 
 use super::client::discover;
 use super::sessions::{Asked, named_agent};
 use super::{Args, ownership, print_json};
 
-pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn delete(a: &Args) -> Result<ExitCode, error::Error> {
     let (purge, profile, json_out) = (a.has("--purge"), a.value("--profile"), a.json);
     let agent = a.rest.clone().unwrap_or_default();
     let id = a.positional[0].clone();
@@ -48,29 +49,34 @@ pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
     let agent = match named_agent(profile, agent)?.or_else(recorded) {
         Some(agent) => agent,
         None if past.is_some() => {
-            return Err("no agent recorded for it: give one after -- or with --profile".into());
+            let error = "no agent recorded for it: give one after -- or with --profile";
+            return Err(error::Error::new(Code::agent_not_started, error));
         }
         None => {
-            return Err(format!(
-                "brnr has no transcript of {id}: name its agent (--profile or -- <agent>)"
-            ));
+            let error =
+                format!("brnr has no transcript of {id}: name its agent (--profile or -- <agent>)");
+            return Err(error::Error::new(Code::agent_not_started, error));
         }
     };
     // Taken last: a session that is open is refused above, naming its process.
     let held = lock::take(&id).map_err(|e| match e {
-        lock::Error::Held(pid) => ownership::taken(&id, pid),
-        lock::Error::Io(why) => format!("{id} can't be locked: {why}"),
+        lock::Error::Held(pid) => {
+            error::Error::new(Code::session_active, ownership::taken(&id, pid))
+        }
+        lock::Error::Io(why) => format!("{id} can't be locked: {why}").into(),
     })?;
     let (mut asked, caps) = Asked::start(&agent)?;
     if caps.session_capabilities.delete.is_none() {
-        return Err("the agent can't delete sessions (no sessionCapabilities.delete)".into());
+        let error = "the agent can't delete sessions (no sessionCapabilities.delete)";
+        return Err(error::Error::new(Code::capability_missing, error));
     }
     let agent_pid = asked.pid();
-    let answer = asked.answer("session/delete", json!({ "sessionId": id })).map(drop);
+    let answer = asked.ask("session/delete", json!({ "sessionId": id })).map(drop);
     drop(asked);
     // The agent doesn't have it: nothing of it is left there to delete.
-    let gone = matches!(answer, Err((Some(ErrorCode::ResourceNotFound), _)));
-    let answer = answer.map_err(|(_, why)| why);
+    let rpc = answer.as_ref().err().and_then(|e| e.rpc_error.as_ref());
+    let gone = rpc.and_then(schema::read::<schema::Error>).map(|e| e.code)
+        == Some(ErrorCode::ResourceNotFound);
     if let (Err(error), false) = (&answer, purge) {
         return Err(error.clone());
     }
@@ -78,7 +84,7 @@ pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
         let (purged, failed) = log::purge(&id);
         if let Err(error) = &answer {
             if purged.is_empty() && failed.is_empty() {
-                return Err(format!("{error}; brnr has no transcript of {id}"));
+                return Err(error.clone().map(|e| format!("{e}; brnr has no transcript of {id}")));
             }
             // What --purge did, said only as far as it went: what wasn't
             // deleted follows, `not deleted`.
@@ -124,7 +130,7 @@ pub(super) fn delete(a: &Args) -> Result<ExitCode, String> {
         print_json(&json!({
             "session": id,
             "deleted": answer.is_ok(),
-            "error": answer.as_ref().err(),
+            "error": answer.as_ref().err().map(error::Error::json),
             "recorded_in": paths(&recorded),
             "purged": paths(&purged),
             "failed": failed,

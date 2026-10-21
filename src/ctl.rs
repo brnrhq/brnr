@@ -32,10 +32,12 @@ use std::env;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code};
 use crate::host::{EVENTS, NOTES, QUIET};
 use crate::{lock, log, paths, render, transcript};
 
@@ -181,12 +183,16 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
         _ => (verb, rest),
     };
+    let mut json = false;
     let result = match args::spec(cmd, verb) {
         Some(spec) if spec.asks_help(rest) => {
             outln!("{}", usage_of(cmd, verb));
             Ok(ExitCode::SUCCESS)
         }
-        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)),
+        Some(spec) => spec.parse(rest).and_then(|a| {
+            json = a.json;
+            run(spec, &a)
+        }),
         None => match (cmd, verb) {
             (group, Some("-h" | "--help")) if grouped => {
                 outln!("{}", usage_of(group, None));
@@ -217,12 +223,26 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
                     errln!("brnr: {msg}");
                     eprintln!("{}", usage_of(cmd, verb));
                 }
-                args::Error::Failed(msg) => errln!("brnr: {msg}"),
+                args::Error::Failed(error) => failed(error, json),
             }
             ExitCode::from(e.code())
         }
     }
 }
+
+/// A command's failure (ADR 8.7): on stderr, its message and its code,
+/// `brnr: no session s (see brnr session list) [session_not_found]`; with
+/// `--json`, also as the command's JSON, `{"error": {code, message}}`, if it
+/// printed none before it failed.
+fn failed(error: &error::Error, json: bool) {
+    errln!("brnr: {}", render::coded(&error.message, error.code.name()));
+    if json && !PRINTED.load(Relaxed) {
+        let _ = print_json(&json!({ "error": error.json() }));
+    }
+}
+
+/// Whether the command has printed anything on stdout.
+static PRINTED: AtomicBool = AtomicBool::new(false);
 
 /// Runs the verb `spec` is, with its arguments `a`.
 fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
@@ -257,7 +277,7 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("watch")) => code(watch(a)),
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
-        ("doctor", None) => done(doctor::main(a)),
+        ("doctor", None) => code(doctor::main(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
         (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
@@ -285,6 +305,7 @@ pub(crate) fn command(args: &[String]) -> String {
 
 /// What [`outln!`] and [`out!`] print with.
 fn out(text: &str) {
+    PRINTED.store(true, Relaxed);
     let mut stdout = io::stdout().lock();
     match stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush()) {
         Ok(()) => {}
@@ -335,11 +356,11 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
 // ---- naming sessions and processes ---------------------------------------
 
 /// The process with pid `pid`.
-fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
-    hosts
-        .iter()
-        .find(|h| h.id() == pid)
-        .ok_or(format!("no brnr process {pid} (see brnr process list)"))
+fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, error::Error> {
+    hosts.iter().find(|h| h.id() == pid).ok_or_else(|| {
+        let error = format!("no brnr process {pid} (see brnr process list)");
+        error::Error::new(Code::process_not_found, error)
+    })
 }
 
 /// `<session>` or `--pid <pid>`, for `event watch` and `event notify`: the
@@ -348,7 +369,7 @@ fn session_or_pid<'a>(
     hosts: &'a [Host],
     session: Option<&str>,
     pid: Option<&str>,
-) -> Result<(&'a Host, Option<String>), String> {
+) -> Result<(&'a Host, Option<String>), error::Error> {
     match (session, pid) {
         (Some(session), None) => running_session(hosts, session).map(|(h, id)| (h, Some(id))),
         (None, Some(pid)) => process(hosts, pid).map(|h| (h, None)),
@@ -358,7 +379,7 @@ fn session_or_pid<'a>(
 
 // ---- processes -----------------------------------------------------------
 
-fn ps(a: &Args) -> Result<(), String> {
+fn ps(a: &Args) -> Result<(), error::Error> {
     let json_out = a.json;
     let hosts = discover()?;
     let locks = lock::all();
@@ -431,7 +452,7 @@ fn process_state(host: &Host) -> &'static str {
     }
 }
 
-fn stop(a: &Args) -> Result<(), String> {
+fn stop(a: &Args) -> Result<(), error::Error> {
     let (pid, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let host = process(&hosts, pid)?;
@@ -559,12 +580,16 @@ fn agent(host: &Host) -> Value {
     agent_of(&info["agent"], &info["agent_info"])
 }
 
-fn status(a: &Args) -> Result<(), String> {
+fn status(a: &Args) -> Result<(), error::Error> {
     let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
-    let st = host.status.as_ref().ok_or("the process is not answering")?;
-    let x = host.session(&id).ok_or("no session")?;
+    let unreachable =
+        || error::Error::new(Code::process_unreachable, "the process is not answering");
+    let st = host.status.as_ref().ok_or_else(unreachable)?;
+    let x = host
+        .session(&id)
+        .ok_or_else(|| error::Error::new(Code::session_not_found, "no session"))?;
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;
@@ -747,7 +772,7 @@ fn when(ts: &str) -> String {
 
 /// The approvals waiting, in every process that answers (saying which
 /// don't) or in one session's.
-fn pending(a: &Args) -> Result<(), String> {
+fn pending(a: &Args) -> Result<(), error::Error> {
     let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
@@ -790,7 +815,7 @@ fn pending_row(p: &Value) -> Value {
 }
 
 /// The permission requests' `rows`, as a table or `--json`.
-fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
+fn list_pending(rows: &Value, json_out: bool) -> Result<(), error::Error> {
     if json_out {
         return print_json(&json!({ "requests": rows }));
     }
@@ -824,7 +849,7 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
 /// `permission allow` and `reject` (`cmd`): the request's option of one
 /// kind, or the one `--option-id` names; the host picks it, and says why it
 /// can't (ADR 8.1).
-fn answer(a: &Args, cmd: &str) -> Result<(), String> {
+fn answer(a: &Args, cmd: &str) -> Result<(), error::Error> {
     let [arg, request_id] = &a.positional[..] else { unreachable!("the table has two") };
     let (option_id, always, json_out) = (a.value("--option-id"), a.has("--always"), a.json);
     let hosts = discover()?;
@@ -959,7 +984,7 @@ fn default_events() -> Vec<String> {
 
 // ---- plumbing ------------------------------------------------------------
 
-fn print_json(value: &Value) -> Result<(), String> {
+fn print_json(value: &Value) -> Result<(), error::Error> {
     outln!("{}", serde_json::to_string_pretty(value).unwrap());
     Ok(())
 }
@@ -969,7 +994,7 @@ fn text(v: &Value) -> String {
     v.as_str().unwrap_or("?").to_owned()
 }
 
-fn read_stdin() -> Result<String, String> {
+fn read_stdin() -> Result<String, error::Error> {
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).map_err(|e| format!("stdin: {e}"))?;
     Ok(text)

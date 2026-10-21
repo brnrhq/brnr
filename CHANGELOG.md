@@ -55,6 +55,18 @@ brnr's own conventions:
 
 ### Changed
 
+- **Breaking:** every error brnr reports as data is `{"code", "message"}`:
+  a socket or bridge reply that fails is `{"ok": false, "error": {"code":
+  "session_not_found", "message": "no session s"}}`, not `"error": "<text>"`;
+  so are the `error` of `turn_ended`, `last_turn`, `--wait --json`'s turn,
+  `session delete --json`, `process_exited`, `events_missed`,
+  `records_skipped` and the host log's failure records. The code is a word
+  that keeps its meaning (docs/interface.md lists them); the message is for
+  people. An error the agent answered with is `agent_failed`, the agent's
+  JSON-RPC error whole as `rpc_error`: read `error.rpc_error.code` where
+  you read `error.code` before. A failed command with `--json` prints
+  `{"error": {…}}` on stdout, and stderr says `brnr: <message> [<code>]`
+  (ADR 8.7).
 - **Breaking:** a usage error exits 2, not 1, in every command: an unknown
   command, verb or option, an argument missing or one too many, a value a
   flag can't take (`event wait --for soon`, `--events nope`, `brnr skill

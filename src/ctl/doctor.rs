@@ -46,6 +46,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -105,7 +106,7 @@ impl Report {
     }
 }
 
-pub(crate) fn main(a: &Args) -> Result<(), Error> {
+pub(crate) fn main(a: &Args) -> Result<ExitCode, Error> {
     let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
         return Err(Error::Invalid("--fix and --report don't go together".into()));
@@ -121,28 +122,28 @@ pub(crate) fn main(a: &Args) -> Result<(), Error> {
     older_files(&mut r);
     if r.report {
         bug_report(&r, hosts.as_deref());
-        return match r.failed {
-            0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n)).into()),
-        };
+        return Ok(checked(r.failed));
     }
     if r.json {
         // An object, as `--report --json` is, with room to grow (ADR 8.2).
         let checks = json!({ "checks": r.checks });
         outln!("{}", serde_json::to_string_pretty(&checks).unwrap());
-        return match r.failed {
-            0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n)).into()),
-        };
+        return Ok(checked(r.failed));
     }
-    match (r.failed, r.warned) {
-        (0, 0) => Ok(()),
-        (0, n) => {
-            outln!("\n{n} warning{}", plural(n));
-            Ok(())
-        }
-        (n, _) => Err(format!("{n} check{} failed", plural(n)).into()),
+    if let (0, n @ 1..) = (r.failed, r.warned) {
+        outln!("\n{n} warning{}", plural(n));
     }
+    Ok(checked(r.failed))
+}
+
+/// How `doctor` exits with `failed` checks failed: 1, and how many on
+/// stderr, if any did. Its checks are its data, not an error (ADR 8.7).
+fn checked(failed: usize) -> ExitCode {
+    if failed == 0 {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("brnr: {failed} check{} failed", plural(failed));
+    ExitCode::FAILURE
 }
 
 fn plural(n: usize) -> &'static str {

@@ -65,6 +65,7 @@ use libc::{c_int, pid_t};
 use serde_json::{Value, json};
 
 use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log};
+use crate::error::{Code, Error};
 use crate::frame;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
@@ -160,7 +161,7 @@ pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
         Ok(request) => request,
         Err((msg, editor)) => {
             let channel = editor.map(|editor| (channel, editor));
-            Failure { channel }.report(&msg, 2);
+            Failure { channel }.report(&Error::from(msg), 2);
             return ExitCode::from(2);
         }
     };
@@ -175,7 +176,8 @@ pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
     // closed.
     let signal_link = match signal_link {
         None if editor => {
-            Failure { channel: Some((channel, true)) }.report("no signal link on fd 4", 2);
+            let error = Error::from("no signal link on fd 4");
+            Failure { channel: Some((channel, true)) }.report(&error, 2);
             return ExitCode::from(2);
         }
         link => link.filter(|_| editor),
@@ -195,7 +197,8 @@ pub(crate) fn main(mut args: impl Iterator<Item = OsString>) -> ExitCode {
             for file in [format!("{id}.sock"), format!("{id}.json")] {
                 let _ = fs::remove_file(paths::runtime_dir().join(file));
             }
-            failure.report(death::panicked().unwrap_or("brnr panicked"), 101);
+            let reason = death::panicked().unwrap_or("brnr panicked");
+            failure.report(&Error::new(Code::process_panicked, reason), 101);
             ExitCode::from(101)
         }
     }
@@ -231,15 +234,21 @@ struct Failure {
 }
 
 impl Failure {
-    fn report(&mut self, msg: &str, code: u8) {
-        eprintln!("brnr: {}", crate::render::clean(msg));
+    fn report(&mut self, error: &Error, code: u8) {
+        // An editor's log has it as `brnr acp` says it, with no code: the
+        // editor gets no error as data (ADR 8.7).
+        let said = match &self.channel {
+            Some((_, true)) => error.message.clone(),
+            _ => crate::render::coded(&error.message, error.code.name()),
+        };
+        eprintln!("brnr: {}", crate::render::clean(&said));
         match &mut self.channel {
             Some((link, true)) => {
-                let report = json!({ "error": msg, "code": code }).to_string();
+                let report = json!({ "error": error.message, "code": code }).to_string();
                 let _ = frame::write(link, frame::FAILED, report.as_bytes());
             }
             Some((start, false)) => {
-                let _ = writeln!(start, "{}", json!({ "ok": false, "error": msg }));
+                let _ = writeln!(start, "{}", error.reply());
             }
             None => {}
         }
@@ -465,7 +474,7 @@ impl Host {
         req: Request,
         channel: UnixStream,
         signal_link: Option<UnixStream>,
-    ) -> Result<Host, (String, u8)> {
+    ) -> Result<Host, (Error, u8)> {
         let recorded = req.recorded();
         let Request { profile, agent, cwd, strict, log: logging, bridges, mut role } = req;
         let (proxy_pid, mask, events) = match &mut role {
@@ -474,11 +483,11 @@ impl Host {
         };
         let program: Vec<OsString> = agent.iter().map(OsString::from).collect();
         if program.is_empty() {
-            return Err(("no agent".into(), 2));
+            return Err((Error::new(Code::agent_not_started, "no agent"), 2));
         }
 
         let dir = paths::runtime_dir();
-        paths::ensure_private(&dir).map_err(|e| (format!("{}: {e}", dir.display()), 1))?;
+        paths::ensure_private(&dir).map_err(|e| (Error::from(e).about(dir.display()), 1))?;
         let id = std::process::id().to_string();
         let started = SystemTime::now();
         let host_id = format!("{}-{id}", log::compact_utc(started));
@@ -486,7 +495,7 @@ impl Host {
         let meta_path = dir.join(format!("{id}.json"));
         let _ = fs::remove_file(&sock_path);
         let listener = UnixListener::bind(&sock_path)
-            .map_err(|e| (format!("{}: {e}", sock_path.display()), 1))?;
+            .map_err(|e| (Error::from(e).about(sock_path.display()), 1))?;
         let _ = fs::set_permissions(&sock_path, fs::Permissions::from_mode(0o600));
         let cleanup = || {
             let _ = fs::remove_file(&sock_path);
@@ -518,7 +527,8 @@ impl Host {
             cleanup();
             // Same codes a shell uses for "not found" / "not executable".
             let code = if err.kind() == ErrorKind::PermissionDenied { 126 } else { 127 };
-            (format!("{}: {err}", program[0].to_string_lossy()), code)
+            let error = format!("{}: {err}", program[0].to_string_lossy());
+            (Error::new(Code::agent_not_started, error), code)
         })?;
         let agent_pid = child.id() as pid_t;
 
@@ -649,7 +659,7 @@ impl Host {
     /// then the editor is told the process is ready, or the headless start
     /// begins. Each is the host's as soon as it is made, for `abandon` or
     /// `died_starting` to undo if the start ends here.
-    fn set_up(&mut self, parts: Parts) -> Result<(), (String, u8)> {
+    fn set_up(&mut self, parts: Parts) -> Result<(), (Error, u8)> {
         let Parts {
             mut child,
             listener,
@@ -672,7 +682,7 @@ impl Host {
                 agent_pid: self.agent_pid as u32,
             };
             self.log = Logger::start(ids, proxy_pid, self.logging == Log::All)
-                .map_err(|e| (format!("log: {e}"), 1))?;
+                .map_err(|e| (Error::from(e).about("log"), 1))?;
             self.sink = self.log.sink();
         }
         self.info = json!({
@@ -747,10 +757,10 @@ impl Host {
         // brnr session new hears how the start ends from here.
         if let Some(channel) = start_channel {
             self.open_start_channel(channel, events, &tx)
-                .map_err(|err| (format!("start channel: {err}"), 1))?;
+                .map_err(|err| (Error::from(err).about("start channel"), 1))?;
         }
         for (n, bridge) in bridges.iter().enumerate() {
-            self.start_bridge(n, bridge, &tx).map_err(|err| (err, 2))?;
+            self.start_bridge(n, bridge, &tx).map_err(|err| (Error::from(err), 2))?;
         }
         death::test_panic_starting();
         if self.editor {
@@ -790,12 +800,13 @@ impl Host {
     /// A start that fails before the event loop runs: what it started goes,
     /// and its host log records the end, as `finish` does, so a log without
     /// `process_exited` is a process that died (ADR 3.7). Returns `error` and `code`.
-    fn abandon(mut self, error: String, code: u8) -> (String, u8) {
+    fn abandon(mut self, error: Error, code: u8) -> (Error, u8) {
         self.kill_all();
         let _ = fs::remove_file(&self.sock_path);
         let _ = fs::remove_file(&self.meta_path);
-        self.sink
-            .note(None, json!({ "event": "process_exited", "exit_status": null, "error": error }));
+        let event =
+            json!({ "event": "process_exited", "exit_status": null, "error": error.json() });
+        self.sink.note(None, event);
         self.release_stderr();
         self.end_log();
         (error, code)
@@ -810,7 +821,7 @@ impl Host {
     /// is to write there: the start channel is let go of, and what is
     /// queued for the editor (`READY`) goes first. Returns the error and
     /// the exit code.
-    fn died_starting(mut self, reason: &str) -> (String, u8) {
+    fn died_starting(mut self, reason: &str) -> (Error, u8) {
         self.record_panic(reason);
         self.release_start_channel();
         self.link = None;
@@ -821,7 +832,7 @@ impl Host {
             }
         }
         self.wind_up(reason);
-        (reason.to_owned(), 101)
+        (Error::new(Code::process_panicked, reason), 101)
     }
 
     fn run(mut self) -> ExitCode {
@@ -893,7 +904,8 @@ impl Host {
             self.send_link(frame::EXIT, &status.to_be_bytes());
         }
         if !self.start_done {
-            self.startup_failed("the agent exited before the session started");
+            let error = "the agent exited before the session started";
+            self.startup_failed(&Error::new(Code::agent_exited, error));
         }
         let status = describe_status(self.status);
         // Held messages and context that never became a prompt.
@@ -937,7 +949,7 @@ impl Host {
     fn died(mut self, reason: &str) -> ExitCode {
         self.record_panic(reason);
         if !self.start_done {
-            self.startup_failed(reason);
+            self.startup_failed(&Error::new(Code::process_panicked, reason));
         }
         self.wind_up(reason);
         ExitCode::from(101)
@@ -946,7 +958,8 @@ impl Host {
     /// A panic, in the host log, and the agent killed with its process
     /// group.
     fn record_panic(&mut self, reason: &str) {
-        self.sink.note(None, json!({ "event": "process_panicked", "error": reason }));
+        let error = Error::new(Code::process_panicked, reason);
+        self.sink.note(None, json!({ "event": "process_panicked", "error": error.json() }));
         if self.status.is_none() && self.foreground {
             self.say("brnr: killing the agent".into());
         }
@@ -972,8 +985,9 @@ impl Host {
             self.sink.note(None, json!({ "event": "drop_held_failed" }));
         }
         let status = describe_status(self.status);
+        let error = Error::new(Code::process_panicked, reason).json();
         self.emit_to_sessions(
-            json!({ "event": "process_exited", "exit_status": status, "error": reason }),
+            json!({ "event": "process_exited", "exit_status": status, "error": error }),
         );
         self.wait_logged();
         self.sessions.let_go_of_all();
@@ -1350,7 +1364,7 @@ impl Host {
         if start.deadline.is_some_and(|t| now >= t) {
             start.deadline = None;
             if !self.stop_requested && !self.test_hold_start_timer(now) {
-                self.fail_start("timed out waiting for the session");
+                self.fail_start(&requests::timed_out());
             }
         }
     }

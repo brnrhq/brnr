@@ -116,6 +116,7 @@ use super::strict::Beyond;
 use super::turns::{Activity, Held, Mode, Status};
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
+use crate::error::{Code, Error};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
 use crate::{json, paths, render, sys};
@@ -272,16 +273,20 @@ pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
     if bridge.command.is_empty() {
         return Err("a bridge needs a command".into());
     }
-    check_events(bridge.events.as_deref().unwrap_or_default())
+    check_events(bridge.events.as_deref().unwrap_or_default()).map_err(|e| e.message)
 }
 
-fn check_events(events: &[String]) -> Result<(), String> {
+fn check_events(events: &[String]) -> Result<(), Error> {
     match events.iter().find(|e| !EVENTS.contains(&e.as_str())) {
         // The host never sends one (ADR 5.9).
-        Some(note) if NOTES.contains(&note.as_str()) => {
-            Err(format!("{note:?} is a note, which the host never sends: only events are"))
-        }
-        Some(bad) => Err(format!("unknown event {bad:?} (events: {})", EVENTS.join(", "))),
+        Some(note) if NOTES.contains(&note.as_str()) => Err(Error::new(
+            Code::event_unknown,
+            format!("{note:?} is a note, which the host never sends: only events are"),
+        )),
+        Some(bad) => Err(Error::new(
+            Code::event_unknown,
+            format!("unknown event {bad:?} (events: {})", EVENTS.join(", ")),
+        )),
         None => Ok(()),
     }
 }
@@ -545,7 +550,7 @@ impl Host {
         match self.command(peer, &req) {
             Ok(Some(response)) => self.reply(peer, req_id, response),
             Ok(None) => {} // See requests.rs: answered when the agent answers.
-            Err(e) => self.reply(peer, req_id, json!({ "ok": false, "error": e })),
+            Err(e) => self.reply(peer, req_id, e.reply()),
         }
     }
 
@@ -568,8 +573,8 @@ impl Host {
     /// `was_cut_off`: whether the peer named `peer` was cut off, and the last
     /// event queued for it then (ADR 10.2). A position, never an event: what
     /// it missed is in the transcript, which the asker reads as itself.
-    fn was_cut_off(&self, req: &Value) -> Result<Value, String> {
-        let peer = req["peer"].as_str().ok_or("missing peer")?;
+    fn was_cut_off(&self, req: &Value) -> Result<Value, Error> {
+        let peer = req["peer"].as_str().ok_or_else(|| invalid("missing peer"))?;
         let cut = self.cut_offs.iter().rev().find(|(label, _)| label == peer);
         Ok(json!({
             "ok": true,
@@ -580,11 +585,11 @@ impl Host {
     }
 
     /// `Ok(None)`: the answer comes from the agent, later.
-    pub(super) fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, String> {
+    pub(super) fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, Error> {
         if let Some(err) = req.get("parse_error") {
-            return Err(format!("bad request: {}", err.as_str().unwrap_or_default()));
+            return Err(invalid(format!("bad request: {}", err.as_str().unwrap_or_default())));
         }
-        let now = |v: Result<Value, String>| v.map(Some);
+        let now = |v: Result<Value, Error>| v.map(Some);
         match req["cmd"].as_str() {
             Some("status") => Ok(Some(self.status_report())),
             Some("logged") => {
@@ -608,13 +613,15 @@ impl Host {
             Some("new" | "resume") => self.open(peer, req).map(|()| None),
             Some("stop") => {
                 if self.status.is_some() {
-                    return Err("the agent has already exited".into());
+                    return Err(Error::new(Code::agent_exited, "the agent has already exited"));
                 }
                 self.begin_stop();
                 Ok(Some(json!({ "ok": true, "status": "stopping" })))
             }
-            Some(other) => Err(format!("unknown command: {other}")),
-            None => Err("missing cmd".into()),
+            Some(other) => {
+                Err(Error::new(Code::command_unknown, format!("unknown command: {other}")))
+            }
+            None => Err(invalid("missing cmd")),
         }
     }
 
@@ -640,7 +647,7 @@ impl Host {
         });
     }
 
-    fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+    fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, Error> {
         let events: Option<Vec<String>> = match req.get("events") {
             None | Some(Value::Null) => None,
             Some(Value::String(all)) if all == "all" => {
@@ -648,10 +655,12 @@ impl Host {
             }
             Some(Value::Array(list)) => Some(
                 list.iter()
-                    .map(|e| e.as_str().map(str::to_owned).ok_or("events are strings"))
+                    .map(|e| {
+                        e.as_str().map(str::to_owned).ok_or_else(|| invalid("events are strings"))
+                    })
                     .collect::<Result<_, _>>()?,
             ),
-            Some(_) => return Err("events must be a list".into()),
+            Some(_) => return Err(invalid("events must be a list")),
         };
         check_events(events.as_deref().unwrap_or_default())?;
         let p = self.peers.get_mut(&peer).ok_or("connection gone")?;
@@ -668,18 +677,18 @@ impl Host {
         )
     }
 
-    fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
+    fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
-        let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
+        let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
         // Its old name, refused rather than ignored: the option it named
         // would not be the one answered (ADR 8.1, P3).
         if req.get("option").is_some() {
             let cmd = req["cmd"].as_str().unwrap_or("allow");
-            return Err(format!("{cmd} takes option_id, not option"));
+            return Err(invalid(format!("{cmd} takes option_id, not option")));
         }
         let resolved = self.approvals.answer(
             Kind::Permission,
@@ -698,7 +707,7 @@ impl Host {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
         // Whether `brnr permission allow` would be taken, and if not, why
         // (ADR 7.1).
-        let why_not = self.check_experimental(Experimental::Permission).err();
+        let why_not = self.check_experimental(Experimental::Permission).err().map(|e| e.message);
         self.approvals
             .held()
             .filter(|r| r.is_permission())
@@ -723,14 +732,15 @@ impl Host {
     /// (null for one scoped to a request outside any) with `action`, and an
     /// accept's `content`, checked against the form's schema before anything
     /// is sent.
-    fn elicitation(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+    fn elicitation(&mut self, peer: u64, req: &Value) -> Result<Value, Error> {
         let session = match &req["session"] {
             Value::Null => None,
             _ => Some(self.sessions[self.session_index(req)?].id.clone()),
         };
         self.check_experimental(Experimental::Elicitation)?;
-        let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
-        let action = req["action"].as_str().ok_or("missing action: accept, decline or cancel")?;
+        let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
+        let action = req["action"].as_str();
+        let action = action.ok_or_else(|| invalid("missing action: accept, decline or cancel"))?;
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let resolved = self.approvals.answer(
             Kind::Elicitation,
@@ -750,7 +760,7 @@ impl Host {
     /// timeout cancels it.
     fn pending_elicitations(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
-        let why_not = self.check_experimental(Experimental::Elicitation).err();
+        let why_not = self.check_experimental(Experimental::Elicitation).err().map(|e| e.message);
         self.approvals
             .held()
             .filter(|r| r.is_elicitation())
@@ -844,23 +854,23 @@ impl Host {
     /// `send` (ADR 4.2): a prompt of its own, held while a turn runs; steered
     /// into the running turn; interrupting it; or context for the next
     /// prompt. A second prompt never goes while one runs.
-    fn send(&mut self, req: &Value) -> Result<Value, String> {
+    fn send(&mut self, req: &Value) -> Result<Value, Error> {
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
             Value::Null => Vec::new(),
             Value::Array(blocks) => blocks.clone(),
-            _ => return Err("blocks must be a list of ACP content blocks".into()),
+            _ => return Err(invalid("blocks must be a list of ACP content blocks")),
         };
         let mode = req["mode"].as_str().unwrap_or("prompt");
         if !matches!(mode, "prompt" | "steer" | "interrupt" | "context") {
-            return Err(format!("unknown mode: {mode}"));
+            return Err(invalid(format!("unknown mode: {mode}")));
         }
         let replace = req["replace"].as_bool().unwrap_or(false);
         if text.trim().is_empty() && blocks.is_empty() {
-            return Err("missing text".into());
+            return Err(invalid("missing text"));
         }
         if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         self.check_blocks(&blocks)?;
         let i = self.session_index(req)?;
@@ -868,7 +878,7 @@ impl Host {
         let session = self.sessions[i].id.clone();
         if mode == "context" {
             if !blocks.is_empty() {
-                return Err("context is text only".into());
+                return Err(invalid("context is text only"));
             }
             self.sessions[i].turns.add_context(text.clone(), replace);
             self.sink.note(
@@ -879,7 +889,7 @@ impl Host {
         }
         if !self.start_done {
             // The start commits before the agent gets any work (ADR 3.4).
-            return Err("the session is still starting".into());
+            return Err(Error::new(Code::session_opening, "the session is still starting"));
         }
         let how = match mode {
             "steer" => Mode::Steer,
@@ -890,7 +900,8 @@ impl Host {
             self.check_strict(Beyond::Steering)?;
             if !self.caps.steering {
                 let why = "it doesn't advertise _session/steering";
-                return Err(format!("the agent can't steer a running turn: {why}"));
+                let error = format!("the agent can't steer a running turn: {why}");
+                return Err(Error::new(Code::capability_missing, error));
             }
         }
         let held = Held { id: self.message_id(), text: text.clone(), blocks };
@@ -906,17 +917,18 @@ impl Host {
     }
 
     /// Content blocks a bridge may add to a prompt.
-    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
+    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), Error> {
         for block in blocks {
             match block["type"].as_str() {
                 Some("resource_link") if block["uri"].is_string() => {}
                 Some("image") if block["data"].is_string() && block["mimeType"].is_string() => {
                     if !self.caps.image {
-                        return Err("the agent doesn't take images".into());
+                        let error = "the agent doesn't take images";
+                        return Err(Error::new(Code::capability_missing, error));
                     }
                 }
                 Some("text") if block["text"].is_string() => {}
-                _ => return Err(format!("unsupported content block: {block}")),
+                _ => return Err(invalid(format!("unsupported content block: {block}"))),
             }
         }
         Ok(())
@@ -924,7 +936,7 @@ impl Host {
 
     /// `cancel`: stops the running turn. Held messages would otherwise start
     /// the next turn, so they are dropped unless `keep_held`.
-    fn cancel_turn(&mut self, req: &Value) -> Result<Value, String> {
+    fn cancel_turn(&mut self, req: &Value) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         self.check_experimental(Experimental::Cancel)?;
         let session = self.sessions[i].id.clone();
@@ -938,17 +950,20 @@ impl Host {
     /// `queue`: one held message in full (`show`), or the held messages and
     /// context after dropping one (`drop`) or clearing them (`clear`,
     /// `clear_context`).
-    fn queue(&mut self, req: &Value) -> Result<Value, String> {
+    fn queue(&mut self, req: &Value) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         // A show that isn't an id is refused, not taken as absent: read as
         // absent, `{show: 2, clear: true}` would clear everything (P3).
         if let Some(show) = req.get("show") {
-            let id = show.as_str().ok_or("show must be a message id")?;
+            let id = show.as_str().ok_or_else(|| invalid("show must be a message id"))?;
             if ["drop", "clear", "clear_context"].iter().any(|k| req.get(k).is_some()) {
-                return Err("queue's show takes no drop or clear".into());
+                return Err(invalid("queue's show takes no drop or clear"));
             }
             let s = &self.sessions[i];
-            let (h, interrupt) = s.turns.held_message(id).ok_or(format!("no held message {id}"))?;
+            let held = s.turns.held_message(id);
+            let no_message =
+                || Error::new(Code::message_not_found, format!("no held message {id}"));
+            let (h, interrupt) = held.ok_or_else(no_message)?;
             return Ok(json!({
                 "ok": true,
                 "session": s.id,
@@ -976,9 +991,9 @@ impl Host {
 
     /// Requests the agent answers: they go out now and the bridge is
     /// answered when the agent is (see requests.rs).
-    fn agent_op(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+    fn agent_op(&mut self, peer: u64, req: &Value) -> Result<(), Error> {
         if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         let cmd = req["cmd"].as_str().unwrap_or_default();
         let req_id = req.get("req_id").cloned();
@@ -992,7 +1007,7 @@ impl Host {
                 let state = &self.sessions[i].state;
                 let steps = resolve_settings(&settings, &Settings::default(), state)?;
                 if steps.is_empty() {
-                    return Err("nothing to set".into());
+                    return Err(invalid("nothing to set"));
                 }
                 let of = SetupOf::Config(peer, req_id);
                 self.run_setup(Setup { session, steps, done: Vec::new(), of });
@@ -1001,18 +1016,20 @@ impl Host {
                 // A forked session would be a headless one in a process that
                 // ends with the editor, which ACP can't tell of it (ADR 7.1).
                 if self.editor_attached() {
-                    return Err("the editor owns this process; fork sessions there".into());
+                    let error = "the editor owns this process; fork sessions there";
+                    return Err(Error::new(Code::process_owned_by_editor, error));
                 }
                 self.check_strict(Beyond::Fork)?;
                 if !caps.fork {
-                    return Err("the agent can't fork sessions".into());
+                    return Err(incapable("the agent can't fork sessions"));
                 }
                 // A second session could never close when idle, and the
                 // process would never stop (ADR 3.8).
                 if self.stop_when_idle.is_some() && !caps.close {
-                    return Err("the agent can't close sessions: with stop_when_idle, a forked \
-                                session would never close"
-                        .into());
+                    return Err(incapable(
+                        "the agent can't close sessions: with stop_when_idle, a forked session \
+                         would never close",
+                    ));
                 }
                 let cwd = self.sessions[i].cwd.clone();
                 let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
@@ -1021,7 +1038,7 @@ impl Host {
             "close" => {
                 self.check_experimental(Experimental::Close)?;
                 if !caps.close {
-                    return Err("the agent can't close sessions".into());
+                    return Err(incapable("the agent can't close sessions"));
                 }
                 let taken_by = req["take_over"].as_u64().and_then(|pid| u32::try_from(pid).ok());
                 self.close(i, peer, req_id, "close");
@@ -1037,37 +1054,39 @@ impl Host {
     /// `session/resume` or `session/load` (ADR 3.11), its settings set, and its
     /// prompt sent, committed as one as a start is (see requests.rs). Refused
     /// where `fork` is but in strict mode: these are stable ACP.
-    fn open(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+    fn open(&mut self, peer: u64, req: &Value) -> Result<(), Error> {
         if self.status.is_some() || self.agent_in.is_none() || self.stop_requested {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         // A session opened here would be a headless one in a process that
         // ends with the editor, which ACP can't tell of it (ADR 7.1).
         if self.editor_attached() {
-            return Err("the editor owns this process; open sessions there".into());
+            let error = "the editor owns this process; open sessions there";
+            return Err(Error::new(Code::process_owned_by_editor, error));
         }
         if !self.start_done {
-            return Err("the process is still starting".into());
+            return Err(Error::new(Code::process_starting, "the process is still starting"));
         }
         let caps = self.caps;
         // A second session could never close when idle, and the process
         // would never stop (ADR 3.8).
         if self.stop_when_idle.is_some() && !caps.close {
-            return Err("the agent can't close sessions: with stop_when_idle, a second session \
-                        would never close"
-                .into());
+            return Err(incapable(
+                "the agent can't close sessions: with stop_when_idle, a second session would \
+                 never close",
+            ));
         }
         let cwd = match &req["cwd"] {
             Value::Null => self.cwd.clone(),
             Value::String(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
-            _ => return Err("cwd isn't an absolute path".into()),
+            _ => return Err(invalid("cwd isn't an absolute path")),
         };
         let settings = settings_of(req)?;
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
             Value::Null => Vec::new(),
             Value::Array(blocks) => blocks.clone(),
-            _ => return Err("blocks must be a list of ACP content blocks".into()),
+            _ => return Err(invalid("blocks must be a list of ACP content blocks")),
         };
         self.check_blocks(&blocks)?;
         let prompt =
@@ -1076,7 +1095,8 @@ impl Host {
         let deadline = match &req["timeout"] {
             Value::Null => None,
             secs => {
-                let secs = secs.as_u64().ok_or("timeout must be a number of seconds")?;
+                let secs = secs.as_u64();
+                let secs = secs.ok_or_else(|| invalid("timeout must be a number of seconds"))?;
                 Instant::now().checked_add(Duration::from_secs(secs))
             }
         };
@@ -1089,14 +1109,15 @@ impl Host {
             self.host_request("session/new", params, HostRequest::Opening(Open::New, opening));
             return Ok(());
         }
-        let session = req["session"].as_str().ok_or("missing session")?.to_owned();
+        let session = req["session"].as_str().ok_or_else(|| invalid("missing session"))?.to_owned();
         if self.sessions.knows(&session) {
-            return Err(format!("{session} is already open in this process"));
+            let error = format!("{session} is already open in this process");
+            return Err(Error::new(Code::session_active, error));
         }
         if !caps.resume && !caps.load {
-            return Err(
-                "the agent can't resume sessions (no session/resume or session/load)".into()
-            );
+            return Err(incapable(
+                "the agent can't resume sessions (no session/resume or session/load)",
+            ));
         }
         // Taken before the agent hears of it: a session another process
         // holds is refused (ADR 3.9).
@@ -1122,14 +1143,15 @@ impl Host {
 
     /// The session a request names, by its exact id. One that is closing
     /// takes no more requests.
-    fn session_index(&self, req: &Value) -> Result<usize, String> {
-        let wanted = req["session"].as_str().ok_or("missing session")?;
-        let i = self.find(wanted).ok_or_else(|| format!("no session {wanted}"))?;
+    fn session_index(&self, req: &Value) -> Result<usize, Error> {
+        let wanted = req["session"].as_str().ok_or_else(|| invalid("missing session"))?;
+        let no_session = || Error::new(Code::session_not_found, format!("no session {wanted}"));
+        let i = self.find(wanted).ok_or_else(no_session)?;
         if self.sessions[i].closing.is_some() {
-            return Err(format!("{wanted} is closing"));
+            return Err(Error::new(Code::session_closing, format!("{wanted} is closing")));
         }
         if self.sessions[i].opening {
-            return Err(format!("{wanted} is still opening"));
+            return Err(Error::new(Code::session_opening, format!("{wanted} is still opening")));
         }
         Ok(i)
     }
@@ -1137,25 +1159,43 @@ impl Host {
 
 /// A `set_config`'s settings: `mode`, `model`, `thought_level`, and
 /// `options` by id, each value a string.
-fn settings_of(req: &Value) -> Result<Settings, String> {
+fn settings_of(req: &Value) -> Result<Settings, Error> {
     let text = |key: &str| match &req[key] {
         Value::Null => Ok(None),
         Value::String(v) => Ok(Some(v.clone())),
-        _ => Err(format!("{key} isn't a string")),
+        _ => Err(invalid(format!("{key} isn't a string"))),
     };
     let mut options = std::collections::BTreeMap::new();
     match &req["options"] {
         Value::Null => {}
         Value::Object(map) => {
             for (id, value) in map {
-                let value = value.as_str().ok_or(format!("options: {id} isn't a string"))?;
+                let value = value.as_str();
+                let value =
+                    value.ok_or_else(|| invalid(format!("options: {id} isn't a string")))?;
                 options.insert(id.clone(), value.to_owned());
             }
         }
-        _ => return Err("options isn't an object".into()),
+        _ => return Err(invalid("options isn't an object")),
     }
     let (mode, model, thought_level) = (text("mode")?, text("model")?, text("thought_level")?);
     Ok(Settings { mode, model, thought_level, options })
+}
+
+/// A request that isn't one, as `why` says.
+fn invalid(why: impl Into<String>) -> Error {
+    Error::new(Code::command_invalid, why)
+}
+
+/// What the agent can't do, as `why` says.
+fn incapable(why: impl Into<String>) -> Error {
+    Error::new(Code::capability_missing, why)
+}
+
+/// A process whose agent takes no more input: it has exited, or the process
+/// is stopping.
+pub(super) fn not_accepting() -> Error {
+    Error::new(Code::process_stopping, "the agent is no longer accepting input")
 }
 
 #[cfg(test)]

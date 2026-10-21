@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use super::text_block;
+use crate::error::{Code, Error};
 
 /// A message accepted by the host and not yet sent as a prompt.
 #[derive(Clone)]
@@ -433,7 +434,7 @@ impl Turns {
         drop: Option<&str>,
         clear: bool,
         clear_context: bool,
-    ) -> Result<(Vec<Value>, Vec<Do>), String> {
+    ) -> Result<(Vec<Value>, Vec<Do>), Error> {
         let mut gone = Vec::new();
         if let Some(id) = drop {
             let interrupt = self.interrupts.iter().position(|h| h.id == id);
@@ -441,7 +442,9 @@ impl Turns {
                 Some(pos) => self.interrupts.remove(pos),
                 None => self.held.iter().position(|h| h.id == id).and_then(|p| self.held.remove(p)),
             };
-            gone.push(held.ok_or(format!("no held message {id}"))?);
+            let no_message =
+                || Error::new(Code::message_not_found, format!("no held message {id}"));
+            gone.push(held.ok_or_else(no_message)?);
         }
         if clear {
             gone.extend(self.interrupts.drain(..).chain(self.held.drain(..)));
@@ -829,7 +832,8 @@ mod tests {
             s.turns.held_message("m2").map(|(h, i)| (h.id.as_str(), i)),
             Some(("m2", false))
         );
-        assert_eq!(s.turns.queue(Some("m9"), true, false).err(), Some("no held message m9".into()));
+        let none = Error::new(Code::message_not_found, "no held message m9");
+        assert_eq!(s.turns.queue(Some("m9"), true, false).err(), Some(none));
         assert_eq!(s.turns.held(), 3, "a refused drop clears nothing");
         let (dropped, todo) = s.turns.queue(Some("m3"), false, false).unwrap();
         assert_eq!((dropped.len(), s.run(todo)), (1, vec!["dropped m3 by queue".into()]));

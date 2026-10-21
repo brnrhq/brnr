@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code};
 use crate::request::{self, Request, Role};
 use crate::{config, paths, render, signals, spawn, sys, transcript};
 
@@ -78,7 +79,7 @@ pub(super) fn wait_for_message(
     message: &str,
     deadline: Option<Instant>,
     mut json: Option<Value>,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, error::Error> {
     let mut started = false;
     let mut reply: Vec<String> = Vec::new();
     loop {
@@ -131,9 +132,13 @@ pub(super) fn wait_for_message(
                     break 'event Some(ExitCode::FAILURE);
                 }
                 "session_closed" if ours => {
-                    return Err("the session closed before the turn ended".into());
+                    let error = "the session closed before the turn ended";
+                    return Err(error::Error::new(Code::session_closed, error));
                 }
-                "process_exited" => return Err("the agent exited before the turn ended".into()),
+                "process_exited" => {
+                    let error = "the agent exited before the turn ended";
+                    return Err(error::Error::new(Code::agent_exited, error));
+                }
                 _ => {}
             }
             None
@@ -155,7 +160,7 @@ fn print_turn(
     message: &str,
     reply: &[String],
     end: &Value,
-) -> Result<(), String> {
+) -> Result<(), error::Error> {
     let dropped = match end["event"] == "message_dropped" {
         true => {
             json!([{ "message": end["message"], "text": end["text"], "reason": end["reason"] }])
@@ -183,8 +188,8 @@ fn carries(e: &Value, message: &str) -> bool {
 
 /// 0 for a turn that ended normally, else 1 (and why, on stderr).
 fn turn_status(e: &Value) -> ExitCode {
-    if let Some(error) = e["error"].as_object() {
-        errln!("brnr: turn failed: {}", error["message"].as_str().unwrap_or("?"));
+    if e["error"].is_object() {
+        errln!("brnr: turn failed: {}", render::error(&e["error"]));
         return ExitCode::FAILURE;
     }
     match e["stop_reason"].as_str() {
@@ -196,6 +201,12 @@ fn turn_status(e: &Value) -> ExitCode {
     }
 }
 
+/// A start, or an opening in a running process, that didn't commit in its
+/// time, nor did the process say so (ADR 3.4).
+fn timed_out() -> error::Error {
+    error::Error::new(Code::start_timed_out, "timed out waiting for the session")
+}
+
 /// When `--timeout` runs out; never, for one too far off to say.
 fn deadline(timeout: Option<u64>) -> Option<Instant> {
     timeout.and_then(|s| Instant::now().checked_add(Duration::from_secs(s)))
@@ -204,10 +215,12 @@ fn deadline(timeout: Option<u64>) -> Option<Instant> {
 // ---- attachments ---------------------------------------------------------
 
 /// `--file` as a resource link and `--image` as an image block.
-fn attachments(files: &[String], images: &[String]) -> Result<Vec<Value>, String> {
+fn attachments(files: &[String], images: &[String]) -> Result<Vec<Value>, error::Error> {
+    let bad = |error: String| error::Error::new(Code::input_invalid, error);
     let mut blocks = Vec::new();
     for file in files {
-        let path = fs::canonicalize(paths::expand(file)).map_err(|e| format!("{file}: {e}"))?;
+        let path =
+            fs::canonicalize(paths::expand(file)).map_err(|e| bad(format!("{file}: {e}")))?;
         let name = path.file_name().map_or(file.clone(), |n| n.to_string_lossy().into_owned());
         blocks.push(json!({ "type": "resource_link", "uri": file_uri(&path), "name": name }));
     }
@@ -219,13 +232,13 @@ fn attachments(files: &[String], images: &[String]) -> Result<Vec<Value>, String
             Some("jpg" | "jpeg") => "image/jpeg",
             Some("gif") => "image/gif",
             Some("webp") => "image/webp",
-            _ => return Err(format!("{image}: not a png, jpeg, gif or webp image")),
+            _ => return Err(bad(format!("{image}: not a png, jpeg, gif or webp image"))),
         };
-        let size = fs::metadata(&path).map_err(|e| format!("{image}: {e}"))?.len();
+        let size = fs::metadata(&path).map_err(|e| bad(format!("{image}: {e}")))?.len();
         if size > MAX_IMAGE {
-            return Err(format!("{image}: {size} bytes; images go up to {MAX_IMAGE}"));
+            return Err(bad(format!("{image}: {size} bytes; images go up to {MAX_IMAGE}")));
         }
-        let data = fs::read(&path).map_err(|e| format!("{image}: {e}"))?;
+        let data = fs::read(&path).map_err(|e| bad(format!("{image}: {e}")))?;
         blocks.push(json!({ "type": "image", "mimeType": mime, "data": base64(&data) }));
     }
     Ok(blocks)
@@ -373,7 +386,8 @@ fn parse_start(args: &Args, resume: bool) -> Result<StartArgs, Error> {
     if a.prompt.as_deref() == Some("-") {
         a.prompt = Some(read_stdin()?);
         if empty(&a.prompt) {
-            return Err(Failed("the prompt on stdin is empty".into()));
+            let error = error::Error::new(Code::input_invalid, "the prompt on stdin is empty");
+            return Err(Failed(error));
         }
     }
     Ok(a)
@@ -390,14 +404,16 @@ pub(super) fn resume(args: &Args) -> Result<ExitCode, Error> {
 }
 
 /// How long a start may take until it commits (`BRNR_START_TIMEOUT`).
-fn start_timeout() -> Result<u64, String> {
+fn start_timeout() -> Result<u64, error::Error> {
     match env::var("BRNR_START_TIMEOUT") {
-        Ok(secs) => secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}")),
+        Ok(secs) => {
+            secs.parse().map_err(|_| format!("BRNR_START_TIMEOUT: not seconds: {secs}").into())
+        }
         Err(_) => Ok(START_TIMEOUT),
     }
 }
 
-fn start(mut a: StartArgs) -> Result<ExitCode, String> {
+fn start(mut a: StartArgs) -> Result<ExitCode, error::Error> {
     if let Some(pid) = a.pid.take() {
         return start_in(a, &pid);
     }
@@ -458,7 +474,8 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     };
     let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
     if !cwd.is_dir() {
-        return Err(format!("{}: not a directory", cwd.display()));
+        let error = format!("{}: not a directory", cwd.display());
+        return Err(error::Error::new(Code::input_invalid, error));
     }
     let mcp_servers =
         h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
@@ -536,7 +553,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             // Before the report: not ours.
             Ok(Some(msg)) if msg.get("event").is_some() => {}
             Ok(Some(msg)) => break msg,
-            Ok(None) => return Err("timed out waiting for the session".into()),
+            Ok(None) => return Err(timed_out()),
             Err(_) => break Value::Null,
         }
     };
@@ -544,14 +561,17 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         if let Some(child) = child {
             return Ok(exit_status(child)); // It has said why, on our stderr.
         }
-        let error = ready["error"].as_str().unwrap_or("the process exited without a session");
-        if crate::bug::is_panic(error) {
+        let error = match &ready["error"] {
+            Value::Null => error::Error::from("the process exited without a session"),
+            error => error::Error::of(error),
+        };
+        if crate::bug::is_panic(&error.message) {
             // A detached process has no terminal to say where to report it.
-            errln!("brnr: {error}");
-            eprintln!("{}", crate::bug::link(error, command));
+            errln!("brnr: {}", render::coded(&error.message, error.code.name()));
+            eprintln!("{}", crate::bug::link(&error.message, command));
             return Ok(ExitCode::FAILURE);
         }
-        return Err(error.to_owned());
+        return Err(error);
     }
     if let Some(child) = child {
         return Ok(exit_status(child));
@@ -572,7 +592,7 @@ fn started(
     wait: bool,
     json: bool,
     timeout: Option<u64>,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, error::Error> {
     let session = text(&ready["session"]);
     // The prompt's id, as `send` gives it (ADR 4.1); null without one.
     let about = json!({ "session": session, "pid": ready["pid"], "message": ready["message"] });
@@ -599,7 +619,7 @@ fn started(
 /// the process's: past it, the process closes the session again and says
 /// so. Gone before it (Ctrl-C), the command closes its connection, and the
 /// process does the same.
-fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
+fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, error::Error> {
     let blocks = attachments(&a.files, &a.images)?;
     let timeout = start_timeout()?;
     let hosts = discover()?;
@@ -630,7 +650,8 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
     };
     let cwd = std::path::absolute(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
     if !cwd.is_dir() {
-        return Err(format!("{}: not a directory", cwd.display()));
+        let error = format!("{}: not a directory", cwd.display());
+        return Err(error::Error::new(Code::input_invalid, error));
     }
     let request::Settings { mode, model, thought_level, options } = &a.settings;
     for (key, value) in [
@@ -663,7 +684,7 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
         Instant::now().checked_add(Duration::from_secs(timeout).saturating_add(START_GRACE));
     let ready = match conn.call_until(req, until)? {
         Some(ready) => ready,
-        None => return Err("timed out waiting for the session".into()),
+        None => return Err(timed_out()),
     };
     conn.only(&text(&ready["session"]));
     started(&mut conn, &ready, a.wait, a.json, a.timeout)
@@ -674,27 +695,33 @@ fn start_in(a: StartArgs, pid: &str) -> Result<ExitCode, String> {
 /// an agent that can't close sessions (ADR 3.8), or an agent with neither
 /// `session/resume` nor `session/load` (ADR 3.11). The process checks the same
 /// itself.
-fn refused_in(host: &Host) -> Result<(), String> {
+fn refused_in(host: &Host) -> Result<(), error::Error> {
+    let refused = |code, error: String| Err(error::Error::new(code, error));
     let Some(status) = &host.status else {
-        return Err(format!("process {} is not answering", host.id()));
+        return refused(
+            Code::process_unreachable,
+            format!("process {} is not answering", host.id()),
+        );
     };
     if status["starting"] != false {
-        return Err(format!("process {} is still starting", host.id()));
+        return refused(Code::process_starting, format!("process {} is still starting", host.id()));
     }
     if status["stopping"] == true {
-        return Err(format!("process {} is stopping", host.id()));
+        return refused(Code::process_stopping, format!("process {} is stopping", host.id()));
     }
     if status["owner"] == "editor" {
-        return Err("the editor owns this process; open sessions there".into());
+        let error = "the editor owns this process; open sessions there";
+        return refused(Code::process_owned_by_editor, error.into());
     }
     let caps = &status["capabilities"];
     if caps["resume"] != true && caps["load"] != true {
-        return Err("the agent can't resume sessions (no session/resume or session/load)".into());
+        let error = "the agent can't resume sessions (no session/resume or session/load)";
+        return refused(Code::capability_missing, error.into());
     }
     if !status["stop_when_idle"].is_null() && status["capabilities"]["close"] != true {
-        return Err("the agent can't close sessions: with stop_when_idle, a second session would \
-                    never close"
-            .into());
+        let error = "the agent can't close sessions: with stop_when_idle, a second session would \
+                     never close";
+        return refused(Code::capability_missing, error.into());
     }
     Ok(())
 }
@@ -768,7 +795,7 @@ pub(super) fn send(a: &Args) -> Result<ExitCode, Error> {
     };
     let blocks = attachments(&files, &images)?;
     if text_in.trim().is_empty() && blocks.is_empty() {
-        return Err(Failed("nothing to send".into()));
+        return Err(Failed(error::Error::new(Code::input_invalid, "nothing to send")));
     }
 
     let hosts = discover()?;
@@ -844,7 +871,7 @@ fn wait_on(
     deadline: Option<Instant>,
     json_out: bool,
     process: &Value,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, error::Error> {
     // Subscribed before looking, so nothing happens unseen in between.
     let events = [
         "turn_ended",
@@ -907,7 +934,7 @@ fn wait_on(
                 let gone = json!({
                     "event": "process_exited",
                     "exit_status": null,
-                    "error": "the process went without saying how it exited",
+                    "error": error::Error::from("the process went without saying how it exited").json(),
                     "ts": crate::log::rfc3339(std::time::SystemTime::now()),
                     "host_id": process["host_id"],
                     "pid": process["host_pid"],
@@ -924,7 +951,9 @@ fn wait_on(
                     done(&e, render::exited(&e["exit_status"]))?;
                     break 'event Some(ExitCode::SUCCESS);
                 }
-                ("process_exited", _) => return Err("the agent exited".into()),
+                ("process_exited", _) => {
+                    return Err(error::Error::new(Code::agent_exited, "the agent exited"));
+                }
                 // A closed session counts as idle; there is no next turn or
                 // approval in it to wait for.
                 ("session_closed", "idle") if mine(&e) => {
@@ -934,7 +963,7 @@ fn wait_on(
                     break 'event Some(ended_as(&last_turn));
                 }
                 ("session_closed", "turn" | "permission" | "elicitation") if mine(&e) => {
-                    return Err("the session closed".into());
+                    return Err(error::Error::new(Code::session_closed, "the session closed"));
                 }
                 // One is waiting, unless answered since: what is waiting now
                 // is what `permission show` or `elicitation show` prints.
@@ -984,8 +1013,8 @@ fn waiting(
     conn: &mut Conn,
     session: &str,
     what: &str,
-    done: &dyn Fn(&Value, String) -> Result<(), String>,
-) -> Result<Option<()>, String> {
+    done: &dyn Fn(&Value, String) -> Result<(), error::Error>,
+) -> Result<Option<()>, error::Error> {
     let pending = conn.pending()?;
     let found = match what {
         "permission" => {
@@ -1009,7 +1038,7 @@ fn idle_text(state: &str, turn: &Value) -> String {
 /// its state then, `idle`, or `inactive` for one that has closed; and how
 /// its last turn ended, as `session status` has it (null for one that has
 /// closed).
-fn idle(conn: &mut Conn, session: &str) -> Result<(Option<&'static str>, Value), String> {
+fn idle(conn: &mut Conn, session: &str) -> Result<(Option<&'static str>, Value), error::Error> {
     let status = conn.call(json!({ "cmd": "status" }))?;
     Ok(match session_in(&status, session) {
         Some(s) => {
@@ -1042,7 +1071,7 @@ fn describe_elicitation(e: &Value) -> String {
 
 // ---- cancel and queue ----------------------------------------------------
 
-pub(super) fn cancel(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn cancel(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, keep_held, json_out) = (a.positional[0].clone(), a.has("--keep-held"), a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, &arg)?;
@@ -1060,13 +1089,13 @@ pub(super) fn cancel(a: &Args) -> Result<ExitCode, String> {
 }
 
 /// `queue list`: the held messages and context.
-pub(super) fn queue_list(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn queue_list(a: &Args) -> Result<ExitCode, error::Error> {
     queue(&a.positional[0], json!({ "cmd": "queue" }), a.json)
 }
 
 /// `queue show <session> <message>`: one held message in full, its text,
 /// whether it interrupts, and its attachments.
-pub(super) fn queue_show(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn queue_show(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, message, json_out) = (&a.positional[0], &a.positional[1], a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
@@ -1098,14 +1127,14 @@ pub(super) fn queue_show(a: &Args) -> Result<ExitCode, String> {
 
 /// `queue drop <session> <message>`: one held message dropped, and what is
 /// still held.
-pub(super) fn queue_drop(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn queue_drop(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, message) = (&a.positional[0], &a.positional[1]);
     queue(arg, json!({ "cmd": "queue", "drop": message }), a.json)
 }
 
 /// `queue clear <session> [--messages] [--context]`: the held messages, the
 /// held context, or with neither flag both, dropped; and what is left.
-pub(super) fn queue_clear(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn queue_clear(a: &Args) -> Result<ExitCode, error::Error> {
     let (messages, context) = (a.has("--messages"), a.has("--context"));
     let neither = !messages && !context;
     let req = json!({ "cmd": "queue", "clear": messages || neither, "clear_context": context || neither });
@@ -1114,7 +1143,7 @@ pub(super) fn queue_clear(a: &Args) -> Result<ExitCode, String> {
 
 /// Sends `req`, the socket's `queue`, for session `arg`, and prints what it
 /// dropped and what is held.
-fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, String> {
+fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, error::Error> {
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     req["session"] = json!(session);
