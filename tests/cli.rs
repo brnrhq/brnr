@@ -5416,6 +5416,43 @@ fn adr_0008_delete_purge() {
     assert_eq!(fs::read_dir(env.dir.join("home/hosts")).unwrap().count(), hosts);
 }
 
+/// `--purge` deletes every file of the session brnr finds, an older brnr's
+/// too (N1): one set aside by a resume (ADR 5.9), its raw ACP beside it,
+/// and one in a folder no process opened again; never another session's.
+/// Each is said, as its own are.
+#[test]
+fn adr_0008_purge_deletes_an_older_brnrs_files_too() {
+    let env = Env::new("c-purge-older").agent("NO_RESUME", "1");
+    let cwd = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
+    let older = older_transcript(&env, &folder_of(&cwd), "old-1", &cwd, true);
+    let before_hash = older_transcript(&env, "-before-the-hash", "old-1", &cwd, true);
+    let other = older_transcript(&env, "-before-the-hash", "old-10", &cwd, false);
+    env.ok(&resume_args("old-1", &["--wait", "--prompt", "reply new"]));
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    let folder = older.parent().unwrap();
+    let aside = folder.join("old-1.older.jsonl");
+    assert!(aside.exists(), "{:?}", transcript_files(&env));
+
+    let out = env.ok(&["session", "delete", "old-1", "--purge", "--json"]);
+    let out: Value = serde_json::from_str(&out).unwrap();
+    let purged: Vec<&str> =
+        out["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    let want = [
+        before_hash.clone(),
+        before_hash.with_extension("acp.jsonl"),
+        older.clone(),
+        older.with_extension("acp.jsonl"),
+        folder.join("old-1.older.acp.jsonl"),
+        aside,
+    ];
+    let want: Vec<String> = want.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert_eq!(purged, want, "{out}");
+    assert_eq!(out["failed"], json!([]), "{out}");
+    assert_eq!(transcript_files(&env), ["old-10.jsonl"]);
+    assert!(other.exists());
+}
+
 /// With `--purge`, an agent whose `session/delete` fails otherwise may still
 /// have the session: its error is said and the command fails, but brnr's
 /// transcript is deleted all the same.

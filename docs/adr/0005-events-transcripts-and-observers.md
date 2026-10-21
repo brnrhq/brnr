@@ -995,7 +995,7 @@ without quoting (in jq `.records-skipped` is a subtraction).
     records in the host log, as a refused file is (ADR 9.3): the session
     then has a transcript, which its next resume finds, and a load records
     its history in it (ADR 5.6). `session delete --purge` deletes the
-    session's own files, not one set aside.
+    files set aside too, as every file of the session's id (ADR 8.1, N1).
 - The CLI reads the bridge `status` reply's `sessions` in the new names,
   and `session list`'s rows of a transcript the same (`session`,
   `events_log`).

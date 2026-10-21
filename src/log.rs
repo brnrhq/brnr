@@ -1072,7 +1072,8 @@ pub(crate) fn record_in_transcripts(
 
 /// Deletes `session`'s transcripts (ADR 8.1): in each project folder under
 /// the state directory, its events file and its raw ACP, named for its id
-/// (ADR 9.2), and nothing else: not the host logs, which are shared, nor
+/// (ADR 9.2), whoever wrote them, and an older brnr's set aside beside them
+/// (`paths::is_sessions_file`, ADR 5.9), and nothing else: not the host logs, which are shared, nor
 /// another session's files. The state directory, `projects` and each folder
 /// are opened without following a symlink, each from the one before, and
 /// the names removed from what was opened (`unlinkat`), so nothing outside
@@ -1104,7 +1105,7 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
         }
     };
     let name = paths::file_name(session);
-    let names = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
+    let own = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
     let entries = std::fs::read_dir(&projects_path).into_iter().flatten().flatten();
     let mut folders: Vec<_> = entries.map(|e| e.file_name()).collect();
     folders.sort();
@@ -1121,7 +1122,14 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
                 continue;
             }
         };
-        for file in &names {
+        // Its own files first, then an older brnr's set aside (ADR 5.9).
+        let listed = std::fs::read_dir(&path).into_iter().flatten().flatten();
+        let mut aside: Vec<String> = listed
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|f| paths::is_sessions_file(&name, f) && !own.contains(f))
+            .collect();
+        aside.sort();
+        for file in own.iter().chain(&aside) {
             // An escaped name has no NUL (ADR 9.2).
             let c_file = CString::new(file.as_str()).expect("an escaped name");
             match sys::unlinkat(dir.as_fd(), &c_file, 0) {

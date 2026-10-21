@@ -486,7 +486,8 @@ delete sessions (`sessionCapabilities.delete`). Only the agent's copy goes:
 brnr's transcript stays, still listed by `session list`, with a
 `session_deleted` in it, a record of no process's (its `host_id` null).
 `--purge` deletes the transcript too, the session's events file and raw ACP
-in each project folder under `BRNR_HOME`, and nothing else: the host logs
+in each project folder under `BRNR_HOME`, an older brnr's too, with those set
+aside beside them (`<id>.older.jsonl`, …), and nothing else: the host logs
 are shared and stay, and does so whatever the agent answered. With
 `--purge`, the command exits 0 only if the agent deleted the session or
 doesn't have it (ACP's `resource_not_found`, said on stderr); any other
