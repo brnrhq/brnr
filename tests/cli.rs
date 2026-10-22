@@ -6938,16 +6938,44 @@ fn adr_0008_an_error_after_a_stream_is_on_stderr_alone() {
     env.start(&[]);
     let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
     let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let mut out = BufReader::new(watch.stdout.take().unwrap());
-    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply live"]);
-    let mut first = String::new();
-    assert!(out.read_line(&mut first).unwrap() > 0, "watch printed nothing");
+    // Its lines come on a thread, so that no read can hang the test.
+    let (tx, lines) = std::sync::mpsc::channel();
+    let out = BufReader::new(watch.stdout.take().unwrap());
+    std::thread::spawn(move || {
+        for line in out.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    // A prompt sent before the watch has subscribed reaches no one: send
+    // again until a line comes, the sign that it has.
+    let until = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    while seen.is_empty() {
+        assert!(Instant::now() < until, "watch printed nothing");
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply live"]);
+        seen.extend(lines.recv_timeout(Duration::from_secs(1)).ok());
+    }
     // Killed: it says nothing more, and the watch's connection ends.
     kill(env.host_pid(), libc::SIGKILL);
-    let mut rest = String::new();
-    std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        match lines.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(line) => seen.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = watch.kill();
+                panic!("watch's stdout stayed open: {seen:?}");
+            }
+        }
+    }
+    if !wait_exit(&mut watch, Duration::from_secs(15)) {
+        let _ = watch.kill();
+        panic!("watch kept running");
+    }
     let ended = watch.wait_with_output().unwrap();
-    for line in first.lines().chain(rest.lines()) {
+    for line in &seen {
         let event: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
         assert!(event["event"].is_string(), "{line}");
     }
