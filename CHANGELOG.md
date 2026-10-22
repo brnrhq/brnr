@@ -24,6 +24,8 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-22
+
 ### Added
 
 - `turn_ended`, the status's `last_turn` and `prompt send --wait --json` have
@@ -1268,7 +1270,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/brnrhq/brnr/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/brnrhq/brnr/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/brnrhq/brnr/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/brnrhq/brnr/compare/v0.6.0...v0.7.0
