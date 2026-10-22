@@ -386,6 +386,11 @@ const MAX_CONNECTIONS: usize = 128;
 const ACCEPT_WAIT: Duration = Duration::from_millis(10);
 const ACCEPT_WAIT_MAX: Duration = Duration::from_secs(1);
 
+/// How long a connection cut off for a request too long waits for its
+/// answer to be written before it closes: a peer that has stopped reading
+/// holds its writer, and so the connection, for as long as it doesn't.
+const CUT_OFF_WAIT: Duration = Duration::from_secs(5);
+
 pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
     serve_up_to(listener, tx, MAX_CONNECTIONS)
 }
@@ -428,8 +433,10 @@ fn backoff(last: Option<Duration>) -> Duration {
     last.map_or(ACCEPT_WAIT, |last| (last * 2).min(ACCEPT_WAIT_MAX))
 }
 
-/// A connection counted as open until it is dropped.
-struct Slot(Arc<AtomicUsize>);
+/// A connection counted as open until it is dropped: once the process has
+/// let go of the connection (`Ev::PeerClosed`), its writer's and closer's
+/// handles too.
+pub(super) struct Slot(Arc<AtomicUsize>);
 
 impl Drop for Slot {
     fn drop(&mut self) {
@@ -448,10 +455,16 @@ fn connection(conn: UnixStream, tx: SyncSender<Ev>, slot: Slot) {
         return;
     }
     read_requests(conn, peer, &tx);
-    // Free before the event loop hears, so a client that has seen one
-    // connection end can open another.
-    drop(slot);
-    let _ = tx.send(Ev::PeerClosed { peer });
+    let _ = tx.send(Ev::PeerClosed { peer, slot });
+}
+
+/// Closes `conn` once its writer has nothing `unwritten`, or after `wait`.
+fn close_once_written(conn: &UnixStream, unwritten: &AtomicUsize, wait: Duration) {
+    let until = Instant::now() + wait;
+    while unwritten.load(Relaxed) > 0 && Instant::now() < until {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = conn.shutdown(Shutdown::Both);
 }
 
 pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
@@ -702,10 +715,18 @@ impl Host {
         let reason = "line_too_long";
         let event = json!({ "event": "peer_dropped", "peer": p.label, "reason": reason, "limit": LINE_BYTES });
         self.sink.note(None, event);
-        if let Closer::Bridge(pid) = p.closer
-            && self.bridge_pids.contains(&pid)
-        {
-            sys::kill(pid, libc::SIGTERM);
+        match p.closer {
+            // Its writer writes the answer and ends, as nothing more comes;
+            // one blocked on a peer that stopped reading is let go of after
+            // a while, so the connection doesn't stay open for ever.
+            Closer::Socket(conn) => {
+                let unwritten = p.tx.queued.clone();
+                thread::spawn(move || close_once_written(&conn, &unwritten, CUT_OFF_WAIT));
+            }
+            Closer::Bridge(pid) if self.bridge_pids.contains(&pid) => {
+                sys::kill(pid, libc::SIGTERM);
+            }
+            Closer::Bridge(_) => {}
         }
     }
 
@@ -1431,8 +1452,8 @@ mod tests {
     }
 
     /// Past `max` connections open, one more is told so and closed, and no
-    /// peer is made of it; once one has closed, the next is served
-    /// (ADR 10.4).
+    /// peer is made of it; once the event loop has let go of one that
+    /// closed, the next is served (ADR 10.4).
     #[test]
     fn adr_0010_a_connection_past_the_cap_is_told_and_closed() {
         let dir = std::env::temp_dir().join(format!("brnr-cap-{}", std::process::id()));
@@ -1455,10 +1476,31 @@ mod tests {
         assert_eq!(told, format!("{}\n", json!({ "ok": false, "error": error })));
         assert!(rx.try_recv().is_err(), "a peer was made of it");
         drop(first);
-        assert!(matches!(rx.recv_timeout(wait), Ok(Ev::PeerClosed { .. })));
+        // Counted until the event loop has let go of it.
+        let closed = rx.recv_timeout(wait).unwrap();
+        assert!(matches!(closed, Ev::PeerClosed { .. }));
+        let mut told = String::new();
+        UnixStream::connect(&socket).unwrap().read_to_string(&mut told).unwrap();
+        assert!(told.contains("too many connections: 2 open"), "{told}");
+        drop(closed);
         let _third = UnixStream::connect(&socket).unwrap();
         assert!(opened(&rx), "not served once one closed");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A connection cut off for a request too long closes once its answer is
+    /// written, or, its peer not reading, after the wait: its writer,
+    /// blocked, would hold it open for ever (ADR 10.3, 10.4).
+    #[test]
+    fn adr_0010_a_cut_off_connection_closes_once_written_or_after_a_wait() {
+        for (unwritten, at_least) in [(0, Duration::ZERO), (1, Duration::from_millis(300))] {
+            let (ours, mut theirs) = UnixStream::pair().unwrap();
+            let start = Instant::now();
+            close_once_written(&ours, &AtomicUsize::new(unwritten), Duration::from_millis(300));
+            let took = start.elapsed();
+            assert!(took >= at_least && took < at_least + Duration::from_secs(2), "{took:?}");
+            assert_eq!(theirs.read(&mut [0; 8]).unwrap(), 0, "not closed");
+        }
     }
 
     /// An accept that fails is tried again after 10 ms, then twice as long
