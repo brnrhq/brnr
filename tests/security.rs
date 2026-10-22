@@ -750,18 +750,18 @@ env = {{ GITHUB_TOKEN = "bridge-secret" }}
 fn adr_0010_was_cut_off_says_where_never_what() {
     let env = Env::new("s-cutoff");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || {
         let lines = BufReader::new(stdout).lines().map_while(Result::ok);
         lines.map(|l| serde_json::from_str::<Value>(&l).unwrap()).collect::<Vec<_>>()
     });
-    sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..4 {
         env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);

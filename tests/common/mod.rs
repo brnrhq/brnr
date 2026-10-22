@@ -196,6 +196,29 @@ impl Env {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
+    /// How many subscriptions the processes have taken on their sockets: the
+    /// `peer_subscribed` records in every host log (ADR 10.2).
+    pub fn subscriptions(&self) -> usize {
+        let Ok(dir) = fs::read_dir(self.dir.join("home/hosts")) else { return 0 };
+        let logs = dir.flatten().filter_map(|e| fs::read_to_string(e.path()).ok());
+        logs.map(|log| log.matches(r#""event":"peer_subscribed""#).count()).sum()
+    }
+
+    /// Waits for the processes to have taken `count` subscriptions: an
+    /// observer that has subscribed gets every event after it.
+    pub fn wait_subscriptions(&self, count: usize) {
+        let taken = wait_for(Duration::from_secs(15), || self.subscriptions() >= count);
+        assert!(taken, "{} of {count} subscriptions taken in 15 s", self.subscriptions());
+    }
+
+    /// What `spawn` started, once it has subscribed: one subscription more.
+    pub fn subscribed<T>(&self, spawn: impl FnOnce() -> T) -> T {
+        let before = self.subscriptions();
+        let spawned = spawn();
+        self.wait_subscriptions(before + 1);
+        spawned
+    }
+
     pub fn child_pid(&self) -> i32 {
         let path = self.dir.join("child.pid");
         assert!(wait_for(Duration::from_secs(5), || path.exists()), "no child pid");

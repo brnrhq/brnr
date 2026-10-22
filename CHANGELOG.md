@@ -49,6 +49,9 @@ brnr's own conventions:
   `events_missed`, which are shown whatever it chose: `event log
   --events records_skipped` lists only a transcript's gaps (ADR 5.9,
   #314).
+- The host log notes each subscription on the control socket,
+  `peer_subscribed` with the connection's `peer`, once the connection gets
+  the events that follow (ADR 10.2, #333).
 
 ### Changed
 

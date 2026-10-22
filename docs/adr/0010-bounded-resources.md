@@ -161,6 +161,13 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
   and `seq`, the last position before it. `session new --wait`'s ready report
   on the start channel says the same (`socket#start`).
+- The host log notes each `subscribe` (`peer_subscribed`, with its `peer`)
+  once the peer is subscribed, so whoever finds the note there knows the
+  peer gets every event after it: the tests wait for it before they make
+  an event an observer must see, not a time (#333). A started bridge has
+  `bridge_started` for it. The start channel has no note: its ready report
+  goes in the same step of the event loop that subscribes it, before any
+  event can.
 
 ### Recording the cut-off
 
@@ -486,7 +493,8 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_burst_past_64_mib_reaches_a_watcher`,
     `adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed`,
     `adr_0010_a_wait_cut_off_catches_up`,
-    `adr_0010_event_wait_cut_off_catches_up`.
+    `adr_0010_event_wait_cut_off_catches_up`,
+    `adr_0010_the_host_log_notes_each_subscription`.
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0010_notify_cut_off_catches_up_once_its_command_is_done`.
   - [tests/security.rs](../../tests/security.rs):
