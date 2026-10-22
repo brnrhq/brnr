@@ -183,6 +183,15 @@ keeps P9.
     (`log: <path>: is a symlink, so brnr won't write a transcript there
     …`). For a session's file, the session is served without it and the
     host log has `session_log_failed` with the error (ADR 5.1).
+  - On macOS, one with an access control list (`ls -le`), which can let
+    others in whatever the mode says, is refused the same way, and the
+    error says the `chmod -N` that removes it (`<path>: has an access
+    control list (ls -le), which can let others read or write it whatever
+    its mode, so brnr won't write a transcript there (chmod -N <path>
+    removes it)`). brnr doesn't remove it (P4). Any ACL is refused, a
+    `deny` one too, as for the config (ADR 9.4). On Linux an ACL's grants
+    show in the mode's group bits, its mask, which are made private with
+    the rest.
   - A FIFO is opened without blocking, so it is refused, not waited on.
 - What reads a transcript reads it only where it could have been written,
   by the same rules for every part of the path: `session list`, `event
@@ -191,15 +200,18 @@ keeps P9.
   directory below it (`projects` and the project folder, or `hosts`) and
   the file, each from the one above it (`openat`, `O_NOFOLLOW`), and check
   each through what was opened (`fstat`). A symlink, one that isn't a
-  directory (or a regular file), one owned by someone else, or a file with
-  other hard links isn't looked in or read, and a FIFO isn't waited on. One
-  read through a link would be whatever the link points at, taken for a
-  session of the user's. Reading makes nothing private: `doctor` warns of
-  what others can reach, and of a state directory, `hosts` or `projects`
-  that isn't a directory, however private. It opens each path the same
-  way, lists a directory through what it opened, and `--fix` makes private
-  only what it opened, through it (`fchmod`): it doesn't look below a
-  symlink, nor change what is put at a name after it looked.
+  directory (or a regular file), one owned by someone else, one with an
+  access control list (macOS), or a file with other hard links isn't
+  looked in or read, and a FIFO isn't waited on. One read through a link
+  would be whatever the link points at, taken for a session of the user's;
+  one with an ACL, what others may have written. Reading makes nothing
+  private: `doctor` warns of what others can reach, of an ACL, with the
+  `chmod -N` that removes it, and of a state directory, `hosts` or
+  `projects` that isn't a directory, however private. It opens each path
+  the same way, lists a directory through what it opened, and `--fix`
+  makes private only what it opened, through it (`fchmod`): it doesn't
+  look below a symlink, nor change what is put at a name after it looked,
+  nor remove an ACL.
   `transcript.rs` holds every read.
 - There is no override. `log = "off"` (ADR 5.1) is the way to write
   nothing, and a transcript to share is copied out.
@@ -211,6 +223,9 @@ keeps P9.
 - `brnr doctor` warns of transcripts others can read, and `brnr doctor
   --fix` makes private the files that no process opens again.
 - A symlinked state directory or transcript is refused, with no shim (P9).
+- On macOS, a transcript or a directory on its way with an ACL leaves the
+  session unrecorded, or the process not started for the state directory
+  or `hosts`, until the user runs the `chmod -N` the error gives.
 - Each open is a few more system calls: per session opened, not per
   record.
 
@@ -228,6 +243,10 @@ points (N1).
   the user ran `brnr doctor --fix`. Repairing through the descriptor is as
   safe, since only a file or directory already the user's is changed, and
   it closes the exposure at once. What can't be repaired safely is refused.
+- Removing an ACL, as the mode is made private: the mode brnr gave what
+  it creates is brnr's to restore, but an ACL is added on purpose, by the
+  user, an administrator or a tool, and removing it is picking for them
+  (P4). The error gives the one command that does it.
 - Checking by path (`lstat`, then `chmod` and `open`): a path can be
   swapped between the check and the open. A descriptor can't.
 - Following a symlinked state directory when the link is the user's: it is
@@ -385,6 +404,14 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       `hosts` a symlink, `session list` reads no host log and `doctor`
       reads, shows and makes private none; with `projects` one too, its
       session isn't listed or logged.
+    - `adr_0009_a_transcript_with_an_acl_is_never_written` (macOS): an
+      events file with an ACL is `session_log_failed`, with the `chmod -N`,
+      and isn't written; a state directory with one fails the start before
+      the agent is prompted; the ACL stays.
+    - `adr_0009_a_transcript_with_an_acl_is_never_read` (macOS): a session
+      whose events file, or project folder, has an ACL isn't listed or
+      logged; `doctor` warns of it with the `chmod -N`, and `--fix` leaves
+      it.
 - 9.4:
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config

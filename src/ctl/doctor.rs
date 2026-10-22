@@ -353,7 +353,7 @@ fn transcripts(r: &mut Report) {
         let fixed = fixable.iter().filter(|f| f.make_private()).count();
         r.line(Level::Ok, what, format!("made {fixed} paths private under {}", root.display()));
         if fixed < open.len() {
-            let msg = format!("{} paths are not yours to fix, e.g. {example}", open.len() - fixed);
+            let msg = format!("{} paths --fix doesn't change, e.g. {example}", open.len() - fixed);
             r.line(Level::Warn, what, msg);
         }
     } else {
@@ -378,6 +378,9 @@ struct Found {
     /// `projects` should; what is in them should be what it is.
     dir: bool,
     file: Option<File>,
+    /// What its access control list is, if it has one (macOS) or it can't
+    /// be read: `--fix` doesn't remove one (P4).
+    acl: Option<String>,
 }
 
 impl Found {
@@ -401,7 +404,12 @@ impl Found {
             Some(file) => file.metadata().ok()?,
             None => fs::symlink_metadata(&path).ok()?,
         };
-        Some(Found { path, meta, dir, file })
+        let acl = file.as_ref().and_then(|file| match sys::has_acl(file) {
+            Ok(false) => None,
+            Ok(true) => Some(paths::acl_refused(&path, meta.is_dir(), "")),
+            Err(e) => Some(format!("has an access control list that can't be read: {e}")),
+        });
+        Some(Found { path, meta, dir, file, acl })
     }
 
     /// `name` in this directory, if it was opened as one.
@@ -426,14 +434,20 @@ impl Found {
         found.collect()
     }
 
+    /// What is wrong with it, if anything: what `--fix` can't change first,
+    /// then an access control list, then the mode.
     fn problem(&self) -> Option<String> {
-        private_problem(&self.meta, self.dir)
+        match private_problem(&self.meta, self.dir) {
+            Some(problem) if !fixable(&self.meta, self.dir) => Some(problem),
+            problem => self.acl.clone().or(problem),
+        }
     }
 
-    /// Whether `--fix` may make it private: it was opened, and is the
-    /// user's and what it should be.
+    /// Whether `--fix` may make it private: it was opened, is the user's and
+    /// what it should be, and has no access control list, which only the
+    /// user removes.
     fn fixable(&self) -> bool {
-        self.file.is_some() && fixable(&self.meta, self.dir)
+        self.file.is_some() && self.acl.is_none() && fixable(&self.meta, self.dir)
     }
 
     /// Makes it private through what was opened (`fchmod`), never by its

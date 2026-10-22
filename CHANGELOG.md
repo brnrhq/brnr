@@ -330,6 +330,22 @@ brnr's own conventions:
   brnr never writes there; `session delete` already left them alone. The
   transcripts brnr writes are where they were (ADR 9.3).
 
+### Security
+
+- On macOS, brnr refuses a transcript, a host log or a folder on their
+  way, the runtime directory, or `sessions/`, that has an access control
+  list (`ls -le`), which can let other users read or reach them whatever
+  the mode says. The error names the path and gives the `chmod -N` that
+  removes it; brnr doesn't remove it. A refused host log or state
+  directory stops the process before it starts; a refused session file
+  leaves the session served without it (`session_log_failed`); a refused
+  runtime directory fails the process and every command that reads it; a
+  refused `sessions/` keeps a session from being locked or started
+  headless. What reads transcripts (`session list`, `event log`, …)
+  doesn't read one with an ACL, and `brnr doctor` says which, with the
+  `chmod -N`; `--fix` leaves it. On Linux an ACL's grants show in the
+  mode, which brnr checked already (ADR 9.3, ADR 3.9, #322).
+
 ## [0.9.0] - 2026-10-16
 
 ### Added

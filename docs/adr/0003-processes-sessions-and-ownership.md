@@ -415,8 +415,23 @@ The lock:
   same: the lock is ownership, not logging.
 - `sessions/` is held to the runtime directory's terms (P13): created
   0700, refused with the cause when it isn't the user's own private
-  directory or is a symlink. Each lock is 0600 and opened `O_NOFOLLOW`. It
-  isn't repaired as transcripts are (ADR 9.3).
+  directory or is a symlink, or, on macOS, has an access control list
+  (below). Each lock is 0600 and opened `O_NOFOLLOW`. It isn't repaired as
+  transcripts are (ADR 9.3).
+- Those terms, for the runtime directory and `sessions/` alike: each is
+  opened without following a symlink and checked through what was opened
+  (`fstat`), and is refused unless it is a directory of the user's with no
+  group or other bits. On macOS one with an access control list (`ls
+  -le`), which can let others in whatever the mode says, is refused too,
+  with the `chmod -N` that removes it: `<dir>: has an access control list
+  (ls -le), which can let others reach what is in it whatever its mode
+  (chmod -N <dir> removes it)`. brnr doesn't remove it (P4), and `doctor
+  --fix` doesn't either. Any ACL is refused, a `deny` one too, as for the
+  config (ADR 9.4). On Linux an ACL's grants show in the mode's group
+  bits, its mask, which are checked. The directory is the boundary: the
+  sockets, metadata and locks in it are reached only through it, and one
+  others can't search keeps them out whatever each file's mode or ACL, so
+  those aren't checked one by one.
 - `session list`, `process list` and `doctor` read the locks to say which
   process serves a session without asking it.
 
@@ -486,7 +501,8 @@ by a process that doesn't say which, the file system has no working
   cause, and its text says "not locked: …; nothing stops another process
   serving it too"; the host log has `lock_failed`. `session resume` of it
   still refuses, as the process serving it says so when asked.
-- `brnr doctor` fails a `sessions/` that isn't a private directory, and
+- `brnr doctor` fails a `sessions/` that isn't a private directory (one
+  with an ACL included), and
   anything but a file where a lock goes, saying that the session can't be
   locked or started headless and what to remove. It doesn't take such a
   thing for a lock a gone process left; `--fix` leaves it to the user.
@@ -779,8 +795,14 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_a_closing_session_doesnt_wake_the_host`.
 - 3.9:
   - [tests/security.rs](../../tests/security.rs):
-    `adr_0003_session_locks_are_private_and_never_followed`; and, not
-    named for a claim, `what_brnr_makes_is_private_whatever_the_umask`.
+    `adr_0003_session_locks_are_private_and_never_followed`,
+    `adr_0003_a_runtime_dir_with_an_acl_is_refused` (macOS): the process
+    starts no agent and writes nothing there, `session list` fails, each
+    with the `chmod -N`, and `doctor --fix` fails it and leaves the ACL,
+    `adr_0003_session_locks_with_an_acl_are_refused` (macOS): a new
+    headless session isn't locked, so isn't started, and the ACL stays;
+    and, not named for a claim,
+    `what_brnr_makes_is_private_whatever_the_umask`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0003_an_editors_load_of_a_held_session_is_refused`,
     `adr_0003_an_editors_session_that_cant_be_locked_is_passed_through`,
@@ -804,7 +826,11 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   - [tests/chaos.rs](../../tests/chaos.rs):
     `adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session`.
   - [src/paths.rs](../../src/paths.rs):
-    `adr_0003_brnr_dir_is_one_shell_word`.
+    `adr_0003_brnr_dir_is_one_shell_word`,
+    `adr_0003_a_private_directory_is_checked_through_what_was_opened`: one
+    that isn't there is `NotFound`; a symlink to a private one, a file and
+    one others can search are refused, and, on macOS, one with an ACL,
+    which stays.
   - [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
     `adr_0003_each_place_is_refused_in_the_same_words`,
     `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
