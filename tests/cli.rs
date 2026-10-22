@@ -980,6 +980,31 @@ fn adr_0005_a_transcript_in_another_format_isnt_read() {
     assert_eq!(row(&rows, "older-1")["cwd"], json!(other.to_string_lossy()), "{rows:?}");
 }
 
+/// A record in another format between records of this brnr's, which no
+/// brnr writes (ADR 5.10), is said where every record is read: `event log`
+/// shows the others and says it isn't shown. The file's first and newest
+/// records are this brnr's, so `session list` lists it from them.
+#[test]
+fn adr_0005_a_record_in_another_format_amid_a_file_is_said() {
+    let env = Env::new("c-format-amid");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "mixed-1", &cwd);
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let amid = [lines[0], lines[4], lines[1], lines[2], lines[3]];
+    assert!(amid[1].starts_with(r#"{"format":2,"#), "{amid:?}");
+    fs::write(&path, amid.join("\n") + "\n").unwrap();
+    let out = env.run(&["event", "log", "mixed-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let says =
+        format!("{}: records in format 2; this brnr reads format 1, not shown", path.display());
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("user: reply hi there") && log.contains("turn ended"), "{log}");
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "mixed-1")["cwd"], json!(cwd), "{rows:?}");
+}
+
 /// A transcript a write cut short, at its end and before its last records,
 /// is read to its last whole record (ADR 5.1, ADR 5.10): `session list` lists
 /// it as of that record, `event log` shows every record and says each line

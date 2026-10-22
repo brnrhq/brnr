@@ -1165,6 +1165,17 @@ The format:
     host log whose first or newest record is in another format.
   - The catch-up of a process writing another format fails, saying so, and
     the command says what it missed (ADR 10.2).
+- Whether a file has records in another format, for `session list`,
+  `session resume`, `doctor` and whether brnr appends to it (ADR 5.9's
+  `log::appends_to`), is told by its first and newest records, not by
+  reading every record. brnr appends only to a file whose first and newest
+  records it reads, and one process serves a session at a time (ADR 3.9):
+  a file a 1.x brnr wrote changes format only at its end, where a newer
+  brnr went on with it, and is then set aside (below). A record in another
+  format between records of this brnr's is no record a brnr appended after
+  them; a reader that reads every record (`event log`, the catch-up) says
+  it all the same, and `session list` takes the file's newest record, one
+  it reads, guessing nothing (P4).
 - brnr doesn't migrate or rewrite a file in another format (ADR 5.1, P3),
   nor keep a reader for one before 1.0 (P9). A major release that changes
   the format decides whether it reads format 1 too.
@@ -1395,6 +1406,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_transcript_in_another_format_isnt_read` (an older brnr's
   without `format`, format 2, and a file a newer brnr went on with:
   `session list`, `event log`, `session resume` and `doctor`),
+  `adr_0005_a_record_in_another_format_amid_a_file_is_said` (a format-2
+  record between format-1 ones: `event log` says it, `session list` lists
+  the file),
   `adr_0005_a_transcript_cut_short_is_read_to_its_last_whole_record`
   (partial writes: a broken line and a cut end, and a resume appending on
   a line of its own),
