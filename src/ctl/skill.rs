@@ -30,8 +30,8 @@ const REFERENCES: &[(&str, &str)] = &[
 /// Claude Code and Codex.
 const DIRS: &[&str] = &["~/.claude/skills", "~/.agents/skills"];
 
-/// `brnr skill [<reference>]`; a reference is never `-h` or another
-/// single-dash word, which is a usage error.
+/// `brnr skill [<reference>]`; a reference is never another single-dash
+/// word, and one it hasn't is a usage error too: they are fixed.
 pub(super) fn skill(a: &Args) -> Result<(), Error> {
     match a.positional.first() {
         None => out!("{SKILL}"),
@@ -41,7 +41,7 @@ pub(super) fn skill(a: &Args) -> Result<(), Error> {
             None => {
                 let names: Vec<&str> = REFERENCES.iter().map(|(n, _)| *n).collect();
                 let names = names.join(", ");
-                return Err(format!("no reference {name} (references: {names})").into());
+                return Err(Error::Invalid(format!("no reference {name} (references: {names})")));
             }
         },
     }

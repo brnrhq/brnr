@@ -1,7 +1,7 @@
 //! A process's own death is recorded (ADR 3.7 in docs/adr).
 //!
 //! A detached process has no terminal: what it writes on stderr goes to its
-//! host log (`host-stderr`), through a pipe on fd 2 that a thread reads, a
+//! host log (`process_stderr`), through a pipe on fd 2 that a thread reads, a
 //! line or a piece of 64 KiB at a time (ADR 10.3).
 //!
 //! A panic, on any of its threads, ends the process. The hook shows it on
@@ -10,7 +10,7 @@
 //! on whatever the panicking thread held, whether that is the event loop or
 //! the logger. The event loop, which holds what there is to tell (the
 //! sessions, the peers), then records the panic in the host log, SIGKILLs
-//! the agent's process group, writes `exited`, with the reason, there and in
+//! the agent's process group, writes `process_exited`, with the reason, there and in
 //! every session's file, sends it to the peers it can still reach (bridges
 //! get the time to act on it they get on any exit), and removes the `.sock`
 //! and `.json` files (see `Host::died`). A panic on the event loop itself
@@ -129,7 +129,7 @@ pub(super) fn test_panic_starting() {
     }
 }
 
-/// Points fd 2 at a pipe whose lines go to the host log, as `host-stderr`,
+/// Points fd 2 at a pipe whose lines go to the host log, as `process_stderr`,
 /// a piece of 64 KiB at most each, as a bridge's do (ADR 10.3). Returns the
 /// thread reading it, for [`release_stderr`].
 pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
@@ -144,7 +144,7 @@ pub(super) fn capture_stderr(sink: Sink) -> Option<JoinHandle<()>> {
     Some(thread::spawn(move || {
         super::read_stderr(reader, |text| {
             if !text.trim_ascii().is_empty() {
-                sink.note(None, json!({ "event": "host-stderr", "text": text }));
+                sink.note(None, json!({ "event": "process_stderr", "text": text }));
             }
             true
         })

@@ -68,7 +68,7 @@ pub(super) enum Hold {
 /// How an open session leaves the table (see [`Host::close_session`]).
 #[derive(Clone, Copy)]
 pub(super) enum Ending<'a> {
-    /// The agent closed it, `by` `close`, `idle` or `editor` (a deletion
+    /// The agent closed it, for `close`, `idle` or the `editor` (a deletion
     /// too): `session_closed` says so (ADR 5.2), and the replay of an
     /// editor's load still unanswered outlasts it (ADR 5.6).
     Closed(&'a str),
@@ -168,14 +168,6 @@ impl Sessions {
         self.open.is_empty()
     }
 
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Sessions { open, claimed: _, closed_loads: _, letting_go: _, under_editor: _ } = self;
-        open.iter().map(Session::holds).max().unwrap_or(0)
-    }
-
     /// Whether `session` is this process's already: open, or claimed.
     pub(super) fn knows(&self, session: &str) -> bool {
         self.open.iter().any(|s| s.id == session) || self.claimed.contains_key(session)
@@ -211,8 +203,7 @@ impl Sessions {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
             Err(lock::Error::Io(error)) => {
-                let event =
-                    json!({ "event": "lock-failed", "session_id": session, "error": error });
+                let event = json!({ "event": "lock_failed", "session": session, "error": error });
                 sink.note(None, event);
                 Hold::Unlocked(error)
             }
@@ -355,7 +346,7 @@ impl Host {
     }
 
     /// As [`Self::open_session`], for a session forked from `forked_from`,
-    /// which its transcript's `session-opened` and its status name (ADR 3.12).
+    /// which its transcript's `session_opened` and its status name (ADR 3.12).
     /// A claimed session opens with its claim's hold; one a load still to be
     /// answered had, closed under it, with its replay (ADR 5.6).
     pub(super) fn open_fork(
@@ -375,7 +366,7 @@ impl Host {
         match hold {
             Hold::Shared(pid) => {
                 let event =
-                    json!({ "event": "session-shared", "session_id": session, "held_by": pid });
+                    json!({ "event": "session_shared", "session": session, "held_by": pid });
                 self.sink.note(None, event);
             }
             Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
@@ -400,8 +391,11 @@ impl Host {
         self.flush_agent_message(i);
         self.drop_all(i, "close");
         let Session { id: session, hold, replay, .. } = self.sessions.open.remove(i);
-        if let Ending::Closed(by) = ending {
-            self.emit(json!({ "event": "session_closed", "session": session, "by": by }));
+        if let Ending::Closed(how) = ending {
+            // Who, and why (ADR 5.9): the editor closes; brnr closes for a
+            // command's `close` or when idle.
+            let (by, reason) = if how == "editor" { ("editor", "close") } else { ("control", how) };
+            self.emit(json!({ "event": "session_closed", "session": session, "by": by, "reason": reason }));
             // A load of it still to be answered may open it again (ADR 5.6).
             if let Some(replay) = replay.filter(|r| r.unanswered > 0 && self.editor_attached()) {
                 self.sessions.closed_loads.insert(session.clone(), replay);

@@ -1,8 +1,7 @@
 # 3. Processes, sessions and ownership
 
-Draft 2026-10-19. Implemented, but for 3.11's resume of an id with files in
-more than one folder (#121), decided, not implemented yet (#309); the cause
-of the deaths 3.7 records is still to be found. Factor: F3; N2 for how a
+Draft 2026-10-20. Implemented, but the cause of the deaths 3.7 records is
+still to be found. Factor: F3; N2 for how a
 process starts and dies (ADR 1). Brings together former ADRs 2, 13, 8, 7, 9,
 10, 11, 12, 3, 50, 65, 42, 14 and 16 (docs/adr/README.md maps them).
 
@@ -125,10 +124,11 @@ a session, and picking one for the user hid that.
 - The process reads no config and takes no flags. `brnr host` is internal,
   not run by hand; `session new --foreground` runs a session in a terminal
   (ADR 3.5).
-- The host log's `started` record holds the request, secrets redacted
-  (ADR 9.1): every process records what it was asked to do.
+- The host log's `process_started` record holds the request
+  (`start_request`), secrets redacted (ADR 9.1): every process records
+  what it was asked to do.
 - A config error under `brnr acp` is reported on the editor's stderr as
-  `brnr acp: …`, as the process's own failures are.
+  `brnr acp: …`, as the process's own failures are, and exits 1 (ADR 8.3).
 
 **Consequences.** There is one way to get a prompt to a process. The
 agent's command isn't in the process's argv, so killing processes by the
@@ -156,7 +156,7 @@ at launch (P10).
   else; cut short (the command died mid-write), it refuses to start.
 - The host reads the start channel on a thread, as every other source. EOF
   on it before the commit means the command has gone: the process stops at
-  once, whatever it was doing (`start-abandoned`).
+  once, whatever it was doing (`start_abandoned`).
 - The commit is the ready report, `{pid, session, message}`, written on
   the start channel once the session is open and its mode and config
   options are set, and before the agent gets the prompt (`message` is the
@@ -260,7 +260,7 @@ everything; a failed display shouldn't cost the session.
 - stdout closing stopping the session, as SIGPIPE ends the writer of a
   pipeline.
 - An unbounded buffer, or printing on the event loop: a broken pipe there
-  panicked the host and left no `exited` record, and stale `.sock` and
+  panicked the host and left no `process_exited` record, and stale `.sock` and
   `.json` files.
 
 ## 3.6 The agent's stderr
@@ -298,15 +298,15 @@ every session).
   SIGKILLs what remains in the agent's process group before it reaps the
   agent (P14). Until then its pid and group id can't be reused. Cleanup
   doesn't depend on a stop request having come first.
-- A detached process's stderr goes to its host log (`host-stderr`), a line
-  or a piece of 64 KiB at a time (ADR 10.3). With `log = false` there is no
+- A detached process's stderr goes to its host log (`process_stderr`), a line
+  or a piece of 64 KiB at a time (ADR 10.3). With `log = "off"` there is no
   host log, and it goes to `/dev/null`.
 - A panic, on any thread, is recorded. The hook notes it and wakes the
-  event loop, which records the panic in the host log, writes `exited`
-  (with the reason) there and in every session's file, sends it to the
+  event loop, which records the panic in the host log (`process_panicked`),
+  writes `process_exited` (with the `error`) there and in every session's file, sends it to the
   peers it can still reach, removes the `.sock` and `.json` files (P3), and
   SIGKILLs the agent's process group (P14). Bridges get the time to act on
-  `exited` they get on any exit (ADR 5.7).
+  `process_exited` they get on any exit (ADR 5.7).
 - A panic once the agent is spawned and before the event loop runs is
   recorded, and ends the agent the same way, as far as what the start has
   made allows (its log, bridges, the display; no sessions yet). Whoever
@@ -316,11 +316,11 @@ every session).
 - A panic prints a link to report it (ADR 11.5): in the foreground from the
   hook, and from `session new` or `brnr acp` when it fails a start.
 - A start that fails as it opens the start channel or its bridges records
-  `exited` too. The logger never skips `exited` (ADR 10.1), so a host log
+  `process_exited` too. The logger never skips `process_exited` (ADR 10.1), so a host log
   without it is a death nothing recorded. What can't be recorded: a panic
   on the logger's own thread, and an abort (a stack overflow), which runs
   no hook.
-- `brnr doctor` lists host logs without `exited` whose process isn't
+- `brnr doctor` lists host logs without `process_exited` whose process isn't
   running (how many, and the latest three), with when each last wrote and
   the sessions it had open.
 - Whether metadata in the runtime directory is a gone process's is told by
@@ -338,7 +338,7 @@ every session).
 
 **Consequences.**
 
-- A killed host can't write `exited`: `doctor` reports its incomplete log
+- A killed host can't write `process_exited`: `doctor` reports its incomplete log
   and repairs stale runtime files, and the session's lock can be taken
   again (ADR 3.9). A killed proxy leaves the host alive to record its death
   and stop even a blocked agent. A killed bridge leaves the session and its
@@ -353,7 +353,7 @@ every session).
 
 **Why.** In October 2026 an editor's host, agent and proxy died together
 three times, with no `exited`, no `editor-disconnected` and no `signal`
-record: SIGKILLed, or a panic, which a detached host's `/dev/null` stderr
+record (the names of then): SIGKILLed, or a panic, which a detached host's `/dev/null` stderr
 hid. One unconfirmed explanation fits all three: something killing
 processes by command line (`pkill -9 -f brnr-claude-adapter`), which
 matched the host's argv. Still to find out: reproduce with IntelliJ
@@ -375,7 +375,7 @@ process (exit 1); and whether it happens without another run alongside.
   session is busy at once. `0` is as soon as it is idle.
 - Never while an editor is attached.
 - Closing emits `session_closed` with `by: idle` (ADR 5.2). The last
-  session, stopping the process, gets `exited` instead, which isn't also
+  session, stopping the process, gets `process_exited` instead, which isn't also
   `session_closed`.
 - With `stop_when_idle` set and an agent that can't close sessions,
   `session fork`, `session new --pid` and `session resume --pid` are
@@ -411,7 +411,7 @@ The lock:
   file it leaves, held by nobody, is taken as it is. `doctor` lists such
   files under `session locks`, and `--fix` removes them. A process that
   closes a session removes the file as it lets go.
-- `log = false` writes no transcripts, but its sessions are locked all the
+- `log = "off"` writes no transcripts, but its sessions are locked all the
   same: the lock is ownership, not logging.
 - `sessions/` is held to the runtime directory's terms (P13): created
   0700, refused with the cause when it isn't the user's own private
@@ -484,7 +484,7 @@ by a process that doesn't say which, the file system has no working
   transcript.
 - It is said where it can be seen: `session status` has `lock_error`, the
   cause, and its text says "not locked: …; nothing stops another process
-  serving it too"; the host log has `lock-failed`. `session resume` of it
+  serving it too"; the host log has `lock_failed`. `session resume` of it
   still refuses, as the process serving it says so when asked.
 - `brnr doctor` fails a `sessions/` that isn't a private directory, and
   anything but a file where a lock goes, saying that the session can't be
@@ -576,7 +576,7 @@ lock goes.
 - Refusing whenever any process doesn't answer: one hung process would
   block every resume.
 - Refusing only if the transcript was last written by the silent process,
-  or by a process not listed here: an inference, wrong for `log = false`.
+  or by a process not listed here: an inference, wrong for `log = "off"`.
 - Each process listing its sessions in its `<pid>.json`: rewritten on
   every change, and trusting a file a dead process left behind.
 - The editor's load taking over automatically: a click in the editor's
@@ -644,7 +644,7 @@ otherwise, kept apart from strict mode, which is about the protocol
   the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
   override them. Of an id with files in more than one project folder, they
   come from the newest record of them all, where the session was last served
-  (ADR 5.1, #121), decided, not implemented yet (#309). An id brnr doesn't
+  (ADR 5.1, #121). An id brnr doesn't
   know (one `session list` with an agent named shows) goes to the agent as
   given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
   `--` (or the profile's).
@@ -690,7 +690,7 @@ rule rather than a guess (P4).
 - Both are refused when the agent can't do them (no `fork` or `close`
   session capability) (P7), and `session fork` when `stop_when_idle` is set
   and the agent can't close sessions (ADR 3.8).
-- A fork's source is recorded and shown. The `session-opened` record that
+- A fork's source is recorded and shown. The `session_opened` record that
   starts the fork's transcript, and the host log's, name the session it was
   forked from, `forked_from` (ADR 5.1). `session list` (a FORKED FROM
   column) and `session status` (`forked_from`) say it, in text and `--json`
@@ -814,13 +814,14 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
-  `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`.
-  That a resume in another cwd starts a file in that folder is shown, for
-  a bridge's resume, by ADR 5.6's
-  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`
-  ([tests/cli.rs](../../tests/cli.rs)). Not covered by a Rust test: the
-  cwd of an id with files in more than one folder (#121), decided, not
-  implemented yet; its tests come with #309.
+  `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
+  `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
+  with files in two folders, #121). That a resume in another cwd starts a
+  file in that folder is shown, for a bridge's resume, by ADR 5.6's
+  `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
+  for a start's by ADR 5.1's
+  `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`
+  ([tests/cli.rs](../../tests/cli.rs)).
 - 3.12:
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_fork_and_close`,

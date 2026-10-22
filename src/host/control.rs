@@ -31,12 +31,12 @@
 //!   it (`seq`): every event has a position, its `seq`, one more than the
 //!   last event's or ACP message's of the process (ADR 10.2)
 //! - `was_cut_off` `{peer}`: whether the process cut that connection off,
-//!   and the last event it queued for it (`last_queued`), so that a peer
+//!   and the last event it queued for it (`last_queued_seq`), so that a peer
 //!   that has reconnected can catch up from the transcript (ADR 10.2). It
 //!   says only where; the events are in the transcript
 //! - `pending`: permission requests waiting for an answer, in full, and
 //!   beside them `elicitations`, the agent's requests for input (ADR 4.5)
-//! - `allow` / `reject` `{session, request, always?, option?}`: with the
+//! - `allow` / `reject` `{session, request, always?, option_id?}`: with the
 //!   option of kind `allow_once` (`allow_always` with `always`), or
 //!   `reject_once` (`reject_always`), or the option named (ADR 8.1)
 //! - `elicitation` `{session, request, action: accept|decline|cancel,
@@ -89,7 +89,7 @@
 //! takes a peer past it doesn't count, nor (up to [`ASIDE_BYTES`] of them)
 //! lines longer than the whole queue, so one long message doesn't either,
 //! even when it comes twice, as its ACP message and its event (ADR 10.1).
-//! A peer cut off is noted in the host log (`peer-dropped`), kept among the
+//! A peer cut off is noted in the host log (`peer_dropped`), kept among the
 //! last [`CUT_OFFS`] for `was_cut_off`, and told to the other peers, as a
 //! `peer_cut_off` event (ADR 10.2).
 
@@ -109,7 +109,7 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use serde_json::{Value, json};
 
-use super::approvals::{self, AgentRequest, Answer, Choice, Kind};
+use super::approvals::{self, AgentRequest, Answer, Choice, Kind, Who};
 use super::elicitation;
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
@@ -144,10 +144,17 @@ pub(crate) const EVENTS: &[&str] = &[
     "session_deleted",
     "history",
     "line_too_long",
+    "line_too_deep",
     "peer_cut_off",
-    "exited",
+    "process_exited",
     "acp",
 ];
+
+/// Notes: what brnr adds to a stream of events, and the host never emits
+/// (ADR 5.9): the logger's gap in a transcript (ADR 10.1), and what a command
+/// cut off couldn't catch up on (ADR 10.2). `--events` takes them;
+/// `subscribe` and a bridge's `events` refuse them.
+pub(crate) const NOTES: &[&str] = &["records_skipped", "events_missed"];
 
 /// Events brnr leaves out of what it shows unless asked for by name: the
 /// ACP messages, the agent's thoughts, usage and tool calls' progress.
@@ -270,6 +277,10 @@ pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
 
 fn check_events(events: &[String]) -> Result<(), String> {
     match events.iter().find(|e| !EVENTS.contains(&e.as_str())) {
+        // The host never sends one (ADR 5.9).
+        Some(note) if NOTES.contains(&note.as_str()) => {
+            Err(format!("{note:?} is a note, which the host never sends: only events are"))
+        }
         Some(bad) => Err(format!("unknown event {bad:?} (events: {})", EVENTS.join(", "))),
         None => Ok(()),
     }
@@ -336,11 +347,11 @@ impl Host {
         // As the request has it: whoever started the process found a bare
         // name next to brnr, as they did the agent's (see request.rs), so
         // `brnr` is this brnr, whatever the editor's PATH.
-        let program = Path::new(&bridge.command[0]);
+        let program = Path::new(&bridge.command);
         let name = program.file_name().unwrap_or(program.as_os_str()).to_string_lossy();
         let label = format!("{name}#{n}");
         let mut cmd = Command::new(program);
-        cmd.args(&bridge.command[1..])
+        cmd.args(&bridge.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -359,7 +370,7 @@ impl Host {
                 Ok(())
             })
         };
-        let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command[0]))?;
+        let mut child = cmd.spawn().map_err(|e| format!("bridge {}: {e}", bridge.command))?;
         let pid = child.id() as pid_t;
         let peer = NEXT_PEER.fetch_add(1, Relaxed);
         let (out_tx, out_rx, queued) = Queue::new();
@@ -390,7 +401,8 @@ impl Host {
         p.events = bridge.events.clone();
         self.peers.insert(peer, p);
         self.bridge_pids.push(pid);
-        self.sink.note(None, json!({ "event": "bridge-started", "bridge": label, "pid": pid }));
+        self.sink
+            .note(None, json!({ "event": "bridge_started", "peer": label, "bridge_pid": pid }));
         Ok(())
     }
 
@@ -403,10 +415,8 @@ impl Host {
         self.sink.msg(session, dir, bytes, Some(seq));
         if self.peers.values().any(|p| p.wants("acp")) {
             let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-            // As the host reads it, where this stack takes it (see json.rs).
-            let msg = (json::depth(body) <= self.stack)
-                .then(|| json::parse::<Value>(body))
-                .flatten()
+            // As the host reads it (see json.rs).
+            let msg = json::parse::<Value>(body, json::DEPTH)
                 .unwrap_or_else(|| Value::String(String::from_utf8_lossy(body).into_owned()));
             let event =
                 json!({ "event": "acp", "dir": dir.name(), "session": session, "msg": msg });
@@ -437,6 +447,7 @@ impl Host {
     fn emit_at(&mut self, seq: u64, mut event: Value) -> Value {
         event["ts"] = json!(log::rfc3339(SystemTime::now()));
         event["host_id"] = json!(self.host_id);
+        event["pid"] = json!(std::process::id());
         let name = event["event"].as_str().unwrap_or_default().to_owned();
         // History a load replays, which brnr had no transcript of (ADR 5.6).
         if let Some(i) = event["session"].as_str().and_then(|s| self.find(s))
@@ -507,14 +518,14 @@ impl Host {
     fn drop_peer(&mut self, peer: u64) {
         let Some(p) = self.peers.remove(&peer) else { return };
         let last = self.seq;
-        let reason = "fell behind";
-        let event = json!({ "event": "peer-dropped", "peer": p.label, "reason": reason, "last_queued": last });
+        let reason = "fell_behind";
+        let event = json!({ "event": "peer_dropped", "peer": p.label, "reason": reason, "last_queued_seq": last });
         self.sink.note(None, event);
         if self.cut_offs.len() == CUT_OFFS {
             self.cut_offs.pop_front();
         }
         self.cut_offs.push_back((p.label.clone(), last));
-        let told = json!({ "event": "peer_cut_off", "peer": p.label, "last_queued": last });
+        let told = json!({ "event": "peer_cut_off", "peer": p.label, "last_queued_seq": last });
         self.untold.push_back(told);
         match p.closer {
             Closer::Socket(conn) => {
@@ -564,7 +575,7 @@ impl Host {
             "ok": true,
             "peer": peer,
             "cut_off": cut.is_some(),
-            "last_queued": cut.map(|(_, last)| *last),
+            "last_queued_seq": cut.map(|(_, last)| *last),
         }))
     }
 
@@ -651,7 +662,10 @@ impl Host {
         });
         // Where it starts, to catch up from if it is cut off (ADR 10.2).
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
-        Ok(json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "seq": seq }))
+        let pid = std::process::id();
+        Ok(
+            json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
+        )
     }
 
     fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
@@ -659,15 +673,29 @@ impl Host {
         self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
-        let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
+        let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
+        // Its old name, refused rather than ignored: the option it named
+        // would not be the one answered (ADR 8.1, P3).
+        if req.get("option").is_some() {
+            let cmd = req["cmd"].as_str().unwrap_or("allow");
+            return Err(format!("{cmd} takes option_id, not option"));
+        }
+        // Absent, it picks by kind; anything but a string, null too, is
+        // refused: read as absent, the kind's option would be answered in
+        // place of the one named (ADR 8.1, P3).
+        let option_id = match req.get("option_id") {
+            None => None,
+            Some(Value::String(id)) => Some(id.as_str()),
+            Some(_) => return Err("option_id isn't a string".into()),
+        };
         let resolved = self.approvals.answer(
             Kind::Permission,
             &handle,
             Some(&session),
             &by,
             self.client(),
-            |r| approvals::choose(r, choice, always, req["option"].as_str()),
+            |r| approvals::choose(r, choice, always, option_id),
         )?;
         let outcome = resolved.answer.clone();
         self.resolved(resolved);
@@ -693,7 +721,7 @@ impl Host {
                     "kind": r.params["toolCall"]["kind"],
                     "tool_call": r.params["toolCall"],
                     "options": r.params["options"],
-                    "timeout_seconds": r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
+                    "timeout_left": r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
                 })
             })
             .collect()
@@ -711,7 +739,7 @@ impl Host {
         self.check_experimental(Experimental::Elicitation)?;
         let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
         let action = req["action"].as_str().ok_or("missing action: accept, decline or cancel")?;
-        let by = self.peers.get(&peer).map_or("control".to_owned(), |p| p.label.clone());
+        let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let resolved = self.approvals.answer(
             Kind::Elicitation,
             &handle,
@@ -741,7 +769,7 @@ impl Host {
                 e["owner"] = json!(owner);
                 e["answerable"] = json!(why_not.is_none());
                 e["why_not"] = json!(why_not);
-                e["timeout_seconds"] = json!(
+                e["timeout_left"] = json!(
                     r.deadline().map(|d| d.saturating_duration_since(Instant::now()).as_secs())
                 );
                 e
@@ -753,12 +781,11 @@ impl Host {
         let mut report = self.info.clone();
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
-        // Counted, not described: a description copies each request's tool
-        // call, which can nest a million deep (ADR 2.5).
+        // Counted: `pending` describes them.
         report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
         report["elicitations"] =
             json!(self.approvals.held().filter(|r| r.is_elicitation()).count());
-        report["uptime_seconds"] = json!(self.started.elapsed().as_secs());
+        report["uptime"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
         report["starting"] = json!(!self.start_done);
         report["stopping"] = json!(self.stop_requested);
@@ -787,16 +814,16 @@ impl Host {
                     _ => "idle",
                 };
                 // Its transcript: events, and raw ACP (ADR 5.1).
-                let events = log::session_log(&s.cwd, &s.id);
+                let events = paths::session_log(&s.cwd, &s.id);
                 let acp = paths::acp_log(&events);
                 let fields = json!({
-                    "session_id": s.id,
+                    "session": s.id,
                     "state": state,
                     "last_active": log::rfc3339(s.last_active),
                     "cwd": s.cwd.to_string_lossy(),
                     "forked_from": s.forked_from,
                     "busy": busy,
-                    "turn_seconds": s.turns.running_for().map(|d| d.as_secs()),
+                    "turn_elapsed": s.turns.running_for().map(|d| d.as_secs()),
                     "prompts": s.turns.prompts(),
                     "held": s.turns.held(),
                     "context": s.turns.context().len(),
@@ -805,7 +832,7 @@ impl Host {
                     "shared": s.shared(),
                     "lock_error": s.lock_error(),
                     "last_turn": s.turns.last_turn(),
-                    "log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
+                    "events_log": (self.logging != Log::Off).then(|| events.to_string_lossy()),
                     "acp_log": (self.logging == Log::All).then(|| acp.to_string_lossy()),
                 });
                 if let (Some(session), Value::Object(fields)) = (session.as_object_mut(), fields) {
@@ -849,7 +876,7 @@ impl Host {
             self.sessions[i].turns.add_context(text.clone(), replace);
             self.sink.note(
                 Some(&session),
-                json!({ "event": "send", "mode": mode, "status": "held", "text": text }),
+                json!({ "event": "context_accepted", "status": "held", "text": text }),
             );
             return Ok(json!({ "ok": true, "status": "held", "session": session }));
         }
@@ -876,7 +903,7 @@ impl Host {
         let status = status.name();
         self.sink.note(
             Some(&session),
-            json!({ "event": "send", "mode": mode, "status": status, "message": message, "text": text }),
+            json!({ "event": "message_accepted", "mode": mode, "status": status, "message": message, "text": text }),
         );
         Ok(json!({ "ok": true, "status": status, "session": session, "message": message }))
     }
@@ -907,7 +934,7 @@ impl Host {
         let keep_held = req["keep_held"].as_bool() == Some(true);
         let (status, dropped, todo) = self.sessions[i].turns.cancel(keep_held);
         self.act(i, todo);
-        self.sink.note(Some(&session), json!({ "event": "cancel", "status": status }));
+        self.sink.note(Some(&session), json!({ "event": "cancel_requested", "status": status }));
         Ok(json!({ "ok": true, "status": status, "session": session, "dropped": dropped }))
     }
 

@@ -1,9 +1,6 @@
 # 5. Events, transcripts and observers
 
-Draft 2026-10-19. Implemented, but these are decided, not implemented yet:
-5.1's reading of one session's files in more than one folder as one
-transcript (#121, #309), and 5.9, one naming scheme (#314). Factor: F3, F5
-(ADR 1). Brings together former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36
+Draft 2026-10-20. Implemented. Factor: F3, F5 (ADR 1). Brings together former ADRs 22, 55, 20, 23, 24, 48, 57, 35 and 36
 (docs/adr/README.md maps them).
 
 What a brnr process says about its sessions, and what it keeps: the events
@@ -23,7 +20,7 @@ Events:
   events file. `event log`, `event watch` and the foreground (ADR 3.5)
   render the same events, and a transcript read back is the stream a
   bridge saw live (P5).
-- `exited`, the one event that belongs to the process, is written into
+- `process_exited`, the one event that belongs to the process, is written into
   every session's events file too, so `event log` keeps to one session's
   files.
 - `session_changed` records what changed, not the whole list again. Of
@@ -32,18 +29,23 @@ Events:
   a command added (`{"review": {…}}`), `null` for what is gone. An answer
   to `set_config_option` that changes a value makes one too, as an agent
   needn't send an update for it.
-- The `session-opened` record of a session the process opened as a fork
+- The `session_opened` record of a session the process opened as a fork
   (`session fork`'s, or an editor's `session/fork` through `brnr acp`),
   in its events file and in the host log, has `forked_from`, the session
   it was forked from (ADR 3.12). A session opened any other way has none:
   the process doesn't know whether it was a fork, and the first
-  `session-opened` in the file says.
+  `session_opened` in the file says.
 - `session delete` writes `session_deleted` into the session's events
   file itself, a record of no process's (`host_id` null), and with
   `--purge` deletes both files (ADR 8.1).
-- Every record carries `host_id`, `host_pid`, `proxy_pid` and `agent_pid`
-  for joining. Every event, and every raw ACP record, has `seq`, its
-  position in its process (ADR 10.2).
+- Every record carries `ts`, `host_id`, `pid` (the brnr process),
+  `proxy_pid`, `agent_pid` and, in a session's files, `session`, for
+  joining. Every event, and every raw ACP record, has `seq`, its position
+  in its process (ADR 10.2), and every event `pid` too (ADR 5.9).
+- A session's events file starts with `session_opened`, the same record as
+  the host log's: `session`, `cwd`, `events_log`, `acp_log` (null with
+  `log = "events"`), `host_log`, and `forked_from` for a fork. The host log
+  names each session's files there.
 
 Files:
 
@@ -55,7 +57,7 @@ Files:
   folder of its own. The session id in the names is escaped, one name per
   id, so distinct sessions never share a transcript (ADR 9.2).
 - One session id is one session, whatever folders its files are in
-  (#121), decided, not implemented yet (#309). A session resumed in
+  (#121). A session resumed in
   another cwd (`session resume --cwd`) has files in each folder, and its
   transcript is all of them: brnr reads them as one (below), and a load
   finds it in any folder (ADR 5.6).
@@ -64,16 +66,16 @@ Files:
   stderr).
 - The events file is always written: `event log`, `session list` and
   `session resume` read it. The raw file is written by default; a
-  profile's `log = "events"` leaves it out, and `log = false` writes
+  profile's `log = "events"` leaves it out, and `log = "off"` writes
   neither (ADR 6.1).
 - A transcript is written only where only the user can read it: what
   others can reach is made private first, and a symlink is refused
   (ADR 9.3, P13).
 - A process holds a session's two files only while it serves the session.
   A close closes them once its last record, `session_closed`, is written;
-  a session opened again appends to them, after another `session-opened`.
+  a session opened again appends to them, after another `session_opened`.
 - Records the logger skips behind a slow disk (ADR 10.1) leave a gap that
-  a `records-skipped` record counts, in the session's events file and the
+  a `records_skipped` note counts, in the session's events file and the
   host log. So do records a write fails to put in a file: the note goes in
   the file that lost them once it takes records again (for the raw file,
   in its events file).
@@ -86,19 +88,32 @@ Reading:
   With `acp` chosen it reads the raw file too, merged in order, each ACP
   message an `acp` event, and says so when there is none. `--events` and
   `--json` mean the same as for `event watch` (ADR 5.3), and `event log
-  --json` is what a watcher got live. It shows a `records-skipped` gap
+  --json` is what a watcher got live. It shows a `records_skipped` gap
   whatever `--events` chose. A transcript written before events existed
   has none, and `event log` says so.
+- A record an older brnr wrote, its head naming the session `session_id`
+  and the process `host_pid`, isn't read: its names are not this brnr's
+  (ADR 5.9, P9). A file of them is no transcript: `session list` and
+  `session resume` pass it over, and a load records the history (ADR 5.6).
+  Nothing goes without a word (P3): `event log` of it says `<file>: an
+  older brnr wrote it, in names this one doesn't read (ADR 5.9)`, and
+  `doctor` lists every such file, transcripts and host logs, as info.
 - `event log` of a running session first waits for what its process has
   recorded (ADR 5.5).
 - `event log` reads every file of the session, in every project folder,
-  merged by their records' `ts` (#121), decided, not implemented yet
-  (#309). One process owns a session at a time (ADR 3.9), and a record's
+  merged by their records' `ts` (#121), each file's records in the order
+  it has them. One process owns a session at a time (ADR 3.9), and a record's
   `ts` is when its process recorded it, not when it was written, so the
   records of two files don't overlap in time. A closing process's last
   records can be written after the next process's, past ADR 5.5's 2 s;
   merged by `ts`, they still come before them. `--last` counts in what is
-  merged; `--follow` follows the files the serving process writes.
+  merged; `--follow` follows the files the serving process writes. With
+  `acp` chosen, each folder's raw file is merged with its events file,
+  and a folder without one is said (`no raw ACP for <session> beside
+  <file>`). A file of the session an older brnr wrote, in any folder, is
+  said and not read (above). Of a session open in a process that logs
+  nothing (`log = "off"`), what the other folders hold is shown, and
+  `event log` says the process keeps no transcript of it.
 - What a transcript is for `session list`, `session resume` and `doctor`
   comes from the first and last records brnr can read in it. A line that
   isn't a JSON object, cut short or not, is passed over. The last record
@@ -106,9 +121,11 @@ Reading:
   records. Of a session with files in more than one folder, the first
   record is the oldest file's and the last is the newest record of them
   all: `session resume` takes its cwd, agent and profile from that newest
-  record (ADR 3.11), and `session list` its row (#121), decided, not
-  implemented yet (#309). A line cut short is never taken for a
-  record: a JSON object ends only at its last byte. So, for a transcript:
+  record (ADR 3.11), and `session list` its row, one per id (#121). That
+  record is the newest a process recorded (a deletion's, ADR 8.1, is no
+  process's), and its cwd is the one its file's first record names. A
+  line cut short is never taken for a record: a JSON object ends only at
+  its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;
   - ending partway through a line: its last whole record;
   - with a whole line that isn't a record, last or anywhere: the line is
@@ -186,7 +203,7 @@ served, a fixed rule that doesn't depend on where the command runs (P4).
   `--raw` would have kept two meanings, one for `event log` and another
   for `event watch`.
 - Host-wide events copied into every session's file: the case that
-  prompted it, `owner_changed`, went with ADR 3.1; `exited` is what
+  prompted it, `owner_changed`, went with ADR 3.1; `process_exited` is what
   remains.
 - Truncating a file to its last newline when it is read or reopened:
   repairs it, but destroys what was there, and a reader would write.
@@ -203,26 +220,27 @@ served, a fixed rule that doesn't depend on where the command runs (P4).
 
 ## 5.2 Dropped messages and closed sessions are events
 
-- `message_dropped {session, message, text, by}`, `by` one of `cancel`,
+- `message_dropped {session, message, text, reason}`, `reason` one of `cancel`,
   `queue` (`queue drop`, `queue clear`), `close`, `exit` and `steer` (a
   steer the agent neither took nor sent back, ADR 4.2): every way a
   message brnr accepted can go unsent (P3). Unanswered steers are dropped
-  with held messages by `prompt cancel`, a close and the exit. `exited`
+  with held messages by `prompt cancel`, a close and the exit. `process_exited`
   has no list of messages not delivered (P5, P9).
-- `context_dropped {session, text, by}`, `by` one of `queue` (`queue clear
+- `context_dropped {session, text, reason}`, `reason` one of `queue` (`queue clear
   --context`), `close` and `exit`: context held for a next prompt that
   won't come, one event per item (context has no message id, ADR 4.1).
   Context held when its session closes (`stop_when_idle` included) or the
   process exits is dropped so. `prompt cancel` keeps context: it is for
   the next prompt, whenever that comes.
-- `session_closed {session, by}`, `by` one of `close` (`session close`,
-  `session resume --take-over`), `idle` (`stop_when_idle`, ADR 3.8) and
-  `editor` (the editor's own `session/close`). Messages and context still
+- `session_closed {session, by, reason}`: `by` `control` with `reason`
+  `close` (`session close`, `session resume --take-over`) or `idle`
+  (`stop_when_idle`, ADR 3.8), or `by` `editor` with `reason` `close` (the
+  editor's own `session/close`). Messages and context still
   held in the session are dropped first. A session whose load the agent
   failed (ADR 5.6), or one the agent opened that isn't the process's to
-  serve (ADR 3.9), drops what it holds the same way, `by` `close`, with
+  serve (ADR 3.9), drops what it holds the same way, `reason` `close`, with
   no `session_closed` after: it never opened here. A process exiting is
-  `exited`, which is in every session's file already, and isn't also
+  `process_exited`, which is in every session's file already, and isn't also
   `session_closed`.
 - `prompt send --wait` and `session new --wait` whose message is dropped
   exit 1, saying `m3 was dropped (cancel)` on stderr and
@@ -244,7 +262,7 @@ session waited for the whole process.
 - Only the response to the command that dropped them saying so.
 - A distinct exit status for "never ran": one more code for scripts to
   learn; the difference is in stderr and `--json`.
-- An `undelivered` list in `exited`: two kinds of record for one thing.
+- An `undelivered` list in `process_exited`: two kinds of record for one thing.
 
 ## 5.3 Choosing events, and what text shows
 
@@ -258,7 +276,10 @@ session waited for the whole process.
   set, so `--events default,agent_thought` adds thoughts. There is no
   `--raw` and no `--thoughts`.
 - Whatever `--events` chose, `event log` also shows a gap in the
-  transcript (`records-skipped`, ADR 5.1), which isn't an event.
+  transcript (`records_skipped`, ADR 5.1), and a command cut off what it
+  missed (`events_missed`, ADR 10.2): notes, not events (ADR 5.9).
+  `--events` takes their names too, so `--events records_skipped` alone
+  shows a transcript's gaps.
 - Bridges and the host's `subscribe` have their own default: every event
   but `acp`. `event notify`'s `default` is its own (ADR 5.8).
 - Tool calls: `tool_call` when a call starts (`started: true`) and when it
@@ -317,7 +338,7 @@ is the one most likely wanted.
   gap of skipped records (ADR 10.1) that ends there. It says `lost` when a
   file has lost records it hasn't noted yet (ADR 10.2). The answer comes
   from the logger's thread; the event loop doesn't wait for it (P1). With
-  `log = false` it is answered at once.
+  `log = "off"` it is answered at once.
 - `event log` of a running session sends it first, and reads the files
   once it is answered: what `session new --wait`, `prompt send --wait` or
   `event wait` has reported is in what it shows. A process that doesn't
@@ -326,9 +347,9 @@ is the one most likely wanted.
   way before its first read.
 - A process that exits waits, before brnr stops listing it and it lets
   go of its sessions, until its logger has written what it
-  recorded, `exited` last, for 2 s at most. Once it is gone, `event log`,
+  recorded, `process_exited` last, for 2 s at most. Once it is gone, `event log`,
   `session list` and `session resume` read its sessions' transcripts
-  whole, and a resume doesn't start appending to one before its `exited`.
+  whole, and a resume doesn't start appending to one before its `process_exited`.
   A panic lets go of the process's sessions as an exit does, before it
   waits.
 - Then, unlisted and holding no session, it waits for the rest without a
@@ -374,7 +395,7 @@ seen: `session new --wait` printed the turn's reply, and `event log` right
 after didn't have the turn, or failed because the events file wasn't there
 yet, and nothing said so (P3). On CI's Linux runners about 1 in 15 such
 waits returned before the turn was written. A process that exited also
-stopped being listed, and let go of its sessions, before `exited` was
+stopped being listed, and let go of its sessions, before `process_exited` was
 written.
 
 **Consequences.**
@@ -386,7 +407,7 @@ written.
 - A headless process whose disk stalls stays after it stopped being
   listed, holding no session and no agent, only its queue (64 MiB at
   most, ADR 10.1), until the disk takes it or a signal ends it (`kill`).
-  Ended so, its host log can lack `exited`, and `brnr doctor` lists it as
+  Ended so, its host log can lack `process_exited`, and `brnr doctor` lists it as
   a death nothing recorded (ADR 3.7).
 
 **Considered.**
@@ -417,7 +438,7 @@ written.
   editor's and a bridge's (below): an id is one session, and its files
   in every folder are its transcript (ADR 5.1, #121).
 - A transcript is an events file holding a record of the session beyond
-  its openings. One holding only `session-opened` records, as a failed
+  its openings. One holding only `session_opened` records, as a failed
   load leaves, isn't one: the next load, a start's, a bridge's or an
   editor's, records the history. brnr reads its own file for this when the
   load is asked for, and deletes nothing; `session list` still lists the
@@ -456,7 +477,7 @@ written.
 - A session a process has served, open or closed since, has its
   transcript in that process, for an editor's load and a bridge's alike,
   whether or not the logger, which writes behind (ADR 5.5), has written it
-  yet, unless the process logs nothing (`log = false`). The process
+  yet, unless the process logs nothing (`log = "off"`). The process
   remembers each session it has handed the logger a record of beyond its
   openings, for its events file, as the disk has it once that is written.
   So loading it again there records nothing of the replay again.
@@ -515,15 +536,15 @@ says it is missing (P3, #60).
   load, and carry this process's ids.
 - brnr's transcript is complete only for what happened through brnr:
   turns taken in the agent's own client, or while a profile had `log =
-  false` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
+  "off"` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
   it, and a load of a session brnr has a transcript of doesn't add them.
   The `history` event's `recorded: false` says that the replay was left
   out, so that what is missing is known to be missing.
 - A session resumed in another cwd (`session resume --cwd`) starts a file
   in that folder, and its load records nothing of the replay there: the
   history is in the file in the first folder. `event log` reads both
-  (ADR 5.1), so it shows the history; until that is implemented
-  (#309), it reads the newest file only, and shows none of it.
+  (ADR 5.1), so it shows the history, and the `history` event says the
+  replay wasn't recorded.
 - Deleting a session's transcript makes its next load record the history
   again, except in a process that served the session before the delete:
   that process remembers what it recorded of the session until it exits.
@@ -557,17 +578,21 @@ says it is missing (P3, #60).
   Requests (`command` in src/host/control.rs): `status`, `send`,
   `cancel`, `queue` (with `show`), `subscribe`, `pending` (answered with
   `pending` and `elicitations`, ADR 4.5), `allow` and `reject`
-  `{session, request, always?, option?}`, `elicitation` `{session,
+  `{session, request, always?, option_id?}`, `elicitation` `{session,
   request, action, content?}` (ADR 4.5), `set_config` (taking `mode`,
   `model`, `thought_level` and `options`, ADR 6.2), `new` and `resume` (a
   session in the running process, as `session new --pid` and `session
   resume --pid`), `fork`, `close`, `stop`, `logged` (ADR 5.5) and
   `was_cut_off` (ADR 10.2). Those about a session name it by its exact id.
   Events: as ADR 5.1, 5.2 and 5.3 list them, each naming its session;
-  `exited` is the process's.
+  `process_exited` is the process's. `subscribe` and a profile bridge's
+  `events` take events only: a note's name is refused, and fails the
+  profile (ADR 5.9).
 - A request line that isn't valid UTF-8 is answered with an error, and the
   bridge stays (#15).
-- A started bridge's stderr goes to the host log (`bridge-stderr`), a line
+- A started bridge's stderr goes to the host log (`bridge_stderr`, its
+  `peer` the bridge's label, as `bridge_started` and `bridge_exited` name
+  it), a line
   at a time, decoded lossily: a line that isn't valid UTF-8 doesn't stop
   the reading, which would leave the bridge's next write to die of SIGPIPE
   (#160). A line longer than 64 KiB goes in pieces of that size, as the
@@ -582,9 +607,9 @@ says it is missing (P3, #60).
   process's sessions come and go, and it has none when its bridges start.
 - A started bridge ends when its process exits. Its stdout closing only
   means it has no more requests; it keeps getting events. When the brnr
-  process stops, the bridge gets the last events (`exited`), its stdin
+  process stops, the bridge gets the last events (`process_exited`), its stdin
   closes (it should exit then), and one still running 2 s later
-  (`BRIDGE_EXIT`) gets SIGTERM: time for a bridge to act on `exited`, as
+  (`BRIDGE_EXIT`) gets SIGTERM: time for a bridge to act on `process_exited`, as
   `event notify` does.
 - A bridge has to keep reading: one 16 MiB behind is cut off (ADR 10.1).
 - On an editor's session, a bridge's actions are experimental, as the
@@ -612,12 +637,12 @@ closed its stdout, was dropped in 4 ms.
 
 - `brnr event notify (<session> | --pid <pid>) [--events …] -- <command>
   [args...]` runs the command once per event. The default events are
-  `permission_request`, `elicitation_request`, `turn_ended` and `exited`;
+  `permission_request`, `elicitation_request`, `turn_ended` and `process_exited`;
   `--events` works as for `event watch` (ADR 5.3), where `default` means
   these four.
 - The event is in the command's environment (`BRNR_EVENT`, `BRNR_TEXT`,
   `BRNR_TITLE`, `BRNR_MESSAGE` with the session's last agent message,
-  `BRNR_SESSION_ID`, `BRNR_REQUEST`, a permission request's or an
+  `BRNR_SESSION`, `BRNR_REQUEST`, a permission request's or an
   elicitation's handle, `BRNR_PID`) and, whole, as JSON on its stdin.
   Nothing goes on its command line, so the agent's text can't become
   arguments (P8). The text, title and message are escaped as `event
@@ -635,21 +660,21 @@ closed its stdout, was dropped in 4 ms.
   each event it missed; one that can't catch up says what it missed and
   exits 3 (ADR 10.2).
 - Cut off as a started bridge (SIGTERM, or its stdin ending before
-  `exited`), its connection ending before `exited` otherwise (the process
+  `process_exited`), its connection ending before `process_exited` otherwise (the process
   killed), or stopped by SIGHUP, SIGINT or SIGQUIT, `event notify` stops
   the command it is running (SIGTERM to its process group, then SIGKILL
   once it has exited, or 2 s later). It says on its stderr that it was
   cut off and that no more notifications come (`brnr: cut off (SIGTERM);
   stopped sh (turn_ended); no more notifications`), and exits non-zero
   (P3); `--stdin` cut off exits 1. A started bridge's stderr is in the
-  host log (`bridge-stderr`). On the socket it watches for the connection
+  host log (`bridge_stderr`). On the socket it watches for the connection
   closing while a command runs, and reads what was sent before it closed,
-  no more than the socket held, to tell the process's end (`exited` among
+  no more than the socket held, to tell the process's end (`process_exited` among
   it) from being cut off.
 - `brnr event notify --stdin [--events …] -- <command>` reads its events
   from its stdin, a started bridge's transport (ADR 5.7), instead of
-  connecting. That is how it runs as a bridge: `command = ["brnr",
-  "event", "notify", "--stdin", "--", …]` in the profile, with no `sh -c`
+  connecting. That is how it runs as a bridge: `command = "brnr"`, `args =
+  ["event", "notify", "--stdin", "--", …]` in the profile, with no `sh -c`
   and no `$BRNR_PID`, and one subscription. A started bridge isn't caught
   up when cut off; one that must not miss events runs `brnr event notify
   <session> -- …` on the socket instead (ADR 10.2).
@@ -680,9 +705,8 @@ notifications stopped without a word (P3).
 
 ## 5.9 Events, records and their fields follow one naming scheme
 
-Decided, not implemented yet (#314). Resolves #151. #150's `--json`
-shapes, #205's error codes and #70's transcript contract take their names
-from it.
+Resolves #151; implemented by #314. #150's `--json` shapes, #205's error
+codes and #70's transcript contract take their names from it.
 
 Names:
 
@@ -770,7 +794,8 @@ Fields:
   `last_active`). A duration is in whole seconds, its name with no unit,
   as ADR 8.1 decides for #154: `uptime`, `turn_elapsed`, `timeout_left`,
   `stop_when_idle`. A size is in bytes by the same rule (`line_too_long`'s
-  `limit`).
+  `limit`). A depth is in levels of nesting, and its name says so
+  (`line_too_deep`'s `max_depth`), as it is no size.
 - A file brnr writes is `<which>_log` (`events_log`, `acp_log`,
   `host_log`); any other file or directory is `path`. `log` alone is the
   profile's setting (ADR 6.1), never a file.
@@ -803,7 +828,7 @@ socket's replies (`uptime_seconds`, `turn_seconds`, `timeout_seconds`),
 
 ### Renames
 
-Events (`EVENTS`). The other 23 keep their names.
+Events (`EVENTS`). The other 24 keep their names.
 
 | Old | New | |
 |---|---|---|
@@ -863,7 +888,6 @@ Records in the host log only (not covered, ADR 8.4):
 | `open-failed` | `open_failed` |
 | `session-log-failed` | `session_log_failed` |
 | `made-private` | `path_made_private` |
-| `line-too-deep` | `line_too_deep` |
 | `peer-dropped` | `peer_dropped` |
 | `timeout-failed` | `timeout_failed` |
 
@@ -947,9 +971,44 @@ without quoting (in jq `.records-skipped` is a subtraction).
   `session resume` pass it over. Nothing is lost silently (P3): `doctor`
   lists it, and `event log` of it says an older brnr wrote it. Once #70
   marks a transcript's format, that is a check of the format, not of a
-  field.
-- The other ADRs, the README, docs/interface.md, the skill and the site
-  name the old forms until #314 lands, and change with it.
+  field. As #314 has it:
+  - A record is an older brnr's by its head: `session_id`, or a host
+    log's `host_pid`, where this brnr's has `session` and `pid`
+    (`transcript::older`). Such a record isn't read anywhere, so a file
+    of them is no transcript to a load either, which records the
+    history (ADR 5.6). A file is listed as one by its first record.
+  - `doctor` lists them as info under `older files`, transcripts and
+    host logs alike, and passes an older host log over where it looks
+    for a death nothing recorded (ADR 3.7) or for the report's logs
+    (ADR 11.5): read in this brnr's names, every one would lack
+    `process_exited`. A line of one in the report would be `(a record an
+    older brnr wrote, not shown)`: what an older brnr didn't redact
+    isn't shown either.
+  - A process doesn't append to an older brnr's transcript: ADR 9.2's
+    rule that went on in a file of the folder before the hash goes, as
+    every such file is an older brnr's, and what was appended would be
+    read without what came before it. No writer does (`log::appends_to`,
+    the one test of it): a session opened where an older brnr's file is in
+    the way (one in its cwd's folder, written there before #314, or a
+    resume of a session brnr has no transcript of) renames that file
+    beside it, `<name>.older.jsonl` (`older-2`, … if taken; the raw file
+    `<name>.older.acp.jsonl`), and starts a file of its own, and the host
+    log's `session_log_moved` (`session`, `path`, `to`) says so (P3);
+    `doctor` still lists the renamed file. An event for a session no
+    process has open (`session delete`, an editor's deletion) passes an
+    older brnr's file over. Renamed rather than left with the session's
+    records in the host log, as a refused file is (ADR 9.3): the session
+    then has a transcript, which its next resume finds, and a load records
+    its history in it (ADR 5.6). `session delete --purge` deletes the
+    files set aside too, as every file of the session's id (ADR 8.1, N1).
+- The CLI reads the bridge `status` reply's `sessions` in the new names,
+  and `session list`'s rows of a transcript the same (`session`,
+  `events_log`).
+- `subscribe`'s answer has the process's `pid`, beside `host_id`, so that
+  a command's `events_missed` has it as every line does.
+- Text shows who acted as before: the `peer` if there is one, else `by`
+  if it isn't `control`, else the `reason` (`permission p1 allowed …, by
+  socket#7`, `session closed (idle)`, `session closed (editor)`).
 - A bridge's `events` naming a note, which a profile may have now as
   `records-skipped`, fails to load.
 
@@ -1019,10 +1078,14 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
   `adr_0005_a_record_is_the_event_watch_showed`,
-  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`. Not covered by
-  a Rust test: one session's files in more than one folder read as one
-  transcript (#121), decided, not implemented yet; its tests come with
-  #309.
+  `adr_0005_a_sessions_files_are_read_merged_as_they_grow`,
+  `adr_0005_a_sessions_files_in_every_folder_are_read_as_one`; one
+  session's files in two folders read as one transcript (#121):
+  [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one` (text,
+  `--json`, `--events acp`, `--last`, and one `session list` row), and,
+  for its `session resume`, ADR 3.11's
+  `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile`.
 - 5.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
   `adr_0005_editor_close_is_an_event`,
@@ -1072,6 +1135,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_load_without_the_transcript_records_the_history`,
   `adr_0005_a_load_of_an_empty_history_says_so`,
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`,
+  `adr_0005_a_load_in_another_cwd_leaves_the_history_in_the_log` (#121's
+  trace: `session resume --cwd` records none of the replay, and `event
+  log` shows the history from the first folder),
   `adr_0005_a_load_after_a_failed_load_records_the_history`,
   `adr_0005_a_bridges_load_after_a_failed_load_records_the_history`;
   [tests/headless.rs](../../tests/headless.rs):
@@ -1117,4 +1183,24 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_notify_cut_off_as_a_bridge_stops_its_command`,
   `adr_0005_notify_stopped_stops_its_command`,
   `adr_0005_notify_cuts_what_the_environment_cant_hold`.
-- 5.9: not implemented yet; its tests come with #314.
+- 5.9: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0005_every_line_printed_is_named_and_placed_alike` (`event log
+  --json` and `event watch --json` print snake_case names, each one
+  `--events` takes, and every line has `ts`, `host_id` and `pid`),
+  `adr_0005_a_note_is_taken_by_events_and_refused_by_subscribe`,
+  `adr_0005_who_acted_and_why_are_by_peer_and_reason` (`session_closed`,
+  `message_dropped`, and `permission_resolved` answered by a peer, a
+  cancel and the timeout),
+  `adr_0005_a_transcript_an_older_brnr_wrote_isnt_read`,
+  `adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript` (set aside
+  by a resume, passed over by `session delete`), and
+  `adr_0005_notify_reads_stdin_as_a_bridge` (`BRNR_SESSION`, and
+  `BRNR_EVENT=process_exited` at the end);
+  [tests/headless.rs](../../tests/headless.rs):
+  `adr_0005_a_sessions_opening_is_the_same_in_both_files`,
+  `adr_0005_an_editors_delete_passes_an_older_transcript_over`, and
+  `adr_0010_a_stalled_disk_skips_records_and_says_so` (`--events
+  records_skipped` shows the one gap, with `session`, `ts`, `host_id` and
+  `pid`);
+  [src/log.rs](../../src/log.rs):
+  `adr_0005_a_gap_note_has_the_fields_of_an_event`.

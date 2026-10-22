@@ -70,8 +70,8 @@ prebuilt adapters.
   (ADR 3.3). They pass the path found to the process, which starts the
   agent. The rule is fixed and documented (P4).
 - A started bridge's bare command (`~` expanded) is looked for the same
-  way, in the same place. So `command = ["brnr", "event", "notify", …]`
-  works from an editor whose PATH lacks brnr, and a bridge linked into
+  way, in the same place. So `command = "brnr"`, `args = ["event",
+  "notify", …]` works from an editor whose PATH lacks brnr, and a bridge linked into
   Homebrew's `bin` is found on Linux too (ADR 5.7, ADR 5.8).
 
 **Why.** An editor's PATH often lacks Homebrew's `bin`, and on Linux the
@@ -240,10 +240,10 @@ are best written with the change, by whoever made it (P9).
     that is another one, each with how it ended (`exited`, `brnr panicked`,
     `running`, `died without recording it`). A line longer than 4000
     characters is cut, saying how much more there was. Each line that is a
-    record, read as transcripts are (ADR 2.5: also one nested past 128),
-    has what ADR 9.1 redacts redacted again, for a log an older brnr
-    wrote; it is otherwise as recorded. A line too deep for any stack to
-    be had is not shown, and says so.
+    record, read as transcripts are (ADR 2.5: nested up to 256), has what
+    ADR 9.1 redacts redacted again, for a log an older brnr wrote; it is
+    otherwise as recorded. A line nested deeper is not shown, and says
+    so.
   - Everywhere, the home directory is `~`, as a path and as the start of a
     project folder's name.
 - `doctor --report --json` is one object with the same data (P5, ADR 8.2):
@@ -262,7 +262,7 @@ are best written with the change, by whoever made it (P9).
   - a detached host has no terminal (its stderr is its host log): when its
     start fails with the panic, `brnr session new`, `brnr session resume`
     and `brnr acp` print the link after the reason. A detached host's panic
-    later on is the `exited` reason that watchers and `event wait` see, and
+    later on is the `process_exited` error that watchers and `event wait` see, and
     the host log `doctor --report` shows. It has no link, which would be
     noise in every event a panic ends.
 - The bug form asks for `brnr doctor --report`, not `doctor --json`.
@@ -278,7 +278,7 @@ the user chose to paste (#23, #24).
 **Consequences.**
 
 - The report shows the host log's lines as they are, prompts included (the
-  `started` record has the request, ADR 3.3): only what brnr knows is
+  `process_started` record has the `start_request`, ADR 3.3): only what brnr knows is
   secret is redacted. The comment at its top, the README and the form say
   to read it first.
 - A panic that keeps the hook from running (an abort, ADR 3.7) prints no

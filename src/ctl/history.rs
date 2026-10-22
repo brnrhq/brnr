@@ -10,10 +10,13 @@
 //! agent; `--follow` keeps printing until the session closes or its
 //! process exits. `--events` and `--json` mean what they do for `event
 //! watch`.
-//! It reads the session's events file; with `acp` events chosen, the raw
-//! ACP file beside it too, each message an `acp` event, merged in time
-//! order (ADR 5.1 in docs/adr). A running session's, once its process has
-//! written what it recorded until then (ADR 5.5).
+//! It reads the session's events files, in every project folder it has
+//! files in, merged by their records' `ts`; with `acp` events chosen, the
+//! raw ACP file beside each too, each message an `acp` event, merged in
+//! time order (ADR 5.1 in docs/adr). `--last` counts in what is merged, and
+//! `--follow` follows the files the serving process writes. A running
+//! session's, once its process has written what it recorded until then
+//! (ADR 5.5).
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -23,32 +26,46 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::host::alive;
-use crate::{json, render, transcript};
+use crate::{render, transcript};
 
+use super::args::Error;
 use super::{Args, default_events, events_arg, ownership};
 
 const POLL: Duration = Duration::from_millis(200);
 
-pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn log(a: &Args) -> Result<ExitCode, Error> {
     let last = a.number("--last");
     let events = events_arg(a, &default_events())?;
+    Ok(show(a, last, events)?)
+}
+
+/// `event log`, its arguments checked: the `events` of the session, from
+/// the `last`-th last message on.
+fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, String> {
     let (follow, json_out) = (a.has("--follow"), a.json);
-    // A gap in the transcript (`records-skipped`, ADR 10.1) is always told: it
+    // A gap in the transcript (`records_skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
     let wanted = |e: &Value| {
-        e["event"] == "records-skipped" || events.iter().any(|name| e["event"] == name.as_str())
+        e["event"] == "records_skipped" || events.iter().any(|name| e["event"] == name.as_str())
     };
     let show = Show { options: render::Options { session: false, time: true }, json_out };
     let target = a.positional[0].clone();
-    let (path, acp_path, host_pid) = ownership::transcript(&target)?;
-    let mut acp = None;
-    if events.iter().any(|e| e == "acp") {
-        match acp_path {
-            Some(raw) if raw.exists() => acp = Some(raw),
-            _ => errln!("brnr: no raw ACP for {target}: log = \"events\" leaves it out"),
+    let (mut files, host_pid) = ownership::transcript(&target)?;
+    let with_acp = events.iter().any(|e| e == "acp");
+    let several = files.len() > 1;
+    for f in &mut files {
+        f.acp = f.acp.take().filter(|raw| with_acp && raw.exists());
+        if with_acp && f.acp.is_none() {
+            match several {
+                true => errln!(
+                    "brnr: no raw ACP for {target} beside {}: log = \"events\" leaves it out",
+                    f.events.display()
+                ),
+                false => errln!("brnr: no raw ACP for {target}: log = \"events\" leaves it out"),
+            }
         }
     }
-    let mut reader = transcript::Reader::open(&path, acp.as_deref())?;
+    let mut reader = transcript::Reader::open(&files)?;
 
     // Everything so far, from the n-th last message on.
     let mut records = reader.read(!follow)?;
@@ -71,21 +88,19 @@ pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
     let none = records.is_empty();
     let no_events = !records.iter().any(|e| e["event"] != "acp");
     let shown_now = records.split_off(from);
-    json::free(Value::Array(records));
     let (shown, _) = show.all(shown_now, &wanted, false)?;
     if shown == 0 && no_events && !none && !follow {
+        let paths: Vec<String> = files.iter().map(|f| f.events.display().to_string()).collect();
         eprintln!(
             "brnr: no events in {} (an older brnr wrote it); try --events acp",
-            path.display()
+            paths.join(", ")
         );
     }
     // A line cut short at the end is still being written while its process
     // runs; once it has gone, it is a record cut short (ADR 5.1).
     let has_gone = || !host_pid.is_some_and(alive);
     if !follow {
-        if has_gone() {
-            reader.cut_short();
-        }
+        reader.cut_short(has_gone());
         return Ok(ExitCode::SUCCESS);
     }
     loop {
@@ -96,7 +111,7 @@ pub(super) fn log(a: &Args) -> Result<ExitCode, String> {
             return Ok(ExitCode::SUCCESS);
         }
         if gone {
-            reader.cut_short();
+            reader.cut_short(true);
             return Ok(ExitCode::SUCCESS);
         }
         sleep(POLL);
@@ -110,24 +125,21 @@ struct Show {
 
 impl Show {
     /// Shows each of `events` that is `wanted`, up to the end of the
-    /// session with `to_end`, and lets go of each on a stack that takes it
-    /// (ADR 2.5): how many lines it showed, and whether the session ended.
+    /// session with `to_end`: how many lines it showed, and whether the
+    /// session ended.
     fn all(
         &self,
         events: Vec<Value>,
-        wanted: &(impl Fn(&Value) -> bool + Sync),
+        wanted: &impl Fn(&Value) -> bool,
         to_end: bool,
     ) -> Result<(usize, bool), String> {
-        let (mut shown, mut events) = (0, events.into_iter());
-        while let Some(event) = events.next() {
-            let end = to_end && (event["event"] == "exited" || event["event"] == "session_closed");
-            let one = json::holding(event, |e| if wanted(&e) { self.print(&e) } else { Ok(0) });
-            match one.and_then(|one| one) {
-                Ok(n) if !end => shown += n,
-                done => {
-                    json::free(Value::Array(events.collect()));
-                    return done.map(|n| (shown + n, true));
-                }
+        let mut shown = 0;
+        for event in events {
+            let end = to_end
+                && (event["event"] == "process_exited" || event["event"] == "session_closed");
+            shown += if wanted(&event) { self.print(&event)? } else { 0 };
+            if end {
+                return Ok((shown, true));
             }
         }
         Ok((shown, false))

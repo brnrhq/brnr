@@ -249,13 +249,13 @@ if with_brnr:
         fork = fork["session"]
         step(
             "brnr prompt send to the fork, in the process that forked it",
-            ("prompt", "send", fork, *wait, "Reply ok."),
+            ("prompt", "send", fork, *wait, "--prompt", "Reply ok."),
             *replied,
         )
         step("brnr session close the fork", ("session", "close", fork, "--json"), {"session": fork})
         step(
             "brnr prompt send to its parent, after",
-            ("prompt", "send", parent, *wait, "Reply ok."),
+            ("prompt", "send", parent, *wait, "--prompt", "Reply ok."),
             *replied,
         )
     # Only this scratch BRNR_DIR's processes: the one session new started.

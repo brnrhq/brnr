@@ -154,7 +154,7 @@ profile's `client_capabilities = ["fs", "terminal"]`, and with `brnr acp
 
 0. The default: the agent sends neither `fs/*` nor `terminal/*`, reads and
    writes the files on disk itself, and runs commands in processes of its
-   own; the host log has `capabilities-dropped`.
+   own; the host log has `capabilities_dropped`.
 1. Unsaved buffers: edit a file in the editor without saving, and ask the
    agent what the edited lines say. It answers with the unsaved text, and
    the raw ACP has `fs/read_text_file` and the editor's answer.

@@ -31,7 +31,7 @@ your own.
 turn when the running one ends; brnr never sends two prompts at once.
 
 ```sh
-brnr prompt send $s --json "also update the changelog"
+brnr prompt send $s --json --prompt "also update the changelog"
 ```
 
 ```json
@@ -46,7 +46,7 @@ one message's turn, always with a timeout:
 ```sh
 brnr event wait $s --timeout 900 --json
 brnr event wait $s --for turn --timeout 900 --json
-brnr prompt send $s --wait --timeout 900 --json "what did you change, and why?"
+brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?"
 ```
 
 `event wait` prints what ended it (`{"event": "idle", "session": …}`, or
@@ -86,6 +86,7 @@ result:
 | 1 | it failed (`error`), stopped for another reason (`stop_reason`), its message was dropped (`dropped`), the agent exited, or the session closed first | tell the user what brnr said on stderr or in the JSON; don't retry quietly |
 | 124 | your `--timeout` passed | the worker is still going: wait again, `brnr prompt cancel`, or ask the user |
 | 3 | brnr cut the wait off for falling behind and couldn't catch up from the transcript (it says what it missed) | the worker is still going: wait again, and read `brnr event log` for what happened |
+| 2 | your command line was wrong (an unknown option, an argument missing, a value a flag can't take); nothing was done | fix it from the usage brnr printed on stderr; the same words fail the same way again |
 
 A worker waiting for an approval, or for input (an elicitation), doesn't end
 its turn: `event wait` runs until your timeout. `prompt send --wait` and
@@ -138,9 +139,9 @@ session again and the error says so, or it names the session left open.
 ## Changing course
 
 ```sh
-brnr prompt send $s --steer --json "use the existing helper in src/util.rs"
-brnr prompt send $s --interrupt --json "stop: wrong branch, switch to main first"
-brnr prompt send $s --context --json "the API key is in .env.local"
+brnr prompt send $s --steer --json --prompt "use the existing helper in src/util.rs"
+brnr prompt send $s --interrupt --json --prompt "stop: wrong branch, switch to main first"
+brnr prompt send $s --context --json --prompt "the API key is in .env.local"
 brnr queue list $s --json
 brnr prompt cancel $s --json
 ```

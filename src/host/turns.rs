@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use super::text_block;
-use crate::json;
 
 /// A message accepted by the host and not yet sent as a prompt.
 #[derive(Clone)]
@@ -161,25 +160,6 @@ impl Turns {
         }
     }
 
-    /// How deeply what it keeps of what the host read nests (see
-    /// `Host::holds`). Every field is named, so that one added is thought
-    /// about here.
-    pub(super) fn holds(&self) -> usize {
-        let Turns {
-            interrupts,
-            held,
-            steering,
-            ended,
-            last_turn,
-            session: _,
-            prompts: _,
-            started: _,
-            context: _,
-        } = self;
-        let blocks = interrupts.iter().chain(held).chain(steering).flat_map(|h| &h.blocks);
-        json::nesting(blocks.chain(ended).chain(last_turn))
-    }
-
     /// What its turns are doing (see [`Activity`]).
     pub(super) fn activity(&self) -> Activity {
         if !self.prompts.is_empty() {
@@ -312,7 +292,7 @@ impl Turns {
             Some("promptRequired") => self.interrupts.push_back(held),
             _ => {
                 let answer = answer.get("error").or(answer.get("result"));
-                todo.push(Do::Note(json!({ "event": "steer-refused", "answer": answer })));
+                todo.push(Do::Note(json!({ "event": "steer_refused", "response": answer })));
                 todo.extend(self.dropped(vec![held], "steer").1);
             }
         }
@@ -338,7 +318,7 @@ impl Turns {
             // No turn to carry it. A steer goes while a turn runs, or while
             // one's `turn_ended` waits for an earlier steer's answer, so this
             // shouldn't happen; if it does, it isn't left without an end.
-            todo.push(Do::Note(json!({ "event": "steer-after-turn", "message": held.id })));
+            todo.push(Do::Note(json!({ "event": "steer_after_turn", "message": held.id })));
             todo.extend(self.dropped(vec![held], "steer").1);
             return;
         };
@@ -357,7 +337,7 @@ impl Turns {
                 let event = self.user_message("editor", None, &prompt.id, text);
                 Do::Sent { event, echo: None }
             }
-            None => Do::Note(json!({ "event": "steer-after-turn", "by": "editor" })),
+            None => Do::Note(json!({ "event": "steer_after_turn", "by": "editor" })),
         }
     }
 
@@ -375,20 +355,20 @@ impl Turns {
     }
 
     /// Everything held, messages and context alike, which won't go: the
-    /// session is closing, or its process exiting (`by` `close`, `exit`).
-    pub(super) fn drop_all(&mut self, by: &str) -> Vec<Do> {
-        let (_, mut todo) = self.drop_held(by);
-        todo.extend(self.drop_context(by));
+    /// session is closing, or its process exiting (`reason` `close`, `exit`).
+    pub(super) fn drop_all(&mut self, reason: &str) -> Vec<Do> {
+        let (_, mut todo) = self.drop_held(reason);
+        todo.extend(self.drop_context(reason));
         todo
     }
 
     /// Drops what is held, and the steers the agent hasn't answered:
     /// whatever it answers, they don't go out. Then the `turn_ended` that
     /// waited for them goes.
-    fn drop_held(&mut self, by: &str) -> (Vec<Value>, Vec<Do>) {
+    fn drop_held(&mut self, reason: &str) -> (Vec<Value>, Vec<Do>) {
         let held = self.steering.drain(..).chain(self.interrupts.drain(..));
         let held: Vec<Held> = held.chain(self.held.drain(..)).collect();
-        let (dropped, mut todo) = self.dropped(held, by);
+        let (dropped, mut todo) = self.dropped(held, reason);
         self.turn_answered(&mut todo);
         (dropped, todo)
     }
@@ -415,17 +395,17 @@ impl Turns {
     }
 
     /// Messages taken from those held, never to be sent: each is a
-    /// `message_dropped` event, `by` `cancel`, `queue`, `close` or `exit`
+    /// `message_dropped` event, `reason` `cancel`, `queue`, `close` or `exit`
     /// (ADR 5.2), or `steer` for a steer the agent refused. Returns them as
     /// `{message, text}` too, for a response.
-    fn dropped(&self, held: Vec<Held>, by: &str) -> (Vec<Value>, Vec<Do>) {
+    fn dropped(&self, held: Vec<Held>, reason: &str) -> (Vec<Value>, Vec<Do>) {
         let events = held.iter().map(|h| {
             Do::Emit(json!({
                 "event": "message_dropped",
                 "session": self.session,
                 "message": h.id,
                 "text": h.text,
-                "by": by,
+                "reason": reason,
             }))
         });
         let events = events.collect();
@@ -433,11 +413,11 @@ impl Turns {
     }
 
     /// Context held for the next prompt, which won't come: each is a
-    /// `context_dropped` event, `by` `close`, `exit` or `queue` (ADR 5.2;
+    /// `context_dropped` event, `reason` `close`, `exit` or `queue` (ADR 5.2;
     /// context has no message id, ADR 4.1).
-    fn drop_context(&mut self, by: &str) -> Vec<Do> {
+    fn drop_context(&mut self, reason: &str) -> Vec<Do> {
         let context = take(&mut self.context).into_iter();
-        let event = |text| json!({ "event": "context_dropped", "session": self.session, "text": text, "by": by });
+        let event = |text| json!({ "event": "context_dropped", "session": self.session, "text": text, "reason": reason });
         context.map(|text| Do::Emit(event(text))).collect()
     }
 
@@ -615,13 +595,13 @@ mod tests {
                         said.push(format!(
                             "dropped {} by {}",
                             e["message"].as_str().unwrap(),
-                            e["by"].as_str().unwrap()
+                            e["reason"].as_str().unwrap()
                         ));
                     }
                     Do::Emit(e) => said.push(format!(
                         "{} by {}",
                         e["event"].as_str().unwrap(),
-                        e["by"].as_str().unwrap()
+                        e["by"].as_str().or(e["reason"].as_str()).unwrap()
                     )),
                     Do::Note(e) => said.push(format!("note {}", e["event"].as_str().unwrap())),
                 }
@@ -753,12 +733,12 @@ mod tests {
         let refused = json!({ "error": { "code": -32603, "message": "no" } });
         assert_eq!(
             s.steer_answered("m2", refused),
-            ["note steer-refused", "dropped m2 by steer", "turn_ended k1 [m1]"]
+            ["note steer_refused", "dropped m2 by steer", "turn_ended k1 [m1]"]
         );
         let other = json!({ "result": { "outcome": "later" } });
         s.send("m3", Mode::Prompt);
         s.send("m4", Mode::Steer);
-        assert_eq!(s.steer_answered("m4", other), ["note steer-refused", "dropped m4 by steer"]);
+        assert_eq!(s.steer_answered("m4", other), ["note steer_refused", "dropped m4 by steer"]);
     }
 
     #[test]
@@ -866,6 +846,6 @@ mod tests {
         let Some(Do::Emit(ended)) = todo.first() else { panic!("no turn_ended") };
         assert_eq!((&ended["by"], &ended["messages"]), (&json!("editor"), &json!([])));
         let late = s.turns.editor_steered("late".into());
-        assert_eq!(s.run(vec![late]), ["note steer-after-turn"]);
+        assert_eq!(s.run(vec![late]), ["note steer_after_turn"]);
     }
 }

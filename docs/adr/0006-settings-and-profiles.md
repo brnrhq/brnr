@@ -1,7 +1,6 @@
 # 6. Settings and profiles
 
-Draft 2026-10-19. Implemented, but for 6.1's names spelled one way (#154),
-decided, not implemented yet (#311). Factor: F3 (ADR 1). Brings together
+Draft 2026-10-20. Implemented. Factor: F3 (ADR 1). Brings together
 former ADRs 33, 58, 28, 31 and 32 (docs/adr/README.md maps them).
 
 How a brnr process is set up: the profiles in `config.toml`, a start's
@@ -17,12 +16,13 @@ A profile has three parts, by role (P7, P12):
 ```toml
 [profiles.work]                     # every process of the profile
 agent = ["brnr-claude-adapter"]
-log = "all"                         # "events", or false (ADR 5.1)
+log = "all"                         # "events", or "off" (ADR 5.1)
 strict = false                      # stable ACP only (ADR 2.1)
 
 [[profiles.work.bridges]]
-command = ["brnr", "event", "notify", "--stdin", "--",
-           "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
+command = "brnr"
+args = ["event", "notify", "--stdin", "--",
+        "sh", "-c", "terminal-notifier -title \"$BRNR_TITLE\" -message \"$BRNR_TEXT\""]
 
 [profiles.work.headless]            # brnr session new and session resume
 cwd = "~/work/project"
@@ -62,17 +62,17 @@ features = ["shared_sessions"]      # process management (ADR 3.10)
   key, and the flat layout fail to load (P7, P9). `brnr doctor` says which
   and where.
 
-One name, one meaning, one spelling in config too (#154, ADR 8.1),
-decided, not implemented yet (#311); the example above is what brnr
-reads until then:
+One name, one meaning, one spelling in config too (#154, ADR 8.1):
 
 - `log` takes strings only: `"all"` (the default), `"events"` or `"off"`.
-  `"off"` replaces `false`, and `true` and `false` fail to load.
+  `"off"` replaces `false`, and `true` and `false` fail to load, as
+  layout errors do: `brnr doctor` names the profile and the value.
 - A command in config is one shape, a program and its arguments:
   `command`, a string, and `args`, a list, with `env` where it takes one.
   An MCP server keeps this form, which is ACP's `McpServerStdio` (F1,
   ADR 6.3), and a bridge takes it too, in place of its argv list:
   `command = "brnr"`, `args = ["event", "notify", "--stdin", "--", …]`.
+  A list `command` fails to load, saying that its arguments go in `args`.
   `agent` stays a list, the agent's argument vector, as `-- <agent>
   [args...]` is on the command line: another name, with one meaning.
 - A duration is in whole seconds, with no unit in its name
@@ -248,9 +248,10 @@ Run `cargo test --release adr_0006_`. Named claims, by section:
   value that won), `adr_0006_start_settings_that_disagree_fail` (two
   values for one setting from the flags, or from the profile, fail before
   anything is set; a flag settles the profile's; the same value twice is
-  one). Not covered by a Rust test: config's names spelled one way (`log`
-  as strings only, one shape for a command, durations with no unit),
-  decided, not implemented yet; their tests come with #311.
+  one), `adr_0006_config_names_are_spelled_one_way` (`log = false` and
+  `log = true` fail to load, and `doctor` names them; `log = "off"` keeps
+  no transcript; a bridge of `command` and `args` starts, and one with a
+  list `command` fails to load).
 - 6.2: [tests/cli.rs](../../tests/cli.rs):
   `adr_0006_mode_lists_and_switches`, `adr_0006_model_and_config`,
   `adr_0006_model_is_the_option_of_category_model`,

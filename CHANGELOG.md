@@ -37,12 +37,51 @@ brnr's own conventions:
 - `session list` and `session status` say which session a fork came from
   (`forked_from`, a FORKED FROM column in the list), also once its process
   has ended: the fork's transcript records it in its first record,
-  `session-opened`. That is so for a fork `session fork` makes and for one
+  `session_opened`. That is so for a fork `session fork` makes and for one
   an editor makes through `brnr acp` (`session/fork`) (ADR 3.12, ADR 5.1,
   #238).
+- Every event has the brnr process's `pid`, beside `host_id`, and so does
+  every line `event log --json` and `event watch --json` print: the
+  `records_skipped` note has `ts`, `host_id`, `pid` and, in a session's
+  file, `session`, and `events_missed` has `pid`; `subscribe`'s answer has
+  `pid` too (ADR 5.9, #314).
+- `--events` takes the notes' names, `records_skipped` and
+  `events_missed`, which are shown whatever it chose: `event log
+  --events records_skipped` lists only a transcript's gaps (ADR 5.9,
+  #314).
 
 ### Changed
 
+- **Breaking:** a usage error exits 2, not 1, in every command: an unknown
+  command, verb or option, an argument missing or one too many, a value a
+  flag can't take (`event wait --for soon`, `--events nope`, `brnr skill
+  nope`), flags that don't go together (`--timeout` without `--wait`), or
+  `brnr` or a group with no command. Nothing is done; brnr says what was
+  wrong, then the command's usage, on stderr. An operation that fails still
+  exits 1. A script that took 1 for both tells them apart now (ADR 8.3).
+- **Breaking:** `--help` and `-h` print the usage on stdout and exit 0 in
+  every command: `doctor --help`, `skill --help` and `skill install --help`
+  printed on stderr and exited 1, and `brnr acp` took them only as its
+  first word (ADR 8.3).
+- `brnr acp --help` names its arguments `<p>` and `<agent>`, as `brnr
+  --help` does (ADR 8.3).
+- **Breaking:** `brnr acp` exits 1 for a config error, not 2, as the
+  control commands do: 2 is a usage error only (ADR 8.3, #338).
+- **Breaking:** brnr reads a line nested up to 128 levels (`[[1]]` is 2),
+  about what serde_json and ACP's Rust SDK read, where it read any depth on
+  a thread whose stack it sized to the line. A deeper line from the agent or
+  the editor is treated as one past 32 MiB: with an editor it goes on unread
+  and unrecorded, headless it is dropped, and a new `line_too_deep` event
+  (`from`, `max_depth`, `relayed`) says so; brnr tracks nothing of it, so a
+  permission request that deep isn't listed, answered from outside or timed
+  out. The commands read what brnr wrote (answers, events, transcripts) up
+  to 256 levels, and fail, saying so, past it. No event or timer runs on a
+  thread of its own any more, and `--json` output indented stays small
+  (ADR 2.5, #268, #259).
+- A process whose `status` answer has an agent's turn error nested past
+  128 is answering: the commands that look for processes (`session list`,
+  `permission requests`, …) no longer pass it over as not answering
+  (ADR 2.5, #323).
 - **Breaking:** brnr refuses a config file that isn't yours, or that the
   group or others can read or write, or whose folder isn't yours or they
   can write, or, on macOS, either with an access control list (`chmod
@@ -59,7 +98,7 @@ brnr's own conventions:
   [docs/adr/README.md](docs/adr/README.md) maps each to its section now.
 - **Breaking:** `brnr acp` drops the editor's `fs` and `terminal` client
   capabilities from its `initialize` again by default, as ACP v2 has
-  neither, and notes `capabilities-dropped` in the host log. A profile
+  neither, and notes `capabilities_dropped` in the host log. A profile
   passes them by name, `client_capabilities = ["fs", "terminal"]` in its
   editor part, and strict mode passes both, as stable ACP v1 has them
   (ADR 2.7, #272).
@@ -77,13 +116,116 @@ brnr's own conventions:
   cwd as `~/.claude/projects` names it and `<hash>` 8 hex digits of a hash
   of the cwd (`-Users-me-src-3db3a304`), where `/a-b` and `/a/b`, and on
   macOS `/A` and `/a`, shared one folder. Transcripts already written stay
-  where they are, and a session resumed in the cwd it began in goes on in
-  its file there. Nothing to do, but a tool that joins brnr's folders to
-  `~/.claude/projects` by the exact name now matches by the prefix (ADR 9.2,
-  #120).
+  where they are; they are an older brnr's, which isn't read (below). A
+  tool that joins brnr's folders to `~/.claude/projects` by the exact name
+  now matches by the prefix (ADR 9.2, #120).
+- **Breaking:** the event `exited` is `process_exited`, its `status`
+  `exit_status` and its `reason` `error`: `--events process_exited`,
+  `BRNR_EVENT=process_exited`, and a bridge's `events` with the new name
+  (ADR 5.9, #314).
+- **Breaking:** transcript and host-log records are snake_case and named
+  subject first, as ADR 5.9 lists them: `session-opened` is
+  `session_opened`, `records-skipped` `records_skipped`, `events-missed`
+  `events_missed`, `peer-dropped` `peer_dropped`, `made-private`
+  `path_made_private`, `session-log-failed` `session_log_failed`, and so
+  on; `send` is `message_accepted` (or `context_accepted` for context),
+  `cancel` `cancel_requested`, `started` `process_started` (its `request`
+  `start_request`), `stopping` `stop_requested`, `signal`
+  `signal_relayed`, `host-signal` `signal_received`, `panic`
+  `process_panicked`, `host-stderr` `process_stderr`, `idle-timeout`
+  `idle_timed_out`, `editor-closed-stdin` `editor_stdin_closed`,
+  `not-sent-to-editor` `editor_message_dropped`. An `acp` record's `dir`
+  `agent-stderr` is `agent_stderr` (ADR 5.9, #314).
+- **Breaking:** every record's head names the session `session` and the
+  brnr process `pid`, where it had `session_id` and `host_pid`. A
+  transcript or host log an older brnr wrote isn't read: `session list`
+  and `session resume` pass it over, `event log` of it says `an older brnr
+  wrote it`, and `brnr doctor` lists it under `older files`. A session
+  resumed starts a new transcript in its cwd's folder; nothing goes on in
+  an older brnr's file: one in the way is renamed `<name>.older.jsonl`,
+  which the host log's `session_log_moved` says, and `session delete`
+  passes one over. `session delete --purge` deletes the files set aside
+  too, every file of the session's id it finds, and lists each
+  (ADR 5.9, ADR 8.1, #314).
+- **Breaking:** `by` says who acted, `editor`, `agent` or `control`;
+  `peer` which connection asked; `reason` why. `message_dropped` and
+  `context_dropped` have `reason` where they had `by`; `session_closed`
+  is `by: control, reason: close` or `idle`, or `by: editor, reason:
+  close`; `session_deleted` by `brnr session delete` is `by: control`;
+  `permission_resolved` and `elicitation_resolved` are `by: control` with
+  the `peer` that answered, or `reason` `timeout` or `cancel`, and a
+  timeout's `cancel_requested` is `by: control, reason: timeout` (ADR 5.9,
+  #314).
+- **Breaking:** the other fields ADR 5.9 renames: `peer_cut_off`'s,
+  `peer_dropped`'s and `was_cut_off`'s `last_queued` is `last_queued_seq`;
+  `events_missed`'s `after` and `until` are `after_seq` and `until_seq`;
+  an elicitation's `message`, `tool_call` and `scope_request` (in
+  `elicitation_request`, `pending`, `elicitation show --json` and
+  `elicitation requests --json`) are `text`, `tool_call_id` and
+  `scope_request_id`; `records_skipped`'s `acp` is `acp_count`;
+  `session_opened` has one shape in the events file and the host log
+  (`session`, `cwd`, `events_log`, `acp_log`, `host_log`, `forked_from`);
+  the bridge `status` reply's sessions have `session` and `events_log`
+  where they had `session_id` and `log`; `event notify`'s
+  `BRNR_SESSION_ID` is `BRNR_SESSION`; `permission requests --json`'s
+  options have `option_id` where they had `option`; and in the host log
+  `bridge` is `peer`, `bridge_started`'s `pid` `bridge_pid`,
+  `bridge_exited`'s `status` `exit_status` (`{code}`, `{signal}` or
+  null), `capabilities_dropped`'s `dropped` `capabilities`, the editor
+  records' `id` and `request_id` `rpc_id`, `steer_refused`'s `answer`
+  `response`, `context_attached`'s `editor-prompt` `editor_prompt`, and
+  `peer_dropped`'s and `editor_message_dropped`'s `reason` the words
+  `fell_behind` and `agent_stdout_ended` (ADR 5.9, #314).
+- **Breaking:** a profile's bridge whose `events` names a note
+  (`records_skipped`, `events_missed`) fails to load, and `subscribe` to
+  one is refused: the process never sends one (ADR 5.9, #314).
+- **Breaking:** `permission allow` and `reject` name an option with
+  `--option-id <id>`, ACP's `optionId`, not `--option <id>`, which is a
+  config option's only and an unknown option there (exit 2). The socket's
+  `allow` and `reject` take `option_id`, and refuse `option`, answering
+  nothing; an `option_id` that isn't a string, null too, is refused the
+  same, not read as absent (ADR 8.1, #311).
+- **Breaking:** `prompt send` takes its prompt as `--prompt <text>`, or
+  `--prompt -` for stdin, as `session new` does: `brnr prompt send $s
+  --prompt "fix it"`. Words after the session are a usage error (exit 2),
+  and the rule that options go before the prompt is gone (ADR 8.1, #311).
+- **Breaking:** a duration in `--json` and the socket's replies has no unit
+  in its name: `uptime_seconds` is `uptime` (`process list`, `session
+  status`), `turn_seconds` `turn_elapsed` (`session status`) and
+  `timeout_seconds` `timeout_left` (`permission show`, `elicitation show`)
+  (ADR 8.1, #311).
+- **Breaking:** a profile's `log` is a string, `"all"`, `"events"` or
+  `"off"`: `log = false` is `log = "off"`, and `true` and `false` fail to
+  load, as `brnr doctor` says (ADR 6.1, #311).
+- **Breaking:** a bridge is a program and its arguments, as an MCP server
+  is: `command = "brnr"` and `args = ["event", "notify", …]`, not
+  `command = ["brnr", "event", "notify", …]`. A list `command` fails to
+  load, as `brnr doctor` says (ADR 6.1, #311).
+- **Breaking:** one session's files in more than one project folder (a
+  session resumed with `--cwd` has one in each) are one transcript.
+  `event log` shows them all, merged by their records' time, the raw ACP
+  of each with `--events acp`, and `--last` counts in what is merged;
+  before, it showed the newest file only, so a session loaded in another
+  cwd showed none of its history. `session resume` takes its cwd, agent and
+  profile from the newest record of them all, and `session list` has one
+  row of the session, with that record's cwd. A script that read the
+  newest file's records only gets every folder's now, and a `--last` of
+  them: to read one folder's records alone, read the file the `events_log`
+  of its `session_opened` names (ADR 5.1, ADR 3.11, #121).
 
 ### Fixed
 
+- A permission request or an elicitation the agent cancels with
+  `$/cancel_request` ends: it is gone from `permission requests`,
+  `elicitation requests` and a bridge's `pending`, the session is no longer
+  `waiting` (so `stop_when_idle` counts again), and its
+  `permission_resolved` or `elicitation_resolved` says `by: agent`.
+  In a headless session brnr answers a permission request `cancelled` and
+  an elicitation `cancel`, as ACP has a cancelled request answered; in an
+  editor's session the editor gets the notification and answers it. An
+  answer to it after that fails and sends nothing. brnr passed the
+  notification over, and the request stayed listed, waiting for an answer
+  the agent no longer took (ADR 4.5, #308).
 - What reads transcripts holds every part of their path to the rules they
   are written by: `session list`, `event log`, `session resume`, `session
   delete`, catching up and `doctor` don't look in, or read through, a
@@ -124,7 +266,7 @@ brnr's own conventions:
   before the `session_closed` (ADR 5.5, #304).
 - Messages and context held in a session whose load the agent fails, or in
   one the agent opened that isn't the process's to serve, are dropped with
-  their `message_dropped` and `context_dropped` events, `by` `close`, with
+  their `message_dropped` and `context_dropped` events, `reason` `close`, with
   no `session_closed` after; they went without a word (P3, ADR 5.2, #304).
 - A Claude fork can be prompted in the process that forked it, where its
   first prompt failed with `Session not found`: claude-agent-acp 0.90.0
@@ -135,10 +277,6 @@ brnr's own conventions:
   (Ctrl-C, `kill`), and says on stderr how much of its records it didn't
   write; until then it waits for the disk, as before. A panic lets go of
   the process's sessions before it waits, as an exit does (ADR 5.5, #165).
-- A headless process no longer dies when `response_timeout` answers a
-  permission request nested deeper than its main thread's stack takes (a
-  million deep): the event loop's timers run on a stack that takes what the
-  host holds, as its events do (ADR 2.5, #189).
 - A bridge's load of a session (`session resume --pid`, an agent without
   `session/resume`) finds its transcript in any folder, and one the process
   served and closed moments before, its logger behind, where it recorded
@@ -162,28 +300,26 @@ brnr's own conventions:
   listed, and its transcript started, only at its first prompt, under the
   process's cwd, and its modes and config options weren't known until the
   agent reported them again (ADR 3.12, ADR 5.1, #238).
-- `brnr permission requests` lists a request nested deeper than 128,
-  where it failed with `recursion limit exceeded`: it reads the host's
-  answer as the host reads the agent's line (ADR 2.5, #239).
+- `brnr permission requests` lists a request nested up to 128 levels, the
+  most the host reads, where one past serde_json's 127 failed with
+  `recursion limit exceeded` (ADR 2.5, #239).
 - `brnr prompt send --wait`, `event wait`, `event watch` and `event notify`
-  (from the socket and `--stdin`) see a permission request nested deeper
-  than 128, which they dropped without a word: they read events as the
-  host reads the agent's line (ADR 2.5, #250).
-- Those commands, and `session new --wait`, follow an event nested about a
-  million deep, where they overflowed their stack and aborted (exit 134):
-  each event is used and let go of on a stack that takes it, as the host
-  does; with no such stack to be had, they say so and exit non-zero (ADR 2.5,
-  #252).
-- `brnr permission show` shows a request nested deeper than 128, and
+  (from the socket and `--stdin`) see a permission request nested up to 128
+  levels, where one past serde_json's 127 was dropped without a word
+  (ADR 2.5, #250).
+- Those commands, and `session new --wait`, no longer overflow their stack
+  and abort (exit 134) on an event nested about a million deep: the host
+  sends none that deep, and a line nested past 256 levels they say they
+  can't read, and fail (ADR 2.5, #252).
+- `brnr permission show` shows a request nested up to 128 levels, and
   `elicitation requests` and `elicitation show` work in a process where one
   waits, where each failed with `recursion limit exceeded`: every command
   reads the host's answers as `permission requests` does (ADR 2.5).
-- `brnr permission requests` and `elicitation requests`, with no session,
-  say a process failed when one does after another held a request nested
-  about a million deep, where they overflowed their stack and aborted: what
-  was read already is let go of on a stack that takes it (ADR 2.5, #301).
-- `brnr event log` shows a record nested deeper than 128, such as a deep
-  `permission_request`, as `event watch` showed it live, where it said the
+- A message nested 128 levels, past serde_json's 127, or with a lone
+  surrogate, is in the raw ACP file as JSON (`msg`), as `event watch` showed
+  it, where it was a string in `raw` (ADR 2.5, ADR 5.1).
+- `brnr event log` shows a record nested deeper than 128, up to 256, such
+  as a deep `permission_request`, as `event watch` showed it live, where it said the
   line `isn't a record brnr can read, not shown`. `session list`, `session
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is

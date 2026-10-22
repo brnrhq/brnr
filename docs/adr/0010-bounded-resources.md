@@ -29,7 +29,7 @@ Observers give way, and never slow the session:
   at most 16 MiB, the lines set aside (64 MiB of them, or the first however
   long), and one more line are queued for a peer.
 - A peer that is behind is cut off: a connection is shut down, a started
-  bridge gets SIGTERM. The host log has `peer-dropped`, and the other peers
+  bridge gets SIGTERM. The host log has `peer_dropped`, and the other peers
   get `peer_cut_off` (ADR 10.2).
 - The foreground's display has a bounded buffer, then skips events, saying
   how many (`… 120 events not shown`). Its stdout closing ends the display,
@@ -61,11 +61,12 @@ The session's own pipes get backpressure, as a direct pipe would give them
 The logger's queue is bounded, and gives way as an observer does:
 
 - Past 64 MiB not yet written (a slow or stalled disk), records are skipped
-  and counted. A session's opening is never skipped, nor `exited` or
-  `panic`, which say how the process ended (ADR 3.7).
+  and counted. A session's opening is never skipped, nor `process_exited` or
+  `process_panicked`, which say how the process ended (ADR 3.7).
 - Once the queue is down to half that, or the logger has caught up, a
-  `records-skipped` note (`count`, `acp`, `since`, `until`, `first_seq`,
-  `last_seq`) says what was lost, in the host log and in each session's
+  `records_skipped` note (`count`, `acp_count`, `since`, `until`,
+  `first_seq`, `last_seq`, and `ts`, `host_id`, `pid` and in a session's
+  file `session`, as an event has them, ADR 5.9) says what was lost, in the host log and in each session's
   events file that lost some (P3). `first_seq` and `last_seq` are the
   positions lost (ADR 10.2).
 - Records a write fails to put in a file (a full disk) are noted the same
@@ -148,29 +149,29 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   every session's events (a bridge, `--pid`), which one number orders. The
   events a session watcher gets come from three files (its events, its raw
   ACP, and the host log, which has the process's own events such as
-  `exited` and ACP of no session), which one number merges exactly.
+  `process_exited` and ACP of no session), which one number merges exactly.
 - A session's file has gaps where other sessions' events are. They are not
-  losses: a `records-skipped` note says what is lost (ADR 10.1).
+  losses: a `records_skipped` note says what is lost (ADR 10.1).
 - An event carries `seq` as its last key, live and in the transcript. A raw
-  ACP record carries it before `dir` (`…,"session_id":"sess-1","seq":12,
+  ACP record carries it before `dir` (`…,"session":"sess-1","seq":12,
   "dir":…`), and `event log` gives it to the `acp` event it makes of the
   record. The copy of a `session/new` in the session's raw file has none;
   the host log has it with its position.
 - `subscribe`'s answer says where the subscription starts: `peer`, the
-  connection's name as the host log has it (`socket#7`), `host_id`, and
-  `seq`, the last position before it. `session new --wait`'s ready report
+  connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
+  and `seq`, the last position before it. `session new --wait`'s ready report
   on the start channel says the same (`socket#start`).
 
 ### Recording the cut-off
 
-- A peer cut off (ADR 10.1) gets a `peer-dropped` note (`peer`, `reason`,
-  `last_queued`) in the host log, and its connection is shut down. Lines
-  queued for it and not written are dropped with the queue. `last_queued`
+- A peer cut off (ADR 10.1) gets a `peer_dropped` record (`peer`, `reason`
+  `fell_behind`, `last_queued_seq`) in the host log, and its connection is shut down. Lines
+  queued for it and not written are dropped with the queue. `last_queued_seq`
   is the last position when the peer was cut off: nothing after it was
   queued for the peer; some lines before it may not have been written.
 - The process keeps the last 64 cut-offs, the peer's name and
-  `last_queued`, for `was_cut_off`.
-- It emits a `peer_cut_off` event (`peer`, `last_queued`) to the other
+  `last_queued_seq`, for `was_cut_off`.
+- It emits a `peer_cut_off` event (`peer`, `last_queued_seq`) to the other
   peers, once the line that cut the peer off has reached them, so that each
   sees positions in order. The event is the process's (no session), in the
   host log, and shown by default.
@@ -178,8 +179,8 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 ### Asking, and catching up
 
 - A request, `was_cut_off` `{peer}`, is answered `{peer, cut_off,
-  last_queued}`: whether the process cut that peer off, and where.
-- A command whose connection ends before the end it waits for (`exited`,
+  last_queued_seq}`: whether the process cut that peer off, and where.
+- A command whose connection ends before the end it waits for (`process_exited`,
   its session's `session_closed`, its turn's end) catches up:
   1. It connects again and asks `was_cut_off` for its peer's name. Not cut
      off, or not one of the last 64: it ends as it did (`the process closed
@@ -189,17 +190,17 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
      new connection.
   3. It sends `logged` (ADR 5.5). Once answered, the transcript has every
      event up to R.
-  4. It reads the host log, whose `session-opened` records name each
+  4. It reads the host log, whose `session_opened` records name each
      session's files, and the files of the session it follows (every
      session's for `--pid`; the raw ACP too when it asked for `acp`). Of
      the process's records, it takes those it subscribed to after its last
      event, L (or where it subscribed), up to R, in order of position, once
-     each (`exited` is in every session's transcript and the host log).
+     each (`process_exited` is in every session's transcript and the host log).
   5. They come before what the new connection has sent since, and it goes
      on there. Its last event is then the last the new connection sent, or
      R if none. Cut off again, it catches up after that, so nothing comes
      twice.
-- A process that has gone can't be asked. Its host log's `peer-dropped` for
+- A process that has gone can't be asked. Its host log's `peer_dropped` for
   the peer says it was cut off, steps 2 and 3 are left out, and its
   transcript, whole once it has gone (ADR 5.5), is read to its end. So is
   the transcript of a process that goes while the command catches up, once
@@ -211,7 +212,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   which names the socket, has exited, or is a zombie nothing has reaped yet.
   Its socket isn't asked: a process removes it before its last records are
   written, and a full backlog refuses on macOS and blocks on Linux. Gone, it
-  is caught up with as above if its host log has the peer's `peer-dropped`.
+  is caught up with as above if its host log has the peer's `peer_dropped`.
   Otherwise the command fails, as it does for a peer that wasn't cut off.
 - These commands catch up: `event watch`, `prompt send --wait`, `session
   new --wait` and `session resume --wait` (on the start channel, or with
@@ -236,27 +237,27 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 
 - The command can't catch up where the transcript doesn't have what it
   missed:
-  - none is kept (`log = false`);
+  - none is kept (`log = "off"`);
   - no raw ACP is kept (`log = "events"`), for a peer that asked for `acp`;
-  - records weren't written where it missed events: a `records-skipped`
+  - records weren't written where it missed events: a `records_skipped`
     note's `first_seq` and `last_seq` between L and R is a hole;
   - a full disk didn't take records that no note says yet: `logged`
     answers `lost`.
 
   The command doesn't guess around a hole (P4).
 - It then says what it missed, after which event, up to where, and why, in
-  the shape of the logger's `records-skipped` note:
+  the shape of the logger's `records_skipped` note:
 
   ```json
-  {"event":"events-missed","ts":"…","host_id":"…","peer":"socket#7","after":120,"until":180,"error":"the process keeps no transcript (log = false)"}
+  {"event":"events_missed","ts":"…","host_id":"…","pid":4466,"peer":"socket#7","after_seq":120,"until_seq":180,"error":"the process keeps no transcript (log = \"off\")"}
   ```
 
-  `until` is R, where the command subscribed again. Given up at the 4th
+  `until_seq` is R, where the command subscribed again. Given up at the 4th
   cut-off in a row with no R (its last new subscription failed), it is
   where the process said it cut the peer off, `was_cut_off`'s
-  `last_queued`. It is null in two cases only: the process has gone (its
+  `last_queued_seq`. It is null in two cases only: the process has gone (its
   socket refuses a new connection), so its transcript is read to its end;
-  or the process, live, cut the peer off but said no `last_queued`, which
+  or the process, live, cut the peer off but said no `last_queued_seq`, which
   brnr's own process always says, and `error` then says that it gave no
   position.
 - `event watch` shows it as its last event, in text or JSON; the others on
@@ -268,7 +269,7 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 - A started bridge isn't caught up. Its events come on its stdin, a pipe
   the process opened; cutting it off closes the pipe and sends SIGTERM
   (ADR 10.1), and there is no connection to open again. The host log's
-  `peer-dropped` and the other peers' `peer_cut_off` say that it was cut
+  `peer_dropped` and the other peers' `peer_cut_off` say that it was cut
   off and where.
 - A bridge that must not miss events subscribes on the socket itself
   (`BRNR_SOCKET`): `brnr event notify <session> -- …` rather than
@@ -298,12 +299,11 @@ its owner.
   `acp`; every session's for `--pid`. Lines of other processes, and out of
   the range, are passed over without being read whole. What it missed is
   held in the command's memory while it goes out.
-- `event watch` doesn't end when it falls behind. It ends with `exited`,
+- `event watch` doesn't end when it falls behind. It ends with `process_exited`,
   its session's close, or exit status 3.
-- The names this adds (`seq`, `peer_cut_off`, `last_queued`, `first_seq`,
-  `last_seq`, `events-missed`, kebab-case as the logger's other notes are)
-  follow ADR 5.9 once #314 lands: `last_queued_seq`, and `events_missed`
-  with `after_seq` and `until_seq`. #150 settles the shapes of `--json`
+- The names this adds (`seq`, `peer_cut_off`, `last_queued_seq`,
+  `first_seq`, `last_seq`, `events_missed` with `after_seq` and
+  `until_seq`) follow ADR 5.9. #150 settles the shapes of `--json`
   output. The change is kept to one field on every event, one event, one
   note and one request.
 
@@ -363,7 +363,7 @@ process going.
   `limit`, in bytes; `relayed`: whether it went on) says so once for each
   such line, when it passes the limit: in every session's events file, to
   watchers and bridges, and in the foreground (P3). It belongs to no
-  session: the host hasn't read it, so, as `exited`, it goes to all of
+  session: the host hasn't read it, so, as `process_exited`, it goes to all of
   them.
 - The agent's stderr isn't interpreted. It goes on as each read brings it,
   up to 64 KiB, a line or not, every byte and in order, to the editor's
@@ -375,7 +375,7 @@ process going.
 - A failed start's tail keeps a long line's first 2000 bytes, cut between
   characters, as it keeps those of any line (ADR 3.6).
 - A started bridge's stderr and the process's own stderr, detached
-  (`host-stderr`, ADR 3.7), go into the host log the same way: a line or a
+  (`process_stderr`, ADR 3.7), go into the host log the same way: a line or a
   piece of 64 KiB at a time, a character a piece's end would cut starting
   the next piece. A bridge's note's decoded text is at most 64 KiB too, the
   rest in the next notes.
@@ -394,7 +394,10 @@ What is bounded, and what isn't:
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
   - the foreground's display (ADR 3.5);
-  - the proxy reads the editor 64 KiB at a time.
+  - the proxy reads the editor 64 KiB at a time;
+  - how deep a line may nest for brnr to read it: 128 levels for what the
+    agent, the editor or a peer sends, 256 for what brnr wrote, and so the
+    stack any value takes (ADR 2.5). No thread is sized to a line.
 - Not bounded by a count of bytes:
   - the agent's message or thought being assembled from its chunks, for an
     `agent_message` event: each chunk has been through the cap, and the

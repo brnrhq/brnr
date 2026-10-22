@@ -1,7 +1,6 @@
 # 4. Turns, messages and the agent's requests
 
-Draft 2026-10-19. Implemented, but for 4.5's request the agent cancels
-(#162), decided, not implemented yet (#308). Factor: F3 (ADR 1).
+Draft 2026-10-20. Implemented. Factor: F3 (ADR 1).
 Brings together former ADRs 17, 56, 18, 19, 71, 27, 68, 29 and 30
 (docs/adr/README.md maps them).
 
@@ -31,7 +30,7 @@ login stay the agent's.
 - An `injected` answer puts the message in that turn: its `user_message`
   names the turn's prompt, and the `turn_ended`, when it goes, lists it. A
   `promptRequired` answer holds the message as ADR 4.2 says, ahead of what
-  is held. An error, or any other answer, is a `message_dropped`, `by`
+  is held. An error, or any other answer, is a `message_dropped`, its `reason`
   `steer` (ADR 5.2). Then the held `turn_ended` goes, and then the next
   held message.
 - While a turn's `turn_ended` waits, no other turn starts. `prompt send`
@@ -39,7 +38,7 @@ login stay the agent's.
   held as ADR 4.2 has it, but with no turn to cancel (status `held`, no
   `session/cancel`). `prompt send --steer` is steered into that turn.
 - `prompt cancel`, closing the session and the agent exiting drop
-  unanswered steers (`message_dropped`, `by` `cancel`, `close` or `exit`),
+  unanswered steers (`message_dropped`, its `reason` `cancel`, `close` or `exit`),
   and then the held `turn_ended` goes. Every accepted message ends in one
   `turn_ended` that lists it, or in one `message_dropped`, whatever the
   order of the answers.
@@ -47,11 +46,11 @@ login stay the agent's.
   turn's own answer exits as that turn does. What the agent said before it
   answered isn't shown as the message's reply: `--wait` prints what follows
   the message's `user_message`. The transcript has it.
-- `steer-after-turn` in the host log is for an `injected` answer with no
+- `steer_after_turn` in the host log is for an `injected` answer with no
   turn at all. A steer brnr sends only while a turn runs or waits, so it
-  can't get one; if it does, the message is dropped, `by` `steer`, never
+  can't get one; if it does, the message is dropped, `reason` `steer`, never
   left without an end. The editor's own steers (ADR 7.1) have no message
-  id; one answered with no turn is logged `steer-after-turn`.
+  id; one answered with no turn is logged `steer_after_turn`.
 
 **Why.** `prompt send --wait` must know which turn answers its message,
 even when the message is held, steered into a running turn, or sent after
@@ -238,23 +237,25 @@ Events:
 
 - `permission_request`, and `permission_resolved`, which says `allowed` or
   `rejected`, and which kind (ADR 8.1).
-- `elicitation_request` carries the request's `message`, `mode` (`form`,
-  `url`, or another the agent names), `scope` (`session`, `tool_call` or
-  `request`) with the `tool_call` or `scope_request` it names, the form's
+- `elicitation_request` carries the request's `text` (ACP's `message`),
+  `mode` (`form`, `url`, or another the agent names), `scope` (`session`,
+  `tool_call` or `request`) with the `tool_call_id` or `scope_request_id`
+  it names, the form's
   `schema` (the `requestedSchema` as sent), and a URL mode's `url` and
   `elicitation_id`; `owner` says `headless` or `editor`.
 - `elicitation_resolved` carries the `action` sent (`accept`, `decline`,
   `cancel`, or an editor's other action), the `content` an accept carried,
-  and `by` (a connection or bridge, `editor`, `cancel` or `timeout`).
+  and who and why, as `permission_resolved` has them (ADR 5.9): `by`
+  `editor`, or `control` with the connection or bridge that answered
+  (`peer`) or `reason` `cancel` or `timeout`.
 - `elicitation_completed` is the agent's `elicitation/complete`, the URL's
   flow done, with the `elicitation_id` and the handle it belonged to.
 - `event wait --for permission` and `--for elicitation` wait for one
   (ADR 8.3). `event notify` runs its command for `permission_request` and
   `elicitation_request` by default (ADR 5.8). `prompt send --wait`
   announces one on stderr, with how to see it and answer it.
-- The events' shapes follow what the code does (snake_case keys, the
-  agent's values as sent); when #149 and #150 land, and ADR 5.9's renames
-  (#314), they follow those decisions.
+- The events' names follow ADR 5.9 (snake_case, the agent's values as
+  sent); when #149 and #150 land, their shapes follow those decisions.
 
 Listing and showing:
 
@@ -286,7 +287,7 @@ Answering a permission request:
   order in the request. No other kind stands in for it, and `reject` never
   answers `cancelled`: a request without that kind, or with two options of
   it, fails, listing the options, and nothing is answered (P4, P7).
-- `--option <id>` names the option instead, for a kind brnr doesn't know
+- `--option-id <id>` names the option instead, for a kind brnr doesn't know
   or two options of one kind. One of an ACP kind must be on the verb's side
   (`allow_*` for `allow`), and with `--always` of the always kind; one of a
   kind brnr doesn't know goes with either verb.
@@ -327,7 +328,7 @@ Socket and bridges (ADR 5.7):
 
 - `pending` answers with `elicitations` beside `pending`, each in full,
   with `answerable` and `why_not`.
-- `allow` and `reject`, with `always` and `option`, answer a permission
+- `allow` and `reject`, with `always` and `option_id`, answer a permission
   request (ADR 8.1). `elicitation {session, request, action:
   accept|decline|cancel, content?}` answers an elicitation, `session` null
   for a request-scoped one. The turn's `cancel` keeps its name.
@@ -345,13 +346,12 @@ One timeout:
   answered `cancelled`, as ACP requires. Never `reject_always`, and never
   an allow.
 - An elicitation nobody answered in time is answered `cancel`, `by`
-  `timeout`: never `decline`, which says the user said no, nor `accept`.
+  `control`, `reason` `timeout`: never `decline`, which says the user said no, nor `accept`.
 - `prompt cancel` answers the session's pending elicitations `cancel`, `by`
-  `cancel`, as it answers its permission requests `cancelled`: the turn
+  `control`, `reason` `cancel`, as it answers its permission requests `cancelled`: the turn
   they were asked in is gone, and nothing is left waiting unsaid (P3).
 
-A request the agent gives up on (#162), decided, not implemented yet
-(#308):
+A request the agent gives up on (#162):
 
 - The agent's `$/cancel_request` for a permission request or an
   elicitation it sent ends the request, in brnr's role either way. It is
@@ -377,6 +377,9 @@ A request the agent gives up on (#162), decided, not implemented yet
   `prompt cancel` cancels it; meanwhile the session is `waiting`, and
   `stop_when_idle` doesn't count (ADR 3.8). What the agent does wrong
   shows, as it would without brnr.
+- A request brnr doesn't hold (an editor's `fs` or `terminal` request) is
+  the editor's: the agent's `$/cancel_request` for it reaches the editor,
+  and brnr ends nothing.
 
 Editor sessions (ADR 7.1):
 
@@ -435,6 +438,14 @@ answers would be (ADR 4.6).
   say so.
 - Bridges that list `pending` see an `elicitations` key; one that answers
   elicitations sends `elicitation`.
+- Both adapters can send `$/cancel_request` for a request of their own:
+  as their code reads (claude-agent-acp 0.85.1, codex-acp 2.1.1), Claude's
+  permission requests and elicitations go with the abort signal of Claude
+  Code's tool call, and Codex's approvals with the turn's cancellation
+  signal, and the ACP SDK sends `$/cancel_request` when one aborts.
+  Neither has been seen to end a turn with a request open.
+  `adapters/check.py` drives no turn that asks (that needs the real
+  agents, with credentials), so neither is run there.
 
 **Considered.**
 
@@ -600,9 +611,13 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_handles_are_never_used_again`,
   `adr_0004_every_way_a_request_ends_leaves_nothing_behind`,
   `adr_0004_an_answer_that_cant_be_sent_leaves_the_request_waiting`,
-  `adr_0004_a_timeout_rejects_once_or_cancels_the_turn`. Not covered by a
-  Rust test: a request the agent cancels with `$/cancel_request` (#162),
-  decided, not implemented yet; its tests come with #308.
+  `adr_0004_a_timeout_rejects_once_or_cancels_the_turn`,
+  `adr_0004_the_agents_cancel_ends_only_what_waits`. A request the agent
+  cancels with `$/cancel_request`: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0004_a_request_the_agent_cancels_ends_by_the_agent`,
+  `adr_0004_a_turn_that_ends_leaves_its_request_waiting`;
+  [tests/headless.rs](../../tests/headless.rs):
+  `adr_0004_an_editor_gets_the_agents_cancel_and_answers_it`.
 - 4.6: [tests/cli.rs](../../tests/cli.rs):
   `adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host`.
 - 4.7: [tests/cli.rs](../../tests/cli.rs):

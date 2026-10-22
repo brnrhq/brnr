@@ -19,9 +19,11 @@
 //! - running processes: each answers; of one that doesn't, the sessions it
 //!   holds the locks of (ADR 3.9);
 //! - host logs: those of processes that died without recording it (no
-//!   `exited`, and not running), the cases ADR 3.7 can't record, with when
+//!   `process_exited`, and not running), the cases ADR 3.7 can't record, with when
 //!   each last wrote and the sessions it had open. Info, not a warning:
-//!   they are a record, and nothing is to be repaired.
+//!   they are a record, and nothing is to be repaired;
+//! - files an older brnr wrote, transcripts and host logs, in names this
+//!   one doesn't read (ADR 5.9): listed, as info, as they aren't read.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata, sockets and locks. It never touches anything it
@@ -51,6 +53,7 @@ use serde_json::{Value, json};
 use crate::host::check_bridge;
 use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
 
+use super::args::Error;
 use super::client::{Host, Probe, gone, probe, read_meta};
 use super::{Args, text, when};
 
@@ -102,10 +105,10 @@ impl Report {
     }
 }
 
-pub(crate) fn main(a: &Args) -> Result<(), String> {
+pub(crate) fn main(a: &Args) -> Result<(), Error> {
     let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
-        return Err("--fix and --report don't go together".into());
+        return Err(Error::Invalid("--fix and --report don't go together".into()));
     }
     let mut r = Report { fix, json: json_out, report, checks: Vec::new(), failed: 0, warned: 0 };
     let hosts = runtime_dir(&mut r);
@@ -115,18 +118,19 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
     adapters(&mut r);
     running(&mut r, hosts.as_deref().unwrap_or_default());
     host_logs(&mut r, hosts.as_deref());
+    older_files(&mut r);
     if r.report {
         bug_report(&r, hosts.as_deref());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     if r.json {
         outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
         return match r.failed {
             0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n))),
+            n => Err(format!("{n} check{} failed", plural(n)).into()),
         };
     }
     match (r.failed, r.warned) {
@@ -135,7 +139,7 @@ pub(crate) fn main(a: &Args) -> Result<(), String> {
             outln!("\n{n} warning{}", plural(n));
             Ok(())
         }
-        (n, _) => Err(format!("{n} check{} failed", plural(n))),
+        (n, _) => Err(format!("{n} check{} failed", plural(n)).into()),
     }
 }
 
@@ -512,8 +516,8 @@ fn config_file(r: &mut Report) {
         for bridge in &profile.bridges {
             if let Err(e) = check_bridge(bridge) {
                 problems.push(e);
-            } else if find_program(&bridge.command[0]).is_none() {
-                problems.push(format!("bridge {} not found", bridge.command[0]));
+            } else if find_program(&bridge.command).is_none() {
+                problems.push(format!("bridge {} not found", bridge.command));
             }
         }
         if problems.is_empty() {
@@ -672,12 +676,12 @@ fn running(r: &mut Report, hosts: &[Running]) {
 /// How many of the processes that died the line names, the latest first.
 const DIED_SHOWN: usize = 3;
 
-/// How much of a host log's end is read for its `exited`.
+/// How much of a host log's end is read for its `process_exited`.
 const LOG_TAIL: u64 = 64 * 1024;
 
 /// Host logs (`~/.brnr/hosts/<run id>.jsonl`) of processes that died
 /// without recording it, the cases ADR 3.7 couldn't record: the log has no
-/// `exited`, and no process running has its run id. For each, when its last
+/// `process_exited`, and no process running has its run id. For each, when its last
 /// record was written and the sessions it had open. Only the ends of files
 /// are read: of each host log, and of each session's events file for the
 /// run it was last written by. `hosts` is `None` when which processes are
@@ -694,7 +698,10 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
     for path in transcript::host_logs() {
         let Some(run) = path.file_stem().and_then(OsStr::to_str) else { continue };
         logs += 1;
-        if running.contains(&run) || recorded_exit(&path) != Some(false) {
+        if running.contains(&run)
+            || recorded_exit(&path) != Some(false)
+            || transcript::by_an_older_brnr(&path)
+        {
             continue;
         }
         // Appended to only: when it was last modified is its last record.
@@ -729,12 +736,46 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
     r.line(Level::Info, what, msg);
 }
 
+/// How many of the files an older brnr wrote the line names, the latest
+/// first.
+const OLDER_SHOWN: usize = 5;
+
+/// The transcripts and host logs an older brnr wrote, which this one doesn't
+/// read (ADR 5.9): `session list` and `session resume` pass them over, so
+/// they are listed here (P3). Info: they are a record, and stay as they are
+/// (P9).
+fn older_files(r: &mut Report) {
+    let what = "older files";
+    let files = transcript::events_files().into_iter().chain(transcript::host_logs());
+    let mut older: Vec<(SystemTime, PathBuf)> = files
+        .filter(|path| transcript::by_an_older_brnr(path))
+        .map(|path| {
+            let written = fs::symlink_metadata(&path).and_then(|m| m.modified());
+            (written.unwrap_or(UNIX_EPOCH), path)
+        })
+        .collect();
+    if older.is_empty() {
+        return r.line(Level::Ok, what, "none an older brnr wrote");
+    }
+    older.sort_by(|a, b| b.cmp(a));
+    let n = older.len();
+    let shown: Vec<String> =
+        older.iter().take(OLDER_SHOWN).map(|(_, p)| p.display().to_string()).collect();
+    let which = if n > OLDER_SHOWN { "; the latest" } else { "" };
+    let msg = format!(
+        "{n} file{} an older brnr wrote, in names this one doesn't read (ADR 5.9){which}: {}",
+        plural(n),
+        shown.join(", ")
+    );
+    r.line(Level::Info, what, msg);
+}
+
 /// Whether a host log records its process's end, `None` if it can't be
-/// read. `exited` is the last thing a process writes but for what follows
+/// read. `process_exited` is the last thing a process writes but for what follows
 /// as it lets go (a bridge's exit, its own stderr), so it is in the end of
 /// the file.
 fn recorded_exit(path: &Path) -> Option<bool> {
-    Some(recorded(&transcript::tail(path, LOG_TAIL)?, "exited"))
+    Some(recorded(&transcript::tail(path, LOG_TAIL)?, "process_exited"))
 }
 
 /// Whether one of `lines` is a host event `event`.
@@ -754,7 +795,7 @@ fn open_sessions() -> HashMap<String, Vec<String>> {
     let mut open: HashMap<String, Vec<String>> = HashMap::new();
     for file in transcript::events_files() {
         let Some(last) = transcript::last(&file, |_| true) else { continue };
-        let (Some(run), Some(session)) = (last["host_id"].as_str(), last["session_id"].as_str())
+        let (Some(run), Some(session)) = (last["host_id"].as_str(), last["session"].as_str())
         else {
             continue;
         };
@@ -863,11 +904,13 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     // The latest first; of two written in the same instant, the later run.
     logs.sort_by(|a, b| b.cmp(a));
     let mut shown: Vec<HostLog> = Vec::new();
+    // An older brnr's isn't read (ADR 5.9): `older files` lists it.
+    logs.retain(|(_, _, path)| !transcript::by_an_older_brnr(path));
     for (i, (_, run, path)) in logs.iter().enumerate() {
         let Some(lines) = transcript::tail(path, LOG_TAIL) else { continue };
-        let ended = if recorded(&lines, "panic") {
+        let ended = if recorded(&lines, "process_panicked") {
             "brnr panicked"
-        } else if recorded(&lines, "exited") {
+        } else if recorded(&lines, "process_exited") {
             "exited"
         } else {
             match &running {
@@ -891,20 +934,22 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
 
 /// A host log's line as the report shows it: with what brnr redacts
 /// redacted again (a log written before it did), cut short if it is long.
-/// A record is read as transcripts are, however deep it nests, and shown,
-/// and let go of, on a stack that takes it.
+/// A record is read as transcripts are, to `json::OWN_DEPTH`.
 fn report_line(line: &[u8]) -> String {
-    let depth = json::depth(line);
-    let shown = json::on_stack(depth, || {
-        let mut record = transcript::record(line)?;
-        log::redact_record(&mut record);
-        Some(record.to_string())
-    });
-    let text = match shown {
-        Some(Some(text)) => text,
-        Some(None) => String::from_utf8_lossy(line).into_owned(),
-        // Not shown as it came: it may hold what brnr redacts.
-        None => format!("(a line {depth} deep, not shown: no stack to be had to read it)"),
+    let text = match transcript::record(line) {
+        // Its names aren't this brnr's, nor what it would redact (ADR 5.9).
+        Some(record) if transcript::older(&record) => {
+            "(a record an older brnr wrote, not shown)".to_owned()
+        }
+        Some(mut record) => {
+            log::redact_record(&mut record);
+            record.to_string()
+        }
+        None => match json::within(line, json::OWN_DEPTH, "a line") {
+            // Not shown as it came: it may hold what brnr redacts.
+            Err(why) => format!("({why}, not shown)"),
+            Ok(()) => String::from_utf8_lossy(line).into_owned(),
+        },
     };
     let chars = text.chars().count();
     if chars <= REPORT_LINE_CHARS {

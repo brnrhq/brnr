@@ -8,7 +8,7 @@
 //!
 //! - `BRNR_EVENT`: the event name; `BRNR_TEXT`: it as `brnr event watch` would
 //!   show it; `BRNR_TITLE`: the session's title, else its id;
-//! - `BRNR_SESSION_ID`, `BRNR_REQUEST` (an approval's or an elicitation's
+//! - `BRNR_SESSION`, `BRNR_REQUEST` (an approval's or an elicitation's
 //!   handle),
 //!   `BRNR_MESSAGE` (the agent's last message in the session);
 //! - `BRNR_PID`, the process.
@@ -18,7 +18,7 @@
 //!
 //! `--events` is read as for `event watch`, but its default (and `default`)
 //! is `permission_request`, `elicitation_request` (ADR 4.5), `turn_ended`,
-//! `exited`. It exits when the process
+//! `process_exited`. It exits when the process
 //! does (or the session closes).
 //!
 //! Commands run one at a time, in order, each in a process group of its
@@ -35,14 +35,14 @@
 //! With `--stdin` it reads the events from its stdin, one per line, instead of
 //! connecting: a started bridge's transport (ADRs 5.7 and 5.8 in docs/adr). As a
 //! bridge in a profile it is
-//! `command = ["brnr", "event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
+//! `command = "brnr"`, `args = ["event", "notify", "--stdin", "--", …]`, and `BRNR_PID`
 //! is the one the process gives it. The bridge's `events`, if the profile
-//! limits them, must include `agent_message`, `session_changed` and `exited`
-//! for the environment and the end. Its stdin ending before `exited` is being
+//! limits them, must include `agent_message`, `session_changed` and `process_exited`
+//! for the environment and the end. Its stdin ending before `process_exited` is being
 //! cut off; the process cuts off a bridge that falls behind with SIGTERM, and a
-//! started bridge's stderr is in the host log (`bridge-stderr`): a started
+//! started bridge's stderr is in the host log (`bridge_stderr`): a started
 //! bridge doesn't catch up (ADR 10.2). On the socket, the connection closing
-//! before `exited` is being cut off, which notify also looks for while a
+//! before `process_exited` is being cut off, which notify also looks for while a
 //! command runs, and asks the process about.
 
 use std::collections::{HashMap, VecDeque};
@@ -61,12 +61,13 @@ use serde_json::Value;
 
 use crate::{host, json, render, signals, sys};
 
+use super::args::Error::{self, Invalid};
 use super::catch_up::MISSED;
 use super::client::{Conn, discover};
 use super::{Args, events_arg, session_or_pid};
 
 const DEFAULT_EVENTS: &[&str] =
-    &["permission_request", "elicitation_request", "turn_ended", "exited"];
+    &["permission_request", "elicitation_request", "turn_ended", "process_exited"];
 
 /// The most of the agent's text one variable gets. Linux refuses to start a
 /// program with a variable over 128 KiB, and macOS one whose environment and
@@ -83,19 +84,35 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 /// hung up the connection.
 const HANGUP_CHECK: Duration = Duration::from_millis(100);
 
-pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn notify(a: &Args) -> Result<ExitCode, Error> {
     let (session, pid) = (a.positional.first().cloned(), a.value("--pid").map(str::to_owned));
     let stdin = a.has("--stdin");
     let default: Vec<String> = DEFAULT_EVENTS.iter().map(|e| e.to_string()).collect();
     let events = events_arg(a, &default)?;
     let command = a.rest.clone().unwrap_or_default();
     if command.is_empty() {
-        return Err("notify needs a command after --".into());
+        return Err(Invalid("notify needs a command after --".into()));
     }
+    match (stdin, session.is_some(), pid.is_some()) {
+        (true, false, false) | (false, true, false) | (false, false, true) => {}
+        (true, ..) => return Err(Invalid("--stdin takes no <session> or --pid".into())),
+        _ => return Err(Invalid("give a <session> or --pid <pid>, or --stdin".into())),
+    }
+    Ok(run(stdin, session, pid, events, command)?)
+}
+
+/// `event notify`, its arguments checked: `command` run for `events`.
+fn run(
+    stdin: bool,
+    session: Option<String>,
+    pid: Option<String>,
+    events: Vec<String>,
+    command: Vec<String>,
+) -> Result<ExitCode, String> {
     // Agent messages and titles are tracked for the environment, and the
     // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
-    for extra in ["agent_message", "session_changed", "session_closed", "exited"] {
+    for extra in ["agent_message", "session_changed", "session_closed", "process_exited"] {
         if !wanted.contains(&extra) {
             wanted.push(extra);
         }
@@ -107,7 +124,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
         Events::open(stdin, session.as_deref(), pid.as_deref(), &wanted)?;
     // Looked at while a command runs, until the process hangs up.
     let mut hangup = source.socket().0;
-    let (tx, mut rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let (ask, asks) = mpsc::channel();
     let t = tx.clone();
     thread::spawn(move || read_events(source, asks, t));
@@ -119,7 +136,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
     // why there was no more.
     let mut ahead: VecDeque<Value> = VecDeque::new();
     let mut end: Option<String> = None;
-    let ended = loop {
+    loop {
         let e = if let Some(e) = ahead.pop_front() {
             e
         } else if let Some(why) = end.take() {
@@ -142,16 +159,12 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                 }
             }
         };
-        // Run for, and let go of, on a stack that takes it (ADR 2.5). How
-        // notify ends, if it does here.
-        let ended = json::holding(e, |e| -> Option<Result<ExitCode, String>> {
-            // Mutably: this may run on a thread of its own, and a `Receiver`
-            // isn't `Sync`.
-            let rx = &mut rx;
+        // How notify ends, if it does here.
+        let ended: Option<Result<ExitCode, String>> = 'run: {
             let name = e["event"].as_str().unwrap_or_default().to_owned();
             let session = e["session"].as_str().unwrap_or_default().to_owned();
             if only.as_deref().is_some_and(|s| !session.is_empty() && s != session) {
-                return None;
+                break 'run None;
             }
             match name.as_str() {
                 "agent_message" => {
@@ -172,7 +185,7 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                     ("BRNR_EVENT", name.clone()),
                     ("BRNR_TEXT", env_text(&text.unwrap_or_default())),
                     ("BRNR_TITLE", env_text(&title)),
-                    ("BRNR_SESSION_ID", session.clone()),
+                    ("BRNR_SESSION", session.clone()),
                     ("BRNR_REQUEST", e["request"].as_str().unwrap_or_default().to_owned()),
                     ("BRNR_MESSAGE", env_text(&message)),
                     ("BRNR_PID", process.clone()),
@@ -186,8 +199,8 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                             running.take().unwrap().reap();
                         }
                         Ok(Msg::Signal(sig)) => {
-                            let stopped = running.take().map(|r| r.stop(rx));
-                            return Some(Err(cut_off(
+                            let stopped = running.take().map(|r| r.stop(&rx));
+                            break 'run Some(Err(cut_off(
                                 &render::signal(sig.into()),
                                 stopped.as_deref(),
                             )));
@@ -200,9 +213,8 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                             draining = false;
                             let end_too = rest.iter().any(|e| ends(e, only.as_deref()));
                             if !end_too && !cut {
-                                json::free(Value::Array(rest));
-                                let stopped = running.take().map(|r| r.stop(rx));
-                                return Some(Err(cut_off(&why, stopped.as_deref())));
+                                let stopped = running.take().map(|r| r.stop(&rx));
+                                break 'run Some(Err(cut_off(&why, stopped.as_deref())));
                             }
                             ahead.extend(rest);
                             if end_too {
@@ -221,22 +233,17 @@ pub(super) fn notify(a: &Args) -> Result<ExitCode, String> {
                 }
             }
             ends(&e, only.as_deref()).then_some(Ok(ExitCode::SUCCESS))
-        });
-        match ended {
-            Ok(None) => {}
-            Ok(Some(ended)) => break ended,
-            Err(why) => break Err(why),
+        };
+        if let Some(ended) = ended {
+            break ended;
         }
-    };
-    // What it read ahead may be deep too.
-    json::free(Value::Array(ahead.into()));
-    ended
+    }
 }
 
-/// Whether `e` is the last event notify waits for: `exited`, or with `only`
+/// Whether `e` is the last event notify waits for: `process_exited`, or with `only`
 /// that session's `session_closed`.
 fn ends(e: &Value, only: Option<&str>) -> bool {
-    e["event"] == "exited"
+    e["event"] == "process_exited"
         || (e["event"] == "session_closed" && only.is_some_and(|s| e["session"] == s))
 }
 
@@ -286,10 +293,8 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
     for ask in asks {
         if matches!(ask, Ask::Rest) {
             let (rest, why, cut) = source.rest();
-            // Not sent, notify has ended: let go of here.
-            if let Err(mpsc::SendError(Msg::Rest(rest, ..))) = tx.send(Msg::Rest(rest, why, cut)) {
-                json::free(Value::Array(rest));
-            }
+            // Not sent: notify has ended.
+            let _ = tx.send(Msg::Rest(rest, why, cut));
             if cut {
                 continue;
             }
@@ -301,10 +306,8 @@ fn read_events(mut source: Source, asks: Receiver<Ask>, tx: Sender<Msg>) {
                     let (socket, made) = source.socket();
                     let socket = socket.filter(|_| made != told);
                     told = made;
-                    // Not sent, notify has ended: let go of here.
-                    if let Err(mpsc::SendError(Msg::Event(e, _))) = tx.send(Msg::Event(e, socket)) {
-                        json::free(e);
-                    }
+                    // Not sent: notify has ended.
+                    let _ = tx.send(Msg::Event(e, socket));
                     break;
                 }
                 Ok(None) => {}
@@ -385,9 +388,6 @@ impl Events {
         wanted: &[&str],
     ) -> Result<Events, String> {
         if stdin {
-            if session.is_some() || pid.is_some() {
-                return Err("--stdin takes no <session> or --pid".into());
-            }
             // Subscribed from the process's start, so every title is to come.
             let process = env::var("BRNR_PID").unwrap_or_default();
             let source = Source::Stdin(io::stdin());
@@ -414,15 +414,12 @@ impl Events {
             Err(_) if conn.missed().is_some() => Value::Null,
             Err(why) => return Err(why),
         };
-        // Read and let go of on a stack that takes it (ADR 2.5).
-        let titles = conn.deep(status, |_, status| {
-            let sessions = status["sessions"].as_array().into_iter().flatten();
-            sessions
-                .filter_map(|s| {
-                    Some((s["session_id"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
-                })
-                .collect::<HashMap<String, String>>()
-        })?;
+        let sessions = status["sessions"].as_array().into_iter().flatten();
+        let titles = sessions
+            .filter_map(|s| {
+                Some((s["session"].as_str()?.to_owned(), s["title"].as_str()?.to_owned()))
+            })
+            .collect::<HashMap<String, String>>();
         Ok(Events {
             source: Source::Socket(Box::new(conn)),
             process: process.to_owned(),
@@ -442,14 +439,12 @@ impl Source {
                 let mut line = Vec::new();
                 match stdin.lock().read_until(b'\n', &mut line) {
                     Ok(0) => Err("stdin closed".into()),
-                    // As the host reads it (see json.rs), as the socket's.
-                    // A line that isn't an event is let go of there too.
+                    // As brnr reads what it wrote (see json.rs), as the
+                    // socket's: one too deep is none brnr wrote, and is said.
                     Ok(_) => {
-                        let depth = json::depth(&line);
-                        let event =
-                            || json::parse::<Value>(&line).filter(|e| e.get("event").is_some());
-                        json::on_stack(depth, event)
-                            .ok_or_else(|| format!("no stack to be had for a message {depth} deep"))
+                        json::within(&line, json::OWN_DEPTH, "a line on stdin")?;
+                        let event = json::parse::<Value>(&line, json::OWN_DEPTH);
+                        Ok(event.filter(|e| e.get("event").is_some()))
                     }
                     Err(e) => Err(format!("stdin: {e}")),
                 }
@@ -580,8 +575,6 @@ impl Running {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Done(done)) if done == pid => break,
                 // Stopped while draining: what is left goes with it.
-                Ok(Msg::Rest(rest, ..)) => json::free(Value::Array(rest)),
-                Ok(Msg::Event(e, _)) => json::free(e),
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -606,7 +599,7 @@ mod tests {
         let (rest, _, cut) = events.source.rest();
         assert_eq!((rest.len(), &rest[0]["seq"], cut), (1, &Value::from(11), true));
         assert!(events.source.next().is_err());
-        assert_eq!(events.source.missed().unwrap()["after"], 11);
+        assert_eq!(events.source.missed().unwrap()["after_seq"], 11);
         process.join().unwrap();
     }
 }
