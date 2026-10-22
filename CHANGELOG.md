@@ -63,6 +63,10 @@ brnr's own conventions:
 
 ### Changed
 
+- Commands ask every process for its status at once, so processes that don't
+  answer cost about 5 s in all, not 5 s each. A process serves at most 128
+  connections at once, and answers the next `too many connections: 128 open`
+  and closes it (ADR 10.4).
 - **Breaking:** a socket or bridge request with a field its `cmd` doesn't
   take is refused, `command_unknown`, and nothing is done; it was done
   without it. `allow`'s and `reject`'s old `option` is such a field now,
@@ -310,6 +314,20 @@ brnr's own conventions:
 
 ### Fixed
 
+- A request on the control socket or a bridge's stdout is read up to 32 MiB:
+  a longer one, which grew the process's memory as far as it went, is
+  answered with an error, noted in the host log (`peer_dropped`, `reason`
+  `line_too_long`) and the peer cut off (ADR 10.3).
+- A process that runs out of file descriptors waits before accepting again,
+  10 ms doubling to 1 s, instead of spinning (ADR 10.4).
+- A request on a subscribed connection (`prompt send --wait`, `event watch`,
+  `event notify`) waits 5 s for its answer, and a request's write 5 s for the
+  process to take it, then fails with `not answering`, instead of waiting
+  for ever. So does connecting to a process, in every command: on Linux a
+  stopped process whose backlog is full held a connection for as long as it
+  stayed stopped, and a command that found the processes left a thread
+  blocked on each. An error the process says before it closes the connection is the
+  command's error, not `the process closed the connection` (ADR 10.4).
 - A process killed but not yet reaped (a zombie) counts as gone: `session
   list`, `process list` and every other command that looks processes up drop
   it, removing its metadata and socket, and `doctor --fix` removes what it

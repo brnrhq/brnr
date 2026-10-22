@@ -1871,6 +1871,74 @@ fn adr_0010_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
     assert_eq!(said[1], "\u{e9}");
 }
 
+/// The host log's `peer_dropped` records, once there is one.
+fn peers_dropped(env: &Env) -> Vec<Value> {
+    let dropped = || host_logs(env).contains(r#""event":"peer_dropped""#);
+    assert!(wait_for(Duration::from_secs(10), dropped), "no peer_dropped");
+    let records: Vec<Value> =
+        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    records
+        .into_iter()
+        .filter(|r| r["event"]["event"] == "peer_dropped")
+        .map(|r| r["event"].clone())
+        .collect()
+}
+
+/// A request on the control socket longer than the longest line the host
+/// reads (32 MiB, newline included) isn't read past that: the peer is told
+/// why and the connection closed, and the host log says so. It isn't a peer
+/// that fell behind: no other peer is told, and the process goes on
+/// (ADR 10.3).
+#[test]
+fn adr_0010_a_request_past_the_limit_is_answered_and_cut_off() {
+    let env = Env::new("longreq");
+    env.start(&[]);
+    let conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    let mut writer = conn.try_clone().unwrap();
+    // Fails once the host has closed the connection, unread.
+    let wrote = std::thread::spawn(move || writer.write_all(&vec![b'x'; (32 << 20) + 2]));
+    let mut reader = BufReader::new(conn);
+    let mut answer = String::new();
+    reader.read_line(&mut answer).unwrap();
+    let error = json!({ "code": "command_invalid", "message": "a request longer than 33554432 bytes: cut off" });
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer).unwrap(),
+        json!({ "ok": false, "error": error })
+    );
+    // Closed: EOF, or on Linux a reset, the rest of the line unread.
+    let mut rest = Vec::new();
+    let _ = reader.read_to_end(&mut rest);
+    assert!(rest.is_empty(), "{} bytes more", rest.len());
+    let _ = wrote.join().unwrap();
+    let dropped = peers_dropped(&env);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    let d = &dropped[0];
+    assert!(d["peer"].as_str().unwrap().starts_with("socket#"), "{d}");
+    assert_eq!((&d["reason"], &d["limit"]), (&json!("line_too_long"), &json!(32 << 20)), "{d}");
+    env.ok(&["session", "status", "sess-1"]);
+    assert!(!host_logs(&env).contains(r#""event":"peer_cut_off""#));
+}
+
+/// A started bridge whose request runs past the limit is cut off as one
+/// that fell behind is, with SIGTERM, and the host log says why (ADR 10.3).
+#[test]
+fn adr_0010_a_bridges_request_past_the_limit_cuts_it_off() {
+    let env = Env::new("longbridge");
+    let script = "head -c 33554434 /dev/zero | tr '\\0' x; exec cat > /dev/null";
+    env.write_config(&format!(
+        "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
+    ));
+    env.start(&[]);
+    let dropped = peers_dropped(&env);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert_eq!(
+        (&dropped[0]["peer"], &dropped[0]["reason"]),
+        (&json!("sh#0"), &json!("line_too_long"))
+    );
+    assert!(wait_for(Duration::from_secs(10), || bridge_stderr(&env).1.is_some()), "not exited");
+    env.ok(&["session", "status", "sess-1"]);
+}
+
 /// `brnr session list | head -1`: a reader that goes away ends brnr quietly, as it
 /// would a filter.
 #[test]

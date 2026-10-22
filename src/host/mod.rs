@@ -57,6 +57,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
@@ -313,8 +314,16 @@ enum Ev {
         peer: u64,
         req: Value,
     },
+    /// A peer's request ran past `LINE_BYTES`; nothing more is read from
+    /// it (ADR 10.3).
+    PeerTooLong {
+        peer: u64,
+    },
+    /// A peer's connection ended; it counts until this is handled
+    /// (ADR 10.4).
     PeerClosed {
         peer: u64,
+        slot: Arc<control::Slot>,
     },
     BridgeStderr {
         label: String,
@@ -1159,8 +1168,10 @@ impl Host {
                 death::test_panic(&req);
                 self.peer_request(peer, req);
             }
-            Ev::PeerClosed { peer } => {
-                self.peers.remove(&peer);
+            Ev::PeerTooLong { peer } => self.request_too_long(peer),
+            Ev::PeerClosed { peer, slot } => {
+                self.peer_closed(peer);
+                drop(slot);
             }
             Ev::BridgeStderr { label, line } => {
                 self.sink
