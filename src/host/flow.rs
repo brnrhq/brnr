@@ -66,6 +66,11 @@ impl Backlog {
         self.0.1.notify_all();
     }
 
+    /// The writer has gone (`close`).
+    pub(super) fn closed(&self) -> bool {
+        self.count().closed
+    }
+
     /// Past the cap: the reader is held back.
     pub(super) fn full(&self) -> bool {
         let count = self.count();

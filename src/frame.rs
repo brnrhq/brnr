@@ -3,9 +3,10 @@
 //! They are joined by two socketpairs. The link carries ACP bytes in `DATA`
 //! frames exactly as read, both ways, and what has its place among them: the
 //! end of them (`EOF`), the proxy's stdin's or the agent's stdout's, which
-//! comes after what was written before it, as it does on a pipe; and
-//! everything else the host sends, what plain stdio carries out of band
-//! (stderr, the exit status).
+//! comes after what was written before it, as it does on a pipe; the
+//! agent's stdin closing (`STDIN_CLOSED`), host → proxy, for the proxy to
+//! close its own; and everything else the host sends, what plain stdio
+//! carries out of band (stderr, the exit status).
 //!
 //! The signal link, proxy → host only, carries what has no place among the
 //! editor's input: a signal (`SIGNAL`) and the proxy's stdout failing
@@ -34,6 +35,9 @@ pub(crate) const SIGNAL: u8 = b'S';
 pub(crate) const EOF: u8 = b'Z';
 /// proxy → host, on the signal link: writing to the proxy's stdout failed.
 pub(crate) const STDOUT_CLOSED: u8 = b'C';
+/// host → proxy: the agent's stdin has closed, and the proxy's stdin closes,
+/// so the editor's next write fails as it would on a pipe (ADR 2.6).
+pub(crate) const STDIN_CLOSED: u8 = b'I';
 
 /// How much memory a payload is given before its bytes arrive.
 const UP_FRONT: usize = 64 << 10;

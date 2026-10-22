@@ -229,6 +229,35 @@ mod tests {
         assert!(h.host.with_stderr("timed out").ends_with("\n  login required: ok"));
     }
 
+    #[test]
+    fn adr_0002_the_editors_stdin_ends_with_the_agents() {
+        let ask = |id: u64| format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"_ask"}}"#);
+        // A stop closes the agent's stdin: the proxy is told to close the
+        // editor's, and what comes before it does goes nowhere, as does the
+        // start of the line the editor was writing.
+        let mut h = Harness::editor(false, false);
+        h.editor_bytes(format!("{}\n{{\"jsonrpc\"", ask(1)).as_bytes());
+        assert_eq!(h.sent().agent.len(), 1);
+        h.host.begin_stop();
+        assert_eq!(h.sent().editor, vec![(frame::STDIN_CLOSED, Vec::new())]);
+        h.editor_bytes(format!(":\"2.0\"}}\n{}\n", ask(2)).as_bytes());
+        h.editor_eof();
+        let sent = h.sent();
+        assert!(sent.agent.is_empty() && sent.editor.is_empty());
+        assert!(!h.host.outbound.waiting(r#""brnr-2""#));
+
+        // The agent closing it: the line that finds it closed went before
+        // anyone knew, those after it in the same read don't.
+        let mut h = Harness::editor(false, false);
+        h.agent = mpsc::channel().1;
+        h.editor_bytes(format!("{}\n{}\n", ask(1), ask(2)).as_bytes());
+        assert_eq!(h.sent().editor, vec![(frame::STDIN_CLOSED, Vec::new())]);
+        assert!(!h.host.outbound.waiting(r#""brnr-2""#));
+        h.editor_bytes(format!("{}\n", ask(3)).as_bytes());
+        let sent = h.sent();
+        assert!(sent.agent.is_empty() && sent.editor.is_empty());
+    }
+
     /// A line `depth` deep: a JSON-RPC request `id` for `method`, whose tool
     /// call's input nests the rest of the way.
     fn deep(id: &str, method: &str, depth: usize) -> Vec<u8> {

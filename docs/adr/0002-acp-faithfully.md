@@ -358,7 +358,7 @@ older brnr wrote, or a process that isn't this brnr, can nest deeper.
 - Leaving serde_json's limits and only forwarding unknown ids: the lone
   surrogate, the case that happens, would still go untracked.
 
-## 2.6 The editor's stdout ends when the agent's does, and its stderr comes as written
+## 2.6 The editor's stdin and stdout end when the agent's do, and its stderr comes as written
 
 - The editor's stdout ends when the agent's does, after the last of what
   the agent wrote, whether the agent runs on or not. The host sends the
@@ -377,6 +377,20 @@ older brnr wrote, or a process that isn't this brnr, can nest deeper.
   line was about still happens: a message sent from outside still reaches
   the agent's stdin, which is open. Only the editor's copy is lost, as
   the agent's answer to it would be.
+- The editor's stdin ends when the agent's does, while the editor is
+  attached and hasn't ended it itself: when a stop closes it
+  (`brnr process stop`, a signal), when the agent closes it, and when the
+  agent exits. The host sends the proxy `STDIN_CLOSED` on the link
+  (frame.rs), and the proxy ends its stdin, fd 0 left open on /dev/null as
+  fd 1 is, so the editor's next write fails (EPIPE), as on the agent's
+  pipe. The host log records `agent_stdin_closed`.
+- What the editor wrote that reached the host after the agent's stdin
+  closed, before the proxy closed its own, goes nowhere: it isn't sent, nor
+  recorded in the raw ACP, nor a request waiting for an answer, nor
+  answered by brnr. Nor is the start of a line the editor hadn't finished.
+  The host log records `editor_bytes_dropped`, with how many `bytes`
+  (P3). What the proxy hadn't read goes with its stdin, as what the agent
+  hadn't read would go with its pipe.
 - The agent's stderr goes on as it is read, newline or not. Each read (up
   to 64 KiB) goes to the editor's stderr through the proxy, and in the
   foreground to its stderr (ADR 3.6), unchanged: every byte once and in
@@ -398,7 +412,11 @@ written as soon as it is written (P1). An editor that reads stdout to EOF
 must see an agent that closes its stdout and runs on as gone, and a
 prompt that waits for an answer (`login required: `) ends no line. Once
 the agent's stdout has ended, lines of brnr's own there would be answers
-and updates that no agent stands behind.
+and updates that no agent stands behind. The agent's stdin is the editor's
+pipe too: once the agent has closed it, or gone, the editor's next write
+fails. Taken and thrown away, the editor's lines would be written without
+an error, waiting for answers that never come, and recorded as sent to an
+agent that never got them (P1, P3, P5).
 
 **Consequences.**
 
@@ -425,6 +443,15 @@ and updates that no agent stands behind.
     proxy's writes there fail and are dropped, and the agent's stderr
     still goes to the host log. (Closing stdout does give EPIPE,
     ADR 3.1.)
+  - The editor's write fails later than on a pipe. The host hears that
+    the agent closed its stdin only when a write to it fails, so the line
+    that finds it closed is recorded, and its request waits, as if it had
+    been sent; a write after it fails. `STDIN_CLOSED` goes to
+    the proxy behind what the host sent before it, so an editor that
+    isn't reading its stdout gets it as late as that. Until the proxy has
+    closed its stdin, writes go through, and the host log counts what of
+    them it dropped. A stdin macOS can't poll (some devices) closes once
+    the read waiting on it returns: one write later.
 
 **Considered.**
 
@@ -432,7 +459,15 @@ and updates that no agent stands behind.
   has ended: the editor wouldn't see the agent's stdout end, and the lines
   would be answers and updates that no agent stands behind.
 - Closing fd 1 outright in the proxy: the next file it opened would get
-  fd 1, and a stray write to stdout would go there.
+  fd 1, and a stray write to stdout would go there. Fd 0 likewise.
+- Closing the proxy's stdin from the thread that reads the link: the
+  thread relaying stdin, blocked reading it, holds the pipe open until its
+  read returns (Linux), so the editor's next write would still go through.
+  That thread waits in poll(2) instead, on stdin and on a pipe that the
+  link's thread closes for `STDIN_CLOSED`, and closes stdin itself.
+- Going on reading the editor's stdin, and answering its requests with an
+  error once the agent's stdin has closed: run directly, the agent answers
+  nothing, and the editor's write fails (P1).
 - Ending the editor's stderr with the agent's: `brnr acp`'s own failures
   would go nowhere (P3).
 - A link of its own for stderr (a third socketpair, with its own cap and a
@@ -613,10 +648,14 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_stderr_comes_as_it_is_written`,
   `adr_0002_stdout_and_stderr_end_on_their_own`;
   [tests/headless.rs](../../tests/headless.rs):
-  `adr_0002_a_timed_out_start_shows_the_line_stderr_is_in`;
+  `adr_0002_a_timed_out_start_shows_the_line_stderr_is_in`,
+  `adr_0002_the_editors_write_fails_once_the_agents_stdin_closes`;
   [src/host/fuzz.rs](../../src/host/fuzz.rs):
   `adr_0002_brnrs_own_lines_end_with_the_agents_stdout`,
-  `adr_0002_stderr_goes_on_before_its_line_ends`.
+  `adr_0002_stderr_goes_on_before_its_line_ends`,
+  `adr_0002_the_editors_stdin_ends_with_the_agents`. Not covered by a Rust
+  test: the editor's stdin closing when the agent exits on its own, which
+  takes a stop's path (`close_agent_stdin`).
 - 2.7: [tests/headless.rs](../../tests/headless.rs):
   `adr_0002_fs_and_terminal_reach_the_agent_in_strict_mode_or_when_named`,
   `adr_0002_the_agents_file_and_terminal_requests_reach_the_editor`,

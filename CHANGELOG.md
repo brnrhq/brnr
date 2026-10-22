@@ -317,6 +317,16 @@ brnr's own conventions:
 
 ### Fixed
 
+- The editor's stdin closes when the agent's does, as on a pipe: after
+  `brnr process stop`, the agent closing its stdin or exiting, the
+  editor's next write to `brnr acp` fails (EPIPE). What it wrote once brnr
+  knew the agent's stdin had closed is neither sent nor recorded as sent,
+  and the host log notes `agent_stdin_closed` and `editor_bytes_dropped`
+  with how many bytes. An agent that closes its stdin itself is found out
+  by the write that fails to reach it: that one line is still recorded as
+  sent, and its request waits. Before, every write went through, and brnr
+  recorded each line as sent to the agent and threw it away (ADR 2.6,
+  #330).
 - A request on the control socket or a bridge's stdout is read up to 32 MiB:
   a longer one, which grew the process's memory as far as it went, is
   answered with an error, noted in the host log (`peer_dropped`, `reason`

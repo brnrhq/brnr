@@ -5,7 +5,7 @@
 mod common;
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
@@ -3645,6 +3645,59 @@ fn adr_0003_editor_gone_takes_the_agents_children() {
     editor.wait().unwrap();
     assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
     assert!(wait_for(Duration::from_secs(2), || !alive(child)), "its child outlived the editor");
+}
+
+/// A stop closes the agent's stdin, and so the editor's: its next write
+/// fails, EPIPE, as on the agent's pipe, while the agent, which ignores its
+/// stdin's end, runs on. Nothing the editor wrote after the stop is
+/// recorded as sent, and what reached the host of it, its host log counts
+/// (ADR 2.6).
+#[test]
+fn adr_0002_the_editors_write_fails_once_the_agents_stdin_closes() {
+    let env = Env::new("ed-stdin").agent("STUBBORN", "all");
+    let (mut editor, mut to_agent, _from_agent) = open_editor(&env);
+    let host = env.host_pid();
+    env.stop();
+    let prompt = format!("{}\n", editor_prompt(3, "after the stop"));
+    let mut written = 0;
+    let failed = wait_for(Duration::from_secs(4), || match to_agent.write_all(prompt.as_bytes()) {
+        Ok(()) => {
+            written += 1;
+            false
+        }
+        Err(err) => {
+            assert_eq!(err.kind(), ErrorKind::BrokenPipe, "{err}");
+            true
+        }
+    });
+    assert!(failed, "{written} writes went through after the stop");
+    // Its stdin closed, not the proxy gone, which would close it too: the
+    // agent's SIGKILL is 10 s after the stop.
+    assert!(editor.try_wait().unwrap().is_none(), "the proxy exited");
+    editor.kill().unwrap();
+    editor.wait().unwrap();
+    assert!(wait_for(Duration::from_secs(15), || !alive(host)), "the agent outlived the editor");
+
+    let acp = env.ok(&["event", "log", "sess-1", "--events", "acp", "--json"]);
+    let records = acp.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    let sent = |r: &Value| r["dir"] == "editor->agent" && r["msg"]["method"] == "session/prompt";
+    assert!(!records.into_iter().any(|r| sent(&r)), "{acp}");
+    let log = host_logs(&env);
+    let notes: Vec<Value> =
+        log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take()).collect();
+    assert!(notes.iter().any(|n| n["event"] == "agent_stdin_closed"), "{log}");
+    // A write is read whole (it is less than PIPE_BUF), or not at all: those
+    // left in the pipe when the proxy closed it go with it, as on a pipe.
+    let dropped: u64 = notes
+        .iter()
+        .filter(|n| n["event"] == "editor_bytes_dropped")
+        .map(|n| n["bytes"].as_u64().unwrap())
+        .sum();
+    let len = prompt.len() as u64;
+    assert!(
+        dropped.is_multiple_of(len) && dropped <= written * len,
+        "{dropped} of {written} writes"
+    );
 }
 
 /// That the host, `pid`, holds less than `limit` bytes of memory, unless it
