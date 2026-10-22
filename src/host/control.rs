@@ -261,7 +261,7 @@ pub(super) enum Closer {
 /// yet.
 #[derive(Clone)]
 pub(super) struct Queue {
-    tx: Sender<String>,
+    tx: Sender<Out>,
     queued: Arc<AtomicUsize>,
     /// While the backlog is past the limit, the size of the lines set aside,
     /// which don't count toward it: the one that took it past, and those
@@ -276,8 +276,16 @@ impl Queue {
         let _ = self.push(line);
     }
 
+    /// Tells the writer the process has let go of its peer: it writes what
+    /// comes within [`CUT_OFF_WAIT`], then ends, even while an answer still
+    /// to come (`logged` on a stalled disk, the agent's) holds a clone of
+    /// the queue, so that the connection doesn't stay open for it (ADR 10.4).
+    pub(super) fn let_go(&self) {
+        let _ = self.tx.send(Out::LetGo);
+    }
+
     /// The queue, and the writer's end of it.
-    pub(super) fn new() -> (Queue, Receiver<String>, Arc<AtomicUsize>) {
+    pub(super) fn new() -> (Queue, Receiver<Out>, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::channel();
         let queued = Arc::new(AtomicUsize::new(0));
         (Queue { tx, queued: queued.clone(), aside: Arc::default() }, rx, queued)
@@ -307,7 +315,7 @@ impl Queue {
             }
         }
         self.queued.fetch_add(len, Relaxed);
-        match self.tx.send(line) {
+        match self.tx.send(Out::Line(line)) {
             Ok(()) => Queued::Ok,
             Err(_) => Queued::Gone,
         }
@@ -318,6 +326,13 @@ enum Queued {
     Ok,
     Gone,
     Full,
+}
+
+/// What a peer's writer gets: a line to write, or that the process has let
+/// go of the peer ([`Queue::let_go`]).
+pub(super) enum Out {
+    Line(String),
+    LetGo,
 }
 
 pub(super) struct Peer {
@@ -474,12 +489,30 @@ fn close_once_written(conn: &UnixStream, unwritten: &AtomicUsize, wait: Duration
     let _ = conn.shutdown(Shutdown::Both);
 }
 
-pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: Arc<AtomicUsize>) {
-    for line in lines {
-        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-            return;
+/// Writes the lines that come until the queue goes, or, once the process has
+/// let go of the peer, until [`CUT_OFF_WAIT`] after that.
+pub(super) fn write_lines(out: impl Write, lines: Receiver<Out>, queued: Arc<AtomicUsize>) {
+    write_until(out, &lines, &queued, CUT_OFF_WAIT);
+}
+
+/// [`write_lines`], ending `wait` after the process lets go of the peer.
+fn write_until(mut out: impl Write, lines: &Receiver<Out>, queued: &AtomicUsize, wait: Duration) {
+    let mut until: Option<Instant> = None;
+    loop {
+        let next = match until {
+            None => lines.recv().ok(),
+            Some(until) => lines.recv_timeout(until.saturating_duration_since(Instant::now())).ok(),
+        };
+        match next {
+            None => return,
+            Some(Out::LetGo) => until = Some(Instant::now() + wait),
+            Some(Out::Line(line)) => {
+                if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    return;
+                }
+                queued.fetch_sub(line.len() + 1, Relaxed);
+            }
         }
-        queued.fetch_sub(line.len() + 1, Relaxed);
     }
 }
 
@@ -727,6 +760,7 @@ impl Host {
             // one blocked on a peer that stopped reading is let go of after
             // a while, so the connection doesn't stay open for ever.
             Closer::Socket(conn) => {
+                p.tx.let_go();
                 let unwritten = p.tx.queued.clone();
                 thread::spawn(move || close_once_written(&conn, &unwritten, CUT_OFF_WAIT));
             }
@@ -744,6 +778,7 @@ impl Host {
     pub(super) fn peer_closed(&mut self, peer: u64) {
         let Some(p) = self.peers.remove(&peer) else { return };
         if let Closer::Socket(conn) = p.closer {
+            p.tx.let_go();
             let unwritten = p.tx.queued.clone();
             if unwritten.load(Relaxed) > 0 {
                 thread::spawn(move || close_once_written(&conn, &unwritten, CUT_OFF_WAIT));
@@ -1539,6 +1574,26 @@ mod tests {
             assert!(took >= at_least && took < at_least + Duration::from_secs(2), "{took:?}");
             assert_eq!(theirs.read(&mut [0; 8]).unwrap(), 0, "not closed");
         }
+    }
+
+    /// A writer the process has let go of writes what comes within its wait,
+    /// then ends, though an answer still to come holds a clone of its queue
+    /// (`logged` on a stalled disk): its connection doesn't stay open for it
+    /// (ADR 10.4).
+    #[test]
+    fn adr_0010_a_writer_let_go_of_ends_after_its_wait() {
+        let (queue, rx, queued) = Queue::new();
+        let held = queue.clone();
+        queue.post("before".into());
+        queue.let_go();
+        drop(queue);
+        held.post("within".into());
+        let (mut out, start) = (Vec::new(), Instant::now());
+        write_until(&mut out, &rx, &queued, Duration::from_millis(300));
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(3), "{took:?}");
+        assert_eq!(String::from_utf8(out).unwrap(), "before\nwithin\n");
+        drop(held);
     }
 
     /// An accept that fails is tried again after 10 ms, then twice as long
