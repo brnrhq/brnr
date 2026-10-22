@@ -349,6 +349,15 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Says a test can't run here, before it returns: a failure in CI, or with
+/// `BRNR_TESTS_STRICT` set, where a test that didn't run mustn't pass (P3);
+/// a `skipped:` line on stderr otherwise.
+pub fn skip(why: &str) {
+    let set = |var| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+    assert!(!set("CI") && !set("BRNR_TESTS_STRICT"), "can't run here: {why}");
+    eprintln!("skipped: {why}");
+}
+
 /// Has `cmd` run with umask `mask` (and what it starts, which inherits it).
 pub fn with_umask(cmd: &mut Command, mask: libc::mode_t) -> &mut Command {
     // SAFETY: the closure runs in the child between fork and exec, where only

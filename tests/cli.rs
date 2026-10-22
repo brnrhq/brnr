@@ -2370,7 +2370,8 @@ fn transcripts_open(pid: i32) -> Option<usize> {
 
 /// A process that serves session after session holds files only for those
 /// it has open: closing one writes its last records and closes its files,
-/// and one resumed later appends to them (ADR 5.1).
+/// and one resumed later appends to them (ADR 5.1). Can't run without
+/// `/proc` or `lsof` (`skip`: a failure in CI).
 #[test]
 fn adr_0005_closing_sessions_closes_their_files() {
     let env = Env::new("c-closefds");
@@ -2380,7 +2381,7 @@ fn adr_0005_closing_sessions_closes_their_files() {
     // returned: `log` answers once it has caught up (ADR 5.5).
     env.ok(&["event", "log", "sess-1"]);
     let Some(before) = transcripts_open(host) else {
-        eprintln!("skipped: neither /proc nor lsof");
+        skip("neither /proc nor lsof");
         return env.stop();
     };
     // The host log and sess-1's two files.
@@ -6107,12 +6108,13 @@ fn adr_0008_delete_purge_fails_when_the_agent_does() {
 
 /// With `--purge`, a transcript that can't be deleted (a project folder
 /// brnr can't write to) is said, and fails the command: it isn't "no
-/// transcript", nor deleted all the same.
+/// transcript", nor deleted all the same. Can't run as root (`skip`: a
+/// failure in CI).
 #[test]
 fn adr_0008_delete_purge_says_what_it_couldnt_delete() {
     use std::os::unix::fs::PermissionsExt;
     if uid() == 0 {
-        eprintln!("skipped: root deletes in a read-only folder");
+        skip("root deletes in a read-only folder");
         return;
     }
     let env = Env::new("c-purge-ro").agent("SESSION_ID", "stuck-1");

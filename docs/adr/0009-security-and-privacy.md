@@ -394,7 +394,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       stay as they were.
     - `adr_0009_a_config_of_another_users_is_refused`: root's `/etc/hosts`
       as the config is refused for its owner and its folder's, with the
-      `chown` (skipped as root).
+      `chown` (can't run as root: `skip` fails it in CI).
     - `adr_0009_a_symlinked_config_is_checked_where_it_points`: a link to a
       private file is read; to one others can read, refused, naming that
       file.

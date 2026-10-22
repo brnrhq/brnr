@@ -97,7 +97,9 @@ the user from their own processes.
 
 Each claim with what enforces it (file and function) and the test that checks
 it. Tests are in `tests/` unless a module is named; `security.rs` holds those
-written for this document.
+written for this document. A test that can't run where it is (as root,
+without `lsof`) fails in CI or with `BRNR_TESTS_STRICT` set, and says it is
+skipped otherwise (`skip`, tests/common/mod.rs): it never passes unrun.
 
 ### B1: the runtime directory and sockets refuse others
 
@@ -106,10 +108,10 @@ written for this document.
 | The runtime directory is created 0700 and the process refuses one that isn't a directory owned by the user with no group or other bits, or is a symlink; it then writes nothing there and starts no agent. | `paths::ensure_private`, `paths::check_private` (src/paths.rs), from `Host::start` (src/host/mod.rs) | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_runtime_dir_of_another_users_is_refused`; `headless.rs`: `runtime_dir_symlink_is_refused` |
 | Every command that reads the runtime directory refuses one others can use, or a symlink, before it trusts anything there: no request, approval included, is sent through it. | `discover` (src/ctl/client.rs) | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_symlinked_runtime_dir_is_refused_by_every_command`, `no_approval_goes_through_a_dir_others_can_use`; `headless.rs`: `shared_runtime_dir_is_refused` |
 | The control socket is 0600, the directory 0700, the session locks' directory (`sessions/` in the state directory, ADR 3.9) 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
-| Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
+| Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (needs root, so `cargo test` ignores it; CI runs it as root on Linux, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl/client.rs) | `headless.rs`: `metadata_names_its_own_socket` |
 | Session locks, in the state directory beside the transcripts they guard (ADR 3.9), are held to the runtime directory's terms (private, or refused) and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused, as is a session opened in a running process (`session new --pid`, `resume --pid`), which the agent then closes again (ADR 3.9, ADR 8.1). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_opened`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`; `cli.rs`: `adr_0003_a_new_session_that_cant_be_locked_isnt_started`, `adr_0003_a_resume_that_cant_be_locked_isnt_started`, `adr_0003_a_fork_that_cant_be_owned_is_refused`, `adr_0008_pid_session_that_cant_be_locked_is_closed` |
-| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); P15 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
+| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); P15 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, which CI has) |
 | `doctor` fails a runtime directory others can use, and `--fix` tightens it but never through a symlink. | `runtime_dir`, `private_problem`, `fixable` (src/ctl/doctor.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed` |
 
 ### B2: transcripts are private
@@ -204,10 +206,12 @@ What brnr doesn't enforce, or doesn't test, today.
 - **No peer credentials on the socket.** The process doesn't check who
   connected (`SO_PEERCRED`, `getpeereid`); the directory's and the socket's
   modes are the only control. Root is never kept out.
-- **The other-user test runs only as root.** `another_user_cant_connect` is
-  skipped otherwise, which includes CI, so the kernel's side of B1 is
-  checked only where someone runs the tests as root. The modes it relies on
-  are tested everywhere.
+- **The other-user test runs as root only on Linux in CI.**
+  `another_user_cant_connect` needs root, to connect as `nobody`, so
+  `cargo test` ignores it; CI runs it as root (`--ignored`) on Linux, so
+  the kernel's side of B1 is checked there. On macOS it is checked only
+  where someone runs it as root: CI doesn't. The modes it relies on are
+  tested everywhere.
 - **The process checks the runtime directory once, at start.** A directory
   opened to others while a process runs is refused by the commands
   (`no_approval_goes_through_a_dir_others_can_use`), but the running process
@@ -228,7 +232,7 @@ What brnr doesn't enforce, or doesn't test, today.
   `doctor`, which changes modes, lists through what it opened instead.
 - **Another user's config is tested only as root's `/etc/hosts`.** Making
   a file or folder of another user's takes root, so the ownership check is
-  tested with a file and folder that are both root's, and skipped as root;
+  tested with a file and folder that are both root's, not as root;
   a private file of the user's in a folder of another's is refused by the
   same check, untested.
 - **A session whose transcript is refused is served unrecorded.** Logging

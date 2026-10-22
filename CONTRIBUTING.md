@@ -59,6 +59,19 @@ fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
 stressors that stop with it however it ends, or when the load average
 reaches its limit (`tests/flake-loop.sh -h`).
 
+A test that can't run where it is (as root, or without `lsof`) passes and
+says `skipped:` on stderr, which `--nocapture` shows. In CI, or with
+`BRNR_TESTS_STRICT=1`, it fails with the reason instead (`skip`, in
+`tests/common/mod.rs`). `another_user_cant_connect` needs root, to connect
+as `nobody`, so `cargo test` ignores it. CI runs it as root on Linux. To
+run it yourself, build as yourself and run only the test binary as root,
+so `target/` has no files of root's:
+
+```sh
+cargo test --release --test security --no-run   # says the test binary's path
+sudo -E target/release/deps/security-<hash> --ignored --exact another_user_cant_connect
+```
+
 `.github/workflows/coverage.yml` also runs the Rust unit and integration
 tests on Linux with `cargo llvm-cov`. Its job summary lists each source
 file's coverage, including files with no hits; its `coverage` artifact has
