@@ -565,6 +565,10 @@ fn status(a: &Args) -> Result<(), String> {
     let (host, id) = running_session(&hosts, arg)?;
     let st = host.status.as_ref().ok_or("the process is not answering")?;
     let x = host.session(&id).ok_or("no session")?;
+    // A count it doesn't have isn't 0 (P4).
+    for key in client::COUNTS {
+        client::count(x, key)?;
+    }
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;

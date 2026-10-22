@@ -272,6 +272,45 @@ fn adr_0008_wait_for_exit() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "agent exited with code 0\n");
 }
 
+/// A session with an approval or an elicitation waiting isn't idle, though
+/// its turn has ended (ADR 3.8): `event wait` waits until the request is
+/// answered, then says it is idle and exits as its last turn ended.
+#[test]
+fn adr_0008_a_session_with_a_request_waiting_isnt_idle() {
+    let env = Env::new("c-waitasked");
+    let env = env.agent("ASK_AND_END", "1");
+    env.start(&[]);
+    for (n, (prompt, what, answer)) in [
+        ("perm edit", "permission", ["permission", "allow", "sess-1", "p1"]),
+        ("elicit form", "elicitation", ["elicitation", "decline", "sess-1", "e1"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", prompt]);
+        env.ok(&["event", "wait", "sess-1", "--for", what, "--timeout", "10"]);
+        let ended = || events_named(&env, "turn_ended").len() == n + 1;
+        assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+        let waited = env.run(&["event", "wait", "sess-1", "--timeout", "1"]);
+        assert_eq!(code(&waited), 124, "{what}: {}", stderr(&waited));
+        let wait = env
+            .brnr(&["event", "wait", "sess-1", "--timeout", "10", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        sleep(Duration::from_millis(300));
+        env.ok(&answer);
+        let out = wait.wait_with_output().unwrap();
+        assert_eq!(code(&out), 0, "{what}: {}", stderr(&out));
+        let idle: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            (&idle["state"], &idle["last_turn"]["stop_reason"]),
+            (&"idle".into(), &"end_turn".into())
+        );
+    }
+}
+
 // ---- cancel and the queue ------------------------------------------------
 
 #[test]
