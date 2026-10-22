@@ -376,6 +376,22 @@ pub fn with_sigchld_ignored(cmd: &mut Command) -> &mut Command {
     }
 }
 
+/// Has `cmd` run with SIGINT and SIGQUIT at their defaults, so a test's
+/// SIGINT stops it even when the tests run as a script's `&` job, which
+/// starts with both ignored and passes that on across exec.
+pub fn with_default_interrupt(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec, where only
+    // async-signal-safe calls may be made: signal(2) is one, and SIG_DFL
+    // installs no handler.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            Ok(())
+        })
+    }
+}
+
 pub fn alive(pid: i32) -> bool {
     kill(pid, 0)
 }

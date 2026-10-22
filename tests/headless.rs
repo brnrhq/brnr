@@ -2256,8 +2256,7 @@ fn adr_0005_a_foreground_exit_given_up_on_says_what_it_didnt_write() {
     let env = Env::new("fgstall");
     let stall = env.dir.join("stall");
     let env = env.agent("BRNR_TEST_LOG_STALL", &stall.to_string_lossy());
-    let mut fg = env
-        .brnr(&new_args(&["--foreground", "--quiet"]))
+    let mut fg = with_default_interrupt(&mut env.brnr(&new_args(&["--foreground", "--quiet"])))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
