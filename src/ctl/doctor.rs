@@ -22,14 +22,15 @@
 //!   `process_exited`, and not running), the cases ADR 3.7 can't record, with when
 //!   each last wrote and the sessions it had open. Info, not a warning:
 //!   they are a record, and nothing is to be repaired;
-//! - files an older brnr wrote, transcripts and host logs, in names this
-//!   one doesn't read (ADR 5.9): listed, as info, as they aren't read.
+//! - transcripts and host logs with records in a format this brnr doesn't
+//!   read, an older brnr's or a newer one's (ADR 5.10): listed, as info, as
+//!   they aren't read.
 //!
 //! `--fix` tightens permissions on directories and files the user owns and
 //! removes stale metadata, sockets and locks. It never touches anything it
 //! would refuse to use, nor any log, nor the config file (P4). The exit status is non-zero if a check
-//! failed. `--json` prints the checks as a list of `{level, check,
-//! message}`.
+//! failed. `--json` prints the checks as `{checks}`, a list of `{level,
+//! check, message}`.
 //!
 //! `--report` prints, instead of the checks, a bug report to read and then
 //! paste into an issue (ADR 11.5): brnr's version, the OS, the adapters, the
@@ -46,6 +47,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -105,7 +107,7 @@ impl Report {
     }
 }
 
-pub(crate) fn main(a: &Args) -> Result<(), Error> {
+pub(crate) fn main(a: &Args) -> Result<ExitCode, Error> {
     let (fix, json_out, report) = (a.has("--fix"), a.json, a.has("--report"));
     if fix && report {
         return Err(Error::Invalid("--fix and --report don't go together".into()));
@@ -118,29 +120,31 @@ pub(crate) fn main(a: &Args) -> Result<(), Error> {
     adapters(&mut r);
     running(&mut r, hosts.as_deref().unwrap_or_default());
     host_logs(&mut r, hosts.as_deref());
-    older_files(&mut r);
+    file_formats(&mut r);
     if r.report {
         bug_report(&r, hosts.as_deref());
-        return match r.failed {
-            0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n)).into()),
-        };
+        return Ok(checked(r.failed));
     }
     if r.json {
-        outln!("{}", serde_json::to_string_pretty(&r.checks).unwrap());
-        return match r.failed {
-            0 => Ok(()),
-            n => Err(format!("{n} check{} failed", plural(n)).into()),
-        };
+        // An object, as `--report --json` is, with room to grow (ADR 8.2).
+        let checks = json!({ "checks": r.checks });
+        outln!("{}", serde_json::to_string_pretty(&checks).unwrap());
+        return Ok(checked(r.failed));
     }
-    match (r.failed, r.warned) {
-        (0, 0) => Ok(()),
-        (0, n) => {
-            outln!("\n{n} warning{}", plural(n));
-            Ok(())
-        }
-        (n, _) => Err(format!("{n} check{} failed", plural(n)).into()),
+    if let (0, n @ 1..) = (r.failed, r.warned) {
+        outln!("\n{n} warning{}", plural(n));
     }
+    Ok(checked(r.failed))
+}
+
+/// How `doctor` exits with `failed` checks failed: 1, and how many on
+/// stderr, if any did. Its checks are its data, not an error (ADR 8.7).
+fn checked(failed: usize) -> ExitCode {
+    if failed == 0 {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("brnr: {failed} check{} failed", plural(failed));
+    ExitCode::FAILURE
 }
 
 fn plural(n: usize) -> &'static str {
@@ -515,7 +519,7 @@ fn config_file(r: &mut Report) {
         }
         for bridge in &profile.bridges {
             if let Err(e) = check_bridge(bridge) {
-                problems.push(e);
+                problems.push(e.message);
             } else if find_program(&bridge.command).is_none() {
                 problems.push(format!("bridge {} not found", bridge.command));
             }
@@ -700,7 +704,7 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
         logs += 1;
         if running.contains(&run)
             || recorded_exit(&path) != Some(false)
-            || transcript::by_an_older_brnr(&path)
+            || transcript::unread_in(&path).is_some()
         {
             continue;
         }
@@ -736,35 +740,37 @@ fn host_logs(r: &mut Report, hosts: Option<&[Running]>) {
     r.line(Level::Info, what, msg);
 }
 
-/// How many of the files an older brnr wrote the line names, the latest
-/// first.
-const OLDER_SHOWN: usize = 5;
+/// How many of the files in other formats the line names, the latest first.
+const UNREAD_SHOWN: usize = 5;
 
-/// The transcripts and host logs an older brnr wrote, which this one doesn't
-/// read (ADR 5.9): `session list` and `session resume` pass them over, so
-/// they are listed here (P3). Info: they are a record, and stay as they are
-/// (P9).
-fn older_files(r: &mut Report) {
-    let what = "older files";
+/// The transcripts and host logs with records in a format this brnr doesn't
+/// read, by their first or newest record (ADR 5.10): `session list` and
+/// `session resume` pass them over, so they are listed here (P3). Info:
+/// they are a record, and stay as they are (P9).
+fn file_formats(r: &mut Report) {
+    let what = "file formats";
     let files = transcript::events_files().into_iter().chain(transcript::host_logs());
-    let mut older: Vec<(SystemTime, PathBuf)> = files
-        .filter(|path| transcript::by_an_older_brnr(path))
+    let mut unread: Vec<(SystemTime, PathBuf)> = files
+        .filter(|path| transcript::unread_in(path).is_some())
         .map(|path| {
             let written = fs::symlink_metadata(&path).and_then(|m| m.modified());
             (written.unwrap_or(UNIX_EPOCH), path)
         })
         .collect();
-    if older.is_empty() {
-        return r.line(Level::Ok, what, "none an older brnr wrote");
+    if unread.is_empty() {
+        let msg = format!("every file in format {}, the one this brnr reads", transcript::FORMAT);
+        return r.line(Level::Ok, what, msg);
     }
-    older.sort_by(|a, b| b.cmp(a));
-    let n = older.len();
+    unread.sort_by(|a, b| b.cmp(a));
+    let n = unread.len();
     let shown: Vec<String> =
-        older.iter().take(OLDER_SHOWN).map(|(_, p)| p.display().to_string()).collect();
-    let which = if n > OLDER_SHOWN { "; the latest" } else { "" };
+        unread.iter().take(UNREAD_SHOWN).map(|(_, p)| p.display().to_string()).collect();
+    let which = if n > UNREAD_SHOWN { "; the latest" } else { "" };
     let msg = format!(
-        "{n} file{} an older brnr wrote, in names this one doesn't read (ADR 5.9){which}: {}",
+        "{n} file{} with records in a format this brnr doesn't read (it reads format {}), an \
+         older brnr's or a newer one's, not read (ADR 5.10){which}: {}",
         plural(n),
+        transcript::FORMAT,
         shown.join(", ")
     );
     r.line(Level::Info, what, msg);
@@ -904,8 +910,8 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
     // The latest first; of two written in the same instant, the later run.
     logs.sort_by(|a, b| b.cmp(a));
     let mut shown: Vec<HostLog> = Vec::new();
-    // An older brnr's isn't read (ADR 5.9): `older files` lists it.
-    logs.retain(|(_, _, path)| !transcript::by_an_older_brnr(path));
+    // One in another format isn't read (ADR 5.10): `file formats` lists it.
+    logs.retain(|(_, _, path)| transcript::unread_in(path).is_none());
     for (i, (_, run, path)) in logs.iter().enumerate() {
         let Some(lines) = transcript::tail(path, LOG_TAIL) else { continue };
         let ended = if recorded(&lines, "process_panicked") {
@@ -937,9 +943,9 @@ fn relevant_logs(hosts: Option<&[Running]>) -> Vec<HostLog> {
 /// A record is read as transcripts are, to `json::OWN_DEPTH`.
 fn report_line(line: &[u8]) -> String {
     let text = match transcript::record(line) {
-        // Its names aren't this brnr's, nor what it would redact (ADR 5.9).
-        Some(record) if transcript::older(&record) => {
-            "(a record an older brnr wrote, not shown)".to_owned()
+        // Its names aren't this brnr's, nor what it would redact (ADR 5.10).
+        Some(record) if !transcript::readable(&record) => {
+            "(a record in a format this brnr doesn't read, not shown)".to_owned()
         }
         Some(mut record) => {
             log::redact_record(&mut record);

@@ -45,13 +45,47 @@ brnr's own conventions:
   `records_skipped` note has `ts`, `host_id`, `pid` and, in a session's
   file, `session`, and `events_missed` has `pid`; `subscribe`'s answer has
   `pid` too (ADR 5.9, #314).
+- `elicitation show --json`, and the elicitations in the socket's `pending`
+  answer, have the process's `pid`, as `elicitation requests --json`'s rows
+  do (ADR 8.2, #150).
 - `--events` takes the notes' names, `records_skipped` and
   `events_missed`, which are shown whatever it chose: `event log
   --events records_skipped` lists only a transcript's gaps (ADR 5.9,
   #314).
+- A process says which brnr it is: its `<pid>.json` and the socket's
+  `status` have `brnr`, its version, and `protocol`, the version of what
+  its socket speaks. A command that fails because the process is another
+  brnr (an editor's process outlives `brew upgrade brnr`) says so, and how
+  to restart it: `brnr process stop <pid>` and `brnr session resume
+  <session>` for a headless one, the agent restarted in its editor for an
+  editor's. Events a command asked for that the process doesn't have are
+  said on stderr, and the command goes on (ADR 8.8, #149).
 
 ### Changed
 
+- **Breaking:** a socket or bridge request with a field its `cmd` doesn't
+  take is refused, `command_unknown`, and nothing is done; it was done
+  without it. `allow`'s and `reject`'s old `option` is such a field now,
+  `command_unknown`, not `command_invalid` (ADR 8.8, #149).
+- `subscribe` with an event the process doesn't have subscribes to the
+  rest, and names it in its answer's `unknown_events`, so that a bridge
+  written for a newer brnr gets an older process's events; it refused the
+  subscription, `event_unknown`, which in `subscribe` is now only for a
+  note's name; a profile's bridge `events` still fail with it for an
+  event brnr doesn't have (ADR 8.8, #149).
+
+- **Breaking:** every error brnr reports as data is `{"code", "message"}`:
+  a socket or bridge reply that fails is `{"ok": false, "error": {"code":
+  "session_not_found", "message": "no session s"}}`, not `"error": "<text>"`;
+  so are the `error` of `turn_ended`, `last_turn`, `--wait --json`'s turn,
+  `session delete --json`, `process_exited`, `events_missed`,
+  `records_skipped` and the host log's failure records. The code is a word
+  that keeps its meaning (docs/interface.md lists them); the message is for
+  people. An error the agent answered with is `agent_failed`, the agent's
+  JSON-RPC error whole as `rpc_error`: read `error.rpc_error.code` where
+  you read `error.code` before. A failed command with `--json` prints
+  `{"error": {…}}` on stdout, and stderr says `brnr: <message> [<code>]`
+  (ADR 8.7).
 - **Breaking:** a usage error exits 2, not 1, in every command: an unknown
   command, verb or option, an argument missing or one too many, a value a
   flag can't take (`event wait --for soon`, `--events nope`, `brnr skill
@@ -138,15 +172,30 @@ brnr's own conventions:
   `agent-stderr` is `agent_stderr` (ADR 5.9, #314).
 - **Breaking:** every record's head names the session `session` and the
   brnr process `pid`, where it had `session_id` and `host_pid`. A
-  transcript or host log an older brnr wrote isn't read: `session list`
-  and `session resume` pass it over, `event log` of it says `an older brnr
-  wrote it`, and `brnr doctor` lists it under `older files`. A session
+  transcript or host log an older brnr wrote isn't read (below). A session
   resumed starts a new transcript in its cwd's folder; nothing goes on in
   an older brnr's file: one in the way is renamed `<name>.older.jsonl`,
   which the host log's `session_log_moved` says, and `session delete`
   passes one over. `session delete --purge` deletes the files set aside
   too, every file of the session's id it finds, and lists each
-  (ADR 5.9, ADR 8.1, #314).
+  (ADR 5.9, ADR 8.1, ADR 9.2, #314).
+- **Breaking:** every record of a transcript and a host log starts with
+  its format, `"format":1`, which stays 1 for all of 1.x. A record without
+  one, as every brnr before this wrote, or in another format, isn't read:
+  `session list` and `session resume` pass over its file, and a file whose
+  newest record is one; `event log` says `<file>: records an older brnr
+  wrote, before transcripts had a format, not shown (ADR 5.10)` (or `records
+  in format 2; this brnr reads format 1`); `session resume` says it too;
+  and `brnr doctor` lists such files under `file formats`, which replaces
+  `older files`. `event log` no longer guesses `no events in … (an older
+  brnr wrote it)`. Nothing is appended to such a file: one in the way of
+  a session's is set aside, `<name>.older.jsonl`, as an older brnr's is
+  (ADR 5.10, #70).
+- A session's `session_opened` names the process's `profile` and `agent`,
+  and `session list` and `session resume` take the session's cwd, profile
+  and agent from the `session_opened` of the process that last served it:
+  a session resumes from its transcript alone. Pruning `~/.brnr/hosts`
+  made `session resume` fail with `no agent` (ADR 3.11, ADR 5.10, #70).
 - **Breaking:** `by` says who acted, `editor`, `agent` or `control`;
   `peer` which connection asked; `reason` why. `message_dropped` and
   `context_dropped` have `reason` where they had `by`; `session_closed`
@@ -167,8 +216,7 @@ brnr's own conventions:
   (`session`, `cwd`, `events_log`, `acp_log`, `host_log`, `forked_from`);
   the bridge `status` reply's sessions have `session` and `events_log`
   where they had `session_id` and `log`; `event notify`'s
-  `BRNR_SESSION_ID` is `BRNR_SESSION`; `permission requests --json`'s
-  options have `option_id` where they had `option`; and in the host log
+  `BRNR_SESSION_ID` is `BRNR_SESSION`; and in the host log
   `bridge` is `peer`, `bridge_started`'s `pid` `bridge_pid`,
   `bridge_exited`'s `status` `exit_status` (`{code}`, `{signal}` or
   null), `capabilities_dropped`'s `dropped` `capabilities`, the editor
@@ -212,9 +260,68 @@ brnr's own conventions:
   newest file's records only gets every folder's now, and a `--last` of
   them: to read one folder's records alone, read the file the `events_log`
   of its `session_opened` names (ADR 5.1, ADR 3.11, #121).
+- **Breaking:** `session resume --profile p` of a session brnr has a
+  transcript of runs p's agent when p names one, not the agent the
+  transcript recorded. Before, the process ran under p with the recorded
+  agent, and nothing said so. A profile that names no agent keeps the
+  recorded one, and `-- <agent>` still overrides both. To keep the recorded
+  agent under p, give it after `--` (ADR 3.11, #341).
+- **Breaking:** a command that lists prints an object, not a bare array:
+  `process list --json` is `{processes}`, `session list --json`
+  `{sessions}`, `permission requests --json` and `elicitation requests
+  --json` `{requests}`, and `doctor --json` `{checks}`, as `doctor --report
+  --json` has it. `jq '.[]'` is `jq '.sessions[]'` (ADR 8.2, #150).
+- **Breaking:** `dropped` is the messages dropped, each `{message, text,
+  reason}` as its `message_dropped` event has it: `--wait --json`'s is a
+  list, empty or with the message whose drop ended the wait, where it was
+  the reason or null; `prompt cancel`'s and `queue`'s, and the socket's
+  `cancel` and `queue` replies, have each message's `reason` (ADR 8.2,
+  #150).
+- **Breaking:** `permission requests --json` has the agent's options whole,
+  `{optionId, name, kind}`, as `permission show` has them, not `{option,
+  kind}` (ADR 8.2, #150).
+- **Breaking:** `agent` is `{program, name, version}` in `process list`,
+  `session list` and `session status`: `.agent` in the lists is
+  `.agent.program`. `name` and `version` are what the agent says it is in
+  `initialize` (`agentInfo`), null where brnr doesn't know them; `session
+  status` left them out (ADR 8.2, #150, #335).
+- **Breaking:** `process list --json`'s `owner` is `editor` or `headless`,
+  null for a process that doesn't answer, which its new `state` says:
+  `starting`, `running`, `stopping` or `unreachable`. Its `sessions` are
+  `{session, state}`, as `session list` has them, not ids (ADR 8.2, #150).
+- **Breaking:** `session status --json` counts with `held_count`,
+  `context_count`, `pending_count` and `elicitation_count`, not `held`,
+  `context`, `pending` and `elicitations`, which are lists in `queue list`
+  and `pending`; so does the socket's `status` reply, for the process and
+  each session. `held_by` is `lock_pid`, `shared_by` `shared_pids`, and the
+  host log's `session_shared` has `lock_pid` (ADR 8.2, #150).
+- **Breaking:** `event wait --json` prints one shape for each `--for`,
+  however the wait ended: `idle` `{session, state, last_turn}` (`state`
+  `idle`, or `inactive` once closed), not `{"event": "idle"}` or the event
+  that ended the wait; `permission` and `elicitation` the request as
+  `permission show` and `elicitation show` print it, also when it came
+  while the command waited; `turn` the `turn_ended` event; `exit` the
+  `process_exited` event, which for a process killed has `ts`, `host_id`,
+  `pid`, and `exit_status` and `seq` null, and `error` (ADR 8.3, #150).
+  Text says `idle: <stop reason>` for a session idle already too.
+- **Breaking:** `session fork --json`'s `from` is `forked_from`, and
+  `session delete --json`'s `recorded` is `recorded_in`: `recorded` is
+  `history`'s boolean (ADR 8.2, #150).
 
 ### Fixed
 
+- A process killed but not yet reaped (a zombie) counts as gone: `session
+  list`, `process list` and every other command that looks processes up drop
+  it, removing its metadata and socket, and `doctor --fix` removes what it
+  left, as `event notify` and the other commands that catch up already
+  counted it. On macOS it was listed as not answering (ADR 3.7, #313).
+- `event wait` waits while an approval or an elicitation is waiting, also
+  one whose turn has ended, and says the session is idle once it is
+  answered; `--for exit` prints the `process_exited` it makes for a process
+  gone without one only once it has seen the process exit, and fails, 1,
+  when the connection fails while the process lives. A count a process's
+  status doesn't have fails `event wait` and `session status`, saying
+  which, and isn't taken as 0 (ADR 8.3).
 - A permission request or an elicitation the agent cancels with
   `$/cancel_request` ends: it is gone from `permission requests`,
   `elicitation requests` and a bridge's `pending`, the session is no longer
@@ -330,6 +437,11 @@ brnr's own conventions:
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is
   listed as last active then (ADR 2.5, ADR 5.1).
+- An editor's process keeps at most 1024 requests it answered for the
+  editor's late answer, and at most 1024 the agent cancelled for the
+  editor's answer, none past their session's close, and at most 1024
+  sessions it closed under the editor; an editor that never followed up
+  grew them for the process's life (ADR 10.3, #332, #364).
 - `session list`, `event log`, `session resume`, catching up and `doctor`
   no longer read a transcript through a symlink, nor in a symlinked
   project folder, which they listed and read as the user's sessions though
