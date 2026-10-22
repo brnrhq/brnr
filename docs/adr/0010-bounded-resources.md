@@ -393,6 +393,11 @@ What is bounded, and what isn't:
   - each peer's queue: 16 MiB, plus the lines set aside, up to 64 MiB of
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
+  - requests the host answered that the editor was shown, kept for its
+    late answer (ADR 4.5, 7.1): 1024, the oldest going first, none past
+    their session's close;
+  - sessions brnr closed under the editor, kept to answer the editor's
+    requests for them (ADR 7.1): 1024, the oldest going first;
   - the foreground's display (ADR 3.5);
   - the proxy reads the editor 64 KiB at a time;
   - how deep a line may nest for brnr to read it: 128 levels for what the
@@ -412,6 +417,10 @@ What isn't bounded is a gap measured against N2 (ADR 1).
 
 **Consequences.**
 
+- An editor's late answer to a request no longer kept goes to the agent,
+  which ignores it (ADR 2.5), and the editor isn't told who answered first.
+  An editor's request for a session closed under it that is no longer kept
+  reaches the agent, which answers it with its own error.
 - A message over 32 MiB, valid JSON or not, isn't seen by the host: no
   events for it. If it answered a request of the host's, the request goes
   unanswered, as for a line it can't parse (ADR 2.5). With an editor, the
@@ -442,6 +451,10 @@ so (P3), and memory stays bounded (P6).
 
 **Considered.**
 
+- Keeping the requests the host answered and the sessions closed under the
+  editor until the editor follows up, without a cap: an editor that never
+  answers a withdrawn request, or never loads a closed session again, grows
+  them for the process's life (#332).
 - Counting a line still coming against the cap, and so a limit of 16 MiB:
   one bound for everything, but messages ADR 10.1 promises to peers (20 MB)
   would not be read.
@@ -508,6 +521,12 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
   - [src/log.rs](../../src/log.rs):
     `adr_0010_what_the_transcript_lost_is_said_by_position`.
 - 10.3:
+  - [src/host/approvals.rs](../../src/host/approvals.rs):
+    `adr_0010_answered_requests_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_sessions_answered_requests_go_with_its_close`.
+  - [src/host/sessions.rs](../../src/host/sessions.rs):
+    `adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_closed_sessions_answered_requests_go`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said`,
     `adr_0010_a_long_line_to_an_editor_that_stops_reading_is_held_back`,

@@ -23,7 +23,8 @@
 //!   accept, whose flow goes on.
 //! - One the editor was shown that the host answered is withdrawn from it,
 //!   and the editor's late answer dropped, so the agent never gets two
-//!   (ADR 2.5, 7.1).
+//!   (ADR 2.5, 7.1). It is kept for that up to 1024, and not past its
+//!   session's close (ADR 10.3).
 //! - The agent's `$/cancel_request` ends one held, `by: agent`: headless,
 //!   the host answers it as a cancelled request is answered; in an editor's
 //!   session the editor has the notification too, and its answer goes on
@@ -32,7 +33,7 @@
 //! - A turn that ends ends none of its requests: ACP has the agent cancel
 //!   what it no longer waits for (ADR 4.5).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
@@ -256,15 +257,23 @@ enum End {
     Agent(Answer),
 }
 
+/// The most requests the host answered kept for the editor's late answer:
+/// past that, an editor that never answers them would have the host keep
+/// them without limit, and its late answer to one not kept goes to the
+/// agent, which ignores it (ADR 2.5).
+const ANSWERED: usize = 1024;
+
 /// The agent's requests to its client that are unanswered, and what is
 /// kept of those answered.
 #[derive(Default)]
 pub(super) struct Approvals {
     /// In the order the agent asked.
     requests: Vec<AgentRequest>,
-    /// Requests the host answered that the editor was shown, by key, until
-    /// the editor answers them too.
-    answered: HashMap<String, Answered>,
+    /// Requests the host answered that the editor was shown, by key, in the
+    /// order they ended: kept until the editor answers them too, up to
+    /// [`ANSWERED`], the oldest going first, and none past their session's
+    /// close.
+    answered: VecDeque<(String, Answered)>,
     /// Requests the agent cancelled in an editor's session, by key, with
     /// their session, until the editor answers them.
     given_up: HashMap<String, Option<String>>,
@@ -334,10 +343,18 @@ impl Approvals {
         if let Some(session) = self.given_up.remove(key) {
             return EditorAnswer::GivenUp(session);
         }
-        match self.answered.remove(key) {
-            Some(answered) => EditorAnswer::Late(answered),
+        let pos = self.answered.iter().position(|(k, _)| k == key);
+        match pos.and_then(|pos| self.answered.remove(pos)) {
+            Some((_, answered)) => EditorAnswer::Late(answered),
             None => EditorAnswer::Unknown,
         }
+    }
+
+    /// `session` closed: its requests the host answered are no longer kept.
+    /// The editor's late answer to one of them then goes to the agent, which
+    /// ignores an answer to a request it had answered (ADR 2.5).
+    pub(super) fn closed(&mut self, session: &str) {
+        self.answered.retain(|(_, a)| a.session.as_deref() != Some(session));
     }
 
     /// The agent's `$/cancel_request` of its request `key` (ADR 4.5): one
@@ -484,7 +501,12 @@ impl Approvals {
         let withdraw = how.filter(|_| editor).map(|how| {
             let answered =
                 Answered { session: req.session.clone(), title: req.title(), how, by: by.clone() };
-            self.answered.insert(req.key.clone(), answered);
+            // An agent that uses an id again replaces what is kept of it.
+            self.answered.retain(|(key, _)| *key != req.key);
+            self.answered.push_back((req.key.clone(), answered));
+            while self.answered.len() > ANSWERED {
+                self.answered.pop_front();
+            }
             (how, by.clone())
         });
         let event = match req.kind() {
@@ -892,5 +914,30 @@ mod tests {
         t.ask(permission(4, "s", &["allow_once"]), Some(now), "headless");
         assert!(matches!(t.time_out("p3", gone), Some(Timeout::Failed(_))));
         assert_eq!(t.next_deadline(), None);
+    }
+
+    #[test]
+    fn adr_0010_answered_requests_past_the_cap_lose_the_oldest() {
+        let mut t = Approvals::default();
+        let last = ANSWERED as u64 + 1;
+        for id in 1..=last {
+            t.ask(permission(id, "s", &["allow_once"]), None, "editor");
+        }
+        assert_eq!(t.cancel("s", CANCEL, EDITOR).len(), last as usize);
+        assert_eq!(t.answered.len(), ANSWERED);
+        assert!(matches!(editor(&mut t, 1, json!({})), EditorAnswer::Unknown), "oldest kept");
+        assert!(matches!(editor(&mut t, last, json!({})), EditorAnswer::Late(_)));
+    }
+
+    #[test]
+    fn adr_0010_a_sessions_answered_requests_go_with_its_close() {
+        let mut t = Approvals::default();
+        t.ask(permission(1, "s1", &["allow_once"]), None, "editor");
+        t.ask(permission(2, "s2", &["allow_once"]), None, "editor");
+        t.cancel("s1", CANCEL, EDITOR);
+        t.cancel("s2", CANCEL, EDITOR);
+        t.closed("s1");
+        assert!(matches!(editor(&mut t, 1, json!({})), EditorAnswer::Unknown), "kept past close");
+        assert!(matches!(editor(&mut t, 2, json!({})), EditorAnswer::Late(_)));
     }
 }

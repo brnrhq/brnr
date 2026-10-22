@@ -324,6 +324,10 @@ brnr's own conventions:
   resume` and `doctor` read such a record too, where they passed over it
   for the one before: a session whose last record nests that deep is
   listed as last active then (ADR 2.5, ADR 5.1).
+- An editor's process keeps at most 1024 requests it answered for the
+  editor's late answer, none past their session's close, and at most 1024
+  sessions it closed under the editor; an editor that never followed up
+  grew them for the process's life (ADR 10.3, #332).
 - `session list`, `event log`, `session resume`, catching up and `doctor`
   no longer read a transcript through a symlink, nor in a symlinked
   project folder, which they listed and read as the user's sessions though
