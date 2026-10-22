@@ -4763,8 +4763,16 @@ fn adr_0002_a_deep_event_is_caught_up() {
     let mut err = String::new();
     watch.stderr.take().unwrap().read_to_string(&mut err).unwrap();
     let status = watch.wait().unwrap();
-    assert!(status.success(), "watch failed ({status:?}): {err}");
     let lines: Vec<String> = lines.join().unwrap();
+    // Its last lines, where an `events_missed` note would be, cut short:
+    // some are megabytes (#329).
+    let cut_short =
+        |l: &String| l.char_indices().nth(500).map_or(l.clone(), |(i, _)| l[..i].into());
+    let last: Vec<String> = lines.iter().rev().take(3).map(cut_short).collect();
+    assert!(
+        status.success(),
+        "watch failed ({status:?}): {err}\nlast lines, newest first: {last:#?}"
+    );
     let request = lines.iter().find(|l| l.contains(r#""event":"permission_request""#));
     let request = request.expect("no permission_request");
     let raw = format!(r#""rawInput":{}"#, input_at_limit());
