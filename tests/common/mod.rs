@@ -5,8 +5,9 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -217,8 +218,24 @@ impl Env {
         assert!(taken, "{} of {count} subscriptions taken in 15 s", self.subscriptions());
     }
 
-    /// What `spawn` started, once it has subscribed: one subscription more.
+    /// Waits for each process to have written what it recorded until now
+    /// (`logged`, ADR 5.5): its host log has every subscription taken so
+    /// far.
+    pub fn logged(&self) {
+        for host in self.hosts() {
+            let Some(Ok(conn)) = host["socket"].as_str().map(UnixStream::connect) else { continue };
+            conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+            if writeln!(&conn, r#"{{"cmd":"logged","req_id":"t"}}"#).is_ok() {
+                let _ = BufReader::new(&conn).read_line(&mut String::new());
+            }
+        }
+    }
+
+    /// What `spawn` started, once it has subscribed: one subscription more
+    /// than were taken before, each of them in the host logs first, so that
+    /// a record of an earlier one written late isn't taken for its.
     pub fn subscribed<T>(&self, spawn: impl FnOnce() -> T) -> T {
+        self.logged();
         let before = self.subscriptions();
         let spawned = spawn();
         self.wait_subscriptions(before + 1);
