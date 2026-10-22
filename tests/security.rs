@@ -485,7 +485,8 @@ fn adr_0009_a_transcript_with_an_acl_is_never_read() {
         (project, "everyone allow add_file"),
     ] {
         add_acl(&at, entry);
-        assert_eq!(env.ok(&["session", "list", "--json"]).trim(), "[]");
+        let listed: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+        assert_eq!(listed, json!({ "sessions": [] }));
         let err = env.fails(&["event", "log", "old-1"]);
         assert!(err.contains("no session old-1 "), "{err}");
         for args in [&["doctor"][..], &["doctor", "--fix"]] {
@@ -496,7 +497,7 @@ fn adr_0009_a_transcript_with_an_acl_is_never_read() {
         assert!(Command::new("chmod").arg("-N").arg(&at).status().unwrap().success());
     }
     let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
-    assert_eq!(list[0]["session"], "old-1", "{list}");
+    assert_eq!(list["sessions"][0]["session"], "old-1", "{list}");
 }
 
 /// What reads transcripts reads them only where the logger could have
