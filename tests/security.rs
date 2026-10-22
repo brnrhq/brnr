@@ -128,7 +128,8 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
 }
 
 /// A private directory of another user's (root's) is refused for being
-/// theirs, mode aside. Skipped where there is none to try, or as root.
+/// theirs, mode aside. Can't run where there is none to try, or as root
+/// (`skip`: a failure in CI).
 #[test]
 fn a_runtime_dir_of_another_users_is_refused() {
     let ours = uid();
@@ -137,7 +138,11 @@ fn a_runtime_dir_of_another_users_is_refused() {
             .is_ok_and(|m| m.is_dir() && m.uid() != ours && m.mode() & 0o077 == 0)
     });
     let Some(dir) = theirs.filter(|_| ours != 0) else {
-        eprintln!("skipped: no private directory of another user's to try");
+        skip(if ours == 0 {
+            "as root, the directories to try are its own"
+        } else {
+            "no private directory of another user's to try"
+        });
         return;
     };
     let env = Env::new("s-theirs");
@@ -213,11 +218,13 @@ fn no_approval_goes_through_a_dir_others_can_use() {
 
 /// Another user can't connect to a process's socket: the runtime directory
 /// is closed to them, and the socket itself too. Needs root, to be someone
-/// else (nobody); skipped otherwise.
+/// else (nobody), so it runs only when asked for (`--ignored`), as root: CI
+/// does, on Linux.
 #[test]
+#[ignore = "needs root"]
 fn another_user_cant_connect() {
     if uid() != 0 {
-        eprintln!("skipped: needs root to connect as another user");
+        skip("needs root to connect as another user");
         return;
     }
     let env = Env::new("s-nobody");
@@ -244,8 +251,8 @@ fn another_user_cant_connect() {
     let control = connect(&socket);
     chmod(&socket, 0o600);
     if control != Some(0) {
-        eprintln!("skipped: nobody can't reach {} at all", env.dir.display());
         chmod(&run, 0o700);
+        skip(&format!("nobody can't reach {} at all", env.dir.display()));
         return env.stop();
     }
     // With the directory open for searching, the socket's own mode refuses.
@@ -256,7 +263,7 @@ fn another_user_cant_connect() {
 }
 
 /// The process listens on no network: its only sockets are Unix sockets.
-/// Skipped where `lsof` isn't installed.
+/// Can't run where `lsof` isn't installed (`skip`: a failure in CI).
 #[test]
 fn the_process_listens_on_no_network() {
     let env = Env::new("s-network");
@@ -264,7 +271,7 @@ fn the_process_listens_on_no_network() {
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     let Ok(out) = Command::new("lsof").args(["-a", "-n", "-P", "-i", "-p", &env.pid()]).output()
     else {
-        eprintln!("skipped: no lsof");
+        skip("no lsof");
         return env.stop();
     };
     assert_eq!(String::from_utf8_lossy(&out.stdout), "", "internet sockets open");
@@ -376,7 +383,9 @@ fn adr_0009_a_symlinked_transcript_is_never_read() {
     symlink(&outside, env.dir.join("home/projects/linked")).unwrap();
     fs::write(outside.join("target"), text.replace("old-1", "link-2")).unwrap();
     symlink(outside.join("target"), project.join("link-2.jsonl")).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let ids: Vec<&str> =
         list.as_array().unwrap().iter().filter_map(|r| r["session"].as_str()).collect();
     assert_eq!(ids, ["old-1"], "{list}");
@@ -401,14 +410,13 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
         symlink(outside.join(sub), home.join(sub)).unwrap();
     };
     let list = || -> Vec<Value> {
-        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"]))
-            .unwrap()
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
             .as_array()
             .unwrap()
             .clone()
     };
     let shown = list();
-    assert!(shown.len() == 1 && shown[0]["agent"] == "fake_agent.py", "{shown:?}");
+    assert!(shown.len() == 1 && shown[0]["agent"]["program"] == "fake_agent.py", "{shown:?}");
 
     link("hosts");
     // A process that died without recording it, its log readable by others.
@@ -416,11 +424,12 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
     fs::write(&dead, "{\"ts\":\"t\",\"host_id\":\"dead\",\"event\":{\"event\":\"started\"}}\n")
         .unwrap();
     chmod(&dead, 0o644);
-    let shown = list();
-    // The agent is named in the host log only.
-    assert!(shown.len() == 1 && shown[0]["agent"] == "?", "its host log was read: {shown:?}");
+    // The session's agent is its transcript's, not the host log's (ADR
+    // 5.10): it is listed as before, and `doctor` shows the logs unread.
+    assert_eq!(list(), shown);
     let checks: Value = serde_json::from_slice(&env.run(&["doctor", "--json"]).stdout).unwrap();
-    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    let check =
+        checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
     assert_eq!(check["message"], "no process died without recording it (0 logs)", "{check}");
     let report = env.run(&["doctor", "--report", "--json"]);
     let report: Value = serde_json::from_slice(&report.stdout).unwrap();
@@ -1127,12 +1136,15 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
         let new = env.fails(&new_args(&["--prompt", "hi"]));
         let acp = stderr(&env.run_with_stdin(&["acp", "--", AGENT], b""));
+        // `brnr acp` says it to the editor's log, with no code (ADR 8.7).
+        code_is(&new, "config_invalid");
         for err in [&new, &acp] {
             assert!(err.contains(&format!("{}: ", path.display())), "{err}");
             assert!(err.contains(says), "{file:o} {dir:o}: {err}");
             assert!(err.contains("so brnr won't read the config"), "{err}");
             let fix = format!("chmod {fix} ");
-            assert!(err.contains(&fix) && err.trim_end().ends_with(&name), "{err}");
+            let err = err.trim_end().trim_end_matches(" [config_invalid]");
+            assert!(err.contains(&fix) && err.ends_with(&name), "{err}");
         }
         assert_eq!((mode(&path), mode(path.parent().unwrap())), (file, dir));
         assert!(env.hosts().is_empty() && env.calls().is_empty());
@@ -1151,12 +1163,12 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
 
 /// A config file of another user's (root's), in a folder of theirs, is
 /// refused for being theirs, mode aside, with the `chown` that fixes it.
-/// Skipped as root.
+/// Can't run as root (`skip`: a failure in CI).
 #[test]
 fn adr_0009_a_config_of_another_users_is_refused() {
     let theirs = Path::new("/etc/hosts");
     if uid() == 0 || !fs::metadata(theirs).is_ok_and(|m| m.uid() == 0) {
-        eprintln!("skipped: needs a file of root's, and not to be root");
+        skip("needs a file of root's, and not to be root");
         return;
     }
     let env = Env::new("s-config-theirs");
@@ -1237,7 +1249,10 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
         assert!(err.contains(says), "{err}");
         assert!(err.contains("so brnr won't read the config"), "{err}");
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(err.contains("chmod -N ") && err.trim_end().ends_with(&name), "{err}");
+        code_is(&err, "config_invalid");
+        let err =
+            err.trim_end().strip_suffix(" [config_invalid]").unwrap_or_else(|| panic!("{err}"));
+        assert!(err.contains("chmod -N ") && err.ends_with(&name), "{err}");
         assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
         assert!(env.hosts().is_empty() && env.calls().is_empty());
         let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();

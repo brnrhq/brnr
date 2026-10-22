@@ -186,7 +186,8 @@ the same events: an event chosen is shown in both, and what is too noisy for
 the default is left out of the default in both. Beside the events, brnr
 keeps the raw ACP by default (ADR 5.1), so the interpretation can be checked
 against what was said; values brnr knows are secrets are recorded redacted
-(ADR 9.1).
+(ADR 9.1). The events are a summary, not the conversation, which is the
+agent's: what each stream keeps and leaves out is ADR 5.10's.
 
 ### P6. Memory stays bounded
 
@@ -220,7 +221,10 @@ aliases for old names, no shims for old formats. Release notes say what
 changed. The records are drafts until then too: a decision is rewritten,
 renumbered, merged or removed where it is written (docs/adr/README.md).
 From 1.0.0 on, compatibility is kept within a major version, of what
-ADR 8.4 lists as covered, and of nothing else.
+ADR 8.4 lists as covered, and of nothing else, not of every flag's
+spelling beyond it. What brnr keeps on disk says its format, so that a
+brnr that can't read it says so rather than misread it or pass it over
+without a word (ADR 5.10).
 
 ### P10. A start is atomic
 

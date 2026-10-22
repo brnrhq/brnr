@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log, Profile};
+use crate::error::{Code, Error};
 use crate::{host, log, paths, spawn};
 
 #[derive(Serialize, Deserialize)]
@@ -147,13 +148,14 @@ impl Request {
         mut agent: Vec<String>,
         cwd: PathBuf,
         role: Role,
-    ) -> Result<Request, String> {
+    ) -> Result<Request, Error> {
         if agent.is_empty() {
             let argv = profile.agent.iter().flatten();
             agent = argv.map(|a| paths::expand(a).to_string_lossy().into_owned()).collect();
         }
         let Some(program) = agent.first_mut() else {
-            return Err("no agent: give one after -- or set agent in the profile".into());
+            let error = "no agent: give one after -- or set agent in the profile";
+            return Err(Error::new(Code::agent_not_started, error));
         };
         next_to_brnr(program);
         // A bridge's command, `~` expanded, is found the same way, here:

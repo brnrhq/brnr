@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code};
 use crate::{json, log, paths, transcript};
 
 /// The exit status of a command that was cut off and couldn't catch up.
@@ -77,7 +78,7 @@ impl Follow {
 
     /// What it missed and can't catch up on, `why`, after its last event and
     /// up to `until` (none: to the end of a process that has gone).
-    pub(super) fn missed(&self, until: Option<u64>, why: &str) -> Value {
+    pub(super) fn missed(&self, until: Option<u64>, why: &error::Error) -> Value {
         json!({
             "event": "events_missed",
             "ts": log::rfc3339(std::time::SystemTime::now()),
@@ -86,17 +87,22 @@ impl Follow {
             "peer": self.peer,
             "after_seq": self.last,
             "until_seq": until,
-            "error": why,
+            "error": why.json(),
         })
     }
 
     /// Whether the process, having gone, had cut it off: its host log's
-    /// `peer_dropped` says so.
+    /// `peer_dropped` says so. One for a request too long to read isn't a
+    /// cut-off to catch up from (ADR 10.3).
     pub(super) fn cut_off_before_it_went(&self) -> bool {
         let Ok(file) = transcript::open(&self.host_log) else { return false };
         let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
-        let ours =
-            |r: &Value| r["event"]["event"] == "peer_dropped" && r["event"]["peer"] == *self.peer;
+        let ours = |r: &Value| {
+            let e = &r["event"];
+            e["event"] == "peer_dropped"
+                && e["peer"] == *self.peer
+                && e["reason"] != "line_too_long"
+        };
         lines
             .filter(|l| l.windows(13).any(|w| w == b"\"peer_dropped"))
             .filter_map(|l| transcript::head(&l))
@@ -106,16 +112,17 @@ impl Follow {
     /// The events it missed, after its last and up to `until` (to the end,
     /// for a process that has gone), in order, from the transcript; or why
     /// the transcript can't have them all.
-    pub(super) fn read(&self, until: Option<u64>) -> Result<Vec<Value>, String> {
+    pub(super) fn read(&self, until: Option<u64>) -> Result<Vec<Value>, error::Error> {
         let acp = self.events.iter().any(|e| e == "acp");
         let host_log = &self.host_log;
         let mut found = Found { follow: self, until, events: Vec::new(), files: Vec::new() };
         match transcript::open(host_log) {
             Ok(file) => found.read(file, acp)?,
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err("the process keeps no transcript (log = \"off\")".into());
+                let error = "the process keeps no transcript (log = \"off\")";
+                return Err(error::Error::new(Code::transcript_not_kept, error));
             }
-            Err(e) => return Err(format!("{}: {e}", host_log.display())),
+            Err(e) => return Err(format!("{}: {e}", host_log.display()).into()),
         }
         for path in std::mem::take(&mut found.files) {
             let file = transcript::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -141,7 +148,7 @@ struct Found<'a> {
 impl Found<'_> {
     /// Reads one of the process's files: the events it missed, and (in the
     /// host log) its sessions' files, the raw ACP too with `acp`.
-    fn read(&mut self, file: File, acp: bool) -> Result<(), String> {
+    fn read(&mut self, file: File, acp: bool) -> Result<(), error::Error> {
         let f = self.follow;
         let ours = format!(r#""host_id":"{}""#, f.host_id);
         for line in BufReader::new(file).split(b'\n') {
@@ -164,11 +171,17 @@ impl Found<'_> {
 
     /// One record of the process's, `line`: an event it missed is kept, and
     /// (in the host log) a session's files are to read.
-    fn record(&mut self, line: &[u8], acp: bool) -> Result<(), String> {
+    fn record(&mut self, line: &[u8], acp: bool) -> Result<(), error::Error> {
         let f = self.follow;
         let Some(record) = transcript::record(line) else { return Ok(()) };
         if record["host_id"] != *f.host_id {
             return Ok(());
+        }
+        // A process of another brnr's, writing in a format this one doesn't
+        // read: what it missed can't be had (ADR 5.10).
+        if let Some(why) = transcript::unread(&record) {
+            let error = format!("its transcript has {why}");
+            return Err(error::Error::new(Code::transcript_unsupported, error));
         }
         // An ACP message is an `acp` event, as `event log` has it.
         let Some(mut event) = transcript::event(record) else { return Ok(()) };
@@ -180,7 +193,8 @@ impl Found<'_> {
                 let file = PathBuf::from(event["events_log"].as_str().unwrap_or_default());
                 let raw = event["acp_log"].as_str().map(PathBuf::from);
                 if acp && raw.is_none() {
-                    return Err("the process keeps no raw ACP (log = \"events\")".into());
+                    let error = "the process keeps no raw ACP (log = \"events\")";
+                    return Err(error::Error::new(Code::transcript_not_kept, error));
                 }
                 for path in [Some(file), raw.filter(|_| acp)].into_iter().flatten() {
                     if !self.files.contains(&path) {
@@ -195,11 +209,13 @@ impl Found<'_> {
                     && last > f.last
                     && self.until.is_none_or(|until| first <= until)
                 {
-                    let at = match event["error"].as_str() {
+                    let at = match event["error"]["message"].as_str() {
                         Some(error) => format!("a write failed: {error}"),
                         None => "the disk was behind".to_owned(),
                     };
-                    return Err(format!("the transcript lacks events {first} to {last} ({at})"));
+                    return Err(
+                        format!("the transcript lacks events {first} to {last} ({at})").into()
+                    );
                 }
             }
             Some(name) => {

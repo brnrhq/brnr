@@ -91,7 +91,7 @@ fn recovered(env: &Env, unrecorded: bool) {
     };
     assert!(report.contains(want), "{report}");
     assert!(env.hosts().is_empty(), "runtime metadata survived: {:?}", env.hosts());
-    let listed: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
+    let listed = serde_json::from_str::<Value>(&env.ok(&["process", "list", "--json"])).unwrap()["processes"].clone();
     assert_eq!(listed, json!([]));
     // Taking the same session again proves the kernel released its flock,
     // independently of doctor removing the stale lock file (ADR 3.9).

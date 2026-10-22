@@ -15,6 +15,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 
+/// The transcript format this brnr writes (ADR 5.10), as its records say it.
+pub const FORMAT: u64 = 1;
+
 pub const AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
 
 /// How the link a panic prints starts (ADR 11.5).
@@ -58,8 +61,10 @@ impl Env {
         cmd
     }
 
+    /// `brnr <args>`: every error in the JSON it prints has a code
+    /// ([`coded`]).
     pub fn run(&self, args: &[&str]) -> Output {
-        self.brnr(args).output().unwrap()
+        printed_coded(self.brnr(args).output().unwrap())
     }
 
     pub fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> Output {
@@ -79,7 +84,7 @@ impl Env {
             Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
             result => result.unwrap(),
         }
-        out
+        printed_coded(out)
     }
 
     /// `brnr session new [args] -- fake_agent.py`, which must succeed.
@@ -246,6 +251,10 @@ impl Drop for Env {
         {
             kill(pid, libc::SIGKILL);
         }
+        // Every error the test's processes recorded has a code (ADR 8.7).
+        if !std::thread::panicking() {
+            recorded_coded(&self.dir);
+        }
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -318,8 +327,130 @@ pub fn resume_args<'a>(session: &'a str, args: &[&'a str]) -> Vec<&'a str> {
     all
 }
 
-/// Writes a transcript of `session` as an older brnr wrote it, its head
-/// naming the session `session_id` (ADR 5.9), in project folder `folder`
+/// Every error brnr has reported as data in `value`, a JSON value it printed
+/// or a line it wrote, is one as ADR 8.7 has it: `{code, message}`, the code
+/// one of brnr's, and `rpc_error`, if there, the agent's JSON-RPC error.
+/// Where brnr puts one: a reply's or a `--json` failure's `error`, an
+/// event's (a transcript record's `event`), `last_turn`'s, and a status's
+/// sessions'. What the agent sent is the agent's, and isn't looked into.
+pub fn coded(value: &Value) {
+    let codes = brnr::internals::error::names();
+    let check = |error: &Value| {
+        if error.is_null() {
+            return;
+        }
+        let code = error["code"].as_str().unwrap_or_else(|| panic!("no code: {value}"));
+        assert!(codes.contains(&code), "{code} isn't one of brnr's: {value}");
+        assert!(error["message"].is_string(), "no message: {value}");
+        if let Some(rpc) = error.get("rpc_error") {
+            assert_eq!(code, "agent_failed", "{value}");
+            assert!(rpc["code"].is_i64(), "the agent's isn't JSON-RPC's: {value}");
+        }
+    };
+    let turn = |v: &Value| check(&v["last_turn"]["error"]);
+    for v in [value, &value["event"]] {
+        check(&v["error"]);
+        turn(v);
+        v["sessions"].as_array().into_iter().flatten().for_each(turn);
+    }
+}
+
+/// Asserts that `said` reports a failure whose code is `code` (ADR 8.7).
+/// The one way tests assert a code: tests/docs.rs counts a code as reached
+/// where a test calls this with it.
+pub fn code_is<S: Said + ?Sized>(said: &S, code: &str) {
+    said.has_code(code);
+}
+
+/// What brnr reported a failure in, for [`code_is`].
+pub trait Said {
+    /// Asserts that it reports one whose code is `code`.
+    fn has_code(&self, code: &str);
+}
+
+/// An error, `{code, message}`, or what has one as its `error` (a reply, an
+/// event, a turn), [`coded`].
+impl Said for Value {
+    fn has_code(&self, code: &str) {
+        let error = if self["code"].is_string() { self } else { &self["error"] };
+        coded(&json!({ "error": error }));
+        assert_eq!(error["code"], code, "{self}");
+    }
+}
+
+/// Text, on stderr or as an event shows it: a line ends with `[code]`.
+impl Said for str {
+    fn has_code(&self, code: &str) {
+        let tag = format!("[{code}]");
+        assert!(self.lines().any(|l| l.trim_end().ends_with(&tag)), "no {tag} in: {self}");
+    }
+}
+
+impl Said for String {
+    fn has_code(&self, code: &str) {
+        self.as_str().has_code(code);
+    }
+}
+
+/// A command that failed: exit 1, `brnr: <message> [code]` on stderr, and,
+/// where it printed nothing else, `{"error": {code, message}}` with
+/// `--json`.
+impl Said for Output {
+    fn has_code(&self, code: &str) {
+        let err = stderr(self);
+        assert_eq!(self.status.code(), Some(1), "{err}");
+        let text = String::from_utf8_lossy(&self.stdout);
+        let printed = serde_json::from_str::<Value>(&text).unwrap_or_default();
+        if printed.as_object().is_some_and(|o| o.len() == 1 && o.contains_key("error")) {
+            printed.has_code(code);
+            let line = format!("brnr: {} [{code}]", printed["error"]["message"].as_str().unwrap());
+            assert!(err.lines().any(|l| l == line), "{line}: {err}");
+        } else {
+            err.has_code(code);
+        }
+    }
+}
+
+/// The error a failed command printed with `--json` (ADR 8.7), `{code,
+/// message}`, [`coded`].
+pub fn json_error(out: &Output) -> Value {
+    let text = String::from_utf8_lossy(&out.stdout);
+    let printed: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+    assert!(printed["error"].is_object(), "{printed}");
+    printed["error"].clone()
+}
+
+/// `out`, its stdout's JSON, one value or one per line, [`coded`].
+fn printed_coded(out: Output) -> Output {
+    let text = String::from_utf8_lossy(&out.stdout);
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => coded(&value),
+        Err(_) => text.lines().filter_map(|l| serde_json::from_str(l).ok()).for_each(|v| coded(&v)),
+    }
+    out
+}
+
+/// Every events file and host log under `dir`, each record in the format
+/// this brnr writes (ADR 5.10; a test's fixture of an older or a newer
+/// brnr's is in another) [`coded`].
+fn recorded_coded(dir: &Path) {
+    let entries = fs::read_dir(dir).into_iter().flatten().flatten();
+    for entry in entries {
+        let path = entry.path();
+        let name = path.to_string_lossy();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            recorded_coded(&path);
+        } else if name.ends_with(".jsonl") && !name.ends_with(".acp.jsonl") {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let records = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok());
+            records.filter(|r| r["format"] == FORMAT).for_each(|r| coded(&r));
+        }
+    }
+}
+
+/// Writes a transcript of `session` as an older brnr wrote it, its records
+/// without `format` (ADR 5.10) and naming the session `session_id` (ADR
+/// 5.9), in project folder `folder`
 /// under `env`'s state directory (made private, as brnr would), opened in
 /// `cwd`: its events file, and its raw ACP if `acp`. The events file's path.
 pub fn older_transcript(env: &Env, folder: &str, session: &str, cwd: &str, acp: bool) -> PathBuf {
@@ -373,6 +504,15 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Says a test can't run here, before it returns: a failure in CI, or with
+/// `BRNR_TESTS_STRICT` set, where a test that didn't run mustn't pass (P3);
+/// a `skipped:` line on stderr otherwise.
+pub fn skip(why: &str) {
+    let set = |var| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+    assert!(!set("CI") && !set("BRNR_TESTS_STRICT"), "can't run here: {why}");
+    eprintln!("skipped: {why}");
+}
+
 /// Has `cmd` run with umask `mask` (and what it starts, which inherits it).
 pub fn with_umask(cmd: &mut Command, mask: libc::mode_t) -> &mut Command {
     // SAFETY: the closure runs in the child between fork and exec, where only
@@ -395,6 +535,22 @@ pub fn with_sigchld_ignored(cmd: &mut Command) -> &mut Command {
     unsafe {
         cmd.pre_exec(|| {
             libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+            Ok(())
+        })
+    }
+}
+
+/// Has `cmd` run with SIGINT and SIGQUIT at their defaults, so a test's
+/// SIGINT stops it even when the tests run as a script's `&` job, which
+/// starts with both ignored and passes that on across exec.
+pub fn with_default_interrupt(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec, where only
+    // async-signal-safe calls may be made: signal(2) is one, and SIG_DFL
+    // installs no handler.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
             Ok(())
         })
     }
