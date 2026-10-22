@@ -28,6 +28,7 @@ with environment variables:
   RESUME_LATER=<file>  answer session/resume when this file exists, reading
                     on meanwhile
   NO_LOAD=1         don't offer session/load
+  NO_AGENT_INFO=1   initialize says no agentInfo
   NO_HISTORY=1      session/load replays nothing
   FULL_HISTORY=1    session/load also replays a tool call it never finished,
                     and the session's commands
@@ -273,6 +274,15 @@ def send(msg):
 # eliciting and sent, or taken out, under this lock, so none opens or goes
 # between its look and its gate going. Taken before sending, never after.
 open_requests = threading.Lock()
+made = {"perm": 0, "elicit": 0}  # requests made, of each kind
+
+
+def next_request(kind):
+    """A new request id of kind (perm or elicit): its count only grows, so
+    no id is used twice, even while one made before it is still open."""
+    with open_requests:
+        made[kind] += 1
+        return f"{kind}-{made[kind]}"
 
 
 def open_request(table, request, value, msg):
@@ -549,7 +559,7 @@ def run(mid, sid, text):
         use_client(mid, sid, ["fs", "terminal"], words[1:2] == ["anyway"])
     elif first == "odd":
         how = words[1] if len(words) > 1 else "surrogate"
-        request = f"perm-{len(asking) + 1}"
+        request = next_request("perm")
         title = "Edit " + chr(0xD83D) if how == "surrogate" else "Edit src/lib.rs"
         tool = {"toolCallId": request, "title": title, "kind": "edit", "rawInput": "INPUT"}
         options = [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]
@@ -659,7 +669,7 @@ def elicit(mid, sid, how, depth=()):
         say(sid, f"not asked: {mode} not advertised")
         end_turn(mid)
         return
-    request = f"elicit-{len(eliciting) + 1}"
+    request = next_request("elicit")
     params = {"sessionId": sid, "mode": mode, "message": "Tell me about you"}
     if how == "tool":
         params["toolCallId"] = "t1"
@@ -667,7 +677,7 @@ def elicit(mid, sid, how, depth=()):
         params["requestedSchema"] = FORM
     elif mode == "url":
         params["message"] = "Log in to the fake"
-        params["elicitationId"] = f"el-{len(eliciting) + 1}"
+        params["elicitationId"] = "el-" + request.removeprefix("elicit-")
         params["url"] = "https://login.example/a?b=1"
     msg = {"jsonrpc": "2.0", "id": request, "method": "elicitation/create", "params": params}
     if how == "deep":
@@ -731,7 +741,7 @@ def running_tool(sid, twice=False):
 
 def ask(mid, sid, kind):
     """Asks permission for a tool call of kind, in prompt mid's turn."""
-    request = f"perm-{len(asking) + 1}"
+    request = next_request("perm")
     options = [
         {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
         {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
@@ -870,6 +880,8 @@ for line in sys.stdin.buffer:
             "authMethods": methods,
             "agentInfo": info,
         }
+        if env("NO_AGENT_INFO"):
+            del answer["agentInfo"]
         if env("PROTOCOL_VERSION") == "missing":
             del answer["protocolVersion"]
         elif env("PROTOCOL_VERSION"):
@@ -879,7 +891,7 @@ for line in sys.stdin.buffer:
         result(mid, answer)
     elif method == "authenticate":
         if env("ELICIT_AUTH"):
-            request = f"elicit-{len(eliciting) + 1}"
+            request = next_request("elicit")
             ask_url = {
                 "mode": "url",
                 "requestId": mid,

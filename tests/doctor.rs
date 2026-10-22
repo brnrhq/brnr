@@ -89,6 +89,42 @@ fn readable_transcripts_are_made_private() {
     assert!(lines(&text, "warn").is_empty(), "{text}");
 }
 
+/// A transcript doctor can't open (mode 000) is said, as readers pass it
+/// over (P3), and `--fix` doesn't change it; what `--fix` left is the
+/// example it gives, not what it just made private (ADR 9.3). Skipped as
+/// root, who can open it.
+#[test]
+fn adr_0009_doctor_says_what_it_cant_open_and_what_fix_left() {
+    if uid() == 0 {
+        eprintln!("skipped: root can open a file of mode 000");
+        return;
+    }
+    let env = Env::new("dr-closed");
+    let home = env.dir.join("home");
+    let project = home.join("projects").join("-tmp-x");
+    mkdir(&home, 0o700);
+    mkdir(&home.join("projects"), 0o700);
+    mkdir(&project, 0o700);
+    let closed = project.join("s.jsonl");
+    write(&closed, "{}\n", 0o000);
+    let why = format!("e.g. {} can't be opened: Permission denied", closed.display());
+    for args in [&[][..], &["--fix"]] {
+        let (ok, text) = doctor(&env, args);
+        assert!(ok, "{text}");
+        let says = format!("warn  transcripts: 1 of 4 paths aren't private, {why}");
+        assert!(text.contains(&says) && !text.contains("brnr doctor --fix"), "{text}");
+    }
+    assert_eq!(mode(&closed), 0o000);
+
+    // The state directory comes first, and `--fix` makes it private.
+    mkdir(&home, 0o755);
+    let (_, text) = doctor(&env, &["--fix"]);
+    assert!(text.contains("made 1 paths private"), "{text}");
+    assert!(text.contains(&format!("1 paths --fix doesn't change, {why}")), "{text}");
+    assert_eq!((mode(&home), mode(&closed)), (0o700, 0o000));
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
 /// A state directory, `hosts` or `projects` that isn't a directory is a
 /// problem, however private: brnr won't write a transcript there (ADR 9.3).
 /// `--fix` leaves it, and what a symlink there points at, as they are.
@@ -426,7 +462,7 @@ fn a_stopped_host_with_a_full_backlog_is_running() {
     assert!(text.contains(&warning), "{text}");
     assert!(!text.contains("removed"), "{text}");
     assert!(socket.exists() && env.hosts().len() == 1, "{text}");
-    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let list = serde_json::from_slice::<Value>(&list.stdout).unwrap()["sessions"].clone();
     assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
 }
 
@@ -502,7 +538,8 @@ fn a_death_without_a_record_is_reported() {
     // The same check in JSON.
     let out = env.run(&["doctor", "--json"]);
     let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    let check =
+        checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
     assert_eq!(check["level"], "info", "{check}");
     assert!(check["message"].as_str().unwrap().contains(run), "{check}");
 }
@@ -587,18 +624,18 @@ fn adr_0011_the_report_is_what_to_paste() {
     // An older brnr's log of a panic, its secret not redacted, and a log of
     // a process that exited, older still: not shown.
     let opened = format!(
-        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"{}","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}]}}}}}}"#,
+        r#"{{"format":1,"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"{}","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}]}}}}}}"#,
         env.dir.display()
     );
     let panicked = format!(
         "{opened}\n{}\n{}\n",
-        r#"{"ts":"t","event":{"event":"process_panicked","error":"brnr panicked at src/x.rs:1:1: oops"}}"#,
-        r#"{"ts":"t","event":{"event":"process_exited","exit_status":null,"error":"brnr panicked at src/x.rs:1:1: oops"}}"#
+        r#"{"format":1,"ts":"t","event":{"event":"process_panicked","error":{"code":"process_panicked","message":"brnr panicked at src/x.rs:1:1: oops"}}}"#,
+        r#"{"format":1,"ts":"t","event":{"event":"process_exited","exit_status":null,"error":{"code":"process_panicked","message":"brnr panicked at src/x.rs:1:1: oops"}}}"#
     );
     write(&hosts.join("20260101T000000-1.jsonl"), &panicked, 0o600);
     write(
         &hosts.join("20250101T000000-2.jsonl"),
-        "{\"event\":{\"event\":\"process_exited\"}}\n",
+        "{\"format\":1,\"event\":{\"event\":\"process_exited\"}}\n",
         0o600,
     );
     let old = std::time::SystemTime::now() - Duration::from_secs(3600);
@@ -666,9 +703,10 @@ fn adr_0011_the_report_redacts_a_deep_line() {
     mkdir(&hosts, 0o700);
     let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
     let opened = format!(
-        r#"{{"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
+        r#"{{"format":1,"ts":"t","dir":"control->agent","msg":{{"jsonrpc":"2.0","id":1,"method":"session/new","params":{{"cwd":"/","mcpServers":[{{"name":"files","command":"true","args":[],"env":[{{"name":"TOKEN","value":"{secret}"}}]}}],"_meta":{{"deep":{deep}}}}}}}}}"#
     );
-    let exited = r#"{"ts":"t","event":{"event":"process_exited","exit_status":{"code":0}}}"#;
+    let exited =
+        r#"{"format":1,"ts":"t","event":{"event":"process_exited","exit_status":{"code":0}}}"#;
     write(&hosts.join("20260101T000000-1.jsonl"), &format!("{opened}\n{exited}\n"), 0o600);
 
     let out = env.run(&["doctor", "--report", "--json"]);

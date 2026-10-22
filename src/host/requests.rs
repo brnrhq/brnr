@@ -35,11 +35,12 @@ use super::outbound::{Asked, By, Opens, Then};
 use super::sessions::Ending;
 use super::state::SessionState;
 use super::turns::Held;
+use crate::error::{Code, Error};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
 use crate::schema::{
     self, AgentCapabilities, ElicitationCapabilities, ElicitationFormCapabilities,
-    ElicitationUrlCapabilities, Error, ErrorCode, error_message,
+    ElicitationUrlCapabilities, Error as AcpError, ErrorCode, error_message,
 };
 
 /// One of the host's own requests to the agent, as it waits for the
@@ -155,7 +156,7 @@ pub(super) struct Opening {
 /// bridge's answer.
 pub(super) enum PeerOp {
     Fork { cwd: PathBuf },
-    Close { session: String, by: &'static str, failed: Option<String> },
+    Close { session: String, by: &'static str, failed: Option<Error> },
 }
 
 impl Host {
@@ -226,7 +227,7 @@ impl Host {
             if is_auth_error(error) && !matches!(step, StartStep::Authenticate(_)) {
                 text.push_str(&self.auth_hint());
             }
-            return self.fail_start(&text);
+            return self.fail_start(&Error::agent(text, error));
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         match step {
@@ -234,7 +235,7 @@ impl Host {
                 // An answer in a version brnr doesn't speak isn't read any
                 // further, and nothing more is sent (ADR 2.2).
                 if let Err(err) = schema::check_protocol_version(&result) {
-                    return self.fail_start(&err);
+                    return self.fail_start(&Error::new(Code::acp_version_unsupported, err));
                 }
                 self.initialized(&result);
                 let Some(start) = &self.start else { return }; // Failed, or abandoned.
@@ -254,7 +255,9 @@ impl Host {
                 let session = match open {
                     Open::New => match new_session(&result) {
                         Some(session) => session,
-                        None => return self.fail_start("session/new returned no sessionId"),
+                        None => {
+                            return self.fail_start(&"session/new returned no sessionId".into());
+                        }
                     },
                     Open::Resume(session) | Open::Load(session) => session,
                 };
@@ -269,7 +272,8 @@ impl Host {
                 // session gets no work, and nobody is to find it (ADR 3.9).
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.close_session(i, Ending::NotOwned, None);
-                    return self.fail_start(&format!("the agent opened {session}, which {why}"));
+                    let error = why.map(|why| format!("the agent opened {session}, which {why}"));
+                    return self.fail_start(&error);
                 }
                 self.end_replay(i);
                 self.sessions[i].state.result(&result);
@@ -293,7 +297,7 @@ impl Host {
         self.info["agent_info"] = result["agentInfo"].clone();
     }
 
-    fn check_mcp_servers(&self) -> Result<(), String> {
+    fn check_mcp_servers(&self) -> Result<(), Error> {
         for server in &self.mcp_servers {
             let kind = server["type"].as_str().unwrap_or("stdio");
             let supported = match kind {
@@ -303,7 +307,8 @@ impl Host {
             };
             if !supported {
                 let name = server["name"].as_str().unwrap_or("?");
-                return Err(format!("MCP server {name}: the agent doesn't support {kind} servers"));
+                let error = format!("MCP server {name}: the agent doesn't support {kind} servers");
+                return Err(Error::new(Code::capability_missing, error));
             }
         }
         Ok(())
@@ -317,7 +322,7 @@ impl Host {
         if !offered.contains(&method) {
             let offered = if offered.is_empty() { "none".to_owned() } else { offered.join(", ") };
             let error = format!("the agent offers no login method {method} (it offers: {offered})");
-            return self.fail_start(&error);
+            return self.fail_start(&Error::new(Code::setting_invalid, error));
         }
         let params = json!({ "methodId": method });
         let step = HostRequest::Start(StartStep::Authenticate(method));
@@ -354,7 +359,8 @@ impl Host {
             let step = HostRequest::Start(StartStep::Open(Open::Load(session)));
             self.host_request("session/load", params, step);
         } else {
-            self.fail_start("the agent can't resume sessions (no session/resume or session/load)");
+            let error = "the agent can't resume sessions (no session/resume or session/load)";
+            self.fail_start(&Error::new(Code::capability_missing, error));
         }
     }
 
@@ -413,7 +419,7 @@ impl Host {
         }
         let Some(i) = self.find(&setup.session) else {
             let error = format!("{} closed before its settings were set", setup.session);
-            return self.setup_failed(setup, &error);
+            return self.setup_failed(setup, Error::new(Code::session_closed, error));
         };
         let Some(step) = setup.steps.pop_front() else {
             let (peer, req_id) = match setup.of {
@@ -448,7 +454,7 @@ impl Host {
             }
             Err(error) => {
                 let error = format!("{}: {error}", step.describe());
-                self.setup_failed(setup, &error);
+                self.setup_failed(setup, Error::new(Code::setting_invalid, error));
             }
         }
     }
@@ -460,7 +466,7 @@ impl Host {
             if matches!(setup.of, SetupOf::Start) && is_auth_error(error) {
                 text.push_str(&self.auth_hint());
             }
-            return self.setup_failed(setup, &text);
+            return self.setup_failed(setup, Error::agent(text, error));
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         if let Some(i) = self.find(&setup.session) {
@@ -484,18 +490,15 @@ impl Host {
     /// One of `setup`'s settings failed with `error`: a start fails, a
     /// bridge is told, with what was set before it (P3), and a session a
     /// bridge was opening is closed again.
-    fn setup_failed(&mut self, setup: Setup, error: &str) {
-        let mut error = error.to_owned();
+    fn setup_failed(&mut self, setup: Setup, mut error: Error) {
         if !matches!(setup.of, SetupOf::Start) && !setup.done.is_empty() {
             let done: Vec<String> =
                 setup.done.iter().map(|s| s.describe().replacen("setting ", "", 1)).collect();
-            error.push_str(&format!(" (already set: {})", done.join(", ")));
+            error.message.push_str(&format!(" (already set: {})", done.join(", ")));
         }
         match setup.of {
             SetupOf::Start => self.fail_start(&error),
-            SetupOf::Config(peer, req_id) => {
-                self.reply(peer, req_id, json!({ "ok": false, "error": error }));
-            }
+            SetupOf::Config(peer, req_id) => self.reply(peer, req_id, error.reply()),
             SetupOf::Open(o) => self.abandon_open(&setup.session, o.peer, o.req_id, error),
         }
     }
@@ -523,9 +526,9 @@ impl Host {
         }
     }
 
-    pub(super) fn fail_start(&mut self, error: &str) {
+    pub(super) fn fail_start(&mut self, error: &Error) {
         self.sessions.unclaim_all();
-        self.sink.note(None, json!({ "event": "start_failed", "error": error }));
+        self.sink.note(None, json!({ "event": "start_failed", "error": error.json() }));
         self.startup_failed(error);
         self.begin_stop();
     }
@@ -534,11 +537,12 @@ impl Host {
     /// foreground on stderr: a step after the session opened (its mode, a
     /// config option) fails the start as much as opening it does. It ends
     /// with the agent's last lines on stderr (ADR 3.6).
-    pub(super) fn startup_failed(&mut self, error: &str) {
-        let error = self.with_stderr(error);
+    pub(super) fn startup_failed(&mut self, error: &Error) {
+        let error = error.clone().map(|m| self.with_stderr(&m));
         if self.foreground && !self.start_done && !self.startup_reported {
             self.startup_reported = true;
-            self.say(format!("brnr: {}", crate::render::clean(&error)));
+            let said = crate::render::coded(&error.message, error.code.name());
+            self.say(format!("brnr: {}", crate::render::clean(&said)));
         }
         self.report_failure(&error);
     }
@@ -570,8 +574,8 @@ impl Host {
             Open::Load(session) => ("session/load", Some(session)),
         };
         if let Some(error) = msg.get("error") {
-            let error = format!("{what} failed: {}", error_message(error));
-            let reply = json!({ "ok": false, "error": error });
+            let reply = Error::agent(format!("{what} failed: {}", error_message(error)), error);
+            let reply = reply.reply();
             // Its lock, taken as it opened, goes, and the bridge is answered,
             // once what was recorded of it (a load's replay, ADR 5.6) is
             // written, as a close's are: whoever resumes it next appends
@@ -587,14 +591,14 @@ impl Host {
         }
         let result = msg.get("result").cloned().unwrap_or(Value::Null);
         let Some(session) = asked.or_else(|| new_session(&result)) else {
-            let error = format!("{what} returned no sessionId");
-            self.reply(opening.peer, opening.req_id, json!({ "ok": false, "error": error }));
+            let error = Error::from(format!("{what} returned no sessionId"));
+            self.reply(opening.peer, opening.req_id, error.reply());
             return self.stop_if_empty();
         };
         let i = self.open_session(&session, Some(&opening.cwd.to_string_lossy()));
         if let Some(why) = self.sessions[i].not_owned() {
             self.close_session(i, Ending::NotOwned, None);
-            let error = format!("the agent opened {session}, which {why}");
+            let error = why.map(|why| format!("the agent opened {session}, which {why}"));
             return self.abandon_open(&session, opening.peer, opening.req_id, error);
         }
         self.sessions[i].opening = true;
@@ -627,7 +631,8 @@ impl Host {
         // Not there, or dropped as its answer was queued.
         if !self.peers.contains_key(&peer) {
             self.sink.note(Some(&session), json!({ "event": "open_abandoned" }));
-            return self.abandon_open(&session, peer, req_id, "nobody is waiting for it".into());
+            let error = Error::from("nobody is waiting for it");
+            return self.abandon_open(&session, peer, req_id, error);
         }
         self.sessions[i].opening = false;
         if let (Some(prompt), Some(id)) = (prompt, message) {
@@ -638,12 +643,12 @@ impl Host {
     /// Why a bridge's `new` or `resume` can't go on to commit: the process
     /// is stopping, so the session would end unused with it, or the
     /// command's timeout has passed (ADR 3.4).
-    fn open_refused(&self, opening: &Opening) -> Option<String> {
+    fn open_refused(&self, opening: &Opening) -> Option<Error> {
         if self.stop_requested || self.agent_in.is_none() {
-            return Some("the process is stopping".into());
+            return Some(Error::new(Code::process_stopping, "the process is stopping"));
         }
         if opening.deadline.is_some_and(|t| Instant::now() >= t) {
-            return Some("timed out waiting for the session".into());
+            return Some(timed_out());
         }
         None
     }
@@ -653,20 +658,21 @@ impl Host {
     /// is answered once it is, saying so. An agent that can't close sessions
     /// keeps it open, and the answer names it (P3). A stopping process can't
     /// tell the agent any more: the session ends with it.
-    fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: String) {
-        self.sink.note(None, json!({ "event": "open_failed", "session": session, "error": error }));
+    fn abandon_open(&mut self, session: &str, peer: u64, req_id: Option<Value>, error: Error) {
+        let event = json!({ "event": "open_failed", "session": session, "error": error.json() });
+        self.sink.note(None, event);
         if self.agent_in.is_none() {
-            return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+            return self.reply(peer, req_id, error.reply());
         }
         if !self.caps.close {
             if let Some(i) = self.find(session) {
                 self.sessions[i].opening = false; // Served as any other is.
             }
             let pid = std::process::id();
-            let error = format!(
-                "{error}; the agent can't close sessions, so {session} is left open in process {pid}"
-            );
-            return self.reply(peer, req_id, json!({ "ok": false, "error": error }));
+            let error = error.map(|e| {
+                format!("{e}; the agent can't close sessions, so {session} is left open in process {pid}")
+            });
+            return self.reply(peer, req_id, error.reply());
         }
         if let Some(i) = self.find(session) {
             self.sessions[i].closing = Some(Close::Sent);
@@ -703,7 +709,8 @@ impl Host {
     ) {
         let reply = match msg.get("error") {
             Some(error) => {
-                let mut said = error_message(error);
+                let said = error_message(error);
+                let mut failed_too = None;
                 if let PeerOp::Close { session, failed, .. } = &op {
                     // One open again since isn't closing (see `peer_result`).
                     let closing =
@@ -714,22 +721,27 @@ impl Host {
                         s.opening = false;
                         self.close_failed(session, &said);
                     }
-                    if let Some(failed) = failed {
+                    // What failed first is the request's failure (ADR 8.7).
+                    failed_too = failed.clone().map(|failed| {
                         let pid = std::process::id();
-                        said = format!(
-                            "{failed}; closing {session} failed too ({said}), so it is left \
-                             open in process {pid}"
-                        );
-                        // Nobody to answer, as for an editor's session this
-                        // process doesn't serve (`not_served`): the host log
-                        // says so (P3).
-                        if peer == 0 {
-                            let event = json!({ "event": "open_failed", "session": session, "error": said });
-                            self.sink.note(None, event);
-                        }
+                        failed.map(|f| {
+                            format!(
+                                "{f}; closing {session} failed too ({said}), so it is left open \
+                                 in process {pid}"
+                            )
+                        })
+                    });
+                    // Nobody to answer, as for an editor's session this
+                    // process doesn't serve (`not_served`): the host log
+                    // says so (P3).
+                    if peer == 0
+                        && let Some(error) = &failed_too
+                    {
+                        let event = json!({ "event": "open_failed", "session": session, "error": error.json() });
+                        self.sink.note(None, event);
                     }
                 }
-                json!({ "ok": false, "error": said })
+                failed_too.unwrap_or_else(|| Error::agent(said, error)).reply()
             }
             None => {
                 let result = msg.get("result").unwrap_or(&Value::Null);
@@ -754,9 +766,7 @@ impl Host {
         Some(match op {
             PeerOp::Fork { cwd } => {
                 let Some(session) = new_session(result) else {
-                    return Some(
-                        json!({ "ok": false, "error": "session/fork returned no sessionId" }),
-                    );
+                    return Some(Error::from("session/fork returned no sessionId").reply());
                 };
                 let i = self.open_session(&session, Some(&cwd.to_string_lossy()));
                 // Its lock, taken as it opened: one another process holds, or
@@ -765,8 +775,9 @@ impl Host {
                 // took no lock on it, and opened no transcript for it.
                 if let Some(why) = self.sessions[i].not_owned() {
                     self.close_session(i, Ending::NotOwned, None);
-                    let error = format!("the agent forked into {session}, which {why}");
-                    return Some(json!({ "ok": false, "error": error }));
+                    let error =
+                        why.map(|why| format!("the agent forked into {session}, which {why}"));
+                    return Some(error.reply());
                 }
                 self.sessions[i].state.result(result);
                 json!({ "ok": true, "session": session })
@@ -774,7 +785,7 @@ impl Host {
             PeerOp::Close { session, by, failed } => {
                 let mut reply = match &failed {
                     Some(failed) => {
-                        json!({ "ok": false, "error": format!("{failed}; {session} was closed") })
+                        failed.clone().map(|f| format!("{f}; {session} was closed")).reply()
                     }
                     None => json!({ "ok": true, "session": session }),
                 };
@@ -852,6 +863,15 @@ impl Capabilities {
 /// take or refuse (ADR 6.2). The mode goes first, then the model, the
 /// thought level, and the other options by id.
 pub(super) fn resolve_settings(
+    flags: &Settings,
+    profile: &Settings,
+    state: &SessionState,
+) -> Result<VecDeque<SetupStep>, Error> {
+    resolve(flags, profile, state).map_err(|e| Error::new(Code::setting_invalid, e))
+}
+
+/// [`resolve_settings`], its failure said.
+fn resolve(
     flags: &Settings,
     profile: &Settings,
     state: &SessionState,
@@ -952,9 +972,14 @@ impl Resolved {
     }
 }
 
+/// A start or an opening that didn't commit in its time (ADR 3.4).
+pub(super) fn timed_out() -> Error {
+    Error::new(Code::start_timed_out, "timed out waiting for the session")
+}
+
 /// ACP's `auth_required`, or an agent that says as much.
 fn is_auth_error(error: &Value) -> bool {
-    schema::read::<Error>(error).is_some_and(|e| {
+    schema::read::<AcpError>(error).is_some_and(|e| {
         e.code == ErrorCode::AuthRequired || e.message.to_lowercase().contains("auth")
     })
 }
@@ -1043,6 +1068,7 @@ mod tests {
         ];
         assert_eq!(steps, want);
         let error = resolve(flags("on")).unwrap_err();
-        assert_eq!(error, "setting fast=on: fast is a boolean option: true or false, not on");
+        let said = "setting fast=on: fast is a boolean option: true or false, not on";
+        assert_eq!(error, Error::new(Code::setting_invalid, said));
     }
 }

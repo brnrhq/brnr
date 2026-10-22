@@ -58,6 +58,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::error::{Code, Error};
 use crate::{paths, sys};
 
 #[derive(Deserialize)]
@@ -293,19 +294,22 @@ pub(crate) struct Bridge {
 }
 
 /// The named profile, or `default` (or nothing) when no name is given.
-pub(crate) fn load(name: Option<&str>) -> Result<Profile, String> {
+/// A file that doesn't load is `config_invalid`; a profile it doesn't have,
+/// `profile_not_found` (ADR 8.7).
+pub(crate) fn load(name: Option<&str>) -> Result<Profile, Error> {
     let path = paths::config_file();
+    let invalid = |e: String| Error::new(Code::config_invalid, format!("{}: {e}", path.display()));
     let profiles = match load_all() {
         Ok(Some(profiles)) => profiles,
         Ok(None) if name.is_none() => return Ok(Profile::default()),
-        Ok(None) => return Err(format!("{}: no such file", path.display())),
-        Err(problems) => return Err(format!("{}: {}", path.display(), problems.join("; "))),
+        Ok(None) => return Err(invalid("no such file".into())),
+        Err(problems) => return Err(invalid(problems.join("; "))),
     };
     match name {
-        Some(name) => profiles
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("no profile {name:?} in {}", path.display())),
+        Some(name) => profiles.get(name).cloned().ok_or_else(|| {
+            let error = format!("no profile {name:?} in {}", path.display());
+            Error::new(Code::profile_not_found, error)
+        }),
         None => Ok(profiles.get("default").cloned().unwrap_or_default()),
     }
 }

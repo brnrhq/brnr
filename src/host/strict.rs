@@ -18,6 +18,7 @@
 
 use super::Host;
 use crate::config::Experimental;
+use crate::error::{Code, Error};
 use crate::schema;
 
 /// What brnr does beyond stable ACP, which strict mode doesn't. A
@@ -35,7 +36,7 @@ pub(super) enum Beyond {
 
 impl Host {
     /// Refuses `what` in strict mode, saying why; allows it otherwise.
-    pub(super) fn check_strict(&self, what: Beyond) -> Result<(), String> {
+    pub(super) fn check_strict(&self, what: Beyond) -> Result<(), Error> {
         if !self.strict {
             return Ok(());
         }
@@ -43,9 +44,13 @@ impl Host {
             Beyond::Steering => ("--steer", "_session/steering"),
             Beyond::Fork => ("session fork", "session/fork"),
             Beyond::Experimental(action) => {
-                return Err(format!(
-                    "{} on an editor's session is an experimental action, and strict mode has none",
-                    action.name()
+                return Err(Error::new(
+                    Code::strict_mode_refused,
+                    format!(
+                        "{} on an editor's session is an experimental action, and strict mode \
+                         has none",
+                        action.name()
+                    ),
                 ));
             }
         };
@@ -53,6 +58,7 @@ impl Host {
             return Ok(()); // The schema has made it stable since.
         }
         let why = if method.starts_with('_') { "an ACP extension" } else { "unstable in ACP v1" };
-        Err(format!("{what} uses {method}, {why}, which strict mode doesn't"))
+        let error = format!("{what} uses {method}, {why}, which strict mode doesn't");
+        Err(Error::new(Code::strict_mode_refused, error))
     }
 }
