@@ -536,7 +536,8 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_sessions_given_up_requests_go_with_its_close`.
   - [src/host/sessions.rs](../../src/host/sessions.rs):
     `adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest`,
-    `adr_0010_a_closed_sessions_answered_requests_go`.
+    `adr_0010_a_closed_sessions_answered_requests_go`,
+    `adr_0010_a_request_cancelled_after_its_close_is_not_kept`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said`,
     `adr_0010_a_long_line_to_an_editor_that_stops_reading_is_held_back`,

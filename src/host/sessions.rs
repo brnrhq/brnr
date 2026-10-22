@@ -471,8 +471,9 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::approvals::Who;
+    use crate::host::approvals::{EditorAnswer, Who};
     use crate::host::fuzz::Harness;
+    use crate::host::id_key;
     use crate::log::Logger;
 
     /// An editor's process with `session` claimed, as if its lock were
@@ -607,6 +608,36 @@ mod tests {
             // Kept, the late answer is dropped; gone with its session, it goes
             // on, and the agent ignores it (ADR 2.5).
             assert_eq!(!h.sent().agent.is_empty(), close, "close: {close}");
+        }
+    }
+
+    #[test]
+    fn adr_0010_a_request_cancelled_after_its_close_is_not_kept() {
+        let session = "unit-given-up";
+        for close in [false, true] {
+            let mut h = Harness::editor(false, false);
+            h.claim(session);
+            let i = h.host().open_session(session, None);
+            let options =
+                json!([{ "optionId": "allow_once", "name": "Allow", "kind": "allow_once" }]);
+            let ask = json!({ "jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                "params": { "sessionId": session, "toolCall": { "toolCallId": "t1" },
+                "options": options } });
+            h.agent_line(format!("{ask}\n").as_bytes());
+            if close {
+                h.host().close_session(i, Ending::Closed("close"), None);
+            }
+            let cancel = json!({ "jsonrpc": "2.0", "method": "$/cancel_request",
+                "params": { "requestId": 7 } });
+            h.agent_line(format!("{cancel}\n").as_bytes());
+            // Open, it is kept for the editor's answer; closed, it isn't.
+            let answer =
+                h.host().approvals.editor_answer(&id_key(&json!(7)), &serde_json::Map::new());
+            match answer {
+                EditorAnswer::GivenUp(Some(s)) => assert!(!close && s == session),
+                EditorAnswer::Unknown => assert!(close, "not kept while open"),
+                _ => panic!("close: {close}"),
+            }
         }
     }
 }
