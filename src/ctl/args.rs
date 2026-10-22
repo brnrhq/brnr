@@ -12,6 +12,8 @@
 
 use std::str::FromStr;
 
+use crate::error;
+
 /// What a flag takes after it, and so what `--flag` alone fails with
 /// (`<flag> needs <what>`).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -254,15 +256,16 @@ pub(super) fn spec(cmd: &str, verb: Option<&str>) -> Option<&'static Spec> {
 }
 
 /// Why a command didn't do what it was asked (ADR 8.3): a usage error,
-/// which exits 2 with the command's usage on stderr, or a failure, 1.
+/// which exits 2 with the command's usage on stderr, or a failure, 1, with
+/// its code (ADR 8.7).
 #[derive(Debug, PartialEq)]
 pub(super) enum Error {
     /// Used wrongly: the command line prints the verb's usage.
     Usage,
     /// Used wrongly, as the message says: printed before the usage.
     Invalid(String),
-    /// The operation failed, as the message says.
-    Failed(String),
+    /// The operation failed, as the error says.
+    Failed(error::Error),
 }
 
 impl Error {
@@ -275,15 +278,22 @@ impl Error {
     }
 }
 
+/// A failure brnr gives no code of its own: `unclassified`.
 impl From<String> for Error {
     fn from(msg: String) -> Error {
-        Error::Failed(msg)
+        Error::Failed(msg.into())
     }
 }
 
 impl From<&str> for Error {
     fn from(msg: &str) -> Error {
-        Error::Failed(msg.to_owned())
+        Error::Failed(msg.into())
+    }
+}
+
+impl From<error::Error> for Error {
+    fn from(error: error::Error) -> Error {
+        Error::Failed(error)
     }
 }
 
