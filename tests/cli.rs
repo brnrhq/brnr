@@ -7048,8 +7048,14 @@ fn adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have() {
 /// A process of another brnr for `env`: its metadata `meta` in the runtime
 /// directory, as this test's pid (with no `host_pid` or `agent_pid`, which
 /// `Env` would kill), and its socket, answering each request as `answer`
-/// does, each connection kept open. Its pid.
-fn another_brnr(env: &Env, meta: Value, answer: fn(&Value) -> Value) -> String {
+/// does, each connection kept open, and sending `event` after a subscription.
+/// Its pid.
+fn another_brnr(
+    env: &Env,
+    meta: Value,
+    answer: fn(&Value) -> Value,
+    event: Option<Value>,
+) -> String {
     use std::os::unix::fs::DirBuilderExt;
     use std::os::unix::net::UnixListener;
     let run = env.dir.join("run");
@@ -7065,6 +7071,7 @@ fn another_brnr(env: &Env, meta: Value, answer: fn(&Value) -> Value) -> String {
     fs::write(run.join(format!("{pid}.json")), meta.to_string()).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
+            let event = event.clone();
             std::thread::spawn(move || {
                 let mut out = stream.try_clone().unwrap();
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -7072,6 +7079,11 @@ fn another_brnr(env: &Env, meta: Value, answer: fn(&Value) -> Value) -> String {
                     let mut reply = answer(&req);
                     reply["req_id"] = req["req_id"].clone();
                     if writeln!(out, "{reply}").is_err() {
+                        return;
+                    }
+                    if let Some(event) = event.as_ref().filter(|_| req["cmd"] == "subscribe")
+                        && writeln!(out, "{event}").is_err()
+                    {
                         return;
                     }
                 }
@@ -7092,15 +7104,21 @@ fn an_older_brnrs_answer(req: &Value) -> Value {
     }
 }
 
-/// A newer brnr's: its status, a subscription to what it has, which isn't
-/// what was asked, and `command_unknown` for the rest.
+/// A newer brnr's: its status, a subscription to what it has, which is what
+/// was asked but `process_exited`, and `command_unknown` for the rest.
 fn a_newer_brnrs_answer(req: &Value) -> Value {
     match req["cmd"].as_str().unwrap() {
         "status" => {
             json!({ "ok": true, "owner": "editor", "sessions": [{ "session": "sess-old", "state": "idle" }] })
         }
         "subscribe" => {
-            json!({ "ok": true, "events": [], "unknown_events": req["events"], "peer": "socket#1", "host_id": "h", "seq": 0 })
+            let (unknown, events): (Vec<Value>, Vec<Value>) = req["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned()
+                .partition(|e| e == "process_exited");
+            json!({ "ok": true, "events": events, "unknown_events": unknown, "peer": "socket#1", "host_id": "h", "seq": 0 })
         }
         "logged" => json!({ "ok": true, "lost": false }),
         cmd => {
@@ -7118,7 +7136,7 @@ fn a_newer_brnrs_answer(req: &Value) -> Value {
 #[test]
 fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
     let env = Env::new("c-older");
-    let pid = another_brnr(&env, json!({}), an_older_brnrs_answer);
+    let pid = another_brnr(&env, json!({}), an_older_brnrs_answer, None);
     let out = env.run(&["session", "fork", "sess-old"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let err = stderr(&out);
@@ -7135,7 +7153,8 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
 
     let env = Env::new("c-newer");
     let meta = json!({ "brnr": "1000.0.0", "protocol": 1000, "proxy_pid": 1 });
-    let pid = another_brnr(&env, meta, a_newer_brnrs_answer);
+    let event = json!({ "event": "turn_ended", "seq": 1, "host_id": "h", "session": "sess-old" });
+    let pid = another_brnr(&env, meta, a_newer_brnrs_answer, Some(event));
     let out = env.run(&["session", "fork", "sess-old", "--json"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     code_is(&out, "command_unknown");
@@ -7145,21 +7164,33 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
     assert!(message.contains(&newer), "{message}");
     assert!(message.ends_with("restart the agent in its editor to run this brnr"), "{message}");
 
-    let args = ["event", "watch", "--pid", &pid, "--events", "turn_ended"];
-    let mut watch = env.brnr(&args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
-    // Its first line on stderr, read on a thread so that the wait for it
-    // is bounded; the watch goes on after it, so it is killed then.
-    let err = BufReader::new(watch.stderr.take().unwrap());
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(err.lines().next());
-    });
-    let first = rx.recv_timeout(Duration::from_secs(10));
+    let args = ["event", "watch", "--pid", &pid, "--json", "--events", "turn_ended"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Its first lines on stdout and stderr, each read on a thread so that
+    // the wait for it is bounded; the watch goes on after them, so it is
+    // killed then.
+    let first_line = |pipe: Box<dyn std::io::Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(BufReader::new(pipe).lines().next());
+        });
+        rx
+    };
+    let (out, err) = (
+        first_line(Box::new(watch.stdout.take().unwrap())),
+        first_line(Box::new(watch.stderr.take().unwrap())),
+    );
+    let (out, err) =
+        (out.recv_timeout(Duration::from_secs(10)), err.recv_timeout(Duration::from_secs(10)));
     kill(watch.id() as i32, libc::SIGKILL);
     watch.wait().unwrap();
-    let err = first.expect("no line on stderr in 10s").expect("stderr closed").unwrap();
-    // What it was asked for: `turn_ended`, and `process_exited`, which a
+    let err = err.expect("no line on stderr in 10s").expect("stderr closed").unwrap();
+    // What it was asked for but doesn't have: `process_exited`, which a
     // watch ends with.
-    let said = format!("brnr: process {pid} doesn't send turn_ended, process_exited; {newer}");
+    let said = format!("brnr: process {pid} doesn't send process_exited; {newer}");
     assert!(err.starts_with(&said), "{err}");
+    // And it goes on with what it has.
+    let out = out.expect("no event on stdout in 10s").expect("stdout closed").unwrap();
+    let event: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(event["event"], "turn_ended", "{event}");
 }
