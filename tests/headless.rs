@@ -3015,7 +3015,7 @@ fn adr_0005_an_editors_prompt_the_agent_serves_opens_its_session() {
     assert!(logged(&env, "any-1", "user_message").is_empty());
     let host_log = fs::read_to_string(editor_process(&env)["host_log"].as_str().unwrap()).unwrap();
     assert!(host_log.contains(r#""event":"user_message""#), "{host_log}");
-    assert_eq!(status_of(&env, "any-1")["held_by"], editor_process(&env)["host_pid"]);
+    assert_eq!(status_of(&env, "any-1")["lock_pid"], editor_process(&env)["host_pid"]);
     let _ = editor.kill();
 }
 
@@ -4004,12 +4004,10 @@ fn adr_0003_an_editors_prompt_of_a_held_session_is_refused() {
     let notes = host_log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take());
     let refused: Vec<Value> = notes.filter(|n| n["event"] == "editor_request_refused").collect();
     assert_eq!(refused.len(), 1, "{host_log}");
-    assert_eq!(
-        (&refused[0]["method"], &refused[0]["error"]),
-        (&json!("session/prompt"), &json!(message))
-    );
+    let logged = json!({ "code": "session_active", "message": message });
+    assert_eq!((&refused[0]["method"], &refused[0]["error"]), (&json!("session/prompt"), &logged));
     let status = status_of(&env, "sess-1");
-    assert_eq!(status["held_by"].to_string(), headless);
+    assert_eq!(status["lock_pid"].to_string(), headless);
     let _ = editor.kill();
 }
 
