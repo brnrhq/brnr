@@ -802,7 +802,9 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_an_editors_session_that_cant_be_locked_is_passed_through`,
     `adr_0003_an_editors_load_held_from_another_runtime_dir_is_refused`,
     `adr_0003_the_release_command_runs_as_shown`,
-    `adr_0003_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`.
+    `adr_0003_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`,
+    `adr_0003_a_load_answered_after_another_process_took_its_session_isnt_served`,
+    `adr_0003_a_resume_answered_after_another_process_took_its_session_isnt_served`.
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_resume_of_a_held_session_is_refused`,
     `adr_0003_take_over_moves_a_session`,
@@ -826,7 +828,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
     `adr_0003_a_resume_into_its_own_process_is_refused`.
 - 3.10: [tests/headless.rs](../../tests/headless.rs):
-  `adr_0003_shared_sessions_let_an_editor_load_a_held_session`.
+  `adr_0003_shared_sessions_let_an_editor_load_a_held_session`,
+  `adr_0003_shared_sessions_serve_a_load_answered_after_another_process_took_it`.
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
