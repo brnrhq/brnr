@@ -163,8 +163,9 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   on the start channel says the same (`socket#start`).
 - The host log notes each `subscribe` (`peer_subscribed`, with its `peer`)
   once the peer is subscribed, so whoever finds the note there knows the
-  peer gets every event after it: the tests wait for it before they make
-  an event an observer must see, not a time (#333). A started bridge has
+  peer gets every event after it that its subscription selects: the tests
+  wait for it before they make an event an observer must see, not a time
+  (#333). A started bridge has
   `bridge_started` for it. The start channel has no note: its ready report
   goes in the same step of the event loop that subscribes it, before any
   event can.

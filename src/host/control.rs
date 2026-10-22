@@ -665,7 +665,7 @@ impl Host {
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
         let pid = std::process::id();
         // Noted once the peer is subscribed: who finds it in the host log
-        // knows the peer gets the next event (ADR 10.2).
+        // knows the peer gets the next event it subscribed to (ADR 10.2).
         self.sink.note(None, json!({ "event": "peer_subscribed", "peer": label }));
         Ok(
             json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),

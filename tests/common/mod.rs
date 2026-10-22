@@ -205,7 +205,8 @@ impl Env {
     }
 
     /// Waits for the processes to have taken `count` subscriptions: an
-    /// observer that has subscribed gets every event after it.
+    /// observer that has subscribed gets every event after it that it asked
+    /// for.
     pub fn wait_subscriptions(&self, count: usize) {
         let taken = wait_for(Duration::from_secs(15), || self.subscriptions() >= count);
         assert!(taken, "{} of {count} subscriptions taken in 15 s", self.subscriptions());
