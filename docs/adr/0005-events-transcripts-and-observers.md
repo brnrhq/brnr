@@ -122,8 +122,11 @@ Reading:
   record is the oldest file's and the last is the newest record of them
   all: `session resume` takes its cwd, agent and profile from that newest
   record (ADR 3.11), and `session list` its row, one per id (#121). That
-  record is the newest a process recorded (a deletion's, ADR 8.1, is no
-  process's), and its cwd is the one its file's first record names. A
+  record is the newest a process recorded that isn't a deletion: a
+  deletion isn't activity (ADR 8.1), neither `session delete`'s, which is
+  no process's, nor an editor's, which its process records into every file
+  of the session, opened there or not. Its cwd is the one its file's first
+  record names. A
   line cut short is never taken for a record: a JSON object ends only at
   its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;

@@ -430,8 +430,9 @@ fn stop(a: &Args) -> Result<(), String> {
 /// the session it was forked from if it opened as a fork (ADR 3.12); the
 /// newest record of them all says when and in which process the session was
 /// last active, and its file's first record in which cwd, or, if it is a
-/// deletion's, a record of no process's (ADR 8.1), the newest that names a
-/// process does. That process's log says which agent it ran.
+/// deletion's, which isn't activity whoever recorded it (ADR 8.1), the
+/// newest other record that names a process does. That process's log says
+/// which agent it ran.
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // One served by a process, or whose lock is held, is running, whatever
     // folder its files are in, and whether its process answers or not.
@@ -453,11 +454,15 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         if running.contains(session) {
             continue;
         }
-        // The process that last served it: a deletion's record is no
-        // process's (ADR 8.1).
-        let served = match last["host_id"].is_string() {
+        // The process that last served it. A deletion isn't serving (ADR
+        // 8.1): `session delete`'s record is no process's, and an editor's,
+        // through a process that may never have opened the session, goes
+        // into every file of it.
+        let serving =
+            |r: &Value| r["host_id"].is_string() && r["event"]["event"] != "session_deleted";
+        let served = match serving(&last) {
             true => Some(last.clone()),
-            false => transcript::last(&file, |r| r["host_id"].is_string()),
+            false => transcript::last(&file, serving),
         };
         // When a process last served it: a deletion isn't activity.
         let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
