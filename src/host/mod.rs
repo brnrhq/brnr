@@ -57,6 +57,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitCode, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
@@ -322,7 +323,7 @@ enum Ev {
     /// (ADR 10.4).
     PeerClosed {
         peer: u64,
-        slot: control::Slot,
+        slot: Arc<control::Slot>,
     },
     BridgeStderr {
         label: String,
@@ -1169,7 +1170,7 @@ impl Host {
             }
             Ev::PeerTooLong { peer } => self.request_too_long(peer),
             Ev::PeerClosed { peer, slot } => {
-                self.peers.remove(&peer);
+                self.peer_closed(peer);
                 drop(slot);
             }
             Ev::BridgeStderr { label, line } => {
