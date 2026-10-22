@@ -91,7 +91,7 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   Codex's adapters, keep the names they had. A transcript under a name of
   the earlier rule (other bytes replaced by `_`), or in a folder of the
   earlier rule (`<claude>` alone), is an older brnr's: it stays as it is,
-  and isn't read, as no record an older brnr wrote is (ADR 5.9). A
+  and isn't read, as no record an older brnr wrote is (ADR 5.10). A
   session resumed writes its escaped name in its cwd's `<claude>-<hash>`
   folder, as any session does. A file two sessions already share stays
   as it is.
@@ -108,7 +108,7 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   say which is which.
 - A session of before the hash, resumed, starts a transcript in its cwd's
   folder, as any session does. The one it had is an older brnr's, which
-  `doctor` lists (ADR 5.9). Going on in the old file (#120 kept that
+  `doctor` lists (ADR 5.10). Going on in the old file (#120 kept that
   rule until #314) would add records of this brnr's after records it
   doesn't read.
 

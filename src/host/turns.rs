@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use super::text_block;
+use crate::error::{Code, Error};
 
 /// A message accepted by the host and not yet sent as a prompt.
 #[derive(Clone)]
@@ -343,7 +344,7 @@ impl Turns {
 
     /// `cancel` (ADR 4.3): what is held is dropped, unless `keep_held`, and
     /// the running turn, if one is, cancelled. Its status (`cancelling` or
-    /// `idle`), and the messages dropped as `{message, text}`.
+    /// `idle`), and the messages dropped as `{message, text, reason}`.
     pub(super) fn cancel(&mut self, keep_held: bool) -> (&'static str, Vec<Value>, Vec<Do>) {
         let (dropped, mut todo) =
             if keep_held { (Vec::new(), Vec::new()) } else { self.drop_held("cancel") };
@@ -397,7 +398,8 @@ impl Turns {
     /// Messages taken from those held, never to be sent: each is a
     /// `message_dropped` event, `reason` `cancel`, `queue`, `close` or `exit`
     /// (ADR 5.2), or `steer` for a steer the agent refused. Returns them as
-    /// `{message, text}` too, for a response.
+    /// `{message, text, reason}` too, as the events have them, for a
+    /// response (ADR 8.2).
     fn dropped(&self, held: Vec<Held>, reason: &str) -> (Vec<Value>, Vec<Do>) {
         let events = held.iter().map(|h| {
             Do::Emit(json!({
@@ -409,7 +411,9 @@ impl Turns {
             }))
         });
         let events = events.collect();
-        (held.into_iter().map(|h| json!({ "message": h.id, "text": h.text })).collect(), events)
+        let dropped =
+            held.into_iter().map(|h| json!({ "message": h.id, "text": h.text, "reason": reason }));
+        (dropped.collect(), events)
     }
 
     /// Context held for the next prompt, which won't come: each is a
@@ -424,13 +428,13 @@ impl Turns {
     /// `queue` (ADR 4.2): drops held message `drop`, refused if there is
     /// none, then, with `clear`, every held message, then, with
     /// `clear_context`, the context. Returns the messages dropped as
-    /// `{message, text}`.
+    /// `{message, text, reason}`.
     pub(super) fn queue(
         &mut self,
         drop: Option<&str>,
         clear: bool,
         clear_context: bool,
-    ) -> Result<(Vec<Value>, Vec<Do>), String> {
+    ) -> Result<(Vec<Value>, Vec<Do>), Error> {
         let mut gone = Vec::new();
         if let Some(id) = drop {
             let interrupt = self.interrupts.iter().position(|h| h.id == id);
@@ -438,7 +442,9 @@ impl Turns {
                 Some(pos) => self.interrupts.remove(pos),
                 None => self.held.iter().position(|h| h.id == id).and_then(|p| self.held.remove(p)),
             };
-            gone.push(held.ok_or(format!("no held message {id}"))?);
+            let no_message =
+                || Error::new(Code::message_not_found, format!("no held message {id}"));
+            gone.push(held.ok_or_else(no_message)?);
         }
         if clear {
             gone.extend(self.interrupts.drain(..).chain(self.held.drain(..)));
@@ -826,7 +832,8 @@ mod tests {
             s.turns.held_message("m2").map(|(h, i)| (h.id.as_str(), i)),
             Some(("m2", false))
         );
-        assert_eq!(s.turns.queue(Some("m9"), true, false).err(), Some("no held message m9".into()));
+        let none = Error::new(Code::message_not_found, "no held message m9");
+        assert_eq!(s.turns.queue(Some("m9"), true, false).err(), Some(none));
         assert_eq!(s.turns.held(), 3, "a refused drop clears nothing");
         let (dropped, todo) = s.turns.queue(Some("m3"), false, false).unwrap();
         assert_eq!((dropped.len(), s.run(todo)), (1, vec!["dropped m3 by queue".into()]));
