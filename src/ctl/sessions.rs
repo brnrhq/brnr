@@ -16,12 +16,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::schema::{self, AgentCapabilities, Error, ErrorCode, ListSessionsResponse, SessionInfo};
+use crate::error::{self, Code};
+use crate::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
 use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::args::{self, Error::Invalid};
 use super::client::{Host, discover};
-use super::{Args, agent_name, forked_from, inactive_sessions, print_json, print_table, when};
+use super::{Args, agent, agent_of, forked_from, inactive_sessions, print_json, print_table, when};
 
 /// How long an agent started to be asked has to start and answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -83,7 +84,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
     // Joined on the id, exactly: never on which recorded agent the command
     // line might be (P4). The agent's title and time, where it gives them.
     let ours = rows.len();
-    let program = asked.as_ref().map(|a| agent_name(&json!(a)));
+    let program = agent_of(&json!(asked), &Value::Null);
     for x in listed {
         let id = x.session_id.to_string();
         let mut known = false;
@@ -140,7 +141,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
         }
     }
     if json_out {
-        print_json(&json!(rows))?;
+        print_json(&json!({ "sessions": rows }))?;
         return Ok(ExitCode::SUCCESS);
     }
     if rows.is_empty() {
@@ -168,7 +169,7 @@ pub(super) fn list(a: &Args) -> Result<ExitCode, args::Error> {
             cell(&r["title"]),
             cell(&r["state"]),
             r["pid"].as_u64().map_or("-".to_owned(), |p| p.to_string()),
-            cell(&r["agent"]),
+            cell(&r["agent"]["program"]),
             cell(&r["source"]),
             r["last_active"].as_str().map_or("-".to_owned(), when),
             cell(&r["forked_from"]),
@@ -220,7 +221,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
     let mut rows = Vec::new();
     for host in hosts {
         let pid = host.id().parse::<u64>().ok();
-        let agent = agent_name(&host.info()["agent"]);
+        let agent = agent(host);
         for s in host.sessions() {
             rows.push(json!({
                 "session": s["session"],
@@ -257,7 +258,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "unreachable",
             "pid": held.pid,
-            "agent": null,
+            "agent": agent_of(&Value::Null, &Value::Null),
             "source": "brnr",
             "last_active": null,
             "forked_from": null,
@@ -270,7 +271,7 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
             "title": null,
             "state": "inactive",
             "pid": null,
-            "agent": agent_name(&p["agent"]),
+            "agent": agent_of(&p["agent"], &Value::Null),
             "source": "brnr",
             "last_active": p["last_active"],
             "forked_from": p["forked_from"],
@@ -285,24 +286,26 @@ fn brnr_rows(hosts: &[Host]) -> Vec<Value> {
 pub(super) fn named_agent(
     profile: Option<&str>,
     agent: Vec<String>,
-) -> Result<Option<Vec<String>>, String> {
+) -> Result<Option<Vec<String>>, error::Error> {
     if profile.is_none() && agent.is_empty() {
         return Ok(None);
     }
     let cfg = config::load(profile)?;
     let agent = if agent.is_empty() { cfg.agent.clone().unwrap_or_default() } else { agent };
     if agent.is_empty() {
-        return Err("no agent: give one after -- or set agent in the profile".into());
+        let error = "no agent: give one after -- or set agent in the profile";
+        return Err(error::Error::new(Code::agent_not_started, error));
     }
     Ok(Some(agent))
 }
 
 /// The agent's sessions in `cwd`, every page of `session/list`. An agent
 /// that can't list fails (P7).
-fn agent_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, String> {
+fn agent_sessions(agent: &[String], cwd: &str) -> Result<Vec<SessionInfo>, error::Error> {
     let (mut asked, caps) = Asked::start(agent)?;
     if caps.session_capabilities.list.is_none() {
-        return Err("the agent doesn't list its sessions".to_owned());
+        let error = "the agent doesn't list its sessions";
+        return Err(error::Error::new(Code::capability_missing, error));
     }
     let mut sessions = Vec::new();
     let mut cursor: Option<String> = None;
@@ -338,7 +341,7 @@ pub(super) struct Asked {
 impl Asked {
     /// Starts `agent` and initializes it, saying what it can do. A version
     /// of ACP other than brnr's fails, with nothing more asked (ADR 2.2).
-    pub(super) fn start(agent: &[String]) -> Result<(Asked, AgentCapabilities), String> {
+    pub(super) fn start(agent: &[String]) -> Result<(Asked, AgentCapabilities), error::Error> {
         let mut program = paths::expand(&agent[0]).into_os_string();
         if let Some(bundled) = spawn::bundled(&program) {
             program = bundled.into_os_string();
@@ -349,9 +352,10 @@ impl Asked {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0);
-        let mut child = signals::as_found(&mut cmd)
-            .spawn()
-            .map_err(|e| format!("{}: {e}", program.to_string_lossy()))?;
+        let mut child = signals::as_found(&mut cmd).spawn().map_err(|e| {
+            let error = format!("{}: {e}", program.to_string_lossy());
+            error::Error::new(Code::agent_not_started, error)
+        })?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel::<String>();
@@ -372,7 +376,8 @@ impl Asked {
                 "clientInfo": { "name": "brnr", "version": env!("CARGO_PKG_VERSION") },
             }),
         )?;
-        schema::check_protocol_version(&init)?;
+        schema::check_protocol_version(&init)
+            .map_err(|e| error::Error::new(Code::acp_version_unsupported, e))?;
         let caps = schema::read(&init["agentCapabilities"]).unwrap_or_default();
         Ok((asked, caps))
     }
@@ -382,42 +387,30 @@ impl Asked {
         self.child.id()
     }
 
-    /// Sends a request and waits for its answer: its result, or its error.
-    pub(super) fn ask(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        self.answer(method, params).map_err(|(_, why)| why)
-    }
-
-    /// As [`ask`](Self::ask), with the code of the agent's error when it
-    /// answered with one: none when it didn't answer.
-    pub(super) fn answer(
-        &mut self,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, (Option<ErrorCode>, String)> {
+    /// Sends a request and waits for its answer: its result, or its error,
+    /// `agent_failed` with the agent's (ADR 8.7) when it answered with one.
+    pub(super) fn ask(&mut self, method: &str, params: Value) -> Result<Value, error::Error> {
         let id = self.next_id;
         self.next_id += 1;
         let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let stdin = self.stdin.as_mut().ok_or((None, "the agent's stdin is closed".to_owned()))?;
-        writeln!(stdin, "{req}").map_err(|e| (None, format!("the agent: {e}")))?;
+        let stdin = self.stdin.as_mut().ok_or("the agent's stdin is closed")?;
+        writeln!(stdin, "{req}").map_err(|e| format!("the agent: {e}"))?;
         loop {
             let wait = self.deadline.saturating_duration_since(Instant::now());
             let line = self
                 .lines
                 .recv_timeout(wait)
-                .map_err(|_| (None, format!("the agent didn't answer {method}")))?;
+                .map_err(|_| format!("the agent didn't answer {method}"))?;
             // As the host reads it (see json.rs): a title cut mid-emoji is no
             // reason to miss the answer. One too deep may be the answer: as
             // the client, brnr refuses it, and says so (ADR 2.5).
             let line = line.as_bytes();
-            json::within(line, json::DEPTH, "a line of the agent's").map_err(|e| (None, e))?;
+            json::within(line, json::DEPTH, "a line of the agent's")?;
             let Some(msg) = json::parse::<Value>(line, json::DEPTH) else { continue };
             if msg["id"] == id && msg.get("method").is_none() {
                 if let Some(error) = msg.get("error") {
-                    let code = schema::read::<Error>(error).map(|e| e.code);
-                    return Err((
-                        code,
-                        format!("{method} failed: {}", schema::error_message(error)),
-                    ));
+                    let said = format!("{method} failed: {}", schema::error_message(error));
+                    return Err(error::Error::agent(said, error));
                 }
                 return Ok(msg["result"].clone());
             }

@@ -34,6 +34,7 @@ use std::process::ExitCode;
 mod bug;
 mod config;
 mod ctl;
+mod error;
 mod frame;
 mod host;
 mod json;
@@ -87,6 +88,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 #[cfg(feature = "internals")]
 #[doc(hidden)]
 pub mod internals {
+    pub mod error {
+        pub use crate::error::names;
+    }
     pub mod frame {
         pub use crate::frame::{DATA, read, write};
     }

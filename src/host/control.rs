@@ -10,6 +10,9 @@
 //!
 //! Requests: `{"cmd": …, "req_id"?: …}`; the response echoes `req_id`.
 //! `session` is a session's exact id; the commands about a session need it.
+//! A `cmd` the process doesn't have, or a field of one ([`REQUESTS`]), is
+//! refused, `command_unknown`: a newer brnr's request, which would otherwise
+//! be done without what it asked (ADR 8.8, P7).
 //! - `status`
 //! - `logged`: answered once what the process recorded before it was asked
 //!   is in its transcript, which a logger thread writes (`brnr event log`,
@@ -26,10 +29,14 @@
 //!   message `show` (an id; anything else is refused) in full, its content
 //!   `blocks` included
 //! - `subscribe` `{events?: [...] | "all"}`: events follow on this connection
-//!   (started bridges are subscribed from the start). The answer names the
+//!   (started bridges are subscribed from the start). An event the process
+//!   doesn't have is left out, and named in `unknown_events`, so that a newer
+//!   brnr's bridge gets the events this one has (ADR 8.8); a note is refused
+//!   (ADR 5.9). The answer names the
 //!   connection (`peer`), the process (`host_id`) and the last event before
 //!   it (`seq`): every event has a position, its `seq`, one more than the
-//!   last event's or ACP message's of the process (ADR 10.2)
+//!   last event's or ACP message's of the process (ADR 10.2). The host log
+//!   notes it (`peer_subscribed`)
 //! - `was_cut_off` `{peer}`: whether the process cut that connection off,
 //!   and the last event it queued for it (`last_queued_seq`), so that a peer
 //!   that has reconnected can catch up from the transcript (ADR 10.2). It
@@ -92,6 +99,12 @@
 //! A peer cut off is noted in the host log (`peer_dropped`), kept among the
 //! last [`CUT_OFFS`] for `was_cut_off`, and told to the other peers, as a
 //! `peer_cut_off` event (ADR 10.2).
+//!
+//! A request is a line of up to [`LINE_BYTES`], its newline included: a
+//! peer that sends a longer one is answered with an error, noted in the
+//! host log (`peer_dropped`, `line_too_long`) and cut off (ADR 10.3). At most
+//! [`MAX_CONNECTIONS`] connections are open at once; one more is told so and
+//! closed (ADR 10.4).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -111,11 +124,13 @@ use serde_json::{Value, json};
 
 use super::approvals::{self, AgentRequest, Answer, Choice, Kind, Who};
 use super::elicitation;
+use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::turns::{Activity, Held, Mode, Status};
 use super::{Ev, Host};
 use crate::config::{Bridge, Experimental, Log};
+use crate::error::{Code, Error};
 use crate::log::{self, Dir};
 use crate::request::{Prompt, Settings};
 use crate::{json, paths, render, sys};
@@ -149,6 +164,66 @@ pub(crate) const EVENTS: &[&str] = &[
     "process_exited",
     "acp",
 ];
+
+/// The version of what the socket speaks, its requests, their fields and
+/// replies, and the events, in `<pid>.json` and `status` beside brnr's own
+/// (ADR 8.8). One more in a release that adds to it; within a major version
+/// it only grows, as the bridge protocol is covered (ADR 8.4).
+pub(crate) const PROTOCOL: u64 = 1;
+
+/// Each request, and its fields but `cmd` and `req_id`, which every request
+/// may have. What isn't here the process doesn't have, and refuses
+/// (`command_unknown`, ADR 8.8).
+const REQUESTS: &[(&str, &[&str])] = &[
+    ("status", &[]),
+    ("logged", &[]),
+    ("send", &["session", "text", "blocks", "mode", "replace"]),
+    ("cancel", &["session", "keep_held"]),
+    ("queue", &["session", "drop", "clear", "clear_context", "show"]),
+    ("subscribe", &["events"]),
+    ("was_cut_off", &["peer"]),
+    ("pending", &[]),
+    ("allow", &["session", "request", "always", "option_id"]),
+    ("reject", &["session", "request", "always", "option_id"]),
+    ("elicitation", &["session", "request", "action", "content"]),
+    ("set_config", &["session", "mode", "model", "thought_level", "options"]),
+    ("fork", &["session"]),
+    ("close", &["session", "take_over"]),
+    ("new", &["cwd", "mode", "model", "thought_level", "options", "text", "blocks", "timeout"]),
+    (
+        "resume",
+        &[
+            "session",
+            "cwd",
+            "mode",
+            "model",
+            "thought_level",
+            "options",
+            "text",
+            "blocks",
+            "timeout",
+        ],
+    ),
+    ("stop", &[]),
+];
+
+/// `Err`: what of `req`, a `cmd` request, the process doesn't have: the
+/// command, or fields of it. Refused, not ignored: a newer brnr's field done
+/// without would be its request done otherwise than asked (ADR 8.8, P7).
+fn check_request(cmd: &str, req: &Value) -> Result<(), Error> {
+    let Some((_, fields)) = REQUESTS.iter().find(|(c, _)| *c == cmd) else {
+        return Err(Error::new(Code::command_unknown, format!("unknown command: {cmd}")));
+    };
+    let fields_of = req.as_object().into_iter().flat_map(|m| m.keys().map(String::as_str));
+    let unknown: Vec<&str> =
+        fields_of.filter(|f| !matches!(*f, "cmd" | "req_id") && !fields.contains(f)).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let takes = if fields.is_empty() { "no fields".to_owned() } else { fields.join(", ") };
+    let error = format!("{cmd} doesn't take {} (it takes {takes})", unknown.join(", "));
+    Err(Error::new(Code::command_unknown, error))
+}
 
 /// Notes: what brnr adds to a stream of events, and the host never emits
 /// (ADR 5.9): the logger's gap in a transcript (ADR 10.1), and what a command
@@ -268,35 +343,102 @@ impl Peer {
     }
 }
 
-pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), String> {
+pub(crate) fn check_bridge(bridge: &Bridge) -> Result<(), Error> {
     if bridge.command.is_empty() {
         return Err("a bridge needs a command".into());
     }
     check_events(bridge.events.as_deref().unwrap_or_default())
 }
 
-fn check_events(events: &[String]) -> Result<(), String> {
+/// A profile's bridge's `events`: each an event this brnr has. The profile
+/// is read by the brnr that starts the bridge, so a name it doesn't have is
+/// a mistake, as a config key it doesn't know is (ADR 6.1).
+fn check_events(events: &[String]) -> Result<(), Error> {
+    no_notes(events)?;
     match events.iter().find(|e| !EVENTS.contains(&e.as_str())) {
-        // The host never sends one (ADR 5.9).
-        Some(note) if NOTES.contains(&note.as_str()) => {
-            Err(format!("{note:?} is a note, which the host never sends: only events are"))
-        }
-        Some(bad) => Err(format!("unknown event {bad:?} (events: {})", EVENTS.join(", "))),
+        Some(bad) => Err(Error::new(
+            Code::event_unknown,
+            format!("unknown event {bad:?} (events: {})", EVENTS.join(", ")),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `Err` if `events` names a note, which no brnr's process sends (ADR 5.9).
+fn no_notes(events: &[String]) -> Result<(), Error> {
+    match events.iter().find(|e| NOTES.contains(&e.as_str())) {
+        Some(note) => Err(Error::new(
+            Code::event_unknown,
+            format!("{note:?} is a note, which the host never sends: only events are"),
+        )),
         None => Ok(()),
     }
 }
 
 // ---- connections ---------------------------------------------------------
 
+/// Connections open at once (ADR 10.4): each costs two threads and a queue
+/// of up to [`QUEUE_BYTES`], so a runaway client of the user's can't take
+/// the process's threads, file descriptors or memory.
+const MAX_CONNECTIONS: usize = 128;
+
+/// The wait after an accept fails, doubling while it keeps failing, up to
+/// [`ACCEPT_WAIT_MAX`] (ADR 10.4).
+const ACCEPT_WAIT: Duration = Duration::from_millis(10);
+const ACCEPT_WAIT_MAX: Duration = Duration::from_secs(1);
+
 pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
+    serve_up_to(listener, tx, MAX_CONNECTIONS)
+}
+
+/// Serves up to `max` connections at once; one more is told so and closed.
+/// An accept that fails (out of file descriptors, say) is tried again after
+/// a wait that doubles while it keeps failing, not at once and for ever.
+fn serve_up_to(listener: UnixListener, tx: SyncSender<Ev>, max: usize) {
+    let open = Arc::new(AtomicUsize::new(0));
+    let mut wait = None;
     for conn in listener.incoming() {
-        let Ok(conn) = conn else { continue };
-        let tx = tx.clone();
-        thread::spawn(move || connection(conn, tx));
+        let mut conn = match conn {
+            Ok(conn) => conn,
+            Err(_) => {
+                let next = backoff(wait);
+                wait = Some(next);
+                thread::sleep(next);
+                continue;
+            }
+        };
+        wait = None;
+        if open.fetch_add(1, Relaxed) >= max {
+            open.fetch_sub(1, Relaxed);
+            // A short line into an empty socket buffer, which never waits; it
+            // is made sure of anyway, so a client can't hold up the others.
+            let error =
+                Error::new(Code::process_unreachable, format!("too many connections: {max} open"));
+            let _ = conn.set_nonblocking(true);
+            let _ = writeln!(conn, "{}", error.reply());
+            continue;
+        }
+        let (tx, slot) = (tx.clone(), Slot(open.clone()));
+        thread::spawn(move || connection(conn, tx, slot));
     }
 }
 
-fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
+/// The wait before accepting again after the wait `last` (none after a
+/// success).
+fn backoff(last: Option<Duration>) -> Duration {
+    last.map_or(ACCEPT_WAIT, |last| (last * 2).min(ACCEPT_WAIT_MAX))
+}
+
+/// A connection counted as open until it is dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
+}
+
+fn connection(conn: UnixStream, tx: SyncSender<Ev>, slot: Slot) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
     let (out_tx, out_rx, queued) = Queue::new();
@@ -307,6 +449,9 @@ fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
         return;
     }
     read_requests(conn, peer, &tx);
+    // Free before the event loop hears, so a client that has seen one
+    // connection end can open another.
+    drop(slot);
     let _ = tx.send(Ev::PeerClosed { peer });
 }
 
@@ -320,11 +465,19 @@ pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: 
 }
 
 /// Requests, one per line, until EOF. A line that isn't JSON (not even
-/// UTF-8) is answered with an error; the peer stays.
+/// UTF-8) is answered with an error; the peer stays. One longer than
+/// [`LINE_BYTES`] isn't read past that: the peer is cut off (ADR 10.3).
 fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
-    while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
+    // Never more of a line than the limit in memory.
+    let mut next =
+        |line: &mut Vec<u8>| (&mut reader).take(LINE_BYTES as u64).read_until(b'\n', line);
+    while matches!(next(&mut line), Ok(n) if n > 0) {
+        if line.len() == LINE_BYTES && line.last() != Some(&b'\n') {
+            let _ = tx.send(Ev::PeerTooLong { peer });
+            return;
+        }
         if !line.trim_ascii().is_empty() {
             let req = serde_json::from_slice::<Value>(&line)
                 .unwrap_or_else(|e| json!({ "parse_error": e.to_string() }));
@@ -538,6 +691,25 @@ impl Host {
         }
     }
 
+    /// Cuts off a peer whose request ran past [`LINE_BYTES`], unread, once
+    /// it is told why (ADR 10.3): where its next request would start can't
+    /// be known. Not one that fell behind: there is nothing to catch up on.
+    /// A connection closes once the answer is written; a started bridge gets
+    /// SIGTERM, as one cut off does.
+    pub(super) fn request_too_long(&mut self, peer: u64) {
+        let Some(p) = self.peers.remove(&peer) else { return };
+        let error = format!("a request longer than {LINE_BYTES} bytes: cut off");
+        let _ = p.tx.push(Error::new(Code::command_invalid, error).reply().to_string());
+        let reason = "line_too_long";
+        let event = json!({ "event": "peer_dropped", "peer": p.label, "reason": reason, "limit": LINE_BYTES });
+        self.sink.note(None, event);
+        if let Closer::Bridge(pid) = p.closer
+            && self.bridge_pids.contains(&pid)
+        {
+            sys::kill(pid, libc::SIGTERM);
+        }
+    }
+
     /// Answers a request, now or (for what the agent must answer first)
     /// once the agent has.
     pub(super) fn peer_request(&mut self, peer: u64, req: Value) {
@@ -545,7 +717,7 @@ impl Host {
         match self.command(peer, &req) {
             Ok(Some(response)) => self.reply(peer, req_id, response),
             Ok(None) => {} // See requests.rs: answered when the agent answers.
-            Err(e) => self.reply(peer, req_id, json!({ "ok": false, "error": e })),
+            Err(e) => self.reply(peer, req_id, e.reply()),
         }
     }
 
@@ -568,8 +740,8 @@ impl Host {
     /// `was_cut_off`: whether the peer named `peer` was cut off, and the last
     /// event queued for it then (ADR 10.2). A position, never an event: what
     /// it missed is in the transcript, which the asker reads as itself.
-    fn was_cut_off(&self, req: &Value) -> Result<Value, String> {
-        let peer = req["peer"].as_str().ok_or("missing peer")?;
+    fn was_cut_off(&self, req: &Value) -> Result<Value, Error> {
+        let peer = req["peer"].as_str().ok_or_else(|| invalid("missing peer"))?;
         let cut = self.cut_offs.iter().rev().find(|(label, _)| label == peer);
         Ok(json!({
             "ok": true,
@@ -580,41 +752,42 @@ impl Host {
     }
 
     /// `Ok(None)`: the answer comes from the agent, later.
-    pub(super) fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, String> {
+    pub(super) fn command(&mut self, peer: u64, req: &Value) -> Result<Option<Value>, Error> {
         if let Some(err) = req.get("parse_error") {
-            return Err(format!("bad request: {}", err.as_str().unwrap_or_default()));
+            return Err(invalid(format!("bad request: {}", err.as_str().unwrap_or_default())));
         }
-        let now = |v: Result<Value, String>| v.map(Some);
-        match req["cmd"].as_str() {
-            Some("status") => Ok(Some(self.status_report())),
-            Some("logged") => {
+        let now = |v: Result<Value, Error>| v.map(Some);
+        let Some(cmd) = req["cmd"].as_str() else { return Err(invalid("missing cmd")) };
+        check_request(cmd, req)?;
+        match cmd {
+            "status" => Ok(Some(self.status_report())),
+            "logged" => {
                 self.when_logged(peer, req.get("req_id").cloned());
                 Ok(None)
             }
-            Some("send") => now(self.send(req)),
-            Some("cancel") => now(self.cancel_turn(req)),
-            Some("queue") => now(self.queue(req)),
-            Some("subscribe") => now(self.subscribe(peer, req)),
-            Some("was_cut_off") => now(self.was_cut_off(req)),
-            Some("pending") => Ok(Some(json!({
+            "send" => now(self.send(req)),
+            "cancel" => now(self.cancel_turn(req)),
+            "queue" => now(self.queue(req)),
+            "subscribe" => now(self.subscribe(peer, req)),
+            "was_cut_off" => now(self.was_cut_off(req)),
+            "pending" => Ok(Some(json!({
                 "ok": true,
                 "pending": self.pending_permissions(),
                 "elicitations": self.pending_elicitations(),
             }))),
-            Some("allow") => now(self.answer(peer, req, Choice::Allow)),
-            Some("reject") => now(self.answer(peer, req, Choice::Reject)),
-            Some("elicitation") => now(self.elicitation(peer, req)),
-            Some("set_config" | "fork" | "close") => self.agent_op(peer, req).map(|()| None),
-            Some("new" | "resume") => self.open(peer, req).map(|()| None),
-            Some("stop") => {
+            "allow" => now(self.answer(peer, req, Choice::Allow)),
+            "reject" => now(self.answer(peer, req, Choice::Reject)),
+            "elicitation" => now(self.elicitation(peer, req)),
+            "set_config" | "fork" | "close" => self.agent_op(peer, req).map(|()| None),
+            "new" | "resume" => self.open(peer, req).map(|()| None),
+            "stop" => {
                 if self.status.is_some() {
-                    return Err("the agent has already exited".into());
+                    return Err(Error::new(Code::agent_exited, "the agent has already exited"));
                 }
                 self.begin_stop();
                 Ok(Some(json!({ "ok": true, "status": "stopping" })))
             }
-            Some(other) => Err(format!("unknown command: {other}")),
-            None => Err("missing cmd".into()),
+            _ => Err(Error::new(Code::command_unknown, format!("unknown command: {cmd}"))),
         }
     }
 
@@ -640,7 +813,7 @@ impl Host {
         });
     }
 
-    fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+    fn subscribe(&mut self, peer: u64, req: &Value) -> Result<Value, Error> {
         let events: Option<Vec<String>> = match req.get("events") {
             None | Some(Value::Null) => None,
             Some(Value::String(all)) if all == "all" => {
@@ -648,12 +821,24 @@ impl Host {
             }
             Some(Value::Array(list)) => Some(
                 list.iter()
-                    .map(|e| e.as_str().map(str::to_owned).ok_or("events are strings"))
+                    .map(|e| {
+                        e.as_str().map(str::to_owned).ok_or_else(|| invalid("events are strings"))
+                    })
                     .collect::<Result<_, _>>()?,
             ),
-            Some(_) => return Err("events must be a list".into()),
+            Some(_) => return Err(invalid("events must be a list")),
         };
-        check_events(events.as_deref().unwrap_or_default())?;
+        // An event this process doesn't have is a newer brnr's: left out and
+        // named, so that a newer bridge gets the events this one has
+        // (ADR 8.8). A note is no brnr's event, and is refused (ADR 5.9).
+        no_notes(events.as_deref().unwrap_or_default())?;
+        let (events, unknown): (Option<Vec<String>>, Vec<String>) = match events {
+            None => (None, Vec::new()),
+            Some(list) => {
+                let (known, unknown) = list.into_iter().partition(|e| EVENTS.contains(&e.as_str()));
+                (Some(known), unknown)
+            }
+        };
         let p = self.peers.get_mut(&peer).ok_or("connection gone")?;
         p.subscribed = true;
         p.events = events.clone();
@@ -663,31 +848,29 @@ impl Host {
         // Where it starts, to catch up from if it is cut off (ADR 10.2).
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
         let pid = std::process::id();
+        // Noted once the peer is subscribed: who finds it in the host log
+        // knows the peer gets the next event it subscribed to (ADR 10.2).
+        self.sink.note(None, json!({ "event": "peer_subscribed", "peer": label }));
         Ok(
-            json!({ "ok": true, "events": names, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
+            json!({ "ok": true, "events": names, "unknown_events": unknown, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
         )
     }
 
-    fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, String> {
+    fn answer(&mut self, peer: u64, req: &Value, choice: Choice) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         self.check_experimental(Experimental::Permission)?;
         let session = self.sessions[i].id.clone();
-        let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
+        let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let always = req["always"].as_bool() == Some(true);
-        // Its old name, refused rather than ignored: the option it named
-        // would not be the one answered (ADR 8.1, P3).
-        if req.get("option").is_some() {
-            let cmd = req["cmd"].as_str().unwrap_or("allow");
-            return Err(format!("{cmd} takes option_id, not option"));
-        }
         // Absent, it picks by kind; anything but a string, null too, is
         // refused: read as absent, the kind's option would be answered in
-        // place of the one named (ADR 8.1, P3).
+        // place of the one named (ADR 8.1, P3). Its old name, `option`, is
+        // a field `allow` doesn't take (ADR 8.8).
         let option_id = match req.get("option_id") {
             None => None,
             Some(Value::String(id)) => Some(id.as_str()),
-            Some(_) => return Err("option_id isn't a string".into()),
+            Some(_) => return Err(invalid("option_id isn't a string")),
         };
         let resolved = self.approvals.answer(
             Kind::Permission,
@@ -706,7 +889,7 @@ impl Host {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
         // Whether `brnr permission allow` would be taken, and if not, why
         // (ADR 7.1).
-        let why_not = self.check_experimental(Experimental::Permission).err();
+        let why_not = self.check_experimental(Experimental::Permission).err().map(|e| e.message);
         self.approvals
             .held()
             .filter(|r| r.is_permission())
@@ -731,14 +914,15 @@ impl Host {
     /// (null for one scoped to a request outside any) with `action`, and an
     /// accept's `content`, checked against the form's schema before anything
     /// is sent.
-    fn elicitation(&mut self, peer: u64, req: &Value) -> Result<Value, String> {
+    fn elicitation(&mut self, peer: u64, req: &Value) -> Result<Value, Error> {
         let session = match &req["session"] {
             Value::Null => None,
             _ => Some(self.sessions[self.session_index(req)?].id.clone()),
         };
         self.check_experimental(Experimental::Elicitation)?;
-        let handle = req["request"].as_str().ok_or("missing request")?.to_owned();
-        let action = req["action"].as_str().ok_or("missing action: accept, decline or cancel")?;
+        let handle = req["request"].as_str().ok_or_else(|| invalid("missing request"))?.to_owned();
+        let action = req["action"].as_str();
+        let action = action.ok_or_else(|| invalid("missing action: accept, decline or cancel"))?;
         let by = Who::peer(self.peers.get(&peer).map(|p| p.label.clone()));
         let resolved = self.approvals.answer(
             Kind::Elicitation,
@@ -758,7 +942,7 @@ impl Host {
     /// timeout cancels it.
     fn pending_elicitations(&self) -> Vec<Value> {
         let owner = if self.editor_attached() { "editor" } else { "headless" };
-        let why_not = self.check_experimental(Experimental::Elicitation).err();
+        let why_not = self.check_experimental(Experimental::Elicitation).err().map(|e| e.message);
         self.approvals
             .held()
             .filter(|r| r.is_elicitation())
@@ -766,6 +950,8 @@ impl Host {
                 let mut e = elicitation::describe(r);
                 e["request"] = json!(r.held());
                 e["session"] = json!(r.session);
+                // The process, which names one outside any session.
+                e["pid"] = json!(std::process::id());
                 e["owner"] = json!(owner);
                 e["answerable"] = json!(why_not.is_none());
                 e["why_not"] = json!(why_not);
@@ -782,8 +968,9 @@ impl Host {
         report["ok"] = json!(true);
         report["owner"] = json!(if self.editor_attached() { "editor" } else { "headless" });
         // Counted: `pending` describes them.
-        report["pending"] = json!(self.approvals.held().filter(|r| r.is_permission()).count());
-        report["elicitations"] =
+        report["pending_count"] =
+            json!(self.approvals.held().filter(|r| r.is_permission()).count());
+        report["elicitation_count"] =
             json!(self.approvals.held().filter(|r| r.is_elicitation()).count());
         report["uptime"] = json!(self.started.elapsed().as_secs());
         report["stop_when_idle"] = json!(self.stop_when_idle.map(|d| d.as_secs()));
@@ -825,10 +1012,12 @@ impl Host {
                     "busy": busy,
                     "turn_elapsed": s.turns.running_for().map(|d| d.as_secs()),
                     "prompts": s.turns.prompts(),
-                    "held": s.turns.held(),
-                    "context": s.turns.context().len(),
-                    "pending": pending,
-                    "elicitations": elicitations,
+                    // Counts, named so: `held` and `context` are the
+                    // queue's lists (ADR 8.2).
+                    "held_count": s.turns.held(),
+                    "context_count": s.turns.context().len(),
+                    "pending_count": pending,
+                    "elicitation_count": elicitations,
                     "shared": s.shared(),
                     "lock_error": s.lock_error(),
                     "last_turn": s.turns.last_turn(),
@@ -847,23 +1036,23 @@ impl Host {
     /// `send` (ADR 4.2): a prompt of its own, held while a turn runs; steered
     /// into the running turn; interrupting it; or context for the next
     /// prompt. A second prompt never goes while one runs.
-    fn send(&mut self, req: &Value) -> Result<Value, String> {
+    fn send(&mut self, req: &Value) -> Result<Value, Error> {
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
             Value::Null => Vec::new(),
             Value::Array(blocks) => blocks.clone(),
-            _ => return Err("blocks must be a list of ACP content blocks".into()),
+            _ => return Err(invalid("blocks must be a list of ACP content blocks")),
         };
         let mode = req["mode"].as_str().unwrap_or("prompt");
         if !matches!(mode, "prompt" | "steer" | "interrupt" | "context") {
-            return Err(format!("unknown mode: {mode}"));
+            return Err(invalid(format!("unknown mode: {mode}")));
         }
         let replace = req["replace"].as_bool().unwrap_or(false);
         if text.trim().is_empty() && blocks.is_empty() {
-            return Err("missing text".into());
+            return Err(invalid("missing text"));
         }
         if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         self.check_blocks(&blocks)?;
         let i = self.session_index(req)?;
@@ -871,7 +1060,7 @@ impl Host {
         let session = self.sessions[i].id.clone();
         if mode == "context" {
             if !blocks.is_empty() {
-                return Err("context is text only".into());
+                return Err(invalid("context is text only"));
             }
             self.sessions[i].turns.add_context(text.clone(), replace);
             self.sink.note(
@@ -882,7 +1071,7 @@ impl Host {
         }
         if !self.start_done {
             // The start commits before the agent gets any work (ADR 3.4).
-            return Err("the session is still starting".into());
+            return Err(Error::new(Code::session_opening, "the session is still starting"));
         }
         let how = match mode {
             "steer" => Mode::Steer,
@@ -893,7 +1082,8 @@ impl Host {
             self.check_strict(Beyond::Steering)?;
             if !self.caps.steering {
                 let why = "it doesn't advertise _session/steering";
-                return Err(format!("the agent can't steer a running turn: {why}"));
+                let error = format!("the agent can't steer a running turn: {why}");
+                return Err(Error::new(Code::capability_missing, error));
             }
         }
         let held = Held { id: self.message_id(), text: text.clone(), blocks };
@@ -909,17 +1099,18 @@ impl Host {
     }
 
     /// Content blocks a bridge may add to a prompt.
-    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), String> {
+    pub(super) fn check_blocks(&self, blocks: &[Value]) -> Result<(), Error> {
         for block in blocks {
             match block["type"].as_str() {
                 Some("resource_link") if block["uri"].is_string() => {}
                 Some("image") if block["data"].is_string() && block["mimeType"].is_string() => {
                     if !self.caps.image {
-                        return Err("the agent doesn't take images".into());
+                        let error = "the agent doesn't take images";
+                        return Err(Error::new(Code::capability_missing, error));
                     }
                 }
                 Some("text") if block["text"].is_string() => {}
-                _ => return Err(format!("unsupported content block: {block}")),
+                _ => return Err(invalid(format!("unsupported content block: {block}"))),
             }
         }
         Ok(())
@@ -927,7 +1118,7 @@ impl Host {
 
     /// `cancel`: stops the running turn. Held messages would otherwise start
     /// the next turn, so they are dropped unless `keep_held`.
-    fn cancel_turn(&mut self, req: &Value) -> Result<Value, String> {
+    fn cancel_turn(&mut self, req: &Value) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         self.check_experimental(Experimental::Cancel)?;
         let session = self.sessions[i].id.clone();
@@ -941,17 +1132,20 @@ impl Host {
     /// `queue`: one held message in full (`show`), or the held messages and
     /// context after dropping one (`drop`) or clearing them (`clear`,
     /// `clear_context`).
-    fn queue(&mut self, req: &Value) -> Result<Value, String> {
+    fn queue(&mut self, req: &Value) -> Result<Value, Error> {
         let i = self.session_index(req)?;
         // A show that isn't an id is refused, not taken as absent: read as
         // absent, `{show: 2, clear: true}` would clear everything (P3).
         if let Some(show) = req.get("show") {
-            let id = show.as_str().ok_or("show must be a message id")?;
+            let id = show.as_str().ok_or_else(|| invalid("show must be a message id"))?;
             if ["drop", "clear", "clear_context"].iter().any(|k| req.get(k).is_some()) {
-                return Err("queue's show takes no drop or clear".into());
+                return Err(invalid("queue's show takes no drop or clear"));
             }
             let s = &self.sessions[i];
-            let (h, interrupt) = s.turns.held_message(id).ok_or(format!("no held message {id}"))?;
+            let held = s.turns.held_message(id);
+            let no_message =
+                || Error::new(Code::message_not_found, format!("no held message {id}"));
+            let (h, interrupt) = held.ok_or_else(no_message)?;
             return Ok(json!({
                 "ok": true,
                 "session": s.id,
@@ -979,9 +1173,9 @@ impl Host {
 
     /// Requests the agent answers: they go out now and the bridge is
     /// answered when the agent is (see requests.rs).
-    fn agent_op(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+    fn agent_op(&mut self, peer: u64, req: &Value) -> Result<(), Error> {
         if self.status.is_some() || self.agent_in.is_none() {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         let cmd = req["cmd"].as_str().unwrap_or_default();
         let req_id = req.get("req_id").cloned();
@@ -995,7 +1189,7 @@ impl Host {
                 let state = &self.sessions[i].state;
                 let steps = resolve_settings(&settings, &Settings::default(), state)?;
                 if steps.is_empty() {
-                    return Err("nothing to set".into());
+                    return Err(invalid("nothing to set"));
                 }
                 let of = SetupOf::Config(peer, req_id);
                 self.run_setup(Setup { session, steps, done: Vec::new(), of });
@@ -1004,18 +1198,20 @@ impl Host {
                 // A forked session would be a headless one in a process that
                 // ends with the editor, which ACP can't tell of it (ADR 7.1).
                 if self.editor_attached() {
-                    return Err("the editor owns this process; fork sessions there".into());
+                    let error = "the editor owns this process; fork sessions there";
+                    return Err(Error::new(Code::process_owned_by_editor, error));
                 }
                 self.check_strict(Beyond::Fork)?;
                 if !caps.fork {
-                    return Err("the agent can't fork sessions".into());
+                    return Err(incapable("the agent can't fork sessions"));
                 }
                 // A second session could never close when idle, and the
                 // process would never stop (ADR 3.8).
                 if self.stop_when_idle.is_some() && !caps.close {
-                    return Err("the agent can't close sessions: with stop_when_idle, a forked \
-                                session would never close"
-                        .into());
+                    return Err(incapable(
+                        "the agent can't close sessions: with stop_when_idle, a forked session \
+                         would never close",
+                    ));
                 }
                 let cwd = self.sessions[i].cwd.clone();
                 let params = json!({ "sessionId": session, "cwd": cwd.to_string_lossy(), "mcpServers": self.mcp_servers });
@@ -1024,7 +1220,7 @@ impl Host {
             "close" => {
                 self.check_experimental(Experimental::Close)?;
                 if !caps.close {
-                    return Err("the agent can't close sessions".into());
+                    return Err(incapable("the agent can't close sessions"));
                 }
                 let taken_by = req["take_over"].as_u64().and_then(|pid| u32::try_from(pid).ok());
                 self.close(i, peer, req_id, "close");
@@ -1040,37 +1236,39 @@ impl Host {
     /// `session/resume` or `session/load` (ADR 3.11), its settings set, and its
     /// prompt sent, committed as one as a start is (see requests.rs). Refused
     /// where `fork` is but in strict mode: these are stable ACP.
-    fn open(&mut self, peer: u64, req: &Value) -> Result<(), String> {
+    fn open(&mut self, peer: u64, req: &Value) -> Result<(), Error> {
         if self.status.is_some() || self.agent_in.is_none() || self.stop_requested {
-            return Err("the agent is no longer accepting input".into());
+            return Err(not_accepting());
         }
         // A session opened here would be a headless one in a process that
         // ends with the editor, which ACP can't tell of it (ADR 7.1).
         if self.editor_attached() {
-            return Err("the editor owns this process; open sessions there".into());
+            let error = "the editor owns this process; open sessions there";
+            return Err(Error::new(Code::process_owned_by_editor, error));
         }
         if !self.start_done {
-            return Err("the process is still starting".into());
+            return Err(Error::new(Code::process_starting, "the process is still starting"));
         }
         let caps = self.caps;
         // A second session could never close when idle, and the process
         // would never stop (ADR 3.8).
         if self.stop_when_idle.is_some() && !caps.close {
-            return Err("the agent can't close sessions: with stop_when_idle, a second session \
-                        would never close"
-                .into());
+            return Err(incapable(
+                "the agent can't close sessions: with stop_when_idle, a second session would \
+                 never close",
+            ));
         }
         let cwd = match &req["cwd"] {
             Value::Null => self.cwd.clone(),
             Value::String(dir) if Path::new(dir).is_absolute() => PathBuf::from(dir),
-            _ => return Err("cwd isn't an absolute path".into()),
+            _ => return Err(invalid("cwd isn't an absolute path")),
         };
         let settings = settings_of(req)?;
         let text = req["text"].as_str().unwrap_or_default().to_owned();
         let blocks = match &req["blocks"] {
             Value::Null => Vec::new(),
             Value::Array(blocks) => blocks.clone(),
-            _ => return Err("blocks must be a list of ACP content blocks".into()),
+            _ => return Err(invalid("blocks must be a list of ACP content blocks")),
         };
         self.check_blocks(&blocks)?;
         let prompt =
@@ -1079,7 +1277,8 @@ impl Host {
         let deadline = match &req["timeout"] {
             Value::Null => None,
             secs => {
-                let secs = secs.as_u64().ok_or("timeout must be a number of seconds")?;
+                let secs = secs.as_u64();
+                let secs = secs.ok_or_else(|| invalid("timeout must be a number of seconds"))?;
                 Instant::now().checked_add(Duration::from_secs(secs))
             }
         };
@@ -1092,14 +1291,15 @@ impl Host {
             self.host_request("session/new", params, HostRequest::Opening(Open::New, opening));
             return Ok(());
         }
-        let session = req["session"].as_str().ok_or("missing session")?.to_owned();
+        let session = req["session"].as_str().ok_or_else(|| invalid("missing session"))?.to_owned();
         if self.sessions.knows(&session) {
-            return Err(format!("{session} is already open in this process"));
+            let error = format!("{session} is already open in this process");
+            return Err(Error::new(Code::session_active, error));
         }
         if !caps.resume && !caps.load {
-            return Err(
-                "the agent can't resume sessions (no session/resume or session/load)".into()
-            );
+            return Err(incapable(
+                "the agent can't resume sessions (no session/resume or session/load)",
+            ));
         }
         // Taken before the agent hears of it: a session another process
         // holds is refused (ADR 3.9).
@@ -1125,14 +1325,15 @@ impl Host {
 
     /// The session a request names, by its exact id. One that is closing
     /// takes no more requests.
-    fn session_index(&self, req: &Value) -> Result<usize, String> {
-        let wanted = req["session"].as_str().ok_or("missing session")?;
-        let i = self.find(wanted).ok_or_else(|| format!("no session {wanted}"))?;
+    fn session_index(&self, req: &Value) -> Result<usize, Error> {
+        let wanted = req["session"].as_str().ok_or_else(|| invalid("missing session"))?;
+        let no_session = || Error::new(Code::session_not_found, format!("no session {wanted}"));
+        let i = self.find(wanted).ok_or_else(no_session)?;
         if self.sessions[i].closing.is_some() {
-            return Err(format!("{wanted} is closing"));
+            return Err(Error::new(Code::session_closing, format!("{wanted} is closing")));
         }
         if self.sessions[i].opening {
-            return Err(format!("{wanted} is still opening"));
+            return Err(Error::new(Code::session_opening, format!("{wanted} is still opening")));
         }
         Ok(i)
     }
@@ -1140,25 +1341,43 @@ impl Host {
 
 /// A `set_config`'s settings: `mode`, `model`, `thought_level`, and
 /// `options` by id, each value a string.
-fn settings_of(req: &Value) -> Result<Settings, String> {
+fn settings_of(req: &Value) -> Result<Settings, Error> {
     let text = |key: &str| match &req[key] {
         Value::Null => Ok(None),
         Value::String(v) => Ok(Some(v.clone())),
-        _ => Err(format!("{key} isn't a string")),
+        _ => Err(invalid(format!("{key} isn't a string"))),
     };
     let mut options = std::collections::BTreeMap::new();
     match &req["options"] {
         Value::Null => {}
         Value::Object(map) => {
             for (id, value) in map {
-                let value = value.as_str().ok_or(format!("options: {id} isn't a string"))?;
+                let value = value.as_str();
+                let value =
+                    value.ok_or_else(|| invalid(format!("options: {id} isn't a string")))?;
                 options.insert(id.clone(), value.to_owned());
             }
         }
-        _ => return Err("options isn't an object".into()),
+        _ => return Err(invalid("options isn't an object")),
     }
     let (mode, model, thought_level) = (text("mode")?, text("model")?, text("thought_level")?);
     Ok(Settings { mode, model, thought_level, options })
+}
+
+/// A request that isn't one, as `why` says.
+fn invalid(why: impl Into<String>) -> Error {
+    Error::new(Code::command_invalid, why)
+}
+
+/// What the agent can't do, as `why` says.
+fn incapable(why: impl Into<String>) -> Error {
+    Error::new(Code::capability_missing, why)
+}
+
+/// A process whose agent takes no more input: it has exited, or the process
+/// is stopping.
+pub(super) fn not_accepting() -> Error {
+    Error::new(Code::process_stopping, "the agent is no longer accepting input")
 }
 
 #[cfg(test)]
@@ -1190,5 +1409,76 @@ mod tests {
         let big = QUEUE_BYTES + 1;
         assert_eq!(taken(&queue, &[big; 10]), ASIDE_BYTES / big + 1, "set aside, and one more");
         assert!(queued.load(Relaxed) <= QUEUE_BYTES + ASIDE_BYTES + big);
+    }
+
+    /// A request is read up to the limit, its newline included, and no
+    /// further: past it, the peer is cut off, and what comes after is never
+    /// read (ADR 10.3).
+    #[test]
+    fn adr_0010_a_request_is_read_up_to_the_limit_and_no_further() {
+        let xs = |n: usize| "x".repeat(n);
+        let status = r#"{"cmd":"status"}"#;
+        let input = format!("{status}\n{}\n{}{status}\n", xs(LINE_BYTES - 1), xs(LINE_BYTES));
+        let (tx, rx) = mpsc::sync_channel(8);
+        read_requests(input.as_bytes(), 7, &tx);
+        drop(tx);
+        let read: Vec<String> = rx
+            .iter()
+            .map(|ev| match ev {
+                Ev::PeerRequest { req, .. } if req.get("parse_error").is_some() => "unread".into(),
+                Ev::PeerRequest { req, .. } => req["cmd"].to_string(),
+                Ev::PeerTooLong { peer } => format!("too long: {peer}"),
+                _ => "other".into(),
+            })
+            .collect();
+        assert_eq!(read, [r#""status""#, "unread", "too long: 7"]);
+    }
+
+    /// Past `max` connections open, one more is told so and closed, and no
+    /// peer is made of it; once one has closed, the next is served
+    /// (ADR 10.4).
+    #[test]
+    fn adr_0010_a_connection_past_the_cap_is_told_and_closed() {
+        let dir = std::env::temp_dir().join(format!("brnr-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("h.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (tx, rx) = mpsc::sync_channel(16);
+        thread::spawn(move || serve_up_to(listener, tx, 2));
+        let wait = Duration::from_secs(5);
+        let opened = |rx: &Receiver<Ev>| matches!(rx.recv_timeout(wait), Ok(Ev::PeerOpened { .. }));
+        let first = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx));
+        let _second = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx));
+        let mut told = String::new();
+        UnixStream::connect(&socket).unwrap().read_to_string(&mut told).unwrap();
+        let error =
+            json!({ "code": "process_unreachable", "message": "too many connections: 2 open" });
+        assert_eq!(told, format!("{}\n", json!({ "ok": false, "error": error })));
+        assert!(rx.try_recv().is_err(), "a peer was made of it");
+        drop(first);
+        assert!(matches!(rx.recv_timeout(wait), Ok(Ev::PeerClosed { .. })));
+        let _third = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx), "not served once one closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An accept that fails is tried again after 10 ms, then twice as long
+    /// each time it fails again, up to 1 s; a success starts again from
+    /// 10 ms (ADR 10.4). (Running out of file descriptors for real would
+    /// take them from every test in the process.)
+    #[test]
+    fn adr_0010_accept_errors_back_off_doubling_to_a_second() {
+        let mut wait = None;
+        let waits: Vec<u128> = (0..9)
+            .map(|_| {
+                wait = Some(backoff(wait));
+                wait.unwrap().as_millis()
+            })
+            .collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 320, 640, 1000, 1000]);
+        assert_eq!(backoff(None), ACCEPT_WAIT, "after a success");
     }
 }

@@ -40,6 +40,7 @@ use serde_json::{Value, json};
 
 use super::control::{self, Closer, Peer, Queue};
 use super::{Ev, Host};
+use crate::error::Error;
 use crate::request::{Headless, Prompt, Settings};
 
 /// The start channel's name as a peer.
@@ -194,8 +195,8 @@ impl Host {
 
     /// Tells brnr session new the start failed, if it is still waiting to
     /// hear: the start goes.
-    pub(super) fn report_failure(&mut self, error: &str) {
-        let report = json!({ "ok": false, "error": error });
+    pub(super) fn report_failure(&mut self, error: &Error) {
+        let report = error.reply();
         match self.start.take().and_then(|s| s.channel) {
             Some(StartChannel::Socket { mut stream, .. }) => {
                 let _ = write_report(&mut stream, &report);
