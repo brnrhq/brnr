@@ -443,13 +443,15 @@ mod tests {
         {
             assert_eq!((full.kind(), err.kind()), (ErrorKind::TimedOut, ErrorKind::TimedOut));
             assert!(took >= wait, "{took:?}");
-            // Room made while it waits, it gets in.
+            // Room made while it waits, it gets in. The listener is kept
+            // until then: closed, it would refuse.
             let accepting = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
-                listener.accept().map(drop)
+                let accepted = listener.accept().map(drop);
+                (listener, accepted)
             });
             connect_within(&path, Duration::from_secs(5)).unwrap();
-            accepting.join().unwrap().unwrap();
+            accepting.join().unwrap().1.unwrap();
         }
         #[cfg(not(target_os = "linux"))]
         {
