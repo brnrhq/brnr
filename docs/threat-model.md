@@ -204,6 +204,14 @@ What brnr doesn't enforce, or doesn't test, today.
 - **No peer credentials on the socket.** The process doesn't check who
   connected (`SO_PEERCRED`, `getpeereid`); the directory's and the socket's
   modes are the only control. Root is never kept out.
+- **A same-user process can fill the socket's connections.** A process
+  serves 128 connections at once, and refuses the next with an error
+  (ADR 10.4); a process of the user's that holds 128 open keeps brnr's
+  commands out of it until it lets go. It is inside the boundary (P13), so
+  this is reliability, not access; the limit keeps the process's threads and
+  memory bounded (N2). A request is read up to 32 MiB, and a longer one cuts
+  its peer off (ADR 10.3). `adr_0010_a_connection_past_the_cap_is_told_and_closed`
+  and `adr_0010_a_request_past_the_limit_is_answered_and_cut_off` check them.
 - **The other-user test runs only as root.** `another_user_cant_connect` is
   skipped otherwise, which includes CI, so the kernel's side of B1 is
   checked only where someone runs the tests as root. The modes it relies on

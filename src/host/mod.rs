@@ -304,6 +304,11 @@ enum Ev {
         peer: u64,
         req: Value,
     },
+    /// A peer's request ran past `LINE_BYTES`; nothing more is read from
+    /// it (ADR 10.3).
+    PeerTooLong {
+        peer: u64,
+    },
     PeerClosed {
         peer: u64,
     },
@@ -1139,6 +1144,7 @@ impl Host {
                 death::test_panic(&req);
                 self.peer_request(peer, req);
             }
+            Ev::PeerTooLong { peer } => self.request_too_long(peer),
             Ev::PeerClosed { peer } => {
                 self.peers.remove(&peer);
             }

@@ -91,12 +91,17 @@ impl Follow {
     }
 
     /// Whether the process, having gone, had cut it off: its host log's
-    /// `peer_dropped` says so.
+    /// `peer_dropped` says so. One for a request too long to read isn't a
+    /// cut-off to catch up from (ADR 10.3).
     pub(super) fn cut_off_before_it_went(&self) -> bool {
         let Ok(file) = transcript::open(&self.host_log) else { return false };
         let lines = BufReader::new(file).split(b'\n').map_while(Result::ok);
-        let ours =
-            |r: &Value| r["event"]["event"] == "peer_dropped" && r["event"]["peer"] == *self.peer;
+        let ours = |r: &Value| {
+            let e = &r["event"];
+            e["event"] == "peer_dropped"
+                && e["peer"] == *self.peer
+                && e["reason"] != "line_too_long"
+        };
         lines
             .filter(|l| l.windows(13).any(|w| w == b"\"peer_dropped"))
             .filter_map(|l| transcript::head(&l))

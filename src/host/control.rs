@@ -92,6 +92,12 @@
 //! A peer cut off is noted in the host log (`peer_dropped`), kept among the
 //! last [`CUT_OFFS`] for `was_cut_off`, and told to the other peers, as a
 //! `peer_cut_off` event (ADR 10.2).
+//!
+//! A request is a line of up to [`LINE_BYTES`], its newline included: a
+//! peer that sends a longer one is answered with an error, noted in the
+//! host log (`peer_dropped`, `line_too_long`) and cut off (ADR 10.3). At most
+//! [`MAX_CONNECTIONS`] connections are open at once; one more is told so and
+//! closed (ADR 10.4).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -111,6 +117,7 @@ use serde_json::{Value, json};
 
 use super::approvals::{self, AgentRequest, Answer, Choice, Kind, Who};
 use super::elicitation;
+use super::flow::LINE_BYTES;
 use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolve_settings};
 use super::strict::Beyond;
 use super::turns::{Activity, Held, Mode, Status};
@@ -288,15 +295,67 @@ fn check_events(events: &[String]) -> Result<(), String> {
 
 // ---- connections ---------------------------------------------------------
 
+/// Connections open at once (ADR 10.4): each costs two threads and a queue
+/// of up to [`QUEUE_BYTES`], so a runaway client of the user's can't take
+/// the process's threads, file descriptors or memory.
+const MAX_CONNECTIONS: usize = 128;
+
+/// The wait after an accept fails, doubling while it keeps failing, up to
+/// [`ACCEPT_WAIT_MAX`] (ADR 10.4).
+const ACCEPT_WAIT: Duration = Duration::from_millis(10);
+const ACCEPT_WAIT_MAX: Duration = Duration::from_secs(1);
+
 pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
+    serve_up_to(listener, tx, MAX_CONNECTIONS)
+}
+
+/// Serves up to `max` connections at once; one more is told so and closed.
+/// An accept that fails (out of file descriptors, say) is tried again after
+/// a wait that doubles while it keeps failing, not at once and for ever.
+fn serve_up_to(listener: UnixListener, tx: SyncSender<Ev>, max: usize) {
+    let open = Arc::new(AtomicUsize::new(0));
+    let mut wait = None;
     for conn in listener.incoming() {
-        let Ok(conn) = conn else { continue };
-        let tx = tx.clone();
-        thread::spawn(move || connection(conn, tx));
+        let mut conn = match conn {
+            Ok(conn) => conn,
+            Err(_) => {
+                let next = backoff(wait);
+                wait = Some(next);
+                thread::sleep(next);
+                continue;
+            }
+        };
+        wait = None;
+        if open.fetch_add(1, Relaxed) >= max {
+            open.fetch_sub(1, Relaxed);
+            // A short line into an empty socket buffer, which never waits; it
+            // is made sure of anyway, so a client can't hold up the others.
+            let error = format!("too many connections: {max} open");
+            let _ = conn.set_nonblocking(true);
+            let _ = writeln!(conn, "{}", json!({ "ok": false, "error": error }));
+            continue;
+        }
+        let (tx, slot) = (tx.clone(), Slot(open.clone()));
+        thread::spawn(move || connection(conn, tx, slot));
     }
 }
 
-fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
+/// The wait before accepting again after the wait `last` (none after a
+/// success).
+fn backoff(last: Option<Duration>) -> Duration {
+    last.map_or(ACCEPT_WAIT, |last| (last * 2).min(ACCEPT_WAIT_MAX))
+}
+
+/// A connection counted as open until it is dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
+}
+
+fn connection(conn: UnixStream, tx: SyncSender<Ev>, slot: Slot) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
     let (out_tx, out_rx, queued) = Queue::new();
@@ -307,6 +366,9 @@ fn connection(conn: UnixStream, tx: SyncSender<Ev>) {
         return;
     }
     read_requests(conn, peer, &tx);
+    // Free before the event loop hears, so a client that has seen one
+    // connection end can open another.
+    drop(slot);
     let _ = tx.send(Ev::PeerClosed { peer });
 }
 
@@ -320,11 +382,19 @@ pub(super) fn write_lines(mut out: impl Write, lines: Receiver<String>, queued: 
 }
 
 /// Requests, one per line, until EOF. A line that isn't JSON (not even
-/// UTF-8) is answered with an error; the peer stays.
+/// UTF-8) is answered with an error; the peer stays. One longer than
+/// [`LINE_BYTES`] isn't read past that: the peer is cut off (ADR 10.3).
 fn read_requests(input: impl Read, peer: u64, tx: &SyncSender<Ev>) {
     let mut reader = BufReader::new(input);
     let mut line = Vec::new();
-    while matches!(reader.read_until(b'\n', &mut line), Ok(n) if n > 0) {
+    // Never more of a line than the limit in memory.
+    let mut next =
+        |line: &mut Vec<u8>| (&mut reader).take(LINE_BYTES as u64).read_until(b'\n', line);
+    while matches!(next(&mut line), Ok(n) if n > 0) {
+        if line.len() == LINE_BYTES && line.last() != Some(&b'\n') {
+            let _ = tx.send(Ev::PeerTooLong { peer });
+            return;
+        }
         if !line.trim_ascii().is_empty() {
             let req = serde_json::from_slice::<Value>(&line)
                 .unwrap_or_else(|e| json!({ "parse_error": e.to_string() }));
@@ -535,6 +605,25 @@ impl Host {
                 sys::kill(pid, libc::SIGTERM);
             }
             Closer::Bridge(_) => {}
+        }
+    }
+
+    /// Cuts off a peer whose request ran past [`LINE_BYTES`], unread, once
+    /// it is told why (ADR 10.3): where its next request would start can't
+    /// be known. Not one that fell behind: there is nothing to catch up on.
+    /// A connection closes once the answer is written; a started bridge gets
+    /// SIGTERM, as one cut off does.
+    pub(super) fn request_too_long(&mut self, peer: u64) {
+        let Some(p) = self.peers.remove(&peer) else { return };
+        let error = format!("a request longer than {LINE_BYTES} bytes: cut off");
+        let _ = p.tx.push(json!({ "ok": false, "error": error }).to_string());
+        let reason = "line_too_long";
+        let event = json!({ "event": "peer_dropped", "peer": p.label, "reason": reason, "limit": LINE_BYTES });
+        self.sink.note(None, event);
+        if let Closer::Bridge(pid) = p.closer
+            && self.bridge_pids.contains(&pid)
+        {
+            sys::kill(pid, libc::SIGTERM);
         }
     }
 
@@ -1190,5 +1279,74 @@ mod tests {
         let big = QUEUE_BYTES + 1;
         assert_eq!(taken(&queue, &[big; 10]), ASIDE_BYTES / big + 1, "set aside, and one more");
         assert!(queued.load(Relaxed) <= QUEUE_BYTES + ASIDE_BYTES + big);
+    }
+
+    /// A request is read up to the limit, its newline included, and no
+    /// further: past it, the peer is cut off, and what comes after is never
+    /// read (ADR 10.3).
+    #[test]
+    fn adr_0010_a_request_is_read_up_to_the_limit_and_no_further() {
+        let xs = |n: usize| "x".repeat(n);
+        let status = r#"{"cmd":"status"}"#;
+        let input = format!("{status}\n{}\n{}{status}\n", xs(LINE_BYTES - 1), xs(LINE_BYTES));
+        let (tx, rx) = mpsc::sync_channel(8);
+        read_requests(input.as_bytes(), 7, &tx);
+        drop(tx);
+        let read: Vec<String> = rx
+            .iter()
+            .map(|ev| match ev {
+                Ev::PeerRequest { req, .. } if req.get("parse_error").is_some() => "unread".into(),
+                Ev::PeerRequest { req, .. } => req["cmd"].to_string(),
+                Ev::PeerTooLong { peer } => format!("too long: {peer}"),
+                _ => "other".into(),
+            })
+            .collect();
+        assert_eq!(read, [r#""status""#, "unread", "too long: 7"]);
+    }
+
+    /// Past `max` connections open, one more is told so and closed, and no
+    /// peer is made of it; once one has closed, the next is served
+    /// (ADR 10.4).
+    #[test]
+    fn adr_0010_a_connection_past_the_cap_is_told_and_closed() {
+        let dir = std::env::temp_dir().join(format!("brnr-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("h.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (tx, rx) = mpsc::sync_channel(16);
+        thread::spawn(move || serve_up_to(listener, tx, 2));
+        let wait = Duration::from_secs(5);
+        let opened = |rx: &Receiver<Ev>| matches!(rx.recv_timeout(wait), Ok(Ev::PeerOpened { .. }));
+        let first = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx));
+        let _second = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx));
+        let mut told = String::new();
+        UnixStream::connect(&socket).unwrap().read_to_string(&mut told).unwrap();
+        assert_eq!(told, "{\"ok\":false,\"error\":\"too many connections: 2 open\"}\n");
+        assert!(rx.try_recv().is_err(), "a peer was made of it");
+        drop(first);
+        assert!(matches!(rx.recv_timeout(wait), Ok(Ev::PeerClosed { .. })));
+        let _third = UnixStream::connect(&socket).unwrap();
+        assert!(opened(&rx), "not served once one closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An accept that fails is tried again after 10 ms, then twice as long
+    /// each time it fails again, up to 1 s; a success starts again from
+    /// 10 ms (ADR 10.4). (Running out of file descriptors for real would
+    /// take them from every test in the process.)
+    #[test]
+    fn adr_0010_accept_errors_back_off_doubling_to_a_second() {
+        let mut wait = None;
+        let waits: Vec<u128> = (0..9)
+            .map(|_| {
+                wait = Some(backoff(wait));
+                wait.unwrap().as_millis()
+            })
+            .collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 320, 640, 1000, 1000]);
+        assert_eq!(backoff(None), ACCEPT_WAIT, "after a success");
     }
 }
