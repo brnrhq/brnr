@@ -895,10 +895,15 @@ However many clients: a process serves 128 connections at once, and tells
 the next one so (`too many connections: 128 open`) and closes it. brnr's
 commands ask every process for its status at once, so processes that don't
 answer cost about 5 s in all, not 5 s each; each request then waits 5 s for
-its answer (120 s for one the agent answers, as `config set` is), and fails
-with `not answering`. Waiting for events isn't such a request: `event wait`
+its answer (120 s for one the agent answers, as `config set` is). One with
+no answer by then, or whose write the process doesn't take, fails with `not
+answering`; an error the process says before it closes the connection is
+the command's error. Waiting for events isn't such a request: `event wait`
 and `--wait` wait as long as `--timeout` says, or the session runs, and a
-start (`session new`, `--pid`) as long as its own timeout (ADR 10.4).
+start (`session new`, `--pid`) as long as its own timeout. But a command
+that catches up waits 5 s for the process to have written its transcript
+(a stalled disk), and gives up on catching up after that, saying so
+(ADR 10.4, ADR 10.2).
 
 However deep the lines: brnr reads a line nested up to 128 levels (`[[1]]`
 is 2), about what serde_json, and so ACP's Rust SDK, reads. A deeper one is
