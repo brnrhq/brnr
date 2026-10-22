@@ -1124,8 +1124,10 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`,
   `adr_0005_an_editors_failed_load_holds_its_lock_until_written`;
   [tests/cli.rs](../../tests/cli.rs):
-  `adr_0005_log_shows_what_the_process_has_recorded`. That a session
-  closing in its process is said to be closing, not opening, by every
+  `adr_0005_log_shows_what_the_process_has_recorded`;
+  [src/host/sessions.rs](../../src/host/sessions.rs):
+  `adr_0005_nothing_is_let_go_of_without_a_lock_or_an_answer`. That a
+  session closing in its process is said to be closing, not opening, by every
   command that refuses it is ADR 3.9's
   `adr_0003_the_lock_decides_and_closing_comes_before_opening` and
   `adr_0003_each_place_is_refused_in_the_same_words`
@@ -1155,12 +1157,16 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_load_that_replays_and_fails_counts_its_replay`,
   `adr_0005_an_editors_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_bridges_failed_load_records_its_last_replayed_message`,
+  `adr_0005_a_starts_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0005_only_openings_are_no_transcript`;
   [src/log.rs](../../src/log.rs):
-  `adr_0005_a_record_beyond_the_opening_counts_at_once`. That a session
-  brnr has a transcript of keeps the replay out of it however often it
+  `adr_0005_a_record_beyond_the_opening_counts_at_once`;
+  [src/host/sessions.rs](../../src/host/sessions.rs):
+  `adr_0005_an_editors_failed_load_closes_the_session_it_opened`,
+  `adr_0005_a_replay_outlasts_its_sessions_close_until_its_last_load`. That
+  a session brnr has a transcript of keeps the replay out of it however often it
   loads, with a `history` event each time, is ADR 3.11's
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`
   ([tests/cli.rs](../../tests/cli.rs)).

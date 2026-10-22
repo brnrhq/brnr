@@ -385,6 +385,11 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       `hosts` a symlink, `session list` reads no host log and `doctor`
       reads, shows and makes private none; with `projects` one too, its
       session isn't listed or logged.
+  - [src/ctl/doctor.rs](../../src/ctl/doctor.rs):
+    `adr_0009_fix_changes_what_was_opened_not_its_name`: a file `--fix`
+    looked at, then swapped for a symlink, is made private as it was
+    opened, and what the link points at is left as it was; looked at
+    again, the symlink is a problem `--fix` doesn't fix.
 - 9.4:
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config

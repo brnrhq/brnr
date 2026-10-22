@@ -524,3 +524,12 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left`,
     `adr_0010_a_stderr_note_is_at_most_a_piece_once_decoded`,
     `adr_0010_a_tails_line_is_cut_between_characters`.
+  - [src/host/lines.rs](../../src/host/lines.rs):
+    `adr_0010_lines_are_read_whole_however_the_reads_split_them`,
+    `adr_0010_a_line_that_ends_at_the_limit_is_read_whole`,
+    `adr_0010_a_relayed_line_past_the_limit_goes_on_as_it_comes`,
+    `adr_0010_a_cut_line_is_in_parts_of_the_limit`,
+    `adr_0010_the_newline_after_a_cut_only_ends_its_line`,
+    `adr_0010_a_character_a_cut_would_split_starts_the_next_part`,
+    `adr_0010_a_cut_is_between_characters`,
+    `adr_0010_a_byte_at_a_time_reads_as_all_at_once`.

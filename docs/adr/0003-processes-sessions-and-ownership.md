@@ -809,6 +809,9 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_each_place_is_refused_in_the_same_words`,
     `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
     `adr_0003_a_resume_into_its_own_process_is_refused`.
+  - [src/host/sessions.rs](../../src/host/sessions.rs):
+    `adr_0003_a_claim_is_known_until_the_agent_opens_it_or_not`,
+    `adr_0003_a_session_another_process_holds_fails_a_headless_start`.
 - 3.10: [tests/headless.rs](../../tests/headless.rs):
   `adr_0003_shared_sessions_let_an_editor_load_a_held_session`.
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
