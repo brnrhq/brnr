@@ -365,6 +365,9 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
     }
 }
 
+/// A new subscription: its peer, and where it starts.
+type Resubscribed = (String, u64);
+
 /// How long a process that hangs up on a request unanswered has to go: one
 /// that is stopping writes what it has left before its socket goes.
 const STOPPING_WAIT: Duration = Duration::from_secs(10);
@@ -750,10 +753,11 @@ impl Conn {
                 }
             }
             match conn.resubscribe(&f) {
-                Ok((peer, until)) => {
+                Ok(Some((peer, until))) => {
                     f.peer = peer;
                     break (Some(conn), Some(until));
                 }
+                Ok(None) => break (None, None),
                 Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), e)),
                 Err((None, e)) if f.tries > TRIES => {
                     // Live, as far as it knows: up to where the process
@@ -800,20 +804,29 @@ impl Conn {
 
     /// Subscribes as `f` did, and waits for the process to have written what
     /// it recorded until then: the new subscription's peer, and where it
-    /// starts, which the transcript has everything up to. `Err` says why it
+    /// starts, which the transcript has everything up to; none if the
+    /// process went meanwhile, its transcript whole. `Err` says why it
     /// can't, and where the new subscription starts once it has one.
-    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, Error)> {
+    fn resubscribe(&mut self, f: &Follow) -> Result<Option<Resubscribed>, (Option<u64>, Error)> {
         let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
         let answer = answer.map_err(|e| (None, e))?;
         let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
         let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
         let at = Some(next.last);
-        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
-            let why = "the process has records it couldn't write yet (a full disk?)";
-            return Err((at, why.into()));
+        match self.call(json!({ "cmd": "logged" })) {
+            Ok(logged) if logged["lost"] == true => {
+                Err((at, "the process has records it couldn't write yet (a full disk?)".into()))
+            }
+            Ok(_) => Ok(Some((next.peer, next.last))),
+            // Hung up unanswered: a process that is stopping accepts until
+            // its socket goes (#275), and gone, its transcript is whole. The
+            // connection, of no more use, is let go of first.
+            Err(e) => {
+                let _ = self.writer.shutdown(std::net::Shutdown::Both);
+                if gone_within(&f.socket, STOPPING_WAIT) { Ok(None) } else { Err((at, e)) }
+            }
         }
-        Ok((next.peer, next.last))
     }
 
     /// Gives up catching up: `missed` says what it missed, and why.
@@ -1492,6 +1505,66 @@ mod tests {
         assert!(error.contains("connection gone; process 7 runs an older brnr"), "{note}");
         assert!(error.contains("stop it (brnr process stop 7)"), "{note}");
         once(thread.join().unwrap(), tries);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A process that stops while a command subscribes again, and hangs up
+    /// before it answers `logged`, has its transcript whole once gone: the
+    /// command catches up to its end, past where it subscribed (20), and
+    /// misses nothing (#329).
+    #[test]
+    fn adr_0010_a_process_that_goes_while_subscribing_again_is_caught_up_to_its_end() {
+        let dir = env::temp_dir().join(format!("brnr-relogged-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 22 });
+        let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": exited });
+        fs::write(&host_log, format!("{record}\n")).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let at = socket.clone();
+        let process = thread::spawn(move || {
+            let mut asked = Vec::new();
+            let mut stream = listener.incoming().next().unwrap().unwrap();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                asked.push(req["cmd"].as_str().unwrap().to_owned());
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    "was_cut_off" => json!({ "ok": true, "cut_off": true, "last_queued_seq": 30 }),
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": "socket#1", "host_id": "h", "seq": 20 })
+                    }
+                    // Stopping: gone, its socket first, before it answers.
+                    _ => {
+                        fs::remove_file(&at).unwrap();
+                        break;
+                    }
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+            }
+            asked
+        });
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            pid: json!(7),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["process_exited".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        let caught = conn.next_event(None).unwrap().unwrap();
+        assert_eq!((&caught["event"], &caught["seq"]), (&json!("process_exited"), &json!(22)));
+        assert!(conn.missed().is_none(), "{:?}", conn.missed());
+        assert_eq!(process.join().unwrap(), ["was_cut_off", "subscribe", "logged"]);
         let _ = fs::remove_dir_all(&dir);
     }
 

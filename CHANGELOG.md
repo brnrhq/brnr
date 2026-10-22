@@ -357,6 +357,12 @@ brnr's own conventions:
   a stopping process hangs up on the question whether it cut the watcher
   off, so the watcher waits for it to go and asks its host log (ADR 10.2,
   #275).
+- A command cut off and catching up, whose process stops while it
+  subscribes again, reads the transcript to its end, where it could exit 3
+  with an `events_missed` note, `the process closed the connection`: the
+  process hung up before it said its transcript had what the command
+  missed, so the command now waits for it to go, as it does when the
+  process hangs up on whether it cut the command off (ADR 10.2, #329).
 - A start whose `session/load` the agent fails, after replaying the history,
   records the last message replayed, as an editor's and a bridge's failed
   load do; it was lost (P3, ADR 5.6, #291).
