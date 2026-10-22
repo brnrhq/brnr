@@ -4676,7 +4676,8 @@ fn not_served(
     let failed: Vec<&Value> = notes.iter().filter(|n| n["event"] == "open_failed").collect();
     assert_eq!(failed.len(), 1, "{notes:?}");
     assert_eq!(failed[0]["session"], "old-1");
-    let error = failed[0]["error"].as_str().unwrap_or_default();
+    assert_eq!(failed[0]["error"]["code"], "session_active", "{notes:?}");
+    let error = failed[0]["error"]["message"].as_str().unwrap_or_default();
     let said = format!(
         "the agent opened old-1 for the editor's {what} after it closed here, and it is running \
          in process {headless}"
@@ -4684,8 +4685,8 @@ fn not_served(
     assert_eq!(error, said);
     assert!(!notes.iter().any(|n| n["event"] == "session_shared"), "{notes:?}");
     let status = status_of(env, "old-1");
-    assert_eq!(status["held_by"].to_string(), headless, "{status}");
-    assert_eq!(status["shared_by"], json!([]), "{status}");
+    assert_eq!(status["lock_pid"].to_string(), headless, "{status}");
+    assert_eq!(status["shared_pids"], json!([]), "{status}");
     assert!(logged(env, "old-1", "session_reopened").is_empty());
     writeln!(to_agent, "{}", editor_prompt_in(id + 10, "old-1", "hello")).unwrap();
     let error = response(from_agent, id + 10)["error"].clone();
@@ -4747,8 +4748,8 @@ fn adr_0003_shared_sessions_serve_a_load_answered_after_another_process_took_it(
     let notes = host_log_with(&env, "session_shared");
     assert!(!notes.iter().any(|n| n["event"] == "open_failed"), "{notes:?}");
     let status = status_of(&env, "old-1");
-    assert_eq!(status["held_by"].to_string(), headless, "{status}");
-    assert_eq!(status["shared_by"], json!([editor_process(&env)["host_pid"]]), "{status}");
+    assert_eq!(status["lock_pid"].to_string(), headless, "{status}");
+    assert_eq!(status["shared_pids"], json!([editor_process(&env)["host_pid"]]), "{status}");
     assert_eq!(env.calls_of("session/close").len(), 1, "only the editor's");
     let _ = editor.kill();
 }
