@@ -527,8 +527,10 @@ never waits on a process without end (N2, P6, P3).
 - The process serves at most 128 connections at once, each with two threads
   and a queue of up to 16 MiB (ADR 10.1). The 129th is answered
   `process_unreachable`, "too many connections: 128 open" (ADR 8.7), and
-  closed, with no thread started for it. A connection counts until its reader has seen
-  it end. The start channel of `session new` and started bridges aren't
+  closed, with no thread started for it. A connection counts until the
+  process has let go of it, its peer gone, once its reader has seen it end.
+  One cut off for a request too long is closed once its answer is written,
+  or after 5 s if the peer doesn't read it (ADR 10.3). The start channel of `session new` and started bridges aren't
   connections to the socket, and don't count.
 - A command finds the processes (`process list`, and every command that
   names a session) by asking each for its status, all at once, each on a
@@ -699,6 +701,7 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
 - 10.4:
   - [src/host/control.rs](../../src/host/control.rs):
     `adr_0010_a_connection_past_the_cap_is_told_and_closed`,
+    `adr_0010_a_cut_off_connection_closes_once_written_or_after_a_wait`,
     `adr_0010_accept_errors_back_off_doubling_to_a_second`.
   - [src/ctl/client.rs](../../src/ctl/client.rs):
     `adr_0010_processes_not_answering_cost_one_wait_in_all`,

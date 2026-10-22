@@ -318,8 +318,11 @@ enum Ev {
     PeerTooLong {
         peer: u64,
     },
+    /// A peer's connection ended; it counts until this is handled
+    /// (ADR 10.4).
     PeerClosed {
         peer: u64,
+        slot: control::Slot,
     },
     BridgeStderr {
         label: String,
@@ -1165,8 +1168,9 @@ impl Host {
                 self.peer_request(peer, req);
             }
             Ev::PeerTooLong { peer } => self.request_too_long(peer),
-            Ev::PeerClosed { peer } => {
+            Ev::PeerClosed { peer, slot } => {
                 self.peers.remove(&peer);
+                drop(slot);
             }
             Ev::BridgeStderr { label, line } => {
                 self.sink
