@@ -641,13 +641,15 @@ otherwise, kept apart from strict mode, which is about the protocol
   session brnr has no transcript of records the replay, marked `replayed`,
   and a `history` event says which it was (ADR 5.6).
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
-  the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
-  override them. Of an id with files in more than one project folder, they
-  come from the newest record of them all, where the session was last served
-  (ADR 5.1, #121). An id brnr doesn't
-  know (one `session list` with an agent named shows) goes to the agent as
-  given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
-  `--` (or the profile's).
+  the session's own record (P4). The flags override them. `--cwd` overrides
+  the cwd. `--profile p` overrides the profile, and the agent too when p
+  names one: a profile's `agent` is the agent of each process of that
+  profile (ADR 6.1, #341). `-- <agent>` overrides the agent, also p's. Of an
+  id with files in more than one project folder, they come from the newest
+  record of them all, where the session was last served (ADR 5.1, #121). An
+  id brnr doesn't know (one `session list` with an agent named shows) goes
+  to the agent as given, in `--cwd` (or the profile's `cwd`, or here), with
+  the agent after `--` (or the profile's).
 - A session another process holds is refused, unless `--take-over`
   (ADR 3.9).
 - With `--pid`, the session is resumed in that running process, in its
@@ -667,6 +669,12 @@ rule rather than a guess (P4).
 - For an id with files in two folders, the cwd of the file in the folder
   the command runs in: a rule that depends on where it runs (P4). The
   options are in ADR 5.1.
+- With `--profile p`, keeping the recorded agent and saying on stderr
+  which agent runs: p's settings, MCP servers and bridges are written for
+  p's agent, and may not suit another (ADR 6.1, F3).
+- Refusing `--profile p` when p's agent isn't the recorded one, unless
+  `-- <agent>` is given: it refuses what the user said plainly. A profile
+  that names an agent is the user naming that agent (P4).
 
 ## 3.12 Fork and close
 

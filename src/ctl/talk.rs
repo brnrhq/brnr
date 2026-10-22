@@ -399,6 +399,8 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
     let blocks = attachments(&a.files, &a.images)?;
     let timeout = start_timeout()?;
     let mut resume_cwd = None;
+    // The agent its newest record has, and whether --profile was given.
+    let (mut recorded, named) = (Vec::new(), a.profile.is_some());
     let hosts = if a.resume.is_some() { discover()? } else { Vec::new() };
     // --take-over: the process holding the session, and the session. It
     // closes the session once the process to resume it has started, so it
@@ -432,7 +434,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
             a.resume = past["session"].as_str().map(str::to_owned);
             resume_cwd = past["cwd"].as_str().map(str::to_owned);
             if a.agent.is_empty() {
-                a.agent = past["agent"]
+                recorded = past["agent"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -445,6 +447,11 @@ fn start(mut a: StartArgs) -> Result<ExitCode, String> {
         }
     }
     let cfg = config::load(a.profile.as_deref())?;
+    // --profile p brings p's agent too, if p names one: a profile's agent
+    // is that of each of its processes (ADR 3.11, ADR 6.1).
+    if a.agent.is_empty() && !(named && cfg.agent.as_ref().is_some_and(|argv| !argv.is_empty())) {
+        a.agent = recorded;
+    }
     let h = &cfg.headless;
     let cwd = match a.cwd.clone().or(resume_cwd).or(h.cwd.clone()) {
         Some(dir) => paths::expand(&dir),

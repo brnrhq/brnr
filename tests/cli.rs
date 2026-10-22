@@ -2542,6 +2542,40 @@ fn adr_0003_resume_continues_a_session() {
     assert!(env.fails(&["session", "resume", "sess-1"]).contains("sess-1 is running in process"));
 }
 
+/// `session resume --profile p` of a session brnr has a transcript of runs
+/// p's agent when p names one, not the recorded one; `-- <agent>` overrides
+/// both, and a profile that names none keeps the recorded one (ADR 3.11,
+/// ADR 6.1, #341).
+#[test]
+fn adr_0003_resume_with_a_profile_runs_its_agent() {
+    let env = Env::new("c-resume-prof");
+    let [mine, given] = ["p-agent.py", "given-agent.py"].map(|name| {
+        let path = env.dir.join(name);
+        install(Path::new(AGENT), &path);
+        path.to_string_lossy().into_owned()
+    });
+    env.write_config(&format!(
+        "[profiles.p]\nagent = [{mine:?}]\n[profiles.bare]\nstrict = false\n"
+    ));
+    closed_session(&env, "s-1", &[]);
+    let resumed = |args: &[&str]| -> (Value, Value) {
+        env.ok(&[&["session", "resume", "s-1"], args].concat());
+        let hosts = env.hosts();
+        assert_eq!(hosts.len(), 1, "{hosts:?}");
+        env.ok(&["session", "close", "s-1"]);
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+        (hosts[0]["profile"].clone(), hosts[0]["agent"].clone())
+    };
+    // Recorded with AGENT, under no profile: p's agent, not AGENT.
+    assert_eq!(resumed(&["--profile", "p"]), ("p".into(), json!([mine])));
+    // -- <agent> overrides p's.
+    assert_eq!(resumed(&["--profile", "p", "--", &given]), ("p".into(), json!([given])));
+    // A profile that names no agent keeps the recorded one, the newest.
+    assert_eq!(resumed(&["--profile", "bare"]), ("bare".into(), json!([given])));
+    // No --profile: the recorded profile and agent.
+    assert_eq!(resumed(&[]), ("bare".into(), json!([given])));
+}
+
 /// `session`'s events named `names` in its transcript, as JSON.
 fn logged(env: &Env, session: &str, names: &str) -> Vec<Value> {
     let log = env.ok(&["event", "log", session, "--json", "--events", names]);

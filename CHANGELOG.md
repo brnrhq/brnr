@@ -212,6 +212,12 @@ brnr's own conventions:
   newest file's records only gets every folder's now, and a `--last` of
   them: to read one folder's records alone, read the file the `events_log`
   of its `session_opened` names (ADR 5.1, ADR 3.11, #121).
+- **Breaking:** `session resume --profile p` of a session brnr has a
+  transcript of runs p's agent when p names one, not the agent the
+  transcript recorded. Before, the process ran under p with the recorded
+  agent, and nothing said so. A profile that names no agent keeps the
+  recorded one, and `-- <agent>` still overrides both. To keep the recorded
+  agent under p, give it after `--` (ADR 3.11, #341).
 
 ### Fixed
 
