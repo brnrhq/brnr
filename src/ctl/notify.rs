@@ -59,6 +59,7 @@ use std::time::{Duration, Instant};
 use libc::c_int;
 use serde_json::Value;
 
+use crate::error;
 use crate::{host, json, render, signals, sys};
 
 use super::args::Error::{self, Invalid};
@@ -108,7 +109,7 @@ fn run(
     pid: Option<String>,
     events: Vec<String>,
     command: Vec<String>,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, error::Error> {
     // Agent messages and titles are tracked for the environment, and the
     // ends watched for, not run for.
     let mut wanted: Vec<&str> = events.iter().map(String::as_str).collect();
@@ -160,7 +161,7 @@ fn run(
             }
         };
         // How notify ends, if it does here.
-        let ended: Option<Result<ExitCode, String>> = 'run: {
+        let ended: Option<Result<ExitCode, error::Error>> = 'run: {
             let name = e["event"].as_str().unwrap_or_default().to_owned();
             let session = e["session"].as_str().unwrap_or_default().to_owned();
             if only.as_deref().is_some_and(|s| !session.is_empty() && s != session) {
@@ -248,9 +249,9 @@ fn ends(e: &Value, only: Option<&str>) -> bool {
 }
 
 /// Why notify stops before the end: `why`, and the command it stopped.
-fn cut_off(why: &str, stopped: Option<&str>) -> String {
+fn cut_off(why: &str, stopped: Option<&str>) -> error::Error {
     let stopped = stopped.map(|s| format!("; stopped {s}")).unwrap_or_default();
-    format!("cut off ({why}){stopped}; no more notifications")
+    format!("cut off ({why}){stopped}; no more notifications").into()
 }
 
 /// What reaches notify's loop.
@@ -386,7 +387,7 @@ impl Events {
         session: Option<&str>,
         pid: Option<&str>,
         wanted: &[&str],
-    ) -> Result<Events, String> {
+    ) -> Result<Events, error::Error> {
         if stdin {
             // Subscribed from the process's start, so every title is to come.
             let process = env::var("BRNR_PID").unwrap_or_default();
@@ -404,7 +405,7 @@ impl Events {
         process: &str,
         only: Option<String>,
         wanted: &[&str],
-    ) -> Result<Events, String> {
+    ) -> Result<Events, error::Error> {
         conn.subscribe(wanted, only.as_deref())?;
         // Titles the agent gave before we subscribed. Cut off before it
         // answered, and unable to catch up, notify goes on with none: what
@@ -434,7 +435,7 @@ impl Source {
     /// there are no more.
     fn next(&mut self) -> Result<Option<Value>, String> {
         match self {
-            Source::Socket(conn) => conn.next_event(None),
+            Source::Socket(conn) => conn.next_event(None).map_err(|e| e.message),
             Source::Stdin(stdin) => {
                 let mut line = Vec::new();
                 match stdin.lock().read_until(b'\n', &mut line) {

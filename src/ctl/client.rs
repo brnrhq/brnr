@@ -3,15 +3,26 @@
 //! (ADR 2.5), a subscription caught up once the process cuts it off
 //! (ADR 10.2).
 //!
-//! [`discover`] finds the processes, asking each for its status, one after
-//! another. A [`Host`] is one of them: [`Host::call`] asks it something and
-//! waits for the answer, [`Host::pending`] has what waits for an answer
-//! there, and [`Conn::open`] subscribes to its events and asks it things on
-//! the same connection. An answer is the process's `ok` and `error` taken
-//! off: an error it says is the command's. What the agent sent nests no
+//! [`discover`] finds the processes, asking them all for their status at
+//! once, and waiting about [`ANSWER_WAIT`] in all (ADR 10.4). A [`Host`] is
+//! one of them: [`Host::call`] asks it something and waits for the answer,
+//! [`Host::pending`] has what waits for an answer there, and [`Conn::open`]
+//! subscribes to its events and asks it things on the same connection. A
+//! request waits [`ANSWER_WAIT`] for its answer, or [`AGENT_WAIT`] for one
+//! that waits on the agent, and a connection the process doesn't take, or
+//! a write that makes no progress, for [`ANSWER_WAIT`] fails the same way:
+//! "not answering". An answer is the process's `ok` and `error` taken off:
+//! an error it says is the command's, also one it says to no request in
+//! particular, before it closes the connection (a request too long to read,
+//! too many connections: ADR 10.3, ADR 10.4). What the agent sent nests no
 //! deeper than [`json::DEPTH`], and the host wraps it in a few levels of its
 //! own: a line past [`json::OWN_DEPTH`] is none the host makes, and is
 //! refused, and said (P3).
+//!
+//! A process may be another brnr than this one: an editor's lives as long as
+//! the editor's session, past an upgrade. Its metadata says which brnr it is
+//! and what it speaks (`brnr`, `protocol`); an error that may come of the
+//! difference says so, and how to restart it ([`skewed`], ADR 8.8).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -19,11 +30,14 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::host::alive;
+use crate::error::{self, Code, Error};
+use crate::host::PROTOCOL;
 use crate::{json, lock, paths, render, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
@@ -78,62 +92,121 @@ impl Host {
     }
 
     /// A request whose failure is the command's failure, and its answer.
-    pub(super) fn call(&self, req: &Value) -> Result<Value, String> {
+    pub(super) fn call(&self, req: &Value) -> Result<Value, Error> {
         self.kept(req, ANSWER_WAIT)
     }
 
     /// [`Host::call`], for a request that waits on the agent.
-    pub(super) fn call_agent(&self, req: &Value) -> Result<Value, String> {
+    pub(super) fn call_agent(&self, req: &Value) -> Result<Value, Error> {
         self.kept(req, AGENT_WAIT)
     }
 
     /// The answer to `req`, waiting `wait` for it. `Err`: the process's
-    /// error, or why there is no answer to use, which names the process.
-    fn kept(&self, req: &Value, wait: Duration) -> Result<Value, String> {
+    /// error, or why there is no answer to use, which names the process: one
+    /// it can't be asked, or that it doesn't give, is unreachable.
+    fn kept(&self, req: &Value, wait: Duration) -> Result<Value, Error> {
         let named = |e: String| format!("process {}: {e}", self.id());
-        let line = self.exchange(req, wait).map_err(|e| named(e.to_string()))?;
-        read(&line).map_err(named)?
+        let unreachable =
+            |e: io::Error| Error::new(Code::process_unreachable, named(e.to_string()));
+        let line = self.exchange(req, wait).map_err(unreachable)?;
+        read(&line).map_err(|e| Error::from(named(e)))?.map_err(|e| skewed(e, &self.meta))
     }
 
     /// What waits for an answer in the process.
-    pub(super) fn pending(&self) -> Result<Pending, String> {
+    pub(super) fn pending(&self) -> Result<Pending, Error> {
         self.kept(&json!({ "cmd": "pending" }), ANSWER_WAIT).map(Pending::from)
     }
 
     /// A request and the line that answers it, waiting up to `timeout` for
-    /// it.
+    /// it, and [`ANSWER_WAIT`] for the process to take the request.
     fn exchange(&self, req: &Value, timeout: Duration) -> io::Result<String> {
         let mut conn = self.connect()?;
-        conn.set_read_timeout(Some(timeout))?;
-        writeln!(conn, "{req}")?;
+        closed_ok(conn.set_read_timeout(Some(timeout)))?;
+        closed_ok(conn.set_write_timeout(Some(ANSWER_WAIT)))?;
+        let wrote = match writeln!(conn, "{req}") {
+            Err(e) if waited(&e) => return Err(io::Error::other("not answering")),
+            wrote => wrote,
+        };
         let mut line = String::new();
-        BufReader::new(conn).read_line(&mut line).map_err(|e| match e.kind() {
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => io::Error::other("not answering"),
-            _ => e,
-        })?;
-        Ok(line)
+        let read = BufReader::new(conn).read_line(&mut line);
+        match (wrote, read) {
+            // A write that failed may have been answered first: the process
+            // says why before it closes the connection (ADR 10.3, 10.4).
+            (_, Ok(n)) if n > 0 => Ok(line),
+            (Err(e), _) => Err(e),
+            (Ok(()), Err(e)) if waited(&e) => Err(io::Error::other("not answering")),
+            (Ok(()), read) => read.map(|_| line),
+        }
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
         let socket =
             self.meta["socket"].as_str().ok_or(io::Error::other("no socket in metadata"))?;
-        UnixStream::connect(PathBuf::from(socket))
+        connect(Path::new(socket))
     }
+}
+
+/// A connection to a process's `socket`, waiting [`ANSWER_WAIT`] for the
+/// process to take it: on Linux one whose backlog is full (a stopped
+/// process's) makes a connection wait for as long as it stays full. One
+/// not taken by then fails, "not answering" (`TimedOut`).
+fn connect(socket: &Path) -> io::Result<UnixStream> {
+    match sys::connect_within(socket, ANSWER_WAIT) {
+        Err(e) if e.kind() == ErrorKind::TimedOut => {
+            Err(io::Error::new(ErrorKind::TimedOut, "not answering"))
+        }
+        connected => connected,
+    }
+}
+
+/// Whether anyone listens on `socket`, asked without waiting: a full backlog
+/// (Linux) is someone listening, as a connection taken is. `Err`: why not.
+pub(super) fn listening(socket: &Path) -> io::Result<()> {
+    match sys::connect_within(socket, Duration::ZERO) {
+        Err(e) if e.kind() == ErrorKind::TimedOut => Ok(()),
+        connected => connected.map(drop),
+    }
+}
+
+/// A timeout set, or the connection already closed by the process: macOS
+/// refuses one then (EINVAL), where reading and writing don't wait anyway (a
+/// process with too many connections closes a new one at once, ADR 10.4).
+fn closed_ok(set: io::Result<()>) -> io::Result<()> {
+    match set {
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        set => set,
+    }
+}
+
+/// Whether a read or write failed for its timeout.
+fn waited(e: &io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+/// Whether `msg` is an error the process says to no request in particular,
+/// before it closes the connection: a request too long to read (ADR 10.3), or
+/// too many connections (ADR 10.4). It answers the request waiting (P3).
+fn unasked_error(msg: &Value) -> bool {
+    msg.get("req_id").is_none() && msg["ok"] == false
 }
 
 /// The answer `line` without its envelope, read as brnr reads what it
 /// wrote, to `json::OWN_DEPTH` (ADR 2.5). `Err`: why it can't be read;
 /// `Ok(Err)`: the process's `error`.
-fn read(line: &str) -> Result<Result<Value, String>, String> {
+fn read(line: &str) -> Result<Result<Value, Error>, String> {
     let line = line.as_bytes();
     json::within(line, json::OWN_DEPTH, "its answer")?;
     Ok(unwrapped(json::parse(line, json::OWN_DEPTH).ok_or("its answer isn't JSON")?))
 }
 
-/// An answer, `ok`, without `ok` and `req_id`; else the `error` it says.
-fn unwrapped(mut answer: Value) -> Result<Value, String> {
+/// An answer, `ok`, without `ok` and `req_id`; else the `error` it says,
+/// with its code (ADR 8.7).
+fn unwrapped(mut answer: Value) -> Result<Value, Error> {
     if answer["ok"].as_bool() != Some(true) {
-        return Err(answer["error"].as_str().unwrap_or("request failed").to_owned());
+        return Err(match &answer["error"] {
+            Value::Null => Error::from("request failed"),
+            error => Error::of(error),
+        });
     }
     if let Some(map) = answer.as_object_mut() {
         map.shift_remove("ok");
@@ -142,9 +215,70 @@ fn unwrapped(mut answer: Value) -> Result<Value, String> {
     Ok(answer)
 }
 
+/// How the process `meta` describes differs from this brnr, and what to do
+/// about it, where it speaks another protocol, or predates `protocol`
+/// (ADR 8.8); `None` where it speaks this brnr's.
+pub(super) fn skew(meta: &Value) -> Option<String> {
+    let theirs = meta["protocol"].as_u64();
+    if theirs == Some(PROTOCOL) {
+        return None;
+    }
+    let pid = meta["id"].as_str().unwrap_or("?");
+    let ours = format!("brnr {}, protocol {PROTOCOL}", env!("CARGO_PKG_VERSION"));
+    let what = match (theirs, meta["brnr"].as_str()) {
+        (Some(p), Some(v)) => {
+            let which = if p < PROTOCOL { "an older" } else { "a newer" };
+            format!("{which} brnr (brnr {v}, protocol {p}) than this one ({ours})")
+        }
+        _ => format!("an older brnr than this one ({ours}), from before processes said theirs"),
+    };
+    // An editor's process is the editor's `brnr acp`'s, which runs the brnr
+    // it was started as (ADR 3.1).
+    let restart = if meta["proxy_pid"].is_number() {
+        "restart the agent in its editor to run this brnr".to_owned()
+    } else {
+        format!(
+            "stop it (brnr process stop {pid}) and resume its sessions (brnr session resume \
+             <session>) to run them in this brnr"
+        )
+    };
+    Some(format!("process {pid} runs {what}: {restart}"))
+}
+
+/// `err`, from the process `meta` describes, with what [`skew`] says where
+/// it may come of the difference: `command_unknown` (a request, or a field
+/// of one, the process doesn't have), and any error from a process that
+/// predates `protocol`, whose errors are text that can't be told apart.
+pub(super) fn skewed(err: Error, meta: &Value) -> Error {
+    let may = err.code == Code::command_unknown || meta["protocol"].is_null();
+    match skew(meta) {
+        Some(note) if may => err.map(|m| format!("{m}; {note}")),
+        _ => err,
+    }
+}
+
 /// Session `id` in a process's `status` answer, if it serves it.
 pub(super) fn session_in<'a>(status: &'a Value, id: &str) -> Option<&'a Value> {
     status["sessions"].as_array()?.iter().find(|s| s["session"] == id)
+}
+
+/// The counts a session has in a process's `status` answer (ADR 8.2).
+pub(super) const COUNTS: [&str; 4] =
+    ["held_count", "context_count", "pending_count", "elicitation_count"];
+
+/// The count `key` in `report`, part of a `status` answer. A count that
+/// isn't there (an older brnr's process, which names it otherwise) is no
+/// count, not 0: an error says so (P4).
+pub(super) fn count(report: &Value, key: &str) -> Result<u64, Error> {
+    report[key].as_u64().ok_or_else(|| missing(key))
+}
+
+/// That a process's `status` answer has no `key`, which this brnr reads:
+/// an older brnr's process, which names it otherwise, as
+/// `command_unknown` is (ADR 8.7), and [`skewed`] says how to restart it
+/// (ADR 8.8).
+pub(super) fn missing(key: &str) -> Error {
+    Error::new(Code::command_unknown, format!("the process's status has no {key}"))
 }
 
 /// What waits for an answer in a process, as its `pending` answer has it:
@@ -195,28 +329,51 @@ impl Pending {
 
 // ---- finding the processes -----------------------------------------------
 
+/// How much longer than a probe's own wait [`discover`] waits for it: the
+/// probe's starts once it has connected, and telling a process gone takes a
+/// moment more (see `gone`), so one that answers just in time still counts.
+/// One that took its time to connect (a full backlog, on Linux) may not.
+const PROBE_MARGIN: Duration = Duration::from_secs(1);
+
 /// Every process with a metadata file, asking each for its live status.
 /// Files left by a process that is gone are removed, even when its pid is
 /// another process's now (see `gone`). The runtime directory must be
 /// private, as the processes themselves require: anyone who could write to
 /// it could list a process of their own, and be sent what brnr sends.
 pub(super) fn discover() -> Result<Vec<Host>, String> {
-    let dir = paths::runtime_dir();
-    match paths::check_private(&dir) {
+    discover_in(&paths::runtime_dir())
+}
+
+/// [`discover`] in runtime directory `dir`. Each process is asked on a
+/// thread of its own, so that k processes that don't answer cost one wait,
+/// not k (ADR 10.4). One not back by then counts as not answering, and its
+/// thread isn't waited for: it ends by itself, as its connection, write and
+/// read each wait [`ANSWER_WAIT`] at most, but needn't hold the command.
+fn discover_in(dir: &Path) -> Result<Vec<Host>, String> {
+    match paths::check_private(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", dir.display())),
     }
-    let Ok(entries) = fs::read_dir(&dir) else { return Ok(Vec::new()) };
+    let Ok(entries) = fs::read_dir(dir) else { return Ok(Vec::new()) };
+    let found: Vec<(PathBuf, Host)> = (entries.flatten().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .filter_map(|path| Some((path.clone(), Host { meta: read_meta(&path)?, status: None })))
+        .collect();
+    let (tx, rx) = mpsc::channel();
+    for (i, (path, host)) in found.iter().enumerate() {
+        let (tx, path, host) = (tx.clone(), path.clone(), host.clone());
+        thread::spawn(move || tx.send((i, probe(&path, &host))));
+    }
+    drop(tx);
+    let mut probes: Vec<Option<Probe>> = found.iter().map(|_| None).collect();
+    let until = Instant::now() + ANSWER_WAIT + PROBE_MARGIN;
+    while let Ok((i, probe)) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        probes[i] = Some(probe);
+    }
     let mut hosts = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") {
-            continue;
-        }
-        let Some(meta) = read_meta(&path) else { continue };
-        let mut host = Host { meta, status: None };
-        match probe(&path, &host) {
+    for ((path, mut host), probe) in found.into_iter().zip(probes) {
+        match probe.unwrap_or_else(|| Probe::Silent("not answering".into())) {
             Probe::Answered(status) => host.status = Some(status),
             Probe::Silent(_) => {}
             Probe::Gone => {
@@ -250,7 +407,8 @@ pub(super) fn probe(path: &Path, host: &Host) -> Probe {
     match host.exchange(&json!({ "cmd": "status" }), ANSWER_WAIT) {
         Ok(line) => match read(&line) {
             Ok(Ok(status)) => Probe::Answered(status),
-            Ok(Err(why)) | Err(why) => Probe::Silent(why),
+            Ok(Err(why)) => Probe::Silent(why.message),
+            Err(why) => Probe::Silent(why),
         },
         Err(e) if gone(pid, &socket, path, &e) => Probe::Gone,
         // Running, but accepting nothing: its backlog is full (`made`).
@@ -273,20 +431,25 @@ const REFUSED_AGAIN: Duration = Duration::from_millis(20);
 /// too: the kernel queues the connection). A socket nobody listens on
 /// refuses, as one that isn't there does: the process that made it is
 /// gone, even when another process has its pid now (a reboot, or pids
-/// wrapping around). A pid that isn't the user's isn't brnr's (`alive`).
+/// wrapping around). A pid that has exited is gone, as for `gone_within`:
+/// one that isn't the user's isn't brnr's, and a zombie nothing has reaped
+/// yet listens no more, though `kill(pid, 0)` still reaches it.
 pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> bool {
-    if !alive(pid) {
+    if pid <= 0 || sys::exited(pid as libc::pid_t) {
         return true;
     }
     if !refused(err) {
         return false;
     }
     std::thread::sleep(REFUSED_AGAIN);
-    match UnixStream::connect(socket) {
+    match listening(socket) {
         Err(e) if refused(&e) => !made(pid, file),
         _ => false,
     }
 }
+
+/// A new subscription: its peer, and where it starts.
+type Resubscribed = (String, u64);
 
 /// How long a process that hangs up on a request unanswered has to go: one
 /// that is stopping writes what it has left before its socket goes.
@@ -304,7 +467,7 @@ fn gone_within(socket: &Path, wait: Duration) -> bool {
     loop {
         let gone = match pid {
             Some(pid) => sys::exited(pid),
-            None => UnixStream::connect(socket).is_err_and(|e| refused(&e)),
+            None => listening(socket).is_err_and(|e| refused(&e)),
         };
         if gone {
             return true;
@@ -385,19 +548,27 @@ pub(super) struct Conn {
     missed: Option<Value>,
     /// How many times it has connected again.
     reconnects: u32,
+    /// The process's metadata, to say how it differs from this brnr
+    /// ([`skewed`]); none on the start channel, whose process is this brnr.
+    meta: Option<Value>,
 }
 
 impl Conn {
-    pub(super) fn open(host: &Host) -> Result<Conn, String> {
-        let stream = host.connect().map_err(|e| format!("process {}: {e}", host.id()))?;
+    pub(super) fn open(host: &Host) -> Result<Conn, Error> {
+        let unreachable =
+            |e| Error::new(Code::process_unreachable, format!("process {}: {e}", host.id()));
+        let stream = host.connect().map_err(unreachable)?;
         let mut conn = Conn::new(stream)?;
         conn.socket = host.meta["socket"].as_str().map(PathBuf::from);
+        conn.meta = Some(host.meta.clone());
         Ok(conn)
     }
 
-    /// One over `stream`: a control connection, or the start channel.
+    /// One over `stream`: a control connection, or the start channel. A
+    /// request the process takes nothing of for [`ANSWER_WAIT`] fails.
     pub(super) fn new(stream: UnixStream) -> Result<Conn, String> {
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
+        closed_ok(writer.set_write_timeout(Some(ANSWER_WAIT))).map_err(|e| e.to_string())?;
         Ok(Conn {
             reader: BufReader::new(stream),
             writer,
@@ -407,6 +578,7 @@ impl Conn {
             follow: None,
             missed: None,
             reconnects: 0,
+            meta: None,
         })
     }
 
@@ -422,12 +594,28 @@ impl Conn {
         &mut self,
         events: &[&str],
         session: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }))?;
+        self.tell_unknown(&answer);
         if let Some(socket) = self.socket.clone() {
             self.follow = Follow::new(socket, &answer, events, session);
         }
         Ok(())
+    }
+
+    /// Says on stderr which of the events asked for the process doesn't have,
+    /// as its `subscribe` answer names them: an older brnr's (ADR 8.8). The
+    /// command goes on with the rest (P3).
+    fn tell_unknown(&self, answer: &Value) {
+        let unknown = answer["unknown_events"].as_array().filter(|u| !u.is_empty());
+        let Some(unknown) = unknown else { return };
+        let names: Vec<&str> = unknown.iter().filter_map(Value::as_str).collect();
+        let pid = self.meta.as_ref().and_then(|m| m["id"].as_str()).unwrap_or("?");
+        let mut said = format!("process {pid} doesn't send {}", names.join(", "));
+        if let Some(note) = self.meta.as_ref().and_then(skew) {
+            said = format!("{said}; {note}");
+        }
+        errln!("brnr: {said}");
     }
 
     /// Follows only `session`, which the subscription came before.
@@ -449,23 +637,34 @@ impl Conn {
         self.missed.as_ref()
     }
 
+    /// Whether the process has gone, for a command whose connection to it
+    /// failed: it has exited within [`STOPPING_WAIT`], as catching up
+    /// decides. Not if brnr doesn't know which process it is: it doesn't
+    /// guess (P4).
+    pub(super) fn process_gone(&self) -> bool {
+        let socket = self.socket.as_ref().or(self.follow.as_ref().map(|f| &f.socket));
+        socket.is_some_and(|socket| gone_within(socket, STOPPING_WAIT))
+    }
+
     /// How a command ends that has got `Err(why)` from the connection: with
     /// [`MISSED`] once it has said what it missed, if it gave up catching
     /// up; else as `why`.
-    pub(super) fn ended(&self, why: String) -> Result<ExitCode, String> {
+    pub(super) fn ended(&self, why: Error) -> Result<ExitCode, Error> {
         let Some(note) = &self.missed else { return Err(why) };
         let text = render::event(note, &render::Options { session: false, time: false });
         errln!("brnr: {}", text.unwrap_or_default());
         Ok(ExitCode::from(MISSED))
     }
 
-    /// A request whose failure is an error, and its answer.
-    pub(super) fn call(&mut self, req: Value) -> Result<Value, String> {
-        self.call_until(req, None)?.ok_or_else(|| "the process closed the connection".into())
+    /// A request whose failure is an error, and its answer, waiting
+    /// [`ANSWER_WAIT`] for it: none waits on the agent (ADR 10.4).
+    pub(super) fn call(&mut self, req: Value) -> Result<Value, Error> {
+        let answer = self.call_until(req, Instant::now().checked_add(ANSWER_WAIT))?;
+        answer.ok_or_else(|| "not answering".into())
     }
 
     /// What waits for an answer in the process.
-    pub(super) fn pending(&mut self) -> Result<Pending, String> {
+    pub(super) fn pending(&mut self) -> Result<Pending, Error> {
         self.call(json!({ "cmd": "pending" })).map(Pending::from)
     }
 
@@ -477,13 +676,23 @@ impl Conn {
     /// A request whose failure is an error, answered by `deadline`;
     /// `Ok(None)` when it passes first. One that only asks (`status`,
     /// `pending`) is asked again once caught up, if the process cut the
-    /// connection off before it answered.
+    /// connection off before it answered, and waits as long again.
     pub(super) fn call_until(
         &mut self,
         req: Value,
         deadline: Option<Instant>,
-    ) -> Result<Option<Value>, String> {
-        self.answer_until(req, deadline)?.map(unwrapped).transpose()
+    ) -> Result<Option<Value>, Error> {
+        let answer = self.answer_until(req, deadline)?.map(unwrapped).transpose();
+        answer.map_err(|e| self.skewed(e))
+    }
+
+    /// `err`, of the process, with what [`skew`] says where it may come of
+    /// the difference ([`skewed`]); as it is on the start channel.
+    pub(super) fn skewed(&self, err: Error) -> Error {
+        match &self.meta {
+            Some(meta) => skewed(err, meta),
+            None => err,
+        }
     }
 
     /// The answer to `req` as the process gave it, error or not; `Err` only
@@ -492,12 +701,15 @@ impl Conn {
     fn answer_until(
         &mut self,
         mut req: Value,
-        deadline: Option<Instant>,
+        mut deadline: Option<Instant>,
     ) -> Result<Option<Value>, String> {
+        let wait = deadline.map(|d| d.saturating_duration_since(Instant::now()));
         self.next_req += 1;
         let id = format!("r{}", self.next_req);
         req["req_id"] = json!(id);
-        writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
+        if let Err(e) = writeln!(self.writer, "{req}") {
+            return self.unwritten(e).map(Some);
+        }
         let again = matches!(req["cmd"].as_str(), Some("status" | "pending"));
         loop {
             let msg = match self.read(deadline) {
@@ -505,12 +717,15 @@ impl Conn {
                 Ok(None) => return Ok(None),
                 Err(why) if again && self.follow.is_some() => {
                     self.catch_up(why)?;
-                    writeln!(self.writer, "{req}").map_err(|e| e.to_string())?;
+                    deadline = wait.and_then(|w| Instant::now().checked_add(w));
+                    if let Err(e) = writeln!(self.writer, "{req}") {
+                        return self.unwritten(e).map(Some);
+                    }
                     continue;
                 }
                 Err(why) => return Err(why),
             };
-            if msg["req_id"] == id.as_str() {
+            if msg["req_id"] == id.as_str() || unasked_error(&msg) {
                 return Ok(Some(msg));
             }
             // Else an answer to another request.
@@ -520,12 +735,27 @@ impl Conn {
         }
     }
 
+    /// Why a request couldn't be written (`e`): the process not taking it
+    /// for [`ANSWER_WAIT`], or what it said before it closed the connection
+    /// on it (a request too long to read, ADR 10.3), as its answer.
+    fn unwritten(&mut self, e: io::Error) -> Result<Value, String> {
+        if waited(&e) {
+            return Err("not answering".into());
+        }
+        while let Ok(Some(msg)) = self.read(Instant::now().checked_add(ANSWER_WAIT)) {
+            if unasked_error(&msg) {
+                return Ok(msg);
+            }
+            if msg.get("event").is_some() {
+                self.events.push_back(msg);
+            }
+        }
+        Err(e.to_string())
+    }
+
     /// The next event; `Ok(None)` when `deadline` passes, `Err` when the
     /// connection closes, but for a cut-off it has caught up on.
-    pub(super) fn next_event(
-        &mut self,
-        deadline: Option<Instant>,
-    ) -> Result<Option<Value>, String> {
+    pub(super) fn next_event(&mut self, deadline: Option<Instant>) -> Result<Option<Value>, Error> {
         loop {
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
@@ -553,8 +783,7 @@ impl Conn {
         };
         let cut = match self.follow.as_ref() {
             Some(f) => {
-                match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
-                {
+                match connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new) {
                     Ok(mut conn) => {
                         let asked = conn.was_cut_off(&f.peer);
                         drop(conn);
@@ -583,7 +812,8 @@ impl Conn {
     /// that is stopping does (#275).
     fn was_cut_off(&mut self, peer: &str) -> Result<Option<Option<u64>>, String> {
         let req = json!({ "cmd": "was_cut_off", "peer": peer });
-        let asked = self.answer_until(req, None)?.ok_or("the process closed the connection")?;
+        let asked = self.answer_until(req, Instant::now().checked_add(ANSWER_WAIT))?;
+        let asked = asked.ok_or("not answering")?;
         let cut = asked["ok"] == true && asked["cut_off"] == true;
         Ok(cut.then(|| asked["last_queued_seq"].as_u64()))
     }
@@ -601,10 +831,11 @@ impl Conn {
         let mut cut: Option<Option<u64>> = None;
         let (live, until) = loop {
             f.tries += 1;
-            let fresh =
-                UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
+            let fresh = connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
             let mut conn = match fresh {
-                Ok(conn) => conn,
+                // The same process: its errors there say how it differs
+                // from this brnr, as here (ADR 8.8).
+                Ok(conn) => Conn { meta: self.meta.clone(), ..conn },
                 // Gone: its transcript is whole (ADR 5.5), and is read to its end.
                 Err(_) if cut.is_some() || f.cut_off_before_it_went() => {
                     // Its socket goes before its last records are written.
@@ -632,32 +863,36 @@ impl Conn {
                 }
             }
             match conn.resubscribe(&f) {
-                Ok((peer, until)) => {
+                Ok(Some((peer, until))) => {
                     f.peer = peer;
                     break (Some(conn), Some(until));
                 }
-                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), &e)),
+                Ok(None) => break (None, None),
+                Err((Some(at), e)) => return Err(self.give_up(&f, Some(at), e)),
                 Err((None, e)) if f.tries > TRIES => {
                     // Live, as far as it knows: up to where the process
                     // said it cut the peer off.
                     let known = cut.flatten();
                     let n = f.tries;
-                    let mut e = format!("cut off {n} times in a row while catching up ({e})");
-                    if known.is_none() {
-                        e.push_str("; the process says no position, so up to where is unknown");
-                    }
-                    return Err(self.give_up(&f, known, &e));
+                    let e = e.map(|m| {
+                        let mut e = format!("cut off {n} times in a row while catching up ({m})");
+                        if known.is_none() {
+                            e.push_str("; the process says no position, so up to where is unknown");
+                        }
+                        e
+                    });
+                    return Err(self.give_up(&f, known, e));
                 }
                 Err((None, _)) => {}
             }
         };
         if f.tries > TRIES {
             let e = format!("cut off {} times in a row while catching up", f.tries);
-            return Err(self.give_up(&f, until, &e));
+            return Err(self.give_up(&f, until, e.into()));
         }
         let caught = match f.read(until) {
             Ok(caught) => caught,
-            Err(e) => return Err(self.give_up(&f, until, &e)),
+            Err(e) => return Err(self.give_up(&f, until, e)),
         };
         f.last = until.or(caught.last().and_then(|e| e["seq"].as_u64())).unwrap_or(f.last);
         self.events.extend(caught);
@@ -679,28 +914,37 @@ impl Conn {
 
     /// Subscribes as `f` did, and waits for the process to have written what
     /// it recorded until then: the new subscription's peer, and where it
-    /// starts, which the transcript has everything up to. `Err` says why it
+    /// starts, which the transcript has everything up to; none if the
+    /// process went meanwhile, its transcript whole. `Err` says why it
     /// can't, and where the new subscription starts once it has one.
-    fn resubscribe(&mut self, f: &Follow) -> Result<(String, u64), (Option<u64>, String)> {
+    fn resubscribe(&mut self, f: &Follow) -> Result<Option<Resubscribed>, (Option<u64>, Error)> {
         let events: Vec<&str> = f.events.iter().map(String::as_str).collect();
         let answer = self.call(json!({ "cmd": "subscribe", "events": events }));
         let answer = answer.map_err(|e| (None, e))?;
         let next = Follow::new(f.socket.clone(), &answer, &events, f.session.as_deref());
         let next = next.ok_or((None, "the process doesn't say where its events are".into()))?;
         let at = Some(next.last);
-        if self.call(json!({ "cmd": "logged" })).map_err(|e| (at, e))?["lost"] == true {
-            let why = "the process has records it couldn't write yet (a full disk?)";
-            return Err((at, why.into()));
+        match self.call(json!({ "cmd": "logged" })) {
+            Ok(logged) if logged["lost"] == true => {
+                Err((at, "the process has records it couldn't write yet (a full disk?)".into()))
+            }
+            Ok(_) => Ok(Some((next.peer, next.last))),
+            // Hung up unanswered: a process that is stopping accepts until
+            // its socket goes (#275), and gone, its transcript is whole. The
+            // connection, of no more use, is let go of first.
+            Err(e) => {
+                let _ = self.writer.shutdown(std::net::Shutdown::Both);
+                if gone_within(&f.socket, STOPPING_WAIT) { Ok(None) } else { Err((at, e)) }
+            }
         }
-        Ok((next.peer, next.last))
     }
 
     /// Gives up catching up: `missed` says what it missed, and why.
-    fn give_up(&mut self, f: &Follow, until: Option<u64>, why: &str) -> String {
-        let note = f.missed(until, why);
+    fn give_up(&mut self, f: &Follow, until: Option<u64>, why: error::Error) -> String {
+        let note = f.missed(until, &why);
         let text = render::event(&note, &render::Options { session: false, time: false });
         self.missed = Some(note);
-        text.unwrap_or_else(|| why.to_owned())
+        text.unwrap_or(why.message)
     }
 
     /// The next line, an event or a response (or the start channel's
@@ -710,13 +954,8 @@ impl Conn {
         if timeout == Some(Duration::ZERO) {
             return Ok(None);
         }
-        // macOS refuses it on a connection the process has closed (EINVAL),
-        // where reading doesn't wait anyway: it reads what is left, then EOF.
-        if let Err(e) = self.reader.get_ref().set_read_timeout(timeout)
-            && e.raw_os_error() != Some(libc::EINVAL)
-        {
-            return Err(e.to_string());
-        }
+        // Closed, it reads what is left, then EOF.
+        closed_ok(self.reader.get_ref().set_read_timeout(timeout)).map_err(|e| e.to_string())?;
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) => Err("the process closed the connection".into()),
@@ -800,8 +1039,49 @@ pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, std::thread::JoinHandle<()
 }
 
 #[cfg(test)]
+impl Conn {
+    /// The same connection, as to the process `meta` describes: for a test.
+    pub(super) fn of(mut self, meta: Value) -> Conn {
+        self.meta = Some(meta);
+        self
+    }
+}
+
+/// A connection, for a test, to a process whose socket is `<pid>.sock`,
+/// that answers each request with the next of `answers`, then closes it.
+#[cfg(test)]
+pub(super) fn answered(pid: u32, answers: Vec<Value>) -> (Conn, std::thread::JoinHandle<()>) {
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::{env, thread};
+    static MADE: AtomicU32 = AtomicU32::new(0);
+    let n = MADE.fetch_add(1, Ordering::Relaxed);
+    let dir = env::temp_dir().join(format!("brnr-answered-{}-{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join(format!("{pid}.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    let process = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap().0;
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        for mut answer in answers {
+            let Some(Ok(line)) = lines.next() else { break };
+            let req: Value = serde_json::from_str(&line).unwrap();
+            answer["req_id"] = req["req_id"].clone();
+            writeln!(stream, "{answer}").unwrap();
+        }
+        drop(stream);
+        let _ = fs::remove_dir_all(&dir);
+    });
+    let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();
+    conn.socket = Some(socket);
+    (conn, process)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::code_is;
     use std::env;
     use std::os::unix::net::UnixListener;
     use std::thread;
@@ -826,7 +1106,62 @@ mod tests {
             let _ = fs::remove_dir_all(&dir);
             asked
         });
-        (Host { meta: json!({ "id": "7", "socket": socket }), status: None }, process)
+        let meta = json!({ "id": "7", "socket": socket, "protocol": PROTOCOL });
+        (Host { meta, status: None }, process)
+    }
+
+    /// An error from a process that speaks another protocol than this
+    /// brnr's says so, and how to restart it, where it may come of the
+    /// difference: a request it doesn't have, or, from one that predates
+    /// `protocol`, any error, as its errors are text (ADR 8.8). One that
+    /// speaks this brnr's gets its errors as they are.
+    #[test]
+    fn adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it() {
+        let unknown =
+            r#"{"ok":false,"error":{"code":"command_unknown","message":"unknown command: fork"}}"#;
+        let missing =
+            r#"{"ok":false,"error":{"code":"session_not_found","message":"no session s"}}"#;
+        let text = r#"{"ok":false,"error":"unknown command: fork"}"#;
+        let answers = [unknown, unknown, missing, unknown, text];
+        let (mut host, process) = answering("skew", answers.map(String::from).to_vec());
+        let fork = json!({ "cmd": "fork", "session": "s" });
+        let said = |host: &Host| host.call(&fork).unwrap_err();
+        let error = said(&host);
+        code_is(&error, Code::command_unknown);
+        assert_eq!(error, Error::new(Code::command_unknown, "unknown command: fork"));
+
+        let newer = PROTOCOL + 1;
+        host.meta["protocol"] = json!(newer);
+        host.meta["brnr"] = json!("9.0.0");
+        let ours = format!("brnr {}, protocol {PROTOCOL}", env!("CARGO_PKG_VERSION"));
+        let restart = "stop it (brnr process stop 7) and resume its sessions (brnr session \
+                       resume <session>) to run them in this brnr";
+        let note = format!(
+            "process 7 runs a newer brnr (brnr 9.0.0, protocol {newer}) than this one ({ours}): \
+             {restart}"
+        );
+        let error = said(&host);
+        code_is(&error, Code::command_unknown);
+        assert_eq!(error.message, format!("unknown command: fork; {note}"));
+        // Not of the difference: as it is.
+        let error = said(&host);
+        code_is(&error, Code::session_not_found);
+        assert_eq!(error, Error::new(Code::session_not_found, "no session s"));
+
+        // An editor's, from before processes said their version.
+        host.meta = json!({ "id": "7", "socket": host.meta["socket"], "proxy_pid": 5 });
+        let note = format!(
+            "process 7 runs an older brnr than this one ({ours}), from before processes said \
+             theirs: restart the agent in its editor to run this brnr"
+        );
+        assert_eq!(said(&host).message, format!("unknown command: fork; {note}"));
+        let error = said(&host);
+        code_is(&error, Code::unclassified);
+        assert_eq!(
+            (error.code, error.message),
+            (Code::unclassified, format!("unknown command: fork; {note}"))
+        );
+        process.join().unwrap();
     }
 
     /// What `call` gets is the answer without its envelope; an error the
@@ -839,13 +1174,14 @@ mod tests {
         let deep = format!(r#"{{"ok":true,"x":{}{}}}"#, "[".repeat(n), "]".repeat(n));
         let answers = [
             r#"{"ok":true,"req_id":"r","status":"stopping"}"#,
-            r#"{"ok":false,"error":"no session s"}"#,
+            r#"{"ok":false,"error":{"code":"session_not_found","message":"no session s"}}"#,
             r#"{"ok":true"#,
             &deep,
         ];
         let (host, process) = answering("call", answers.map(String::from).to_vec());
         assert_eq!(host.call(&json!({ "cmd": "stop" })), Ok(json!({ "status": "stopping" })));
-        assert_eq!(host.call(&json!({ "cmd": "stop" })), Err("no session s".into()));
+        let none = Error::new(Code::session_not_found, "no session s");
+        assert_eq!(host.call(&json!({ "cmd": "stop" })), Err(none));
         let isnt = Err("process 7: its answer isn't JSON".into());
         assert_eq!(host.call_agent(&json!({ "cmd": "fork" })), isnt);
         let deep = Err("process 7: its answer nests 257 deep, past the 256 brnr reads".into());
@@ -897,7 +1233,7 @@ mod tests {
                 d if d + 4 == json::OWN_DEPTH => assert_eq!(found, Ok(want)),
                 _ => {
                     let past = "process 7: its answer nests 257 deep, past the 256 brnr reads";
-                    assert_eq!(found.err().as_deref(), Some(past));
+                    assert_eq!(found.err().map(|e| e.message).as_deref(), Some(past));
                 }
             }
             assert_eq!(process.join().unwrap(), [json!({ "cmd": "pending" })]);
@@ -989,7 +1325,8 @@ mod tests {
         assert_eq!(live["seq"], 11);
         assert!(conn.next_event(None).is_err());
         let note = conn.missed().unwrap();
-        assert_eq!(note["error"], "cut off 4 times in a row while catching up", "{note}");
+        let error = &note["error"]["message"];
+        assert_eq!(error, "cut off 4 times in a row while catching up", "{note}");
         assert_eq!((note["after_seq"].as_u64(), note["until_seq"].as_u64()), (Some(40), Some(50)));
         assert_eq!(process.join().unwrap(), 5, "connections after the first");
         let _ = fs::remove_dir_all(&dir);
@@ -1007,7 +1344,12 @@ mod tests {
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
         let event = |seq: u64| json!({ "event": "turn_ended", "seq": seq });
         let lines: String = (11..=13)
-            .map(|n| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event(n) })))
+            .map(|n| {
+                format!(
+                    "{}\n",
+                    json!({ "format": 1, "ts": "t", "host_id": "h", "event": event(n) })
+                )
+            })
             .collect();
         fs::write(&host_log, lines).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
@@ -1086,6 +1428,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A process that left its metadata is gone once it has exited, though
+    /// nothing has reaped it: `kill(pid, 0)` still reaches a zombie, and on
+    /// macOS it started before its file was written (#313). One that lives,
+    /// its socket not refusing, isn't.
+    #[test]
+    fn adr_0003_a_zombie_process_is_gone() {
+        let dir = env::temp_dir().join(format!("brnr-zombie-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut zombie = std::process::Command::new("true").spawn().unwrap();
+        let pid = zombie.id();
+        let (socket, file) = (dir.join(format!("{pid}.sock")), dir.join(format!("{pid}.json")));
+        assert!(gone_within(&socket, Duration::from_secs(5)), "never a zombie");
+        assert!(sys::kill(pid as libc::pid_t, 0), "reaped already");
+        fs::write(&file, "{}").unwrap();
+        assert!(gone(pid.into(), &socket, &file, &io::Error::from(ErrorKind::NotFound)));
+        let timed_out = io::Error::from(ErrorKind::TimedOut);
+        assert!(!gone(std::process::id().into(), &socket, &file, &timed_out));
+        zombie.wait().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A process that is stopping accepts, and hangs up with no answer,
     /// until its socket goes (#275). A peer it had cut off waits for it to
     /// go, then reads what it missed from the transcript to its end, where
@@ -1096,8 +1460,9 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
-        let record =
-            |event: Value| format!("{}\n", json!({ "ts": "t", "host_id": "h", "event": event }));
+        let record = |event: Value| {
+            format!("{}\n", json!({ "format": 1, "ts": "t", "host_id": "h", "event": event }))
+        };
         let dropped = record(json!({ "event": "peer_dropped", "peer": "socket#0" }));
         let events: String =
             (11..=12).map(|n| record(json!({ "event": "turn_ended", "seq": n }))).collect();
@@ -1138,7 +1503,7 @@ mod tests {
     /// `until` is null only for a process that has gone. One that stays
     /// gives up at the 4th, `until` where it said it cut the peer off
     /// (`last_queued_seq`, 30), or null with the error saying why if it said no
-    /// position.
+    /// position. An older brnr's errors there say how to restart it.
     #[test]
     fn adr_0010_a_new_subscription_that_fails_is_one_more_cut_off() {
         // A process that says it cut the peer off (`last_queued_seq`) and fails
@@ -1150,7 +1515,7 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
             let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 12 });
-            let record = json!({ "ts": "t", "host_id": "h", "event": exited });
+            let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": exited });
             fs::write(&host_log, format!("{record}\n")).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
             let at = socket.clone();
@@ -1228,12 +1593,172 @@ mod tests {
                 (Some(10), last_queued),
                 "{note}"
             );
-            let error = note["error"].as_str().unwrap();
+            let error = note["error"]["message"].as_str().unwrap();
             assert!(error.starts_with("cut off 4 times in a row while catching up"), "{note}");
             assert_eq!(error.contains("no position"), last_queued.is_none(), "{note}");
             once(thread.join().unwrap(), tries);
             let _ = fs::remove_dir_all(&dir);
         }
+
+        // An older brnr's, which says no `protocol`: its errors on the new
+        // connections say how to restart it, as on the first (ADR 8.8).
+        let (mut conn, thread, dir) = process("older", Some(30), tries, true);
+        conn.meta = Some(json!({ "id": "7" }));
+        assert!(conn.next_event(None).is_err());
+        let note = conn.missed().expect("no events_missed note").clone();
+        let error = note["error"]["message"].as_str().unwrap();
+        assert!(error.contains("connection gone; process 7 runs an older brnr"), "{note}");
+        assert!(error.contains("stop it (brnr process stop 7)"), "{note}");
+        once(thread.join().unwrap(), tries);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A process that stops while a command subscribes again, and hangs up
+    /// before it answers `logged`, has its transcript whole once gone: the
+    /// command catches up to its end, past where it subscribed (20), and
+    /// misses nothing (#329).
+    #[test]
+    fn adr_0010_a_process_that_goes_while_subscribing_again_is_caught_up_to_its_end() {
+        let dir = env::temp_dir().join(format!("brnr-relogged-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 22 });
+        let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": exited });
+        fs::write(&host_log, format!("{record}\n")).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let at = socket.clone();
+        let process = thread::spawn(move || {
+            let mut asked = Vec::new();
+            let mut stream = listener.incoming().next().unwrap().unwrap();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                asked.push(req["cmd"].as_str().unwrap().to_owned());
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    "was_cut_off" => json!({ "ok": true, "cut_off": true, "last_queued_seq": 30 }),
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": "socket#1", "host_id": "h", "seq": 20 })
+                    }
+                    // Stopping: gone, its socket first, before it answers.
+                    _ => {
+                        fs::remove_file(&at).unwrap();
+                        break;
+                    }
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+            }
+            asked
+        });
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            pid: json!(7),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["process_exited".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        let caught = conn.next_event(None).unwrap().unwrap();
+        assert_eq!((&caught["event"], &caught["seq"]), (&json!("process_exited"), &json!(22)));
+        assert!(conn.missed().is_none(), "{:?}", conn.missed());
+        assert_eq!(process.join().unwrap(), ["was_cut_off", "subscribe", "logged"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Processes that don't answer cost `discover` one wait in all, not one
+    /// each: they are asked at once. Each is listed, as not answering (no
+    /// status), beside one that answers, in the order they started
+    /// (ADR 10.4).
+    #[test]
+    fn adr_0010_processes_not_answering_cost_one_wait_in_all() {
+        let dir = env::temp_dir().join(format!("brnr-probes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        paths::ensure_private(&dir).unwrap();
+        let mut listeners = Vec::new();
+        for n in 1..=4 {
+            let socket = dir.join(format!("{n}.sock"));
+            listeners.push(UnixListener::bind(&socket).unwrap());
+            let started = format!("2026-01-0{}", 5 - n);
+            let meta = json!({ "id": n.to_string(), "socket": socket, "host_pid": std::process::id(), "started": started });
+            fs::write(dir.join(format!("{n}.json")), meta.to_string()).unwrap();
+        }
+        // 1 and 2 never accept, 3 accepts and never answers, 4 answers.
+        let answers = listeners.pop().unwrap();
+        thread::spawn(move || {
+            let mut stream = answers.accept().unwrap().0;
+            BufReader::new(&stream).read_line(&mut String::new()).unwrap();
+            writeln!(stream, r#"{{"ok":true,"sessions":[]}}"#).unwrap();
+        });
+        let silent = listeners.pop().unwrap();
+        thread::spawn(move || {
+            let held = silent.accept().unwrap();
+            thread::sleep(ANSWER_WAIT * 3);
+            drop(held);
+        });
+        let start = Instant::now();
+        let hosts = discover_in(&dir).unwrap();
+        let took = start.elapsed();
+        assert!(took < ANSWER_WAIT + PROBE_MARGIN + Duration::from_secs(1), "{took:?}");
+        let listed: Vec<(&str, bool)> =
+            hosts.iter().map(|h| (h.id(), h.status.is_some())).collect();
+        assert_eq!(listed, [("4", true), ("3", false), ("2", false), ("1", false)]);
+        drop(listeners);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A request the process never answers fails after [`ANSWER_WAIT`], "not
+    /// answering", as one it takes nothing of does, rather than waiting for
+    /// ever (ADR 10.4).
+    #[test]
+    fn adr_0010_a_request_not_answered_or_taken_is_not_answering() {
+        let timed = |conn: &mut Conn| {
+            let start = Instant::now();
+            (conn.call(json!({ "cmd": "status" })), start.elapsed())
+        };
+        let (silent, _held) = UnixStream::pair().unwrap();
+        let mut silent = Conn::new(silent).unwrap();
+        // Its socket's buffer full: nothing more is taken.
+        let (full, _unread) = UnixStream::pair().unwrap();
+        full.set_nonblocking(true).unwrap();
+        while (&full).write(&[b'x'; 4096]).is_ok() {}
+        full.set_nonblocking(false).unwrap();
+        let mut full = Conn::new(full).unwrap();
+        thread::scope(|s| {
+            let answered = s.spawn(|| timed(&mut silent));
+            let taken = s.spawn(|| timed(&mut full));
+            for (result, took) in [answered.join().unwrap(), taken.join().unwrap()] {
+                assert_eq!(result, Err("not answering".into()));
+                assert!(took >= ANSWER_WAIT - Duration::from_millis(100), "{took:?}");
+                assert!(took < ANSWER_WAIT + Duration::from_secs(2), "{took:?}");
+            }
+        });
+    }
+
+    /// An error the process says to no request in particular, before it
+    /// closes the connection (a request too long to read, too many
+    /// connections), is the answer to the request waiting, on a connection
+    /// and for a single request alike (ADR 10.3, 10.4).
+    #[test]
+    fn adr_0010_an_error_said_to_no_request_is_the_answer() {
+        let error = r#"{"ok":false,"error":{"code":"process_unreachable","message":"too many connections: 128 open"}}"#;
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        writeln!(theirs, "{error}").unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        let answer = conn.call(json!({ "cmd": "subscribe" }));
+        let refused = Error::new(Code::process_unreachable, "too many connections: 128 open");
+        assert_eq!(answer, Err(refused.clone()));
+        let (host, process) = answering("unasked", vec![error.into()]);
+        assert_eq!(host.call(&json!({ "cmd": "status" })), Err(refused));
+        process.join().unwrap();
     }
 
     /// A live process that can't be caught up with (here, it has records it

@@ -152,7 +152,8 @@ fn write(shared: &(Mutex<Queue>, Condvar), sink: &Sink, json: bool) {
             queue.lines.retain(|l| matches!(l, Line::Note(_)));
             (queue.bytes, queue.skipped) = (0, 0);
             drop(queue);
-            sink.note(None, json!({ "event": "display_stopped", "error": err.to_string() }));
+            let error = crate::error::Error::from(err).json();
+            sink.note(None, json!({ "event": "display_stopped", "error": error }));
         }
     }
 }

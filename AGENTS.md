@@ -68,7 +68,8 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 - `src/sys.rs`: the system calls that are safe whatever their arguments.
 - `tests/`: integration tests that drive the real binary against
   `tests/fake_agent.py`, whose behaviour is chosen with environment variables
-  (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`);
+  (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`,
+  and `skip` for a test that can't run where it is: it fails in CI);
   `tests/security.rs` checks the claims of the threat model.
   `tests/docs.rs` runs the examples in the README, the site and the skill
   (`skills/brnr/`): an example added or changed needs its line in

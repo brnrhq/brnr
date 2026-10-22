@@ -6,8 +6,9 @@
 //! [`Sink::when_written`] says when what was recorded is written, for
 //! `brnr event log` (ADR 5.5). transcript.rs reads what this writes.
 //!
-//! Every record starts with the fields that join files together:
-//! `{"ts","host_id","pid","proxy_pid","agent_pid"[,"session"],…}`,
+//! Every record starts with its format, `transcript::FORMAT` (ADR 5.10),
+//! then the fields that join files together:
+//! `{"format","ts","host_id","pid","proxy_pid","agent_pid"[,"session"],…}`,
 //! where `proxy_pid` is null for a headless process. ACP traffic adds
 //! `"dir"` and `"msg"`: ACP frames messages as newline-delimited JSON, so
 //! each line is embedded unchanged (but for the MCP servers' secrets in a
@@ -16,14 +17,16 @@
 //! `"event":{…}`.
 //!
 //! A session's events file starts with a `session_opened` record naming the
-//! session, its cwd and its files (`events_log`, `acp_log`, `host_log`); the
+//! session, its cwd, the process's profile and agent, and its files
+//! (`events_log`, `acp_log`, `host_log`); the
 //! host log records the same `session_opened`. Both name the session a fork
 //! came from, `forked_from`, when it opens as one. Closing a session closes its files
 //! once what was recorded for it before is written, so a process holds
 //! files only for the sessions it has open; one opened again appends to
 //! them, starting with another `session_opened`. Nothing is appended to a
-//! file an older brnr wrote ([`appends_to`]): one in the way of a session's
-//! file is set aside first ([`Writer::set_aside`]).
+//! file in a format this brnr doesn't read, an older brnr's or a newer
+//! one's ([`appends_to`]): one in the way of a session's file is set aside
+//! first ([`Writer::set_aside`]).
 //!
 //! What a record goes into, from the state directory down, is the user's own
 //! and private before anything is written to it (P13, ADR 9.3): a file or
@@ -79,6 +82,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+use crate::error::Error;
 use crate::{json, paths, sys, transcript};
 
 /// What may be queued for the logger before records are skipped.
@@ -127,6 +131,10 @@ pub(crate) struct Ids {
     pub(crate) host_id: String,
     pub(crate) pid: u32,
     pub(crate) agent_pid: u32,
+    /// The process's profile and agent, as each `session_opened` names them:
+    /// what `session resume` resumes a session with (ADR 3.11, ADR 5.10).
+    pub(crate) profile: Option<String>,
+    pub(crate) agent: Vec<String>,
 }
 
 enum Cmd {
@@ -271,7 +279,7 @@ impl Lost {
             note["last_seq"] = json!(last);
         }
         if let Some(error) = &self.error {
-            note["error"] = json!(error);
+            note["error"] = Error::from(error.as_str()).json();
         }
         note["ts"] = json!(rfc3339(ts));
         note["host_id"] = json!(head.ids.host_id);
@@ -596,6 +604,8 @@ impl Writer {
             "event": "session_opened",
             "session": session,
             "cwd": cwd.to_string_lossy(),
+            "profile": self.head.ids.profile,
+            "agent": self.head.ids.agent,
             "events_log": path.to_string_lossy(),
             "acp_log": acp_path,
             "host_log": self.host_path.to_string_lossy(),
@@ -609,9 +619,9 @@ impl Writer {
         self.note(now, None, event);
     }
 
-    /// Sets the file at `path`, one of `session`'s, aside if an older brnr
-    /// wrote it ([`appends_to`]), so that the session starts a file of its
-    /// own there (ADR 5.9): renamed beside it, `<name>.older.jsonl`
+    /// Sets the file at `path`, one of `session`'s, aside if it is in a
+    /// format this brnr doesn't read ([`appends_to`]), so that the session
+    /// starts a file of its own there (ADR 5.9, ADR 5.10): renamed beside it, `<name>.older.jsonl`
     /// (`<name>.older.acp.jsonl` for a raw file; `older-2`, `older-3`, … if
     /// that is taken), where `doctor` still lists it, and the host log has a
     /// `session_log_moved` saying where to. A file it can't set aside is
@@ -655,7 +665,7 @@ impl Writer {
             "event": "session_log_failed",
             "session": session,
             "path": path.to_string_lossy(),
-            "error": err.to_string(),
+            "error": Error::from(err.to_string()).json(),
         });
         self.note(ts, None, event);
     }
@@ -736,7 +746,8 @@ impl Head {
     fn record(&self, ts: SystemTime, session: Option<&str>, body: &[u8]) -> Vec<u8> {
         let proxy = self.proxy_pid.map_or("null".to_owned(), |p| p.to_string());
         let mut out = format!(
-            r#"{{"ts":"{}","host_id":"{}","pid":{},"proxy_pid":{},"agent_pid":{},"#,
+            r#"{{"format":{},"ts":"{}","host_id":"{}","pid":{},"proxy_pid":{},"agent_pid":{},"#,
+            transcript::FORMAT,
             rfc3339(ts),
             self.ids.host_id,
             self.ids.pid,
@@ -899,13 +910,15 @@ pub(crate) fn redact_record(record: &mut Value) {
     }
 }
 
-/// Whether brnr appends to the transcript at `path`: not to one an older
-/// brnr wrote (ADR 5.9), whose records it doesn't read, and in which what
-/// it appended would be read without what came before it. The one test of
-/// it: a session's file is set aside ([`Writer::set_aside`]), and an event
-/// for a session no process has open passes it over.
+/// Whether brnr appends to the transcript at `path`: not to one whose first
+/// or newest record is in a format it doesn't read (ADR 5.10,
+/// `transcript::unread_in`), an older brnr's or a newer one's, whose records
+/// it doesn't read, and in which what it appended would be read without
+/// what came before it (ADR 5.9). The one test of it: a session's file is
+/// set aside ([`Writer::set_aside`]), and an event for a session no process
+/// has open passes it over.
 fn appends_to(path: &Path) -> bool {
-    !transcript::by_an_older_brnr(path)
+    transcript::unread_in(path).is_none()
 }
 
 /// Renames the file at `path`, `<name>.jsonl` or `<name>.acp.jsonl`, to the
@@ -1060,7 +1073,8 @@ pub(crate) fn record_in_transcripts(
     event: &Value,
 ) -> (Vec<PathBuf>, Vec<String>, Made) {
     let mut record = format!(
-        r#"{{"ts":"{}","host_id":null,"pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session":{},"#,
+        r#"{{"format":{},"ts":"{}","host_id":null,"pid":null,"proxy_pid":null,"agent_pid":{agent_pid},"session":{},"#,
+        transcript::FORMAT,
         rfc3339(SystemTime::now()),
         json!(session),
     )
@@ -1330,7 +1344,9 @@ mod tests {
     }
 
     fn head() -> Head {
-        Head { ids: Ids { host_id: "h".into(), pid: 1, agent_pid: 2 }, proxy_pid: None }
+        let ids =
+            Ids { host_id: "h".into(), pid: 1, agent_pid: 2, profile: None, agent: Vec::new() };
+        Head { ids, proxy_pid: None }
     }
 
     #[test]
@@ -1514,7 +1530,8 @@ mod tests {
         assert_eq!(skipped(&path), [(3, 1)]);
         let (since, until) = (rfc3339(t0), rfc3339(t0 + Duration::from_secs(2)));
         assert_eq!((&note["since"], &note["until"]), (&json!(since), &json!(until)));
-        assert!(note["error"].is_string(), "{note}");
+        assert!(note["error"]["message"].is_string(), "{note}");
+        assert_eq!(note["error"]["code"], "unclassified", "{note}");
         assert_eq!(lines[2].as_ref().unwrap()["event"]["event"], "back");
         let _ = std::fs::remove_file(path);
     }

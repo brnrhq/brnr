@@ -40,8 +40,9 @@ brnr prompt send $s --json --prompt "also update the changelog"
 
 `status` is `delivered` (sent now), `held`, `steered` or `interrupting`.
 
-**Wait.** For the session to be idle (no turn running, nothing held), or for
-one message's turn, always with a timeout:
+**Wait.** For the session to be idle (no turn running, nothing held, no
+approval or elicitation waiting), or for one message's turn, always with a
+timeout:
 
 ```sh
 brnr event wait $s --timeout 900 --json
@@ -49,12 +50,14 @@ brnr event wait $s --for turn --timeout 900 --json
 brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?"
 ```
 
-`event wait` prints what ended it (`{"event": "idle", "session": …}`, or
-the `turn_ended` event). `prompt send --wait` prints the turn as one object
+`event wait` prints one shape for each `--for`, however the wait ended: for
+`idle` the session's state (`{"session": …, "state": "idle", "last_turn":
+{"stop_reason": "end_turn", …}}`, `state` `inactive` if it closed), for
+`turn` the `turn_ended` event. `prompt send --wait` prints the turn as one object
 at its end:
 
 ```json
-{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}, "dropped": null}
+{"session": "0f6c…", "message": "m3", "reply": "…", "stop_reason": "end_turn", "error": null, "tokens": {"total": 1234, "input": 1000, "output": 234, "thought": null, "cached_read": 500, "cached_write": null}, "dropped": []}
 ```
 
 **Read.** The reply is in `prompt send --wait`'s `reply`. For what the worker did
@@ -87,6 +90,17 @@ result:
 | 124 | your `--timeout` passed | the worker is still going: wait again, `brnr prompt cancel`, or ask the user |
 | 3 | brnr cut the wait off for falling behind and couldn't catch up from the transcript (it says what it missed) | the worker is still going: wait again, and read `brnr event log` for what happened |
 | 2 | your command line was wrong (an unknown option, an argument missing, a value a flag can't take); nothing was done | fix it from the usage brnr printed on stderr; the same words fail the same way again |
+
+A command that fails with an error says why on stderr, `brnr: <message>
+[<code>]`. A usage error (2), a timeout (124) and a cut-off (3) have no
+code: their exit status says what happened. With
+`--json`, a wait that got its turn prints the turn even when it failed
+(exit 1): read its `error`, `stop_reason` and `dropped`. A command that
+fails before that prints `{"error": {"code": …, "message": …}}` alone.
+Act on the `code` (`session_inactive`: resume it; `session_closing`: try
+again in a moment; `agent_failed`: the agent's own error, in `rpc_error`),
+never on the message; `unclassified` means nothing more than "failed".
+Tell the user either way.
 
 A worker waiting for an approval, or for input (an elicitation), doesn't end
 its turn: `event wait` runs until your timeout. `prompt send --wait` and
@@ -157,7 +171,7 @@ brnr prompt cancel $s --json
   message in full; `brnr queue drop $s <message>` drops one, and
   `brnr queue clear $s` all of it (`--messages` or `--context`: only those).
 - `prompt cancel` stops the running turn and drops what is held (`dropped` lists
-  them; `--keep-held` keeps them). Each dropped message is one you sent and
+  them, each `{message, text, reason}`; `--keep-held` keeps them). Each dropped message is one you sent and
   the worker never got: say so if it mattered.
 
 ## Processes

@@ -97,7 +97,10 @@ the user from their own processes.
 
 Each claim with what enforces it (file and function) and the test that checks
 it. Tests are in `tests/` unless a module is named; `security.rs` holds those
-written for this document.
+written for this document. A test that can't run where it is (as root,
+without `lsof`) fails in CI or with `BRNR_TESTS_STRICT` set (`skip`,
+tests/common/mod.rs), so in CI it never passes unrun. Elsewhere it passes
+without checking its claim, and says `skipped:` on stderr.
 
 ### B1: the runtime directory and sockets refuse others
 
@@ -106,10 +109,10 @@ written for this document.
 | The runtime directory is created 0700 and the process refuses one that isn't a directory owned by the user with no group or other bits, is a symlink, or, on macOS, has an access control list, which can grant what the mode doesn't show (the error gives the `chmod -N` that removes it; brnr doesn't); it then writes nothing there and starts no agent. It is opened without following a symlink and checked through what was opened (`O_NOFOLLOW`, `fstat`). The directory is the boundary: the sockets and metadata in it aren't checked one by one (ADR 3.9). | `paths::ensure_private`, `paths::check_private` (src/paths.rs), from `Host::start` (src/host/mod.rs); `sys::has_acl` (src/sys.rs) | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_runtime_dir_of_another_users_is_refused`, `adr_0003_a_runtime_dir_with_an_acl_is_refused` (macOS); `headless.rs`: `runtime_dir_symlink_is_refused`; src/paths.rs: `adr_0003_a_private_directory_is_checked_through_what_was_opened` |
 | Every command that reads the runtime directory refuses one others can use, a symlink, or, on macOS, one with an access control list, before it trusts anything there: no request, approval included, is sent through it. | `discover` (src/ctl/client.rs), through `paths::check_private` | `security.rs`: `a_runtime_dir_others_can_use_is_refused`, `a_symlinked_runtime_dir_is_refused_by_every_command`, `no_approval_goes_through_a_dir_others_can_use`, `adr_0003_a_runtime_dir_with_an_acl_is_refused` (macOS); `headless.rs`: `shared_runtime_dir_is_refused` |
 | The control socket is 0600, the directory 0700, the session locks' directory (`sessions/` in the state directory, ADR 3.9) 0700 and each lock 0600, whatever the umask. | `Host::start` (bind, then `set_permissions` 0600); `lock::take` (src/lock.rs) | `security.rs`: `what_brnr_makes_is_private_whatever_the_umask` |
-| Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (runs as root only, connecting as `nobody`) |
+| Another user can't connect to the socket: the directory and the socket's mode both refuse them. | the kernel, given the modes above | `security.rs`: `another_user_cant_connect` (needs root, so `cargo test` ignores it; CI runs it as root on Linux, connecting as `nobody`) |
 | A metadata file counts only with the socket next to it, so a planted file can't point a command at another socket. | `read_meta` (src/ctl/client.rs) | `headless.rs`: `metadata_names_its_own_socket` |
 | Session locks, in the state directory beside the transcripts they guard (ADR 3.9), are held to the runtime directory's terms (private, with no access control list on macOS, or refused, with the `chmod -N` that removes one) and never followed through a symlink. A headless start, resume or fork that can't take its lock is refused, as is a session opened in a running process (`session new --pid`, `resume --pid`), which the agent then closes again (ADR 3.9, ADR 8.1). | `lock::take` (`ensure_private`, `O_NOFOLLOW`); `sys::has_acl` (src/sys.rs); `own`, `take_lock` (src/host/acp.rs); `host_request_done`, `peer_opened`, `peer_result` (src/host/requests.rs) | `security.rs`: `adr_0003_session_locks_are_private_and_never_followed`, `adr_0003_session_locks_with_an_acl_are_refused` (macOS); `cli.rs`: `adr_0003_a_new_session_that_cant_be_locked_isnt_started`, `adr_0003_a_resume_that_cant_be_locked_isnt_started`, `adr_0003_a_fork_that_cant_be_owned_is_refused`, `adr_0008_pid_session_that_cant_be_locked_is_closed` |
-| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); P15 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, where installed) |
+| brnr listens on no network. | the process binds only a `UnixListener` (src/host/mod.rs); P15 | `security.rs`: `the_process_listens_on_no_network` (with `lsof`, which CI has) |
 | `doctor` fails a runtime directory others can use, or, on macOS, with an access control list, and `--fix` tightens its mode but never through a symlink, and never removes an ACL. | `runtime_dir`, `Found`, `private_problem`, `fixable` (src/ctl/doctor.rs); `sys::has_acl` (src/sys.rs) | `doctor.rs`: `open_runtime_dir_fails_until_fixed`, `symlinked_runtime_dir_is_not_fixed`; `security.rs`: `adr_0003_a_runtime_dir_with_an_acl_is_refused` (macOS) |
 
 ### B2: transcripts are private
@@ -148,7 +151,7 @@ written for this document.
 | Headless, an elicitation waits until someone answers it, and `response_timeout` answers it only `cancel`: never `accept`, nor `decline`, the user's no (ADR 4.5). | `agent_request`, `fire_permission_timers` (src/host/acp.rs); `Approvals::time_out` (src/host/approvals.rs) | `security.rs`: `adr_0004_a_timeout_cancels_never_accepts`; `cli.rs`: `adr_0004_requests_and_show_list_an_elicitation` |
 | An accept sends only what fits the form: fields it names, the required ones, values of their type, within their bounds and choices, checked in the host for the CLI and bridges alike; one that doesn't fit sends nothing. An elicitation is answered only in its own session, or outside any by its process (ADR 4.5). | `response`, `check` (src/host/elicitation.rs); `elicitation` (src/host/control.rs); `Approvals::answer` (src/host/approvals.rs) | `cli.rs`: `adr_0004_accept_checks_fields_against_the_schema`, `adr_0004_a_request_scoped_elicitation_is_answered_by_pid`; src/host/elicitation.rs: `what_doesnt_fit_names_the_field` |
 | An elicitation's URL is shown escaped, never opened or run: brnr has no code that opens one (P8, ADR 4.5). | `render::clean`; `show` (src/ctl/elicitation.rs) | `cli.rs`: `adr_0004_requests_and_show_list_an_elicitation`; src/render.rs: `adr_0004_elicitation_events_have_lines` |
-| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing; a socket `allow` or `reject` with `option`, `option_id`'s old name, or with an `option_id` that isn't a string (null, a number), is refused, not answered by kind in its place (ADR 8.1). | `answer` (src/host/control.rs); `Approvals::answer`, `choose` (src/host/approvals.rs) | `security.rs`: `adr_0004_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0008_allow_and_reject_pick_by_kind`, `adr_0008_a_missing_or_doubled_kind_fails`, `adr_0008_option_must_be_on_the_verbs_side`, `adr_0008_a_permissions_option_is_option_id`, `adr_0008_a_permissions_option_id_is_a_string` |
+| A request is answered only in its own session, with the option of the kind asked for, and no other kind in its place: `reject` can't pick an allow option, nor `allow` a reject one, nor `--always` a once one; a missing or doubled kind answers nothing; a socket `allow` or `reject` with `option`, `option_id`'s old name (a field it doesn't take, ADR 8.8), or with an `option_id` that isn't a string (null, a number), is refused, not answered by kind in its place (ADR 8.1). | `check_request`, `answer` (src/host/control.rs); `Approvals::answer`, `choose` (src/host/approvals.rs) | `security.rs`: `adr_0004_a_request_is_answered_only_in_its_session`; `cli.rs`: `adr_0008_allow_and_reject_pick_by_kind`, `adr_0008_a_missing_or_doubled_kind_fails`, `adr_0008_option_must_be_on_the_verbs_side`, `adr_0008_a_permissions_option_is_option_id`, `adr_0008_a_permissions_option_id_is_a_string` |
 
 ### B5: bridges and `event notify` commands
 
@@ -167,7 +170,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0009_a_profiles_mcp_secrets_are_redacted`, `adr_0009_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted`, `adr_0003_acp_passes_bytes_unchanged`, `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0009_secrets_are_redacted_keys_and_structure_stay` |
-| `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows (for a log an older brnr wrote), a line nested past 128 too, read as transcripts are (ADR 2.5: to 256; a deeper one isn't shown), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs), `record` (src/transcript.rs), `redact_record` (src/log.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste`, `adr_0011_the_report_redacts_a_deep_line` |
+| `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows, a line nested past 128 too, read as transcripts are (ADR 2.5: to 256; a deeper one isn't shown), shows no record in a format this brnr doesn't read (ADR 5.10), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs), `record` (src/transcript.rs), `redact_record` (src/log.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste`, `adr_0011_the_report_redacts_a_deep_line` |
 | `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted` |
 
 ### B7: the config file is only the user's
@@ -204,10 +207,20 @@ What brnr doesn't enforce, or doesn't test, today.
 - **No peer credentials on the socket.** The process doesn't check who
   connected (`SO_PEERCRED`, `getpeereid`); the directory's and the socket's
   modes are the only control. Root is never kept out.
-- **The other-user test runs only as root.** `another_user_cant_connect` is
-  skipped otherwise, which includes CI, so the kernel's side of B1 is
-  checked only where someone runs the tests as root. The modes it relies on
-  are tested everywhere.
+- **A same-user process can fill the socket's connections.** A process
+  serves 128 connections at once, and refuses the next with an error
+  (ADR 10.4); a process of the user's that holds 128 open keeps brnr's
+  commands out of it until it lets go. It is inside the boundary (P13), so
+  this is reliability, not access; the limit keeps the process's threads and
+  memory bounded (N2). A request is read up to 32 MiB, and a longer one cuts
+  its peer off (ADR 10.3). `adr_0010_a_connection_past_the_cap_is_told_and_closed`
+  and `adr_0010_a_request_past_the_limit_is_answered_and_cut_off` check them.
+- **The other-user test runs as root only on Linux in CI.**
+  `another_user_cant_connect` needs root, to connect as `nobody`, so
+  `cargo test` ignores it; CI runs it as root (`--ignored`) on Linux, so
+  the kernel's side of B1 is checked there. On macOS it is checked only
+  where someone runs it as root: CI doesn't. The modes it relies on are
+  tested everywhere.
 - **The process checks the runtime directory once, at start.** A directory
   opened to others while a process runs is refused by the commands
   (`no_approval_goes_through_a_dir_others_can_use`), but the running process
@@ -228,7 +241,7 @@ What brnr doesn't enforce, or doesn't test, today.
   `doctor`, which changes modes, lists through what it opened instead.
 - **Another user's config is tested only as root's `/etc/hosts`.** Making
   a file or folder of another user's takes root, so the ownership check is
-  tested with a file and folder that are both root's, and skipped as root;
+  tested with a file and folder that are both root's, not as root;
   a private file of the user's in a folder of another's is refused by the
   same check, untested.
 - **A session whose transcript is refused is served unrecorded.** Logging

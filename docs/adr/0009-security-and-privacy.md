@@ -91,7 +91,7 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   Codex's adapters, keep the names they had. A transcript under a name of
   the earlier rule (other bytes replaced by `_`), or in a folder of the
   earlier rule (`<claude>` alone), is an older brnr's: it stays as it is,
-  and isn't read, as no record an older brnr wrote is (ADR 5.9). A
+  and isn't read, as no record an older brnr wrote is (ADR 5.10). A
   session resumed writes its escaped name in its cwd's `<claude>-<hash>`
   folder, as any session does. A file two sessions already share stays
   as it is.
@@ -108,7 +108,7 @@ bridge that asks for `acp`, which may forward it anywhere (N1, P13).
   say which is which.
 - A session of before the hash, resumed, starts a transcript in its cwd's
   folder, as any session does. The one it had is an older brnr's, which
-  `doctor` lists (ADR 5.9). Going on in the old file (#120 kept that
+  `doctor` lists (ADR 5.10). Going on in the old file (#120 kept that
   rule until #314) would add records of this brnr's after records it
   doesn't read.
 
@@ -417,6 +417,11 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     `adr_0009_doctor_says_what_it_cant_open_and_what_fix_left`: a
     transcript of mode 000 is a warning, `--fix` leaves it, and the example
     it then gives is what is left, not what it made private.
+  - [src/ctl/doctor.rs](../../src/ctl/doctor.rs):
+    `adr_0009_fix_changes_what_was_opened_not_its_name`: a file `--fix`
+    looked at, then swapped for a symlink, is made private as it was
+    opened, and what the link points at is left as it was; looked at
+    again, the symlink is a problem `--fix` doesn't fix.
 - 9.4:
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config
@@ -426,7 +431,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       stay as they were.
     - `adr_0009_a_config_of_another_users_is_refused`: root's `/etc/hosts`
       as the config is refused for its owner and its folder's, with the
-      `chown` (skipped as root).
+      `chown` (can't run as root: `skip` fails it in CI).
     - `adr_0009_a_symlinked_config_is_checked_where_it_points`: a link to a
       private file is read; to one others can read, refused, naming that
       file.

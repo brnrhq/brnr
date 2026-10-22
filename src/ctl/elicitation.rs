@@ -13,6 +13,7 @@
 
 use serde_json::{Map, Value, json};
 
+use crate::error::{self, Code};
 use crate::render;
 
 use super::args::Error::{self, Invalid};
@@ -29,7 +30,7 @@ struct Target<'a> {
 }
 
 /// Where `a`'s `<session>` or `--pid <pid>` is, and its `<request>`.
-fn locate<'a>(hosts: &'a [Host], a: &Args) -> Result<(Target<'a>, String), String> {
+fn locate<'a>(hosts: &'a [Host], a: &Args) -> Result<(Target<'a>, String), error::Error> {
     let target = match a.value("--pid") {
         None => {
             let session = &a.positional[0];
@@ -46,20 +47,27 @@ fn locate<'a>(hosts: &'a [Host], a: &Args) -> Result<(Target<'a>, String), Strin
 }
 
 /// The elicitation `request` waiting at `target`, in `pending`.
-fn find<'a>(pending: &'a Pending, target: &Target, request: &str) -> Result<&'a Value, String> {
+fn find<'a>(
+    pending: &'a Pending,
+    target: &Target,
+    request: &str,
+) -> Result<&'a Value, error::Error> {
     let found = pending.elicitation(target.session.as_deref(), request);
-    found.ok_or_else(|| match &target.session {
-        Some(_) => format!("no pending elicitation {request} in {}", target.arg),
-        None => format!(
-            "no pending elicitation {request} outside a session in process {}",
-            target.host.id()
-        ),
+    found.ok_or_else(|| {
+        let error = match &target.session {
+            Some(_) => format!("no pending elicitation {request} in {}", target.arg),
+            None => format!(
+                "no pending elicitation {request} outside a session in process {}",
+                target.host.id()
+            ),
+        };
+        error::Error::new(Code::request_not_found, error)
     })
 }
 
 /// `elicitation requests [<session>]`: those waiting, in every process that
 /// answers (saying which don't), or in one session.
-pub(super) fn requests(a: &Args) -> Result<(), String> {
+pub(super) fn requests(a: &Args) -> Result<(), error::Error> {
     let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
@@ -81,12 +89,12 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
     };
     let mut rows = Vec::new();
     for host in chosen {
-        let pid = host.id().parse::<u64>().ok();
         let pending = host.pending()?;
+        // `elicitation show`'s object, with fewer fields (ADR 8.2).
         let row = |e: &Value| {
             json!({
                 "session": e["session"],
-                "pid": pid,
+                "pid": e["pid"],
                 "request": e["request"],
                 "owner": e["owner"],
                 "mode": e["mode"],
@@ -100,9 +108,9 @@ pub(super) fn requests(a: &Args) -> Result<(), String> {
 }
 
 /// The elicitations' `rows`, as a table or `--json`.
-fn list(rows: &Value, json_out: bool) -> Result<(), String> {
+fn list(rows: &Value, json_out: bool) -> Result<(), error::Error> {
     if json_out {
-        return print_json(rows);
+        return print_json(&json!({ "requests": rows }));
     }
     let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
@@ -126,7 +134,7 @@ fn list(rows: &Value, json_out: bool) -> Result<(), String> {
 
 /// `elicitation show`: one in full, so it can be answered: the message, the
 /// mode and scope, a form's fields, a URL as the agent sent it.
-pub(super) fn show(a: &Args) -> Result<(), String> {
+pub(super) fn show(a: &Args) -> Result<(), error::Error> {
     let json_out = a.json;
     let hosts = discover()?;
     let (target, request) = locate(&hosts, a)?;
@@ -225,7 +233,8 @@ pub(super) fn answer(a: &Args, action: &str) -> Result<(), Error> {
             let value: Value =
                 serde_json::from_str(&text).map_err(|e| format!("stdin isn't JSON: {e}"))?;
             if !value.is_object() {
-                return Err("stdin must be one JSON object of the form's fields".into());
+                let error = "stdin must be one JSON object of the form's fields";
+                return Err(error::Error::new(Code::input_invalid, error).into());
             }
             value
         }
