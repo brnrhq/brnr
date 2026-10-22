@@ -395,8 +395,9 @@ Editor sessions (ADR 7.1):
   `elicitation` is refused in strict mode too. When it is taken, the
   request is withdrawn from the editor with `$/cancel_request` and the
   editor is told in the session ("Accepted via brnr", "Declined via
-  brnr"); the editor's late answer is dropped, and it is told who answered
-  first, as `permission` does.
+  brnr"); the editor's late answer is dropped while the host keeps the
+  request (ADR 10.3), and it is told who answered first, as `permission`
+  does.
 
 Status: `session status` counts them, `elicitation_count` beside
 `pending_count` (ADR 8.2), and a session with one waiting is `waiting`.

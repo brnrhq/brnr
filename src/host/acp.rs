@@ -719,6 +719,12 @@ impl Host {
         let named = msg.get("params").and_then(|p| p.get("requestId"));
         let given_up = named.and_then(|id| self.approvals.give_up(&id_key(id), self.client()));
         let session = given_up.as_ref().and_then(|r| r.req.session.clone());
+        // Cancelled after its session closed: nothing is kept past that (ADR 10.3).
+        if let Some(s) = &session
+            && self.find(s).is_none()
+        {
+            self.approvals.closed(s);
+        }
         self.record(session.or_else(|| param_session(msg)).as_deref(), Dir::AgentToEditor, line);
         self.send_link(frame::DATA, line);
         if let Some(resolved) = given_up {
