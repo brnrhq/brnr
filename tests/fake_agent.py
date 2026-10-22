@@ -25,8 +25,8 @@ with environment variables:
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
   RESUME_FAIL=1     session/resume answers with an error
-  RESUME_LATER=<file>  answer session/resume when this file exists, reading
-                    on meanwhile
+  RESUME_LATER=<file>  answer session/resume once this file exists; until
+                    then it goes on reading and answering other messages
   NO_LOAD=1         don't offer session/load
   NO_AGENT_INFO=1   initialize says no agentInfo
   NO_HISTORY=1      session/load replays nothing
