@@ -449,7 +449,9 @@ watch` prints it on stdout as its last event, `event notify` and the
 and command changes use merge patches, with null removing an entry.
 `session_reopened` follows a `session_closed` when the agent answered an
 editor's load of the session with success after its close: the session is
-open again, and the load's `history` follows it. `history` carries
+open again, and the load's `history` follows it, unless another process
+took the session meanwhile, which the editor's process then doesn't serve
+(ADR 3.9). `history` carries
 `updates`, `recorded`, `recorded_updates` and `loads`. `recorded` says
 whether the replay was taken into the transcript at all;
 `recorded_updates`, how many of the `updates` are in it: all when

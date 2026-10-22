@@ -25,6 +25,8 @@ with environment variables:
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
   RESUME_FAIL=1     session/resume answers with an error
+  RESUME_LATER=<file>  answer session/resume when this file exists, reading
+                    on meanwhile
   NO_LOAD=1         don't offer session/load
   NO_HISTORY=1      session/load replays nothing
   FULL_HISTORY=1    session/load also replays a tool call it never finished,
@@ -255,8 +257,9 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE), session/load (LOAD_LATER) or a
-# steer (STEER_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE), session/load (LOAD_LATER),
+# session/resume (RESUME_LATER) or a steer (STEER_GATE) is sent from a thread
+# of its own.
 sending = threading.Lock()
 
 
@@ -366,6 +369,12 @@ def load_later(gate, mid, session):
     if env("LATE_HISTORY"):
         say(session, "late history")
     load_answer(mid)
+
+
+def resume_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.01)
+    result(mid, settings({}))
 
 
 def new_later(gate, mid, session):
@@ -937,6 +946,9 @@ for line in sys.stdin.buffer:
             time.sleep(0.01)
         if method == "session/resume" and env("RESUME_FAIL"):
             error(mid, -32603, "Can't resume the session")
+        elif method == "session/resume" and env("RESUME_LATER"):
+            later = (env("RESUME_LATER"), mid)
+            threading.Thread(target=resume_later, args=later, daemon=True).start()
         elif method == "session/resume":
             result(mid, settings({}))
         elif env("LOAD_LATER"):

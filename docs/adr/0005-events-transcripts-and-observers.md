@@ -520,7 +520,9 @@ written.
   and a `session_reopened`, `by` `editor`, says so (`session reopened
   (editor): its load was answered after its close`). brnr takes the
   agent's last answer as how the session is, and doesn't guess otherwise
-  (P4).
+  (P4). Unless another process took the session between the close and the
+  answer: then it isn't served here (ADR 3.9), with no `session_reopened`
+  and no `history`, as for a load that fails.
 - The load's replay is kept through the close: what the agent replays
   meanwhile is counted, and goes to the host log, as the session's files
   are closed. Once the load succeeds, the replay goes on in the reopened

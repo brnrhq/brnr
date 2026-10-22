@@ -342,6 +342,16 @@ brnr's own conventions:
   history. A prompt's session now has its transcript from the agent's
   first word of it; the prompt that came before is in the host log
   (ADR 5.6, #331).
+- An editor's `session/load` or `session/resume` that the agent answers
+  with success after the session closed in the editor's process (the
+  editor's close, or brnr's close or take-over under it, while the request
+  was unanswered) is checked again for the session's lock: if another
+  process took it meanwhile, the editor's process doesn't serve it unless
+  `shared_sessions` lets it. The agent is asked to close it, the editor is
+  told in the session which process holds it and how to release it, its
+  later requests for it are answered by brnr, and the host log has
+  `open_failed`. It opened shared, beside its owner, with only a
+  `session_shared` in the host log (ADR 3.9, #357).
 
 ## [0.9.0] - 2026-10-16
 

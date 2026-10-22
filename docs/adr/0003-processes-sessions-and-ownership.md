@@ -457,11 +457,24 @@ A session another process holds:
   agent. A prompt opens a session as a load does (ADR 5.6), so it is held
   to the same lock (#331). A caveat under P1: the editor can't pass
   `--take-over`, so its explicit step is releasing the session first.
+- A load or resume the agent answers with success after the session closed
+  in the editor's process (the editor's `session/close`, or brnr's close or
+  take-over under it, while the request was unanswered) is checked again as
+  the answer comes: another process can take the lock between the close and
+  the answer (#357). One it took isn't served there: the session doesn't
+  open, has no transcript there and no replay kept, and its lock isn't
+  held; the agent is asked to close it (`session/close`); the editor gets
+  the agent's answer, and is told in the session, as of a take-over
+  ("Session held by brnr process 4466", with how to release it, as above),
+  its later requests for it answered as ADR 7.1 has them. The host log has `open_failed`,
+  saying too if the agent can't close sessions, and another if the agent
+  fails the close: the session is left open in the agent (P3).
 - The feature flag `shared_sessions` in the editor's profile (ADR 3.10)
-  lets the load, or the prompt, through. The agent then serves the session
-  to both processes and splits the conversation. The process holding the
-  lock stays the only writer of the session's transcript; the editor's
-  process records the session in its host log only, and says so (P3).
+  lets the load, or the prompt, through, and one answered after a close as
+  above opens shared. The agent then serves the session to both processes
+  and splits the conversation. The process holding the lock stays the only
+  writer of the session's transcript; the editor's process records the
+  session in its host log only, and says so (P3).
   Strict mode (ADR 2.1) doesn't decide this.
 
 A session that can't be locked (the lock is neither held nor free:
