@@ -4572,10 +4572,13 @@ fn adr_0004_the_agent_cancels_each_request_it_has_open() {
     let ended = || resolved(&env).len() == 3;
     assert!(wait_for(Duration::from_secs(10), ended), "not all ended: {:?}", resolved(&env));
     assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    // The agent records brnr's answers as it reads them, after the events.
     let outcomes =
-        ["perm-1", "perm-2", "perm-3"].map(|r| outcome(&env, r).map(|o| o["outcome"].clone()));
+        || ["perm-1", "perm-2", "perm-3"].map(|r| outcome(&env, r).map(|o| o["outcome"].clone()));
+    let answered = || outcomes().iter().all(Option::is_some);
+    assert!(wait_for(Duration::from_secs(10), answered), "unanswered: {:?}", outcomes());
     assert_eq!(
-        outcomes,
+        outcomes(),
         [Some("selected".into()), Some("cancelled".into()), Some("cancelled".into())]
     );
     let by: Vec<_> =
