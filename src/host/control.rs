@@ -386,9 +386,10 @@ const MAX_CONNECTIONS: usize = 128;
 const ACCEPT_WAIT: Duration = Duration::from_millis(10);
 const ACCEPT_WAIT_MAX: Duration = Duration::from_secs(1);
 
-/// How long a connection cut off for a request too long waits for its
-/// answer to be written before it closes: a peer that has stopped reading
-/// holds its writer, and so the connection, for as long as it doesn't.
+/// How long a connection that ended, or was cut off for a request too long,
+/// waits for what was queued for it to be written before it closes: a peer
+/// that has stopped reading holds its writer, and so the connection, for as
+/// long as it doesn't.
 const CUT_OFF_WAIT: Duration = Duration::from_secs(5);
 
 pub(super) fn serve(listener: UnixListener, tx: SyncSender<Ev>) {
@@ -433,9 +434,9 @@ fn backoff(last: Option<Duration>) -> Duration {
     last.map_or(ACCEPT_WAIT, |last| (last * 2).min(ACCEPT_WAIT_MAX))
 }
 
-/// A connection counted as open until it is dropped: once the process has
-/// let go of the connection (`Ev::PeerClosed`), its writer's and closer's
-/// handles too.
+/// A connection counted as open until it is dropped: shared by its reader,
+/// its writer and `Ev::PeerClosed`, so it counts until the writer has ended
+/// and the process has let go of the connection.
 pub(super) struct Slot(Arc<AtomicUsize>);
 
 impl Drop for Slot {
@@ -448,7 +449,12 @@ fn connection(conn: UnixStream, tx: SyncSender<Ev>, slot: Slot) {
     let (Ok(writer), Ok(closer)) = (conn.try_clone(), conn.try_clone()) else { return };
     let peer = NEXT_PEER.fetch_add(1, Relaxed);
     let (out_tx, out_rx, queued) = Queue::new();
-    thread::spawn(move || write_lines(writer, out_rx, queued));
+    let slot = Arc::new(slot);
+    let writing = slot.clone();
+    thread::spawn(move || {
+        write_lines(writer, out_rx, queued);
+        drop(writing);
+    });
     let label = format!("socket#{peer}");
     let opened = Ev::PeerOpened { peer, tx: out_tx, label, closer: Closer::Socket(closer) };
     if tx.send(opened).is_err() {
@@ -727,6 +733,20 @@ impl Host {
                 sys::kill(pid, libc::SIGTERM);
             }
             Closer::Bridge(_) => {}
+        }
+    }
+
+    /// A connection whose reader has seen it end: the process lets go of it,
+    /// and its writer, with nothing more to come, writes what it has and
+    /// ends; one blocked on a peer that doesn't read is shut down after
+    /// [`CUT_OFF_WAIT`], so that it doesn't stay open uncounted (ADR 10.4).
+    pub(super) fn peer_closed(&mut self, peer: u64) {
+        let Some(p) = self.peers.remove(&peer) else { return };
+        if let Closer::Socket(conn) = p.closer {
+            let unwritten = p.tx.queued.clone();
+            if unwritten.load(Relaxed) > 0 {
+                thread::spawn(move || close_once_written(&conn, &unwritten, CUT_OFF_WAIT));
+            }
         }
     }
 
@@ -1453,7 +1473,7 @@ mod tests {
 
     /// Past `max` connections open, one more is told so and closed, and no
     /// peer is made of it; once the event loop has let go of one that
-    /// closed, the next is served (ADR 10.4).
+    /// closed, and its writer has ended, the next is served (ADR 10.4).
     #[test]
     fn adr_0010_a_connection_past_the_cap_is_told_and_closed() {
         let dir = std::env::temp_dir().join(format!("brnr-cap-{}", std::process::id()));
@@ -1466,7 +1486,9 @@ mod tests {
         let wait = Duration::from_secs(5);
         let opened = |rx: &Receiver<Ev>| matches!(rx.recv_timeout(wait), Ok(Ev::PeerOpened { .. }));
         let first = UnixStream::connect(&socket).unwrap();
-        assert!(opened(&rx));
+        // Its queue kept: its writer goes on until the queue goes.
+        let first_queue = rx.recv_timeout(wait).unwrap();
+        assert!(matches!(first_queue, Ev::PeerOpened { .. }));
         let _second = UnixStream::connect(&socket).unwrap();
         assert!(opened(&rx));
         let mut told = String::new();
@@ -1476,15 +1498,27 @@ mod tests {
         assert_eq!(told, format!("{}\n", json!({ "ok": false, "error": error })));
         assert!(rx.try_recv().is_err(), "a peer was made of it");
         drop(first);
-        // Counted until the event loop has let go of it.
+        // Counted until the event loop has let go of it, and its writer too.
         let closed = rx.recv_timeout(wait).unwrap();
         assert!(matches!(closed, Ev::PeerClosed { .. }));
-        let mut told = String::new();
-        UnixStream::connect(&socket).unwrap().read_to_string(&mut told).unwrap();
-        assert!(told.contains("too many connections: 2 open"), "{told}");
+        let refused = || {
+            let mut told = String::new();
+            UnixStream::connect(&socket).unwrap().read_to_string(&mut told).unwrap();
+            told.contains("too many connections: 2 open")
+        };
+        assert!(refused(), "served with the peer not let go of");
         drop(closed);
-        let _third = UnixStream::connect(&socket).unwrap();
-        assert!(opened(&rx), "not served once one closed");
+        assert!(refused(), "served with its writer running");
+        drop(first_queue);
+        // Free once its writer has seen the queue go, which it does by itself.
+        let start = Instant::now();
+        let _third = loop {
+            let conn = UnixStream::connect(&socket).unwrap();
+            if matches!(rx.recv_timeout(Duration::from_millis(50)), Ok(Ev::PeerOpened { .. })) {
+                break conn;
+            }
+            assert!(start.elapsed() < wait, "not served once one closed");
+        };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
