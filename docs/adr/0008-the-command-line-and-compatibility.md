@@ -1101,6 +1101,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_delete_purge_says_what_it_couldnt_delete`,
   `adr_0008_purge_deletes_an_older_brnrs_files_too`,
   `adr_0008_delete_records_in_each_transcript_it_can`,
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity`,
   `adr_0008_delete_refuses_an_open_session`,
   `adr_0008_delete_needs_an_agent_that_can_delete`,
   `adr_0008_new_in_a_running_process`,
