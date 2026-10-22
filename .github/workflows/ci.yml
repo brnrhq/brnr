@@ -42,8 +42,27 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets -- -D warnings
+      # A test that can't run here fails in CI (`skip`, tests/common), and the
+      # network test needs lsof: macOS has it, the Linux image may not.
+      - if: runner.os == 'Linux'
+        run: command -v lsof || { sudo apt-get update && sudo apt-get install -y lsof; }
       # Release, as locally: some tests stream tens of thousands of events.
       - run: cargo test --release
+      # another_user_cant_connect needs root, to connect as nobody: B1's
+      # kernel side (docs/threat-model.md). Built as the runner, run as root:
+      # cargo as root leaves root's files in target/, which the cache can't
+      # save. CI stays set (-E), so a check in it that can't run fails, and
+      # the grep fails a run of no test. TMPDIR: user nobody can reach /tmp.
+      - name: The test that needs root, as root
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TMPDIR: /tmp
+        run: |
+          bin=$(cargo test --release --test security --no-run --message-format=json \
+            | jq -r 'select(.target.name == "security" and .executable) | .executable')
+          sudo -E "$bin" --ignored --exact another_user_cant_connect | tee "$RUNNER_TEMP/root.txt"
+          grep -qxF 'test another_user_cant_connect ... ok' "$RUNNER_TEMP/root.txt"
       - name: ADR claim inventory
         run: |
           python3 .github/scripts/test_adr_tests.py

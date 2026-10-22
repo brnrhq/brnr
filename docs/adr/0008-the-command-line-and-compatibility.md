@@ -1,8 +1,8 @@
 # 8. The command line and compatibility
 
 Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade waits for #150, and 8.6's evals with a real agent
-aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+1.0.0, 8.5's typed facade (#215) isn't built, and 8.6's evals with a real
+agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -169,7 +169,8 @@ How words are read:
 - Every table of sessions has the same columns, in the same order,
   formatted the same way: SESSION, TITLE, STATE, PID, AGENT, SOURCE,
   LAST ACTIVE, FORKED FROM, CWD (`session`, `title`, `state`, `pid`,
-  `agent`, `source`, `last_active`, `forked_from`, `cwd` in `--json`).
+  `agent`, `source`, `last_active`, `forked_from`, `cwd` in `--json`, each
+  row in `{sessions}`, AGENT the `agent`'s `program`, ADR 8.2).
   Rows are ordered most recently active first.
 - STATE is a running session's live state (`idle`, `busy`, `waiting` for an
   approval or an elicitation), `unreachable` for one whose process holds
@@ -321,9 +322,10 @@ wins, and the other form goes, with no alias (P9):
   ADR 8.3). The socket's `allow` and `reject` take `option_id` in place of
   `option`, and refuse `option`, answering nothing: ignored, it would let
   a bridge that names an option get the kind's option instead (P3, P7).
-  For the same reason an `option_id` that isn't a string (null, a number)
-  is refused, answering nothing, not read as absent; only an absent one
-  picks by kind.
+  `option` is refused as any field a request doesn't take is,
+  `command_unknown` (ADR 8.8). For the same reason an `option_id` that
+  isn't a string (null, a number) is refused, `command_invalid`,
+  answering nothing, not read as absent; only an absent one picks by kind.
 - The prompt is `--prompt <text> | -` wherever a command takes one:
   `session new`, `session resume` and `prompt send`
   (`prompt send <session> [flags] [--prompt <text> | -]`, with a prompt, a
@@ -417,9 +419,11 @@ some places only (F5, P5).
   elicitations, token usage, the last turn (`last_turn`: `stop_reason`,
   `error`, `tokens`, ADR 4.4, with a line for it in the text), the last
   agent message (at most 4000 characters of it; the events have all of
-  it), the session it was forked from (`forked_from`, ADR 3.12), and what
-  the agent says it is (`agentInfo`). The control socket's `status` stays
-  the full report, which bridges use; brnr shapes what it prints from it.
+  it), the session it was forked from (`forked_from`, ADR 3.12), and the
+  agent (`agent`: `program`, the command brnr ran, and `name` and
+  `version`, what the agent says it is in `initialize`, ACP's
+  `agentInfo`). The control socket's `status` stays the full report, which
+  bridges use; brnr shapes what it prints from it.
 - Running tools are the running turn's (#164). A tool call the agent left
   unfinished, in a turn that was cancelled or failed, isn't running once
   the turn has ended; nor is one from a load's replayed history that ended
@@ -428,8 +432,9 @@ some places only (F5, P5).
 - Text shows values, not JSON.
 - Every command that prints data takes `--json`: one JSON value, or one
   event per line for `event log`, `event watch` and
-  `session new --foreground`. Errors stay on stderr, with the same exit
-  status. `process stop` and `session close` take it too, though their
+  `session new --foreground`. A command that fails says so on stderr, with
+  the same exit status, and with `--json` prints its error as its JSON,
+  `{"error": {code, message}}` (ADR 8.7). `process stop` and `session close` take it too, though their
   answer is mostly their exit status: they print what they did, the process
   stopping (`{pid, status}`) and the session closed (`{session}`, as
   `session fork` names its session). `event notify` doesn't: its stdout is
@@ -441,9 +446,81 @@ some places only (F5, P5).
   `--json` is everywhere. `brnr <group> --help` prints a group's part. A
   usage error prints that command's lines, not all of it.
 
+One concept has one name and one shape in every command's `--json`, and in
+the socket's replies where the commands print their fields as they are
+(#150). A field means one thing and has one type wherever it is, and is
+named as ADR 5.9 has it:
+
+- **Lists.** A command that lists prints an object, the list under the
+  plural of what it lists: `process list` `{processes}`, `session list`
+  `{sessions}`, `permission requests` and `elicitation requests`
+  `{requests}`, `doctor` `{checks}`, as `doctor --report --json`,
+  `config get` (`{session, options}`) and `prompt commands`
+  (`{session, commands}`) have theirs. It has no `version`: brnr's major
+  version is the version of what it prints (ADR 8.4).
+- **Rows.** A row is the object its command's detail prints, with fewer
+  fields, none renamed or reshaped: `session list`'s are `session
+  status`'s (with `source`), `permission requests`' are `permission
+  show`'s, `elicitation requests`' are `elicitation show`'s, which has the
+  process's `pid` as its row does; a `process list` row's `sessions` are
+  `session list` rows with `session` and `state` only.
+- **ACP's objects whole** (ADR 5.9). A permission request's `options` are
+  the agent's, `{optionId, name, kind}`, in `permission requests` as in
+  `permission show` and `permission_request`; `--option-id` takes an
+  `optionId` (ADR 8.1).
+- **A count or a list, never both.** A count of what is listed elsewhere is
+  `<what>_count`, as `records_skipped`'s `acp_count` is: `session status`,
+  and the socket's `status`, have `held_count`, `context_count`,
+  `pending_count` and `elicitation_count`, where `held` and `context` are
+  `queue list`'s lists, and `pending` and `elicitations` the socket's
+  `pending` answer's.
+- **`dropped`** is the messages dropped, a list of `{message, text,
+  reason}` as their `message_dropped` events have them: in `prompt
+  cancel`, `queue drop` and `queue clear`, and in `--wait`'s turn, where it
+  is empty, or the message whose drop ended the wait (ADR 8.3).
+- **`agent`** is `{program, name, version}` in `process list`, `session
+  list` and `session status`: `program` the file name of the command brnr
+  ran, `name` and `version` what the agent says it is in `initialize`
+  (`agentInfo`); each null where brnr doesn't know it. A process that
+  doesn't answer, an inactive session and a session only the agent lists
+  have no `agentInfo` brnr kept. The socket's `status`, the full report,
+  keeps the command as `agent`, as a profile's `agent` has it (ADR 6.1),
+  and `agentInfo` as `agent_info`; the commands make `agent` of the two.
+- **`owner`** is who owns a process's sessions, `editor` or `headless`,
+  and null where it isn't known: a process that doesn't answer. Whether one
+  answers is its `state` in `process list`, `starting`, `running`,
+  `stopping` or `unreachable`, as a session in it is `unreachable` in
+  `session list`.
+- **Who and where.** `by` is who acted (ADR 5.9), never a process: a
+  session's lock is held by `lock_pid`, and the processes serving it
+  without it are `shared_pids` (ADR 3.9). `session fork` names the session
+  it forked `forked_from`, as `session status` and `session list` do.
+  `session delete` names the files `session_deleted` went into
+  `recorded_in`: `recorded` is `history`'s boolean.
+- **`event wait`** prints one shape for each `--for`, whatever ended the
+  wait and whether it held when the wait began (ADR 8.3).
+
 **Why.** Scripts and agents read `--json`, people read text (F5). If the two
 carried different data, brnr would have two interpretations of one session
 where P5 allows one, and a script could not see what a person sees.
+
+At f017499 one thing had several shapes (#150): `dropped` was a reason in
+`--wait` and a list of messages in `prompt cancel` and `queue`, so
+`jq '.dropped | length'` worked on one and not the other; a permission
+request was rewritten in `permission requests` (`name` dropped), ACP's in
+`permission show`, and either that or its event in `event wait`, which
+also made up an `idle` event and a `process_exited` with no fields but its
+status; `agent` was a string in the lists and an object in `session
+status`; `held` and `context` were counts in one and lists in another;
+`owner` held reachability in `process list`; and every list was a bare
+array. A script written against one command broke on the next, and ADR
+8.4 would hold each of these for 1.x (F5, P5). One shape learned once is
+fewer concepts (N4), and a filter written for a row works on the detail.
+An object can gain a field in a minor release (ADR 8.4) where a bare array
+can't: what belongs beside a list, such as the processes that didn't
+answer, which go to stderr now, has room. Within a major, what changes in
+an object is fields added, which readers ignore, so a `version` beside them
+would never change; a 2.0 can add one if it needs one.
 
 **Considered.**
 
@@ -451,14 +528,35 @@ where P5 allows one, and a script could not see what a person sees.
   text showed six columns.
 - `session status` as a summary in text and the raw report in `--json`.
 - `--json` on a few commands only.
+- Bare arrays for lists, as they were: nothing can be added beside the
+  rows without a break.
+- A `version` in each list's object: within 1.x it could only stay `1`.
+- JSON lines for lists, as `event log` prints: a list is one value, read
+  whole; the `event` commands stream because events go on.
+- `dropped` as the drop's reason in `--wait`: `prompt cancel` and `queue`
+  drop several messages, so one name would keep two types.
+- Lists in `session status` for `held` and `context`: it counts what
+  `queue list` lists, as it counts the approvals `permission requests`
+  lists, each with its tool call.
+- A request in `permission requests` as brnr rewrote it, `{option_id,
+  kind}`: it dropped the option's `name`, and was a third shape of one
+  request.
+- `agent` a string everywhere, with `agent_name` and `agent_version` in
+  `session status`: three fields for one thing, and nowhere to add a
+  fourth.
+- `owner: unreachable`, as it was: a field with two lists of values.
 
 ## 8.3 Waiting, and exit status
 
 - `brnr event wait <session> [--for idle|turn|permission|elicitation|exit]
   [--timeout <s>]`:
-  - `idle` (the default): no turn running and nothing held. It returns at
-    once if the session is idle already, so `prompt send` followed by
-    `event wait` can't race. A closed session counts as idle.
+  - `idle` (the default): no turn running, nothing held, and no approval
+    or elicitation waiting, also one whose turn has ended (ADR 3.8), as
+    `--stop-when-idle` counts it. It returns at once if the session is
+    idle already, so `prompt send` followed by `event wait` can't race. A
+    closed session counts as idle. A process whose status lacks a count
+    this needs (an older brnr's) fails the wait, saying which: a count
+    that isn't there isn't 0 (P4).
   - `turn`: the next turn that ends.
   - `permission`: an approval is waiting (at once if one already is).
   - `elicitation`: an elicitation is waiting, as for `permission`
@@ -514,7 +612,30 @@ where P5 allows one, and a script could not see what a person sees.
 - With `--json`, `--wait` prints the turn as one object at its end:
   `{session, message, reply, stop_reason, error, tokens, dropped}`, and for
   `session new` and `session resume` its `pid`. `tokens` is what the agent
-  reported for the turn, or null (ADR 4.4).
+  reported for the turn, or null (ADR 4.4). `dropped` is the messages
+  dropped, as `prompt cancel` has them (ADR 8.2): empty, or the message,
+  dropped before it was sent.
+- With `--json`, `event wait` prints what met its condition in one shape
+  for each `--for` (ADR 8.2), whatever ended the wait, and whether it held
+  when the wait began:
+  - `idle`: the session's state, `{session, state, last_turn}`: `state`
+    `idle`, or `inactive` once it has closed, as `session list` has it, and
+    `last_turn` as `session status` has it, null before the first turn.
+  - `turn`: the turn's `turn_ended` event, as `event watch --json` prints
+    it.
+  - `permission` and `elicitation`: the request waiting, as `permission
+    show --json` and `elicitation show --json` print it. The event of one
+    answered before brnr asks for it doesn't end the wait: none is
+    waiting.
+  - `exit`: the `process_exited` event. A process gone without sending it
+    (killed) gets the same event from the command, as far as it knows it:
+    `exit_status` and `seq` null, `ts` when it saw the process go, and
+    `error` saying so. Only once brnr has seen the process exit, as
+    catching up decides (ADR 10.2): a connection that fails while it lives
+    is a failure, 1, saying brnr can't tell that it exited (P4).
+
+  Text says the same: `idle: end_turn`, `inactive: session closed (idle)`,
+  `turn ended: end_turn`, `approval p1: Edit src/lib.rs`, `exited`.
 
 **Why.** A script or a supervising agent needs to wait for a turn without
 polling, and to know from the exit status alone how it ended (F5, P3). The
@@ -576,6 +697,10 @@ Covered:
   people carries text whose wording isn't covered.
 - **Exit codes**: what each command exits with, in each situation
   `docs/interface.md` lists.
+- **Error codes**: each error's `code` (ADR 8.7), wherever brnr reports an
+  error as data, and what it means; its `message` isn't covered, nor is
+  `unclassified`, which promises nothing. ACP's error the agent answered
+  with, `rpc_error`, is ACP's.
 - **Events for bridges**: each event's name and fields, wherever it goes:
   a bridge's stdin, `--json` lines (`event log`, `event watch`,
   `session new --foreground`), `event notify`'s stdin and its `BRNR_*`
@@ -589,9 +714,10 @@ Covered:
   promise, whatever it speaks.
 - **Transcripts**: the events file and the raw ACP file of each session
   under `$BRNR_HOME` (`projects/<folder>/<session id>.jsonl` and
-  `.acp.jsonl`), and their records. A 1.x brnr reads what an earlier 1.x
-  wrote (`event log`, `session list`, `session resume`). What each record
-  promises in detail is #70's.
+  `.acp.jsonl`), and their records, in format 1. A 1.x brnr reads what an
+  earlier 1.x wrote (`event log`, `session list`, `session resume`). What
+  each record promises, and how a reader tells a format it doesn't read,
+  is ADR 5.10's.
 - **Where brnr's files are**: how the state directory (`$BRNR_HOME`, else
   `~/.brnr`) and the runtime directory are found, and where each file brnr
   writes under `$BRNR_HOME` is, the session locks
@@ -610,8 +736,10 @@ Covered:
 The environment variables brnr reads are inputs, as flags are, and go with
 what they belong to: `BRNR_CONFIG` and `BRNR_START_TIMEOUT` with config,
 `BRNR_HOME` with where brnr's files are. `BRNR_DIR` is covered as where the
-runtime directory is, not as what is in it. Stable error codes (#205) are
-covered once they land.
+runtime directory is, not as what is in it. Error codes are covered
+(ADR 8.7): each code, and what it means, wherever an error is reported as
+data; `unclassified` promises nothing, and a failure under it may get a
+code of its own in a minor release.
 
 Not covered: whatever isn't listed above, and in particular:
 
@@ -626,7 +754,8 @@ Not covered: whatever isn't listed above, and in particular:
   (P13, ADR 3.9), and it is not an interface: it is how brnr's own
   commands and the bridges brnr starts reach a process. Its path
   (`$BRNR_DIR/<pid>.sock`), how processes are found, their metadata files
-  (`<pid>.json`), and connecting to it directly, by `BRNR_SOCKET` (which a
+  (`<pid>.json`, whose `brnr` and `protocol` are for brnr's own commands,
+  ADR 8.8), and connecting to it directly, by `BRNR_SOCKET` (which a
   started bridge has) or otherwise, have no promise. A client connected
   directly speaks the bridge protocol, but what it speaks, and whether it
   is answered, can change in any release.
@@ -655,12 +784,13 @@ upgrading within that major is the fix, and breaks nothing covered. There
 is one major so far, so no support period for older majors is set; it will
 be, by a record that amends this one, once a second major exists.
 
-The promise starts at 1.0.0. Before 1.0.0-rc.1, #150 (`--json` shapes)
-still settles names and shapes, breaking as P9 allows. #151 (event and
-transcript record names) is decided and made (ADR 5.9, #314), as is #153
-(the exit code of a usage error, `--help`: ADR 8.3, #310), and #154 (flags
-and config keys spelled two ways: ADR 8.1 and 6.1, #311). What they settle
-is what 1.0.0 promises.
+The promise starts at 1.0.0. #150 (`--json` shapes) is decided and made
+(ADR 8.2), as are #151 (event and transcript record names: ADR 5.9, #314),
+#70 (what a transcript promises, its format marked: ADR 5.10), #153 (the
+exit code of a usage error, `--help`: ADR 8.3, #310), #154 (flags and
+config keys spelled two ways: ADR 8.1 and 6.1, #311), #205 (error codes:
+ADR 8.7), and #149 (a process and the commands of different releases:
+ADR 8.8). What they settle is what 1.0.0 promises.
 
 **Why.** P9 alone says compatibility is kept within a major version, but
 not of what, and each of brnr's interfaces is a different kind of promise
@@ -680,8 +810,8 @@ requests, such as answering a permission, with no promise.
   connects to the socket itself works, with no promise.
 - brnr still refuses a config key it doesn't know (P7, ADR 6.1): a profile
   using a key added in 1.3 doesn't load in 1.2.
-- Scripts match exit codes and `--json` fields, not messages. Until stable
-  error codes (#205) land, there is nothing finer to match.
+- Scripts match exit codes, `--json` fields and error codes (ADR 8.7), not
+  messages.
 - Text output can change in any release, for people: P5 has it carry the
   same data as `--json`, so nothing is in it that `--json` doesn't have.
 
@@ -697,7 +827,7 @@ requests, such as answering a permission, with no promise.
 - Covering text output: two contracts for the same data (P5), and text is
   for people, who are served by changing it.
 - Covering the wording of errors: every better message would wait for a
-  major. Stable error codes (#205) let the wording change freely.
+  major. Error codes (ADR 8.7) let the wording change freely.
 - Covering what host logs contain: they are what a process records for
   itself and for `doctor`, not for others to read; the session's story is
   in its events file (ADR 5.1).
@@ -707,8 +837,8 @@ requests, such as answering a permission, with no promise.
 
 ## 8.5 The library is private, and its facade mirrors the command line
 
-Implemented, but for the typed facade, which waits for #150: `brnr::run` is
-the library's one public item.
+Implemented, but for the typed facade (#215): `brnr::run` is the library's
+one public item.
 
 - The library is private. Its modules are `mod`, not `pub mod`, and an item
   is `pub(crate)` unless something outside reaches it (below).
@@ -729,16 +859,17 @@ the library's one public item.
   `skill`), with one function per verb (`brnr::session::list`,
   `brnr::prompt::send`), taking the command's arguments and flags, and
   returning the data its `--json` prints, with the same names and shapes.
-  An error carries the stable code the command's error has (#205) once
-  those land; its message, like the command's, is not covered. It isn't
-  built yet: its return types are the `--json` shapes, which #150 makes
-  one name and one shape per concept. It follows #150, by a record of its
-  own if it departs from this shape.
+  An error carries the code the command's error has (ADR 8.7); its
+  message, like the command's, is not covered. It isn't
+  built yet (#215): its return types are the `--json` shapes, which ADR
+  8.2 makes one name and one shape per concept (#150). A record of its own
+  says so if it departs from this shape.
 - The crate's own tests and fuzz targets reach internals through
   `brnr::internals`, a `#[doc(hidden)]` module behind the `internals` Cargo
   feature, off by default. It re-exports what they use (`frame`'s reading
-  and writing, `json`'s parsing and spans, `schema`'s types, `log::rfc3339`
-  and `host::fuzz`'s harness), and nothing more. The integration tests
+  and writing, `json`'s parsing and spans, `schema`'s types, `log::rfc3339`,
+  the error codes' names (ADR 8.7) and `host::fuzz`'s harness), and nothing
+  more. The integration tests
   turn it on with a dev-dependency of the crate on itself, so `cargo test`
   needs no flag; `fuzz/Cargo.toml` turns it on for the fuzz targets.
   `host::fuzz` is compiled only for unit tests and with the feature.
@@ -945,6 +1076,302 @@ October 2026.
   is the user's call, and the agent's mode already says what it asks
   about (P2).
 
+## 8.7 An error is a stable code and a message
+
+Resolves #205.
+
+Wherever brnr reports an error as data, it has one shape, `"error":
+{"code": "<code>", "message": "<text>"}`:
+
+- a socket or started bridge's reply that fails: `{"ok": false, "error":
+  {code, message}}`;
+- an event, note or record that reports a failure: `turn_ended`,
+  `process_exited` (when brnr itself died), `events_missed`,
+  `records_skipped`, and the host log's `start_failed`, `open_failed`,
+  `lock_failed`, `timeout_failed`, `display_stopped`, `process_panicked`,
+  `session_log_failed` and `editor_request_refused`. #70 marks these
+  records' format as it marks every record's (ADR 5.10);
+- the `--json` fields that hold one: `--wait`'s turn's and `last_turn`'s
+  `error` (ADR 8.3, 8.2), `session delete`'s `error`;
+- a command that fails, with `--json`: its stdout is `{"error": {code,
+  message}}`, its one JSON value, unless it had printed its JSON before it
+  failed (a stream's events); then stderr alone says so, and the stream
+  stays one value per line. A wait whose turn failed exits 1 having
+  printed the turn, whose `error` is the turn's (ADR 8.3).
+
+`code` is a word from the list below; `message` is for people. The
+rules:
+
+- **A code is snake_case, subject first**, as a record's name is
+  (ADR 5.9): `session_not_found`, `process_unreachable`,
+  `transcript_not_kept`. Never a number: JSON-RPC's numbers are ACP's.
+- **One code per failure a caller can act on, not per place brnr fails.**
+  A script that gets `session_inactive` resumes the session; one that gets
+  `session_closing` tries again in 2 s (ADR 5.5); `session_active` closes
+  it first, or takes it over. Failures a caller handles alike share a
+  code: every malformed socket request is `command_invalid`.
+- **`unclassified` is the catch-all, and promises nothing.** A failure brnr
+  gives no code of its own (an I/O error on brnr's own files, an agent's
+  answer that isn't ACP, what brnr didn't foresee) is `unclassified`.
+  Scripts must not match it: a failure under it may get a code of its own
+  in a minor release. Every other code keeps its meaning through the
+  major version (ADR 8.4).
+- **The agent's error stays the agent's** (F1, P1). Where what failed is
+  the agent's answer, a JSON-RPC error, the code is `agent_failed`, and the
+  error has the agent's beside it as `rpc_error`, whole and unchanged
+  (`{code, message, data}`, ACP's numeric code): `{"code": "agent_failed",
+  "message": "session/new failed: Authentication required", "rpc_error":
+  {"code": -32000, "message": "Authentication required"}}`. brnr's code says
+  whose failure it was, the agent's what it was; brnr reads no ACP code
+  into one of its own (P4), and a script that needs ACP's reads
+  `rpc_error.code` (`session delete` exits 0 for its `-32002`, ADR 8.1).
+  A turn the agent failed is such an error in `turn_ended`, and so in
+  `last_turn` and `--wait`'s turn.
+- **ACP stays ACP.** What brnr answers in the agent's place, through `brnr
+  acp`, is a JSON-RPC error as ACP has it (`-32603`, brnr's message); the
+  host log's `editor_request_refused` has brnr's code (P1).
+- **Text says the code too** (P5): a failed command prints `brnr:
+  <message> [<code>]` on stderr, in text and with `--json` alike, and an
+  error in an event shown as text has its code after its message: at the
+  end of its first line, where lines follow that are the agent's (its last
+  lines on stderr, ADR 3.6). `brnr acp` says its errors to the editor's
+  log as it did, with no code: the editor gets none as data.
+- **What isn't an error as data has no code.** A usage error (exit 2) is
+  the command line's mistake: the exit status says what it is, the usage
+  how to fix it (ADR 8.3). A wait's timeout (124) and a cut-off it couldn't
+  catch up on (3) have their exit codes, and the latter its
+  `events_missed`, whose `error` says why. `doctor`'s failed checks are its
+  data, `{checks}`: it exits 1 with how many on stderr.
+- The exit status stays coarse (ADR 8.3): every code above is a failure,
+  exit 1, wherever a command exits with it.
+
+The codes, by subject:
+
+| Code | The failure |
+|---|---|
+| `acp_version_unsupported` | The agent speaks an ACP version brnr doesn't (ADR 2.2). |
+| `agent_exited` | The agent exited, and its process with it, before the command was done: a start, a wait, a request. |
+| `agent_failed` | The agent answered with a JSON-RPC error, which `rpc_error` has. |
+| `agent_not_started` | No agent to start: none given or recorded, or its program can't be run. |
+| `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one (ADR 8.1, 4.5). |
+| `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
+| `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
+| `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request, which an older brnr's process refuses (ADR 8.8); or a `status` answer without a field this brnr reads (a count, `busy`), as an older brnr's has it (ADR 8.2, 8.8). |
+| `config_invalid` | The config file can't be read, isn't private, or doesn't load (ADR 6.1, 9.4). |
+| `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one (ADR 5.9). An event brnr doesn't have, or a note, in a profile's bridge `events` (ADR 6.1). `subscribe` leaves out an event the process doesn't have, and names it (ADR 8.8). |
+| `experimental_disabled` | An action on an editor's session its profile doesn't enable (ADR 7.1). |
+| `input_invalid` | What the command reads besides its command line won't do: an empty prompt on stdin, stdin that isn't the form's fields, a file or image that can't be read or sent, a `--cwd` that isn't a directory. |
+| `message_not_found` | No held message has that id (ADR 4.2). |
+| `process_not_found` | No brnr process has that pid. |
+| `process_owned_by_editor` | An editor's process: no session is opened or forked in it (ADR 7.1). |
+| `process_panicked` | brnr itself failed, and its process ended (ADR 3.7): a bug to report. |
+| `process_starting` | The process hasn't committed its start (ADR 3.4). |
+| `process_stopping` | The process is stopping, or its agent takes no more input. |
+| `process_unreachable` | The process doesn't answer, or can't be reached from here (another `BRNR_DIR`, ADR 3.9). |
+| `profile_not_found` | The config has no profile of that name. |
+| `request_not_found` | No permission request or elicitation of that handle is waiting (ADR 4.1). |
+| `session_active` | The session is open in a process, where the command needs it not to be: close it first, or take it over (ADR 3.9). |
+| `session_closed` | The session closed before the command was done. |
+| `session_closing` | The session is closing; it is free once its records are written (ADR 5.5). |
+| `session_inactive` | The session isn't open in any process; it can be resumed (ADR 3.11). |
+| `session_not_found` | brnr knows no session of that id. |
+| `session_opening` | The session is opening, and takes no requests until it has (ADR 3.4). |
+| `setting_invalid` | A mode, model, thought level, config option or login method the agent doesn't offer, or a value it doesn't take (ADR 6.2, 4.7). |
+| `start_timed_out` | The session didn't open in the time its start had (ADR 3.4). |
+| `strict_mode_refused` | Strict mode refuses what isn't stable ACP (ADR 2.1). |
+| `transcript_not_kept` | The process keeps no transcript to read, or no raw ACP (`log`, ADR 6.1). |
+| `transcript_unsupported` | The transcript is in a format this brnr doesn't read (ADR 5.9, 5.10). |
+| `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs (ADR 7.1). |
+| `unclassified` | Anything else. No promise: don't match it. |
+
+src/error.rs has the list, docs/interface.md lists it for users, and a test
+checks that the two agree and that a test reaches each code.
+
+**Why.** At 8d4b1dd every error was text, at about 155 places: a reply was
+`{"ok": false, "error": "<text>"}`, a failure event had a text `error`,
+the CLI printed the text. A script or bridge that had to tell one failure
+from another could only match the wording, which ADR 8.4 leaves out of the
+promise so that it can get better (F5). A code inside the promise, beside
+a message outside it, lets both hold. One shape everywhere is one concept
+learned once (N4, ADR 8.2), and a field of one type (ADR 5.9): an
+`error.code` that was a number in `turn_ended` and a word in a reply would
+be two. A code for each failure a caller can act on keeps the list short
+enough to learn and handle, which a code per call site wouldn't; the
+catch-all is what lets the list stay short without a promise brnr can't
+keep: naming a new failure later breaks no script, since none may match
+`unclassified`. ACP's error, whole beside brnr's word, is what the agent
+said, unchanged (F1), and brnr's word is what brnr knows: that the agent's
+answer is what failed (P4). With `--json`, the code is in the JSON a script
+already reads; on stderr, a script would parse lines written for people.
+
+**Considered.**
+
+- Kebab-case codes, as the issue had them, after the records' names then:
+  ADR 5.9 makes every name in brnr's JSON snake_case.
+- Numeric codes: JSON-RPC's are ACP's, and a word says what it is.
+- One code per call site: about 155 codes, most of them handled alike.
+- The agent's error as `error` itself, its `code` a number, beside brnr's
+  with a word: one field, two types (ADR 5.9).
+- Reading ACP's codes into brnr's (`-32002` as `session_not_found`): a
+  second interpretation of what the agent said, and a guess where the
+  agent's code is its own (P4, F1).
+- brnr's code in the JSON-RPC errors it answers the editor with, in `data`:
+  what the editor sees is ACP (P1), and the host log has the code.
+- The code first on stderr (`brnr: session_not_found: no session s`): a
+  person reads the message; the code is for looking up, and a script reads
+  `--json`.
+- No code in text: text and JSON would carry different data (P5).
+- The error object on stderr with `--json`: stderr has other lines for
+  people (warnings, a process not answering), so it would not be one JSON
+  value; stdout is where `--json` is.
+- An error object for usage errors too: exit 2 says it, and a usage error
+  is found before `--json` is known to be one of the command's flags.
+- `internal` for the catch-all: what falls under it isn't only brnr's bugs
+  (a full disk, an agent's malformed answer), and brnr's bug has a code of
+  its own, `process_panicked`.
+- A code for `doctor`'s failed checks: its checks are the data, and each
+  says what failed.
+
+**Consequences.**
+
+- Scripts match `error.code`, and ACP's `error.rpc_error.code` where the
+  agent failed; never `message`, nor `unclassified`.
+- A minor release can add a code, for a new failure or for one that was
+  `unclassified`; removing or renaming one, or changing what it means,
+  waits for a major (ADR 8.4).
+- A new failure is given an existing code where a caller would act on it
+  the same way, else a new one; `unclassified` only where no caller could
+  act on it.
+- The typed facade (#215) returns the code with its error (ADR 8.5).
+- ADR 8.8 answers a request, or a field of one, that an older process
+  doesn't have with `command_unknown`, and the CLI says how to restart it.
+
+## 8.8 A process and the commands can be different brnrs
+
+Resolves #149.
+
+An editor's process lives as long as the editor's session, so after an
+upgrade (`brew upgrade brnr`) the new CLI routinely talks to an older
+process, and a bridge written for a newer brnr can be started by an older
+one. `brnr acp` starts its process from its own executable (ADR 3.1), so
+those two always match; the CLI and a process, and a bridge and its
+process, may not.
+
+- **A process says what it is.** `<pid>.json`, and so the socket's
+  `status`, which has the metadata, carry `brnr`, the version `brnr
+  --version` prints (`"1.0.0"`), and `protocol`, a number: the version of
+  what the socket speaks, its requests, their fields and replies, and its
+  events. It is 1 until the first release after 1.0.0 that adds to that;
+  each release that adds to it makes it one more. Within a major version
+  nothing else changes it, as the protocol of a bridge brnr starts is
+  covered (ADR 8.4): a process with a lower `protocol` has less than this
+  brnr, never something else. A major version that changes it otherwise
+  makes it one more too, and its `brnr` says it is another major.
+- **A request the process doesn't have is refused, `command_unknown`**: a
+  `cmd` it doesn't have, or a field of one it doesn't take (`send doesn't
+  take priority (it takes session, text, blocks, mode, replace)`), and
+  nothing is done: `allow`'s old `option` too (ADR 8.1). A field it takes
+  but of the wrong type, as an `option_id` that isn't a string, is
+  `command_invalid`, as before (ADR 8.7): the request is malformed, not
+  newer. A request is done as asked, or not at all (P7), as a
+  config key brnr doesn't know fails the config (ADR 6.1). A caller that
+  can do without a newer field asks again without it.
+- **`subscribe` leaves out an event the process doesn't have, and names
+  it**, in its answer's `unknown_events`; the subscription is to the rest.
+  A note's name is still refused, `event_unknown` (ADR 5.9): no brnr's
+  process sends one, so asking for it is a mistake whatever the versions. A
+  profile's bridge `events` are read by the brnr that starts the bridge, as
+  the rest of the profile is, and an event it doesn't have fails the
+  profile (ADR 6.1).
+- **The CLI says what it found, and how to restart the process.** An error
+  from a process whose `protocol` isn't the CLI's has, after its message,
+  what the process is and what to do, where the error may come of the
+  difference: `command_unknown` from an older or a newer process, and every
+  error from a process with no `protocol`, a brnr from before this, whose
+  errors are text that can't be told apart (ADR 8.7). The code stays the
+  process's. A `status` answer without a field the CLI reads (a count,
+  `busy`: an older brnr's, which names it otherwise, ADR 8.2) is the CLI's
+  `command_unknown`, and said the same way. A headless process is stopped (`brnr process stop <pid>`) and
+  its sessions resumed, which runs them in this brnr; an editor's is
+  restarted from its editor, whose `brnr acp` then is this brnr:
+
+  ```text
+  brnr: unknown command: fork; process 4242 runs an older brnr (brnr 1.0.0, protocol 1) than this one (brnr 1.1.0, protocol 2): stop it (brnr process stop 4242) and resume its sessions (brnr session resume <session>) to run them in this brnr [command_unknown]
+  ```
+
+  Events a command subscribed to that the process doesn't have are said on
+  stderr, with the same, and the command goes on with the rest.
+- **An older CLI and a newer process**: within a major version, the newer
+  process has every request, field and event the older CLI asks for, and
+  its replies only add fields, which the older CLI ignores (ADR 8.4); there
+  is nothing to tell. Across a major, the older CLI's requests that the
+  newer process doesn't have are refused, `command_unknown`, and said as
+  any error is; the CLI to use is the one installed.
+- **The socket stays outside the promise** (ADR 8.4). A client that
+  connects to it directly has none, nor has `<pid>.json`: `brnr` and
+  `protocol` are there for brnr's own commands, which do meet processes of
+  other releases. A bridge brnr starts has them in `status`'s reply, which
+  is covered as the rest of its protocol is. What brnr's commands read to
+  find and reach a process (its metadata's `id`, `socket`, `host_pid`,
+  `proxy_pid`, `started`, `brnr` and `protocol`, and the socket's path),
+  brnr changes within a major version only by adding to: its own rule, so
+  that the commands it ships keep reaching the processes it left running,
+  not a promise to anyone else.
+
+**Why.** Before this, nothing said which brnr was on either side (#149): an
+error was a bare string the CLI couldn't tell from another, so after an
+upgrade a command failed with `unknown command: X` and nothing said why or
+what to do (F5); a field an older process didn't know was ignored, because
+requests were read as untyped JSON, so a newer flag quietly did nothing
+(P3, P4); and `subscribe` refused a whole subscription for one name it
+didn't know, so a bridge written for 1.1 got no events from 1.0. Refusing a
+request the process can't do as asked keeps P7, and a request already done
+otherwise than asked can't be undone, which telling of it after wouldn't
+mend (N2). A subscription is a reader's list of what it will read, and a
+reader ignores the events it doesn't know (ADR 8.4): an event a process
+doesn't have is one it never sends, so nothing is lost by subscribing to
+the rest, and the answer says what was left out (P3). The CLI knows both
+sides, so it can say which is older and how to restart it; the code stays
+the process's, so a script's match doesn't change (ADR 8.7). `brnr` says
+which release a process is, for people and `doctor`; `protocol` says what
+it speaks, which most patch releases don't change, as one number that only
+grows within a major, so that "has it what I ask" is one comparison, not a
+semver reading.
+
+**Considered.**
+
+- `brnr` alone: a version string compared by semver rules, pre-releases
+  and all, where most releases don't change what the socket speaks.
+- A handshake on every connection, refused on a mismatch: one more round
+  trip for every command, and a refusal of everything where most requests
+  are the same in both.
+- Refusing every request from a CLI of another `protocol`: a 1.1 CLI can
+  list, watch and answer a 1.0 process, which this would stop.
+- Ignoring a field the process doesn't know and naming it in the reply
+  (`ignored`): the request is done by then, otherwise than asked; a prompt
+  sent can't be unsent.
+- A code of its own for an unknown field (`field_unknown`): a caller acts
+  on it as on an unknown command (the process is another brnr: restart it,
+  or do without), and ADR 8.7 gives a code per failure a caller can act on.
+- Refusing a subscription that names an event the process doesn't have, as
+  before: a bridge for 1.1 got nothing from 1.0.
+- Taking such an event out without naming it: P3.
+- What to do after every error from a process of another `protocol`: most
+  of its errors are its own (no such session, a setting the agent doesn't
+  offer), and the advice would be noise there.
+- Restarting the process for the user: it ends the editor's session or a
+  running turn; that is the user's to choose (P4, P11).
+
+**Consequences.**
+
+- A flag added in 1.x fails against a process of an earlier 1.x, saying so
+  and how to restart it, instead of doing nothing.
+- `event_unknown` is only a note's name in `subscribe`, and, in a
+  profile's bridge `events`, a note or an event that brnr doesn't have.
+- A release that adds to what the socket speaks makes `PROTOCOL`
+  (src/host/control.rs) one more, and says so under Added in the changelog;
+  docs/interface.md lists each request's fields.
+
 ## Tests
 
 Run `cargo test --release adr_0008_`. Named claims, by section:
@@ -983,6 +1410,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_delete_purge_says_what_it_couldnt_delete`,
   `adr_0008_purge_deletes_an_older_brnrs_files_too`,
   `adr_0008_delete_records_in_each_transcript_it_can`,
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity`,
   `adr_0008_delete_refuses_an_open_session`,
   `adr_0008_delete_needs_an_agent_that_can_delete`,
   `adr_0008_new_in_a_running_process`,
@@ -1019,8 +1447,15 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,
   `adr_0008_a_cancelled_turns_tool_calls_are_not_running`,
-  `adr_0008_a_failed_turns_tool_calls_are_not_running`;
+  `adr_0008_a_failed_turns_tool_calls_are_not_running`,
+  `adr_0008_a_list_is_an_object`,
+  `adr_0008_a_row_is_its_details_object_with_fewer_fields`,
+  `adr_0008_dropped_is_a_list_of_messages_everywhere`,
+  `adr_0008_a_count_is_named_so` (and, for `process list`'s `state` and
+  `owner`, ADR 3's `adr_0003_ps_lists_the_processes` and
+  `adr_0003_a_silent_process_keeps_its_session`);
   [tests/headless.rs](../../tests/headless.rs):
+  `adr_0008_the_agent_is_what_it_says_it_is` (#335),
   `adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running`,
   `adr_0008_a_failed_loads_history_leaves_no_tool_call_running`,
   `adr_0008_a_replays_call_with_a_finished_calls_id_is_not_running`;
@@ -1036,8 +1471,14 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_wait_returns_when_the_session_goes_idle`,
   `adr_0008_wait_on_an_idle_session_reports_the_last_turn`,
   `adr_0008_huge_timeouts_are_never`, `adr_0008_wait_for_permission`,
-  `adr_0008_wait_for_exit`, `adr_0008_a_usage_error_exits_2`,
-  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`.
+  `adr_0008_wait_for_exit`,
+  `adr_0008_event_wait_prints_one_shape_for_each_condition`,
+  `adr_0008_a_session_with_a_request_waiting_isnt_idle`,
+  `adr_0008_a_usage_error_exits_2`,
+  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`;
+  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  `adr_0008_wait_for_exit_says_exited_only_once_the_process_has`,
+  `adr_0008_a_count_the_status_doesnt_have_isnt_0`.
 - 8.4: none: it is a promise that applies from 1.0.0.
 - 8.5: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
@@ -1048,3 +1489,39 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_every_toml_block_loads`; [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_skill_prints_the_skill_and_its_references`,
   `adr_0008_skill_install_writes_it_for_claude_code_and_codex`.
+- 8.7: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_a_failed_command_prints_its_error_as_json`,
+  `adr_0008_no_error_is_reported_without_a_code`,
+  `adr_0008_a_starting_process_refuses_another_session`,
+  `adr_0008_a_failed_take_over_keeps_its_code`,
+  `adr_0008_an_error_after_a_stream_is_on_stderr_alone`;
+  [tests/docs.rs](../../tests/docs.rs):
+  `adr_0008_every_error_code_is_listed_and_reached`;
+  [src/error.rs](../../src/error.rs):
+  `adr_0008_an_error_is_a_code_and_a_message`;
+  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  `adr_0008_a_refusal_has_its_places_code`. tests/common's `coded` checks
+  every error in what each test's commands print and each record their
+  processes write. A test asserts a code with `code_is`
+  (tests/common's, on a command's output, its stderr, a reply, an event or
+  a record; error.rs's on an `Error` in a unit test), and
+  `adr_0008_every_error_code_is_listed_and_reached` counts a code as
+  reached only where a test calls `code_is` with it written out: so each
+  code is one some test has seen brnr report, or in its `UNREACHED`, with
+  why. A code named only in a comment, a fixture or a request doesn't
+  count.
+- 8.8: [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_a_process_says_which_brnr_it_is`,
+  `adr_0008_a_field_the_process_doesnt_have_is_refused`,
+  `adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have`,
+  `adr_0008_an_older_process_is_said_with_how_to_restart_it` (an unknown
+  command, from a process of another brnr), and
+  `adr_0008_old_socket_commands_are_unknown`;
+  [src/ctl/client.rs](../../src/ctl/client.rs):
+  `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`;
+  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  `adr_0008_a_count_the_status_doesnt_have_isnt_0` (a `status` answer
+  without a count, from a process of another brnr); and, on the
+  connections made to catch up, ADR 10.2's
+  `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`
+  ([src/ctl/client.rs](../../src/ctl/client.rs)).

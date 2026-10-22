@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::error;
 use crate::paths;
 
 use super::Args;
@@ -49,7 +50,7 @@ pub(super) fn skill(a: &Args) -> Result<(), Error> {
 }
 
 /// `brnr skill install [--dir <dir>]...`.
-pub(super) fn install(a: &Args) -> Result<(), String> {
+pub(super) fn install(a: &Args) -> Result<(), error::Error> {
     let mut dirs: Vec<_> = a.values("--dir").iter().map(|d| paths::expand(d)).collect();
     if dirs.is_empty() {
         dirs = DIRS.iter().map(|d| paths::expand(d)).collect();

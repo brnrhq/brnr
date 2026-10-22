@@ -303,8 +303,7 @@ its owner.
   its session's close, or exit status 3.
 - The names this adds (`seq`, `peer_cut_off`, `last_queued_seq`,
   `first_seq`, `last_seq`, `events_missed` with `after_seq` and
-  `until_seq`) follow ADR 5.9. #150 settles the shapes of `--json`
-  output. The change is kept to one field on every event, one event, one
+  `until_seq`) follow ADR 5.9, and their shapes in `--json` ADR 8.2. The change is kept to one field on every event, one event, one
   note and one request.
 
 **Why.** A burst of lines longer than 16 MiB that comes to more than the
@@ -393,6 +392,14 @@ What is bounded, and what isn't:
   - each peer's queue: 16 MiB, plus the lines set aside, up to 64 MiB of
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
+  - requests the host answered that the editor was shown, kept for its
+    late answer (ADR 4.5, 7.1): 1024, the oldest going first, none past
+    their session's close;
+  - requests the agent cancelled that the editor was shown, kept to
+    record the editor's answer in their session (ADR 4.5, 7.1): 1024, the
+    oldest going first, none past their session's close;
+  - sessions brnr closed under the editor, kept to answer the editor's
+    requests for them (ADR 7.1): 1024, the oldest going first;
   - the foreground's display (ADR 3.5);
   - the proxy reads the editor 64 KiB at a time;
   - how deep a line may nest for brnr to read it: 128 levels for what the
@@ -412,6 +419,14 @@ What isn't bounded is a gap measured against N2 (ADR 1).
 
 **Consequences.**
 
+- An editor's late answer to a request no longer kept goes to the agent,
+  which ignores it (ADR 2.5), and the editor isn't told who answered first.
+  An editor's request for a session closed under it that is no longer kept
+  reaches the agent, which answers it with its own error.
+- An editor's answer to a request the agent cancelled that is no longer
+  kept still goes to the agent as it is (ADR 4.5), but with no session: it
+  is recorded in the host log, not the session's transcript, and its `acp`
+  event has `session: null`.
 - A message over 32 MiB, valid JSON or not, isn't seen by the host: no
   events for it. If it answered a request of the host's, the request goes
   unanswered, as for a line it can't parse (ADR 2.5). With an editor, the
@@ -442,6 +457,11 @@ so (P3), and memory stays bounded (P6).
 
 **Considered.**
 
+- Keeping the requests the host answered, those the agent cancelled and
+  the sessions closed under the editor until the editor follows up, without
+  a cap: an editor that never answers a withdrawn or cancelled request, or
+  never loads a closed session again, grows them for the process's life
+  (#332, #364).
 - Counting a line still coming against the cap, and so a limit of 16 MiB:
   one bound for everything, but messages ADR 10.1 promises to peers (20 MB)
   would not be read.
@@ -508,6 +528,15 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
   - [src/log.rs](../../src/log.rs):
     `adr_0010_what_the_transcript_lost_is_said_by_position`.
 - 10.3:
+  - [src/host/approvals.rs](../../src/host/approvals.rs):
+    `adr_0010_answered_requests_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_sessions_answered_requests_go_with_its_close`,
+    `adr_0010_given_up_requests_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_sessions_given_up_requests_go_with_its_close`.
+  - [src/host/sessions.rs](../../src/host/sessions.rs):
+    `adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_closed_sessions_answered_requests_go`,
+    `adr_0010_a_request_cancelled_after_its_close_is_not_kept`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said`,
     `adr_0010_a_long_line_to_an_editor_that_stops_reading_is_held_back`,
@@ -524,3 +553,12 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left`,
     `adr_0010_a_stderr_note_is_at_most_a_piece_once_decoded`,
     `adr_0010_a_tails_line_is_cut_between_characters`.
+  - [src/host/lines.rs](../../src/host/lines.rs):
+    `adr_0010_lines_are_read_whole_however_the_reads_split_them`,
+    `adr_0010_a_line_that_ends_at_the_limit_is_read_whole`,
+    `adr_0010_a_relayed_line_past_the_limit_goes_on_as_it_comes`,
+    `adr_0010_a_cut_line_is_in_parts_of_the_limit`,
+    `adr_0010_the_newline_after_a_cut_only_ends_its_line`,
+    `adr_0010_a_character_a_cut_would_split_starts_the_next_part`,
+    `adr_0010_a_cut_is_between_characters`,
+    `adr_0010_a_byte_at_a_time_reads_as_all_at_once`.

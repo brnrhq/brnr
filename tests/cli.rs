@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -272,6 +272,45 @@ fn adr_0008_wait_for_exit() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "agent exited with code 0\n");
 }
 
+/// A session with an approval or an elicitation waiting isn't idle, though
+/// its turn has ended (ADR 3.8): `event wait` waits until the request is
+/// answered, then says it is idle and exits as its last turn ended.
+#[test]
+fn adr_0008_a_session_with_a_request_waiting_isnt_idle() {
+    let env = Env::new("c-waitasked");
+    let env = env.agent("ASK_AND_END", "1");
+    env.start(&[]);
+    for (n, (prompt, what, answer)) in [
+        ("perm edit", "permission", ["permission", "allow", "sess-1", "p1"]),
+        ("elicit form", "elicitation", ["elicitation", "decline", "sess-1", "e1"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", prompt]);
+        env.ok(&["event", "wait", "sess-1", "--for", what, "--timeout", "10"]);
+        let ended = || events_named(&env, "turn_ended").len() == n + 1;
+        assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+        let waited = env.run(&["event", "wait", "sess-1", "--timeout", "1"]);
+        assert_eq!(code(&waited), 124, "{what}: {}", stderr(&waited));
+        let wait = env
+            .brnr(&["event", "wait", "sess-1", "--timeout", "10", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        sleep(Duration::from_millis(300));
+        env.ok(&answer);
+        let out = wait.wait_with_output().unwrap();
+        assert_eq!(code(&out), 0, "{what}: {}", stderr(&out));
+        let idle: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            (&idle["state"], &idle["last_turn"]["stop_reason"]),
+            (&"idle".into(), &"end_turn".into())
+        );
+    }
+}
+
 // ---- cancel and the queue ------------------------------------------------
 
 #[test]
@@ -324,14 +363,16 @@ fn adr_0005_send_wait_on_a_dropped_message() {
     );
     assert_eq!(code(&json), 1, "{}", stderr(&json));
     let turn: Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(turn["dropped"], "cancel");
+    let dropped =
+        serde_json::json!([{ "message": turn["message"], "text": "later", "reason": "cancel" }]);
+    assert_eq!(turn["dropped"], dropped, "{turn}");
     assert_eq!(turn["session"], "sess-1");
     assert!(turn["stop_reason"].is_null() && turn["error"].is_null(), "{turn}");
     assert_ne!(turn["message"], message);
     // A turn that ran says it wasn't dropped.
     let out = env.ok(&["prompt", "send", "sess-1", "--wait", "--json", "--prompt", "reply fine"]);
     let turn: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!((&turn["stop_reason"], &turn["dropped"]), (&"end_turn".into(), &Value::Null));
+    assert_eq!((&turn["stop_reason"], &turn["dropped"]), (&"end_turn".into(), &json!([])));
 }
 
 #[test]
@@ -364,7 +405,9 @@ fn adr_0005_queue_lists_and_drops() {
     let json: Value =
         serde_json::from_str(&env.ok(&["queue", "list", "sess-1", "--json"])).unwrap();
     assert_eq!(json["held"][0]["message"], "m3");
-    assert!(env.fails(&["queue", "drop", "sess-1", "m9"]).contains("no held message m9"));
+    let err = env.fails(&["queue", "drop", "sess-1", "m9"]);
+    assert!(err.contains("no held message m9"), "{err}");
+    code_is(&err, "message_not_found");
     assert_eq!(
         env.ok(&["queue", "clear", "sess-1", "--messages"]),
         "dropped m3: second\nnothing held\n"
@@ -439,13 +482,19 @@ fn adr_0008_queue_show() {
         serde_json::from_str(&answer).unwrap()
     };
     let answer = ask(r#"{"cmd":"queue","session":"sess-1","show":"m2","drop":"m2"}"#);
-    assert_eq!(answer["error"], "queue's show takes no drop or clear", "{answer}");
+    let said =
+        json!({ "code": "command_invalid", "message": "queue's show takes no drop or clear" });
+    code_is(&answer, "command_invalid");
+    assert_eq!(answer["error"], said, "{answer}");
     for show in ["2", "true", "null"] {
         let answer =
             ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show},"clear":true}}"#));
-        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+        let said = json!({ "code": "command_invalid", "message": "show must be a message id" });
+        code_is(&answer, "command_invalid");
+        assert_eq!(answer["error"], said, "{answer}");
         let answer = ask(&format!(r#"{{"cmd":"queue","session":"sess-1","show":{show}}}"#));
-        assert_eq!(answer["error"], "show must be a message id", "{answer}");
+        code_is(&answer, "command_invalid");
+        assert_eq!(answer["error"], said, "{answer}");
     }
     // Showing drops nothing.
     let out = env.ok(&["queue", "list", "sess-1"]);
@@ -736,7 +785,12 @@ fn adr_0005_a_note_is_taken_by_events_and_refused_by_subscribe() {
     BufReader::new(conn).read_line(&mut line).unwrap();
     let answer: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(answer["ok"], false, "{answer}");
-    assert!(answer["error"].as_str().unwrap().contains(r#""events_missed" is a note"#), "{answer}");
+    let error = &answer["error"];
+    assert!(
+        error["message"].as_str().unwrap().contains(r#""events_missed" is a note"#),
+        "{answer}"
+    );
+    code_is(error, "event_unknown");
     // No gap in this transcript: nothing to show.
     for names in ["records_skipped", "records_skipped,events_missed"] {
         assert_eq!(env.ok(&["event", "log", "sess-1", "--events", names]), "", "{names}");
@@ -790,51 +844,278 @@ fn adr_0005_who_acted_and_why_are_by_peer_and_reason() {
     env.stop();
 }
 
-/// A transcript an older brnr wrote, its head naming the session
-/// `session_id`, isn't read (ADR 5.9, P9): `session list` passes it over,
-/// `event log` of it says an older brnr wrote it, and `doctor` lists it (P3).
-#[test]
-fn adr_0005_a_transcript_an_older_brnr_wrote_isnt_read() {
-    let env = Env::new("c-older");
-    let cwd = env.dir.to_string_lossy().into_owned();
-    let path = older_transcript(&env, &folder_of(&cwd), "old-1", &cwd, false);
+/// The transcript fixture `name` (tests/fixtures/transcripts, ADR 5.10), its
+/// raw ACP too if it has one, put where brnr keeps `cwd`'s, private, with
+/// the cwd, the fake agent and the paths filled in: the events file.
+fn fixture(env: &Env, name: &str, cwd: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let home = env.dir.join("home");
+    let folder = home.join("projects").join(folder_of(cwd));
+    fs::create_dir_all(&folder).unwrap();
+    for dir in [&home, &home.join("projects"), &folder] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcripts");
+    for file in [format!("{name}.jsonl"), format!("{name}.acp.jsonl")] {
+        let Ok(text) = fs::read_to_string(fixtures.join(&file)) else { continue };
+        let text = text
+            .replace("@CWD@", cwd)
+            .replace("@AGENT@", AGENT)
+            .replace("@FOLDER@", &folder.to_string_lossy())
+            .replace("@HOME@", &home.to_string_lossy());
+        fs::write(folder.join(&file), text).unwrap();
+        fs::set_permissions(folder.join(&file), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    folder.join(format!("{name}.jsonl"))
+}
 
-    let list = env.ok(&["session", "list", "--include", "inactive", "--json"]);
-    assert!(!list.contains("old-1"), "{list}");
-    let err = env.fails(&["event", "log", "old-1"]);
-    let says =
-        format!("{}: an older brnr wrote it, in names this one doesn't read", path.display());
-    assert!(err.contains(&says), "{err}");
+/// `doctor --json`'s check `name`.
+fn doctor_check(env: &Env, name: &str) -> Value {
     let out = env.run(&["doctor", "--json"]);
     let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let older = checks.as_array().unwrap().iter().find(|c| c["check"] == "older files");
-    let older = older.expect("no older files check");
-    assert_eq!(older["level"], "info", "{older}");
-    assert!(older["message"].as_str().unwrap().contains(&path.to_string_lossy().into_owned()));
+    let check = checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == name);
+    check.unwrap_or_else(|| panic!("no {name} check in {checks}")).clone()
+}
+
+/// Every record brnr writes, in a session's events file, its raw ACP and
+/// the host log, starts with its format, 1 (ADR 5.10); a deletion's, of no
+/// process's, too. A session's `session_opened` names the profile and agent
+/// it is served with, in both files, so that the transcript alone resumes it
+/// (ADR 3.11).
+#[test]
+fn adr_0005_every_record_brnr_writes_has_its_format() {
+    let env = Env::new("c-format-all");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    env.ok(&["session", "delete", "sess-1", "--", AGENT]);
+    let home = env.dir.join("home");
+    let only = |dir: &Path| fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
+    let (folder, host_log) = (only(&home.join("projects")), only(&home.join("hosts")));
+    let files = [folder.join("sess-1.jsonl"), folder.join("sess-1.acp.jsonl"), host_log];
+    for path in &files {
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.lines().count() > 2, "{}: {text}", path.display());
+        for line in text.lines() {
+            assert!(line.starts_with(r#"{"format":1,"ts":""#), "{}: {line}", path.display());
+        }
+        if path != &files[1] {
+            let mut records = text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+            let opened = records.find(|r| r["event"]["event"] == "session_opened").unwrap();
+            let opened = &opened["event"];
+            assert_eq!((&opened["agent"], &opened["profile"]), (&json!([AGENT]), &Value::Null));
+        }
+    }
+    let events = fs::read_to_string(&files[0]).unwrap();
+    assert!(events.lines().last().unwrap().contains(r#""event":"session_deleted""#), "{events}");
+}
+
+/// A transcript in format 1, as 1.0 writes it, is read by every 1.x brnr
+/// (ADR 5.10, ADR 8.4). The fixture is frozen: a change that fails this test
+/// breaks what 1.x promises. `session list` lists it, `event log` shows its
+/// records as the events they were, and its raw ACP, `doctor` has nothing to
+/// say of it, and `session resume` resumes it from it alone, with no host
+/// log: its cwd, agent and profile are its `session_opened`'s (ADR 3.11). A
+/// load records nothing of the replay, as the transcript has the history
+/// (ADR 5.6).
+#[test]
+fn adr_0005_a_format_1_transcript_is_read_by_every_1x_brnr() {
+    let env = Env::new("c-format-1").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "fixture-1", &cwd);
+    assert!(!env.dir.join("home/hosts").exists());
+
+    let rows = session_list(&env, &["--include", "inactive"]);
+    let row = row(&rows, "fixture-1");
+    let program = &row["agent"]["program"];
+    assert_eq!((&row["state"], program), (&"inactive".into(), &"fake_agent.py".into()), "{row}");
+    assert_eq!((&row["cwd"], &row["forked_from"]), (&json!(cwd), &Value::Null), "{row}");
+    assert_eq!(row["last_active"], "2026-10-01T09:00:52.699336Z", "{row}");
+    let names = |log: &str| -> Vec<String> {
+        let events = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+        events.map(|e| e["event"].as_str().unwrap().to_owned()).collect()
+    };
+    let log = env.ok(&["event", "log", "fixture-1", "--json"]);
+    let want = [
+        "user_message",
+        "session_changed",
+        "session_changed",
+        "agent_message",
+        "turn_ended",
+        "user_message",
+        "permission_request",
+        "permission_resolved",
+        "turn_ended",
+        "process_exited",
+    ];
+    assert_eq!(names(&log), want, "{log}");
+    // Each the event its record holds, as a bridge got it.
+    let records = fs::read_to_string(&path).unwrap();
+    let records: Vec<Value> = records.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    for event in log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()) {
+        assert!(records.iter().any(|r| r["event"] == event), "{event}");
+    }
+    let text = env.ok(&["event", "log", "fixture-1"]);
+    assert!(text.contains("agent: hi there") && text.contains("permission p1"), "{text}");
+    let acp = env.ok(&["event", "log", "fixture-1", "--json", "--events", "acp"]);
+    assert_eq!(names(&acp), ["acp"; 11], "{acp}");
+    assert_eq!(doctor_check(&env, "file formats")["level"], "ok");
+
+    let out = env.run(&["session", "resume", "fixture-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let load = env.calls_of("session/load").remove(0);
+    assert_eq!(load["params"]["cwd"], json!(cwd), "{load}");
+    let history = logged(&env, "fixture-1", "history");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &false.into()));
+    assert!(replayed(&env, "fixture-1").is_empty());
+    env.stop();
+}
+
+/// A record is read by its format, not by its fields (ADR 5.10, P9). A
+/// transcript with none, an older brnr's, as this brnr's records but for
+/// it, and one in format 2, a newer brnr's, aren't read: `session list`
+/// passes them over, `event log` of each fails saying what it doesn't read,
+/// `session resume` says so too and resumes the id as one brnr doesn't know
+/// (ADR 3.11), and `doctor` lists them (P3). A file a newer brnr went on
+/// with, its newest records in format 2, is no session to `session list`,
+/// which can't say where it was last served; `event log` shows the records
+/// it can read, and says the rest isn't shown.
+#[test]
+fn adr_0005_a_transcript_in_another_format_isnt_read() {
+    let env = Env::new("c-format-other");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let older = fixture(&env, "older-1", &cwd);
+    let newer = fixture(&env, "newer-1", &cwd);
+    let mixed = fixture(&env, "mixed-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert!(rows.is_empty(), "{rows:?}");
+    let older_says = format!(
+        "{}: records an older brnr wrote, before transcripts had a format, not read (ADR 5.10)",
+        older.display()
+    );
+    let newer_says =
+        format!("{}: records in format 2; this brnr reads format 1, not read", newer.display());
+    let err = env.fails(&["event", "log", "older-1"]);
+    assert!(err.contains(&older_says), "{err}");
+    code_is(&err, "transcript_unsupported");
+    let err = env.fails(&["event", "log", "newer-1"]);
+    assert!(err.contains(&newer_says), "{err}");
+    code_is(&err, "transcript_unsupported");
+    let out = env.run(&["event", "log", "mixed-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let says =
+        format!("{}: records in format 2; this brnr reads format 1, not shown", mixed.display());
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert_eq!(log.matches("user: reply hi there").count(), 1, "{log}");
+    assert!(log.contains("agent: hi there") && log.contains("turn ended"), "{log}");
+    // Resumed as an id brnr doesn't know: with no agent named, none.
+    let err = env.fails(&["session", "resume", "newer-1"]);
+    assert!(err.contains(&newer_says) && err.contains("no agent"), "{err}");
+    let check = doctor_check(&env, "file formats");
+    assert_eq!(check["level"], "info", "{check}");
+    for path in [&older, &newer, &mixed] {
+        assert!(check["message"].as_str().unwrap().contains(&*path.to_string_lossy()), "{check}");
+    }
     // Beside a file of this brnr's in another folder, it is said and not
     // read, and the session is the other file's (ADR 5.1).
     let other = env.dir.join("other");
     fs::create_dir(&other).unwrap();
     closed_session(
         &env,
-        "old-1",
+        "older-1",
         &["--cwd", &other.to_string_lossy(), "--wait", "--prompt", "reply new"],
     );
-    let out = env.run(&["event", "log", "old-1"]);
+    let out = env.run(&["event", "log", "older-1"]);
     assert!(out.status.success(), "{}", stderr(&out));
+    let says = older_says.replace("not read", "not shown");
     assert!(stderr(&out).contains(&says), "{}", stderr(&out));
     let log = stdout(&out);
-    assert!(log.contains("agent: new") && !log.contains("user: hi"), "{log}");
-    let list = session_list(&env, &["--include", "inactive"]);
-    let rows: Vec<&Value> = list.iter().filter(|r| r["session"] == "old-1").collect();
-    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(log.contains("agent: new") && !log.contains("user: reply hi there"), "{log}");
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "older-1")["cwd"], json!(other.to_string_lossy()), "{rows:?}");
 }
 
-/// brnr doesn't append to a transcript an older brnr wrote (ADR 5.9): a
-/// session opened where one is in the way sets it aside, beside it, and
-/// starts a file of its own, which the host log says (`session_log_moved`);
-/// `session delete` passes it over, as an event for a session no process has
-/// open does.
+/// A record in another format between records of this brnr's, which no
+/// brnr writes (ADR 5.10), is said where every record is read: `event log`
+/// shows the others and says it isn't shown. The file's first and newest
+/// records are this brnr's, so `session list` lists it from them.
+#[test]
+fn adr_0005_a_record_in_another_format_amid_a_file_is_said() {
+    let env = Env::new("c-format-amid");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "mixed-1", &cwd);
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let amid = [lines[0], lines[4], lines[1], lines[2], lines[3]];
+    assert!(amid[1].starts_with(r#"{"format":2,"#), "{amid:?}");
+    fs::write(&path, amid.join("\n") + "\n").unwrap();
+    let out = env.run(&["event", "log", "mixed-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let says =
+        format!("{}: records in format 2; this brnr reads format 1, not shown", path.display());
+    assert!(stderr(&out).contains(&says), "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("user: reply hi there") && log.contains("turn ended"), "{log}");
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "mixed-1")["cwd"], json!(cwd), "{rows:?}");
+}
+
+/// A transcript a write cut short, at its end and before its last records,
+/// is read to its last whole record (ADR 5.1, ADR 5.10): `session list` lists
+/// it as of that record, `event log` shows every record and says each line
+/// it can't read and the end cut short, exiting 0, and a resume appends its
+/// first record on a line of its own, the cut bytes left as they were.
+#[test]
+fn adr_0005_a_transcript_cut_short_is_read_to_its_last_whole_record() {
+    let env = Env::new("c-format-cut").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    let path = fixture(&env, "cut-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "cut-1")["last_active"], "2026-10-01T09:00:51.484926Z", "{rows:?}");
+    let out = env.run(&["event", "log", "cut-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let log = stdout(&out);
+    assert!(log.contains("user: reply hi there") && log.contains("agent: hi there"), "{log}");
+    assert!(log.contains("turn ended"), "{log}");
+    let err = stderr(&out);
+    let file = path.display();
+    assert!(err.contains(&format!("{file}:3 isn't a record brnr can read, not shown")), "{err}");
+    let end = format!("{file} ends partway through a record (40 bytes), not shown");
+    assert!(err.contains(&end), "{err}");
+    let before = fs::read_to_string(&path).unwrap();
+    env.resume("cut-1", &[]);
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(after.starts_with(&format!("{before}\n{{\"format\":1,")), "{after}");
+    let history = logged(&env, "cut-1", "history");
+    assert_eq!(history[0]["recorded"], false, "{history:?}");
+}
+
+/// A transcript holding only its openings, as a load that failed leaves,
+/// has no history (ADR 5.6, ADR 5.10): `session list` lists it, with its cwd
+/// and agent, and the next load records the history the agent replays.
+#[test]
+fn adr_0005_a_transcript_of_openings_only_gets_the_history() {
+    let env = Env::new("c-format-opened").agent("NO_RESUME", "1");
+    let cwd = env.dir.to_string_lossy().into_owned();
+    fixture(&env, "opened-1", &cwd);
+    let rows = session_list(&env, &["--include", "inactive"]);
+    assert_eq!(row(&rows, "opened-1")["agent"]["program"], "fake_agent.py", "{rows:?}");
+    let out = env.run(&["session", "resume", "opened-1"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(replayed(&env, "opened-1"), ["old question", "replayed history"]);
+    let history = logged(&env, "opened-1", "history");
+    assert_eq!((&history[0]["updates"], &history[0]["recorded"]), (&3.into(), &true.into()));
+    env.stop();
+}
+
+/// brnr doesn't append to a transcript in a format it doesn't read, an
+/// older brnr's or a newer one's (ADR 5.9, ADR 5.10): a session opened where
+/// one is in the way sets it aside, beside it, and starts a file of its own,
+/// which the host log says (`session_log_moved`); `session delete` passes it
+/// over, as an event for a session no process has open does.
 #[test]
 fn adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript() {
     let env = Env::new("c-older-append").agent("NO_RESUME", "1");
@@ -893,10 +1174,7 @@ fn adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript() {
         moved.iter().map(to).collect::<Vec<_>>(),
         [want(&older, &set_aside), want(&older_raw, &raw_aside)]
     );
-    let out = env.run(&["doctor", "--json"]);
-    let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let listed = checks.as_array().unwrap().iter().find(|c| c["check"] == "older files");
-    let listed = listed.expect("no older files check")["message"].as_str().unwrap().to_owned();
+    let listed = doctor_check(&env, "file formats")["message"].as_str().unwrap().to_owned();
     assert!(listed.contains(&*set_aside.to_string_lossy()), "{listed}");
     assert!(listed.contains(&*before_hash.to_string_lossy()), "{listed}");
 
@@ -905,8 +1183,18 @@ fn adr_0005_brnr_doesnt_append_to_an_older_brnrs_transcript() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let out = env.ok(&["session", "delete", "old-1", "--json"]);
     let out: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(out["recorded"], json!([older.to_string_lossy()]), "{out}");
+    assert_eq!(out["recorded_in"], json!([older.to_string_lossy()]), "{out}");
     assert_eq!(fs::read_to_string(&before_hash).unwrap(), kept);
+
+    // A newer brnr's, its records in format 2, is set aside the same.
+    let newer = fixture(&env, "newer-1", &cwd);
+    let text = fs::read_to_string(&newer).unwrap();
+    env.ok(&resume_args("newer-1", &["--wait", "--prompt", "reply new"]));
+    env.stop();
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
+    assert_eq!(fs::read_to_string(newer.with_file_name("newer-1.older.jsonl")).unwrap(), text);
+    let now = fs::read_to_string(&newer).unwrap();
+    assert!(now.lines().all(|l| l.starts_with(r#"{"format":1,"#)), "{now}");
 }
 
 #[test]
@@ -1080,6 +1368,205 @@ fn adr_0008_status_summarizes_the_session() {
     assert_eq!(json["usage"]["used"], 12345);
 }
 
+// ---- one name and one shape (ADR 8.2) ------------------------------------
+
+/// A command that lists prints an object, the list under the plural of what
+/// it lists, never a bare array: it can gain a field (ADR 8.2).
+#[test]
+fn adr_0008_a_list_is_an_object() {
+    let env = Env::new("c-lists");
+    env.start(&[]);
+    for (args, key) in [
+        (&["process", "list", "--json"][..], "processes"),
+        (&["session", "list", "--json"], "sessions"),
+        (&["permission", "requests", "--json"], "requests"),
+        (&["elicitation", "requests", "--json"], "requests"),
+        (&["doctor", "--json"], "checks"),
+    ] {
+        // doctor exits 1 for a failed check; its JSON is the same.
+        let listed: Value = serde_json::from_slice(&env.run(args).stdout).unwrap();
+        let keys: Vec<&String> = listed.as_object().unwrap().keys().collect();
+        assert_eq!(keys, [key], "{args:?}: {listed}");
+        assert!(listed[key].is_array(), "{args:?}: {listed}");
+    }
+}
+
+/// A row is the object its command's detail prints, with fewer fields, none
+/// renamed or reshaped: `session list`'s are `session status`'s (with
+/// `source`), `permission requests`' `permission show`'s, `elicitation
+/// requests`' `elicitation show`'s, and a `process list` row's sessions
+/// `session list` rows (ADR 8.2).
+#[test]
+fn adr_0008_a_row_is_its_details_object_with_fewer_fields() {
+    let env = Env::new("c-rows");
+    env.start(&[]);
+    env.ok(&["session", "fork", "sess-1"]);
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+    env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
+    env.ok(&["prompt", "send", "sess-2", "--prompt", "elicit form"]);
+    env.ok(&["event", "wait", "sess-2", "--for", "elicitation", "--timeout", "10"]);
+    let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+    let within = |row: &Value, detail: &Value, but: &[&str]| {
+        let fields = row.as_object().unwrap().iter().filter(|(k, _)| !but.contains(&k.as_str()));
+        for (k, v) in fields {
+            assert_eq!(v, &detail[k], "{k}: {row} in {detail}");
+        }
+    };
+    let sessions = json(&["session", "list", "--json"])["sessions"].clone();
+    let sessions = sessions.as_array().unwrap();
+    for row in sessions {
+        let id = row["session"].as_str().unwrap();
+        within(row, &json(&["session", "status", id, "--json"]), &["source"]);
+    }
+    let permission = json(&["permission", "requests", "--json"])["requests"][0].clone();
+    within(&permission, &json(&["permission", "show", "sess-1", "p1", "--json"]), &[]);
+    let elicitation = json(&["elicitation", "requests", "--json"])["requests"][0].clone();
+    within(&elicitation, &json(&["elicitation", "show", "sess-2", "e1", "--json"]), &[]);
+    assert_eq!(elicitation["pid"], env.host_pid(), "{elicitation}");
+    let process = json(&["process", "list", "--json"])["processes"][0].clone();
+    let listed = process["sessions"].as_array().unwrap();
+    assert_eq!(listed.len(), 2, "{process}");
+    for row in listed {
+        let found = sessions.iter().find(|s| s["session"] == row["session"]).unwrap();
+        within(row, found, &[]);
+    }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    env.ok(&["elicitation", "decline", "sess-2", "e1"]);
+}
+
+/// `dropped` is the messages dropped, each `{message, text, reason}` as its
+/// `message_dropped` event has it, in `queue drop`, `prompt cancel` and
+/// `queue clear` alike, and an empty list where none was (ADR 8.2); `--wait`'s
+/// is `adr_0005_send_wait_on_a_dropped_message`'s.
+#[test]
+fn adr_0008_dropped_is_a_list_of_messages_everywhere() {
+    let env = Env::new("c-dropped");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+    let send = |text: &str| {
+        let sent = json(&["prompt", "send", "sess-1", "--json", "--prompt", text]);
+        sent["message"].as_str().unwrap().to_owned()
+    };
+    let (m2, m3, m4) = (send("two"), send("three"), send("four"));
+    let one =
+        |m: &str, text: &str, reason: &str| json!({ "message": m, "text": text, "reason": reason });
+    let dropped = json(&["queue", "drop", "sess-1", &m2, "--json"])["dropped"].clone();
+    assert_eq!(dropped, json!([one(&m2, "two", "queue")]));
+    let dropped = json(&["prompt", "cancel", "sess-1", "--json"])["dropped"].clone();
+    assert_eq!(dropped, json!([one(&m3, "three", "cancel"), one(&m4, "four", "cancel")]));
+    let dropped = json(&["queue", "clear", "sess-1", "--json"])["dropped"].clone();
+    assert_eq!(dropped, json!([]));
+    settled(&env);
+    let events: Vec<Value> = (events(&env, "sess-1").into_iter())
+        .filter(|e| e["event"] == "message_dropped")
+        .map(|e| json!({ "message": e["message"], "text": e["text"], "reason": e["reason"] }))
+        .collect();
+    let all = [one(&m2, "two", "queue"), one(&m3, "three", "cancel"), one(&m4, "four", "cancel")];
+    assert_eq!(events, all);
+}
+
+/// A name is a count or a list, never both: `session status` counts, as
+/// `held_count` and `context_count`, what `queue list` lists as `held` and
+/// `context` (ADR 8.2).
+#[test]
+fn adr_0008_a_count_is_named_so() {
+    let env = Env::new("c-counts");
+    env.start(&["--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "later"]);
+    env.ok(&["prompt", "send", "sess-1", "--context", "--prompt", "some context"]);
+    let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+    let status = json(&["session", "status", "sess-1", "--json"]);
+    let counts = ["held_count", "context_count", "pending_count", "elicitation_count"];
+    let counts = counts.map(|k| status[k].clone());
+    assert_eq!(counts, [json!(1), json!(1), json!(0), json!(0)], "{status}");
+    for list in ["held", "context", "pending", "elicitations"] {
+        assert!(status.get(list).is_none(), "{list} in {status}");
+    }
+    let queue = json(&["queue", "list", "sess-1", "--json"]);
+    assert_eq!(queue["held"].as_array().map(Vec::len), Some(1), "{queue}");
+    assert_eq!(queue["context"], json!(["some context"]), "{queue}");
+    env.ok(&["prompt", "cancel", "sess-1"]);
+}
+
+/// `event wait --json` prints one shape for each `--for`, whatever ended
+/// the wait and whether it held when the wait began (ADR 8.3): `idle` the
+/// session's state, `permission` and `elicitation` the request as
+/// `permission show` and `elicitation show` print it, `turn` the
+/// `turn_ended` event, `exit` the `process_exited` event,
+/// which the command makes, as far as it knows it, for a process killed
+/// before it could send one.
+#[test]
+fn adr_0008_event_wait_prints_one_shape_for_each_condition() {
+    let env = Env::new("c-waitshape");
+    env.start(&[]);
+    let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+    let spawn = |args: &[&str]| {
+        let mut args = args.to_vec();
+        args.extend(["--timeout", "10", "--json"]);
+        env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+    let waited = |child: Child, exit: i32| -> Value {
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(code(&out), exit, "{}", stderr(&out));
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", stderr(&out)))
+    };
+    let idle = ["event", "wait", "sess-1"];
+    let before = json(&[&idle[..], &["--json"]].concat());
+    assert_eq!(before, json!({ "session": "sess-1", "state": "idle", "last_turn": null }));
+    // Idle once a turn ends, and idle already: the same.
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "hang on"]);
+    assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
+    let wait = spawn(&idle);
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "cancel", "sess-1"]);
+    let after = waited(wait, 1);
+    assert_eq!(
+        (&after["state"], &after["last_turn"]["stop_reason"]),
+        (&"idle".into(), &"cancelled".into())
+    );
+    // Exiting as that turn ended, as the one that waited did.
+    let again = env.run(&[&idle[..], &["--json"]].concat());
+    assert_eq!(code(&again), 1, "{}", stderr(&again));
+    assert_eq!(after, serde_json::from_slice::<Value>(&again.stdout).unwrap());
+    assert_eq!(after["last_turn"], json(&["session", "status", "sess-1", "--json"])["last_turn"]);
+    // An approval as it comes, and once it is waiting: `permission show`'s.
+    let permission = ["event", "wait", "sess-1", "--for", "permission"];
+    let wait = spawn(&permission);
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+    let came = waited(wait, 0);
+    let shown = json(&["permission", "show", "sess-1", "p1", "--json"]);
+    assert_eq!(came, shown);
+    assert_eq!(json(&[&permission[..], &["--json"]].concat()), shown);
+    // A turn's end is its event.
+    let wait = spawn(&["event", "wait", "sess-1", "--for", "turn"]);
+    sleep(Duration::from_millis(300));
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    let ended = waited(wait, 0);
+    assert_eq!((&ended["event"], &ended["session"]), (&"turn_ended".into(), &"sess-1".into()));
+    assert!(ended["seq"].is_u64() && ended["host_id"].is_string(), "{ended}");
+    // An elicitation as it comes, and once it is waiting: `elicitation show`'s.
+    let elicitation = ["event", "wait", "sess-1", "--for", "elicitation"];
+    let wait = spawn(&elicitation);
+    sleep(Duration::from_millis(300));
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "elicit form"]);
+    let came = waited(wait, 0);
+    let shown = json(&["elicitation", "show", "sess-1", "e1", "--json"]);
+    assert_eq!(came, shown);
+    assert_eq!(json(&[&elicitation[..], &["--json"]].concat()), shown);
+    // A process killed says nothing: the command says it for it.
+    let wait = spawn(&["event", "wait", "sess-1", "--for", "exit"]);
+    sleep(Duration::from_millis(300));
+    let host = env.host_pid();
+    kill(host, libc::SIGKILL);
+    let gone = waited(wait, 0);
+    assert_eq!((&gone["event"], &gone["pid"]), (&"process_exited".into(), &host.into()), "{gone}");
+    assert_eq!((&gone["exit_status"], &gone["seq"]), (&Value::Null, &Value::Null), "{gone}");
+    assert!(gone["error"]["message"].is_string() && gone["host_id"].is_string(), "{gone}");
+}
+
 /// A duration in `--json` is whole seconds, its name with no unit:
 /// `uptime`, `turn_elapsed` and `timeout_left`, not the `_seconds` names
 /// (ADR 8.1).
@@ -1090,7 +1577,7 @@ fn adr_0008_a_durations_name_has_no_unit() {
     env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
     let json = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
-    let process = json(&["process", "list", "--json"])[0].clone();
+    let process = json(&["process", "list", "--json"])["processes"][0].clone();
     let session = json(&["session", "status", "sess-1", "--json"]);
     let request = json(&["permission", "show", "sess-1", "p1", "--json"]);
     for (value, name) in [
@@ -1314,6 +1801,7 @@ fn adr_0006_mode_lists_and_switches() {
     assert_eq!(json["options"][0]["choices"][1], plan);
     let err = env.fails(&["config", "set", "sess-1", "--mode", "warp"]);
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
+    code_is(&err, "setting_invalid");
     assert_eq!(env.calls_of("session/set_mode").len(), 1, "warp reached the agent");
 }
 
@@ -1520,6 +2008,7 @@ fn adr_0006_start_applies_mode_and_model_before_the_prompt() {
     let out = env.brnr(&new_args(&["--mode", "warp"])).env("FIRST_SESSION", "1").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting mode warp: the agent has no mode warp"), "{err}");
+    code_is(&err, "setting_invalid");
     let out = env.brnr(&new_args(&["--model", "huge"])).env("FIRST_SESSION", "2").output();
     let err = stderr(&out.unwrap());
     assert!(err.contains("setting model huge failed: bad option model=huge"), "{err}");
@@ -1589,7 +2078,7 @@ fn session_list(env: &Env, args: &[&str]) -> Vec<Value> {
     let mut all = vec!["session", "list", "--json"];
     all.extend_from_slice(args);
     let rows: Value = serde_json::from_str(&env.ok(&all)).unwrap();
-    rows.as_array().unwrap().clone()
+    rows["sessions"].as_array().unwrap().clone()
 }
 
 /// The row of session `id` in `rows`, which must have one.
@@ -1648,7 +2137,8 @@ fn adr_0008_list_without_an_agent_is_brnrs_index() {
         (&"inactive".into(), &Value::Null, &here.into())
     );
     for r in &rows {
-        assert_eq!((&r["source"], &r["agent"]), (&"brnr".into(), &"fake_agent.py".into()), "{r}");
+        let agent = &r["agent"]["program"];
+        assert_eq!((&r["source"], agent), (&"brnr".into(), &"fake_agent.py".into()), "{r}");
         let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
         let want = [
             "session",
@@ -1714,7 +2204,7 @@ fn adr_0008_list_joins_the_agents_sessions_on_id() {
         (&"An old session".into(), &"2026-10-01T10:00:00.000000Z".into())
     );
     let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
-    assert_eq!((&old["agent"], &old["cwd"]), (&"fake_agent.py".into(), &here.into()));
+    assert_eq!((&old["agent"]["program"], &old["cwd"]), (&"fake_agent.py".into(), &here.into()));
     // Every page: the second asked for with the first's cursor.
     let asked = env.calls_of("session/list");
     assert_eq!(asked.len(), 2, "{asked:?}");
@@ -1755,7 +2245,7 @@ fn adr_0008_list_joins_the_agents_sessions_on_id() {
             .unwrap();
         assert!(out.status.success(), "{}", stderr(&out));
         let titled: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let one = row(titled.as_array().unwrap(), "sess-1");
+        let one = row(titled["sessions"].as_array().unwrap(), "sess-1");
         assert_eq!((&one["source"], &one["title"]), (&"both".into(), &"The agent's title".into()));
     }
     assert!(one["last_active"].as_str().unwrap() > "2026-10-01T10:00:00.000000Z", "{one}");
@@ -1776,11 +2266,13 @@ fn adr_0008_list_joins_the_agents_sessions_on_id() {
 
     let err = env.fails(&["session", "list", "--profile", "nope"]);
     assert!(err.contains("no profile \"nope\""), "{err}");
+    code_is(&err, "profile_not_found");
     let env = Env::new("c-list-nolist").agent("NO_LIST", "1");
     let out = env.run(&["session", "list", "--", AGENT]);
     assert_eq!(code(&out), 1);
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
-    assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions\n");
+    code_is(&out, "capability_missing");
+    assert_eq!(stderr(&out), "brnr: the agent doesn't list its sessions [capability_missing]\n");
 }
 
 /// The agent's times are read with their offsets: LAST ACTIVE is in UTC, as
@@ -1826,7 +2318,7 @@ fn adr_0008_list_reads_the_agents_times_in_utc() {
 
     let rows: Value = serde_json::from_str(&list(&["session", "list", "--json", "--", AGENT]))
         .unwrap_or_else(|e| panic!("{e}"));
-    let rows = rows.as_array().unwrap();
+    let rows = rows["sessions"].as_array().unwrap();
     let ids: Vec<&Value> = rows.iter().map(|r| &r["session"]).collect();
     assert_eq!(
         ids,
@@ -2016,7 +2508,8 @@ fn adr_0009_cwds_alike_are_listed_apart() {
     }
     for (out, (dir, x)) in lists.iter().zip(&cwds) {
         let rows: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(ours(rows.as_array().unwrap().clone()), want(x, "unreachable"), "{dir}");
+        let rows = rows["sessions"].as_array().unwrap().clone();
+        assert_eq!(ours(rows), want(x, "unreachable"), "{dir}");
     }
 }
 
@@ -2173,7 +2666,7 @@ fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
     let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(
-        (&rows[0]["cwd"], &rows[0]["agent"]),
+        (&rows[0]["cwd"], &rows[0]["agent"]["program"]),
         (&b.as_str().into(), &"other-agent.py".into())
     );
     // No --cwd, --profile or agent: the newest record's.
@@ -2183,6 +2676,92 @@ fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
     let hosts = env.hosts();
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     assert_eq!((&hosts[0]["profile"], &hosts[0]["agent"]), (&"other".into(), &json!([other])));
+    env.stop();
+}
+
+/// Of a session with files in two folders, the cwd, agent and profile are
+/// those of the newest `session_opened` of them all, the last in its file,
+/// not its file's first record: here the session, opened in `a`, then
+/// resumed in `b` with another agent, is resumed in `a` again with that
+/// agent (ADR 3.11, ADR 5.1, ADR 5.10).
+#[test]
+fn adr_0003_resume_takes_the_newest_opening_of_every_folder() {
+    let env = Env::new("c-newest-opening");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    for cwd in [&b, &a] {
+        env.ok(&["session", "resume", "s-1", "--cwd", cwd, "--", &other]);
+        env.ok(&["session", "close", "s-1"]);
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    }
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (&rows[0]["cwd"], &rows[0]["agent"]["program"]),
+        (&a.as_str().into(), &"other-agent.py".into())
+    );
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], a.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!(hosts[0]["agent"], json!([other]), "{hosts:?}");
+    env.stop();
+}
+
+/// An editor's deletion, recorded by its process into each of the
+/// session's files though it never opened the session there, isn't
+/// activity (ADR 8.1): of a session with files in two folders, `session
+/// list` keeps LAST ACTIVE, cwd and agent from where the session was last
+/// served, and `session resume` resumes it there (ADR 3.11, ADR 5.1).
+#[test]
+fn adr_0008_an_editors_deletion_in_every_folder_isnt_activity() {
+    let env = Env::new("c-deleted-folders");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--", &other]);
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    let of = |rows: &[Value]| -> Value {
+        let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        rows[0].clone()
+    };
+    let before = of(&session_list(&env, &[]));
+    let deleted = r#"{"format":1,"ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1,"proxy_pid":null,"agent_pid":2,"session":"s-1","event":{"event":"session_deleted","session":"s-1","by":"editor","ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1}}"#;
+    for cwd in [&a, &b] {
+        let path = env.dir.join("home/projects").join(folder_of(cwd)).join("s-1.jsonl");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{deleted}").unwrap();
+    }
+    assert_eq!(
+        (&before["cwd"], &before["agent"]["program"]),
+        (&b.as_str().into(), &"other-agent.py".into())
+    );
+    let after = of(&session_list(&env, &[]));
+    let row = |r: &Value| (r["last_active"].clone(), r["cwd"].clone(), r["agent"].clone());
+    assert_eq!(row(&after), row(&before), "{after}");
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], b.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!(hosts[0]["agent"], json!([other]), "{hosts:?}");
     env.stop();
 }
 
@@ -2302,7 +2881,10 @@ fn adr_0003_a_fork_keeps_its_source() {
     let env = Env::new("c-forkfrom");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
-    let list = || serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list = || {
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone()
+    };
     let row = |rows: &Value, id: &str| {
         let found = rows.as_array().unwrap().iter().find(|r| r["session"] == id).cloned();
         found.unwrap_or_else(|| panic!("no {id}: {rows}"))
@@ -2370,7 +2952,8 @@ fn transcripts_open(pid: i32) -> Option<usize> {
 
 /// A process that serves session after session holds files only for those
 /// it has open: closing one writes its last records and closes its files,
-/// and one resumed later appends to them (ADR 5.1).
+/// and one resumed later appends to them (ADR 5.1). Can't run without
+/// `/proc` or `lsof` (`skip`: a failure in CI).
 #[test]
 fn adr_0005_closing_sessions_closes_their_files() {
     let env = Env::new("c-closefds");
@@ -2380,7 +2963,7 @@ fn adr_0005_closing_sessions_closes_their_files() {
     // returned: `log` answers once it has caught up (ADR 5.5).
     env.ok(&["event", "log", "sess-1"]);
     let Some(before) = transcripts_open(host) else {
-        eprintln!("skipped: neither /proc nor lsof");
+        skip("neither /proc nor lsof");
         return env.stop();
     };
     // The host log and sess-1's two files.
@@ -2463,16 +3046,18 @@ fn adr_0005_close_ends_what_follows_the_session() {
     assert_eq!(code(&turn), 1, "{}", stderr(&turn));
     assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
     let permission = permission.wait_with_output().unwrap();
-    assert_eq!(code(&permission), 1, "{}", stderr(&permission));
+    code_is(&permission, "session_closed");
     assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
     // The session is idle once its turn is cancelled, and the wait exits as
     // that turn ended.
     let idle = idle.wait_with_output().unwrap();
     assert_eq!(code(&idle), 1, "{}", stderr(&idle));
+    // Idle, or closed by the time it asked (ADR 8.3).
     let ended: Value = serde_json::from_slice(&idle.stdout).unwrap();
+    assert!(ended["state"] == "idle" || ended["state"] == "inactive", "{ended}");
     assert_eq!(
-        (&ended["event"], &ended["stop_reason"]),
-        (&"turn_ended".into(), &"cancelled".into())
+        (&ended["session"], &ended["last_turn"]["stop_reason"]),
+        (&"sess-2".into(), &"cancelled".into())
     );
     let sent = sent.wait_with_output().unwrap();
     assert_eq!(code(&sent), 1, "{}", stderr(&sent));
@@ -2540,6 +3125,40 @@ fn adr_0003_resume_continues_a_session() {
     let log = env.ok(&["event", "log", "sess-1"]);
     assert!(log.contains("agent: first") && log.contains("agent: again"), "{log}");
     assert!(env.fails(&["session", "resume", "sess-1"]).contains("sess-1 is running in process"));
+}
+
+/// `session resume --profile p` of a session brnr has a transcript of runs
+/// p's agent when p names one, not the recorded one; `-- <agent>` overrides
+/// both, and a profile that names none keeps the recorded one (ADR 3.11,
+/// ADR 6.1, #341).
+#[test]
+fn adr_0003_resume_with_a_profile_runs_its_agent() {
+    let env = Env::new("c-resume-prof");
+    let [mine, given] = ["p-agent.py", "given-agent.py"].map(|name| {
+        let path = env.dir.join(name);
+        install(Path::new(AGENT), &path);
+        path.to_string_lossy().into_owned()
+    });
+    env.write_config(&format!(
+        "[profiles.p]\nagent = [{mine:?}]\n[profiles.bare]\nstrict = false\n"
+    ));
+    closed_session(&env, "s-1", &[]);
+    let resumed = |args: &[&str]| -> (Value, Value) {
+        env.ok(&[&["session", "resume", "s-1"], args].concat());
+        let hosts = env.hosts();
+        assert_eq!(hosts.len(), 1, "{hosts:?}");
+        env.ok(&["session", "close", "s-1"]);
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+        (hosts[0]["profile"].clone(), hosts[0]["agent"].clone())
+    };
+    // Recorded with AGENT, under no profile: p's agent, not AGENT.
+    assert_eq!(resumed(&["--profile", "p"]), ("p".into(), json!([mine])));
+    // -- <agent> overrides p's.
+    assert_eq!(resumed(&["--profile", "p", "--", &given]), ("p".into(), json!([given])));
+    // A profile that names no agent keeps the recorded one, the newest.
+    assert_eq!(resumed(&["--profile", "bare"]), ("bare".into(), json!([given])));
+    // No --profile: the recorded profile and agent.
+    assert_eq!(resumed(&[]), ("bare".into(), json!([given])));
 }
 
 /// `session`'s events named `names` in its transcript, as JSON.
@@ -2737,7 +3356,8 @@ fn adr_0003_a_new_session_that_cant_be_locked_isnt_started() {
     for _ in 0..2 {
         let out = env.run(&new_args(&["--json", "--prompt", "reply hi"]));
         assert_eq!(code(&out), 1, "{}", stdout(&out));
-        assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+        // No code of its own: a file brnr can't lock (ADR 8.7).
+        code_is(&json_error(&out), "unclassified");
         let said = format!("the agent opened sess-1, which can't be locked: {}: ", lock.display());
         assert!(stderr(&out).contains(&said), "{}", stderr(&out));
         assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "left running");
@@ -2909,22 +3529,27 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     // Each command says where the session is in the same words, and none
     // offers what can't work: a process that doesn't answer can't be asked
     // to close it (ADR 3.9).
-    let refused = format!("brnr: sess-1 is running in process {pid}, which is not answering\n");
+    let refused = format!(
+        "brnr: sess-1 is running in process {pid}, which is not answering [process_unreachable]\n"
+    );
     for out in [&resume, &take_over, &delete] {
-        assert_eq!((code(out), stderr(out)), (1, refused.clone()));
+        code_is(out, "process_unreachable");
+        assert_eq!(stderr(out), refused);
     }
-    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let list = serde_json::from_slice::<Value>(&list.stdout).unwrap()["sessions"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
     assert_eq!(list[0]["pid"], pid);
-    let ps: Value = serde_json::from_slice(&ps.stdout).unwrap();
+    let ps = serde_json::from_slice::<Value>(&ps.stdout).unwrap()["processes"].clone();
+    let held = serde_json::json!([{ "session": "sess-1", "state": "unreachable" }]);
     assert_eq!(
-        (&ps[0]["owner"], &ps[0]["sessions"]),
-        (&"unreachable".into(), &serde_json::json!(["sess-1"]))
+        (&ps[0]["state"], &ps[0]["owner"], &ps[0]["sessions"]),
+        (&"unreachable".into(), &Value::Null, &held)
     );
+    assert_eq!(ps[0]["agent"]["program"], "fake_agent.py", "{ps}");
     // Joined with the agent's, its cwd the agent's, not as one only the
     // agent knows.
-    let sessions: Value = serde_json::from_slice(&sessions.stdout).unwrap();
+    let sessions = serde_json::from_slice::<Value>(&sessions.stdout).unwrap()["sessions"].clone();
     let row = sessions.as_array().unwrap().iter().find(|r| r["session"] == "sess-1").unwrap();
     assert_eq!((&row["state"], &row["pid"]), (&"unreachable".into(), &pid.into()), "{sessions}");
     let here = fs::canonicalize(&env.dir).unwrap().to_string_lossy().into_owned();
@@ -2934,13 +3559,13 @@ fn adr_0003_a_silent_process_keeps_its_session() {
     assert!(row.contains(&format!("unreachable  {pid}")), "{table}");
     // With --cwd and no agent, its transcript says which cwd's it is; its
     // cwd still unknown.
-    let in_dir: Value = serde_json::from_slice(&in_dir.stdout).unwrap();
+    let in_dir = serde_json::from_slice::<Value>(&in_dir.stdout).unwrap()["sessions"].clone();
     assert_eq!(in_dir.as_array().unwrap().len(), 1, "{in_dir}");
     let (one, state) = (&in_dir[0]["session"], &in_dir[0]["state"]);
     assert_eq!((one, state), (&"sess-1".into(), &"unreachable".into()), "{in_dir}");
     assert_eq!(in_dir[0]["cwd"], Value::Null, "{in_dir}");
     let there: Value = serde_json::from_slice(&there.stdout).unwrap();
-    assert_eq!(there, serde_json::json!([]));
+    assert_eq!(there, serde_json::json!({ "sessions": [] }));
     assert_eq!(env.hosts().len(), 1, "a second process started");
 }
 
@@ -2994,7 +3619,7 @@ fn adr_0003_a_session_is_owned_once_however_the_runtime_dir_is_found() {
     // runtime directory can't reach.
     let out = elsewhere(&["session", "list", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let list = serde_json::from_slice::<Value>(&out.stdout).unwrap()["sessions"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["state"]), (&"sess-1".into(), &"unreachable".into()));
     assert_eq!(list[0]["pid"].to_string(), pid, "{list}");
@@ -3043,10 +3668,12 @@ fn a_gone_process_whose_pid_is_taken_is_not_listed() {
     env.start(&[]);
     let real = env.host_pid();
     let mut sleep = ghost(&env);
-    let ps: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
+    let ps = serde_json::from_str::<Value>(&env.ok(&["process", "list", "--json"])).unwrap()["processes"].clone();
     let pids: Vec<&Value> = ps.as_array().unwrap().iter().map(|p| &p["pid"]).collect();
     assert_eq!(pids, [&Value::from(real)], "{ps}");
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
     assert_eq!((&list[0]["session"], &list[0]["pid"]), (&"sess-1".into(), &Value::from(real)));
     let pid = sleep.id();
@@ -3127,15 +3754,20 @@ fn adr_0004_show_explains_a_permission_request() {
     let json: Value =
         serde_json::from_str(&env.ok(&["permission", "show", "sess-1", "p1", "--json"])).unwrap();
     assert_eq!(json["tool_call"]["kind"], "edit");
-    let pending: Value =
-        serde_json::from_str(&env.ok(&["permission", "requests", "--json"])).unwrap();
+    let pending = serde_json::from_str::<Value>(&env.ok(&["permission", "requests", "--json"]))
+        .unwrap()["requests"]
+        .clone();
     assert_eq!(pending[0]["session"], "sess-1");
-    assert_eq!(pending[0]["options"][0]["option_id"], "allow");
+    // The agent's options whole, as `permission show` has them (ADR 8.2).
+    assert_eq!(pending[0]["options"], json["options"]);
+    assert_eq!(pending[0]["options"][0]["optionId"], "allow");
     assert!(
         env.fails(&["permission", "allow", "sess-1"]).contains("usage:"),
         "a request is needed"
     );
-    assert!(env.fails(&["permission", "allow", "sess-1", "p9"]).contains("no pending request p9"));
+    let err = env.fails(&["permission", "allow", "sess-1", "p9"]);
+    assert!(err.contains("no pending request p9"), "{err}");
+    code_is(&err, "request_not_found");
     let json: Value =
         serde_json::from_str(&env.ok(&["permission", "allow", "sess-1", "p1", "--json"])).unwrap();
     assert_eq!(json["outcome"]["optionId"], "allow");
@@ -3167,7 +3799,7 @@ fn adr_0004_requests_passes_over_a_silent_process() {
     let row = stdout(&table);
     let row = row.lines().find(|l| l.starts_with("sess-2")).unwrap_or_else(|| panic!("{row}"));
     assert!(row.contains("p1"), "{row}");
-    let json: Value = serde_json::from_slice(&json.stdout).unwrap();
+    let json = serde_json::from_slice::<Value>(&json.stdout).unwrap()["requests"].clone();
     let ids: Vec<(&Value, &Value)> =
         json.as_array().unwrap().iter().map(|r| (&r["session"], &r["request"])).collect();
     assert_eq!(ids, [(&"sess-2".into(), &"p1".into())], "{json}");
@@ -3203,11 +3835,11 @@ fn ask(env: &Env) {
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
 }
 
-/// The fake agent's answers, in order: its requests are each `perm-1` while
-/// no other is waiting.
+/// The fake agent's answers to its permission requests (`perm-N`), in order.
 fn answers(env: &Env) -> Vec<Value> {
+    let ours = |c: &Value| c["id"].as_str().is_some_and(|id| id.starts_with("perm-"));
     (env.calls().into_iter())
-        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .filter(|c| ours(c) && c.get("method").is_none())
         .map(|c| c["result"]["outcome"].clone())
         .collect()
 }
@@ -3325,6 +3957,7 @@ fn adr_0008_option_must_be_on_the_verbs_side() {
         all.extend(&args[1..]);
         let err = env.fails(&all);
         assert!(err.contains(says), "{args:?}: {err}");
+        code_is(&err, "answer_invalid");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
     // A kind brnr doesn't know goes with either verb, which the event says.
@@ -3344,8 +3977,8 @@ fn adr_0008_option_must_be_on_the_verbs_side() {
 
 /// A permission request's option is `--option-id <id>`, ACP's `optionId`,
 /// and the socket's `option_id`: `--option` is a config option's, unknown to
-/// `permission allow` (exit 2), and the socket refuses `option`, nothing
-/// answered either way (ADR 8.1).
+/// `permission allow` (exit 2), and the socket refuses `option`, a field
+/// `allow` doesn't take (ADR 8.8), nothing answered either way (ADR 8.1).
 #[test]
 fn adr_0008_a_permissions_option_is_option_id() {
     let options = r#"[{"optionId": "a", "name": "A", "kind": "allow_once"},
@@ -3374,7 +4007,11 @@ fn adr_0008_a_permissions_option_is_option_id() {
     for cmd in ["allow", "reject"] {
         let old = call(json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option": "b" }));
         assert_eq!(old["ok"], false, "{old}");
-        assert_eq!(old["error"], format!("{cmd} takes option_id, not option"), "{old}");
+        let message =
+            format!("{cmd} doesn't take option (it takes session, request, always, option_id)");
+        let said = json!({ "code": "command_unknown", "message": message });
+        code_is(&old, "command_unknown");
+        assert_eq!(old["error"], said, "{old}");
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
     let new =
@@ -3410,7 +4047,9 @@ fn adr_0008_a_permissions_option_id_is_a_string() {
             let req = json!({ "cmd": cmd, "session": "sess-1", "request": "p1", "option_id": id });
             let refused = call(req);
             assert_eq!(refused["ok"], false, "{refused}");
-            assert_eq!(refused["error"], "option_id isn't a string", "{refused}");
+            let said = json!({ "code": "command_invalid", "message": "option_id isn't a string" });
+            code_is(&refused, "command_invalid");
+            assert_eq!(refused["error"], said, "{refused}");
         }
     }
     assert!(outcome(&env, "perm-1").is_none(), "answered anyway");
@@ -3484,8 +4123,10 @@ fn adr_0004_requests_and_show_list_an_elicitation() {
         "{table}"
     );
     assert!(table.lines().nth(2).unwrap().ends_with("Log in to the fake"), "{table}");
-    let json: Value =
-        serde_json::from_str(&env.ok(&["elicitation", "requests", "sess-2", "--json"])).unwrap();
+    let json =
+        serde_json::from_str::<Value>(&env.ok(&["elicitation", "requests", "sess-2", "--json"]))
+            .unwrap()["requests"]
+            .clone();
     assert_eq!(json.as_array().unwrap().len(), 1, "{json}");
     assert_eq!((&json[0]["request"], &json[0]["scope"]), (&"e2".into(), &"session".into()));
 
@@ -3534,7 +4175,7 @@ fn adr_0004_requests_and_show_list_an_elicitation() {
     assert!(status.contains("1 elicitation(s) waiting: brnr elicitation requests sess-1"));
     let status: Value =
         serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
-    assert_eq!((&status["state"], &status["elicitations"]), (&"waiting".into(), &1.into()));
+    assert_eq!((&status["state"], &status["elicitation_count"]), (&"waiting".into(), &1.into()));
     let log = env.ok(&["event", "log", "sess-1"]);
     let line = "elicitation e1: Tell me about you [form: name count ratio ok color size tags]";
     assert!(log.contains(line), "{log}");
@@ -3785,8 +4426,9 @@ fn adr_0004_a_request_scoped_elicitation_is_answered_by_pid() {
     let listed = || env.ok(&["elicitation", "requests"]).contains("e1");
     assert!(wait_for(Duration::from_secs(10), listed), "never listed");
     let pid = env.pid();
-    let json: Value =
-        serde_json::from_str(&env.ok(&["elicitation", "requests", "--json"])).unwrap();
+    let json = serde_json::from_str::<Value>(&env.ok(&["elicitation", "requests", "--json"]))
+        .unwrap()["requests"]
+        .clone();
     let row = &json[0];
     assert_eq!(
         (&row["session"], &row["scope"], &row["mode"]),
@@ -3938,6 +4580,42 @@ fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
     assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
     assert_eq!(events_named(&env, "turn_ended").len(), 1, "its answer ended a turn");
+}
+
+/// The agent cancels each request it has open, one made after an earlier
+/// one was answered as well as the one made before it: each ends, by the
+/// agent, and nothing is left waiting.
+#[test]
+fn adr_0004_the_agent_cancels_each_request_it_has_open() {
+    let env = Env::new("c-giveupmany");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&[]);
+    let waiting = |want: &str| {
+        let has = || env.ok(&["permission", "requests"]).contains(want);
+        assert!(wait_for(Duration::from_secs(10), has), "{want} isn't waiting");
+    };
+    for request in ["p1", "p2"] {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+        waiting(request);
+    }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+    waiting("p3");
+    fs::write(&gate, "").unwrap();
+    let ended = || resolved(&env).len() == 3;
+    assert!(wait_for(Duration::from_secs(10), ended), "not all ended: {:?}", resolved(&env));
+    assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    let outcomes =
+        ["perm-1", "perm-2", "perm-3"].map(|r| outcome(&env, r).map(|o| o["outcome"].clone()));
+    assert_eq!(
+        outcomes,
+        [Some("selected".into()), Some("cancelled".into()), Some("cancelled".into())]
+    );
+    let by: Vec<_> =
+        resolved(&env).iter().map(|e| (e["request"].clone(), e["by"].clone())).collect();
+    assert_eq!(by[1..], [(json!("p2"), json!("agent")), (json!("p3"), json!("agent"))], "{by:?}");
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -4144,7 +4822,8 @@ fn adr_0002_a_start_in_an_acp_version_brnr_doesnt_speak_fails() {
             }
             let out = env.run(&new_args(&args));
             assert_eq!(code(&out), 1, "{version}: {}", stdout(&out));
-            assert!(stdout(&out).is_empty(), "{version}: {}", stdout(&out));
+            let error = json_error(&out);
+            code_is(&error, "acp_version_unsupported");
             assert!(stderr(&out).contains(want.as_str()), "{version}: {}", stderr(&out));
             let methods: Vec<Value> = env.calls().iter().map(|c| c["method"].clone()).collect();
             assert_eq!(methods, ["initialize"], "{version}: sent after initialize");
@@ -4536,7 +5215,8 @@ fn adr_0005_notify_cut_off_as_a_bridge_stops_its_command() {
         .filter(|r| r["event"]["event"] == "bridge_stderr")
         .filter_map(|r| r["event"]["text"].as_str())
         .collect();
-    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    let want =
+        "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications [unclassified]";
     assert!(said.contains(&want), "{said:?}");
     let exit = records.iter().find(|r| r["event"]["event"] == "bridge_exited").unwrap();
     assert_eq!(exit["event"]["exit_status"], json!({ "code": 1 }), "{exit}");
@@ -4569,7 +5249,8 @@ fn adr_0005_notify_stopped_stops_its_command() {
     assert!(wait_exit(&mut stopped, Duration::from_secs(10)), "notify kept running");
     let out = stopped.wait_with_output().unwrap();
     assert!(!out.status.success(), "notify exited 0");
-    let want = "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications";
+    let want =
+        "brnr: cut off (SIGTERM); stopped sh (turn_ended); no more notifications [unclassified]";
     assert!(stderr(&out).contains(want), "{}", stderr(&out));
     assert!(wait_for(Duration::from_secs(5), || !alive(command)), "the command lives on");
     env.stop();
@@ -4667,13 +5348,19 @@ fn adr_0003_ps_lists_the_processes() {
     let env = Env::new("c-ps");
     env.start(&[]);
     env.ok(&["session", "fork", "sess-1"]);
-    let ps: Value = serde_json::from_str(&env.ok(&["process", "list", "--json"])).unwrap();
+    let ps = serde_json::from_str::<Value>(&env.ok(&["process", "list", "--json"])).unwrap()["processes"].clone();
     assert_eq!(ps[0]["pid"].as_i64(), Some(env.host_pid() as i64));
-    assert_eq!(ps[0]["owner"], "headless");
-    assert_eq!(ps[0]["sessions"], serde_json::json!(["sess-1", "sess-2"]));
+    assert_eq!((&ps[0]["state"], &ps[0]["owner"]), (&"running".into(), &"headless".into()));
+    let sessions = serde_json::json!([
+        { "session": "sess-1", "state": "idle" },
+        { "session": "sess-2", "state": "idle" },
+    ]);
+    assert_eq!(ps[0]["sessions"], sessions);
     assert!(env.ok(&["process", "list"]).contains("sess-1, sess-2"));
     // Most recently active first; both just opened, so take them by id.
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let row = |id: &str| {
         list.as_array()
             .unwrap()
@@ -4685,7 +5372,9 @@ fn adr_0003_ps_lists_the_processes() {
     assert_eq!(row("sess-2")["pid"], ps[0]["pid"]);
     // A session's watch and the process's.
     assert!(env.fails(&["event", "watch"]).contains("<session> or --pid"));
-    assert!(env.fails(&["process", "stop", "sess-1"]).contains("no brnr process sess-1"));
+    let err = env.fails(&["process", "stop", "sess-1"]);
+    assert!(err.contains("no brnr process sess-1"), "{err}");
+    code_is(&err, "process_not_found");
     env.stop();
 }
 
@@ -4742,7 +5431,10 @@ fn adr_0008_old_socket_commands_are_unknown() {
         reader.read_line(&mut line).unwrap();
         let answer: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(answer["ok"], false, "{cmd}: {answer}");
-        assert_eq!(answer["error"], format!("unknown command: {cmd}"), "{cmd}: {answer}");
+        let said =
+            json!({ "code": "command_unknown", "message": format!("unknown command: {cmd}") });
+        code_is(&answer, "command_unknown");
+        assert_eq!(answer["error"], said, "{cmd}: {answer}");
     }
     let pending = env.ok(&["permission", "requests", "sess-1"]);
     assert!(pending.contains("p1"), "answered: {pending}");
@@ -4832,6 +5524,7 @@ fn adr_0008_help_lists_the_groups_and_their_commands() {
     // As a flag's value, it is the value.
     let err = env.fails(&["prompt", "send", "nosuch", "--prompt", "--help"]);
     assert!(err.contains("no session nosuch"), "{err}");
+    code_is(&err, "session_not_found");
 }
 
 /// `prompt send`'s prompt is `--prompt <text>` or `--prompt -` (stdin), as a
@@ -5321,6 +6014,7 @@ fn adr_0008_new_and_resume_replace_start() {
     assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()));
     let err = env.fails(&["prompt", "send", "sess-1", "--prompt", "hi"]);
     assert!(err.contains("sess-1 isn't running: brnr session resume sess-1"), "{err}");
+    code_is(&err, "session_inactive");
 
     for (args, says) in [
         (new_args(&["--set", "model=large"]), "brnr: unknown option: --set"),
@@ -5441,6 +6135,7 @@ fn adr_0008_resume_in_a_running_process() {
         let args = [&["session", "resume", "--pid", &pid, "sess-1"], extra].concat();
         let err = env.fails(&args);
         assert!(err.contains(&format!("sess-1 is already open in process {pid}")), "{err}");
+        code_is(&err, "session_active");
     }
 
     // Held by another process: refused, then taken over.
@@ -5568,7 +6263,8 @@ fn adr_0008_pid_settings_that_fail_close_the_session() {
     ];
     let err = env.fails(&args);
     let says = "brnr: setting model huge failed: bad option model=huge (already set: mode plan); \
-                sess-2 was closed\n";
+                sess-2 was closed [agent_failed]\n";
+    code_is(&err, "agent_failed");
     assert_eq!(err, says);
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
@@ -5602,7 +6298,7 @@ fn adr_0008_pid_session_that_cant_be_locked_is_closed() {
     let lock = unlockable(&env, "sess-2");
     let err = env.fails(&["session", "new", "--pid", &pid, "--prompt", "reply no"]);
     let said = format!("the agent opened sess-2, which can't be locked: {}: ", lock.display());
-    assert!(err.contains(&said) && err.ends_with("; sess-2 was closed\n"), "{err}");
+    assert!(err.contains(&said) && err.ends_with("; sess-2 was closed [unclassified]\n"), "{err}");
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     let err = env.fails(&["session", "resume", "--pid", &pid, "sess-2"]);
     assert!(err.contains("sess-2 can't be locked"), "{err}");
@@ -5641,7 +6337,7 @@ fn adr_0008_pid_given_up_before_its_commit_sends_no_prompt() {
 /// (ADR 3.4, ADR 8.1).
 #[test]
 fn adr_0008_pid_timeout_abandons_the_opening() {
-    let says = "brnr: timed out waiting for the session; sess-2 was closed\n";
+    let says = "brnr: timed out waiting for the session; sess-2 was closed [start_timed_out]\n";
     let env = Env::new("c-pid-timeout").agent("NEW_DELAY", "2");
     env.start(&[]);
     let pid = env.pid();
@@ -5650,7 +6346,8 @@ fn adr_0008_pid_timeout_abandons_the_opening() {
         .env("BRNR_START_TIMEOUT", "1")
         .output()
         .unwrap();
-    assert_eq!((code(&out), stderr(&out)), (1, says.into()));
+    code_is(&out, "start_timed_out");
+    assert_eq!(stderr(&out), says);
     assert_eq!(env.calls_of("session/close")[0]["params"]["sessionId"], "sess-2");
     assert!(env.prompts().is_empty());
 
@@ -5735,7 +6432,8 @@ fn adr_0008_pid_opening_in_a_stopping_process_fails() {
     assert!(wait_for(Duration::from_secs(10), opening), "the process wasn't asked");
     env.stop();
     let out = cmd.wait_with_output().unwrap();
-    assert_eq!((code(&out), stderr(&out)), (1, "brnr: the process is stopping\n".into()));
+    code_is(&out, "process_stopping");
+    assert_eq!(stderr(&out), "brnr: the process is stopping [process_stopping]\n");
     assert!(env.prompts().is_empty());
 }
 
@@ -5760,7 +6458,9 @@ fn adr_0008_pid_take_over_refused_before_closing() {
     let pid = env.hosts().into_iter().map(|h| h["host_pid"].to_string()).find(|p| *p != holder);
     let pid = pid.unwrap();
     let err = env.fails(&["session", "resume", "--pid", &pid, "sess-1", "--take-over"]);
-    let says = "brnr: the agent can't resume sessions (no session/resume or session/load)\n";
+    let says = "brnr: the agent can't resume sessions (no session/resume or session/load) \
+                [capability_missing]\n";
+    code_is(&err, "capability_missing");
     assert_eq!(err, says);
     assert!(env.calls_of("session/close").is_empty());
     assert_eq!(lock_holder(&env, "sess-1"), holder);
@@ -5895,7 +6595,9 @@ fn transcript_files(env: &Env) -> Vec<String> {
 fn adr_0008_delete_keeps_the_transcript() {
     let env = Env::new("c-delete");
     ended(&env, &[]);
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let active = list[0]["last_active"].clone();
     assert!(active.is_string(), "{list}");
     let out = env.ok(&["session", "delete", "sess-1"]);
@@ -5910,18 +6612,22 @@ fn adr_0008_delete_keeps_the_transcript() {
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"control".into(), &Value::Null));
     assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     assert_eq!(list[0]["session"], "sess-1", "{list}");
-    assert_eq!(list[0]["agent"], "fake_agent.py", "{list}");
+    assert_eq!(list[0]["agent"]["program"], "fake_agent.py", "{list}");
     // Asked again, of the agent recorded before the deletion.
     let json: Value =
         serde_json::from_str(&env.ok(&["session", "delete", "sess-1", "--json"])).unwrap();
     assert_eq!((&json["deleted"], &json["error"]), (&true.into(), &Value::Null), "{json}");
-    assert_eq!(json["recorded"].as_array().map(Vec::len), Some(1), "{json}");
+    assert_eq!(json["recorded_in"].as_array().map(Vec::len), Some(1), "{json}");
     assert_eq!(json["purged"], serde_json::json!([]), "{json}");
     assert_eq!(env.calls_of("session/delete").len(), 2);
     // A deletion isn't activity: LAST ACTIVE is when a process last served it.
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     assert_eq!(list[0]["last_active"], active, "{list}");
 }
 
@@ -5975,7 +6681,7 @@ fn adr_0008_delete_records_in_each_transcript_it_can() {
     let json: Value =
         serde_json::from_str(&stdout(&env.run(&["session", "delete", "sess-1", "--json"])))
             .unwrap();
-    assert_eq!(json["recorded"], serde_json::json!([mine.to_string_lossy()]), "{json}");
+    assert_eq!(json["recorded_in"], serde_json::json!([mine.to_string_lossy()]), "{json}");
     assert_eq!(json["failed"].as_array().map(Vec::len), Some(1), "{json}");
 }
 
@@ -5996,8 +6702,11 @@ fn adr_0008_delete_a_session_only_the_agent_knows() {
     assert!(err.contains("session/delete failed: Session not found: gone-1"), "{err}");
     // With --purge too, when there is no transcript to delete either.
     let err = env.fails(&["session", "delete", "gone-1", "--purge", "--", AGENT]);
+    code_is(&err, "agent_failed");
     assert!(
-        err.ends_with("Session not found: gone-1; brnr has no transcript of gone-1\n"),
+        err.ends_with(
+            "Session not found: gone-1; brnr has no transcript of gone-1 [agent_failed]\n"
+        ),
         "{err}"
     );
 }
@@ -6025,7 +6734,7 @@ fn adr_0008_delete_purge() {
         json["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert_eq!(purged.len(), 2, "{json}");
     assert!(purged[0].ends_with("/sess-2.jsonl") && purged[1].ends_with("/sess-2.acp.jsonl"));
-    assert_eq!(json["recorded"], serde_json::json!([]), "{json}");
+    assert_eq!(json["recorded_in"], serde_json::json!([]), "{json}");
     assert_eq!(transcript_files(&env), ["gone-1.acp.jsonl", "gone-1.jsonl"]);
 
     let out = env.run(&["session", "delete", "gone-1", "--purge"]);
@@ -6043,7 +6752,8 @@ fn adr_0008_delete_purge() {
     assert_eq!(text.lines().count(), 3, "{text}");
     assert_eq!(env.calls_of("session/delete").len(), 2);
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
-    assert_eq!(env.ok(&["session", "list", "--json"]).trim(), "[]");
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    assert_eq!(list, json!({ "sessions": [] }));
     // The host logs are shared, and stay.
     assert_eq!(fs::read_dir(env.dir.join("home/hosts")).unwrap().count(), hosts);
 }
@@ -6105,19 +6815,27 @@ fn adr_0008_delete_purge_fails_when_the_agent_does() {
     );
     let json: Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(json["deleted"], false, "{json}");
-    assert_eq!(json["error"], "session/delete failed: Can't delete stuck-1", "{json}");
+    let rpc = json!({ "code": -32603, "message": "Can't delete stuck-1" });
+    let said = json!({
+        "code": "agent_failed",
+        "message": "session/delete failed: Can't delete stuck-1",
+        "rpc_error": rpc,
+    });
+    code_is(&json, "agent_failed");
+    assert_eq!(json["error"], said, "{json}");
     assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
 }
 
 /// With `--purge`, a transcript that can't be deleted (a project folder
 /// brnr can't write to) is said, and fails the command: it isn't "no
-/// transcript", nor deleted all the same.
+/// transcript", nor deleted all the same. Can't run as root (`skip`: a
+/// failure in CI).
 #[test]
 fn adr_0008_delete_purge_says_what_it_couldnt_delete() {
     use std::os::unix::fs::PermissionsExt;
     if uid() == 0 {
-        eprintln!("skipped: root deletes in a read-only folder");
+        skip("root deletes in a read-only folder");
         return;
     }
     let env = Env::new("c-purge-ro").agent("SESSION_ID", "stuck-1");
@@ -6328,4 +7046,406 @@ fn adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host() {
         serde_json::json!({ "option": null, "category": "mode", "value": "plan" })
     );
     assert!(env.ok(&["config", "get", "sess-1", "--mode"]).contains("plan"));
+}
+
+// ---- errors (ADR 8.7) ------------------------------------------------------
+
+/// A failed command says its error on stderr, its code after its message,
+/// and with `--json` prints it as its JSON, `{"error": {code, message}}`; a
+/// usage error has its exit status, and no JSON. Each failure has its code
+/// (ADR 8.7).
+#[test]
+fn adr_0008_a_failed_command_prints_its_error_as_json() {
+    let env = Env::new("c-errors");
+    // A failure with `--json`: exit 1, `{"error"}` alone on stdout, and its
+    // message and code on stderr.
+    fn failed(out: &std::process::Output) -> &std::process::Output {
+        json_error(out);
+        out
+    }
+    let none = env.run(&["session", "status", "nosuch", "--json"]);
+    code_is(failed(&none), "session_not_found");
+    let text = env.run(&["session", "status", "nosuch"]);
+    assert_eq!((code(&text), stdout(&text), stderr(&text)), (1, String::new(), stderr(&none)));
+    code_is(failed(&env.run(&["process", "stop", "999999", "--json"])), "process_not_found");
+    let empty = env.run_with_stdin(&["prompt", "send", "sess-1", "--prompt", "-", "--json"], b"");
+    code_is(failed(&empty), "input_invalid");
+    let file = env.dir.join("nofile");
+    let file = file.to_str().unwrap();
+    let missing =
+        env.run(&["prompt", "send", "sess-1", "--prompt", "hi", "--file", file, "--json"]);
+    code_is(failed(&missing), "input_invalid");
+    let nowhere = env.dir.join("nowhere");
+    let agent = nowhere.to_str().unwrap();
+    let out = env.run(&["session", "new", "--json", "--prompt", "hi", "--", agent]);
+    code_is(failed(&out), "agent_not_started");
+    env.write_config("[profiles.default]\n");
+    code_is(failed(&env.run(&new_args(&["--profile", "nope", "--json"]))), "profile_not_found");
+    env.write_config("[profiles.default\n");
+    code_is(failed(&env.run(&new_args(&["--json"]))), "config_invalid");
+    env.write_config("");
+    code_is(failed(&env.run(&["session", "new", "--json"])), "agent_not_started");
+    // A bridge's events are checked as `subscribe`'s are.
+    env.write_config("[[profiles.default.bridges]]\ncommand = \"cat\"\nevents = [\"nope\"]\n");
+    code_is(failed(&env.run(&new_args(&["--json"]))), "event_unknown");
+    env.write_config("");
+    // A usage error is the command line's: exit 2, no JSON.
+    let usage = env.run(&["session", "status", "nosuch", "--json", "--bogus"]);
+    assert_eq!((code(&usage), stdout(&usage)), (2, String::new()), "{}", stderr(&usage));
+    // A turn the agent failed is `agent_failed`, the agent's error whole.
+    env.start(&[]);
+    let out = env.run(&["prompt", "send", "sess-1", "--wait", "--json", "--prompt", "fail"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let turn: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let rpc = json!({ "code": -32603, "message": "boom" });
+    code_is(&turn, "agent_failed");
+    assert_eq!(
+        turn["error"],
+        json!({ "code": "agent_failed", "message": "boom", "rpc_error": rpc })
+    );
+    assert!(stderr(&out).contains("brnr: turn failed: boom [agent_failed]"), "{}", stderr(&out));
+    let status: Value =
+        serde_json::from_str(&env.ok(&["session", "status", "sess-1", "--json"])).unwrap();
+    assert_eq!(status["last_turn"]["error"], turn["error"], "{status}");
+    let ended = events(&env, "sess-1").into_iter().rfind(|e| e["event"] == "turn_ended");
+    assert_eq!(ended.unwrap()["error"], turn["error"]);
+}
+
+/// Every error brnr reports as data has a code, and a message: each kind
+/// of socket request that fails is answered `{"ok": false, "error": {code,
+/// message}}`. tests/common checks the same of what every test's commands
+/// print and every record their processes write (`coded`).
+#[test]
+fn adr_0008_no_error_is_reported_without_a_code() {
+    let env = Env::new("c-coded");
+    env.start(&[]);
+    let mut conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    // The reply to `line`, which fails.
+    let mut ask = |line: &str| -> Value {
+        writeln!(conn, "{line}").unwrap();
+        let mut answer = String::new();
+        reader.read_line(&mut answer).unwrap();
+        let answer: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(answer["ok"], false, "{line}: {answer}");
+        answer
+    };
+    code_is(&ask("not json"), "command_invalid");
+    code_is(&ask(r#"{"req_id":1}"#), "command_invalid");
+    code_is(&ask(r#"{"cmd":"approve"}"#), "command_unknown");
+    code_is(&ask(r#"{"cmd":"status","nosuch":1}"#), "command_unknown");
+    code_is(&ask(r#"{"cmd":"subscribe","events":["events_missed"]}"#), "event_unknown");
+    code_is(&ask(r#"{"cmd":"send","text":"hi"}"#), "command_invalid");
+    code_is(&ask(r#"{"cmd":"send","session":"nosuch","text":"hi"}"#), "session_not_found");
+    code_is(&ask(r#"{"cmd":"queue","session":"sess-1","drop":"m9"}"#), "message_not_found");
+    code_is(&ask(r#"{"cmd":"allow","session":"sess-1","request":"p9"}"#), "request_not_found");
+    code_is(&ask(r#"{"cmd":"set_config","session":"sess-1","mode":"warp"}"#), "setting_invalid");
+    code_is(&ask(r#"{"cmd":"resume","session":"sess-1"}"#), "session_active");
+}
+
+/// A take-over that fails says why with the code of what failed, not a
+/// catch-all: here the holder's agent can't close sessions (ADR 8.7).
+#[test]
+fn adr_0008_a_failed_take_over_keeps_its_code() {
+    let env = Env::new("c-take-code").agent("NO_CLOSE", "1");
+    env.start(&[]);
+    let pid = env.pid();
+    let out = env.run(&resume_args("sess-1", &["--take-over", "--json"]));
+    code_is(&out, "capability_missing");
+    let error = json_error(&out);
+    let said = format!("sess-1 is running in process {pid}, which didn't close it: ");
+    assert!(error["message"].as_str().unwrap().starts_with(&said), "{error}");
+    assert_eq!(env.hosts().len(), 1, "{}", stderr(&out));
+}
+
+/// A stream's command that fails once it has printed events says so on
+/// stderr alone: its stdout stays one event per line, with no `{"error"}`
+/// after them (ADR 8.7, ADR 8.2).
+#[test]
+fn adr_0008_an_error_after_a_stream_is_on_stderr_alone() {
+    let env = Env::new("c-stream-fails");
+    env.start(&[]);
+    let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Its lines come on a thread, so that no read can hang the test.
+    let (tx, lines) = std::sync::mpsc::channel();
+    let out = BufReader::new(watch.stdout.take().unwrap());
+    std::thread::spawn(move || {
+        for line in out.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    // A prompt sent before the watch has subscribed reaches no one: send
+    // again until a line comes, the sign that it has.
+    let until = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    while seen.is_empty() {
+        assert!(Instant::now() < until, "watch printed nothing");
+        env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply live"]);
+        seen.extend(lines.recv_timeout(Duration::from_secs(1)).ok());
+    }
+    // Killed: it says nothing more, and the watch's connection ends.
+    kill(env.host_pid(), libc::SIGKILL);
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        match lines.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(line) => seen.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = watch.kill();
+                panic!("watch's stdout stayed open: {seen:?}");
+            }
+        }
+    }
+    if !wait_exit(&mut watch, Duration::from_secs(15)) {
+        let _ = watch.kill();
+        panic!("watch kept running");
+    }
+    let ended = watch.wait_with_output().unwrap();
+    for line in &seen {
+        let event: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert!(event["event"].is_string(), "{line}");
+    }
+    code_is(&ended, "unclassified");
+}
+
+/// A process that hasn't committed its start opens no other session in
+/// it: `process_starting` (ADR 3.4, ADR 8.7).
+#[test]
+fn adr_0008_a_starting_process_refuses_another_session() {
+    let env = Env::new("c-starting").agent("NEW_DELAY", "3");
+    let mut first = env.brnr(&new_args(&["--prompt", "hi"])).stdout(Stdio::null()).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(5), || !env.hosts().is_empty()), "no process");
+    let pid = env.pid();
+    let out = env.run(&["session", "new", "--pid", &pid, "--json"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    code_is(&json_error(&out), "process_starting");
+    assert!(first.wait().unwrap().success());
+}
+
+// ---- another brnr's process (ADR 8.8) -------------------------------------
+
+/// A connection to `env`'s one process, and a way to ask it something on
+/// it: the line that answers.
+fn asking(env: &Env) -> (UnixStream, impl FnMut(&mut UnixStream, Value) -> Value) {
+    let conn = UnixStream::connect(env.hosts()[0]["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(conn.try_clone().unwrap());
+    let ask = move |conn: &mut UnixStream, req: Value| -> Value {
+        writeln!(conn, "{req}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    (conn, ask)
+}
+
+/// `<pid>.json` and `status` say which brnr the process is, as `brnr
+/// --version` says it, and the version of what its socket speaks.
+#[test]
+fn adr_0008_a_process_says_which_brnr_it_is() {
+    let env = Env::new("c-version");
+    env.start(&[]);
+    let version = env.ok(&["--version"]);
+    let version = version.trim().strip_prefix("brnr ").unwrap();
+    let meta = &env.hosts()[0];
+    assert_eq!(meta["brnr"], version, "{meta}");
+    assert!(meta["protocol"].as_u64().is_some_and(|p| p >= 1), "{meta}");
+    let (mut conn, mut ask) = asking(&env);
+    let status = ask(&mut conn, json!({ "cmd": "status" }));
+    assert_eq!((&status["brnr"], &status["protocol"]), (&meta["brnr"], &meta["protocol"]));
+}
+
+/// A field the process doesn't have is refused, `command_unknown`, as a
+/// command it doesn't have is, and nothing is done: a newer brnr's request,
+/// done without it, would be done otherwise than asked (P7).
+#[test]
+fn adr_0008_a_field_the_process_doesnt_have_is_refused() {
+    let env = Env::new("c-field");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    let (mut conn, mut ask) = asking(&env);
+    let req = json!({ "cmd": "send", "session": "sess-1", "text": "reply later", "priority": "high", "req_id": "r1" });
+    let answer = ask(&mut conn, req);
+    let message = "send doesn't take priority (it takes session, text, blocks, mode, replace)";
+    let said = json!({ "ok": false, "error": { "code": "command_unknown", "message": message }, "req_id": "r1" });
+    code_is(&answer, "command_unknown");
+    assert_eq!(answer, said);
+    let answer = ask(&mut conn, json!({ "cmd": "stop", "now": true }));
+    code_is(&answer, "command_unknown");
+    assert_eq!(answer["error"]["message"], "stop doesn't take now (it takes no fields)");
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply now"]);
+    assert_eq!(env.prompts(), ["reply hi", "reply now"], "sent anyway");
+    assert_eq!(env.hosts().len(), 1, "stopped anyway");
+}
+
+/// `subscribe` leaves out an event the process doesn't have, and names it:
+/// a newer brnr's bridge gets the events this one has.
+#[test]
+fn adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have() {
+    let env = Env::new("c-sub-newer");
+    env.start(&[]);
+    let (mut conn, mut ask) = asking(&env);
+    let req = json!({ "cmd": "subscribe", "events": ["turn_ended", "turn_paused"] });
+    let answer = ask(&mut conn, req);
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["events"], json!(["turn_ended"]), "{answer}");
+    assert_eq!(answer["unknown_events"], json!(["turn_paused"]), "{answer}");
+    env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["event"], "turn_ended", "{event}");
+}
+
+/// A process of another brnr for `env`: its metadata `meta` in the runtime
+/// directory, as this test's pid (with no `host_pid` or `agent_pid`, which
+/// `Env` would kill), and its socket, answering each request as `answer`
+/// does, each connection kept open, and sending `event` after a subscription.
+/// Its pid.
+fn another_brnr(
+    env: &Env,
+    meta: Value,
+    answer: fn(&Value) -> Value,
+    event: Option<Value>,
+) -> String {
+    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::net::UnixListener;
+    let run = env.dir.join("run");
+    let _ = fs::DirBuilder::new().mode(0o700).create(&run);
+    let pid = std::process::id().to_string();
+    let socket = run.join(format!("{pid}.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut meta = meta;
+    meta["id"] = json!(pid);
+    meta["socket"] = json!(socket);
+    meta["cwd"] = json!(env.dir);
+    meta["started"] = json!("2026-10-21T00:00:00.000000Z");
+    fs::write(run.join(format!("{pid}.json")), meta.to_string()).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let event = event.clone();
+            std::thread::spawn(move || {
+                let mut out = stream.try_clone().unwrap();
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let mut reply = answer(&req);
+                    reply["req_id"] = req["req_id"].clone();
+                    if writeln!(out, "{reply}").is_err() {
+                        return;
+                    }
+                    if let Some(event) = event.as_ref().filter(|_| req["cmd"] == "subscribe")
+                        && writeln!(out, "{event}").is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    pid
+}
+
+/// What an older brnr's process answers: its status, with one session; and
+/// every other request as a process from before #205 does, in text.
+fn an_older_brnrs_answer(req: &Value) -> Value {
+    match req["cmd"].as_str().unwrap() {
+        "status" => {
+            json!({ "ok": true, "owner": "headless", "sessions": [{ "session": "sess-old", "state": "idle" }] })
+        }
+        cmd => json!({ "ok": false, "error": format!("unknown command: {cmd}") }),
+    }
+}
+
+/// A newer brnr's: its status, a subscription to what it has, which is what
+/// was asked but `process_exited`, and `command_unknown` for the rest.
+fn a_newer_brnrs_answer(req: &Value) -> Value {
+    match req["cmd"].as_str().unwrap() {
+        "status" => {
+            json!({ "ok": true, "owner": "editor", "sessions": [{ "session": "sess-old", "state": "idle" }] })
+        }
+        "subscribe" => {
+            let (unknown, events): (Vec<Value>, Vec<Value>) = req["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned()
+                .partition(|e| e == "process_exited");
+            json!({ "ok": true, "events": events, "unknown_events": unknown, "peer": "socket#1", "host_id": "h", "seq": 0 })
+        }
+        "logged" => json!({ "ok": true, "lost": false }),
+        cmd => {
+            json!({ "ok": false, "error": { "code": "command_unknown", "message": format!("unknown command: {cmd}") } })
+        }
+    }
+}
+
+/// A command a process of another brnr doesn't have says so, and how to
+/// restart it to run this brnr: headless, by stopping it and resuming its
+/// sessions; an editor's, in its editor. One from before processes said
+/// their version answers in text, which can't be told apart, so its every
+/// error says it. An event it doesn't have is said on stderr, and the
+/// command goes on.
+#[test]
+fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
+    let env = Env::new("c-older");
+    let pid = another_brnr(&env, json!({}), an_older_brnrs_answer, None);
+    let out = env.run(&["session", "fork", "sess-old"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    let older =
+        format!("brnr: unknown command: fork; process {pid} runs an older brnr than this one");
+    assert!(err.starts_with(&older), "{err}");
+    assert!(err.contains("from before processes said theirs"), "{err}");
+    let restart = format!(
+        "stop it (brnr process stop {pid}) and resume its sessions (brnr session resume \
+         <session>) to run them in this brnr [unclassified]\n"
+    );
+    code_is(&err, "unclassified");
+    assert!(err.ends_with(&restart), "{err}");
+
+    let env = Env::new("c-newer");
+    let meta = json!({ "brnr": "1000.0.0", "protocol": 1000, "proxy_pid": 1 });
+    let event = json!({ "event": "turn_ended", "seq": 1, "host_id": "h", "session": "sess-old" });
+    let pid = another_brnr(&env, meta, a_newer_brnrs_answer, Some(event));
+    let out = env.run(&["session", "fork", "sess-old", "--json"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    code_is(&out, "command_unknown");
+    let error = json_error(&out);
+    let newer = format!("process {pid} runs a newer brnr (brnr 1000.0.0, protocol 1000)");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains(&newer), "{message}");
+    assert!(message.ends_with("restart the agent in its editor to run this brnr"), "{message}");
+
+    let args = ["event", "watch", "--pid", &pid, "--json", "--events", "turn_ended"];
+    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Its first lines on stdout and stderr, each read on a thread so that
+    // the wait for it is bounded; the watch goes on after them, so it is
+    // killed then.
+    let first_line = |pipe: Box<dyn std::io::Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(BufReader::new(pipe).lines().next());
+        });
+        rx
+    };
+    let (out, err) = (
+        first_line(Box::new(watch.stdout.take().unwrap())),
+        first_line(Box::new(watch.stderr.take().unwrap())),
+    );
+    let (out, err) =
+        (out.recv_timeout(Duration::from_secs(10)), err.recv_timeout(Duration::from_secs(10)));
+    kill(watch.id() as i32, libc::SIGKILL);
+    watch.wait().unwrap();
+    let err = err.expect("no line on stderr in 10s").expect("stderr closed").unwrap();
+    // What it was asked for but doesn't have: `process_exited`, which a
+    // watch ends with.
+    let said = format!("brnr: process {pid} doesn't send process_exited; {newer}");
+    assert!(err.starts_with(&said), "{err}");
+    // And it goes on with what it has.
+    let out = out.expect("no event on stdout in 10s").expect("stdout closed").unwrap();
+    let event: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(event["event"], "turn_ended", "{event}");
 }

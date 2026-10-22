@@ -84,9 +84,11 @@ rely on them.
   shorter handles are the shell's. The agent's own title for a session
   (`session_info_update`) is shown in `session list` and `session status`
   to tell sessions apart, and is never something to type.
-- `brnr process list` lists brnr's processes: pid, agent, owner (`editor`,
-  `headless`, or `unreachable` for one that doesn't answer, whose sessions
-  are those it holds the locks of, ADR 3.9), uptime and sessions.
+- `brnr process list` lists brnr's processes: pid, state (`starting`,
+  `running`, `stopping`, or `unreachable` for one that doesn't answer,
+  whose sessions are those it holds the locks of, ADR 3.9), owner
+  (`editor` or `headless`, unknown for one that doesn't answer), agent,
+  uptime and sessions (ADR 8.2).
 - `brnr process stop <pid>` stops a process and its agent: the agent's
   stdin is closed, then SIGTERM goes to its process group after 5 s, then
   SIGKILL after 5 s more. Ending one session is `brnr session close`
@@ -532,7 +534,7 @@ Where things live, fixed for 1.x and kept within the major version from
 What host logs and lock files contain, and what is in the runtime
 directory, aren't covered: a lock's fields are for brnr's own commands and
 can change in any release. What a transcript's records contain, and how a
-reader tells formats apart, is the rest of #70, not this section's.
+reader tells formats apart, is ADR 5.10's.
 
 **Consequences.**
 
@@ -642,13 +644,18 @@ otherwise, kept apart from strict mode, which is about the protocol
   session brnr has no transcript of records the replay, marked `replayed`,
   and a `history` event says which it was (ADR 5.6).
 - An id brnr has a transcript of brings its cwd, agent and profile from it,
-  the session's own record (P4); `--cwd`, `--profile` or `-- <agent>`
-  override them. Of an id with files in more than one project folder, they
-  come from the newest record of them all, where the session was last served
-  (ADR 5.1, #121). An id brnr doesn't
-  know (one `session list` with an agent named shows) goes to the agent as
-  given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
-  `--` (or the profile's).
+  the session's own record (P4): the `session_opened` of the process that
+  last served it, never the host log (ADR 5.10). The flags override them.
+  `--cwd` overrides the cwd. `--profile p` overrides the profile, and the
+  agent too when p names one: a profile's `agent` is the agent of each
+  process of that profile (ADR 6.1, #341). `-- <agent>` overrides the agent,
+  also p's. Of an id with files in more than one project folder, that
+  opening is the newest `session_opened` of them all, in whichever file it
+  is: one process serves a session at a time (ADR 3.9), and the newest
+  record of them all, where the session was last served, may be in another
+  file (ADR 5.1, #121). An id brnr doesn't know (one `session list` with an
+  agent named shows) goes to the agent as given, in `--cwd` (or the
+  profile's `cwd`, or here), with the agent after `--` (or the profile's).
 - A session another process holds is refused, unless `--take-over`
   (ADR 3.9).
 - With `--pid`, the session is resumed in that running process, in its
@@ -668,6 +675,12 @@ rule rather than a guess (P4).
 - For an id with files in two folders, the cwd of the file in the folder
   the command runs in: a rule that depends on where it runs (P4). The
   options are in ADR 5.1.
+- With `--profile p`, keeping the recorded agent and saying on stderr
+  which agent runs: p's settings, MCP servers and bridges are written for
+  p's agent, and may not suit another (ADR 6.1, F3).
+- Refusing `--profile p` when p's agent isn't the recorded one, unless
+  `-- <agent>` is given: it refuses what the user said plainly. A profile
+  that names an agent is the user naming that agent (P4).
 
 ## 3.12 Fork and close
 
@@ -812,6 +825,9 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_each_place_is_refused_in_the_same_words`,
     `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
     `adr_0003_a_resume_into_its_own_process_is_refused`.
+  - [src/host/sessions.rs](../../src/host/sessions.rs):
+    `adr_0003_a_claim_is_known_until_the_agent_opens_it_or_not`,
+    `adr_0003_a_session_another_process_holds_fails_a_headless_start`.
 - 3.10: [tests/headless.rs](../../tests/headless.rs):
   `adr_0003_shared_sessions_let_an_editor_load_a_held_session`.
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
@@ -819,8 +835,13 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
   `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
-  with files in two folders, #121). That a resume in another cwd starts a
-  file in that folder is shown, for a bridge's resume, by ADR 5.6's
+  with files in two folders, #121),
+  `adr_0003_resume_takes_the_newest_opening_of_every_folder` (resumed
+  in the first folder again, with another agent),
+  `adr_0003_resume_with_a_profile_runs_its_agent` (#341); ADR 8.1's
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity` shows the
+  newest opening with an editor's deletion, the newest record, in both
+  files. That a resume in another cwd starts a file in that folder is shown, for a bridge's resume, by ADR 5.6's
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
   for a start's by ADR 5.1's
   `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`
