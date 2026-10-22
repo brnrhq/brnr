@@ -206,8 +206,8 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 at(&e["since"]),
                 at(&e["until"]),
             );
-            if let Some(error) = e["error"].as_str() {
-                what.push_str(&format!(": {error}"));
+            if e["error"].is_object() {
+                what.push_str(&format!(": {}", error(&e["error"])));
             }
             what
         }
@@ -226,12 +226,16 @@ pub(crate) fn event(e: &Value, o: &Options) -> Option<String> {
                 Some(until) => format!(" up to {until}"),
                 None => String::new(),
             };
-            format!("cut off: events after {}{until} missed: {}", e["after_seq"], s(&e["error"]))
+            format!(
+                "cut off: events after {}{until} missed: {}",
+                e["after_seq"],
+                error(&e["error"])
+            )
         }
         // With the error when brnr itself died (a panic, ADR 3.7).
-        "process_exited" => match e["error"].as_str() {
-            Some(error) => format!("{}; {error}", exited(&e["exit_status"])),
-            None => exited(&e["exit_status"]),
+        "process_exited" => match e["error"].is_object() {
+            true => format!("{}; {}", exited(&e["exit_status"]), error(&e["error"])),
+            false => exited(&e["exit_status"]),
         },
         // An ACP message (`--events acp`): the direction and the message.
         "acp" => format!("{:<15} {}", s(&e["dir"]), e["msg"]),
@@ -351,9 +355,28 @@ pub(crate) fn usage(usage: &Value) -> Option<String> {
 /// `<what> ended: end_turn` or `<what> failed: <its error>`.
 pub(crate) fn turn(e: &Value, what: &str) -> String {
     let s = |v: &Value| v.as_str().unwrap_or("?").to_owned();
-    match e["error"].as_object() {
-        Some(error) => format!("{what} failed: {}", s(&error["message"])),
-        None => format!("{what} ended: {}", s(&e["stop_reason"])),
+    match e["error"].is_object() {
+        true => format!("{what} failed: {}", error(&e["error"])),
+        false => format!("{what} ended: {}", s(&e["stop_reason"])),
+    }
+}
+
+/// An error as brnr reports it as data (ADR 8.7), as text: its message,
+/// then its code, `no session s [session_not_found]`.
+pub(crate) fn error(e: &Value) -> String {
+    let message = e["message"].as_str().unwrap_or("?");
+    match e["code"].as_str() {
+        Some(code) => coded(message, code),
+        None => message.to_owned(),
+    }
+}
+
+/// `message` with `code` after it, at the end of its first line: what
+/// follows, such as the agent's last lines on stderr, is the agent's.
+pub(crate) fn coded(message: &str, code: &str) -> String {
+    match message.split_once('\n') {
+        Some((first, rest)) => format!("{first} [{code}]\n{rest}"),
+        None => format!("{message} [{code}]"),
     }
 }
 
@@ -756,9 +779,9 @@ mod tests {
     fn adr_0008_text_shows_values_not_json() {
         use serde_json::json;
         let shown = |e: Value| event(&e, &Options { session: false, time: false }).unwrap();
-        let failed =
-            json!({ "event": "turn_ended", "error": { "message": "boom" }, "by": "control" });
-        assert_eq!(shown(failed), "turn failed: boom (control)");
+        let boom = json!({ "code": "agent_failed", "message": "boom", "rpc_error": {} });
+        let failed = json!({ "event": "turn_ended", "error": boom, "by": "control" });
+        assert_eq!(shown(failed), "turn failed: boom [agent_failed] (control)");
         let exited =
             |status: Value| shown(json!({ "event": "process_exited", "exit_status": status }));
         assert_eq!(exited(json!({ "code": 0 })), "agent exited with code 0");
@@ -767,9 +790,12 @@ mod tests {
         assert_eq!(exited(json!({ "signal": libc::SIGKILL })), "agent killed by SIGKILL");
         assert_eq!(exited(json!({ "signal": 99 })), "agent killed by signal 99");
         assert_eq!(exited(Value::Null), "agent exited (status unknown)");
-        let panicked =
-            json!({ "event": "process_exited", "exit_status": null, "error": "brnr panicked" });
-        assert_eq!(shown(panicked), "agent exited (status unknown); brnr panicked");
+        let error = json!({ "code": "process_panicked", "message": "brnr panicked" });
+        let panicked = json!({ "event": "process_exited", "exit_status": null, "error": error });
+        assert_eq!(
+            shown(panicked),
+            "agent exited (status unknown); brnr panicked [process_panicked]"
+        );
         let id = "0199a6f2-7b4c-7d21-9e3f-5a8b1c2d3e4f";
         let e =
             json!({ "event": "session_closed", "session": id, "by": "control", "reason": "idle" });
