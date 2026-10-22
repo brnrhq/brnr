@@ -530,9 +530,11 @@ never waits on a process without end (N2, P6, P3).
   closed, with no thread started for it. A connection counts until both
   its threads have ended and the process has let go of it. Once its reader
   has seen it end, or it is cut off for a request too long (ADR 10.3), its
-  writer writes what was queued for it and ends; the connection is shut
-  down then, or after 5 s if the peer doesn't read, so a client that stops
-  reading and closes its side doesn't keep a thread and a socket uncounted.
+  writer writes what was queued for it, and what comes within 5 s (an
+  answer still to come, `logged` on a stalled disk), and ends; the
+  connection is shut down then, or after 5 s if the peer doesn't read, so a
+  client that stops reading and closes its side doesn't hold a slot, a
+  thread and a socket for ever.
   The start channel of `session new` and started bridges aren't
   connections to the socket, and don't count.
 - A command finds the processes (`process list`, and every command that
@@ -705,6 +707,7 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
   - [src/host/control.rs](../../src/host/control.rs):
     `adr_0010_a_connection_past_the_cap_is_told_and_closed`,
     `adr_0010_a_cut_off_connection_closes_once_written_or_after_a_wait`,
+    `adr_0010_a_writer_let_go_of_ends_after_its_wait`,
     `adr_0010_accept_errors_back_off_doubling_to_a_second`.
   - [src/ctl/client.rs](../../src/ctl/client.rs):
     `adr_0010_processes_not_answering_cost_one_wait_in_all`,
