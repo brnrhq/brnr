@@ -27,10 +27,10 @@
 
 use std::env;
 use std::ffi::OsStr;
-use std::fs::{self, DirBuilder};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::sys;
@@ -55,13 +55,45 @@ pub(crate) fn ensure_private(dir: &Path) -> io::Result<()> {
 
 /// What [`ensure_private`] checks, for a directory that must already exist:
 /// what brnr reads there (which processes run, where their sockets are) is
-/// only to be trusted if nobody else could have put it there.
+/// only to be trusted if nobody else could have put it there. It is opened
+/// without following a symlink and checked through what was opened: the
+/// user's own directory, no group or other bits, and on macOS no access
+/// control list, which can let others in whatever the mode says. What is in
+/// it (sockets, metadata, locks) is guarded by it, so only it is checked
+/// (ADR 3.9). One that isn't there is `NotFound`.
 pub(crate) fn check_private(dir: &Path) -> io::Result<()> {
-    let meta = fs::symlink_metadata(dir)?;
-    if !meta.is_dir() || meta.uid() != sys::uid() || meta.mode() & 0o077 != 0 {
-        return Err(io::Error::other("not a private directory owned by this user"));
+    let refused = || io::Error::other("not a private directory owned by this user");
+    let private = |m: &fs::Metadata| m.is_dir() && m.uid() == sys::uid() && m.mode() & 0o077 == 0;
+    let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let opened = match OpenOptions::new().read(true).custom_flags(flags).open(dir) {
+        Ok(opened) => opened,
+        // The name is looked at only to say why the open failed: a symlink,
+        // not a directory, or another user's is refused as such.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(e),
+        Err(e) if fs::symlink_metadata(dir).is_ok_and(|m| private(&m)) => return Err(e),
+        Err(_) => return Err(refused()),
+    };
+    if !private(&opened.metadata()?) {
+        return Err(refused());
+    }
+    if sys::has_acl(&opened)? {
+        return Err(io::Error::other(acl_refused(dir, true, "")));
     }
     Ok(())
+}
+
+/// Why the directory (`dir`) or file at `path` isn't used: it has an access
+/// control list (macOS, `sys::has_acl`). `refused` says what brnr won't do,
+/// if anything, and then comes the `chmod -N` that removes it, which brnr
+/// never runs itself (P4), in brackets, so that what a caller adds after it
+/// isn't taken for part of the command.
+pub(crate) fn acl_refused(path: &Path, dir: bool, refused: &str) -> String {
+    let can = if dir { "reach what is in it" } else { "read or write it" };
+    let shell = shell_word(&path.to_string_lossy());
+    format!(
+        "has an access control list (ls -le), which can let others {can} whatever its \
+         mode{refused} (chmod -N {shell} removes it)"
+    )
 }
 
 pub(crate) fn state_dir() -> PathBuf {
@@ -222,7 +254,50 @@ fn home() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
     use super::*;
+
+    /// A private directory is checked through what was opened (ADR 3.9):
+    /// one that isn't there is `NotFound`, as the commands take it for no
+    /// processes; a symlink to a private one, a file, and one others can
+    /// search are refused; on macOS, so is one with an access control list,
+    /// which is left there.
+    #[test]
+    fn adr_0003_a_private_directory_is_checked_through_what_was_opened() {
+        let dir = env::temp_dir().join(format!("brnr-paths-{}-private", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let (private, link, file) = (dir.join("private"), dir.join("link"), dir.join("file"));
+        let err = check_private(&private).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        ensure_private(&private).unwrap();
+        check_private(&private).unwrap();
+        symlink(&private, &link).unwrap();
+        fs::write(&file, "").unwrap();
+        for refused in [&link, &file] {
+            let err = check_private(refused).unwrap_err().to_string();
+            assert_eq!(err, "not a private directory owned by this user", "{}", refused.display());
+        }
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o711)).unwrap();
+        assert!(check_private(&private).is_err());
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let chmod = |args: &[&str]| {
+                let ok = std::process::Command::new("chmod").args(args).arg(&private).status();
+                assert!(ok.unwrap().success(), "chmod {args:?}");
+            };
+            chmod(&["+a", "everyone allow list"]);
+            let err = check_private(&private).unwrap_err().to_string();
+            let want = format!("whatever its mode (chmod -N {} removes it)", private.display());
+            assert!(err.starts_with("has an access control list (ls -le)"), "{err}");
+            assert!(err.ends_with(&want), "{err}");
+            assert!(check_private(&private).is_err(), "the ACL is gone");
+            chmod(&["-N"]);
+            check_private(&private).unwrap();
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn adr_0003_brnr_dir_is_one_shell_word() {

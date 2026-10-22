@@ -18,13 +18,14 @@
 //! session's, once its process has written what it recorded until then
 //! (ADR 5.5).
 
-use std::io::{self, Write};
+use std::io;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::error;
 use crate::host::alive;
 use crate::{render, transcript};
 
@@ -41,7 +42,7 @@ pub(super) fn log(a: &Args) -> Result<ExitCode, Error> {
 
 /// `event log`, its arguments checked: the `events` of the session, from
 /// the `last`-th last message on.
-fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, String> {
+fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, error::Error> {
     let (follow, json_out) = (a.has("--follow"), a.json);
     // A gap in the transcript (`records_skipped`, ADR 10.1) is always told: it
     // is what this reader relied on (P3).
@@ -85,17 +86,8 @@ fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, 
         // ACP held back (see `Reader::read`) is from before, too.
         reader.forget_held();
     }
-    let none = records.is_empty();
-    let no_events = !records.iter().any(|e| e["event"] != "acp");
     let shown_now = records.split_off(from);
-    let (shown, _) = show.all(shown_now, &wanted, false)?;
-    if shown == 0 && no_events && !none && !follow {
-        let paths: Vec<String> = files.iter().map(|f| f.events.display().to_string()).collect();
-        eprintln!(
-            "brnr: no events in {} (an older brnr wrote it); try --events acp",
-            paths.join(", ")
-        );
-    }
+    show.all(shown_now, &wanted, false)?;
     // A line cut short at the end is still being written while its process
     // runs; once it has gone, it is a record cut short (ADR 5.1).
     let has_gone = || !host_pid.is_some_and(alive);
@@ -132,7 +124,7 @@ impl Show {
         events: Vec<Value>,
         wanted: &impl Fn(&Value) -> bool,
         to_end: bool,
-    ) -> Result<(usize, bool), String> {
+    ) -> Result<(usize, bool), error::Error> {
         let mut shown = 0;
         for event in events {
             let end = to_end
@@ -146,18 +138,17 @@ impl Show {
     }
 
     /// Prints one event as asked; returns how many lines it showed.
-    fn print(&self, event: &Value) -> Result<usize, String> {
+    fn print(&self, event: &Value) -> Result<usize, error::Error> {
         let text = if self.json_out {
             Some(event.to_string())
         } else {
             render::event(event, &self.options)
         };
         let Some(text) = text else { return Ok(0) };
-        let mut out = io::stdout().lock();
-        match writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()) {
+        match super::write_out(&format!("{text}\n")) {
             Ok(()) => Ok(1),
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.into()),
         }
     }
 }

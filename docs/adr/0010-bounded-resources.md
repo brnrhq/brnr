@@ -4,7 +4,8 @@ Draft 2026-10-19. Implemented. Factor: N2 (ADR 1). Brings together former
 ADRs 6, 49, 51, 60 and 69 (docs/adr/README.md maps them).
 
 How much memory a reader that falls behind, or a long line, can cost the
-process, and what a peer that is cut off does next. Memory stays bounded
+process, and what a peer that is cut off does next; how many connections
+the process serves, and how long a command waits for it. Memory stays bounded
 whatever a peer, the agent or the editor sends (N2, P6): observers give way
 and are told (P3), and the session's own pipes get backpressure (P1).
 
@@ -161,6 +162,13 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
   and `seq`, the last position before it. `session new --wait`'s ready report
   on the start channel says the same (`socket#start`).
+- The host log notes each `subscribe` (`peer_subscribed`, with its `peer`)
+  once the peer is subscribed, so whoever finds the note there knows the
+  peer gets every event after it that its subscription selects: the tests
+  wait for it before they make an event an observer must see, not a time
+  (#333). A started bridge has `bridge_started` for it. The start channel
+  has no note: its ready report goes in the same step of the event loop
+  that subscribes it, before any event can.
 
 ### Recording the cut-off
 
@@ -214,6 +222,10 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   written, and a full backlog refuses on macOS and blocks on Linux. Gone, it
   is caught up with as above if its host log has the peer's `peer_dropped`.
   Otherwise the command fails, as it does for a peer that wasn't cut off.
+  One that hangs up on step 3 has already said it cut the peer off: it is
+  waited for the same way and, gone, its transcript is read to its end;
+  still there after 10 s, the command says what it missed up to R, as
+  below.
 - These commands catch up: `event watch`, `prompt send --wait`, `session
   new --wait` and `session resume --wait` (on the start channel, or with
   `--pid`), `event wait`, and `event notify` on the socket.
@@ -303,8 +315,7 @@ its owner.
   its session's close, or exit status 3.
 - The names this adds (`seq`, `peer_cut_off`, `last_queued_seq`,
   `first_seq`, `last_seq`, `events_missed` with `after_seq` and
-  `until_seq`) follow ADR 5.9. #150 settles the shapes of `--json`
-  output. The change is kept to one field on every event, one event, one
+  `until_seq`) follow ADR 5.9, and their shapes in `--json` ADR 8.2. The change is kept to one field on every event, one event, one
   note and one request.
 
 **Why.** A burst of lines longer than 16 MiB that comes to more than the
@@ -379,6 +390,18 @@ process going.
   piece of 64 KiB at a time, a character a piece's end would cut starting
   the next piece. A bridge's note's decoded text is at most 64 KiB too, the
   rest in the next notes.
+- A peer's request, a line on a control connection or on a started bridge's
+  stdout, is read up to the same 32 MiB, its newline included. A longer one
+  isn't read past that, and nothing after it is: where the next request
+  would start can't be known. The peer is answered `command_invalid`, "a
+  request longer than 33554432 bytes: cut off" (ADR 8.7; no `req_id`: the
+  request wasn't read), the host log has `peer_dropped` (`peer`, `reason`
+  `line_too_long`, `limit`), and the peer is cut off: a connection is
+  closed once the answer is written, a started bridge gets SIGTERM, as one
+  that fell behind does (ADR 10.1). It didn't fall behind, so it isn't
+  one of the cut-offs `was_cut_off` knows, nor a `peer_cut_off` event, and
+  a command doesn't catch up from it (ADR 10.2): its request fails with the
+  answer's error (ADR 10.4).
 
 What is bounded, and what isn't:
 
@@ -393,8 +416,19 @@ What is bounded, and what isn't:
   - each peer's queue: 16 MiB, plus the lines set aside, up to 64 MiB of
     them, and one more line (ADR 10.1);
   - the logger's queue: 64 MiB (ADR 10.1);
+  - requests the host answered that the editor was shown, kept for its
+    late answer (ADR 4.5, 7.1): 1024, the oldest going first, none past
+    their session's close;
+  - requests the agent cancelled that the editor was shown, kept to
+    record the editor's answer in their session (ADR 4.5, 7.1): 1024, the
+    oldest going first, none past their session's close;
+  - sessions brnr closed under the editor, kept to answer the editor's
+    requests for them (ADR 7.1): 1024, the oldest going first;
   - the foreground's display (ADR 3.5);
   - the proxy reads the editor 64 KiB at a time;
+  - a peer's request: 32 MiB, on a control connection or a started bridge's
+    stdout;
+  - how many connections the process serves at once: 128 (ADR 10.4);
   - how deep a line may nest for brnr to read it: 128 levels for what the
     agent, the editor or a peer sends, 256 for what brnr wrote, and so the
     stack any value takes (ADR 2.5). No thread is sized to a line.
@@ -404,14 +438,20 @@ What is bounded, and what isn't:
     message is as long as the agent makes it;
   - what a session keeps (held messages and context, the last message,
     config options and commands), whose size the user and the agent
-    choose;
-  - a line from a peer on the control socket, read as a whole line: it is
-    the user's own process (P13), not the session's pipes.
+    choose.
 
 What isn't bounded is a gap measured against N2 (ADR 1).
 
 **Consequences.**
 
+- An editor's late answer to a request no longer kept goes to the agent,
+  which ignores it (ADR 2.5), and the editor isn't told who answered first.
+  An editor's request for a session closed under it that is no longer kept
+  reaches the agent, which answers it with its own error.
+- An editor's answer to a request the agent cancelled that is no longer
+  kept still goes to the agent as it is (ADR 4.5), but with no session: it
+  is recorded in the host log, not the session's transcript, and its `acp`
+  event has `session: null`.
 - A message over 32 MiB, valid JSON or not, isn't seen by the host: no
   events for it. If it answered a request of the host's, the request goes
   unanswered, as for a line it can't parse (ADR 2.5). With an editor, the
@@ -428,11 +468,19 @@ What isn't bounded is a gap measured against N2 (ADR 1).
 - The limit is twice the cap so that one message bigger than a peer's
   queue, which ADR 10.1 lets through to a peer that keeps up, is still
   read.
+- A prompt or a block of more than about 32 MiB, JSON-escaped, can't be
+  sent through the socket; `prompt send` fails with the process's error.
+  ACP has no such limit, but the agent's side of the host reads no longer
+  line either.
 
 **Why.** A line counted only once its newline came let a newline-free
 stream go past the cap without limit: 64 MiB of `x` took the host from
 3 MB to 71 MB, and 96 MiB to an editor that had stopped reading, 486 MB.
-The editor's input and the agent's stderr had the same gap. Holding back
+The editor's input and the agent's stderr had the same gap, and so did a
+peer's requests (#269): a client of the user's that wrote without a newline
+grew the host's memory as far as it wrote. The peer is the user's own
+process (P13), so this is reliability, not a boundary, but the host's
+memory is everyone's sessions' (N2). Holding back
 the pipe can't fix it alone: a line longer than the cap would hold its own
 reader back for room only its newline could make, a deadlock in the middle
 of a message. So past some length a line can't be kept whole. With an
@@ -442,6 +490,11 @@ so (P3), and memory stays bounded (P6).
 
 **Considered.**
 
+- Keeping the requests the host answered, those the agent cancelled and
+  the sessions closed under the editor until the editor follows up, without
+  a cap: an editor that never answers a withdrawn or cancelled request, or
+  never loads a closed session again, grows them for the process's life
+  (#332, #364).
 - Counting a line still coming against the cap, and so a limit of 16 MiB:
   one bound for everything, but messages ADR 10.1 promises to peers (20 MB)
   would not be read.
@@ -456,6 +509,102 @@ so (P3), and memory stays bounded (P6).
   ADR 2.5 rejects.
 - An event at the line's end with its length: one that never ends would
   never be told.
+- Leaving a peer's requests unbounded, as the user's own process: a client
+  with a bug costs every session of the process its memory.
+- Skipping a peer's long request and reading on after its newline: the
+  bytes up to it are still read, as long as the peer writes, and a peer
+  whose request is that long has gone wrong.
+
+## 10.4 Connections and waits
+
+The process serves its socket however its clients behave, and a command
+never waits on a process without end (N2, P6, P3).
+
+- An accept that fails (out of file descriptors, `EMFILE`) is tried again
+  after 10 ms, then after twice as long each time it fails again, up to
+  1 s; one that succeeds starts again from 10 ms. The accepting thread
+  never spins.
+- The process serves at most 128 connections at once, each with two threads
+  and a queue of up to 16 MiB (ADR 10.1). The 129th is answered
+  `process_unreachable`, "too many connections: 128 open" (ADR 8.7), and
+  closed, with no thread started for it. A connection counts until its reader has seen
+  it end. The start channel of `session new` and started bridges aren't
+  connections to the socket, and don't count.
+- A command finds the processes (`process list`, and every command that
+  names a session) by asking each for its status, all at once, each on a
+  thread of its own: it waits about 5 s in all (5 s and a margin of 1 s),
+  not 5 s for each. A process not answering by then is listed as not
+  answering (ADR 3.9). Its thread isn't waited for; it ends by itself, as
+  each of its steps waits at most 5 s (below).
+- Connecting to a process waits at most 5 s for it to take the connection:
+  on Linux a stopped process whose backlog is full makes a connection wait
+  for as long as it stays full (macOS refuses it). Past that, the command
+  says `not answering`, as for a request. So every step a command takes
+  against a process is bounded, and no thread is left blocked for good:
+  a command that finds the processes twice (reading a session that is
+  closing) doesn't pile them up.
+- Every request a command makes waits 5 s for its answer, on a connection
+  of its own or on one it is subscribed on: none of those it makes there
+  (`subscribe`, `status`, `pending`, `logged`, `was_cut_off`, `send`) waits
+  on the agent. One that does (`config set`, `session fork`, `session
+  close`) waits 120 s. Events wait as long as `--timeout` says, and
+  without it for as long as the session runs; a start, `session new
+  --pid` or `session resume --pid`, as long as its own timeout (ADR 3.4).
+  Past its wait, a request fails with `not answering`.
+- A request whose write makes no progress for 5 s (the process has stopped
+  reading) fails the same way.
+- Whether anyone listens on a socket, to tell a process gone (ADR 3.9), is
+  asked without waiting: a full backlog is someone listening.
+- An error the process says to no request in particular (no `req_id`),
+  before it closes the connection, is the answer to the request waiting:
+  a request too long to read (ADR 10.3), too many connections. The command
+  fails with it (P3), not with `the process closed the connection`.
+
+**Consequences.**
+
+- A command over k processes that don't answer waits about 5 s, not 5k s.
+- A process that takes a connection only just before 5 s, then answers
+  late, keeps its probe's thread past the command's 6 s, each step 5 s at
+  most: the command lists it as not answering and goes on without it.
+- A 129th client gets an error rather than a connection; brnr's own
+  commands say it. A client of the user's that holds 128 connections open
+  keeps brnr's commands out of that process until it lets them go
+  (docs/threat-model.md).
+- A request's write that takes some of the request and then stalls waits
+  5 s for each time the kernel stops taking it, so a long request may wait
+  up to twice that before it fails.
+- A process whose `logged` is held up by a stalled disk for more than 5 s
+  is one a command can't catch up with (ADR 10.2), and says so: before, the
+  command waited for as long as the disk did.
+
+**Why.** An accept that failed was tried again at once, so a process out of
+file descriptors spun on its accepting thread; each connection took two
+threads and a queue, without a limit on how many (#269). `discover` asked
+the processes one after another, 5 s each, so k stopped processes cost
+5k s for every command; on Linux a connection to a stopped process whose
+backlog was full blocked for good. A request on a subscribed connection had no
+timeout, and a write none either, so a process that stopped reading or
+answering held the command for good, with nothing said (P3).
+
+**Considered.**
+
+- Waiting for each process in turn, with a shorter wait: a busy process
+  would be listed as not answering more often, and k of them still add up.
+- An async runtime for the probes: a crate, for what a thread each does
+  (N1: few crates).
+- A connection that blocks, left on a thread of its own the command doesn't
+  wait for: a thread for each stopped process, every time the processes are
+  found, blocked for as long as the process is stopped.
+- A bounded pool of threads for the probes: blocked connections still hold
+  its threads, and k processes over n threads cost k/n waits.
+- Making the 129th connection wait in the backlog rather than answering
+  it: the backlog is the kernel's and small, its client can't tell a full
+  process from a stopped one, and on macOS a full backlog refuses
+  connections, which a command takes as a process gone.
+- A cap on connections per client: the socket can't tell clients apart
+  (docs/threat-model.md: no peer credentials), and they are all the user's.
+- A timeout for events: a turn takes as long as it takes, and the user
+  chooses with `--timeout` (ADR 8.3).
 
 ## Tests
 
@@ -486,7 +635,8 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_burst_past_64_mib_reaches_a_watcher`,
     `adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed`,
     `adr_0010_a_wait_cut_off_catches_up`,
-    `adr_0010_event_wait_cut_off_catches_up`.
+    `adr_0010_event_wait_cut_off_catches_up`,
+    `adr_0010_the_host_log_notes_each_subscription`.
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0010_notify_cut_off_catches_up_once_its_command_is_done`.
   - [tests/security.rs](../../tests/security.rs):
@@ -508,6 +658,15 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
   - [src/log.rs](../../src/log.rs):
     `adr_0010_what_the_transcript_lost_is_said_by_position`.
 - 10.3:
+  - [src/host/approvals.rs](../../src/host/approvals.rs):
+    `adr_0010_answered_requests_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_sessions_answered_requests_go_with_its_close`,
+    `adr_0010_given_up_requests_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_sessions_given_up_requests_go_with_its_close`.
+  - [src/host/sessions.rs](../../src/host/sessions.rs):
+    `adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest`,
+    `adr_0010_a_closed_sessions_answered_requests_go`,
+    `adr_0010_a_request_cancelled_after_its_close_is_not_kept`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said`,
     `adr_0010_a_long_line_to_an_editor_that_stops_reading_is_held_back`,
@@ -519,8 +678,35 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_bridges_stderr_keeps_a_character_a_piece_would_cut`,
     `adr_0010_an_agents_stderr_line_that_fills_a_piece_is_one_record`,
     `adr_0010_an_agents_stderr_keeps_a_character_a_piece_would_cut`,
-    `adr_0010_the_processs_own_stderr_goes_to_the_host_log_in_pieces`.
+    `adr_0010_the_processs_own_stderr_goes_to_the_host_log_in_pieces`,
+    `adr_0010_a_request_past_the_limit_is_answered_and_cut_off`,
+    `adr_0010_a_bridges_request_past_the_limit_cuts_it_off`.
   - [src/host/mod.rs](../../src/host/mod.rs):
     `adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left`,
     `adr_0010_a_stderr_note_is_at_most_a_piece_once_decoded`,
     `adr_0010_a_tails_line_is_cut_between_characters`.
+  - [src/host/lines.rs](../../src/host/lines.rs):
+    `adr_0010_lines_are_read_whole_however_the_reads_split_them`,
+    `adr_0010_a_line_that_ends_at_the_limit_is_read_whole`,
+    `adr_0010_a_relayed_line_past_the_limit_goes_on_as_it_comes`,
+    `adr_0010_a_cut_line_is_in_parts_of_the_limit`,
+    `adr_0010_the_newline_after_a_cut_only_ends_its_line`,
+    `adr_0010_a_character_a_cut_would_split_starts_the_next_part`,
+    `adr_0010_a_cut_is_between_characters`,
+    `adr_0010_a_byte_at_a_time_reads_as_all_at_once`.
+  - [src/host/control.rs](../../src/host/control.rs):
+    `adr_0010_a_request_is_read_up_to_the_limit_and_no_further`.
+- 10.4:
+  - [src/host/control.rs](../../src/host/control.rs):
+    `adr_0010_a_connection_past_the_cap_is_told_and_closed`,
+    `adr_0010_accept_errors_back_off_doubling_to_a_second`.
+  - [src/ctl/client.rs](../../src/ctl/client.rs):
+    `adr_0010_processes_not_answering_cost_one_wait_in_all`,
+    `adr_0010_a_request_not_answered_or_taken_is_not_answering`,
+    `adr_0010_an_error_said_to_no_request_is_the_answer`.
+  - [src/sys.rs](../../src/sys.rs):
+    `adr_0010_a_connection_a_full_backlog_holds_waits_at_most_its_wait`.
+
+  Not covered by a Rust test: an accept failing for real (running a test
+  process out of file descriptors would fail its other tests); the back-off
+  is tested as the waits it chooses.

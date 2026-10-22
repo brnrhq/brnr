@@ -32,12 +32,14 @@ use std::env;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::error::{self, Code};
 use crate::host::{EVENTS, NOTES, QUIET};
-use crate::{lock, log, paths, render, transcript};
+use crate::{lock, log, render, transcript};
 
 /// `println!` and `print!` for what the commands print: through
 /// [`render::clean`], since so much of it is the agent's (titles, messages,
@@ -181,12 +183,16 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
         [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
         _ => (verb, rest),
     };
+    let mut json = false;
     let result = match args::spec(cmd, verb) {
         Some(spec) if spec.asks_help(rest) => {
             outln!("{}", usage_of(cmd, verb));
             Ok(ExitCode::SUCCESS)
         }
-        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)),
+        Some(spec) => spec.parse(rest).and_then(|a| {
+            json = a.json;
+            run(spec, &a)
+        }),
         None => match (cmd, verb) {
             (group, Some("-h" | "--help")) if grouped => {
                 outln!("{}", usage_of(group, None));
@@ -217,12 +223,26 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
                     errln!("brnr: {msg}");
                     eprintln!("{}", usage_of(cmd, verb));
                 }
-                args::Error::Failed(msg) => errln!("brnr: {msg}"),
+                args::Error::Failed(error) => failed(error, json),
             }
             ExitCode::from(e.code())
         }
     }
 }
+
+/// A command's failure (ADR 8.7): on stderr, its message and its code,
+/// `brnr: no session s (see brnr session list) [session_not_found]`; with
+/// `--json`, also as the command's JSON, `{"error": {code, message}}`, if it
+/// printed none before it failed.
+fn failed(error: &error::Error, json: bool) {
+    errln!("brnr: {}", render::coded(&error.message, error.code.name()));
+    if json && !PRINTED.load(Relaxed) {
+        let _ = print_json(&json!({ "error": error.json() }));
+    }
+}
+
+/// Whether the command has printed anything on stdout.
+static PRINTED: AtomicBool = AtomicBool::new(false);
 
 /// Runs the verb `spec` is, with its arguments `a`.
 fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
@@ -257,7 +277,7 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("watch")) => code(watch(a)),
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
-        ("doctor", None) => done(doctor::main(a)),
+        ("doctor", None) => code(doctor::main(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
         (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
@@ -285,12 +305,21 @@ pub(crate) fn command(args: &[String]) -> String {
 
 /// What [`outln!`] and [`out!`] print with.
 fn out(text: &str) {
-    let mut stdout = io::stdout().lock();
-    match stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush()) {
+    match write_out(text) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => panic!("writing to stdout: {e}"),
     }
+}
+
+/// Writes `text`, [`render::clean`]ed, to stdout, and flushes it. All a
+/// command prints goes through here, so that [`failed`] knows whether it has
+/// printed any (a stream's events), and prints no `{"error"}` after it
+/// (ADR 8.7).
+fn write_out(text: &str) -> io::Result<()> {
+    PRINTED.store(true, Relaxed);
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush())
 }
 
 /// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
@@ -335,11 +364,11 @@ fn usage_of(cmd: &str, verb: Option<&str>) -> String {
 // ---- naming sessions and processes ---------------------------------------
 
 /// The process with pid `pid`.
-fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, String> {
-    hosts
-        .iter()
-        .find(|h| h.id() == pid)
-        .ok_or(format!("no brnr process {pid} (see brnr process list)"))
+fn process<'a>(hosts: &'a [Host], pid: &str) -> Result<&'a Host, error::Error> {
+    hosts.iter().find(|h| h.id() == pid).ok_or_else(|| {
+        let error = format!("no brnr process {pid} (see brnr process list)");
+        error::Error::new(Code::process_not_found, error)
+    })
 }
 
 /// `<session>` or `--pid <pid>`, for `event watch` and `event notify`: the
@@ -348,7 +377,7 @@ fn session_or_pid<'a>(
     hosts: &'a [Host],
     session: Option<&str>,
     pid: Option<&str>,
-) -> Result<(&'a Host, Option<String>), String> {
+) -> Result<(&'a Host, Option<String>), error::Error> {
     match (session, pid) {
         (Some(session), None) => running_session(hosts, session).map(|(h, id)| (h, Some(id))),
         (None, Some(pid)) => process(hosts, pid).map(|h| (h, None)),
@@ -358,7 +387,7 @@ fn session_or_pid<'a>(
 
 // ---- processes -----------------------------------------------------------
 
-fn ps(a: &Args) -> Result<(), String> {
+fn ps(a: &Args) -> Result<(), error::Error> {
     let json_out = a.json;
     let hosts = discover()?;
     let locks = lock::all();
@@ -366,15 +395,26 @@ fn ps(a: &Args) -> Result<(), String> {
         .iter()
         .map(|host| {
             let info = host.info();
-            // One that doesn't answer serves what it holds the locks of.
+            // One that doesn't answer serves what it holds the locks of; its
+            // sessions are rows of `session list`, with their state only.
             let sessions: Vec<Value> = match host.status {
-                Some(_) => host.sessions().iter().map(|s| s["session"].clone()).collect(),
-                None => host.held(&locks).into_iter().map(Value::from).collect(),
+                Some(_) => host
+                    .sessions()
+                    .iter()
+                    .map(|s| json!({ "session": s["session"], "state": s["state"] }))
+                    .collect(),
+                None => host
+                    .held(&locks)
+                    .into_iter()
+                    .map(|s| json!({ "session": s, "state": "unreachable" }))
+                    .collect(),
             };
             json!({
                 "pid": host.id().parse::<u64>().ok(),
-                "owner": if host.status.is_some() { info["owner"].clone() } else { json!("unreachable") },
-                "agent": agent_name(&info["agent"]),
+                "state": process_state(host),
+                // Who owns its sessions; not known of one that doesn't answer.
+                "owner": info["owner"],
+                "agent": agent(host),
                 "sessions": sessions,
                 "uptime": info["uptime"],
                 "cwd": info["cwd"],
@@ -382,7 +422,7 @@ fn ps(a: &Args) -> Result<(), String> {
         })
         .collect();
     if json_out {
-        return print_json(&json!(rows));
+        return print_json(&json!({ "processes": rows }));
     }
     if rows.is_empty() {
         outln!("no brnr processes");
@@ -391,14 +431,15 @@ fn ps(a: &Args) -> Result<(), String> {
     // Each session has a cwd of its own (brnr session list); the process's
     // is only where the editor happened to start it, so the table leaves it
     // to --json.
-    let mut table = vec![["PID", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
+    let mut table = vec![["PID", "STATE", "OWNER", "AGENT", "SESSIONS", "UP"].map(String::from)];
     for r in &rows {
         let sessions: Vec<String> =
-            r["sessions"].as_array().into_iter().flatten().map(text).collect();
+            r["sessions"].as_array().into_iter().flatten().map(|s| text(&s["session"])).collect();
         table.push([
             r["pid"].to_string(),
-            text(&r["owner"]),
-            text(&r["agent"]),
+            text(&r["state"]),
+            r["owner"].as_str().unwrap_or("-").to_owned(),
+            r["agent"]["program"].as_str().unwrap_or("?").to_owned(),
             if sessions.is_empty() { "-".to_owned() } else { sessions.join(", ") },
             r["uptime"].as_u64().map_or("?".to_owned(), duration),
         ]);
@@ -407,7 +448,19 @@ fn ps(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn stop(a: &Args) -> Result<(), String> {
+/// A process's `state` in `process list`: `starting`, `running`,
+/// `stopping`, or `unreachable` for one that doesn't answer, as `session
+/// list` has a session in it (ADR 8.2).
+fn process_state(host: &Host) -> &'static str {
+    match &host.status {
+        None => "unreachable",
+        Some(st) if st["stopping"] == true => "stopping",
+        Some(st) if st["starting"] == true => "starting",
+        Some(_) => "running",
+    }
+}
+
+fn stop(a: &Args) -> Result<(), error::Error> {
     let (pid, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let host = process(&hosts, pid)?;
@@ -425,13 +478,21 @@ fn stop(a: &Args) -> Result<(), String> {
 
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first, a row each, whatever folders its files are in
-/// (ADR 5.1). Only the first and last record of each events file are read:
+/// (ADR 5.1). Only the first and last records of each events file, and its
+/// last `session_opened`, are read:
 /// the session began where its oldest file's first record says, which names
 /// the session it was forked from if it opened as a fork (ADR 3.12); the
 /// newest record of them all says when and in which process the session was
-/// last active, and its file's first record in which cwd, or, if it is a
-/// deletion's, a record of no process's (ADR 8.1), the newest that names a
-/// process does. That process's log says which agent it ran.
+/// last active, or, if it is a deletion's, which isn't activity whoever
+/// recorded it (ADR 8.1), the newest other record that names a process
+/// does. The newest `session_opened` of them all, the last in each file,
+/// says the cwd, profile and agent the session was last served with (ADR
+/// 3.11): one process serves it at a time (ADR 3.9), and a process that
+/// didn't open it (an editor's deletion, ADR 8.1) records into every file
+/// of it. The transcript alone says it, not the host log (ADR 5.10). A file
+/// whose newest record is in a format this brnr doesn't read isn't one, as
+/// where the session was last served isn't known; `doctor` lists it (ADR
+/// 5.10).
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // One served by a process, or whose lock is held, is running, whatever
     // folder its files are in, and whether its process answers or not.
@@ -439,55 +500,55 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         hosts.iter().flat_map(|h| h.sessions().iter().filter_map(|s| s["session"].as_str()));
     let mut running: HashSet<String> = served.map(str::to_owned).collect();
     running.extend(lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session));
-    // By id: the oldest file's first record; and the newest a process
-    // recorded, when, its file and that file's first record.
-    type Newest = (Option<Value>, Value, Value, PathBuf);
-    let mut found: HashMap<String, (Value, Newest)> = HashMap::new();
+    // By id: the oldest file's first record; when a process last recorded
+    // in it, and in which file; and its files.
+    type Found = (Value, (Value, PathBuf), Vec<PathBuf>);
+    let mut found: HashMap<String, Found> = HashMap::new();
     for file in transcript::events_files() {
-        let (Some(first), Some(last)) =
-            (transcript::first(&file), transcript::last(&file, |_| true))
-        else {
-            continue;
-        };
+        let Some(last) = transcript::newest(&file).filter(transcript::readable) else { continue };
+        let Some(first) = transcript::first(&file) else { continue };
         let Some(session) = last["session"].as_str() else { continue };
         if running.contains(session) {
             continue;
         }
-        // The process that last served it: a deletion's record is no
-        // process's (ADR 8.1).
-        let served = match last["host_id"].is_string() {
+        // The process that last served it. A deletion isn't serving (ADR
+        // 8.1): `session delete`'s record is no process's, and an editor's,
+        // through a process that may never have opened the session, goes
+        // into every file of it.
+        let serving =
+            |r: &Value| r["host_id"].is_string() && r["event"]["event"] != "session_deleted";
+        let served = match serving(&last) {
             true => Some(last.clone()),
-            false => transcript::last(&file, |r| r["host_id"].is_string()),
+            false => transcript::last(&file, serving),
         };
         // When a process last served it: a deletion isn't activity.
         let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
-        let Some((oldest, newest)) = found.get_mut(session) else {
-            found.insert(session.to_owned(), (first.clone(), (served, at, first, file)));
+        let Some((oldest, newest, files)) = found.get_mut(session) else {
+            found.insert(session.to_owned(), (first, (at, file.clone()), vec![file]));
             continue;
         };
         if first["ts"].as_str() < oldest["ts"].as_str() {
-            *oldest = first.clone();
+            *oldest = first;
         }
-        if at.as_str() > newest.1.as_str() {
-            *newest = (served, at, first, file);
+        files.push(file.clone());
+        if at.as_str() > newest.0.as_str() {
+            *newest = (at, file);
         }
     }
-    let mut started: HashMap<String, Value> = HashMap::new();
     let mut past = Vec::new();
-    for (session, (oldest, (served, at, first, file))) in found {
-        let host_id = served.as_ref().and_then(|r| r["host_id"].as_str());
-        let host_id = host_id.unwrap_or_default().to_owned();
-        let start = started
-            .entry(host_id.clone())
-            .or_insert_with(|| transcript::first(&paths::host_log(&host_id)).unwrap_or_default());
-        let info = &start["event"]["info"];
+    for (session, (oldest, (at, file), files)) in found {
+        let opening = |r: &Value| r["event"]["event"] == "session_opened";
+        let openings = files.iter().filter_map(|path| transcript::last(path, opening));
+        let opened = openings.max_by(|a, b| a["ts"].as_str().cmp(&b["ts"].as_str()));
+        let opened = opened.unwrap_or_default();
+        let opened = &opened["event"];
         past.push(json!({
             "session": session,
-            "cwd": first["event"]["cwd"],
+            "cwd": opened["cwd"],
             "forked_from": oldest["event"]["forked_from"],
             "last_active": at,
-            "profile": info["profile"],
-            "agent": info["agent"],
+            "profile": opened["profile"],
+            "agent": opened["agent"],
             "events_log": file.to_string_lossy(),
         }));
     }
@@ -510,44 +571,63 @@ fn forked_from(s: &Value) -> Value {
     first.map_or(Value::Null, |first| first["event"]["forked_from"].clone())
 }
 
-fn agent_name(argv: &Value) -> String {
-    let Some(program) = argv.as_array().and_then(|a| a.first()).and_then(Value::as_str) else {
-        return "?".to_owned();
-    };
-    Path::new(program).file_name().map_or(program.to_owned(), |f| f.to_string_lossy().into_owned())
+/// The file name of `argv`'s program, if it has one.
+fn program(argv: &Value) -> Option<String> {
+    let program = argv.as_array().and_then(|a| a.first()).and_then(Value::as_str)?;
+    let name = Path::new(program).file_name();
+    Some(name.map_or(program.to_owned(), |f| f.to_string_lossy().into_owned()))
 }
 
-fn status(a: &Args) -> Result<(), String> {
+/// The agent as every `--json` has it (ADR 8.2): `program`, the file name
+/// of the command brnr ran, from `argv`; `name` and `version`, what it says
+/// it is in `initialize` (`agentInfo`, `info`). Each null where brnr doesn't
+/// know it.
+fn agent_of(argv: &Value, info: &Value) -> Value {
+    json!({
+        "program": program(argv),
+        "name": info["name"].as_str(),
+        "version": info["version"].as_str(),
+    })
+}
+
+/// The agent process `host` runs.
+fn agent(host: &Host) -> Value {
+    let info = host.info();
+    agent_of(&info["agent"], &info["agent_info"])
+}
+
+fn status(a: &Args) -> Result<(), error::Error> {
     let (arg, json_out) = (&a.positional[0], a.json);
     let hosts = discover()?;
     let (host, id) = running_session(&hosts, arg)?;
-    let st = host.status.as_ref().ok_or("the process is not answering")?;
-    let x = host.session(&id).ok_or("no session")?;
+    let unreachable =
+        || error::Error::new(Code::process_unreachable, "the process is not answering");
+    let st = host.status.as_ref().ok_or_else(unreachable)?;
+    let x = host
+        .session(&id)
+        .ok_or_else(|| error::Error::new(Code::session_not_found, "no session"))?;
+    // A count it doesn't have isn't 0 (P4).
+    for key in client::COUNTS {
+        client::count(x, key).map_err(|e| client::skewed(e, &host.meta))?;
+    }
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;
-    let shared_by: Vec<u64> = hosts
+    let shared_pids: Vec<u64> = hosts
         .iter()
         .filter(|h| h.sessions().iter().any(shares))
         .filter_map(|h| h.id().parse().ok())
         .collect();
-    let mut agent = json!({ "program": agent_name(&st["agent"]) });
-    // What the agent says it is, in initialize: the npm package and version
-    // of an adapter.
-    if let (Some(name), Some(version)) =
-        (st["agent_info"]["name"].as_str(), st["agent_info"]["version"].as_str())
-    {
-        agent["name"] = json!(name);
-        agent["version"] = json!(version);
-    }
     let report = json!({
         "session": id,
         "title": x["title"],
         "pid": host.id().parse::<u64>().ok(),
-        "agent": agent,
+        // What the agent says it is, in initialize: the npm package and
+        // version of an adapter.
+        "agent": agent(host),
         "owner": st["owner"],
-        "held_by": lock::holder(&id),
-        "shared_by": shared_by,
+        "lock_pid": lock::holder(&id),
+        "shared_pids": shared_pids,
         // An editor's session served without its lock (ADR 3.9).
         "lock_error": x["lock_error"],
         "cwd": x["cwd"],
@@ -558,10 +638,10 @@ fn status(a: &Args) -> Result<(), String> {
         "model": x["model"],
         "tools": x["tools"],
         "plan": x["plan"],
-        "pending": x["pending"],
-        "elicitations": x["elicitations"],
-        "held": x["held"],
-        "context": x["context"],
+        "pending_count": x["pending_count"],
+        "elicitation_count": x["elicitation_count"],
+        "held_count": x["held_count"],
+        "context_count": x["context_count"],
         "usage": x["usage"],
         // How the last turn ended, and the tokens the agent said it used
         // (ADR 4.4).
@@ -588,8 +668,10 @@ fn describe_status(x: &Value, arg: &str) -> String {
     out.push('\n');
     let a = &x["agent"];
     let mut agent = text(&a["program"]);
-    if let (Some(name), Some(version)) = (a["name"].as_str(), a["version"].as_str()) {
-        agent.push_str(&format!(" ({name} {version})"));
+    match (a["name"].as_str(), a["version"].as_str()) {
+        (Some(name), Some(version)) => agent.push_str(&format!(" ({name} {version})")),
+        (Some(name), None) => agent.push_str(&format!(" ({name})")),
+        _ => {}
     }
     out.push_str(&format!(
         "process {}: {agent}, {}, up {}\n",
@@ -597,16 +679,16 @@ fn describe_status(x: &Value, arg: &str) -> String {
         text(&x["owner"]),
         duration(x["uptime"].as_u64().unwrap_or(0))
     ));
-    let shared_by: Vec<String> =
-        x["shared_by"].as_array().into_iter().flatten().map(Value::to_string).collect();
-    if !shared_by.is_empty() {
-        let held = match x["held_by"].as_u64() {
+    let shared_pids: Vec<String> =
+        x["shared_pids"].as_array().into_iter().flatten().map(Value::to_string).collect();
+    if !shared_pids.is_empty() {
+        let held = match x["lock_pid"].as_u64() {
             Some(pid) => format!("process {pid}'s"),
             None => "no process's (none holds it now)".to_owned(),
         };
         out.push_str(&format!(
             "shared by process {}: the transcript is {held}, and has none of what happens there\n",
-            shared_by.join(", ")
+            shared_pids.join(", ")
         ));
     }
     if x["lock_error"].is_string() {
@@ -636,7 +718,7 @@ fn describe_status(x: &Value, arg: &str) -> String {
     // turn's start is known.
     let working = x["turn_elapsed"].as_u64().map(|secs| format!("working for {}", duration(secs)));
     let pending = |key: &str| x[key].as_u64().filter(|&n| n > 0);
-    let input = pending("elicitations").is_some() && pending("pending").is_none();
+    let input = pending("elicitation_count").is_some() && pending("pending_count").is_none();
     let waiting = if input { "input" } else { "an approval" };
     match (x["state"].as_str(), working) {
         (Some("busy"), Some(working)) => out.push_str(&format!("{working}\n")),
@@ -658,13 +740,14 @@ fn describe_status(x: &Value, arg: &str) -> String {
     if x["plan"].is_array() {
         out.push_str(&format!("{}\n", render::plan(&x["plan"])));
     }
-    if let Some(n) = pending("pending") {
+    if let Some(n) = pending("pending_count") {
         out.push_str(&format!("{n} approval(s) waiting: brnr permission requests {arg}\n"));
     }
-    if let Some(n) = pending("elicitations") {
+    if let Some(n) = pending("elicitation_count") {
         out.push_str(&format!("{n} elicitation(s) waiting: brnr elicitation requests {arg}\n"));
     }
-    let (held, context) = (x["held"].as_u64().unwrap_or(0), x["context"].as_u64().unwrap_or(0));
+    let count = |key: &str| x[key].as_u64().unwrap_or(0);
+    let (held, context) = (count("held_count"), count("context_count"));
     if held + context > 0 {
         out.push_str(&format!(
             "held: {held} message(s), {context} context (brnr queue list {arg})\n"
@@ -709,7 +792,7 @@ fn when(ts: &str) -> String {
 
 /// The approvals waiting, in every process that answers (saying which
 /// don't) or in one session's.
-fn pending(a: &Args) -> Result<(), String> {
+fn pending(a: &Args) -> Result<(), error::Error> {
     let (arg, json_out) = (a.positional.first(), a.json);
     let hosts = discover()?;
     let (chosen, only): (Vec<&Host>, Option<String>) = match arg {
@@ -737,28 +820,24 @@ fn pending(a: &Args) -> Result<(), String> {
     list_pending(&Value::Array(rows), json_out)
 }
 
-/// A permission request as `permission requests` lists it.
+/// A permission request as `permission requests` lists it: `permission
+/// show`'s object, with fewer fields, the agent's options whole as ACP has
+/// them (ADR 8.2).
 fn pending_row(p: &Value) -> Value {
-    let options: Vec<Value> = p["options"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|o| json!({ "option_id": o["optionId"], "kind": o["kind"] }))
-        .collect();
     json!({
         "session": p["session"],
         "request": p["request"],
         "owner": p["owner"],
         "kind": p["kind"],
         "title": p["title"],
-        "options": options,
+        "options": p["options"],
     })
 }
 
 /// The permission requests' `rows`, as a table or `--json`.
-fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
+fn list_pending(rows: &Value, json_out: bool) -> Result<(), error::Error> {
     if json_out {
-        return print_json(rows);
+        return print_json(&json!({ "requests": rows }));
     }
     let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
@@ -772,7 +851,7 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|o| format!("{}={}", text(&o["option_id"]), text(&o["kind"])))
+            .map(|o| format!("{}={}", text(&o["optionId"]), text(&o["kind"])))
             .collect();
         table.push([
             text(&r["session"]),
@@ -790,7 +869,7 @@ fn list_pending(rows: &Value, json_out: bool) -> Result<(), String> {
 /// `permission allow` and `reject` (`cmd`): the request's option of one
 /// kind, or the one `--option-id` names; the host picks it, and says why it
 /// can't (ADR 8.1).
-fn answer(a: &Args, cmd: &str) -> Result<(), String> {
+fn answer(a: &Args, cmd: &str) -> Result<(), error::Error> {
     let [arg, request_id] = &a.positional[..] else { unreachable!("the table has two") };
     let (option_id, always, json_out) = (a.value("--option-id"), a.has("--always"), a.json);
     let hosts = discover()?;
@@ -849,11 +928,7 @@ fn watch(a: &Args) -> Result<ExitCode, args::Error> {
     let options = render::Options { session: only_session.is_none(), time: true };
     let show = |event: &Value| {
         let text = if json_out { Some(event.to_string()) } else { render::event(event, &options) };
-        let mut out = io::stdout().lock();
-        match text {
-            Some(text) => writeln!(out, "{}", render::clean(&text)).and_then(|()| out.flush()),
-            None => Ok(()),
-        }
+        text.map_or(Ok(()), |text| write_out(&format!("{text}\n")))
     };
     loop {
         let event = match conn.next_event(None) {
@@ -924,7 +999,7 @@ fn default_events() -> Vec<String> {
 
 // ---- plumbing ------------------------------------------------------------
 
-fn print_json(value: &Value) -> Result<(), String> {
+fn print_json(value: &Value) -> Result<(), error::Error> {
     outln!("{}", serde_json::to_string_pretty(value).unwrap());
     Ok(())
 }
@@ -934,7 +1009,7 @@ fn text(v: &Value) -> String {
     v.as_str().unwrap_or("?").to_owned()
 }
 
-fn read_stdin() -> Result<String, String> {
+fn read_stdin() -> Result<String, error::Error> {
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).map_err(|e| format!("stdin: {e}"))?;
     Ok(text)
@@ -973,7 +1048,7 @@ mod tests {
         assert_eq!(state("waiting", json!(40)), "waiting for an approval, working for 40s");
         assert_eq!(state("waiting", Value::Null), "waiting for an approval");
         // Waiting for an elicitation only (ADR 4.5).
-        let x = json!({ "session": "s", "state": "waiting", "pending": 0, "elicitations": 1 });
+        let x = json!({ "session": "s", "state": "waiting", "pending_count": 0, "elicitation_count": 1 });
         assert_eq!(describe_status(&x, "s").lines().nth(3), Some("waiting for input"));
     }
 }

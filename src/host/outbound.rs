@@ -168,6 +168,14 @@ impl Outbound {
             matches!(a.then, Then::Host(HostRequest::Opening(Open::New | Open::Resume(_), _)))
         })
     }
+
+    /// Whether the editor's `session/resume` of `session` waits for the
+    /// agent's answer.
+    pub(super) fn resuming(&self, session: &str) -> bool {
+        self.asked.values().any(|a| {
+            matches!(&a.then, Then::Note(Note::Attach { session: s, load: false, .. }) if s == session)
+        })
+    }
 }
 
 #[cfg(test)]

@@ -32,13 +32,14 @@ use super::strict::Beyond;
 use super::turns::Activity;
 use super::{Host, text_block};
 use crate::config::Experimental;
+use crate::error::{Code, Error};
 use crate::lock;
 
 impl Host {
     /// Refuses `action` on an editor's session unless the editor's part of
     /// the profile enables it, and in strict mode whatever it enables. A
     /// headless session has nothing to refuse.
-    pub(super) fn check_experimental(&self, action: Experimental) -> Result<(), String> {
+    pub(super) fn check_experimental(&self, action: Experimental) -> Result<(), Error> {
         if !self.editor_attached() {
             return Ok(());
         }
@@ -49,30 +50,34 @@ impl Host {
         // Without --profile, the default profile is the one that applies.
         let profile = self.info["profile"].as_str().unwrap_or("default");
         let name = action.name();
-        Err(format!(
+        let error = format!(
             "`{name}` on an editor's session is experimental; enable it with \
              `experimental = [\"{name}\"]` under `[profiles.{profile}.editor]`"
-        ))
+        );
+        Err(Error::new(Code::experimental_disabled, error))
     }
 
     /// `send` in `mode` to session `i` of an editor's: context, or a prompt
     /// while none runs, the editor's or brnr's. Mid-turn, whether a message
     /// waits, is steered or interrupts is the editor's call.
-    pub(super) fn check_editor_send(&self, i: usize, mode: &str) -> Result<(), String> {
+    pub(super) fn check_editor_send(&self, i: usize, mode: &str) -> Result<(), Error> {
         if !self.editor_attached() {
             return Ok(());
         }
+        let editors = |error: String| Error::new(Code::turn_owned_by_editor, error);
         if matches!(mode, "steer" | "interrupt") {
-            return Err(format!(
+            return Err(editors(format!(
                 "the editor controls this session's turns; --{mode} is its call, not brnr's"
-            ));
+            )));
         }
         let context = mode == "context";
         self.check_experimental(if context { Experimental::Context } else { Experimental::Send })?;
         if !context && self.sessions[i].turns.activity() == Activity::Busy {
-            return Err("the editor controls this session's turns; one is running, so send once \
-                        it has ended (or with --context, for the editor's next prompt)"
-                .into());
+            return Err(editors(
+                "the editor controls this session's turns; one is running, so send once it has \
+                 ended (or with --context, for the editor's next prompt)"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -152,10 +157,6 @@ impl Host {
     /// session, and from now on its requests for it are answered here (see
     /// `closed_error`).
     pub(super) fn closing_under_editor(&mut self, session: &str, taken_by: Option<u32>) {
-        if !self.editor_attached() {
-            return;
-        }
-        self.sessions.close_under_editor(session, taken_by);
         let (title, text) = match taken_by {
             Some(pid) => (
                 format!("Session taken over by brnr (process {pid})"),
@@ -170,7 +171,25 @@ impl Host {
                     .to_owned(),
             ),
         };
-        self.echo(session, &title, &[text_block(&text)]);
+        self.tell_closed_under_editor(session, taken_by, &title, &text);
+    }
+
+    /// `session` is closed under the editor, for process `taken_by` if one
+    /// has it: the editor is told in the session, `title` and `text`, and
+    /// from now on its requests for it are answered here (see
+    /// `closed_error`). None without an editor.
+    pub(super) fn tell_closed_under_editor(
+        &mut self,
+        session: &str,
+        taken_by: Option<u32>,
+        title: &str,
+        text: &str,
+    ) {
+        if !self.editor_attached() {
+            return;
+        }
+        self.sessions.close_under_editor(session, taken_by);
+        self.echo(session, title, &[text_block(text)]);
     }
 
     /// The agent didn't close `session`, with `error`: it stays open, and

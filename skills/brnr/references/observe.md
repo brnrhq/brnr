@@ -100,7 +100,8 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
   `reason` `cancel` or `timeout` when brnr answered for its turn's cancel or
   its time.
 - `turn_ended`: `stop_reason` (`end_turn`, `cancelled`, …) or an `error`
-  (`{code, message}`), the `messages` the turn carried, and `tokens`: the
+  (`{code, message, rpc_error}`: `agent_failed`, and the agent's JSON-RPC
+  error), the `messages` the turn carried, and `tokens`: the
   counts the agent reported for the turn (`total`, `input`, `output`,
   `thought`, `cached_read`, `cached_write`), each null where it gave none that
   is a count (a JSON integer that fits a `u64`; not `1e3`), and `tokens` null
@@ -114,7 +115,8 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
   (`--stop-when-idle`); or `by` `editor`.
 - `session_reopened`: `by` `editor`: the agent answered an editor's load
   of the session with success after it answered the session's close, so the
-  session is open again. A watcher has ended at the `session_closed`; watch
+  session is open again (unless another process took it meanwhile: then
+  it isn't, and there is none). A watcher has ended at the `session_closed`; watch
   it again to follow it.
 - `session_deleted`: the agent deleted its copy of the session, `by`
   `control` (`brnr session delete`) or the `editor`. brnr's transcript stays,

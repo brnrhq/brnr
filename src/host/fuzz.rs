@@ -115,13 +115,14 @@ impl Harness {
     }
 
     /// A bridge's `send`, `cancel`, `queue` or `status` (see control.rs),
-    /// from a peer that isn't there: the answer it would get. Other commands
-    /// start or stop processes, and aren't taken.
-    pub fn bridge(&mut self, req: &Value) -> Result<Value, String> {
+    /// from a peer that isn't there: the answer it would get, or its
+    /// `error` (ADR 8.7). Other commands start or stop processes, and aren't
+    /// taken.
+    pub fn bridge(&mut self, req: &Value) -> Result<Value, Value> {
         if !matches!(req["cmd"].as_str(), Some("send" | "cancel" | "queue" | "status")) {
-            return Err("not a command the harness takes".into());
+            return Err(crate::error::Error::from("not a command the harness takes").json());
         }
-        self.host.command(0, req).map(Option::unwrap_or_default)
+        self.host.command(0, req).map(Option::unwrap_or_default).map_err(|e| e.json())
     }
 
     /// `session` is this process's before the agent opens it, as if its lock
@@ -353,7 +354,8 @@ mod tests {
             h.tick();
             let sent = h.sent();
             assert_eq!(sent.start.len(), 1);
-            assert_eq!(sent.start[0]["error"], "timed out waiting for the session");
+            let error = serde_json::json!({ "code": "start_timed_out", "message": "timed out waiting for the session" });
+            assert_eq!(sent.start[0]["error"], error);
             let seq = h.host.seq;
             h.agent_line(late);
             assert!(h.sent().agent.is_empty(), "the agent was sent a step after the start failed");
@@ -388,14 +390,16 @@ mod tests {
         assert!(h.sent().agent.is_empty(), "a prompt went while a steer was unanswered");
         let status = h.bridge(&serde_json::json!({ "cmd": "status" })).unwrap();
         assert_eq!(
-            (&status["sessions"][0]["state"], &status["sessions"][0]["held"]),
+            (&status["sessions"][0]["state"], &status["sessions"][0]["held_count"]),
             (&"idle".into(), &1.into())
         );
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-5","result":{"outcome":"injected"}}"#);
         let sent = h.sent().agent;
         assert!(sent.len() == 1 && sent[0].windows(5).any(|w| w == b"later"));
         let queue = serde_json::json!({ "cmd": "queue", "session": "fuzz-send", "drop": "m1" });
-        assert_eq!(h.bridge(&queue).err(), Some("no held message m1".into()));
+        let none =
+            serde_json::json!({ "code": "message_not_found", "message": "no held message m1" });
+        assert_eq!(h.bridge(&queue).err(), Some(none));
         assert!(h.bridge(&serde_json::json!({ "cmd": "stop" })).is_err());
     }
 }

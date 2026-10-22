@@ -608,7 +608,9 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_an_id_is_found_where_it_is_and_nowhere_else`;
   [src/host/outbound.rs](../../src/host/outbound.rs):
   `adr_0002_ids_are_never_given_twice`,
-  `adr_0002_an_answer_is_its_requests_once`. Also
+  `adr_0002_an_answer_is_its_requests_once`,
+  `adr_0002_a_second_answer_reaches_nobody`,
+  `adr_0002_an_answer_for_a_closed_session_goes_to_whoever_asked`. Also
   [tests/security.rs](../../tests/security.rs):
   `adr_0003_acp_passes_bytes_unchanged` (ADR 3.1's), which checks that
   only the ids change.
@@ -635,6 +637,10 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_a_deep_request_is_notified`,
   `adr_0002_a_deep_event_is_caught_up`,
   `adr_0002_a_deep_request_is_logged`;
+  [src/host/outbound.rs](../../src/host/outbound.rs):
+  `adr_0002_an_answer_to_an_unknown_id_goes_on_as_it_came`;
+  [src/host/approvals.rs](../../src/host/approvals.rs):
+  `adr_0002_a_late_answer_from_the_editor_is_dropped`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0002_a_record_is_read_to_the_limit_and_no_deeper`.
 - 2.6: [tests/security.rs](../../tests/security.rs):
