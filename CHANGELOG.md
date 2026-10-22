@@ -215,6 +215,11 @@ brnr's own conventions:
 
 ### Fixed
 
+- A process killed but not yet reaped (a zombie) counts as gone: `session
+  list`, `process list` and every other command that looks processes up drop
+  it, removing its metadata and socket, and `doctor --fix` removes what it
+  left, as `event notify` and the other commands that catch up already
+  counted it. On macOS it was listed as not answering (ADR 3.7, #313).
 - A permission request or an elicitation the agent cancels with
   `$/cancel_request` ends: it is gone from `permission requests`,
   `elicitation requests` and a bridge's `pending`, the session is no longer

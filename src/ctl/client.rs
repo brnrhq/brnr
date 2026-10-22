@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::host::alive;
 use crate::{json, lock, paths, render, sys};
 
 use super::catch_up::{Follow, MISSED, TRIES};
@@ -273,9 +272,11 @@ const REFUSED_AGAIN: Duration = Duration::from_millis(20);
 /// too: the kernel queues the connection). A socket nobody listens on
 /// refuses, as one that isn't there does: the process that made it is
 /// gone, even when another process has its pid now (a reboot, or pids
-/// wrapping around). A pid that isn't the user's isn't brnr's (`alive`).
+/// wrapping around). A pid that has exited is gone, as for `gone_within`:
+/// one that isn't the user's isn't brnr's, and a zombie nothing has reaped
+/// yet listens no more, though `kill(pid, 0)` still reaches it.
 pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> bool {
-    if !alive(pid) {
+    if pid <= 0 || sys::exited(pid as libc::pid_t) {
         return true;
     }
     if !refused(err) {
@@ -1083,6 +1084,28 @@ mod tests {
         assert!(sys::kill(zombie.id() as libc::pid_t, 0), "reaped already");
         zombie.wait().unwrap();
         assert!(gone_within(&socket(zombie.id()), wait));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A process that left its metadata is gone once it has exited, though
+    /// nothing has reaped it: `kill(pid, 0)` still reaches a zombie, and on
+    /// macOS it started before its file was written (#313). One that lives,
+    /// its socket not refusing, isn't.
+    #[test]
+    fn adr_0003_a_zombie_process_is_gone() {
+        let dir = env::temp_dir().join(format!("brnr-zombie-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut zombie = std::process::Command::new("true").spawn().unwrap();
+        let pid = zombie.id();
+        let (socket, file) = (dir.join(format!("{pid}.sock")), dir.join(format!("{pid}.json")));
+        assert!(gone_within(&socket, Duration::from_secs(5)), "never a zombie");
+        assert!(sys::kill(pid as libc::pid_t, 0), "reaped already");
+        fs::write(&file, "{}").unwrap();
+        assert!(gone(pid.into(), &socket, &file, &io::Error::from(ErrorKind::NotFound)));
+        let timed_out = io::Error::from(ErrorKind::TimedOut);
+        assert!(!gone(std::process::id().into(), &socket, &file, &timed_out));
+        zombie.wait().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 
