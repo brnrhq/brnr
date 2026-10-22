@@ -328,10 +328,11 @@ every session).
 - Whether metadata in the runtime directory is a gone process's is told by
   its socket, not its pid, which may be another process's by then (a
   reboot, pids wrapping around). It is gone if its pid isn't a live process
-  of the user's, or its socket refuses a connection twice (nobody listens,
-  or it isn't there). macOS also refuses a stopped process's socket once
-  its backlog is full, so there a refusal counts only if the process with
-  that pid started after the file was written.
+  of the user's (one that has exited, a zombie nothing has reaped yet
+  included, as in ADR 10.2), or its socket refuses a connection twice
+  (nobody listens, or it isn't there). macOS also refuses a stopped
+  process's socket once its backlog is full, so there a refusal counts
+  only if the process with that pid started after the file was written.
 - `doctor --fix` removes what gone processes left behind. `session list`,
   `process list`, `session status`, `session resume` and every other
   command that looks processes up drop them, removing their metadata and
@@ -783,6 +784,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_a_panic_while_starting_is_recorded`.
   - [src/log.rs](../../src/log.rs):
     `adr_0003_how_the_process_ended_is_never_skipped`.
+  - [src/ctl/client.rs](../../src/ctl/client.rs):
+    `adr_0003_a_zombie_process_is_gone`.
   - [tests/chaos.rs](../../tests/chaos.rs):
     `adr_0003_seeded_agent_crash_records_death_and_releases_session`,
     `adr_0003_killed_proxy_mid_fault_stops_host_and_agent`.

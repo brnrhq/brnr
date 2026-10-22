@@ -310,6 +310,11 @@ brnr's own conventions:
 
 ### Fixed
 
+- A process killed but not yet reaped (a zombie) counts as gone: `session
+  list`, `process list` and every other command that looks processes up drop
+  it, removing its metadata and socket, and `doctor --fix` removes what it
+  left, as `event notify` and the other commands that catch up already
+  counted it. On macOS it was listed as not answering (ADR 3.7, #313).
 - `event wait` waits while an approval or an elicitation is waiting, also
   one whose turn has ended, and says the session is idle once it is
   answered; `--for exit` prints the `process_exited` it makes for a process
