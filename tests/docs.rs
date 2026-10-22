@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use common::{AGENT, Env, kill, script, wait_for};
+use common::{AGENT, Env, kill, script, wait_for, with_default_interrupt};
 
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
@@ -194,7 +194,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Idle,
         Says(r#""status": "delivered""#),
     ),
-    ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr event wait $s --timeout 600 --json", Idle, Says(r#""state": "idle""#)),
     (
         r#"brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?""#,
         Idle,
@@ -218,12 +218,12 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
         Turn,
         Says(r#""status": "held""#),
     ),
-    ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""event": "idle""#)),
+    ("brnr event wait $s --timeout 900 --json", Idle, Says(r#""state": "idle""#)),
     ("brnr event wait $s --for turn --timeout 900 --json", Slow, Says(r#""event": "turn_ended""#)),
     (
         r#"brnr prompt send $s --wait --timeout 900 --json --prompt "what did you change, and why?""#,
         Idle,
-        Says(r#""dropped": null"#),
+        Says(r#""dropped": []"#),
     ),
     (
         "brnr session new --wait --timeout 900 --json --stop-when-idle 0 --prompt - -- brnr-claude-adapter < task.md",
@@ -415,7 +415,8 @@ fn adr_0008_every_toml_block_loads() {
         env.write_config(&text);
         let out = env.run(&["doctor", "--json"]);
         let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let config = checks.as_array().unwrap().iter().find(|c| c["check"] == "config").unwrap();
+        let config =
+            checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "config").unwrap();
         if config["level"] != "ok" {
             problems.push(format!("{at}: {}", config["message"]));
         }
@@ -460,6 +461,88 @@ fn the_interface_reference_matches_cli_help() {
         .expect("CLI synopsis must end")
         .0;
     assert_eq!(synopsis, help.trim_end(), "update the reference when CLI syntax changes");
+}
+
+/// The error codes a test can't reach, with why (ADR 8.7). Every other
+/// code is asserted by a test, through `code_is`: in tests/, or in a unit
+/// test in src/.
+const UNREACHED: &[(&str, &str)] = &[];
+
+/// The error codes, as brnr has them, are the ones docs/interface.md and
+/// ADR 8.7 list, in the same order; and a test asserts that brnr reported
+/// each one, but those in [`UNREACHED`], with why (ADR 8.7).
+#[test]
+fn adr_0008_every_error_code_is_listed_and_reached() {
+    let codes = brnr::internals::error::names();
+    // The first column of the table that follows `heading`.
+    let listed = |doc: &str, heading: &str| -> Vec<String> {
+        let text = read(doc);
+        let (_, after) = text.split_once(heading).unwrap_or_else(|| panic!("{doc}: {heading}"));
+        let table = after.lines().skip_while(|l| !l.starts_with("| `"));
+        let rows = table.take_while(|l| l.starts_with("| `"));
+        rows.filter_map(|l| Some(l.split('`').nth(1)?.to_owned())).collect()
+    };
+    let adr = "docs/adr/0008-the-command-line-and-compatibility.md";
+    for (doc, heading) in [("docs/interface.md", "### Errors"), (adr, "## 8.7 ")] {
+        assert_eq!(listed(doc, heading), codes, "{doc} lists other codes than src/error.rs");
+    }
+    // The tests: tests/, and the unit tests in src/ (after a module's
+    // `#[cfg(test)]`), but error.rs's own, which only reads codes back.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut tests = String::new();
+    let mut files = vec![root.join("src")];
+    while let Some(path) = files.pop() {
+        if path.is_dir() {
+            files.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+        } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("src/error.rs") {
+            let text = fs::read_to_string(&path).unwrap();
+            tests.push_str(text.split_once("#[cfg(test)]").map_or("", |(_, tests)| tests));
+        }
+    }
+    for entry in fs::read_dir(root.join("tests")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests/docs.rs") {
+            tests.push_str(&fs::read_to_string(&path).unwrap());
+        }
+    }
+    let reached = asserted_codes(&tests);
+    for code in &codes {
+        let why = UNREACHED.iter().find(|(c, _)| c == code);
+        match (reached.iter().any(|r| r == code), why) {
+            (true, Some(_)) => panic!("{code} is reached: take it out of UNREACHED"),
+            (false, None) => panic!("no test asserts {code}, and UNREACHED doesn't say why"),
+            _ => {}
+        }
+    }
+    for (code, _) in UNREACHED {
+        assert!(codes.contains(code), "UNREACHED has {code}, which brnr doesn't");
+    }
+    let unknown: Vec<&String> = reached.iter().filter(|c| !codes.contains(&c.as_str())).collect();
+    assert!(unknown.is_empty(), "tests assert codes brnr doesn't have: {unknown:?}");
+}
+
+/// The codes `tests` asserts: each `code_is(said, code)` call's, where
+/// `code` is written out, `"name"` (tests/common's) or `Code::name`
+/// (error.rs's). A code only named (in a comment, a fixture, a request) or
+/// passed in a variable isn't one.
+fn asserted_codes(tests: &str) -> Vec<String> {
+    let code = tests.lines().filter(|l| !l.trim_start().starts_with("//"));
+    let code = code.collect::<Vec<_>>().join("\n");
+    let mut found: Vec<String> = (code.split("code_is(").skip(1))
+        .filter_map(|call| {
+            // The call, to the end of its statement.
+            let call = call.split(';').next()?.trim_end().strip_suffix(')')?;
+            let last = call.trim_end().trim_end_matches(',').rsplit(',').next()?.trim();
+            let name = match last.strip_prefix("Code::") {
+                Some(name) => name,
+                None => last.strip_prefix('"')?.strip_suffix('"')?,
+            };
+            Some(name.to_owned())
+        })
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 fn read(doc: &str) -> String {
@@ -676,7 +759,7 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         })
         .stdout(File::create(dir.join(&stdout)).unwrap())
         .stderr(File::create(dir.join("stderr")).unwrap());
-    let mut child = cmd.spawn().unwrap();
+    let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
     let printed = || fs::read_to_string(dir.join(&stdout)).unwrap_or_default();
     let stderr = || fs::read_to_string(dir.join("stderr")).unwrap_or_default();
     let never = |what| Err(format!("never printed {what:?}"));

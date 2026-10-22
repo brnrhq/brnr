@@ -383,7 +383,9 @@ fn adr_0009_a_symlinked_transcript_is_never_read() {
     symlink(&outside, env.dir.join("home/projects/linked")).unwrap();
     fs::write(outside.join("target"), text.replace("old-1", "link-2")).unwrap();
     symlink(outside.join("target"), project.join("link-2.jsonl")).unwrap();
-    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    let list =
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
+            .clone();
     let ids: Vec<&str> =
         list.as_array().unwrap().iter().filter_map(|r| r["session"].as_str()).collect();
     assert_eq!(ids, ["old-1"], "{list}");
@@ -408,14 +410,13 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
         symlink(outside.join(sub), home.join(sub)).unwrap();
     };
     let list = || -> Vec<Value> {
-        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"]))
-            .unwrap()
+        serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
             .as_array()
             .unwrap()
             .clone()
     };
     let shown = list();
-    assert!(shown.len() == 1 && shown[0]["agent"] == "fake_agent.py", "{shown:?}");
+    assert!(shown.len() == 1 && shown[0]["agent"]["program"] == "fake_agent.py", "{shown:?}");
 
     link("hosts");
     // A process that died without recording it, its log readable by others.
@@ -423,11 +424,12 @@ fn adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read() {
     fs::write(&dead, "{\"ts\":\"t\",\"host_id\":\"dead\",\"event\":{\"event\":\"started\"}}\n")
         .unwrap();
     chmod(&dead, 0o644);
-    let shown = list();
-    // The agent is named in the host log only.
-    assert!(shown.len() == 1 && shown[0]["agent"] == "?", "its host log was read: {shown:?}");
+    // The session's agent is its transcript's, not the host log's (ADR
+    // 5.10): it is listed as before, and `doctor` shows the logs unread.
+    assert_eq!(list(), shown);
     let checks: Value = serde_json::from_slice(&env.run(&["doctor", "--json"]).stdout).unwrap();
-    let check = checks.as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
+    let check =
+        checks["checks"].as_array().unwrap().iter().find(|c| c["check"] == "host logs").unwrap();
     assert_eq!(check["message"], "no process died without recording it (0 logs)", "{check}");
     let report = env.run(&["doctor", "--report", "--json"]);
     let report: Value = serde_json::from_slice(&report.stdout).unwrap();
@@ -1134,12 +1136,15 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
         let new = env.fails(&new_args(&["--prompt", "hi"]));
         let acp = stderr(&env.run_with_stdin(&["acp", "--", AGENT], b""));
+        // `brnr acp` says it to the editor's log, with no code (ADR 8.7).
+        code_is(&new, "config_invalid");
         for err in [&new, &acp] {
             assert!(err.contains(&format!("{}: ", path.display())), "{err}");
             assert!(err.contains(says), "{file:o} {dir:o}: {err}");
             assert!(err.contains("so brnr won't read the config"), "{err}");
             let fix = format!("chmod {fix} ");
-            assert!(err.contains(&fix) && err.trim_end().ends_with(&name), "{err}");
+            let err = err.trim_end().trim_end_matches(" [config_invalid]");
+            assert!(err.contains(&fix) && err.ends_with(&name), "{err}");
         }
         assert_eq!((mode(&path), mode(path.parent().unwrap())), (file, dir));
         assert!(env.hosts().is_empty() && env.calls().is_empty());
@@ -1244,7 +1249,10 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
         assert!(err.contains(says), "{err}");
         assert!(err.contains("so brnr won't read the config"), "{err}");
         let name = at.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(err.contains("chmod -N ") && err.trim_end().ends_with(&name), "{err}");
+        code_is(&err, "config_invalid");
+        let err =
+            err.trim_end().strip_suffix(" [config_invalid]").unwrap_or_else(|| panic!("{err}"));
+        assert!(err.contains("chmod -N ") && err.ends_with(&name), "{err}");
         assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
         assert!(env.hosts().is_empty() && env.calls().is_empty());
         let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();
