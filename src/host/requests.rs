@@ -712,7 +712,10 @@ impl Host {
                 let said = error_message(error);
                 let mut failed_too = None;
                 if let PeerOp::Close { session, failed, .. } = &op {
-                    if let Some(i) = self.find(session) {
+                    // One open again since isn't closing (see `peer_result`).
+                    let closing =
+                        |i: &usize| matches!(self.sessions[*i].closing, Some(Close::Sent));
+                    if let Some(i) = self.find(session).filter(closing) {
                         let s = &mut self.sessions[i];
                         s.closing = None; // Still open: it takes requests again.
                         s.opening = false;
@@ -728,6 +731,15 @@ impl Host {
                             )
                         })
                     });
+                    // Nobody to answer, as for an editor's session this
+                    // process doesn't serve (`not_served`): the host log
+                    // says so (P3).
+                    if peer == 0
+                        && let Some(error) = &failed_too
+                    {
+                        let event = json!({ "event": "open_failed", "session": session, "error": error.json() });
+                        self.sink.note(None, event);
+                    }
                 }
                 failed_too.unwrap_or_else(|| Error::agent(said, error)).reply()
             }
@@ -777,7 +789,11 @@ impl Host {
                     }
                     None => json!({ "ok": true, "session": session }),
                 };
-                let Some(i) = self.find(&session) else {
+                // One open here that isn't closing opened again since: an
+                // editor's load, after a close of one this process didn't
+                // serve (`not_served`), isn't closed by it.
+                let closing = |i: &usize| matches!(self.sessions[*i].closing, Some(Close::Sent));
+                let Some(i) = self.find(&session).filter(closing) else {
                     self.stop_if_empty();
                     return Some(reply);
                 };

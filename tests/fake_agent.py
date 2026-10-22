@@ -25,6 +25,8 @@ with environment variables:
   CANCEL_DELAY=<s>  wait before honouring session/cancel
   NO_RESUME=1       offer session/load but not session/resume
   RESUME_FAIL=1     session/resume answers with an error
+  RESUME_LATER=<file>  answer session/resume once this file exists; until
+                    then it goes on reading and answering other messages
   NO_LOAD=1         don't offer session/load
   NO_AGENT_INFO=1   initialize says no agentInfo
   NO_HISTORY=1      session/load replays nothing
@@ -113,7 +115,9 @@ $/cancel_request for the prompt that hangs answers it with an error, -32800.
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would, a page each. session/load replays a question, an answer and a title. session/delete
 deletes any session but one whose id starts with gone, which it doesn't have
-(-32002), or stuck, which it fails to delete (-32603).
+(-32002), or stuck, which it fails to delete (-32603). session/prompt serves
+any session but one whose id starts with nope, which it doesn't have: it
+answers -32002, Session not found, saying nothing of it.
 
 A client whose initialize advertises boolean config options
 (clientCapabilities.session.configOptions.boolean) also gets a boolean option,
@@ -254,8 +258,9 @@ def settings(answer):
     return answer
 
 
-# A late answer to session/new (NEW_GATE), session/load (LOAD_LATER) or a
-# steer (STEER_GATE) is sent from a thread of its own.
+# A late answer to session/new (NEW_GATE), session/load (LOAD_LATER),
+# session/resume (RESUME_LATER) or a steer (STEER_GATE) is sent from a thread
+# of its own.
 sending = threading.Lock()
 
 
@@ -374,6 +379,12 @@ def load_later(gate, mid, session):
     if env("LATE_HISTORY"):
         say(session, "late history")
     load_answer(mid)
+
+
+def resume_later(gate, mid):
+    while not os.path.exists(gate):
+        time.sleep(0.01)
+    result(mid, settings({}))
 
 
 def new_later(gate, mid, session):
@@ -947,6 +958,9 @@ for line in sys.stdin.buffer:
             time.sleep(0.01)
         if method == "session/resume" and env("RESUME_FAIL"):
             error(mid, -32603, "Can't resume the session")
+        elif method == "session/resume" and env("RESUME_LATER"):
+            later = (env("RESUME_LATER"), mid)
+            threading.Thread(target=resume_later, args=later, daemon=True).start()
         elif method == "session/resume":
             result(mid, settings({}))
         elif env("LOAD_LATER"):
@@ -1026,6 +1040,8 @@ for line in sys.stdin.buffer:
             result(mid, {"configOptions": config(model)})
         else:
             error(mid, -32602, f"bad option {params.get('configId')}={params.get('value')}")
+    elif method == "session/prompt" and str(sid).startswith("nope"):
+        error(mid, -32002, f"Session not found: {sid}")
     elif method == "session/prompt":
         text = text_of(params["prompt"])
         append("PROMPT_LOG", text)

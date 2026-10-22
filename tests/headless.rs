@@ -2976,6 +2976,49 @@ fn adr_0005_an_editors_failed_resume_holds_its_lock_until_written() {
     let _ = editor.kill();
 }
 
+/// An editor's prompt for a session the agent doesn't have, an id mistyped
+/// say, opens nothing: the editor gets the agent's error, and the session
+/// is in no list, its lock goes and it has no transcript, so that a load of
+/// it later records its history (ADR 5.6, #331).
+#[test]
+fn adr_0005_an_editors_prompt_the_agent_has_no_session_for_opens_nothing() {
+    let env = Env::new("ed-nope");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt_in(3, "nope-1", "reply hi")).unwrap();
+    let error = response(&mut from_agent, 3)["error"].clone();
+    assert_eq!(error["code"], -32002, "{error}");
+    let lock = env.dir.join("home/sessions/nope-1.lock");
+    assert!(wait_for(Duration::from_secs(5), || !lock.exists()), "its lock is held");
+    assert!(!env.ok(&["session", "list"]).contains("nope-1"));
+    assert!(!env.ok(&["session", "list", "--json"]).contains("nope-1"));
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let files = folders.flat_map(|f| fs::read_dir(f.path()).unwrap().flatten());
+    let files: Vec<String> = files.map(|f| f.file_name().to_string_lossy().into()).collect();
+    assert!(files.iter().all(|f| !f.starts_with("nope-1")), "{files:?}");
+    assert!(files.iter().any(|f| f.starts_with("sess-1")), "{files:?}");
+    let _ = editor.kill();
+}
+
+/// An editor's prompt for a session it never opened here, which the agent
+/// serves, opens the session once the agent says anything of it: its
+/// transcript has what the agent said, and the prompt, which came before,
+/// is in the host log (ADR 5.6, #331).
+#[test]
+fn adr_0005_an_editors_prompt_the_agent_serves_opens_its_session() {
+    let env = Env::new("ed-served");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_prompt_in(2, "any-1", "reply served here")).unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let said = logged(&env, "any-1", "agent_message,turn_ended");
+    assert_eq!(said[0]["text"], "served here", "{said:?}");
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(logged(&env, "any-1", "user_message").is_empty());
+    let host_log = fs::read_to_string(editor_process(&env)["host_log"].as_str().unwrap()).unwrap();
+    assert!(host_log.contains(r#""event":"user_message""#), "{host_log}");
+    assert_eq!(status_of(&env, "any-1")["lock_pid"], editor_process(&env)["host_pid"]);
+    let _ = editor.kill();
+}
+
 /// Context held for a session whose load the agent fails is dropped with
 /// its `context_dropped`, `by` `close`, as at any end of the session here,
 /// though no `session_closed` follows: the session never opened (P3,
@@ -3942,6 +3985,32 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let _ = editor.kill();
 }
 
+/// An editor's prompt of a session a headless process holds, which it
+/// never loaded, is refused as a load of it is, and the agent never hears
+/// of it (ADR 3.9, #331).
+#[test]
+fn adr_0003_an_editors_prompt_of_a_held_session_is_refused() {
+    let env = Env::new("ed-heldprompt");
+    env.start(&[]);
+    let headless = env.pid();
+    let prompts = env.calls_of("session/prompt").len();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(2, "reply from the editor")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
+    assert_eq!(env.calls_of("session/prompt").len(), prompts, "the agent got the prompt");
+    let host_log = fs::read_to_string(editor_process(&env)["host_log"].as_str().unwrap()).unwrap();
+    let notes = host_log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take());
+    let refused: Vec<Value> = notes.filter(|n| n["event"] == "editor_request_refused").collect();
+    assert_eq!(refused.len(), 1, "{host_log}");
+    let logged = json!({ "code": "session_active", "message": message });
+    assert_eq!((&refused[0]["method"], &refused[0]["error"]), (&json!("session/prompt"), &logged));
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["lock_pid"].to_string(), headless);
+    let _ = editor.kill();
+}
+
 /// An editor's load of a session held by a process started with another
 /// runtime directory, which this one's commands can't reach, is refused the
 /// same way, saying which `BRNR_DIR` releases it (ADR 3.9).
@@ -4553,12 +4622,149 @@ fn adr_0005_overlapping_loads_closed_meanwhile_have_one_history() {
     let _ = editor.kill();
 }
 
+/// Once the editor's process has let go of `session`, closed there, a
+/// headless process resumes it, taking its lock: its pid. `RESUME_LATER`, if
+/// set, is the editor's agent's only.
+fn taken_meanwhile(env: &Env, session: &str) -> String {
+    let lock = env.dir.join(format!("home/sessions/{session}.lock"));
+    assert!(wait_for(Duration::from_secs(5), || !lock.exists()), "{session} not let go of");
+    let out = env.brnr(&resume_args(session, &[])).env_remove("RESUME_LATER").output().unwrap();
+    assert!(out.status.success(), "session resume failed: {}", stderr(&out));
+    let mut hosts = env.hosts().into_iter();
+    let headless = hosts.find(|h| !h["proxy_pid"].is_number()).expect("no headless one");
+    headless["host_pid"].to_string()
+}
+
+/// The editor's host log, as JSON, once it has an `event`.
+fn host_log_with(env: &Env, event: &str) -> Vec<Value> {
+    let path = editor_process(env)["host_log"].as_str().unwrap().to_owned();
+    let has = || fs::read_to_string(&path).is_ok_and(|t| t.contains(&format!("\"{event}\"")));
+    assert!(wait_for(Duration::from_secs(5), has), "no {event} in the host log");
+    let log = fs::read_to_string(&path).unwrap();
+    log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take()).collect()
+}
+
+/// old-1, closed in the editor's process while its `what` (`id`) was
+/// unanswered, and taken by process `headless` meanwhile, which the agent
+/// has now answered with success: the editor is told in the session which
+/// process holds it, then gets the answer as the agent gave it. The agent
+/// is asked to close it, this process serves nothing of it, the host log
+/// says why, and the editor's prompt of it is answered by brnr, saying
+/// where it continues (P11, ADR 3.9).
+fn not_served(
+    env: &Env,
+    to_agent: &mut ChildStdin,
+    from_agent: &mut BufReader<ChildStdout>,
+    (id, what): (u64, &str),
+    headless: &str,
+) {
+    let either = |m: &Value| m["id"] == id || m["params"]["update"]["sessionUpdate"] == "tool_call";
+    let note = message(from_agent, either)["params"]["update"].clone();
+    assert_eq!(note["title"], format!("Session held by brnr process {headless}"), "{note}");
+    let text = note["content"][0]["content"]["text"].as_str().unwrap_or_default();
+    let held = format!(
+        "The agent answered the {what} after the session closed here, and another process took \
+         it meanwhile, so brnr closed it here again: session old-1 is running in brnr process \
+         {headless}; release it first with `brnr session close old-1`."
+    );
+    assert_eq!(text, held, "{note}");
+    assert!(response(from_agent, id)["result"].is_object());
+    // The editor's close, then brnr's.
+    let closes = || env.calls_of("session/close").len() == 2;
+    assert!(wait_for(Duration::from_secs(5), closes), "{:?}", env.calls_of("session/close"));
+    let notes = host_log_with(env, "open_failed");
+    let failed: Vec<&Value> = notes.iter().filter(|n| n["event"] == "open_failed").collect();
+    assert_eq!(failed.len(), 1, "{notes:?}");
+    assert_eq!(failed[0]["session"], "old-1");
+    assert_eq!(failed[0]["error"]["code"], "session_active", "{notes:?}");
+    let error = failed[0]["error"]["message"].as_str().unwrap_or_default();
+    let said = format!(
+        "the agent opened old-1 for the editor's {what} after it closed here, and it is running \
+         in process {headless}"
+    );
+    assert_eq!(error, said);
+    assert!(!notes.iter().any(|n| n["event"] == "session_shared"), "{notes:?}");
+    let status = status_of(env, "old-1");
+    assert_eq!(status["lock_pid"].to_string(), headless, "{status}");
+    assert_eq!(status["shared_pids"], json!([]), "{status}");
+    assert!(logged(env, "old-1", "session_reopened").is_empty());
+    writeln!(to_agent, "{}", editor_prompt_in(id + 10, "old-1", "hello")).unwrap();
+    let error = response(from_agent, id + 10)["error"].clone();
+    let says = format!("session old-1 was taken over by brnr (process {headless})");
+    assert!(error["message"].as_str().unwrap_or_default().contains(&says), "{error}");
+}
+
+/// An editor's load answered with success after its session's close, which
+/// another process took in between: it isn't served here, unshared, as the
+/// load would have been refused had it been sent then (P11, ADR 3.9, #357).
+#[test]
+fn adr_0003_a_load_answered_after_another_process_took_its_session_isnt_served() {
+    let env = Env::new("ed-load-taken");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    load_then_close(&env, &mut to_agent, &mut from_agent);
+    let headless = taken_meanwhile(&env, "old-1");
+    fs::write(&later, "").unwrap();
+    not_served(&env, &mut to_agent, &mut from_agent, (2, "load"), &headless);
+    let _ = editor.kill();
+}
+
+/// So is a resume, of a session the editor had loaded, answered after the
+/// session's close (P11, ADR 3.9, #357).
+#[test]
+fn adr_0003_a_resume_answered_after_another_process_took_its_session_isnt_served() {
+    let env = Env::new("ed-resume-taken");
+    let later = env.dir.join("resume-later");
+    let env = env.agent("RESUME_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_load(&env, 2, "old-1")).unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let resume = editor_load(&env, 3, "old-1").replace("session/load", "session/resume");
+    writeln!(to_agent, "{resume}").unwrap();
+    let close = request_with_id("4", "session/close", json!({ "sessionId": "old-1" }));
+    writeln!(to_agent, "{close}").unwrap();
+    assert!(response(&mut from_agent, 4)["result"].is_object());
+    let headless = taken_meanwhile(&env, "old-1");
+    fs::write(&later, "").unwrap();
+    not_served(&env, &mut to_agent, &mut from_agent, (3, "resume"), &headless);
+    let _ = editor.kill();
+}
+
+/// With `shared_sessions`, a load answered after its session's close, which
+/// another process took in between, is served shared, as one sent then
+/// would have been (ADR 3.9, ADR 3.10).
+#[test]
+fn adr_0003_shared_sessions_serve_a_load_answered_after_another_process_took_it() {
+    let env = Env::new("ed-load-taken-shared");
+    env.write_config("[profiles.default.editor]\nfeatures = [\"shared_sessions\"]\n");
+    let later = env.dir.join("load-later");
+    let env = env.agent("LOAD_LATER", later.to_str().unwrap());
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    load_then_close(&env, &mut to_agent, &mut from_agent);
+    let headless = taken_meanwhile(&env, "old-1");
+    fs::write(&later, "").unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let notes = host_log_with(&env, "session_shared");
+    assert!(!notes.iter().any(|n| n["event"] == "open_failed"), "{notes:?}");
+    let status = status_of(&env, "old-1");
+    assert_eq!(status["lock_pid"].to_string(), headless, "{status}");
+    assert_eq!(status["shared_pids"], json!([editor_process(&env)["host_pid"]]), "{status}");
+    assert_eq!(env.calls_of("session/close").len(), 1, "only the editor's");
+    let _ = editor.kill();
+}
+
 // ---- lines brnr reads --------------------------------------------------
 
 /// A prompt from the editor, with id `id`.
 fn editor_prompt(id: u64, text: &str) -> String {
+    editor_prompt_in(id, "sess-1", text)
+}
+
+/// A prompt from the editor for `session`, with id `id`.
+fn editor_prompt_in(id: u64, session: &str, text: &str) -> String {
     let prompt = [serde_json::json!({ "type": "text", "text": text })];
-    let params = serde_json::json!({ "sessionId": "sess-1", "prompt": prompt });
+    let params = serde_json::json!({ "sessionId": session, "prompt": prompt });
     serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": params })
         .to_string()
 }

@@ -115,7 +115,8 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
   (`--stop-when-idle`); or `by` `editor`.
 - `session_reopened`: `by` `editor`: the agent answered an editor's load
   of the session with success after it answered the session's close, so the
-  session is open again. A watcher has ended at the `session_closed`; watch
+  session is open again (unless another process took it meanwhile: then
+  it isn't, and there is none). A watcher has ended at the `session_closed`; watch
   it again to follow it.
 - `session_deleted`: the agent deleted its copy of the session, `by`
   `control` (`brnr session delete`) or the `editor`. brnr's transcript stays,

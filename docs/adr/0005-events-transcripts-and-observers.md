@@ -483,6 +483,19 @@ written.
   follows the rule.
 - A bridge's load (`session resume --pid`, ADR 8.1) follows it too, and
   looks in any folder, whatever the cwd it is resumed in.
+- An editor's `session/prompt` of a session not open in its process (one
+  it never loaded or created there, a mistyped id) opens the session
+  pending: its turn is tracked, but its transcript isn't opened, and what
+  is recorded of it goes to the host log, until the agent says anything
+  of the session (a notification or a request naming it, or a success
+  answer to the prompt, a load or a resume); then the transcript opens,
+  before that line is recorded. An editor's load of a pending session
+  opens its transcript too, so that its replay is recorded as a load of a
+  session not open here is, but the session stays pending. A pending
+  session closes again once the agent has failed everything the editor
+  asked of it, its prompts, loads and resumes, having said nothing of it:
+  the last failure closes it, as one a failed load opened closes, with no
+  `session_closed`, as it never opened, and its lock goes (#331).
 - A session a process has served, open or closed since, has its
   transcript in that process, for an editor's load and a bridge's alike,
   whether or not the logger, which writes behind (ADR 5.5), has written it
@@ -516,7 +529,9 @@ written.
   and a `session_reopened`, `by` `editor`, says so (`session reopened
   (editor): its load was answered after its close`). brnr takes the
   agent's last answer as how the session is, and doesn't guess otherwise
-  (P4).
+  (P4). Unless another process took the session between the close and the
+  answer: then it isn't served here (ADR 3.9), with no `session_reopened`
+  and no `history`, as for a load that fails.
 - The load's replay is kept through the close: what the agent replays
   meanwhile is counted, and goes to the host log, as the session's files
   are closed. Once the load succeeds, the replay goes on in the reopened
@@ -543,6 +558,14 @@ says it is missing (P3, #60).
 - The transcript of a session first loaded by brnr starts with its
   history, as the agent replayed it. Those records are as new as the
   load, and carry this process's ids.
+- An agent that serves a session it was never asked to create or load
+  has that session's first prompt, the `user_message` and the request,
+  in the host log, not the transcript, which starts with what the agent
+  said. A conforming agent fails such a prompt: opening the transcript at
+  once would leave a file of the session's turn, so that a load of it
+  later, as an editor that prompts before it loads does, records nothing
+  of its history; and a mistyped id would be an open session, holding its
+  lock, until the process exits (#331).
 - brnr's transcript is complete only for what happened through brnr:
   turns taken in the agent's own client, or while a profile had `log =
   "off"` (ADR 6.1), or records a slow disk skipped (ADR 5.1), aren't in
@@ -1356,7 +1379,12 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_an_editors_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_bridges_failed_load_records_its_last_replayed_message`,
   `adr_0005_a_starts_failed_load_records_its_last_replayed_message`,
-  `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`;
+  `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`,
+  `adr_0005_an_editors_prompt_the_agent_has_no_session_for_opens_nothing`,
+  `adr_0005_an_editors_prompt_the_agent_serves_opens_its_session`;
+  [src/host/sessions.rs](../../src/host/sessions.rs):
+  `adr_0005_a_prompted_session_outlasts_a_failed_load_while_its_turn_runs`,
+  `adr_0005_a_prompted_session_is_held_until_its_resume_is_answered`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0005_only_openings_are_no_transcript`;
   [src/log.rs](../../src/log.rs):

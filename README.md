@@ -562,7 +562,7 @@ show the same events, live or read back from the transcript:
 | `message_dropped` | a message that never went, its `reason` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, its `reason` `queue`, `close` or `exit` |
 | `session_closed` | `by` `control`, its `reason` `close` (`brnr session close`, `--take-over`) or `idle`; or `by` `editor`, `reason` `close` |
-| `session_reopened` | an editor's load the agent answered with success after it answered the session's close: the session is open again, `by` `editor`, and the load's `history` follows |
+| `session_reopened` | an editor's load the agent answered with success after it answered the session's close: the session is open again, `by` `editor`, and the load's `history` follows. None if another process took the session meanwhile, which the editor's process then doesn't serve (ADR 3.9) |
 | `session_deleted` | the agent deleted the session, `by` `control` (`brnr session delete`) or the `editor`; brnr's transcript stays |
 | `history` | a load's replay: how many `updates`, whether they were `recorded` (as events with `replayed`), how many of them are (`recorded_updates`: fewer only when the session closed while its load was unanswered), and over how many `loads` (more than 1 only for an editor's loads that overlap) |
 | `line_too_long` | a line `from` the `agent` or `editor` past the `limit` (32 MiB), unread: `relayed` to the other side with an editor, dropped headless |

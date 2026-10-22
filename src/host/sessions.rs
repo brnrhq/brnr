@@ -3,14 +3,17 @@
 //! that lock goes, once the session's records are written.
 //!
 //! A session's life here: claimed (its lock taken, or found held, before
-//! the agent is asked to resume or load it), open (`Session`; a bridge's
-//! `opening` until it commits, ADR 3.4), closing (`Session::closing`, until
-//! the agent has closed it, ADR 3.12), then let go of (`LettingGo`): its
-//! lock, and the answer to its close, go once the logger has written what
-//! the process recorded of it, 2 s at most (ADR 5.5). A load's replay
-//! outlasts its session's close while the load is unanswered (ADR 5.6).
+//! the agent is asked to resume, load or prompt it), open (`Session`; a
+//! bridge's `opening` until it commits, ADR 3.4; one an editor's prompt
+//! opened `pending`, with no transcript, until the agent says anything of
+//! it, ADR 5.6), closing (`Session::closing`, until the agent has closed
+//! it, ADR 3.12), then let go of (`LettingGo`): its lock, and the answer
+//! to its close, go once the logger has written what the process recorded
+//! of it, 2 s at most (ADR 5.5). A load's replay outlasts its session's
+//! close while the load is unanswered (ADR 5.6).
 //!
-//! Sessions open and close here only: [`Host::open_fork`] and
+//! Sessions open and close here only: [`Host::open_fork`] (or
+//! [`Host::open_prompted`], pending) and
 //! [`Host::close_session`], which every ending goes through, as its
 //! [`Ending`] says, so no close forgets a step. The rest of the host reaches
 //! an open session by its index (`host.sessions[i]`).
@@ -25,6 +28,7 @@ use serde_json::{Value, json};
 
 use super::acp::{Replay, Session};
 use super::requests::history;
+use super::turns::Activity;
 use super::{Host, LOG_FLUSH, control};
 use crate::error::{Code, Error};
 use crate::lock::{self, Lock};
@@ -80,10 +84,11 @@ pub(super) enum Ending<'a> {
     /// too): `session_closed` says so (ADR 5.2), and the replay of an
     /// editor's load still unanswered outlasts it (ADR 5.6).
     Closed(&'a str),
-    /// The agent failed the load it was opened for, after replaying what
-    /// it did of the history, recorded perhaps (ADR 5.6). It never opened,
+    /// The agent failed what it was opened for: a load, after replaying
+    /// what it did of the history, recorded perhaps, or the editor's prompt
+    /// of a session the agent said nothing of (ADR 5.6). It never opened,
     /// so no `session_closed`.
-    LoadFailed,
+    OpenFailed,
     /// The agent opened it, and it isn't this process's to serve: a headless
     /// process's session another process holds, or one it couldn't lock
     /// (ADR 3.9). Nothing of it was recorded.
@@ -361,6 +366,73 @@ impl Host {
         self.open_fork(session, cwd, None)
     }
 
+    /// Index of `session`, for the editor's prompt of it: one not open yet
+    /// opens pending (`Session::pending`), its records in the host log until
+    /// the agent says anything of it (see [`Self::confirm`]) or the editor
+    /// loads it. A conforming agent fails a prompt of a session it doesn't
+    /// have, and a transcript of one would stop a later load of it recording
+    /// its history (ADR 5.6).
+    pub(super) fn open_prompted(&mut self, session: &str) -> usize {
+        match self.find(session) {
+            Some(i) => i,
+            None => self.open_in(session, None, None, true),
+        }
+    }
+
+    /// Session `i` is the agent's: if it was pending, it no longer is, and
+    /// its files open if they aren't (see [`Self::open_files`]).
+    pub(super) fn confirm(&mut self, i: usize, cwd: Option<&str>) {
+        if std::mem::take(&mut self.sessions[i].pending) {
+            self.open_files(i, cwd);
+        }
+    }
+
+    /// Session `i`'s files, which a pending one hasn't, open, as they would
+    /// have as it opened, under `cwd` if one is given: what is recorded of it
+    /// from now on goes there (ADR 5.6). Once only.
+    pub(super) fn open_files(&mut self, i: usize, cwd: Option<&str>) {
+        let s = &mut self.sessions[i];
+        if !std::mem::take(&mut s.unopened) {
+            return;
+        }
+        if let Some(cwd) = cwd {
+            s.cwd = PathBuf::from(cwd);
+        }
+        let s = &self.sessions[i];
+        if self.keeps_transcript(&s.hold) {
+            self.sink.open_session(&s.id, &s.cwd, s.forked_from.as_deref());
+        }
+    }
+
+    /// Session `i`, if pending, closes once the agent has failed everything
+    /// the editor asked of it, having said nothing of it: no turn of it
+    /// runs, and no load or resume of it waits for its answer (ADR 5.6).
+    /// As a failed load's, it never opened, and its lock goes. Whether it
+    /// closed.
+    pub(super) fn close_if_failed(&mut self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        let asked = s.turns.activity() == Activity::Busy
+            || s.replay.as_ref().is_some_and(|r| r.unanswered > 0)
+            || self.outbound.resuming(&s.id);
+        if !s.pending || asked {
+            return false;
+        }
+        self.close_session(i, Ending::OpenFailed, None);
+        true
+    }
+
+    /// Whether this process keeps the transcript of a session it holds as
+    /// `hold`: its owner does, and an editor's does of one it couldn't lock
+    /// (P1, P4); a headless process won't serve that one, and a shared one
+    /// is its owner's (ADR 3.9).
+    fn keeps_transcript(&self, hold: &Hold) -> bool {
+        match hold {
+            Hold::Owner(_) => true,
+            Hold::Unlocked(_) => self.editor_attached(),
+            Hold::Shared(_) => false,
+        }
+    }
+
     /// As [`Self::open_session`], for a session forked from `forked_from`,
     /// which its transcript's `session_opened` and its status name (ADR 3.12).
     /// A claimed session opens with its claim's hold; one a load still to be
@@ -371,29 +443,36 @@ impl Host {
         cwd: Option<&str>,
         forked_from: Option<&str>,
     ) -> usize {
-        if let Some(i) = self.find(session) {
-            return i;
+        match self.find(session) {
+            Some(i) => i,
+            None => self.open_in(session, cwd, forked_from, false),
         }
+    }
+
+    /// `session`, not open, opens: with its files, unless `pending`.
+    fn open_in(
+        &mut self,
+        session: &str,
+        cwd: Option<&str>,
+        forked_from: Option<&str>,
+        pending: bool,
+    ) -> usize {
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| self.cwd.clone());
         let hold = match self.sessions.claimed.remove(session) {
             Some(hold) => hold,
             None => self.sessions.take_lock(session, &self.sink),
         };
-        match hold {
-            Hold::Shared(pid) => {
-                let event =
-                    json!({ "event": "session_shared", "session": session, "lock_pid": pid });
-                self.sink.note(None, event);
-            }
-            Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
-            // One the headless process won't serve gets no transcript.
-            Hold::Unlocked(_) if self.editor_attached() => {
-                self.sink.open_session(session, &cwd, forked_from)
-            }
-            Hold::Unlocked(_) => {}
+        if let Hold::Shared(pid) = hold {
+            let event = json!({ "event": "session_shared", "session": session, "lock_pid": pid });
+            self.sink.note(None, event);
+        }
+        if !pending && self.keeps_transcript(&hold) {
+            self.sink.open_session(session, &cwd, forked_from);
         }
         let replay = self.sessions.closed_loads.remove(session);
-        self.sessions.open.push(Session::new(session, cwd, forked_from, hold, replay));
+        let mut opened = Session::new(session, cwd, forked_from, hold, replay);
+        (opened.pending, opened.unopened) = (pending, pending);
+        self.sessions.open.push(opened);
         self.sessions.len() - 1
     }
 
@@ -422,7 +501,8 @@ impl Host {
         // After its last record, so nothing of it is lost (ADR 5.1). Every
         // ending closes them: one `NotOwned` has none to close, as a headless
         // process, the one that refuses such a session, opens none for it
-        // (see `open_fork`), so closing them is a no-op there.
+        // (see `open_fork`), nor has one still pending (see
+        // `open_prompted`), so closing them is a no-op for those.
         self.sink.close_session(&session);
         let answers =
             answer.and_then(|(peer, reply)| Some((self.peer_queue(peer)?, reply.to_string())));
@@ -430,13 +510,13 @@ impl Host {
     }
 
     /// The agent failed to open `session`, a load or a resume of it: one
-    /// open for a load closes (`Ending::LoadFailed`), and one only claimed
+    /// open for a load closes (`Ending::OpenFailed`), and one only claimed
     /// is let go of (see [`Self::claim_failed`]), the peer in `answer`
     /// answered with its reply once what was recorded of it is written
     /// (ADR 5.5). Whether this process held it at all.
     pub(super) fn open_failed(&mut self, session: &str, answer: Option<(u64, Value)>) -> bool {
         if let Some(i) = self.find(session) {
-            self.close_session(i, Ending::LoadFailed, answer);
+            self.close_session(i, Ending::OpenFailed, answer);
             return true;
         }
         self.claim_failed(session, answer)
@@ -549,6 +629,59 @@ mod tests {
         assert_eq!(table.closed_load(session).map(|r| r.unanswered), Some(1));
         h.agent_line(LOAD_FAILED);
         assert!(h.host().sessions.closed_load(session).is_none());
+    }
+
+    /// The editor's `method` of `session`, with id `id`: a prompt, a load
+    /// or a resume, as each takes what the others don't need.
+    fn ask(h: &mut Harness, id: u64, method: &str, session: &str) {
+        let params = json!({ "sessionId": session, "cwd": "/", "mcpServers": [],
+            "prompt": [{ "type": "text", "text": "hi" }] });
+        let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        h.editor_bytes(format!("{msg}\n").as_bytes());
+    }
+
+    /// The agent's failure of its request `wire`: it has no such session.
+    fn not_found(wire: &str) -> Vec<u8> {
+        let error = json!({ "code": -32002, "message": "Session not found" });
+        json!({ "jsonrpc": "2.0", "id": wire, "error": error }).to_string().into_bytes()
+    }
+
+    #[test]
+    fn adr_0005_a_prompted_session_outlasts_a_failed_load_while_its_turn_runs() {
+        let session = "unit-prompt-load";
+        let mut h = Harness::editor(false, false);
+        h.claim(session);
+        ask(&mut h, 2, "session/prompt", session);
+        ask(&mut h, 3, "session/load", session);
+        h.agent_line(&not_found("brnr-2"));
+        assert!(h.host().find(session).is_some(), "closed under its running prompt");
+        h.agent_line(&not_found("brnr-1"));
+        let table = &h.host().sessions;
+        assert!(table.is_empty() && !table.knows(session), "failed all it was asked");
+    }
+
+    #[test]
+    fn adr_0005_a_prompted_session_is_held_until_its_resume_is_answered() {
+        for resumed in [false, true] {
+            let session = "unit-prompt-resume";
+            let mut h = Harness::editor(false, false);
+            h.claim(session);
+            ask(&mut h, 2, "session/prompt", session);
+            ask(&mut h, 3, "session/resume", session);
+            h.agent_line(&not_found("brnr-1"));
+            assert!(h.host().sessions.knows(session), "let go of before its resume's answer");
+            if resumed {
+                h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{}}"#);
+                let i = h.host().find(session).expect("closed though resumed");
+                let s = &h.host().sessions[i];
+                assert!(!s.pending && matches!(s.hold, Hold::Owner(_)));
+            } else {
+                h.agent_line(&not_found("brnr-2"));
+                let table = &h.host().sessions;
+                assert!(table.is_empty() && !table.knows(session));
+                assert!(table.letting_go.is_empty() && table.claimed.is_empty());
+            }
+        }
     }
 
     #[test]

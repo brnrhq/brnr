@@ -467,18 +467,33 @@ A session another process holds:
   action, refused unless the editor's profile enables it, and compensated
   for (ADR 7.1). `session resume` first launches the process that is to
   resume the session, so the owner can tell the editor which one has it.
-- An editor's `session/load` or `session/resume` of a session another
-  process holds is answered by the host, by default, with a JSON-RPC error
-  naming the process and how to release it (`brnr session close
-  <session>`; for a session another editor has open, closing it there). It
-  doesn't reach the agent. A caveat under P1: the editor can't pass
+- An editor's `session/load`, `session/resume` or `session/prompt` of a
+  session another process holds, and not open in the editor's process, is
+  answered by the host, by default, with a JSON-RPC error naming the
+  process and how to release it (`brnr session close <session>`; for a
+  session another editor has open, closing it there). It doesn't reach the
+  agent. A prompt opens a session as a load does (ADR 5.6), so it is held
+  to the same lock (#331). A caveat under P1: the editor can't pass
   `--take-over`, so its explicit step is releasing the session first.
+- A load or resume the agent answers with success after the session closed
+  in the editor's process (the editor's `session/close`, or brnr's close or
+  take-over under it, while the request was unanswered) is checked again as
+  the answer comes: another process can take the lock between the close and
+  the answer (#357). One it took isn't served there: the session doesn't
+  open, has no transcript there and no replay kept, and its lock isn't
+  held; the agent is asked to close it (`session/close`); the editor gets
+  the agent's answer, and is told in the session, as of a take-over
+  ("Session held by brnr process 4466", with how to release it, as above),
+  its later requests for it answered as ADR 7.1 has them. The host log has `open_failed`,
+  saying too if the agent can't close sessions, and another if the agent
+  fails the close: the session is left open in the agent (P3).
 - The feature flag `shared_sessions` in the editor's profile (ADR 3.10)
-  lets the load through. The agent then serves the session to both
-  processes and splits the conversation. The process holding the lock
-  stays the only writer of the session's transcript; the editor's process
-  records the session in its host log only, and says so (P3). Strict mode
-  (ADR 2.1) doesn't decide this.
+  lets the load, or the prompt, through, and one answered after a close as
+  above opens shared. The agent then serves the session to both processes
+  and splits the conversation. The process holding the lock stays the only
+  writer of the session's transcript; the editor's process records the
+  session in its host log only, and says so (P3).
+  Strict mode (ADR 2.1) doesn't decide this.
 
 A session that can't be locked (the lock is neither held nor free:
 `sessions/` isn't a private directory, something other than a file is where
@@ -821,10 +836,13 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `what_brnr_makes_is_private_whatever_the_umask`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0003_an_editors_load_of_a_held_session_is_refused`,
+    `adr_0003_an_editors_prompt_of_a_held_session_is_refused`,
     `adr_0003_an_editors_session_that_cant_be_locked_is_passed_through`,
     `adr_0003_an_editors_load_held_from_another_runtime_dir_is_refused`,
     `adr_0003_the_release_command_runs_as_shown`,
-    `adr_0003_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`.
+    `adr_0003_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`,
+    `adr_0003_a_load_answered_after_another_process_took_its_session_isnt_served`,
+    `adr_0003_a_resume_answered_after_another_process_took_its_session_isnt_served`.
   - [tests/cli.rs](../../tests/cli.rs):
     `adr_0003_resume_of_a_held_session_is_refused`,
     `adr_0003_take_over_moves_a_session`,
@@ -855,7 +873,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_a_claim_is_known_until_the_agent_opens_it_or_not`,
     `adr_0003_a_session_another_process_holds_fails_a_headless_start`.
 - 3.10: [tests/headless.rs](../../tests/headless.rs):
-  `adr_0003_shared_sessions_let_an_editor_load_a_held_session`.
+  `adr_0003_shared_sessions_let_an_editor_load_a_held_session`,
+  `adr_0003_shared_sessions_serve_a_load_answered_after_another_process_took_it`.
 - 3.11: [tests/cli.rs](../../tests/cli.rs):
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,

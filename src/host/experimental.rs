@@ -157,10 +157,6 @@ impl Host {
     /// session, and from now on its requests for it are answered here (see
     /// `closed_error`).
     pub(super) fn closing_under_editor(&mut self, session: &str, taken_by: Option<u32>) {
-        if !self.editor_attached() {
-            return;
-        }
-        self.sessions.close_under_editor(session, taken_by);
         let (title, text) = match taken_by {
             Some(pid) => (
                 format!("Session taken over by brnr (process {pid})"),
@@ -175,7 +171,25 @@ impl Host {
                     .to_owned(),
             ),
         };
-        self.echo(session, &title, &[text_block(&text)]);
+        self.tell_closed_under_editor(session, taken_by, &title, &text);
+    }
+
+    /// `session` is closed under the editor, for process `taken_by` if one
+    /// has it: the editor is told in the session, `title` and `text`, and
+    /// from now on its requests for it are answered here (see
+    /// `closed_error`). None without an editor.
+    pub(super) fn tell_closed_under_editor(
+        &mut self,
+        session: &str,
+        taken_by: Option<u32>,
+        title: &str,
+        text: &str,
+    ) {
+        if !self.editor_attached() {
+            return;
+        }
+        self.sessions.close_under_editor(session, taken_by);
+        self.echo(session, title, &[text_block(text)]);
     }
 
     /// The agent didn't close `session`, with `error`: it stays open, and

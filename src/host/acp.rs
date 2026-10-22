@@ -58,11 +58,19 @@
 //!   counted, not recorded, and the session's again if the load succeeds
 //!   (`session_reopened`), when `recorded_updates` says how many the
 //!   transcript has.
-//! - The editor's `session/load` or `session/resume` of a session another
-//!   process holds is answered by the host with an error, naming the process
-//!   and how to release it, and never reaches the agent (ADR 3.9); with
-//!   `shared_sessions` in the profile (ADR 3.10) it goes through, and the
-//!   session is served shared (see `Hold`, sessions.rs).
+//! - The editor's `session/load`, `session/resume` or `session/prompt` of a
+//!   session another process holds is answered by the host with an error,
+//!   naming the process and how to release it, and never reaches the agent
+//!   (ADR 3.9); with `shared_sessions` in the profile (ADR 3.10) it goes
+//!   through, and the session is served shared (see `Hold`, sessions.rs).
+//!   A load or resume the agent answers with success after the session
+//!   closed here is checked again: one another process took meanwhile isn't
+//!   served, unless shared, but closed at the agent, the editor told in the
+//!   session which process holds it, and the host log has `open_failed`.
+//!   A session the editor's prompt opens has no transcript until the agent
+//!   says anything of it, or the editor loads it, and closes again once the
+//!   agent has failed everything the editor asked of it having said nothing
+//!   of it (`Session::pending`, ADR 5.6).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
 //! deleted the session, the host records a `session_deleted` (ADR 8.1).
@@ -158,6 +166,14 @@ pub(super) struct Session {
     /// (see requests.rs): it takes no requests, and its idle time doesn't
     /// count.
     pub(super) opening: bool,
+    /// Opened for the editor's prompt, and the agent has said nothing of it
+    /// yet: it closes again once the agent has failed everything the editor
+    /// asked of it, its last failure closing it (see `close_if_failed`,
+    /// `open_prompted`, ADR 5.6).
+    pub(super) pending: bool,
+    /// Its files aren't open yet: it is pending, and no load of it has
+    /// opened them. What is recorded of it goes to the host log meanwhile.
+    pub(super) unopened: bool,
 }
 
 pub(super) enum Close {
@@ -197,6 +213,8 @@ impl Session {
             hold,
             closing: None,
             opening: false,
+            pending: false,
+            unopened: false,
         }
     }
 
@@ -310,6 +328,15 @@ impl Host {
                         && let Some(error) = self.closed_error(sid, &method)
                     {
                         let error = Error::new(Code::session_closed, error);
+                        return self.refuse(id, sid, &method, &error);
+                    }
+                    // A prompt of a session not open here opens it, as a
+                    // load does: after `closed_error`, which says why one
+                    // brnr closed under the editor is gone (ADR 3.9, 7.1).
+                    if method == "session/prompt"
+                        && let Some(sid) = &session
+                        && let Err(error) = self.attach(sid)
+                    {
                         return self.refuse(id, sid, &method, &error);
                     }
                     // It goes with an id of the host's, which nobody else's
@@ -471,11 +498,19 @@ impl Host {
         (None, Then::Note(note))
     }
 
-    /// The editor's `session/load` or `session/resume` of `session`: its lock
-    /// is taken before the agent hears of it. One another process holds is
-    /// refused, saying how to release it (ADR 3.9), unless the profile shares
-    /// sessions (`shared_sessions`, ADR 3.10).
+    /// The editor's `session/load`, `session/resume` or `session/prompt` of
+    /// `session`: its lock is taken before the agent hears of it. One another
+    /// process holds is refused, saying how to release it (ADR 3.9), unless
+    /// the profile shares sessions (`shared_sessions`, ADR 3.10).
     fn attach(&mut self, session: &str) -> Result<(), Error> {
+        let held = |pid| Error::new(Code::session_active, held_elsewhere(session, pid));
+        self.claim_for_editor(session).map_err(held)
+    }
+
+    /// `session`, for the editor, claimed if it isn't this process's
+    /// already: its lock is taken, and one process `pid` holds isn't claimed
+    /// (`Err(pid)`), unless the profile shares sessions (ADR 3.9, 3.10).
+    fn claim_for_editor(&mut self, session: &str) -> Result<(), u32> {
         if self.sessions.knows(session) {
             return Ok(()); // Ours already.
         }
@@ -483,10 +518,70 @@ impl Host {
         if let Hold::Shared(pid) = hold
             && !self.features.contains(&Feature::SharedSessions)
         {
-            return Err(Error::new(Code::session_active, held_elsewhere(session, pid)));
+            return Err(pid);
         }
         self.sessions.claim(session, hold);
         Ok(())
+    }
+
+    /// Index of `session`, which the agent opened for the editor's `what`
+    /// (`load` or `resume`), opened here if it isn't. One neither open nor
+    /// claimed closed while the request was unanswered, and its lock, which
+    /// `attach` took as the request went, may have gone to another process
+    /// since: it is checked again now, and one another process holds isn't
+    /// served (see [`Self::not_served`]), unless the profile shares sessions
+    /// (ADR 3.9, 3.10).
+    fn open_answered(&mut self, session: &str, cwd: Option<&str>, what: &str) -> Option<usize> {
+        if let Err(pid) = self.claim_for_editor(session) {
+            self.not_served(session, pid, what);
+            return None;
+        }
+        Some(self.open_session(session, cwd))
+    }
+
+    /// The agent opened `session` for the editor's `what` after it closed
+    /// here, and process `pid` took it meanwhile: this process doesn't serve
+    /// it (P11, ADR 3.9). It doesn't open here, and leaves nothing held; the
+    /// agent is asked to close it, and the editor is told in the session, as
+    /// of a take-over, its later requests for it answered here (see
+    /// `closed_error`). The host log says so (`open_failed`), and, if the
+    /// agent can't close it, or fails to (see `peer_done`), that it is left
+    /// open in the agent (P3).
+    fn not_served(&mut self, session: &str, pid: u32, what: &str) {
+        let mut error = format!(
+            "the agent opened {session} for the editor's {what} after it closed here, and it is \
+             running in process {pid}"
+        );
+        let close = self.agent_in.is_some() && self.caps.close;
+        if !close && self.agent_in.is_some() {
+            let here = std::process::id();
+            error.push_str(&format!(
+                "; the agent can't close sessions, so it is left open in process {here}"
+            ));
+        }
+        let error = Error::new(Code::session_active, error);
+        self.sink.note(
+            None,
+            json!({ "event": "open_failed", "session": session, "error": error.json() }),
+        );
+        if close {
+            // Nobody to answer (peer 0): a failure goes to the host log.
+            let op =
+                PeerOp::Close { session: session.to_owned(), by: "close", failed: Some(error) };
+            self.peer_op(0, None, op, "session/close", json!({ "sessionId": session }));
+        }
+        let held = held_elsewhere(session, pid);
+        let text = format!(
+            "The agent answered the {what} after the session closed here, and another process \
+             took it meanwhile, so brnr closed it here again: {}.",
+            held.strip_prefix("brnr: ").unwrap_or(&held)
+        );
+        self.tell_closed_under_editor(
+            session,
+            Some(pid),
+            &format!("Session held by brnr process {pid}"),
+            &text,
+        );
     }
 
     /// The editor's `session/load` of `session`, whose history the agent
@@ -517,11 +612,16 @@ impl Host {
             replay.unanswered += 1;
             return;
         }
-        let record = match open.map(|i| &self.sessions[i].hold) {
-            Some(Hold::Owner(_) | Hold::Unlocked(_)) => self.logging == Log::Off,
-            Some(Hold::Shared(_)) | None => !self.has_transcript(session),
+        // One the editor's prompt opened has no files yet (see
+        // `open_prompted`): its replay is recorded as if not open here.
+        let record = match open.map(|i| (&self.sessions[i].hold, self.sessions[i].unopened)) {
+            Some((Hold::Owner(_) | Hold::Unlocked(_), false)) => self.logging == Log::Off,
+            _ => !self.has_transcript(session),
         };
         let i = self.open_session(session, cwd);
+        // Its files open, so that its replay is recorded; it is still
+        // pending, and the prompt's, if the agent says nothing of it.
+        self.open_files(i, cwd);
         self.begin_replay(i, record);
         if let Some(replay) = &mut self.sessions[i].replay {
             replay.opened = open.is_none();
@@ -538,8 +638,12 @@ impl Host {
             // Closed meanwhile, as the editor asked, and the agent answered
             // the close before the load: its last answer wins, and says so.
             // The replay goes on, its own again (see `open_session`).
+            // Unless another process took it meanwhile: then its replay goes
+            // as a failed load's would (see `open_answered`).
             (None, Some(_)) => {
-                let i = self.open_session(session, cwd);
+                let Some(i) = self.open_answered(session, cwd, "load") else {
+                    return self.closed_load_failed(session);
+                };
                 self.emit(
                     json!({ "event": "session_reopened", "session": session, "by": "editor" }),
                 );
@@ -548,6 +652,7 @@ impl Host {
             (None, None) => return self.closed_load_failed(session),
         };
         if let Some(result) = result {
+            self.confirm(i, cwd);
             self.sessions[i].state.result(result);
         }
         let Some(replay) = &mut self.sessions[i].replay else { return };
@@ -563,9 +668,11 @@ impl Host {
         if loaded {
             self.end_replay(i);
         } else if opened {
-            self.close_session(i, Ending::LoadFailed, None);
+            self.close_session(i, Ending::OpenFailed, None);
         } else {
-            self.drop_replay(i); // Loaded again, or resumed, and failed.
+            // Loaded again, or resumed, or prompted, and failed.
+            self.drop_replay(i);
+            self.close_if_failed(i);
         }
     }
 
@@ -614,7 +721,7 @@ impl Host {
         key: &str,
         msg: &mut Map<String, Value>,
     ) -> Option<Vec<u8>> {
-        let i = self.open_session(session, None);
+        let i = self.open_prompted(session);
         let rewritten = self.attach_context(i, session, msg);
         let prompt = msg.get("params").and_then(|p| p.get("prompt"));
         let sent = self.sessions[i].turns.editor_prompt(key, prompt);
@@ -664,6 +771,13 @@ impl Host {
             return;
         };
         let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
+        // The agent has a session it names, before the line is recorded
+        // (see `confirm`).
+        if method.is_some()
+            && let Some(i) = param_session(&msg).and_then(|s| self.find(&s))
+        {
+            self.confirm(i, None);
+        }
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.agent_response(&id_key(&id), &msg, line),
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
@@ -752,6 +866,10 @@ impl Host {
                 self.relay(by, session.as_deref(), line);
             }
             Then::Turn(session) => {
+                // A turn it served: the session is the agent's.
+                if let Some(i) = result.and_then(|_| self.find(&session)) {
+                    self.confirm(i, None);
+                }
                 self.relay(by, Some(&session), line);
                 self.turn_answered(&session, key, msg);
             }
@@ -800,6 +918,9 @@ impl Host {
             }
         }
         self.act(i, todo);
+        if self.close_if_failed(i) {
+            return;
+        }
         self.close_after_turn(i);
     }
 
@@ -829,18 +950,25 @@ impl Host {
                 if load {
                     self.load_answered(&session, cwd.as_deref(), result);
                 } else if let Some(result) = result {
-                    let i = self.open_session(&session, cwd.as_deref());
+                    // Closed meanwhile, it may be another process's now.
+                    let Some(i) = self.open_answered(&session, cwd.as_deref(), "resume") else {
+                        return Some(session);
+                    };
+                    self.confirm(i, cwd.as_deref());
                     self.sessions[i].state.result(result);
                     // Open now, whatever a load still to be answered gets.
                     if let Some(replay) = &mut self.sessions[i].replay {
                         replay.opened = false;
                     }
-                } else {
-                    // Its lock (see `attach`) goes once what was recorded
-                    // under it is written: a close's here, if the resume
-                    // took it back from one (ADR 5.5). One open already
-                    // stays open.
-                    self.claim_failed(&session, None);
+                } else if !self.claim_failed(&session, None)
+                    && let Some(i) = self.find(&session)
+                {
+                    // Claimed, its lock (see `attach`) goes once what was
+                    // recorded under it is written: a close's here, if the
+                    // resume took it back from one (ADR 5.5). One open
+                    // already stays open, unless the editor's prompt opened
+                    // it and this was the last the editor asked of it.
+                    self.close_if_failed(i);
                 }
                 Some(session)
             }
