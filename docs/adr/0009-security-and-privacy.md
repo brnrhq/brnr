@@ -206,8 +206,9 @@ keeps P9.
   would be whatever the link points at, taken for a session of the user's;
   one with an ACL, what others may have written. Reading makes nothing
   private: `doctor` warns of what others can reach, of an ACL, with the
-  `chmod -N` that removes it, and of a state directory, `hosts` or
-  `projects` that isn't a directory, however private. It opens each path
+  `chmod -N` that removes it, of what it can't open (which readers pass
+  over), and of a state directory, `hosts` or `projects` that isn't a
+  directory, however private. It opens each path
   the same way, lists a directory through what it opened, and `--fix`
   makes private only what it opened, through it (`fchmod`): it doesn't
   look below a symlink, nor change what is put at a name after it looked,
@@ -412,6 +413,10 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       whose events file, or project folder, has an ACL isn't listed or
       logged; `doctor` warns of it with the `chmod -N`, and `--fix` leaves
       it.
+  - [tests/doctor.rs](../../tests/doctor.rs):
+    `adr_0009_doctor_says_what_it_cant_open_and_what_fix_left`: a
+    transcript of mode 000 is a warning, `--fix` leaves it, and the example
+    it then gives is what is left, not what it made private.
 - 9.4:
   - [tests/security.rs](../../tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config

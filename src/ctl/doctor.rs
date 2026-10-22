@@ -347,20 +347,21 @@ fn transcripts(r: &mut Report) {
         let msg = format!("{}: private ({} paths)", root.display(), paths.len());
         return r.line(Level::Ok, what, msg);
     }
-    let fixable: Vec<&Found> = open.iter().map(|(f, _)| *f).filter(|f| f.fixable()).collect();
-    let example = format!("{} {}", open[0].0.path.display(), open[0].1);
-    if r.fix && !fixable.is_empty() {
-        let fixed = fixable.iter().filter(|f| f.make_private()).count();
+    let example = |(f, why): &(&Found, String)| format!("{} {why}", f.path.display());
+    let fixable = open.iter().any(|(f, _)| f.fixable());
+    if r.fix && fixable {
+        // What is left is what wasn't made private, and the example one of it.
+        let left: Vec<&(&Found, String)> = open.iter().filter(|(f, _)| !f.make_private()).collect();
+        let fixed = open.len() - left.len();
         r.line(Level::Ok, what, format!("made {fixed} paths private under {}", root.display()));
-        if fixed < open.len() {
-            let msg = format!("{} paths --fix doesn't change, e.g. {example}", open.len() - fixed);
+        if let Some(first) = left.first() {
+            let msg = format!("{} paths --fix doesn't change, e.g. {}", left.len(), example(first));
             r.line(Level::Warn, what, msg);
         }
     } else {
-        let hint = if fixable.is_empty() { "" } else { " (brnr doctor --fix)" };
-        let msg =
-            format!("{} of {} paths aren't private, e.g. {example}{hint}", open.len(), paths.len());
-        r.line(Level::Warn, what, msg);
+        let hint = if fixable { " (brnr doctor --fix)" } else { "" };
+        let (n, all, e) = (open.len(), paths.len(), example(&open[0]));
+        r.line(Level::Warn, what, format!("{n} of {all} paths aren't private, e.g. {e}{hint}"));
     }
 }
 
@@ -378,6 +379,9 @@ struct Found {
     /// `projects` should; what is in them should be what it is.
     dir: bool,
     file: Option<File>,
+    /// Why it couldn't be opened, if it couldn't: what readers can't open
+    /// they pass over, so it is said (P3), and isn't fixed.
+    unopened: Option<String>,
     /// What its access control list is, if it has one (macOS) or it can't
     /// be read: `--fix` doesn't remove one (P4).
     acl: Option<String>,
@@ -399,7 +403,10 @@ impl Found {
                 sys::openat(parent.as_fd(), &name, flags, 0)
             }
         };
-        let file = opened.ok();
+        let (file, unopened) = match opened {
+            Ok(file) => (Some(file), None),
+            Err(e) => (None, Some(format!("can't be opened: {e}"))),
+        };
         let meta = match &file {
             Some(file) => file.metadata().ok()?,
             None => fs::symlink_metadata(&path).ok()?,
@@ -409,7 +416,7 @@ impl Found {
             Ok(true) => Some(paths::acl_refused(&path, meta.is_dir(), "")),
             Err(e) => Some(format!("has an access control list that can't be read: {e}")),
         });
-        Some(Found { path, meta, dir, file, acl })
+        Some(Found { path, meta, dir, file, unopened, acl })
     }
 
     /// `name` in this directory, if it was opened as one.
@@ -434,12 +441,13 @@ impl Found {
         found.collect()
     }
 
-    /// What is wrong with it, if anything: what `--fix` can't change first,
-    /// then an access control list, then the mode.
+    /// What is wrong with it, if anything: what `--fix` can't change first
+    /// (a symlink, …), then an access control list or why it couldn't be
+    /// opened, then the mode.
     fn problem(&self) -> Option<String> {
         match private_problem(&self.meta, self.dir) {
             Some(problem) if !fixable(&self.meta, self.dir) => Some(problem),
-            problem => self.acl.clone().or(problem),
+            problem => self.acl.clone().or_else(|| self.unopened.clone()).or(problem),
         }
     }
 
