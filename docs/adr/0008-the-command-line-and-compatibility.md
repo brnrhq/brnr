@@ -550,9 +550,13 @@ would never change; a 2.0 can add one if it needs one.
 
 - `brnr event wait <session> [--for idle|turn|permission|elicitation|exit]
   [--timeout <s>]`:
-  - `idle` (the default): no turn running and nothing held. It returns at
-    once if the session is idle already, so `prompt send` followed by
-    `event wait` can't race. A closed session counts as idle.
+  - `idle` (the default): no turn running, nothing held, and no approval
+    or elicitation waiting, also one whose turn has ended (ADR 3.8), as
+    `--stop-when-idle` counts it. It returns at once if the session is
+    idle already, so `prompt send` followed by `event wait` can't race. A
+    closed session counts as idle. A process whose status lacks a count
+    this needs (an older brnr's) fails the wait, saying which: a count
+    that isn't there isn't 0 (P4).
   - `turn`: the next turn that ends.
   - `permission`: an approval is waiting (at once if one already is).
   - `elicitation`: an elicitation is waiting, as for `permission`
@@ -626,7 +630,9 @@ would never change; a 2.0 can add one if it needs one.
   - `exit`: the `process_exited` event. A process gone without sending it
     (killed) gets the same event from the command, as far as it knows it:
     `exit_status` and `seq` null, `ts` when it saw the process go, and
-    `error` saying so.
+    `error` saying so. Only once brnr has seen the process exit, as
+    catching up decides (ADR 10.2): a connection that fails while it lives
+    is a failure, 1, saying brnr can't tell that it exited (P4).
 
   Text says the same: `idle: end_turn`, `inactive: session closed (idle)`,
   `turn ended: end_turn`, `approval p1: Edit src/lib.rs`, `exited`.
@@ -1150,7 +1156,7 @@ The codes, by subject:
 | `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one (ADR 8.1, 4.5). |
 | `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
-| `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request, which an older brnr's process refuses (ADR 8.8). |
+| `command_unknown` | A `cmd` the process doesn't have, or a field of one it doesn't take: a newer brnr's request, which an older brnr's process refuses (ADR 8.8); or a `status` answer without a field this brnr reads (a count, `busy`), as an older brnr's has it (ADR 8.2, 8.8). |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load (ADR 6.1, 9.4). |
 | `event_unknown` | A note's name in `subscribe`'s `events`: no process sends one (ADR 5.9). An event brnr doesn't have, or a note, in a profile's bridge `events` (ADR 6.1). `subscribe` leaves out an event the process doesn't have, and names it (ADR 8.8). |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable (ADR 7.1). |
@@ -1402,6 +1408,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_delete_purge_says_what_it_couldnt_delete`,
   `adr_0008_purge_deletes_an_older_brnrs_files_too`,
   `adr_0008_delete_records_in_each_transcript_it_can`,
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity`,
   `adr_0008_delete_refuses_an_open_session`,
   `adr_0008_delete_needs_an_agent_that_can_delete`,
   `adr_0008_new_in_a_running_process`,
@@ -1464,8 +1471,12 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_huge_timeouts_are_never`, `adr_0008_wait_for_permission`,
   `adr_0008_wait_for_exit`,
   `adr_0008_event_wait_prints_one_shape_for_each_condition`,
+  `adr_0008_a_session_with_a_request_waiting_isnt_idle`,
   `adr_0008_a_usage_error_exits_2`,
-  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`.
+  `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`;
+  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  `adr_0008_wait_for_exit_says_exited_only_once_the_process_has`,
+  `adr_0008_a_count_the_status_doesnt_have_isnt_0`.
 - 8.4: none: it is a promise that applies from 1.0.0.
 - 8.5: [tests/cli.rs](../../tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's

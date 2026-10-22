@@ -238,7 +238,10 @@ pub(crate) fn unread(record: &Value) -> Option<String> {
 
 /// Of the file at `path`, the records in a format this brnr doesn't read
 /// ([`unread`]), if its first or its newest record is one: a file an older
-/// brnr wrote, or one a newer brnr went on with.
+/// brnr wrote, or one a newer brnr went on with. Not every record is read:
+/// brnr appends only to a file this says nothing of, so a file brnr wrote
+/// changes format only at its end (ADR 5.10); a reader of every record
+/// ([`Reader`], the catch-up) says one amid the others itself.
 pub(crate) fn unread_in(path: &Path) -> Option<String> {
     let lines = BufReader::new(open(path).ok()?).split(b'\n').map_while(Result::ok);
     let first = lines.filter_map(|line| record(&line)).next()?;

@@ -646,8 +646,10 @@ otherwise, kept apart from strict mode, which is about the protocol
   the session's own record (P4): the `session_opened` of the process that
   last served it, never the host log (ADR 5.10); `--cwd`, `--profile` or
   `-- <agent>` override them. Of an id with files in more than one project
-  folder, that process is the newest record's of them all, where the
-  session was last served (ADR 5.1, #121). An id brnr doesn't
+  folder, that opening is the newest `session_opened` of them all, in
+  whichever file it is: one process serves a session at a time (ADR 3.9),
+  and the newest record of them all, where the session was last served,
+  may be in another file (ADR 5.1, #121). An id brnr doesn't
   know (one `session list` with an agent named shows) goes to the agent as
   given, in `--cwd` (or the profile's `cwd`, or here), with the agent after
   `--` (or the profile's).
@@ -819,8 +821,12 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
   `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
-  with files in two folders, #121). That a resume in another cwd starts a
-  file in that folder is shown, for a bridge's resume, by ADR 5.6's
+  with files in two folders, #121),
+  `adr_0003_resume_takes_the_newest_opening_of_every_folder` (resumed
+  in the first folder again, with another agent); ADR 8.1's
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity` shows it
+  with an editor's deletion, the newest record, in both files. That a
+  resume in another cwd starts a file in that folder is shown, for a bridge's resume, by ADR 5.6's
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
   for a start's by ADR 5.1's
   `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`

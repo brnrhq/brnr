@@ -40,8 +40,9 @@ brnr prompt send $s --json --prompt "also update the changelog"
 
 `status` is `delivered` (sent now), `held`, `steered` or `interrupting`.
 
-**Wait.** For the session to be idle (no turn running, nothing held), or for
-one message's turn, always with a timeout:
+**Wait.** For the session to be idle (no turn running, nothing held, no
+approval or elicitation waiting), or for one message's turn, always with a
+timeout:
 
 ```sh
 brnr event wait $s --timeout 900 --json
@@ -90,7 +91,9 @@ result:
 | 3 | brnr cut the wait off for falling behind and couldn't catch up from the transcript (it says what it missed) | the worker is still going: wait again, and read `brnr event log` for what happened |
 | 2 | your command line was wrong (an unknown option, an argument missing, a value a flag can't take); nothing was done | fix it from the usage brnr printed on stderr; the same words fail the same way again |
 
-A command that fails says why on stderr, `brnr: <message> [<code>]`. With
+A command that fails with an error says why on stderr, `brnr: <message>
+[<code>]`. A usage error (2), a timeout (124) and a cut-off (3) have no
+code: their exit status says what happened. With
 `--json`, a wait that got its turn prints the turn even when it failed
 (exit 1): read its `error`, `stop_reason` and `dropped`. A command that
 fails before that prints `{"error": {"code": …, "message": …}}` alone.
