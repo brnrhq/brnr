@@ -1289,7 +1289,9 @@ process, may not.
   difference: `command_unknown` from an older or a newer process, and every
   error from a process with no `protocol`, a brnr from before this, whose
   errors are text that can't be told apart (ADR 8.7). The code stays the
-  process's. A headless process is stopped (`brnr process stop <pid>`) and
+  process's. A `status` answer without a field the CLI reads (a count,
+  `busy`: an older brnr's, which names it otherwise, ADR 8.2) is the CLI's
+  `command_unknown`, and said the same way. A headless process is stopped (`brnr process stop <pid>`) and
   its sessions resumed, which runs them in this brnr; an editor's is
   restarted from its editor, whose `brnr acp` then is this brnr:
 
@@ -1516,4 +1518,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   command, from a process of another brnr), and
   `adr_0008_old_socket_commands_are_unknown`;
   [src/ctl/client.rs](../../src/ctl/client.rs):
-  `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`.
+  `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`;
+  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  `adr_0008_a_count_the_status_doesnt_have_isnt_0` (a `status` answer
+  without a count, from a process of another brnr).

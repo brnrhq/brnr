@@ -1062,11 +1062,14 @@ fn idle(conn: &mut Conn, session: &str) -> Result<(Option<&'static str>, Value),
     let status = conn.call(json!({ "cmd": "status" }))?;
     Ok(match session_in(&status, session) {
         Some(s) => {
-            let busy = s["busy"].as_bool().ok_or_else(|| missing("busy"))?;
+            // A field it doesn't have: an older brnr's, said so (ADR 8.8).
+            let skewed = |e| conn.skewed(e);
+            let busy = s["busy"].as_bool().ok_or_else(|| skewed(missing("busy")))?;
             let waiting = ["held_count", "pending_count", "elicitation_count"]
                 .into_iter()
                 .map(|key| count(s, key))
-                .sum::<Result<u64, error::Error>>()?;
+                .sum::<Result<u64, error::Error>>()
+                .map_err(skewed)?;
             ((!busy && waiting == 0).then_some("idle"), s["last_turn"].clone())
         }
         None => (Some("inactive"), Value::Null),
@@ -1242,7 +1245,8 @@ mod tests {
 
     /// `event wait` for `idle` asks the process's status, and a count it
     /// needs that isn't there (an older brnr's `held`) is no count, not 0:
-    /// the wait fails, saying which (P4).
+    /// the wait fails, saying which (P4), and, from a process of another
+    /// protocol, how to restart it (ADR 8.8).
     #[test]
     fn adr_0008_a_count_the_status_doesnt_have_isnt_0() {
         let s =
@@ -1258,6 +1262,17 @@ mod tests {
             assert_eq!(err.message, "the process's status has no held_count", "{key}");
             process.join().unwrap();
         }
+        let mut s = s.clone();
+        s["held"] = json!(0);
+        let status = json!({ "ok": true, "sessions": [s] });
+        let (conn, process) = answered(std::process::id(), vec![json!({ "ok": true }), status]);
+        let mut conn = conn.of(json!({ "id": "7" }));
+        let err = wait_on(&mut conn, "s", "idle", None, true, &Value::Null).unwrap_err();
+        code_is(&err, Code::command_unknown);
+        let older = "the process's status has no held_count; process 7 runs an older brnr";
+        assert!(err.message.starts_with(older), "{err}");
+        assert!(err.message.ends_with("brnr process stop 7) and resume its sessions (brnr session resume <session>) to run them in this brnr"), "{err}");
+        process.join().unwrap();
     }
 
     /// `session new --wait` (and `resume`) follows its turn on the start

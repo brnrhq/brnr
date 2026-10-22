@@ -608,7 +608,7 @@ fn status(a: &Args) -> Result<(), error::Error> {
         .ok_or_else(|| error::Error::new(Code::session_not_found, "no session"))?;
     // A count it doesn't have isn't 0 (P4).
     for key in client::COUNTS {
-        client::count(x, key)?;
+        client::count(x, key).map_err(|e| client::skewed(e, &host.meta))?;
     }
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.

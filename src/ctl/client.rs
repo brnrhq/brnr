@@ -215,7 +215,8 @@ pub(super) fn count(report: &Value, key: &str) -> Result<u64, Error> {
 
 /// That a process's `status` answer has no `key`, which this brnr reads:
 /// an older brnr's process, which names it otherwise, as
-/// `command_unknown` is (ADR 8.7).
+/// `command_unknown` is (ADR 8.7), and [`skewed`] says how to restart it
+/// (ADR 8.8).
 pub(super) fn missing(key: &str) -> Error {
     Error::new(Code::command_unknown, format!("the process's status has no {key}"))
 }
@@ -590,9 +591,15 @@ impl Conn {
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, Error> {
         let answer = self.answer_until(req, deadline)?.map(unwrapped).transpose();
+        answer.map_err(|e| self.skewed(e))
+    }
+
+    /// `err`, of the process, with what [`skew`] says where it may come of
+    /// the difference ([`skewed`]); as it is on the start channel.
+    pub(super) fn skewed(&self, err: Error) -> Error {
         match &self.meta {
-            Some(meta) => answer.map_err(|e| skewed(e, meta)),
-            None => answer,
+            Some(meta) => skewed(err, meta),
+            None => err,
         }
     }
 
@@ -907,6 +914,15 @@ pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, std::thread::JoinHandle<()
     let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();
     conn.socket = Some(socket);
     (conn, process)
+}
+
+#[cfg(test)]
+impl Conn {
+    /// The same connection, as to the process `meta` describes: for a test.
+    pub(super) fn of(mut self, meta: Value) -> Conn {
+        self.meta = Some(meta);
+        self
+    }
 }
 
 /// A connection, for a test, to a process whose socket is `<pid>.sock`,

@@ -61,8 +61,9 @@ codes! {
     /// A request on the socket that isn't one: not JSON, no `cmd`, a field
     /// missing or of the wrong type, fields that don't go together.
     command_invalid,
-    /// A `cmd` the process doesn't have, or a `status` answer without a
-    /// field this brnr reads: it may be an older brnr's.
+    /// A `cmd` the process doesn't have, or a field of one it doesn't take;
+    /// or a `status` answer without a field this brnr reads: it may be
+    /// another brnr's (ADR 8.8).
     command_unknown,
     /// The config file can't be read, isn't private, or doesn't load.
     config_invalid,
