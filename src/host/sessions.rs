@@ -15,7 +15,7 @@
 //! [`Ending`] says, so no close forgets a step. The rest of the host reaches
 //! an open session by its index (`host.sessions[i]`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::{Index, IndexMut};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use super::acp::{Replay, Session};
 use super::requests::history;
 use super::{Host, LOG_FLUSH, control};
+use crate::error::{Code, Error};
 use crate::lock::{self, Lock};
 use crate::log::Sink;
 
@@ -44,9 +45,16 @@ pub(super) struct Sessions {
     letting_go: Vec<LettingGo>,
     /// Closed by brnr under the editor (ADR 7.1) → the process that took
     /// each over, if one did: the editor's requests for them are answered
-    /// by the host (see experimental.rs).
-    under_editor: HashMap<String, Option<u32>>,
+    /// by the host (see experimental.rs). In the order they closed, up to
+    /// [`UNDER_EDITOR`], the oldest going first: the editor's request for
+    /// one that has gone reaches the agent, which answers it with its own
+    /// error.
+    under_editor: VecDeque<(String, Option<u32>)>,
 }
+
+/// The most sessions kept as closed under the editor: past that, an editor
+/// that never loads them again would have the host keep them without limit.
+const UNDER_EDITOR: usize = 1024;
 
 /// How a process holds a session it serves (ADR 3.9).
 pub(super) enum Hold {
@@ -203,7 +211,8 @@ impl Sessions {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
             Err(lock::Error::Io(error)) => {
-                let event = json!({ "event": "lock_failed", "session": session, "error": error });
+                let failed = Error::from(error.as_str()).json();
+                let event = json!({ "event": "lock_failed", "session": session, "error": failed });
                 sink.note(None, event);
                 Hold::Unlocked(error)
             }
@@ -213,11 +222,13 @@ impl Sessions {
     /// Takes the lock of `session`, which a headless start or a bridge
     /// resumes, before the agent is asked for it: one another process holds,
     /// or one that can't be locked, can't be served here (ADR 3.9).
-    pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
+    pub(super) fn own(&mut self, session: &str) -> Result<(), Error> {
         let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
         let lock = lock.map_err(|err| match err {
-            lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
-            lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
+            lock::Error::Held(pid) => {
+                Error::new(Code::session_active, format!("{session} is running in process {pid}"))
+            }
+            lock::Error::Io(why) => Error::from(format!("{session} can't be locked: {why}")),
         })?;
         self.claim(session, Hold::Owner(Some(lock)));
         Ok(())
@@ -319,18 +330,23 @@ impl Sessions {
     /// brnr closed `session` under the editor, for process `taken_by` if one
     /// took it over (ADR 7.1).
     pub(super) fn close_under_editor(&mut self, session: &str, taken_by: Option<u32>) {
-        self.under_editor.insert(session.to_owned(), taken_by);
+        self.under_editor.retain(|(s, _)| s != session);
+        self.under_editor.push_back((session.to_owned(), taken_by));
+        while self.under_editor.len() > UNDER_EDITOR {
+            self.under_editor.pop_front();
+        }
     }
 
     /// The editor's again (loaded, or its close failed): whether brnr had
     /// closed it under the editor.
     pub(super) fn back_to_editor(&mut self, session: &str) -> bool {
-        self.under_editor.remove(session).is_some()
+        let pos = self.under_editor.iter().position(|(s, _)| s == session);
+        pos.and_then(|pos| self.under_editor.remove(pos)).is_some()
     }
 
     /// Whether brnr closed `session` under the editor, and for which process.
     pub(super) fn closed_under_editor(&self, session: &str) -> Option<Option<u32>> {
-        self.under_editor.get(session).copied()
+        self.under_editor.iter().find(|(s, _)| s == session).map(|&(_, taken_by)| taken_by)
     }
 }
 
@@ -366,7 +382,7 @@ impl Host {
         match hold {
             Hold::Shared(pid) => {
                 let event =
-                    json!({ "event": "session_shared", "session": session, "held_by": pid });
+                    json!({ "event": "session_shared", "session": session, "lock_pid": pid });
                 self.sink.note(None, event);
             }
             Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
@@ -391,6 +407,8 @@ impl Host {
         self.flush_agent_message(i);
         self.drop_all(i, "close");
         let Session { id: session, hold, replay, .. } = self.sessions.open.remove(i);
+        // Whatever ended it, the editor's late answers to it aren't kept.
+        self.approvals.closed(&session);
         if let Ending::Closed(how) = ending {
             // Who, and why (ADR 5.9): the editor closes; brnr closes for a
             // command's `close` or when idle.
@@ -457,7 +475,9 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::approvals::{EditorAnswer, Who};
     use crate::host::fuzz::Harness;
+    use crate::host::id_key;
     use crate::log::Logger;
 
     /// An editor's process with `session` claimed, as if its lock were
@@ -539,8 +559,9 @@ mod tests {
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"unit-shared"}}"#);
         let start = h.sent().start;
         assert_eq!(start.len(), 1);
-        let error = start[0]["error"].as_str().unwrap_or_default();
+        let error = start[0]["error"]["message"].as_str().unwrap_or_default();
         assert!(error.ends_with("unit-shared, which is running in process 7"), "{error}");
+        assert_eq!(start[0]["error"]["code"], "session_active");
         let table = &h.host().sessions;
         assert!(table.is_empty() && !table.knows("unit-shared") && table.letting_go.is_empty());
     }
@@ -555,5 +576,73 @@ mod tests {
         assert!(table.back_to_editor("s1"));
         assert!(!table.back_to_editor("s1"));
         assert_eq!(table.closed_under_editor("s1"), None);
+    }
+
+    #[test]
+    fn adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest() {
+        let mut table = Sessions::default();
+        for n in 0..=UNDER_EDITOR {
+            table.close_under_editor(&format!("s{n}"), None);
+        }
+        assert_eq!(table.under_editor.len(), UNDER_EDITOR);
+        assert_eq!(table.closed_under_editor("s0"), None, "oldest kept");
+        assert_eq!(table.closed_under_editor(&format!("s{UNDER_EDITOR}")), Some(None));
+    }
+
+    #[test]
+    fn adr_0010_a_closed_sessions_answered_requests_go() {
+        let session = "unit-answered";
+        for close in [false, true] {
+            let mut h = Harness::editor(false, false);
+            h.claim(session);
+            let i = h.host().open_session(session, None);
+            let options =
+                json!([{ "optionId": "allow_once", "name": "Allow", "kind": "allow_once" }]);
+            let ask = json!({ "jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                "params": { "sessionId": session, "toolCall": { "toolCallId": "t1" },
+                "options": options } });
+            h.agent_line(format!("{ask}\n").as_bytes());
+            h.host().cancel(session, &Who::because("cancel"));
+            if close {
+                h.host().close_session(i, Ending::Closed("close"), None);
+            }
+            h.sent();
+            let late = json!({ "jsonrpc": "2.0", "id": 7,
+                "result": { "outcome": { "outcome": "selected", "optionId": "allow_once" } } });
+            h.editor_bytes(format!("{late}\n").as_bytes());
+            // Kept, the late answer is dropped; gone with its session, it goes
+            // on, and the agent ignores it (ADR 2.5).
+            assert_eq!(!h.sent().agent.is_empty(), close, "close: {close}");
+        }
+    }
+
+    #[test]
+    fn adr_0010_a_request_cancelled_after_its_close_is_not_kept() {
+        let session = "unit-given-up";
+        for close in [false, true] {
+            let mut h = Harness::editor(false, false);
+            h.claim(session);
+            let i = h.host().open_session(session, None);
+            let options =
+                json!([{ "optionId": "allow_once", "name": "Allow", "kind": "allow_once" }]);
+            let ask = json!({ "jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                "params": { "sessionId": session, "toolCall": { "toolCallId": "t1" },
+                "options": options } });
+            h.agent_line(format!("{ask}\n").as_bytes());
+            if close {
+                h.host().close_session(i, Ending::Closed("close"), None);
+            }
+            let cancel = json!({ "jsonrpc": "2.0", "method": "$/cancel_request",
+                "params": { "requestId": 7 } });
+            h.agent_line(format!("{cancel}\n").as_bytes());
+            // Open, it is kept for the editor's answer; closed, it isn't.
+            let answer =
+                h.host().approvals.editor_answer(&id_key(&json!(7)), &serde_json::Map::new());
+            match answer {
+                EditorAnswer::GivenUp(Some(s)) => assert!(!close && s == session),
+                EditorAnswer::Unknown => assert!(close, "not kept while open"),
+                _ => panic!("close: {close}"),
+            }
+        }
     }
 }

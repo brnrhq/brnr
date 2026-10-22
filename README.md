@@ -269,7 +269,12 @@ Every command that prints data takes `--json`, with the same data as its
 text: one JSON value, or one event per line for `event log`, `event watch`
 and `session new --foreground`. `session close --json` is `{session}`, and
 `process stop --json` `{pid, status}`; `event notify`, whose output is its
-command's, has none.
+command's, has none. One thing has one name and one shape in all of them
+([ADR 8.2](docs/adr/0008-the-command-line-and-compatibility.md#82-same-data-in-text-and-json)):
+a list is an object (`{"sessions": [...]}`, `{"processes": [...]}`,
+`{"requests": [...]}`, `{"checks": [...]}`), its rows the detail's objects
+with fewer fields; `dropped` is always the messages dropped; `agent` is
+always `{program, name, version}`; a count is `<what>_count`.
 
 ### Waiting, for scripts
 
@@ -293,7 +298,21 @@ its last turn ended. While `prompt send --wait` and `session new --wait`
 wait, approvals and elicitations are announced on stderr; `session new --wait`
 says `started …` there too, so stdout is the reply and nothing else. With `--json`, the turn is one object at its end:
 `session`, `message`, `reply`, `stop_reason`, `error`, `tokens`, `dropped`
-(and `pid`, for `session new` and `resume`).
+(and `pid`, for `session new` and `resume`). `event wait --json` prints one
+shape for each `--for`, whether the wait ended at once or later: for `idle`
+`{session, state, last_turn}`, for `turn` the `turn_ended` event, for
+`permission` and `elicitation` the request as `permission show` and
+`elicitation show` print it, for `exit` the `process_exited` event.
+
+A command that fails exits 1 and says why on stderr, its error's code after
+the message (`brnr: no session s (see brnr session list) [session_not_found]`);
+with `--json` it prints the error as its JSON, `{"error": {"code": …,
+"message": …}}`. A wait that got its turn prints the turn instead, a
+failed one too (exit 1): its `error` says why. Scripts match the `code`, never the message:
+[the interface reference](docs/interface.md#errors) lists the codes, and
+`unclassified` promises nothing. Where the agent's answer failed, a turn's
+`error` too, the code is `agent_failed`, and `rpc_error` is the agent's
+JSON-RPC error as it sent it.
 
 ### Approvals
 
@@ -410,7 +429,7 @@ brnr session delete $s --purge     # and brnr's transcript of it goes too
 brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here
-brnr process list                  # brnr's processes: pid, owner, agent, sessions
+brnr process list                  # brnr's processes: pid, state, owner, agent, sessions
 brnr process stop 4466             # stdin closed, then SIGTERM, then SIGKILL, 5 s apart
 ```
 
@@ -419,7 +438,7 @@ A process holds a lock for each session it serves
 write one transcript contend for one lock however each found its runtime
 directory), so which process has a session is known without asking it. A
 process that doesn't answer (within 5 seconds) still has its sessions:
-`session list` and `process list` show them `unreachable`, commands on them
+`session list` and `process list` show them `unreachable` (`state`), commands on them
 say the process isn't answering, and `session resume` refuses them, naming
 the process, as it does any session that is running. A process started with
 another runtime directory (`BRNR_DIR`; a cron job without `XDG_RUNTIME_DIR`,
@@ -539,7 +558,7 @@ show the same events, live or read back from the transcript:
 | `session_changed` | the title, mode, config options or commands: what changed |
 | `permission_request`, `permission_resolved` | an approval waiting; its answer (`allowed`, `rejected` or `cancelled`), the chosen option's kind, and who gave it |
 | `elicitation_request`, `elicitation_resolved`, `elicitation_completed` | the agent asking for input: its `text`, `mode`, `scope` (with its `tool_call_id` or `scope_request_id`), a form's `schema` or a `url`; the `action` sent (`accept`, with its `content`, `decline` or `cancel`) and who sent it; the agent saying a URL's flow is done |
-| `turn_ended` | its `stop_reason` or `error`, the `tokens` the agent reported for it, and the `messages` it carried |
+| `turn_ended` | its `stop_reason` or `error` (`agent_failed`, with the agent's as `rpc_error`), the `tokens` the agent reported for it, and the `messages` it carried |
 | `message_dropped` | a message that never went, its `reason` `cancel`, `queue`, `close`, `exit` or `steer` |
 | `context_dropped` | context that never joined a prompt, its `reason` `queue`, `close` or `exit` |
 | `session_closed` | `by` `control`, its `reason` `close` (`brnr session close`, `--take-over`) or `idle`; or `by` `editor`, `reason` `close` |
@@ -582,7 +601,8 @@ transcript) and `events_missed` (what a command cut off couldn't catch up
 on), which are shown whatever it chose: `--events records_skipped` alone
 shows only a transcript's gaps. A bridge's `events` and `subscribe` take
 events only; a note's name fails a profile's bridge, as the process never
-sends one.
+sends one. `subscribe` leaves out an event the process doesn't have (an
+older brnr's), and names it in its answer.
 Without it, `event watch`, `event log` and the foreground leave out the quiet
 ones, `acp`, `agent_thought`, `usage` and `tool_progress`, in text and JSON
 alike. Bridges get every event but `acp` unless they choose. Watching a
@@ -679,7 +699,8 @@ events, saying how many (`… 120 events not shown`); stdout closing
 `session resume` uses the agent's `session/resume` (or `session/load`), in the
 session's cwd, with the agent and profile it last had (where it was last
 served, the newest record of all its files), and appends to the same
-transcript. A load replays the session's history: brnr records it, as
+transcript. `--profile p` runs p's agent instead, when p names one, and
+`-- <agent>` runs that agent, whatever the profile. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, whose transcript is gone, or whose loads all failed,
 leaving only their openings), so repeated loads don't record it twice. A
@@ -805,10 +826,19 @@ environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `was_cut_off`, `pending`, `allow`, `reject`, `set_config`, `fork`, `new`,
-`resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); those about a session name it by
+`resume`, `close`, `stop` (see the [request and response reference](docs/interface.md#bridge-and-control-socket-protocol)); a failure is `{"ok": false, "error": {"code", "message"}}`, its code one of [these](docs/interface.md#errors); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](#experimental-actions), as the CLI's are. Events:
 [as above](#events). A started bridge gets them from the process's start.
+A request, or a field of one, that the process doesn't have is refused
+(`command_unknown`), never done without it.
+
+A process can be an older brnr than the one you run: an editor's lives as
+long as the editor's session, past `brew upgrade brnr`. `status` says which
+it is (`brnr`, its version, and `protocol`, what its socket speaks), and a
+command that fails because of the difference says so, and how to restart
+the process: `brnr process stop <pid>` and `brnr session resume <session>`
+for a headless one, the agent restarted in its editor for an editor's.
 
 A started bridge lasts until its process exits; its stdout closing only means
 it has no more requests. When the process stops, the bridge gets the last
@@ -910,20 +940,28 @@ most). A process killed (SIGKILL) loses what it hadn't written yet, and may
 leave its last record cut short: the session is still listed, logged and
 resumed as of its last whole record, `event log` says on stderr which lines it
 couldn't read, and the next process starts on a new line; brnr never rewrites
-a transcript. Every record carries `ts`, `host_id`, `pid` (the brnr
-process), `proxy_pid`, `agent_pid` and, in a session's file, `session`, for
-joining: `proxy_pid` is null for a headless process, and the
-`session_deleted` that `session delete` records is no process's, its
-`host_id`, `pid` and `proxy_pid` null. A session's events file starts with
-`session_opened`, as the host log records it too: the `session`, its `cwd`,
-its `events_log`, `acp_log` and `host_log`, and `forked_from` for a fork. A
-transcript an older brnr wrote, its records naming the session `session_id`
-and the process `host_pid`, isn't read: brnr reads only its own names (ADR
-5.9). `session list` and `session resume` pass it over, `event log` of it
-says an older brnr wrote it, and `brnr doctor` lists it. Nothing is appended to
-it: a session opened where one is in the way renames it `<name>.older.jsonl`
+a transcript. Every record starts with its `format`, 1, then carries `ts`,
+`host_id`, `pid` (the brnr process), `proxy_pid`, `agent_pid` and, in a
+session's file, `session`, for joining: `proxy_pid` is null for a headless
+process, and the `session_deleted` that `session delete` records is no
+process's, its `host_id`, `pid` and `proxy_pid` null. A session's events
+file starts with `session_opened`, as the host log records it too: the
+`session`, its `cwd`, the process's `profile` and `agent`, its
+`events_log`, `acp_log` and `host_log`, and `forked_from` for a fork. That
+is what `session resume` resumes a session with: the transcript alone, not
+the host log (ADR 3.11).
+
+The format stays 1 for all of 1.x, and every 1.x reads every 1.x's
+transcripts (ADR 5.10, ADR 8.4). A record in a format brnr doesn't read,
+an older brnr's without `format` or a newer one's, isn't read: `session
+list` and `session resume` pass its file over, `event log` says
+`<file>: records in format 2; this brnr reads format 1, not shown`, and
+`brnr doctor` lists it. Nothing is appended to such a file: a session
+opened where one is in the way renames it `<name>.older.jsonl`
 (`<name>.older.acp.jsonl` for its raw file), which the host log's
-`session_log_moved` says, and starts a file of its own. `log = "events"` leaves out the
+`session_log_moved` says, and starts a file of its own. The events are a summary: an agent message's text,
+a tool call's title, kind, status and locations; images, diffs and tool
+output are in the raw file only. `log = "events"` leaves out the
 raw file, most of the space; `log = "off"` writes nothing but the session
 locks.
 
@@ -1012,11 +1050,12 @@ It also lists the host logs (`~/.brnr/hosts/`) of processes that died
 without recording it, killed by SIGKILL for instance: logs without `process_exited`
 whose process isn't running. The line says how many, and for the latest three
 when each last wrote and the sessions it had open; it is information, not a
-warning. So is its list of the files an older brnr wrote, transcripts and
-host logs, which this one doesn't read (ADR 5.9). `--fix` makes the runtime directory and transcripts private (only
+warning. So is its list of the files in a format this brnr doesn't read
+(`file formats`), transcripts and host logs, an older brnr's or a newer
+one's (ADR 5.10). `--fix` makes the runtime directory and transcripts private (only
 what you own, never through a symlink) and removes what processes that are
 gone left behind; it leaves logs alone. It exits non-zero if a check fails;
-`--json` prints the checks, each a `level`, `check` and `message`.
+`--json` prints `{checks}`, each a `level`, `check` and `message`.
 
 `--report` prints, instead of the checks, what a bug report needs, as
 Markdown to paste into an issue: brnr's version, the OS, the adapters, the
