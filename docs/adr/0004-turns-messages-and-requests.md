@@ -615,7 +615,8 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_the_agents_cancel_ends_only_what_waits`. A request the agent
   cancels with `$/cancel_request`: [tests/cli.rs](../../tests/cli.rs):
   `adr_0004_a_request_the_agent_cancels_ends_by_the_agent`,
-  `adr_0004_a_turn_that_ends_leaves_its_request_waiting`;
+  `adr_0004_a_turn_that_ends_leaves_its_request_waiting`,
+  `adr_0004_the_agent_cancels_each_request_it_has_open`;
   [tests/headless.rs](../../tests/headless.rs):
   `adr_0004_an_editor_gets_the_agents_cancel_and_answers_it`.
 - 4.6: [tests/cli.rs](../../tests/cli.rs):

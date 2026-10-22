@@ -3013,11 +3013,11 @@ fn ask(env: &Env) {
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
 }
 
-/// The fake agent's answers, in order: its requests are each `perm-1` while
-/// no other is waiting.
+/// The fake agent's answers to its permission requests (`perm-N`), in order.
 fn answers(env: &Env) -> Vec<Value> {
+    let ours = |c: &Value| c["id"].as_str().is_some_and(|id| id.starts_with("perm-"));
     (env.calls().into_iter())
-        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .filter(|c| ours(c) && c.get("method").is_none())
         .map(|c| c["result"]["outcome"].clone())
         .collect()
 }
@@ -3665,6 +3665,42 @@ fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
     assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
     assert_eq!(events_named(&env, "turn_ended").len(), 1, "its answer ended a turn");
+}
+
+/// The agent cancels each request it has open, one made after an earlier
+/// one was answered as well as the one made before it: each ends, by the
+/// agent, and nothing is left waiting.
+#[test]
+fn adr_0004_the_agent_cancels_each_request_it_has_open() {
+    let env = Env::new("c-giveupmany");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&[]);
+    let waiting = |want: &str| {
+        let has = || env.ok(&["permission", "requests"]).contains(want);
+        assert!(wait_for(Duration::from_secs(10), has), "{want} isn't waiting");
+    };
+    for request in ["p1", "p2"] {
+        env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+        waiting(request);
+    }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    env.ok(&["prompt", "send", "sess-1", "perm edit"]);
+    waiting("p3");
+    fs::write(&gate, "").unwrap();
+    let ended = || resolved(&env).len() == 3;
+    assert!(wait_for(Duration::from_secs(10), ended), "not all ended: {:?}", resolved(&env));
+    assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    let outcomes =
+        ["perm-1", "perm-2", "perm-3"].map(|r| outcome(&env, r).map(|o| o["outcome"].clone()));
+    assert_eq!(
+        outcomes,
+        [Some("selected".into()), Some("cancelled".into()), Some("cancelled".into())]
+    );
+    let by: Vec<_> =
+        resolved(&env).iter().map(|e| (e["request"].clone(), e["by"].clone())).collect();
+    assert_eq!(by[1..], [(json!("p2"), json!("agent")), (json!("p3"), json!("agent"))], "{by:?}");
 }
 
 // ---- lifecycle -----------------------------------------------------------
