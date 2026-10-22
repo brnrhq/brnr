@@ -891,8 +891,8 @@ commands ask every process for its status at once, so processes that don't
 answer cost about 5 s in all, not 5 s each; each request then waits 5 s for
 its answer (120 s for one the agent answers, as `config set` is). One with
 no answer by then, or whose write the process doesn't take, fails with `not
-answering`; an error the process says before it closes the connection is
-the command's error. Waiting for events isn't such a request: `event wait`
+answering`; an error the process says to no request (no `req_id`), before
+it closes the connection, is the waiting command's error. Waiting for events isn't such a request: `event wait`
 and `--wait` wait as long as `--timeout` says, or the session runs, and a
 start (`session new`, `--pid`) as long as its own timeout. But a command
 that catches up waits 5 s for the process to have written its transcript
