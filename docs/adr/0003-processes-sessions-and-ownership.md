@@ -449,18 +449,20 @@ A session another process holds:
   action, refused unless the editor's profile enables it, and compensated
   for (ADR 7.1). `session resume` first launches the process that is to
   resume the session, so the owner can tell the editor which one has it.
-- An editor's `session/load` or `session/resume` of a session another
-  process holds is answered by the host, by default, with a JSON-RPC error
-  naming the process and how to release it (`brnr session close
-  <session>`; for a session another editor has open, closing it there). It
-  doesn't reach the agent. A caveat under P1: the editor can't pass
+- An editor's `session/load`, `session/resume` or `session/prompt` of a
+  session another process holds, and not open in the editor's process, is
+  answered by the host, by default, with a JSON-RPC error naming the
+  process and how to release it (`brnr session close <session>`; for a
+  session another editor has open, closing it there). It doesn't reach the
+  agent. A prompt opens a session as a load does (ADR 5.6), so it is held
+  to the same lock (#331). A caveat under P1: the editor can't pass
   `--take-over`, so its explicit step is releasing the session first.
 - The feature flag `shared_sessions` in the editor's profile (ADR 3.10)
-  lets the load through. The agent then serves the session to both
-  processes and splits the conversation. The process holding the lock
-  stays the only writer of the session's transcript; the editor's process
-  records the session in its host log only, and says so (P3). Strict mode
-  (ADR 2.1) doesn't decide this.
+  lets the load, or the prompt, through. The agent then serves the session
+  to both processes and splits the conversation. The process holding the
+  lock stays the only writer of the session's transcript; the editor's
+  process records the session in its host log only, and says so (P3).
+  Strict mode (ADR 2.1) doesn't decide this.
 
 A session that can't be locked (the lock is neither held nor free:
 `sessions/` isn't a private directory, something other than a file is where
@@ -783,6 +785,7 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     named for a claim, `what_brnr_makes_is_private_whatever_the_umask`.
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0003_an_editors_load_of_a_held_session_is_refused`,
+    `adr_0003_an_editors_prompt_of_a_held_session_is_refused`,
     `adr_0003_an_editors_session_that_cant_be_locked_is_passed_through`,
     `adr_0003_an_editors_load_held_from_another_runtime_dir_is_refused`,
     `adr_0003_the_release_command_runs_as_shown`,

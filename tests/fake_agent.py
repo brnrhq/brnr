@@ -112,7 +112,9 @@ $/cancel_request for the prompt that hangs answers it with an error, -32800.
 session/list always has old-1 and sess-1, as an agent's store of sessions
 would, a page each. session/load replays a question, an answer and a title. session/delete
 deletes any session but one whose id starts with gone, which it doesn't have
-(-32002), or stuck, which it fails to delete (-32603).
+(-32002), or stuck, which it fails to delete (-32603). session/prompt serves
+any session but one whose id starts with nope, which it doesn't have: it
+answers -32002, Session not found, saying nothing of it.
 
 A client whose initialize advertises boolean config options
 (clientCapabilities.session.configOptions.boolean) also gets a boolean option,
@@ -1014,6 +1016,8 @@ for line in sys.stdin.buffer:
             result(mid, {"configOptions": config(model)})
         else:
             error(mid, -32602, f"bad option {params.get('configId')}={params.get('value')}")
+    elif method == "session/prompt" and str(sid).startswith("nope"):
+        error(mid, -32002, f"Session not found: {sid}")
     elif method == "session/prompt":
         text = text_of(params["prompt"])
         append("PROMPT_LOG", text)

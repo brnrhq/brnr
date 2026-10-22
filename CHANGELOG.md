@@ -329,6 +329,19 @@ brnr's own conventions:
   project folder, which they listed and read as the user's sessions though
   brnr never writes there; `session delete` already left them alone. The
   transcripts brnr writes are where they were (ADR 9.3).
+- An editor's `session/prompt` of a session another process holds, which
+  the editor never loaded, is refused as its load is, naming the process
+  and how to release it, unless `shared_sessions` lets it through; it
+  reached the agent, and the editor's process served the session beside
+  its owner (ADR 3.9, #331).
+- An editor's `session/prompt` of a session the agent doesn't have (a
+  mistyped id) leaves nothing behind once the agent fails it: the session
+  isn't open in `session list` or `session status`, its lock goes, and it
+  has no transcript. It stayed open, holding its lock, until the process
+  exited, and its transcript stopped a later load of the id recording its
+  history. A prompt's session now has its transcript from the agent's
+  first word of it; the prompt that came before is in the host log
+  (ADR 5.6, #331).
 
 ## [0.9.0] - 2026-10-16
 

@@ -2839,6 +2839,49 @@ fn adr_0005_an_editors_failed_resume_holds_its_lock_until_written() {
     let _ = editor.kill();
 }
 
+/// An editor's prompt for a session the agent doesn't have, an id mistyped
+/// say, opens nothing: the editor gets the agent's error, and the session
+/// is in no list, its lock goes and it has no transcript, so that a load of
+/// it later records its history (ADR 5.6, #331).
+#[test]
+fn adr_0005_an_editors_prompt_the_agent_has_no_session_for_opens_nothing() {
+    let env = Env::new("ed-nope");
+    let (mut editor, mut to_agent, mut from_agent) = open_editor(&env);
+    writeln!(to_agent, "{}", editor_prompt_in(3, "nope-1", "reply hi")).unwrap();
+    let error = response(&mut from_agent, 3)["error"].clone();
+    assert_eq!(error["code"], -32002, "{error}");
+    let lock = env.dir.join("home/sessions/nope-1.lock");
+    assert!(wait_for(Duration::from_secs(5), || !lock.exists()), "its lock is held");
+    assert!(!env.ok(&["session", "list"]).contains("nope-1"));
+    assert!(!env.ok(&["session", "list", "--json"]).contains("nope-1"));
+    let folders = fs::read_dir(env.dir.join("home/projects")).unwrap().flatten();
+    let files = folders.flat_map(|f| fs::read_dir(f.path()).unwrap().flatten());
+    let files: Vec<String> = files.map(|f| f.file_name().to_string_lossy().into()).collect();
+    assert!(files.iter().all(|f| !f.starts_with("nope-1")), "{files:?}");
+    assert!(files.iter().any(|f| f.starts_with("sess-1")), "{files:?}");
+    let _ = editor.kill();
+}
+
+/// An editor's prompt for a session it never opened here, which the agent
+/// serves, opens the session once the agent says anything of it: its
+/// transcript has what the agent said, and the prompt, which came before,
+/// is in the host log (ADR 5.6, #331).
+#[test]
+fn adr_0005_an_editors_prompt_the_agent_serves_opens_its_session() {
+    let env = Env::new("ed-served");
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_prompt_in(2, "any-1", "reply served here")).unwrap();
+    assert!(response(&mut from_agent, 2)["result"].is_object());
+    let said = logged(&env, "any-1", "agent_message,turn_ended");
+    assert_eq!(said[0]["text"], "served here", "{said:?}");
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(logged(&env, "any-1", "user_message").is_empty());
+    let host_log = fs::read_to_string(editor_process(&env)["host_log"].as_str().unwrap()).unwrap();
+    assert!(host_log.contains(r#""event":"user_message""#), "{host_log}");
+    assert_eq!(status_of(&env, "any-1")["held_by"], editor_process(&env)["host_pid"]);
+    let _ = editor.kill();
+}
+
 /// Context held for a session whose load the agent fails is dropped with
 /// its `context_dropped`, `by` `close`, as at any end of the session here,
 /// though no `session_closed` follows: the session never opened (P3,
@@ -3771,6 +3814,34 @@ fn adr_0003_an_editors_load_of_a_held_session_is_refused() {
     let _ = editor.kill();
 }
 
+/// An editor's prompt of a session a headless process holds, which it
+/// never loaded, is refused as a load of it is, and the agent never hears
+/// of it (ADR 3.9, #331).
+#[test]
+fn adr_0003_an_editors_prompt_of_a_held_session_is_refused() {
+    let env = Env::new("ed-heldprompt");
+    env.start(&[]);
+    let headless = env.pid();
+    let prompts = env.calls_of("session/prompt").len();
+    let (mut editor, mut to_agent, mut from_agent) = editor(&env);
+    writeln!(to_agent, "{}", editor_prompt(2, "reply from the editor")).unwrap();
+    let error = response(&mut from_agent, 2)["error"].clone();
+    let message = error["message"].as_str().unwrap_or_default();
+    assert!(message.contains(&format!("sess-1 is running in brnr process {headless}")), "{error}");
+    assert_eq!(env.calls_of("session/prompt").len(), prompts, "the agent got the prompt");
+    let host_log = fs::read_to_string(editor_process(&env)["host_log"].as_str().unwrap()).unwrap();
+    let notes = host_log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take());
+    let refused: Vec<Value> = notes.filter(|n| n["event"] == "editor_request_refused").collect();
+    assert_eq!(refused.len(), 1, "{host_log}");
+    assert_eq!(
+        (&refused[0]["method"], &refused[0]["error"]),
+        (&json!("session/prompt"), &json!(message))
+    );
+    let status = status_of(&env, "sess-1");
+    assert_eq!(status["held_by"].to_string(), headless);
+    let _ = editor.kill();
+}
+
 /// An editor's load of a session held by a process started with another
 /// runtime directory, which this one's commands can't reach, is refused the
 /// same way, saying which `BRNR_DIR` releases it (ADR 3.9).
@@ -4386,8 +4457,13 @@ fn adr_0005_overlapping_loads_closed_meanwhile_have_one_history() {
 
 /// A prompt from the editor, with id `id`.
 fn editor_prompt(id: u64, text: &str) -> String {
+    editor_prompt_in(id, "sess-1", text)
+}
+
+/// A prompt from the editor for `session`, with id `id`.
+fn editor_prompt_in(id: u64, session: &str, text: &str) -> String {
     let prompt = [serde_json::json!({ "type": "text", "text": text })];
-    let params = serde_json::json!({ "sessionId": "sess-1", "prompt": prompt });
+    let params = serde_json::json!({ "sessionId": session, "prompt": prompt });
     serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": params })
         .to_string()
 }

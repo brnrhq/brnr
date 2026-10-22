@@ -58,11 +58,14 @@
 //!   counted, not recorded, and the session's again if the load succeeds
 //!   (`session_reopened`), when `recorded_updates` says how many the
 //!   transcript has.
-//! - The editor's `session/load` or `session/resume` of a session another
-//!   process holds is answered by the host with an error, naming the process
-//!   and how to release it, and never reaches the agent (ADR 3.9); with
-//!   `shared_sessions` in the profile (ADR 3.10) it goes through, and the
-//!   session is served shared (see `Hold`, sessions.rs).
+//! - The editor's `session/load`, `session/resume` or `session/prompt` of a
+//!   session another process holds is answered by the host with an error,
+//!   naming the process and how to release it, and never reaches the agent
+//!   (ADR 3.9); with `shared_sessions` in the profile (ADR 3.10) it goes
+//!   through, and the session is served shared (see `Hold`, sessions.rs).
+//!   A session the editor's prompt opens has no transcript until the agent
+//!   says anything of it, and closes again if the agent fails the prompt
+//!   first (`Session::pending`, ADR 5.6).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
 //! deleted the session, the host records a `session_deleted` (ADR 8.1).
@@ -157,6 +160,10 @@ pub(super) struct Session {
     /// (see requests.rs): it takes no requests, and its idle time doesn't
     /// count.
     pub(super) opening: bool,
+    /// Opened for the editor's prompt, and the agent has said nothing of it
+    /// yet: what is recorded of it goes to the host log, and if the agent
+    /// fails the prompt, it closes again (see `open_prompted`, ADR 5.6).
+    pub(super) pending: bool,
 }
 
 pub(super) enum Close {
@@ -196,6 +203,7 @@ impl Session {
             hold,
             closing: None,
             opening: false,
+            pending: false,
         }
     }
 
@@ -303,6 +311,15 @@ impl Host {
                     }
                     if let Some(sid) = &session
                         && let Some(error) = self.closed_error(sid, &method)
+                    {
+                        return self.refuse(id, sid, &method, &error);
+                    }
+                    // A prompt of a session not open here opens it, as a
+                    // load does: after `closed_error`, which says why one
+                    // brnr closed under the editor is gone (ADR 3.9, 7.1).
+                    if method == "session/prompt"
+                        && let Some(sid) = &session
+                        && let Err(error) = self.attach(sid)
                     {
                         return self.refuse(id, sid, &method, &error);
                     }
@@ -465,10 +482,10 @@ impl Host {
         (None, Then::Note(note))
     }
 
-    /// The editor's `session/load` or `session/resume` of `session`: its lock
-    /// is taken before the agent hears of it. One another process holds is
-    /// refused, saying how to release it (ADR 3.9), unless the profile shares
-    /// sessions (`shared_sessions`, ADR 3.10).
+    /// The editor's `session/load`, `session/resume` or `session/prompt` of
+    /// `session`: its lock is taken before the agent hears of it. One another
+    /// process holds is refused, saying how to release it (ADR 3.9), unless
+    /// the profile shares sessions (`shared_sessions`, ADR 3.10).
     fn attach(&mut self, session: &str) -> Result<(), String> {
         if self.sessions.knows(session) {
             return Ok(()); // Ours already.
@@ -504,6 +521,9 @@ impl Host {
             None if self.sessions.closed_load(session).is_some() => {
                 Some(self.open_session(session, cwd))
             }
+            // One the editor's prompt opened, which the agent has said
+            // nothing of: the load opens it, and closes it if it fails.
+            Some(i) if self.sessions[i].pending => None,
             open => open,
         };
         if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
@@ -516,6 +536,7 @@ impl Host {
             Some(Hold::Shared(_)) | None => !self.has_transcript(session),
         };
         let i = self.open_session(session, cwd);
+        self.confirm(i, cwd);
         self.begin_replay(i, record);
         if let Some(replay) = &mut self.sessions[i].replay {
             replay.opened = open.is_none();
@@ -557,7 +578,7 @@ impl Host {
         if loaded {
             self.end_replay(i);
         } else if opened {
-            self.close_session(i, Ending::LoadFailed, None);
+            self.close_session(i, Ending::OpenFailed, None);
         } else {
             self.drop_replay(i); // Loaded again, or resumed, and failed.
         }
@@ -607,7 +628,7 @@ impl Host {
         key: &str,
         msg: &mut Map<String, Value>,
     ) -> Option<Vec<u8>> {
-        let i = self.open_session(session, None);
+        let i = self.open_prompted(session);
         let rewritten = self.attach_context(i, session, msg);
         let prompt = msg.get("params").and_then(|p| p.get("prompt"));
         let sent = self.sessions[i].turns.editor_prompt(key, prompt);
@@ -657,6 +678,13 @@ impl Host {
             return;
         };
         let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
+        // The agent has a session it names, before the line is recorded
+        // (see `confirm`).
+        if method.is_some()
+            && let Some(i) = param_session(&msg).and_then(|s| self.find(&s))
+        {
+            self.confirm(i, None);
+        }
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.agent_response(&id_key(&id), &msg, line),
             (Some(method), Some(id)) => self.agent_request(method, id, &msg, line),
@@ -739,6 +767,10 @@ impl Host {
                 self.relay(by, session.as_deref(), line);
             }
             Then::Turn(session) => {
+                // A turn it served: the session is the agent's.
+                if let Some(i) = result.and_then(|_| self.find(&session)) {
+                    self.confirm(i, None);
+                }
                 self.relay(by, Some(&session), line);
                 self.turn_answered(&session, key, msg);
             }
@@ -786,6 +818,12 @@ impl Host {
             }
         }
         self.act(i, todo);
+        // Opened for the editor's prompt, which the agent failed having said
+        // nothing of the session: it hasn't one, and it closes again, as a
+        // failed load's does (ADR 5.6).
+        if self.sessions[i].pending && self.sessions[i].turns.activity() != Activity::Busy {
+            return self.close_session(i, Ending::OpenFailed, None);
+        }
         self.close_after_turn(i);
     }
 
@@ -816,6 +854,7 @@ impl Host {
                     self.load_answered(&session, cwd.as_deref(), result);
                 } else if let Some(result) = result {
                     let i = self.open_session(&session, cwd.as_deref());
+                    self.confirm(i, cwd.as_deref());
                     self.sessions[i].state.result(result);
                     // Open now, whatever a load still to be answered gets.
                     if let Some(replay) = &mut self.sessions[i].replay {
