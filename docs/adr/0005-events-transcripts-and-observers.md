@@ -120,12 +120,19 @@ Reading:
   is read backwards, so a long transcript costs no more than its last
   records. Of a session with files in more than one folder, the first
   record is the oldest file's and the last is the newest record of them
-  all: `session resume` takes its cwd, agent and profile from that newest
+  all: `session resume` takes where it was last served from that newest
   record (ADR 3.11), and `session list` its row, one per id (#121). That
-  record is the newest a process recorded (a deletion's, ADR 8.1, is no
-  process's), and its cwd, profile and agent are those that process's
-  `session_opened` in its file names (ADR 5.10). A file whose newest
-  record is in a format brnr doesn't read is passed over (ADR 5.10). A
+  record is the newest a process recorded that isn't a deletion: a
+  deletion isn't activity (ADR 8.1), neither `session delete`'s, which is
+  no process's, nor an editor's, which its process records into every file
+  of the session, opened there or not. Its cwd, profile and agent are those
+  the newest `session_opened` of them all names (ADR 5.10), in whichever
+  file it is. One process serves the session at a time (ADR 3.9), so that
+  is the opening of the process that last served it; the newest record may
+  be in another file, as an editor's deletion is recorded in every file of
+  the session by a process that may never have opened it (ADR 8.1). A file
+  whose newest record is in a format brnr doesn't read is passed over (ADR
+  5.10). A
   line cut short is never taken for a record: a JSON object ends only at
   its last byte. So, for a transcript:
   - ending in a newline, as written: its last line is the last record;
@@ -1160,6 +1167,17 @@ The format:
     host log whose first or newest record is in another format.
   - The catch-up of a process writing another format fails, saying so, and
     the command says what it missed (ADR 10.2).
+- Whether a file has records in another format, for `session list`,
+  `session resume`, `doctor` and whether brnr appends to it (ADR 5.9's
+  `log::appends_to`), is told by its first and newest records, not by
+  reading every record. brnr appends only to a file whose first and newest
+  records it reads, and one process serves a session at a time (ADR 3.9):
+  a file a 1.x brnr wrote changes format only at its end, where a newer
+  brnr went on with it, and is then set aside (below). A record in another
+  format between records of this brnr's is no record a brnr appended after
+  them; a reader that reads every record (`event log`, the catch-up) says
+  it all the same, and `session list` takes the file's newest record, one
+  it reads, guessing nothing (P4).
 - brnr doesn't migrate or rewrite a file in another format (ADR 5.1, P3),
   nor keep a reader for one before 1.0 (P9). A major release that changes
   the format decides whether it reads format 1 too.
@@ -1390,6 +1408,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_transcript_in_another_format_isnt_read` (an older brnr's
   without `format`, format 2, and a file a newer brnr went on with:
   `session list`, `event log`, `session resume` and `doctor`),
+  `adr_0005_a_record_in_another_format_amid_a_file_is_said` (a format-2
+  record between format-1 ones: `event log` says it, `session list` lists
+  the file),
   `adr_0005_a_transcript_cut_short_is_read_to_its_last_whole_record`
   (partial writes: a broken line and a cut end, and a resume appending on
   a line of its own),

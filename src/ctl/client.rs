@@ -155,6 +155,24 @@ pub(super) fn session_in<'a>(status: &'a Value, id: &str) -> Option<&'a Value> {
     status["sessions"].as_array()?.iter().find(|s| s["session"] == id)
 }
 
+/// The counts a session has in a process's `status` answer (ADR 8.2).
+pub(super) const COUNTS: [&str; 4] =
+    ["held_count", "context_count", "pending_count", "elicitation_count"];
+
+/// The count `key` in `report`, part of a `status` answer. A count that
+/// isn't there (an older brnr's process, which names it otherwise) is no
+/// count, not 0: an error says so (P4).
+pub(super) fn count(report: &Value, key: &str) -> Result<u64, Error> {
+    report[key].as_u64().ok_or_else(|| missing(key))
+}
+
+/// That a process's `status` answer has no `key`, which this brnr reads:
+/// an older brnr's process, which names it otherwise, as
+/// `command_unknown` is (ADR 8.7).
+pub(super) fn missing(key: &str) -> Error {
+    Error::new(Code::command_unknown, format!("the process's status has no {key}"))
+}
+
 /// What waits for an answer in a process, as its `pending` answer has it:
 /// permission requests and elicitations.
 pub(super) struct Pending {
@@ -458,6 +476,15 @@ impl Conn {
     /// What it missed and couldn't catch up on, once it has given up (ADR 10.2).
     pub(super) fn missed(&self) -> Option<&Value> {
         self.missed.as_ref()
+    }
+
+    /// Whether the process has gone, for a command whose connection to it
+    /// failed: it has exited within [`STOPPING_WAIT`], as catching up
+    /// decides. Not if brnr doesn't know which process it is: it doesn't
+    /// guess (P4).
+    pub(super) fn process_gone(&self) -> bool {
+        let socket = self.socket.as_ref().or(self.follow.as_ref().map(|f| &f.socket));
+        socket.is_some_and(|socket| gone_within(socket, STOPPING_WAIT))
     }
 
     /// How a command ends that has got `Err(why)` from the connection: with
@@ -803,6 +830,37 @@ pub(super) fn cut_off_at(cmd: &'static str) -> (Conn, std::thread::JoinHandle<()
                 writeln!(stream, "{answer}").unwrap();
             }
         }
+        let _ = fs::remove_dir_all(&dir);
+    });
+    let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();
+    conn.socket = Some(socket);
+    (conn, process)
+}
+
+/// A connection, for a test, to a process whose socket is `<pid>.sock`,
+/// that answers each request with the next of `answers`, then closes it.
+#[cfg(test)]
+pub(super) fn answered(pid: u32, answers: Vec<Value>) -> (Conn, std::thread::JoinHandle<()>) {
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::{env, thread};
+    static MADE: AtomicU32 = AtomicU32::new(0);
+    let n = MADE.fetch_add(1, Ordering::Relaxed);
+    let dir = env::temp_dir().join(format!("brnr-answered-{}-{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join(format!("{pid}.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    let process = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap().0;
+        let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+        for mut answer in answers {
+            let Some(Ok(line)) = lines.next() else { break };
+            let req: Value = serde_json::from_str(&line).unwrap();
+            answer["req_id"] = req["req_id"].clone();
+            writeln!(stream, "{answer}").unwrap();
+        }
+        drop(stream);
         let _ = fs::remove_dir_all(&dir);
     });
     let mut conn = Conn::new(UnixStream::connect(&socket).unwrap()).unwrap();

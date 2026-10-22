@@ -478,17 +478,21 @@ fn stop(a: &Args) -> Result<(), error::Error> {
 
 /// Sessions with a transcript that no running process is serving, most
 /// recently active first, a row each, whatever folders its files are in
-/// (ADR 5.1). Only the first and last records of each events file are read:
+/// (ADR 5.1). Only the first and last records of each events file, and its
+/// last `session_opened`, are read:
 /// the session began where its oldest file's first record says, which names
 /// the session it was forked from if it opened as a fork (ADR 3.12); the
 /// newest record of them all says when and in which process the session was
-/// last active, or, if it is a deletion's, a record of no process's (ADR
-/// 8.1), the newest that names a process does. That process's
-/// `session_opened`, the last in its file, says the cwd, profile and agent
-/// it served the session with (ADR 3.11): the transcript alone says it, not
-/// the host log (ADR 5.10). A file whose newest record is in a format this
-/// brnr doesn't read isn't one, as where the session was last served isn't
-/// known; `doctor` lists it (ADR 5.10).
+/// last active, or, if it is a deletion's, which isn't activity whoever
+/// recorded it (ADR 8.1), the newest other record that names a process
+/// does. The newest `session_opened` of them all, the last in each file,
+/// says the cwd, profile and agent the session was last served with (ADR
+/// 3.11): one process serves it at a time (ADR 3.9), and a process that
+/// didn't open it (an editor's deletion, ADR 8.1) records into every file
+/// of it. The transcript alone says it, not the host log (ADR 5.10). A file
+/// whose newest record is in a format this brnr doesn't read isn't one, as
+/// where the session was last served isn't known; `doctor` lists it (ADR
+/// 5.10).
 fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     // One served by a process, or whose lock is held, is running, whatever
     // folder its files are in, and whether its process answers or not.
@@ -496,10 +500,10 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         hosts.iter().flat_map(|h| h.sessions().iter().filter_map(|s| s["session"].as_str()));
     let mut running: HashSet<String> = served.map(str::to_owned).collect();
     running.extend(lock::all().into_iter().filter(|e| e.pid.is_some()).filter_map(|e| e.session));
-    // By id: the oldest file's first record; and the newest a process
-    // recorded, when, and its file.
-    type Newest = (Option<Value>, Value, PathBuf);
-    let mut found: HashMap<String, (Value, Newest)> = HashMap::new();
+    // By id: the oldest file's first record; when a process last recorded
+    // in it, and in which file; and its files.
+    type Found = (Value, (Value, PathBuf), Vec<PathBuf>);
+    let mut found: HashMap<String, Found> = HashMap::new();
     for file in transcript::events_files() {
         let Some(last) = transcript::newest(&file).filter(transcript::readable) else { continue };
         let Some(first) = transcript::first(&file) else { continue };
@@ -507,32 +511,36 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         if running.contains(session) {
             continue;
         }
-        // The process that last served it: a deletion's record is no
-        // process's (ADR 8.1).
-        let served = match last["host_id"].is_string() {
+        // The process that last served it. A deletion isn't serving (ADR
+        // 8.1): `session delete`'s record is no process's, and an editor's,
+        // through a process that may never have opened the session, goes
+        // into every file of it.
+        let serving =
+            |r: &Value| r["host_id"].is_string() && r["event"]["event"] != "session_deleted";
+        let served = match serving(&last) {
             true => Some(last.clone()),
-            false => transcript::last(&file, |r| r["host_id"].is_string()),
+            false => transcript::last(&file, serving),
         };
         // When a process last served it: a deletion isn't activity.
         let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
-        let Some((oldest, newest)) = found.get_mut(session) else {
-            found.insert(session.to_owned(), (first, (served, at, file)));
+        let Some((oldest, newest, files)) = found.get_mut(session) else {
+            found.insert(session.to_owned(), (first, (at, file.clone()), vec![file]));
             continue;
         };
         if first["ts"].as_str() < oldest["ts"].as_str() {
             *oldest = first;
         }
-        if at.as_str() > newest.1.as_str() {
-            *newest = (served, at, file);
+        files.push(file.clone());
+        if at.as_str() > newest.0.as_str() {
+            *newest = (at, file);
         }
     }
     let mut past = Vec::new();
-    for (session, (oldest, (served, at, file))) in found {
-        let host_id = served.as_ref().map(|r| r["host_id"].clone());
-        let opening = |r: &Value| {
-            r["event"]["event"] == "session_opened" && host_id.as_ref() == Some(&r["host_id"])
-        };
-        let opened = transcript::last(&file, opening).unwrap_or_default();
+    for (session, (oldest, (at, file), files)) in found {
+        let opening = |r: &Value| r["event"]["event"] == "session_opened";
+        let openings = files.iter().filter_map(|path| transcript::last(path, opening));
+        let opened = openings.max_by(|a, b| a["ts"].as_str().cmp(&b["ts"].as_str()));
+        let opened = opened.unwrap_or_default();
         let opened = &opened["event"];
         past.push(json!({
             "session": session,
@@ -598,6 +606,10 @@ fn status(a: &Args) -> Result<(), error::Error> {
     let x = host
         .session(&id)
         .ok_or_else(|| error::Error::new(Code::session_not_found, "no session"))?;
+    // A count it doesn't have isn't 0 (P4).
+    for key in client::COUNTS {
+        client::count(x, key)?;
+    }
     // Processes serving it without its lock, `shared_sessions` (ADR 3.9): what
     // happens there isn't in its transcript.
     let shares = |s: &Value| s["session"] == id.as_str() && s["shared"] == true;

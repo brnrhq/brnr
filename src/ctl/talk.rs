@@ -39,7 +39,7 @@ use crate::request::{self, Request, Role};
 use crate::{config, paths, render, signals, spawn, sys, transcript};
 
 use super::args::Error::{self, Failed, Invalid};
-use super::client::{Conn, Host, discover, session_in};
+use super::client::{Conn, Host, count, discover, missing, session_in};
 use super::ownership::{self, Resume};
 use super::{
     Args, START_GRACE, START_TIMEOUT, print_json, process, read_stdin, running_session, settings,
@@ -876,7 +876,9 @@ fn wait_on(
     let events = [
         "turn_ended",
         "permission_request",
+        "permission_resolved",
         "elicitation_request",
+        "elicitation_resolved",
         "session_closed",
         "process_exited",
     ];
@@ -928,7 +930,7 @@ fn wait_on(
                 return Ok(ExitCode::from(TIMED_OUT));
             }
             Err(why) if conn.missed().is_some() => return conn.ended(why),
-            Err(_) if what == "exit" => {
+            Err(_) if what == "exit" && conn.process_gone() => {
                 // Gone without saying how (killed): the event it would have
                 // sent, with what brnr knows of it.
                 let gone = json!({
@@ -942,6 +944,11 @@ fn wait_on(
                 });
                 done(&gone, render::exited(&gone["exit_status"]))?;
                 return Ok(ExitCode::SUCCESS);
+            }
+            // Not seen to exit: no exit to print, but a failure (P4).
+            Err(why) if what == "exit" => {
+                let why = format!("{why}, and brnr can't tell that the process has exited");
+                return Err(error::Error::new(Code::process_unreachable, why));
             }
             Err(e) => return Err(e),
         };
@@ -979,6 +986,18 @@ fn wait_on(
                     let how = e["stop_reason"].as_str().unwrap_or("error");
                     done(&e, format!("turn ended: {how}"))?;
                     break 'event Some(turn_status(&e));
+                }
+                // A request that outlived its turn (ADR 3.8), answered or
+                // cancelled: the session may be idle now.
+                ("permission_resolved" | "elicitation_resolved", "idle") if mine(&e) => {
+                    let (now, turn) = match idle(conn, session) {
+                        Ok(idle) => idle,
+                        Err(why) => return conn.ended(why),
+                    };
+                    if let Some(now) = now {
+                        state(now, &turn)?;
+                        break 'event Some(ended_as(&turn));
+                    }
                 }
                 ("turn_ended", "idle") if mine(&e) => {
                     last_turn = turn_of(&e);
@@ -1034,16 +1053,21 @@ fn idle_text(state: &str, turn: &Value) -> String {
     }
 }
 
-/// Whether the session is idle, with no turn running and nothing held:
-/// its state then, `idle`, or `inactive` for one that has closed; and how
-/// its last turn ended, as `session status` has it (null for one that has
-/// closed).
+/// Whether the session is idle, with no turn running, nothing held and no
+/// approval or elicitation waiting: its state then, `idle`, or `inactive`
+/// for one that has closed; and how its last turn ended, as `session
+/// status` has it (null for one that has closed). `Err` for a status that
+/// doesn't say (P4).
 fn idle(conn: &mut Conn, session: &str) -> Result<(Option<&'static str>, Value), error::Error> {
     let status = conn.call(json!({ "cmd": "status" }))?;
     Ok(match session_in(&status, session) {
         Some(s) => {
-            let is_idle = s["busy"] != true && s["held_count"].as_u64().unwrap_or(0) == 0;
-            (is_idle.then_some("idle"), s["last_turn"].clone())
+            let busy = s["busy"].as_bool().ok_or_else(|| missing("busy"))?;
+            let waiting = ["held_count", "pending_count", "elicitation_count"]
+                .into_iter()
+                .map(|key| count(s, key))
+                .sum::<Result<u64, error::Error>>()?;
+            ((!busy && waiting == 0).then_some("idle"), s["last_turn"].clone())
         }
         None => (Some("inactive"), Value::Null),
     })
@@ -1174,7 +1198,8 @@ fn queue(arg: &str, mut req: Value, json_out: bool) -> Result<ExitCode, error::E
 mod tests {
     use super::*;
     use crate::ctl::catch_up::MISSED;
-    use crate::ctl::client::cut_off_at;
+    use crate::ctl::client::{answered, cut_off_at};
+    use crate::error::code_is;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
@@ -1191,6 +1216,46 @@ mod tests {
             assert_eq!(ended, Ok(ExitCode::from(MISSED)), "--for {what}");
             let note = conn.missed().unwrap();
             assert_eq!((&note["event"], &note["after_seq"]), (&json!("events_missed"), &json!(11)));
+            process.join().unwrap();
+        }
+    }
+
+    /// `event wait --for exit` prints the `process_exited` it makes for a
+    /// process gone without one only once it has seen the process exit.
+    /// A connection that fails while it lives is a failure, said (P4).
+    #[test]
+    fn adr_0008_wait_for_exit_says_exited_only_once_the_process_has() {
+        let subscribed = || vec![json!({ "ok": true })];
+        let (mut conn, process) = answered(std::process::id(), subscribed());
+        let ended = wait_on(&mut conn, "s", "exit", None, true, &Value::Null);
+        let err = ended.unwrap_err();
+        code_is(&err, Code::process_unreachable);
+        assert!(err.message.contains("brnr can't tell that the process has exited"), "{err}");
+        process.join().unwrap();
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        gone.wait().unwrap();
+        let (mut conn, process) = answered(gone.id(), subscribed());
+        let ended = wait_on(&mut conn, "s", "exit", None, true, &Value::Null);
+        assert_eq!(ended, Ok(ExitCode::SUCCESS));
+        process.join().unwrap();
+    }
+
+    /// `event wait` for `idle` asks the process's status, and a count it
+    /// needs that isn't there (an older brnr's `held`) is no count, not 0:
+    /// the wait fails, saying which (P4).
+    #[test]
+    fn adr_0008_a_count_the_status_doesnt_have_isnt_0() {
+        let s =
+            json!({ "session": "s", "busy": false, "pending_count": 0, "elicitation_count": 0 });
+        for (key, value) in [("held", json!(0)), ("held_count", json!(null))] {
+            let mut s = s.clone();
+            s[key] = value;
+            let status = json!({ "ok": true, "sessions": [s] });
+            let (mut conn, process) =
+                answered(std::process::id(), vec![json!({ "ok": true }), status]);
+            let err = wait_on(&mut conn, "s", "idle", None, true, &Value::Null).unwrap_err();
+            code_is(&err, Code::command_unknown);
+            assert_eq!(err.message, "the process's status has no held_count", "{key}");
             process.join().unwrap();
         }
     }

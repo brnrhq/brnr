@@ -307,8 +307,8 @@ can give a situation that has none a code of its own.
 |---|---|
 | Every command | 2 for a usage error: what the command line alone shows wrong, with nothing done and the usage on stderr. 0 for `--help` or `-h`, the usage on stdout. |
 | Ordinary CLI command | 0 on success; 1 for an operation failure (a session, process or profile that isn't there, an agent's error, a file that can't be read). |
-| `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`elicitation`/`exit` succeeds when its requested condition occurs. |
-| `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running and nothing held is idle. |
+| `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 124 when the wait timeout expires. For a turn result, 0 for `end_turn`, otherwise 1; dropped messages and premature exit/closure also fail. `event wait --for permission`/`elicitation`/`exit` succeeds when its requested condition occurs; `--for exit` fails, 1, when the connection fails and brnr can't see the process exit. |
+| `event wait --for idle` | An already idle session, or one closed while waiting, uses its last turn's result; no turn running, nothing held and no approval or elicitation waiting is idle. |
 | `event watch`, `event notify`, `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 3 when the process cut the command off for falling behind and it couldn't catch up from the transcript: what it missed is an `events_missed` note, with `ts`, `host_id` and `pid` as an event has them, `after_seq` the last event it got, `until_seq` where it subscribed again, or, if subscribing again failed each time, where the process said it cut the command off (null only for a process gone, or one that said no position, as `error` then says), and `error`, why ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). `event watch` prints it as its last event; the others say it on stderr. |
 | `brnr acp` | A usage error exits 2; a config error or a host startup failure exits 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
@@ -352,7 +352,7 @@ can add a code, for a new failure or for one that was `unclassified`.
 | `answer_invalid` | An answer that doesn't fit its permission request or elicitation: no such option, a kind missing or doubled, the other side's option, content that doesn't fit the form, an action that isn't one. |
 | `capability_missing` | The agent doesn't advertise what was asked: forking, closing, resuming, listing or deleting sessions, steering, images, an MCP server's transport. |
 | `command_invalid` | A socket request that isn't one: not JSON, no `cmd`, a field missing or of the wrong type, fields that don't go together. |
-| `command_unknown` | A `cmd` the process doesn't have: it may be an older brnr's. |
+| `command_unknown` | A `cmd` the process doesn't have, or a `status` answer without a field this brnr reads: it may be an older brnr's. |
 | `config_invalid` | The config file can't be read, isn't private, or doesn't load. |
 | `event_unknown` | An event the process doesn't have, or a note, in `subscribe`'s `events` or a bridge's. |
 | `experimental_disabled` | An action on an editor's session its profile doesn't enable. |
