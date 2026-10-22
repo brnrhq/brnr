@@ -214,6 +214,10 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   written, and a full backlog refuses on macOS and blocks on Linux. Gone, it
   is caught up with as above if its host log has the peer's `peer_dropped`.
   Otherwise the command fails, as it does for a peer that wasn't cut off.
+  One that hangs up on step 3 has already said it cut the peer off: it is
+  waited for the same way and, gone, its transcript is read to its end;
+  still there after 10 s, the command says what it missed up to R, as
+  below.
 - These commands catch up: `event watch`, `prompt send --wait`, `session
   new --wait` and `session resume --wait` (on the start channel, or with
   `--pid`), `event wait`, and `event notify` on the socket.
