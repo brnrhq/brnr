@@ -824,7 +824,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
   `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
-  with files in two folders, #121). That a resume in another cwd starts a
+  with files in two folders, #121),
+  `adr_0003_resume_with_a_profile_runs_its_agent` (#341). That a resume in another cwd starts a
   file in that folder is shown, for a bridge's resume, by ADR 5.6's
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
   for a start's by ADR 5.1's
