@@ -5231,11 +5231,12 @@ fn adr_0007_approve_answers_in_the_editors_place() {
     line_with(&mut from_agent, "session/request_permission");
     assert_eq!(env.ok(&["permission", "reject", "sess-1", "p2"]), "p2 reject\n");
     let tool = update(&mut from_agent, "tool_call_update");
-    assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-1".into(), &"failed".into()));
+    assert_eq!((&tool["toolCallId"], &tool["status"]), (&"perm-2".into(), &"failed".into()));
     assert_eq!(update(&mut from_agent, "tool_call")["title"], "Rejected via brnr");
     response(&mut from_agent, 4);
+    let ours = |c: &Value| c["id"] == "perm-1" || c["id"] == "perm-2";
     let answers: Vec<Value> = (env.calls().into_iter())
-        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .filter(|c| ours(c) && c.get("method").is_none())
         .map(|c| c["result"]["outcome"]["optionId"].clone())
         .collect();
     assert_eq!(answers, ["allow", "reject"]);
