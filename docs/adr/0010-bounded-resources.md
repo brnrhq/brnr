@@ -165,10 +165,9 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
   once the peer is subscribed, so whoever finds the note there knows the
   peer gets every event after it that its subscription selects: the tests
   wait for it before they make an event an observer must see, not a time
-  (#333). A started bridge has
-  `bridge_started` for it. The start channel has no note: its ready report
-  goes in the same step of the event loop that subscribes it, before any
-  event can.
+  (#333). A started bridge has `bridge_started` for it. The start channel
+  has no note: its ready report goes in the same step of the event loop
+  that subscribes it, before any event can.
 
 ### Recording the cut-off
 
