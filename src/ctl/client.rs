@@ -1519,7 +1519,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
         let exited = json!({ "event": "process_exited", "exit_status": 0, "seq": 22 });
-        let record = json!({ "ts": "t", "host_id": "h", "event": exited });
+        let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": exited });
         fs::write(&host_log, format!("{record}\n")).unwrap();
         let listener = UnixListener::bind(&socket).unwrap();
         let at = socket.clone();
