@@ -388,7 +388,9 @@ protocol below. Do not write human messages to this stdout. brnr relays ACP
 between the editor and its agent; stderr carries diagnostics and the
 agent's stderr, as it is written. Stdout ends when the agent's stdout does,
 even if the agent runs on; brnr writes nothing more there itself. Stdin
-closes when the agent's does, so the editor's next write fails. Stderr
+closes when the agent's does, so the editor's next write fails; when the
+agent closed its stdin itself, brnr finds out on the write that fails to
+reach it, which is recorded as sent, and the writes after it fail. Stderr
 ends when `brnr acp` exits. Both streams share one connection and a 16 MiB
 buffer, so an editor that stops reading one eventually holds up the other
 ([ADR 2.6](adr/0002-acp-faithfully.md#26-the-editors-stdin-and-stdout-end-when-the-agents-do-and-its-stderr-comes-as-written)). The editor initializes the protocol and owns its
