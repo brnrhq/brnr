@@ -221,13 +221,31 @@ impl Env {
     /// Waits for each process to have written what it recorded until now
     /// (`logged`, ADR 5.5): its host log has every subscription taken so
     /// far.
+    /// One that refuses the connection has gone (its metadata left), and one
+    /// that hangs up unanswered is stopping, its log whole once it has gone;
+    /// any other must answer, each step within 15 s.
     pub fn logged(&self) {
+        let wait = Duration::from_secs(15);
         for host in self.hosts() {
-            let Some(Ok(conn)) = host["socket"].as_str().map(UnixStream::connect) else { continue };
-            conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
-            if writeln!(&conn, r#"{{"cmd":"logged","req_id":"t"}}"#).is_ok() {
-                let _ = BufReader::new(&conn).read_line(&mut String::new());
+            let Some(socket) = host["socket"].as_str().map(PathBuf::from) else { continue };
+            // A connection a full backlog holds (Linux) waits: on a thread.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let at = socket.clone();
+            std::thread::spawn(move || tx.send(UnixStream::connect(at)));
+            let conn = match rx.recv_timeout(wait) {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(_)) => continue,
+                Err(_) => panic!("{}: not connected in 15 s", socket.display()),
+            };
+            conn.set_read_timeout(Some(wait)).unwrap();
+            conn.set_write_timeout(Some(wait)).unwrap();
+            writeln!(&conn, r#"{{"cmd":"logged","req_id":"t"}}"#).expect("logged not sent");
+            let mut answer = String::new();
+            if BufReader::new(&conn).read_line(&mut answer).expect("logged not answered") == 0 {
+                continue;
             }
+            let answer: Value = serde_json::from_str(&answer).expect("logged not answered");
+            assert_eq!(answer["ok"], true, "{answer}");
         }
     }
 
