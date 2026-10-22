@@ -28,8 +28,10 @@
 //! - The agent's `$/cancel_request` ends one held, `by: agent`: headless,
 //!   the host answers it as a cancelled request is answered; in an editor's
 //!   session the editor has the notification too, and its answer goes on
-//!   to the agent, with no event of its own (ADR 4.5). One answered
-//!   already, or an id of none, ends nothing.
+//!   to the agent, with no event of its own (ADR 4.5), recorded in its
+//!   session while the host keeps it: up to 1024, and not past its
+//!   session's close (ADR 10.3). One answered already, or an id of none,
+//!   ends nothing.
 //! - A turn that ends ends none of its requests: ACP has the agent cancel
 //!   what it no longer waits for (ADR 4.5).
 
@@ -263,6 +265,28 @@ enum End {
 /// agent, which ignores it (ADR 2.5).
 const ANSWERED: usize = 1024;
 
+/// The most requests the agent cancelled kept for the editor's answer: past
+/// that, an editor that never answers them would have the host keep them
+/// without limit, and its answer to one not kept still goes to the agent,
+/// recorded with no session: in the host log, not its session's transcript.
+const GIVEN_UP: usize = 1024;
+
+/// Keeps `value` for `key` in `kept`, the newest, in place of what was kept
+/// for it (an agent that uses an id again), the oldest going past `cap`.
+fn keep<T>(kept: &mut VecDeque<(String, T)>, key: String, value: T, cap: usize) {
+    kept.retain(|(k, _)| *k != key);
+    kept.push_back((key, value));
+    while kept.len() > cap {
+        kept.pop_front();
+    }
+}
+
+/// What `kept` has for `key`, no longer kept.
+fn take<T>(kept: &mut VecDeque<(String, T)>, key: &str) -> Option<T> {
+    let pos = kept.iter().position(|(k, _)| k == key)?;
+    kept.remove(pos).map(|(_, value)| value)
+}
+
 /// The agent's requests to its client that are unanswered, and what is
 /// kept of those answered.
 #[derive(Default)]
@@ -275,8 +299,10 @@ pub(super) struct Approvals {
     /// close.
     answered: VecDeque<(String, Answered)>,
     /// Requests the agent cancelled in an editor's session, by key, with
-    /// their session, until the editor answers them.
-    given_up: HashMap<String, Option<String>>,
+    /// their session, in the order they were cancelled: kept until the
+    /// editor answers them, up to [`GIVEN_UP`], the oldest going first, and
+    /// none past their session's close.
+    given_up: VecDeque<(String, Option<String>)>,
     /// The last handle's number, of each kind.
     permissions: u64,
     elicitations: u64,
@@ -340,21 +366,24 @@ impl Approvals {
             let resolved = self.end(pos, End::Editor(result), &Who::EDITOR, false);
             return EditorAnswer::Resolved(Box::new(resolved));
         }
-        if let Some(session) = self.given_up.remove(key) {
+        if let Some(session) = take(&mut self.given_up, key) {
             return EditorAnswer::GivenUp(session);
         }
-        let pos = self.answered.iter().position(|(k, _)| k == key);
-        match pos.and_then(|pos| self.answered.remove(pos)) {
-            Some((_, answered)) => EditorAnswer::Late(answered),
+        match take(&mut self.answered, key) {
+            Some(answered) => EditorAnswer::Late(answered),
             None => EditorAnswer::Unknown,
         }
     }
 
-    /// `session` closed: its requests the host answered are no longer kept.
-    /// The editor's late answer to one of them then goes to the agent, which
-    /// ignores an answer to a request it had answered (ADR 2.5).
+    /// `session` closed: its requests the host answered, and those the
+    /// agent cancelled, are no longer kept. The editor's late answer to one
+    /// the host answered then goes to the agent, which ignores an answer to
+    /// a request it had answered (ADR 2.5); its answer to one the agent
+    /// cancelled still goes to the agent, recorded in the host log with no
+    /// session.
     pub(super) fn closed(&mut self, session: &str) {
         self.answered.retain(|(_, a)| a.session.as_deref() != Some(session));
+        self.given_up.retain(|(_, s)| s.as_deref() != Some(session));
     }
 
     /// The agent's `$/cancel_request` of its request `key` (ADR 4.5): one
@@ -373,7 +402,7 @@ impl Approvals {
             return Some(self.end(pos, End::Host(answer), &Who::AGENT, false));
         }
         let resolved = self.end(pos, End::Agent(answer), &Who::AGENT, false);
-        self.given_up.insert(resolved.req.key.clone(), resolved.req.session.clone());
+        keep(&mut self.given_up, resolved.req.key.clone(), resolved.req.session.clone(), GIVEN_UP);
         Some(resolved)
     }
 
@@ -501,12 +530,7 @@ impl Approvals {
         let withdraw = how.filter(|_| editor).map(|how| {
             let answered =
                 Answered { session: req.session.clone(), title: req.title(), how, by: by.clone() };
-            // An agent that uses an id again replaces what is kept of it.
-            self.answered.retain(|(key, _)| *key != req.key);
-            self.answered.push_back((req.key.clone(), answered));
-            while self.answered.len() > ANSWERED {
-                self.answered.pop_front();
-            }
+            keep(&mut self.answered, req.key.clone(), answered, ANSWERED);
             (how, by.clone())
         });
         let event = match req.kind() {
@@ -939,5 +963,31 @@ mod tests {
         t.closed("s1");
         assert!(matches!(editor(&mut t, 1, json!({})), EditorAnswer::Unknown), "kept past close");
         assert!(matches!(editor(&mut t, 2, json!({})), EditorAnswer::Late(_)));
+    }
+
+    #[test]
+    fn adr_0010_given_up_requests_past_the_cap_lose_the_oldest() {
+        let mut t = Approvals::default();
+        let last = GIVEN_UP as u64 + 1;
+        for id in 1..=last {
+            t.ask(permission(id, "s", &["allow_once"]), None, "editor");
+            assert!(t.give_up(&id_key(&json!(id)), EDITOR).is_some());
+        }
+        assert_eq!(t.given_up.len(), GIVEN_UP);
+        assert!(matches!(editor(&mut t, 1, json!({})), EditorAnswer::Unknown), "oldest kept");
+        assert!(matches!(editor(&mut t, last, json!({})), EditorAnswer::GivenUp(_)));
+    }
+
+    #[test]
+    fn adr_0010_a_sessions_given_up_requests_go_with_its_close() {
+        let mut t = Approvals::default();
+        t.ask(permission(1, "s1", &["allow_once"]), None, "editor");
+        t.ask(permission(2, "s2", &["allow_once"]), None, "editor");
+        t.give_up(&id_key(&json!(1)), EDITOR);
+        t.give_up(&id_key(&json!(2)), EDITOR);
+        t.closed("s1");
+        assert!(matches!(editor(&mut t, 1, json!({})), EditorAnswer::Unknown), "kept past close");
+        let kept = editor(&mut t, 2, json!({}));
+        assert!(matches!(kept, EditorAnswer::GivenUp(Some(s)) if s == "s2"));
     }
 }
