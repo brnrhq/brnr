@@ -8,18 +8,20 @@
 //! from the host, stdout ending when the agent's does, however long the
 //! agent runs on; the agent's stderr comes out of the proxy's stderr as it
 //! comes, newline or not; signals the proxy receives are handed to the host;
-//! and the proxy exits with the agent's exact wait status. Signals, and its
-//! stdout failing, go on a socket of their own, the signal link (see
-//! frame.rs): they don't wait behind the editor's input while the agent
-//! isn't reading it, as they wouldn't with the agent run directly. The
-//! agent never holds the editor's file descriptors and is out of reach of
-//! the editor's process group and process tree; when the proxy goes, the
-//! host stops it as if the editor had run it.
+//! and the proxy exits with the agent's exact wait status. When the agent's
+//! stdin closes, so does the proxy's, and the editor's next write fails as
+//! it would on the agent's pipe. Signals, and its stdout failing, go on a
+//! socket of their own, the signal link (see frame.rs): they don't wait
+//! behind the editor's input while the agent isn't reading it, as they
+//! wouldn't with the agent run directly. The agent never holds the editor's
+//! file descriptors and is out of reach of the editor's process group and
+//! process tree; when the proxy goes, the host stops it as if the editor had
+//! run it.
 
 use std::env;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, BufReader, ErrorKind, PipeReader, Read, Write};
+use std::io::{self, BufReader, ErrorKind, PipeReader, PipeWriter, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::{ExitCode, Stdio};
@@ -89,17 +91,24 @@ pub(crate) fn main(args: impl Iterator<Item = OsString>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    let (stdin_closed, close_stdin) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(err) => {
+            eprintln!("brnr acp: pipe: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     if let Err(err) = start_host(&request, theirs, their_signal_link) {
         eprintln!("brnr acp: starting its process: {err}");
         return ExitCode::FAILURE;
     }
 
     let input = link.try_clone().expect("clone socket");
-    thread::spawn(move || relay_stdin(input));
+    thread::spawn(move || relay_stdin(input, stdin_closed));
     let signal_link: SignalLink = Arc::new(Mutex::new(signal_link));
     let s = signal_link.clone();
     thread::spawn(move || relay_signals(signals, s));
-    run(link, signal_link)
+    run(link, signal_link, close_stdin)
 }
 
 /// Splits `[options] [-- <agent> [args...]]`; `None` for `-h` or `--help`,
@@ -172,12 +181,13 @@ fn start_host(request: &Request, link: UnixStream, signal_link: UnixStream) -> i
 }
 
 /// Frames from the host → our stdout and stderr, until the agent's exit
-/// status arrives.
-fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
+/// status arrives. Dropping `close_stdin` has `relay_stdin` close our stdin.
+fn run(link: UnixStream, signal_link: SignalLink, close_stdin: PipeWriter) -> ExitCode {
     let mut reader = BufReader::new(link);
     let mut stdout = sys::stdio(1);
     let mut stderr = sys::stdio(2);
     let mut stdout_open = true;
+    let mut close_stdin = Some(close_stdin);
     loop {
         let (kind, payload) = match frame::read(&mut reader) {
             Ok(Some(frame)) => frame,
@@ -203,6 +213,9 @@ fn run(link: UnixStream, signal_link: SignalLink) -> ExitCode {
                     eprintln!("brnr acp: closing stdout: {err}");
                 }
             }
+            // The agent's stdin has closed: ours does, for the editor's
+            // next write to fail as it would on the agent's pipe (ADR 2.6).
+            frame::STDIN_CLOSED => drop(close_stdin.take()),
             frame::STDERR => {
                 let _ = write_all(&mut stderr, &payload);
             }
@@ -234,17 +247,35 @@ fn mirror(status: c_int) -> ExitCode {
 }
 
 /// Our stdin → the host, then EOF so the host knows exactly when the caller
-/// closed ours. The only writer of the link.
-fn relay_stdin(mut link: UnixStream) {
+/// closed ours. The only writer of the link. When `closed` is readable (its
+/// writer has gone: the agent's stdin has closed), our stdin is closed
+/// instead, with no EOF: the host has no one to give it to.
+fn relay_stdin(mut link: UnixStream, closed: PipeReader) {
     let mut input = sys::stdio(0);
     let mut buf = vec![0; 64 * 1024];
+    let mut polled = true;
     loop {
+        // In poll, not read: a read of fd 0 under way holds the editor's pipe
+        // open (Linux), whatever another thread does to fd 0, and the
+        // editor's next write would go through. Woken, this thread closes it.
+        match wait_input(&input, &closed, polled) {
+            Input::Ready => {}
+            Input::Closed => {
+                if let Err(err) = sys::end_stdin() {
+                    eprintln!("brnr acp: closing stdin: {err}");
+                }
+                return;
+            }
+            Input::Unpolled => polled = false,
+        }
         let n = match input.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                wait_ready(&*input, libc::POLLIN);
+                if !polled {
+                    wait_ready(&*input, libc::POLLIN);
+                }
                 continue;
             }
             Err(_) => break,
@@ -254,6 +285,44 @@ fn relay_stdin(mut link: UnixStream) {
         }
     }
     let _ = frame::write(&mut link, frame::EOF, &[]);
+}
+
+/// What `wait_input` found.
+enum Input {
+    /// Stdin can be read, or is at its end.
+    Ready,
+    /// Stdin is to be closed.
+    Closed,
+    /// Stdin can't be polled (macOS can't poll some devices): it is read
+    /// blocking, as it was before, and closed once the read that waits
+    /// returns.
+    Unpolled,
+}
+
+/// Waits until stdin can be read or `closed` is readable, whichever comes
+/// first (`closed` if both are); unless `stdin` is polled, only looks to see
+/// whether `closed` is.
+fn wait_input(input: &File, closed: &PipeReader, stdin: bool) -> Input {
+    let mut fds = [closed.as_raw_fd(), input.as_raw_fd()].map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    let (fds, timeout) = if stdin { (&mut fds[..], -1) } else { (&mut fds[..1], 0) };
+    loop {
+        match sys::poll(fds, timeout) {
+            Ok(_) => break,
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return Input::Unpolled,
+        }
+    }
+    if fds[0].revents != 0 {
+        Input::Closed
+    } else if stdin && fds[1].revents & libc::POLLNVAL != 0 {
+        Input::Unpolled
+    } else {
+        Input::Ready
+    }
 }
 
 /// `write_all` that also works on a non-blocking descriptor, which an
@@ -274,11 +343,8 @@ pub(crate) fn write_all(out: &mut File, mut bytes: &[u8]) -> io::Result<()> {
 
 /// Waits until a non-blocking `fd` can be read or written (`events`).
 fn wait_ready(fd: &impl AsRawFd, events: libc::c_short) {
-    let mut p = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
-    // SAFETY: p is a valid pollfd, and the count says there is one.
-    while unsafe { libc::poll(&mut p, 1, -1) } < 0
-        && io::Error::last_os_error().kind() == ErrorKind::Interrupted
-    {}
+    let mut p = [libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 }];
+    while sys::poll(&mut p, -1).is_err_and(|err| err.kind() == ErrorKind::Interrupted) {}
 }
 
 /// The signals we get → the host, on the signal link: never behind our stdin.

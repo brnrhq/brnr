@@ -215,6 +215,13 @@ brnr's own conventions:
 
 ### Fixed
 
+- The editor's stdin closes when the agent's does, as on a pipe: after
+  `brnr process stop`, the agent closing its stdin or exiting, the
+  editor's next write to `brnr acp` fails (EPIPE). What it wrote before
+  then is neither sent nor recorded as sent, and the host log notes
+  `agent_stdin_closed` and `editor_bytes_dropped` with how many bytes. The
+  editor's writes went through, and brnr recorded its lines as sent to the
+  agent and threw them away (ADR 2.6, #330).
 - A permission request or an elicitation the agent cancels with
   `$/cancel_request` ends: it is gone from `permission requests`,
   `elicitation requests` and a bridge's `pending`, the session is no longer

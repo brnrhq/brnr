@@ -1128,7 +1128,7 @@ impl Host {
                 // Reaped here, on the thread that sends signals, so a signal
                 // can never reach a recycled pid.
                 self.status = reap(self.agent_pid).ok();
-                self.agent_in = None;
+                self.close_agent_stdin();
                 self.stopping = None;
                 self.drain_until = Some(Instant::now() + DRAIN);
             }
@@ -1280,8 +1280,32 @@ impl Host {
         let Some(agent) = &self.agent_in else { return };
         self.to_agent.add(bytes.len());
         if agent.send(bytes.to_vec()).is_err() {
-            self.agent_in = None; // The agent closed its stdin.
+            self.close_agent_stdin(); // The agent closed its stdin.
         }
+    }
+
+    /// The agent's stdin closes, as a stop closes it, or as the agent closed
+    /// it or exited; not as the editor's does (`editor_eof`, `link_gone`).
+    /// The start of a line the editor hasn't finished won't reach the agent,
+    /// nor will what it writes next: the proxy closes its stdin, so the
+    /// editor's next write fails, as it would on the agent's pipe (ADR 2.6).
+    fn close_agent_stdin(&mut self) {
+        if self.agent_in.take().is_none() {
+            return;
+        }
+        if let Some(rest) = self.editor_lines.finish() {
+            self.editor_bytes_dropped(rest.len());
+        }
+        if self.link.is_some() {
+            self.sink.note(None, json!({ "event": "agent_stdin_closed" }));
+            self.send_link(frame::STDIN_CLOSED, &[]);
+        }
+    }
+
+    /// Bytes from the editor that won't reach the agent, its stdin closed
+    /// (`close_agent_stdin`): neither sent nor recorded, but said (P3).
+    pub(super) fn editor_bytes_dropped(&mut self, bytes: usize) {
+        self.sink.note(None, json!({ "event": "editor_bytes_dropped", "bytes": bytes }));
     }
 
     // ---- stopping -----------------------------------------------------
@@ -1321,7 +1345,7 @@ impl Host {
         }
         self.stop_requested = true;
         self.sink.note(None, json!({ "event": "stop_requested" }));
-        self.agent_in = None;
+        self.close_agent_stdin();
         self.stopping = Some((Instant::now() + STOP_TERM_AFTER, StopStage::Term));
     }
 

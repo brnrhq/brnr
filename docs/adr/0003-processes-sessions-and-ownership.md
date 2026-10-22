@@ -20,7 +20,8 @@ are what N2 asks of it.
   fork, reparented to init or launchd), with one end of each of two
   socketpairs, and from then on only relays:
   - On the link: stdin and stdout as frames, the agent's stderr to its
-    stderr, stdin EOF after what came before it.
+    stderr, stdin EOF after what came before it, and the agent's stdin
+    closing, for the proxy to close its own (ADR 2.6).
   - On the signal link, which the host never stops reading, so that nothing
     on it waits behind the editor's input (ADR 10.1): the signals the proxy
     catches (HUP, INT, QUIT, TERM, USR1, USR2, but those the editor

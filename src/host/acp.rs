@@ -228,7 +228,17 @@ impl Host {
     /// What the editor writes, as lines. One longer than `LINE_BYTES` isn't
     /// read: it goes to the agent as it comes (ADR 10.3).
     pub(super) fn editor_bytes(&mut self, bytes: &[u8]) {
-        for piece in self.editor_lines.push(bytes) {
+        // The writer of the agent's stdin has gone: the agent closed it.
+        if self.to_agent.closed() {
+            self.close_agent_stdin();
+        }
+        // `agent_in` is set before the link is read, and nothing follows the
+        // editor's EOF: these came before the proxy closed its stdin.
+        if self.agent_in.is_none() {
+            return self.editor_bytes_dropped(bytes.len());
+        }
+        let mut pieces = self.editor_lines.push(bytes).into_iter();
+        for piece in pieces.by_ref() {
             match piece {
                 Piece::Line(mut line) => {
                     line.pop(); // Its newline: the line is read without it.
@@ -241,6 +251,13 @@ impl Host {
                     self.write_agent(&bytes);
                 }
             }
+            if self.agent_in.is_none() {
+                break; // Its stdin closed as it was written to.
+            }
+        }
+        let rest: usize = pieces.map(|piece| piece.len()).sum();
+        if rest > 0 {
+            self.editor_bytes_dropped(rest);
         }
     }
 

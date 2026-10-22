@@ -205,7 +205,10 @@ action on a session: it stops an editor's process as it does any other.
   ends when the agent closes it, even if the agent runs on, and stderr comes as
   it is written, newline or not. From when stdout ends, brnr's own notes to the
   editor (a message sent from outside, a refusal) aren't shown; the host log
-  says which ([ADR 2.6](docs/adr/0002-acp-faithfully.md#26-the-editors-stdout-ends-when-the-agents-does-and-its-stderr-comes-as-written)).
+  says which. The editor's stdin closes when the agent's does (a stop, the
+  agent closing it or exiting), so its next write fails, as on a pipe; what
+  it wrote before then goes nowhere, and the host log says how much
+  ([ADR 2.6](docs/adr/0002-acp-faithfully.md#26-the-editors-stdin-and-stdout-end-when-the-agents-do-and-its-stderr-comes-as-written)).
 - Both streams come through one connection, in order, with 16 MiB in flight
   rather than a pipe's 64 KiB: an editor that stops reading one of them holds
   up the other too, once that much is waiting. The editor's stderr is also

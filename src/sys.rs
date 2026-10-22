@@ -105,17 +105,40 @@ pub(crate) fn stdio(fd: RawFd) -> ManuallyDrop<File> {
 /// on /dev/null, so that no file opened later is taken for stdout, and what
 /// writes to it then writes nowhere.
 pub(crate) fn end_stdout() -> io::Result<()> {
-    let null = File::options().write(true).open("/dev/null")?;
+    onto_null(1, File::options().write(true).open("/dev/null")?)
+}
+
+/// Ends stdin for whoever writes to it, as closing it would (their next
+/// write fails, EPIPE, once no one else holds it): fd 0 is left open on
+/// /dev/null, as `end_stdout` leaves fd 1, and what reads it then reads EOF.
+pub(crate) fn end_stdin() -> io::Result<()> {
+    onto_null(0, File::open("/dev/null")?)
+}
+
+/// Puts `null` in the place of stdin or stdout, `fd` 0 or 1.
+fn onto_null(fd: RawFd, null: File) -> io::Result<()> {
     loop {
-        // SAFETY: dup2(2) takes no pointers; `null` is open, and fd 1 is the
+        // SAFETY: dup2(2) takes no pointers; `null` is open, and `fd` is the
         // process's (see `stdio`): what holds it goes on to hold /dev/null.
-        if unsafe { libc::dup2(null.as_raw_fd(), 1) } >= 0 {
+        if unsafe { libc::dup2(null.as_raw_fd(), fd) } >= 0 {
             return Ok(());
         }
         let err = io::Error::last_os_error();
         if err.kind() != io::ErrorKind::Interrupted {
             return Err(err);
         }
+    }
+}
+
+/// Waits, for up to `timeout` ms (-1: as long as it takes), until one of
+/// `fds` is ready for its events; how many are.
+pub(crate) fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> io::Result<usize> {
+    // SAFETY: the pointer and the count are the slice's, of valid pollfds;
+    // poll(2) writes only their revents. Any fd, events and timeout are
+    // valid arguments (a bad fd is POLLNVAL).
+    match unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) } {
+        -1 => Err(io::Error::last_os_error()),
+        n => Ok(n as usize),
     }
 }
 
