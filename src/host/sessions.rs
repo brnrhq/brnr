@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use super::acp::{Replay, Session};
 use super::requests::history;
 use super::{Host, LOG_FLUSH, control};
+use crate::error::{Code, Error};
 use crate::lock::{self, Lock};
 use crate::log::Sink;
 
@@ -203,7 +204,8 @@ impl Sessions {
             Ok(lock) => Hold::Owner(Some(lock)),
             Err(lock::Error::Held(pid)) => Hold::Shared(pid),
             Err(lock::Error::Io(error)) => {
-                let event = json!({ "event": "lock_failed", "session": session, "error": error });
+                let failed = Error::from(error.as_str()).json();
+                let event = json!({ "event": "lock_failed", "session": session, "error": failed });
                 sink.note(None, event);
                 Hold::Unlocked(error)
             }
@@ -213,11 +215,13 @@ impl Sessions {
     /// Takes the lock of `session`, which a headless start or a bridge
     /// resumes, before the agent is asked for it: one another process holds,
     /// or one that can't be locked, can't be served here (ADR 3.9).
-    pub(super) fn own(&mut self, session: &str) -> Result<(), String> {
+    pub(super) fn own(&mut self, session: &str) -> Result<(), Error> {
         let lock = self.reclaim(session).map_or_else(|| lock::take(session), Ok);
         let lock = lock.map_err(|err| match err {
-            lock::Error::Held(pid) => format!("{session} is running in process {pid}"),
-            lock::Error::Io(why) => format!("{session} can't be locked: {why}"),
+            lock::Error::Held(pid) => {
+                Error::new(Code::session_active, format!("{session} is running in process {pid}"))
+            }
+            lock::Error::Io(why) => Error::from(format!("{session} can't be locked: {why}")),
         })?;
         self.claim(session, Hold::Owner(Some(lock)));
         Ok(())
@@ -366,7 +370,7 @@ impl Host {
         match hold {
             Hold::Shared(pid) => {
                 let event =
-                    json!({ "event": "session_shared", "session": session, "held_by": pid });
+                    json!({ "event": "session_shared", "session": session, "lock_pid": pid });
                 self.sink.note(None, event);
             }
             Hold::Owner(_) => self.sink.open_session(session, &cwd, forked_from),
@@ -539,8 +543,9 @@ mod tests {
         h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{"sessionId":"unit-shared"}}"#);
         let start = h.sent().start;
         assert_eq!(start.len(), 1);
-        let error = start[0]["error"].as_str().unwrap_or_default();
+        let error = start[0]["error"]["message"].as_str().unwrap_or_default();
         assert!(error.ends_with("unit-shared, which is running in process 7"), "{error}");
+        assert_eq!(start[0]["error"]["code"], "session_active");
         let table = &h.host().sessions;
         assert!(table.is_empty() && !table.knows("unit-shared") && table.letting_go.is_empty());
     }

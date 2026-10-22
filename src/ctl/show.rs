@@ -6,17 +6,21 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+use crate::error::{self, Code};
 use crate::render;
 
 use super::{Args, discover, print_json, running_session};
 
-pub(super) fn show(a: &Args) -> Result<ExitCode, String> {
+pub(super) fn show(a: &Args) -> Result<ExitCode, error::Error> {
     let (arg, request, json_out) = (&a.positional[0], &a.positional[1], a.json);
     let hosts = discover()?;
     let (host, session) = running_session(&hosts, arg)?;
     let pending = host.pending()?;
     let p = pending.approval(&session, request);
-    let p = p.ok_or(format!("no pending request {request} in {arg}"))?;
+    let none = || {
+        error::Error::new(Code::request_not_found, format!("no pending request {request} in {arg}"))
+    };
+    let p = p.ok_or_else(none)?;
     if json_out {
         print_json(p)?;
     } else {
