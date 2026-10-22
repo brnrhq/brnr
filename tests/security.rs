@@ -128,7 +128,8 @@ fn a_symlinked_runtime_dir_is_refused_by_every_command() {
 }
 
 /// A private directory of another user's (root's) is refused for being
-/// theirs, mode aside. Skipped where there is none to try, or as root.
+/// theirs, mode aside. Can't run where there is none to try, or as root
+/// (`skip`: a failure in CI).
 #[test]
 fn a_runtime_dir_of_another_users_is_refused() {
     let ours = uid();
@@ -137,7 +138,11 @@ fn a_runtime_dir_of_another_users_is_refused() {
             .is_ok_and(|m| m.is_dir() && m.uid() != ours && m.mode() & 0o077 == 0)
     });
     let Some(dir) = theirs.filter(|_| ours != 0) else {
-        eprintln!("skipped: no private directory of another user's to try");
+        skip(if ours == 0 {
+            "as root, the directories to try are its own"
+        } else {
+            "no private directory of another user's to try"
+        });
         return;
     };
     let env = Env::new("s-theirs");
@@ -213,11 +218,13 @@ fn no_approval_goes_through_a_dir_others_can_use() {
 
 /// Another user can't connect to a process's socket: the runtime directory
 /// is closed to them, and the socket itself too. Needs root, to be someone
-/// else (nobody); skipped otherwise.
+/// else (nobody), so it runs only when asked for (`--ignored`), as root: CI
+/// does, on Linux.
 #[test]
+#[ignore = "needs root"]
 fn another_user_cant_connect() {
     if uid() != 0 {
-        eprintln!("skipped: needs root to connect as another user");
+        skip("needs root to connect as another user");
         return;
     }
     let env = Env::new("s-nobody");
@@ -244,8 +251,8 @@ fn another_user_cant_connect() {
     let control = connect(&socket);
     chmod(&socket, 0o600);
     if control != Some(0) {
-        eprintln!("skipped: nobody can't reach {} at all", env.dir.display());
         chmod(&run, 0o700);
+        skip(&format!("nobody can't reach {} at all", env.dir.display()));
         return env.stop();
     }
     // With the directory open for searching, the socket's own mode refuses.
@@ -256,7 +263,7 @@ fn another_user_cant_connect() {
 }
 
 /// The process listens on no network: its only sockets are Unix sockets.
-/// Skipped where `lsof` isn't installed.
+/// Can't run where `lsof` isn't installed (`skip`: a failure in CI).
 #[test]
 fn the_process_listens_on_no_network() {
     let env = Env::new("s-network");
@@ -264,7 +271,7 @@ fn the_process_listens_on_no_network() {
     assert!(wait_for(Duration::from_secs(5), || !env.prompts().is_empty()));
     let Ok(out) = Command::new("lsof").args(["-a", "-n", "-P", "-i", "-p", &env.pid()]).output()
     else {
-        eprintln!("skipped: no lsof");
+        skip("no lsof");
         return env.stop();
     };
     assert_eq!(String::from_utf8_lossy(&out.stdout), "", "internet sockets open");
@@ -1156,12 +1163,12 @@ fn adr_0009_a_config_others_can_read_or_write_is_refused() {
 
 /// A config file of another user's (root's), in a folder of theirs, is
 /// refused for being theirs, mode aside, with the `chown` that fixes it.
-/// Skipped as root.
+/// Can't run as root (`skip`: a failure in CI).
 #[test]
 fn adr_0009_a_config_of_another_users_is_refused() {
     let theirs = Path::new("/etc/hosts");
     if uid() == 0 || !fs::metadata(theirs).is_ok_and(|m| m.uid() == 0) {
-        eprintln!("skipped: needs a file of root's, and not to be root");
+        skip("needs a file of root's, and not to be root");
         return;
     }
     let env = Env::new("s-config-theirs");

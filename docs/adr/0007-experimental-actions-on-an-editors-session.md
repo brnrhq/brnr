@@ -283,8 +283,11 @@ Run `cargo test --release adr_0007_`. Named claims, by section:
   `adr_0007_settings_are_told_to_the_editor`,
   `adr_0007_close_tells_the_editor`,
   `adr_0007_take_over_from_an_editor`,
-  `adr_0007_the_editors_own_steer_is_recorded`. The real-editor checks
-  have no automated test: they are what the matrix records.
+  `adr_0007_the_editors_own_steer_is_recorded`;
+  [src/host/sessions.rs](../../src/host/sessions.rs):
+  `adr_0007_a_session_closed_under_the_editor_is_its_again_once_loaded`.
+  The real-editor checks have no automated test: they are what the matrix
+  records.
 - 7.2: [tests/headless.rs](../../tests/headless.rs):
   `adr_0007_send_to_an_editors_session_waits_for_no_turn`,
   `adr_0007_context_joins_the_editors_next_prompt`,

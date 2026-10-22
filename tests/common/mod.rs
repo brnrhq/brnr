@@ -480,6 +480,15 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Says a test can't run here, before it returns: a failure in CI, or with
+/// `BRNR_TESTS_STRICT` set, where a test that didn't run mustn't pass (P3);
+/// a `skipped:` line on stderr otherwise.
+pub fn skip(why: &str) {
+    let set = |var| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+    assert!(!set("CI") && !set("BRNR_TESTS_STRICT"), "can't run here: {why}");
+    eprintln!("skipped: {why}");
+}
+
 /// Has `cmd` run with umask `mask` (and what it starts, which inherits it).
 pub fn with_umask(cmd: &mut Command, mask: libc::mode_t) -> &mut Command {
     // SAFETY: the closure runs in the child between fork and exec, where only
@@ -502,6 +511,22 @@ pub fn with_sigchld_ignored(cmd: &mut Command) -> &mut Command {
     unsafe {
         cmd.pre_exec(|| {
             libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+            Ok(())
+        })
+    }
+}
+
+/// Has `cmd` run with SIGINT and SIGQUIT at their defaults, so a test's
+/// SIGINT stops it even when the tests run as a script's `&` job, which
+/// starts with both ignored and passes that on across exec.
+pub fn with_default_interrupt(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the child between fork and exec, where only
+    // async-signal-safe calls may be made: signal(2) is one, and SIG_DFL
+    // installs no handler.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
             Ok(())
         })
     }

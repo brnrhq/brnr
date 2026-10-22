@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use common::{AGENT, Env, kill, script, wait_for};
+use common::{AGENT, Env, kill, script, wait_for, with_default_interrupt};
 
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
@@ -759,7 +759,7 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         })
         .stdout(File::create(dir.join(&stdout)).unwrap())
         .stderr(File::create(dir.join("stderr")).unwrap());
-    let mut child = cmd.spawn().unwrap();
+    let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
     let printed = || fs::read_to_string(dir.join(&stdout)).unwrap_or_default();
     let stderr = || fs::read_to_string(dir.join("stderr")).unwrap_or_default();
     let never = |what| Err(format!("never printed {what:?}"));

@@ -699,7 +699,8 @@ events, saying how many (`… 120 events not shown`); stdout closing
 `session resume` uses the agent's `session/resume` (or `session/load`), in the
 session's cwd, with the agent and profile it last had (where it was last
 served, the newest record of all its files), and appends to the same
-transcript. A load replays the session's history: brnr records it, as
+transcript. `--profile p` runs p's agent instead, when p names one, and
+`-- <agent>` runs that agent, whatever the profile. A load replays the session's history: brnr records it, as
 events marked `replayed`, only when it has no transcript of the session (one
 it has never seen, whose transcript is gone, or whose loads all failed,
 leaving only their openings), so repeated loads don't record it twice. A
