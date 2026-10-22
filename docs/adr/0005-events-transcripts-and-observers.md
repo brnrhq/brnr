@@ -479,12 +479,14 @@ written.
   pending: its turn is tracked, but its transcript isn't opened, and what
   is recorded of it goes to the host log, until the agent says anything
   of the session (a notification or a request naming it, or a success
-  answer to the prompt); then the transcript opens, before that line is
-  recorded. If the agent fails the prompt first, and no other turn of the
-  session runs, the session closes again, as one a failed load opened
-  does: no `session_closed`, as it never opened, and its lock goes
-  (#331). An editor's load of a pending session opens it, as a load of a
-  session not open does.
+  answer to the prompt, a load or a resume); then the transcript opens,
+  before that line is recorded. An editor's load of a pending session
+  opens its transcript too, so that its replay is recorded as a load of a
+  session not open here is, but the session stays pending. A pending
+  session closes again once the agent has failed everything the editor
+  asked of it, its prompts, loads and resumes, having said nothing of it:
+  the last failure closes it, as one a failed load opened closes, with no
+  `session_closed`, as it never opened, and its lock goes (#331).
 - A session a process has served, open or closed since, has its
   transcript in that process, for an editor's load and a bridge's alike,
   whether or not the logger, which writes behind (ADR 5.5), has written it
@@ -1177,6 +1179,9 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`,
   `adr_0005_an_editors_prompt_the_agent_has_no_session_for_opens_nothing`,
   `adr_0005_an_editors_prompt_the_agent_serves_opens_its_session`;
+  [src/host/sessions.rs](../../src/host/sessions.rs):
+  `adr_0005_a_prompted_session_outlasts_a_failed_load_while_its_turn_runs`,
+  `adr_0005_a_prompted_session_is_held_until_its_resume_is_answered`;
   [src/transcript.rs](../../src/transcript.rs):
   `adr_0005_only_openings_are_no_transcript`;
   [src/log.rs](../../src/log.rs):

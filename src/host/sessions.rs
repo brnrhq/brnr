@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 
 use super::acp::{Replay, Session};
 use super::requests::history;
+use super::turns::Activity;
 use super::{Host, LOG_FLUSH, control};
 use crate::lock::{self, Lock};
 use crate::log::Sink;
@@ -351,9 +352,10 @@ impl Host {
 
     /// Index of `session`, for the editor's prompt of it: one not open yet
     /// opens pending (`Session::pending`), its records in the host log until
-    /// the agent says anything of it (see [`Self::confirm`]). A conforming
-    /// agent fails a prompt of a session it doesn't have, and a transcript
-    /// of one would stop a later load of it recording its history (ADR 5.6).
+    /// the agent says anything of it (see [`Self::confirm`]) or the editor
+    /// loads it. A conforming agent fails a prompt of a session it doesn't
+    /// have, and a transcript of one would stop a later load of it recording
+    /// its history (ADR 5.6).
     pub(super) fn open_prompted(&mut self, session: &str) -> usize {
         match self.find(session) {
             Some(i) => i,
@@ -361,12 +363,20 @@ impl Host {
         }
     }
 
-    /// Session `i` is the agent's: if it was pending, its transcript opens,
-    /// as it would have as it opened, under `cwd` if one is given, and what
-    /// is recorded of it from now on goes there (ADR 5.6).
+    /// Session `i` is the agent's: if it was pending, it no longer is, and
+    /// its files open if they aren't (see [`Self::open_files`]).
     pub(super) fn confirm(&mut self, i: usize, cwd: Option<&str>) {
+        if std::mem::take(&mut self.sessions[i].pending) {
+            self.open_files(i, cwd);
+        }
+    }
+
+    /// Session `i`'s files, which a pending one hasn't, open, as they would
+    /// have as it opened, under `cwd` if one is given: what is recorded of it
+    /// from now on goes there (ADR 5.6). Once only.
+    pub(super) fn open_files(&mut self, i: usize, cwd: Option<&str>) {
         let s = &mut self.sessions[i];
-        if !std::mem::take(&mut s.pending) {
+        if !std::mem::take(&mut s.unopened) {
             return;
         }
         if let Some(cwd) = cwd {
@@ -376,6 +386,23 @@ impl Host {
         if self.keeps_transcript(&s.hold) {
             self.sink.open_session(&s.id, &s.cwd, s.forked_from.as_deref());
         }
+    }
+
+    /// Session `i`, if pending, closes once the agent has failed everything
+    /// the editor asked of it, having said nothing of it: no turn of it
+    /// runs, and no load or resume of it waits for its answer (ADR 5.6).
+    /// As a failed load's, it never opened, and its lock goes. Whether it
+    /// closed.
+    pub(super) fn close_if_failed(&mut self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        let asked = s.turns.activity() == Activity::Busy
+            || s.replay.as_ref().is_some_and(|r| r.unanswered > 0)
+            || self.outbound.resuming(&s.id);
+        if !s.pending || asked {
+            return false;
+        }
+        self.close_session(i, Ending::OpenFailed, None);
+        true
     }
 
     /// Whether this process keeps the transcript of a session it holds as
@@ -428,7 +455,7 @@ impl Host {
         }
         let replay = self.sessions.closed_loads.remove(session);
         let mut opened = Session::new(session, cwd, forked_from, hold, replay);
-        opened.pending = pending;
+        (opened.pending, opened.unopened) = (pending, pending);
         self.sessions.open.push(opened);
         self.sessions.len() - 1
     }
@@ -582,6 +609,59 @@ mod tests {
         assert_eq!(table.closed_load(session).map(|r| r.unanswered), Some(1));
         h.agent_line(LOAD_FAILED);
         assert!(h.host().sessions.closed_load(session).is_none());
+    }
+
+    /// The editor's `method` of `session`, with id `id`: a prompt, a load
+    /// or a resume, as each takes what the others don't need.
+    fn ask(h: &mut Harness, id: u64, method: &str, session: &str) {
+        let params = json!({ "sessionId": session, "cwd": "/", "mcpServers": [],
+            "prompt": [{ "type": "text", "text": "hi" }] });
+        let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        h.editor_bytes(format!("{msg}\n").as_bytes());
+    }
+
+    /// The agent's failure of its request `wire`: it has no such session.
+    fn not_found(wire: &str) -> Vec<u8> {
+        let error = json!({ "code": -32002, "message": "Session not found" });
+        json!({ "jsonrpc": "2.0", "id": wire, "error": error }).to_string().into_bytes()
+    }
+
+    #[test]
+    fn adr_0005_a_prompted_session_outlasts_a_failed_load_while_its_turn_runs() {
+        let session = "unit-prompt-load";
+        let mut h = Harness::editor(false, false);
+        h.claim(session);
+        ask(&mut h, 2, "session/prompt", session);
+        ask(&mut h, 3, "session/load", session);
+        h.agent_line(&not_found("brnr-2"));
+        assert!(h.host().find(session).is_some(), "closed under its running prompt");
+        h.agent_line(&not_found("brnr-1"));
+        let table = &h.host().sessions;
+        assert!(table.is_empty() && !table.knows(session), "failed all it was asked");
+    }
+
+    #[test]
+    fn adr_0005_a_prompted_session_is_held_until_its_resume_is_answered() {
+        for resumed in [false, true] {
+            let session = "unit-prompt-resume";
+            let mut h = Harness::editor(false, false);
+            h.claim(session);
+            ask(&mut h, 2, "session/prompt", session);
+            ask(&mut h, 3, "session/resume", session);
+            h.agent_line(&not_found("brnr-1"));
+            assert!(h.host().sessions.knows(session), "let go of before its resume's answer");
+            if resumed {
+                h.agent_line(br#"{"jsonrpc":"2.0","id":"brnr-2","result":{}}"#);
+                let i = h.host().find(session).expect("closed though resumed");
+                let s = &h.host().sessions[i];
+                assert!(!s.pending && matches!(s.hold, Hold::Owner(_)));
+            } else {
+                h.agent_line(&not_found("brnr-2"));
+                let table = &h.host().sessions;
+                assert!(table.is_empty() && !table.knows(session));
+                assert!(table.letting_go.is_empty() && table.claimed.is_empty());
+            }
+        }
     }
 
     #[test]

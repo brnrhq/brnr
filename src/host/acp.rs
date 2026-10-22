@@ -64,8 +64,9 @@
 //!   (ADR 3.9); with `shared_sessions` in the profile (ADR 3.10) it goes
 //!   through, and the session is served shared (see `Hold`, sessions.rs).
 //!   A session the editor's prompt opens has no transcript until the agent
-//!   says anything of it, and closes again if the agent fails the prompt
-//!   first (`Session::pending`, ADR 5.6).
+//!   says anything of it, or the editor loads it, and closes again once the
+//!   agent has failed everything the editor asked of it having said nothing
+//!   of it (`Session::pending`, ADR 5.6).
 //!
 //! The editor's `session/delete` passes through as it is; once the agent has
 //! deleted the session, the host records a `session_deleted` (ADR 8.1).
@@ -161,9 +162,13 @@ pub(super) struct Session {
     /// count.
     pub(super) opening: bool,
     /// Opened for the editor's prompt, and the agent has said nothing of it
-    /// yet: what is recorded of it goes to the host log, and if the agent
-    /// fails the prompt, it closes again (see `open_prompted`, ADR 5.6).
+    /// yet: it closes again once the agent has failed everything the editor
+    /// asked of it, its last failure closing it (see `close_if_failed`,
+    /// `open_prompted`, ADR 5.6).
     pub(super) pending: bool,
+    /// Its files aren't open yet: it is pending, and no load of it has
+    /// opened them. What is recorded of it goes to the host log meanwhile.
+    pub(super) unopened: bool,
 }
 
 pub(super) enum Close {
@@ -204,6 +209,7 @@ impl Session {
             closing: None,
             opening: false,
             pending: false,
+            unopened: false,
         }
     }
 
@@ -521,9 +527,6 @@ impl Host {
             None if self.sessions.closed_load(session).is_some() => {
                 Some(self.open_session(session, cwd))
             }
-            // One the editor's prompt opened, which the agent has said
-            // nothing of: the load opens it, and closes it if it fails.
-            Some(i) if self.sessions[i].pending => None,
             open => open,
         };
         if let Some(replay) = open.and_then(|i| self.sessions[i].replay.as_mut()) {
@@ -531,12 +534,16 @@ impl Host {
             replay.unanswered += 1;
             return;
         }
-        let record = match open.map(|i| &self.sessions[i].hold) {
-            Some(Hold::Owner(_) | Hold::Unlocked(_)) => self.logging == Log::Off,
-            Some(Hold::Shared(_)) | None => !self.has_transcript(session),
+        // One the editor's prompt opened has no files yet (see
+        // `open_prompted`): its replay is recorded as if not open here.
+        let record = match open.map(|i| (&self.sessions[i].hold, self.sessions[i].unopened)) {
+            Some((Hold::Owner(_) | Hold::Unlocked(_), false)) => self.logging == Log::Off,
+            _ => !self.has_transcript(session),
         };
         let i = self.open_session(session, cwd);
-        self.confirm(i, cwd);
+        // Its files open, so that its replay is recorded; it is still
+        // pending, and the prompt's, if the agent says nothing of it.
+        self.open_files(i, cwd);
         self.begin_replay(i, record);
         if let Some(replay) = &mut self.sessions[i].replay {
             replay.opened = open.is_none();
@@ -563,6 +570,7 @@ impl Host {
             (None, None) => return self.closed_load_failed(session),
         };
         if let Some(result) = result {
+            self.confirm(i, cwd);
             self.sessions[i].state.result(result);
         }
         let Some(replay) = &mut self.sessions[i].replay else { return };
@@ -580,7 +588,9 @@ impl Host {
         } else if opened {
             self.close_session(i, Ending::OpenFailed, None);
         } else {
-            self.drop_replay(i); // Loaded again, or resumed, and failed.
+            // Loaded again, or resumed, or prompted, and failed.
+            self.drop_replay(i);
+            self.close_if_failed(i);
         }
     }
 
@@ -818,11 +828,8 @@ impl Host {
             }
         }
         self.act(i, todo);
-        // Opened for the editor's prompt, which the agent failed having said
-        // nothing of the session: it hasn't one, and it closes again, as a
-        // failed load's does (ADR 5.6).
-        if self.sessions[i].pending && self.sessions[i].turns.activity() != Activity::Busy {
-            return self.close_session(i, Ending::OpenFailed, None);
+        if self.close_if_failed(i) {
+            return;
         }
         self.close_after_turn(i);
     }
@@ -860,12 +867,15 @@ impl Host {
                     if let Some(replay) = &mut self.sessions[i].replay {
                         replay.opened = false;
                     }
-                } else {
-                    // Its lock (see `attach`) goes once what was recorded
-                    // under it is written: a close's here, if the resume
-                    // took it back from one (ADR 5.5). One open already
-                    // stays open.
-                    self.claim_failed(&session, None);
+                } else if !self.claim_failed(&session, None)
+                    && let Some(i) = self.find(&session)
+                {
+                    // Claimed, its lock (see `attach`) goes once what was
+                    // recorded under it is written: a close's here, if the
+                    // resume took it back from one (ADR 5.5). One open
+                    // already stays open, unless the editor's prompt opened
+                    // it and this was the last the editor asked of it.
+                    self.close_if_failed(i);
                 }
                 Some(session)
             }
