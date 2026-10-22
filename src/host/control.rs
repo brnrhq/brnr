@@ -35,7 +35,8 @@
 //!   (ADR 5.9). The answer names the
 //!   connection (`peer`), the process (`host_id`) and the last event before
 //!   it (`seq`): every event has a position, its `seq`, one more than the
-//!   last event's or ACP message's of the process (ADR 10.2)
+//!   last event's or ACP message's of the process (ADR 10.2). The host log
+//!   notes it (`peer_subscribed`)
 //! - `was_cut_off` `{peer}`: whether the process cut that connection off,
 //!   and the last event it queued for it (`last_queued_seq`), so that a peer
 //!   that has reconnected can catch up from the transcript (ADR 10.2). It
@@ -923,6 +924,9 @@ impl Host {
         // Where it starts, to catch up from if it is cut off (ADR 10.2).
         let (label, host_id, seq) = (p.label.clone(), &self.host_id, self.seq);
         let pid = std::process::id();
+        // Noted once the peer is subscribed: who finds it in the host log
+        // knows the peer gets the next event it subscribed to (ADR 10.2).
+        self.sink.note(None, json!({ "event": "peer_subscribed", "peer": label }));
         Ok(
             json!({ "ok": true, "events": names, "unknown_events": unknown, "peer": label, "host_id": host_id, "pid": pid, "seq": seq }),
         )

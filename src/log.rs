@@ -962,8 +962,9 @@ fn open_append(path: &Path) -> io::Result<(Out, Made)> {
 /// file are opened without following a symlink, each from the one before,
 /// and created 0700 or 0600 if missing. Each is checked through what was
 /// opened, so what is checked is what is written to: one that isn't a
-/// directory (or a file with no other links) of the user's is refused, and
-/// one that others could read, write or search is made private (`fchmod`).
+/// directory (or a file with no other links) of the user's, or has an access
+/// control list, is refused, and one that others could read, write or
+/// search is made private (`fchmod`).
 fn open_private(root: &Path, path: &Path) -> io::Result<(File, Made)> {
     let mut made = Made::new();
     let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW;
@@ -1012,8 +1013,9 @@ fn open_private(root: &Path, path: &Path) -> io::Result<(File, Made)> {
 }
 
 /// Refuses what `open_private` opened at `path` unless it is the user's own
-/// directory (`dir`), or file with no other name, and makes it private if
-/// others have any access to it, adding it to `made` with the mode it had.
+/// directory (`dir`), or file with no other name, with no access control
+/// list, and makes it private if others have any access to it, adding it to
+/// `made` with the mode it had.
 fn keep_private(opened: &File, path: &Path, dir: bool, made: &mut Made) -> io::Result<()> {
     let meta = opened.metadata().map_err(|e| at(path, e))?;
     let mode = meta.mode() & 0o777;
@@ -1027,6 +1029,13 @@ fn keep_private(opened: &File, path: &Path, dir: bool, made: &mut Made) -> io::R
         // Another name for it could be anywhere: appending there writes
         // the transcript into some other file.
         return Err(refused(path, &format!("has {} hard links", meta.nlink())));
+    }
+    // macOS: an ACL can let others in whatever the mode says. It is the
+    // user's to remove (P4), so it is refused, not removed.
+    if sys::has_acl(opened).map_err(|e| at(path, e))? {
+        let why = paths::acl_refused(path, dir, ", so brnr won't write a transcript there");
+        let msg = format!("{}: {why}", path.display());
+        return Err(io::Error::new(ErrorKind::PermissionDenied, msg));
     }
     if mode & 0o077 != 0 {
         opened.set_permissions(Permissions::from_mode(mode & 0o700)).map_err(|e| at(path, e))?;

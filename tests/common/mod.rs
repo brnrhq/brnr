@@ -5,8 +5,9 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -199,6 +200,64 @@ impl Env {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// How many subscriptions the processes have taken on their sockets: the
+    /// `peer_subscribed` records in every host log (ADR 10.2).
+    pub fn subscriptions(&self) -> usize {
+        let Ok(dir) = fs::read_dir(self.dir.join("home/hosts")) else { return 0 };
+        let logs = dir.flatten().filter_map(|e| fs::read_to_string(e.path()).ok());
+        logs.map(|log| log.matches(r#""event":"peer_subscribed""#).count()).sum()
+    }
+
+    /// Waits for the processes to have taken `count` subscriptions: an
+    /// observer that has subscribed gets every event after it that it asked
+    /// for.
+    pub fn wait_subscriptions(&self, count: usize) {
+        let taken = wait_for(Duration::from_secs(15), || self.subscriptions() >= count);
+        assert!(taken, "{} of {count} subscriptions taken in 15 s", self.subscriptions());
+    }
+
+    /// Waits for each process to have written what it recorded until now
+    /// (`logged`, ADR 5.5): its host log has every subscription taken so
+    /// far.
+    /// One that refuses the connection has gone (its metadata left), and one
+    /// that hangs up unanswered is stopping, its log whole once it has gone;
+    /// any other must answer, each step within 15 s.
+    pub fn logged(&self) {
+        let wait = Duration::from_secs(15);
+        for host in self.hosts() {
+            let Some(socket) = host["socket"].as_str().map(PathBuf::from) else { continue };
+            // A connection a full backlog holds (Linux) waits: on a thread.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let at = socket.clone();
+            std::thread::spawn(move || tx.send(UnixStream::connect(at)));
+            let conn = match rx.recv_timeout(wait) {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(_)) => continue,
+                Err(_) => panic!("{}: not connected in 15 s", socket.display()),
+            };
+            conn.set_read_timeout(Some(wait)).unwrap();
+            conn.set_write_timeout(Some(wait)).unwrap();
+            writeln!(&conn, r#"{{"cmd":"logged","req_id":"t"}}"#).expect("logged not sent");
+            let mut answer = String::new();
+            if BufReader::new(&conn).read_line(&mut answer).expect("logged not answered") == 0 {
+                continue;
+            }
+            let answer: Value = serde_json::from_str(&answer).expect("logged not answered");
+            assert_eq!(answer["ok"], true, "{answer}");
+        }
+    }
+
+    /// What `spawn` started, once it has subscribed: one subscription more
+    /// than were taken before, each of them in the host logs first, so that
+    /// a record of an earlier one written late isn't taken for its.
+    pub fn subscribed<T>(&self, spawn: impl FnOnce() -> T) -> T {
+        self.logged();
+        let before = self.subscriptions();
+        let spawned = spawn();
+        self.wait_subscriptions(before + 1);
+        spawned
     }
 
     pub fn child_pid(&self) -> i32 {

@@ -89,6 +89,41 @@ fn readable_transcripts_are_made_private() {
     assert!(lines(&text, "warn").is_empty(), "{text}");
 }
 
+/// A transcript doctor can't open (mode 000) is said, as readers pass it
+/// over (P3), and `--fix` doesn't change it; what `--fix` left is the
+/// example it gives, not what it just made private (ADR 9.3). Skipped as
+/// root, who can open it.
+#[test]
+fn adr_0009_doctor_says_what_it_cant_open_and_what_fix_left() {
+    if uid() == 0 {
+        return skip("root can open a file of mode 000");
+    }
+    let env = Env::new("dr-closed");
+    let home = env.dir.join("home");
+    let project = home.join("projects").join("-tmp-x");
+    mkdir(&home, 0o700);
+    mkdir(&home.join("projects"), 0o700);
+    mkdir(&project, 0o700);
+    let closed = project.join("s.jsonl");
+    write(&closed, "{}\n", 0o000);
+    let why = format!("e.g. {} can't be opened: Permission denied", closed.display());
+    for args in [&[][..], &["--fix"]] {
+        let (ok, text) = doctor(&env, args);
+        assert!(ok, "{text}");
+        let says = format!("warn  transcripts: 1 of 4 paths aren't private, {why}");
+        assert!(text.contains(&says) && !text.contains("brnr doctor --fix"), "{text}");
+    }
+    assert_eq!(mode(&closed), 0o000);
+
+    // The state directory comes first, and `--fix` makes it private.
+    mkdir(&home, 0o755);
+    let (_, text) = doctor(&env, &["--fix"]);
+    assert!(text.contains("made 1 paths private"), "{text}");
+    assert!(text.contains(&format!("1 paths --fix doesn't change, {why}")), "{text}");
+    assert_eq!((mode(&home), mode(&closed)), (0o700, 0o000));
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
 /// A state directory, `hosts` or `projects` that isn't a directory is a
 /// problem, however private: brnr won't write a transcript there (ADR 9.3).
 /// `--fix` leaves it, and what a symlink there points at, as they are.

@@ -1002,10 +1002,13 @@ state directory included (set `BRNR_HOME` to where one points instead), and
 what isn't your own directory or file, or has another hard link, is refused:
 a process whose host log can't be opened doesn't start (`log: <path>: …`),
 and a session whose file can't be is served without it, with a
-`session_log_failed` record in the host log saying why. What reads them
-(`session list`, `event log`, `doctor`, …) keeps the same rules: nothing is
-read through a symlink, nor what isn't yours or has another hard link. There
-is no override; `log = "off"` writes no transcripts.
+`session_log_failed` record in the host log saying why. On macOS, one with an
+access control list (`ls -le`), which can let others in whatever the mode
+says, is refused the same way, with the `chmod -N` that removes it; brnr
+doesn't remove it. What reads them (`session list`, `event log`, `doctor`, …)
+keeps the same rules: nothing is read through a symlink, nor what isn't
+yours or has another hard link or an access control list. There is no
+override; `log = "off"` writes no transcripts.
 
 ## Adapters
 
@@ -1060,7 +1063,8 @@ when each last wrote and the sessions it had open; it is information, not a
 warning. So is its list of the files in a format this brnr doesn't read
 (`file formats`), transcripts and host logs, an older brnr's or a newer
 one's (ADR 5.10). `--fix` makes the runtime directory and transcripts private (only
-what you own, never through a symlink) and removes what processes that are
+what you own, never through a symlink; an access control list stays, for
+you to remove) and removes what processes that are
 gone left behind; it leaves logs alone. It exits non-zero if a check fails;
 `--json` prints `{checks}`, each a `level`, `check` and `message`.
 

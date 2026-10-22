@@ -157,8 +157,9 @@ fn adr_0008_wait_behind_exits_as_the_last_turn_ended() {
     assert!(wait_for(Duration::from_secs(5), || env.prompts().len() == 1));
     env.ok(&["prompt", "send", "sess-1", "--prompt", "reply first"]);
     env.ok(&["prompt", "send", "sess-1", "--prompt", "reply second"]);
-    let mut wait = env.brnr(&["event", "wait", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(500));
+    let mut wait = env.subscribed(|| {
+        env.brnr(&["event", "wait", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap()
+    });
     kill(wait.id() as i32, libc::SIGSTOP);
     env.ok(&["prompt", "cancel", "sess-1", "--keep-held"]);
     assert!(wait_for(Duration::from_secs(10), || env.prompts().len() == 3));
@@ -258,12 +259,12 @@ fn adr_0008_wait_for_permission() {
 fn adr_0008_wait_for_exit() {
     let env = Env::new("c-waitexit");
     env.start(&[]);
-    let mut wait = env
-        .brnr(&["event", "wait", "sess-1", "--for", "exit"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(300));
+    let mut wait = env.subscribed(|| {
+        env.brnr(&["event", "wait", "sess-1", "--for", "exit"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     env.stop();
     assert!(wait_exit(&mut wait, Duration::from_secs(15)));
     let out = wait.wait_with_output().unwrap();
@@ -740,8 +741,7 @@ fn adr_0005_every_line_printed_is_named_and_placed_alike() {
     env.start(&["--wait", "--prompt", "reply hi"]);
     let pid = env.pid();
     let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(500));
+    let mut watch = env.subscribed(|| env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap());
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply again"]);
     let taken = names_events_takes(&env);
     env.stop();
@@ -1297,9 +1297,10 @@ fn adr_0005_thoughts_are_shown_when_asked() {
 fn adr_0005_watch_is_readable_by_default() {
     let env = Env::new("c-watch");
     env.start(&[]);
-    let mut watch = env.brnr(&["event", "watch", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1"]).stdout(Stdio::piped()).spawn().unwrap()
+    });
     let mut out = BufReader::new(watch.stdout.take().unwrap());
-    sleep(Duration::from_millis(300));
     env.ok(&["prompt", "send", "sess-1", "--prompt", "reply hi"]);
     let mut seen = Vec::new();
     let mut line = String::new();
@@ -2022,8 +2023,7 @@ fn adr_0005_session_changed_says_what_changed() {
     let env = Env::new("c-changed");
     env.start(&[]);
     let args = ["event", "watch", "sess-1", "--events", "session_changed", "--json"];
-    let watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(300));
+    let watch = env.subscribed(|| env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap());
     // The agent's answer to config set changes the model; saying so again
     // changes nothing.
     env.ok(&["config", "set", "sess-1", "--option", "model=large"]);
@@ -3011,6 +3011,7 @@ fn adr_0005_close_ends_what_follows_the_session() {
     let spawn = |args: &[&str]| {
         env.brnr(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     };
+    let subscribed = env.subscriptions();
     let watch = spawn(&["event", "watch", "sess-2"]);
     let notify = spawn(&[
         "event",
@@ -3029,7 +3030,7 @@ fn adr_0005_close_ends_what_follows_the_session() {
     let sent = spawn(&["prompt", "send", "sess-2", "--wait", "--prompt", "later"]);
     let held = || env.ok(&["queue", "list", "sess-2"]).contains("later");
     assert!(wait_for(Duration::from_secs(5), held), "not held");
-    sleep(Duration::from_millis(300));
+    env.wait_subscriptions(subscribed + 6);
     env.ok(&["session", "close", "sess-2"]);
 
     let watch = watch.wait_with_output().unwrap();
@@ -5037,11 +5038,8 @@ fn adr_0005_notify_runs_a_command_per_event() {
     env.start(&[]);
     let out = env.dir.join("notified");
     let script = format!("echo \"$BRNR_EVENT|$BRNR_MESSAGE|$BRNR_TITLE\" >> '{}'", out.display());
-    let mut notify = env
-        .brnr(&["event", "notify", "sess-1", "--events", "turn_ended", "--", "sh", "-c", &script])
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(300));
+    let args = ["event", "notify", "sess-1", "--events", "turn_ended", "--", "sh", "-c", &script];
+    let mut notify = env.subscribed(|| env.brnr(&args).spawn().unwrap());
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi; $(touch pwned)"]);
     assert!(wait_for(Duration::from_secs(5), || out.exists()));
     let text = fs::read_to_string(&out).unwrap();
@@ -5063,8 +5061,7 @@ fn adr_0005_notify_reads_events_as_watch_does() {
             .unwrap()
     };
     // `default` is notify's own: the turn ending, not the messages in it.
-    let mut first = notify("default,user_message");
-    sleep(Duration::from_millis(300));
+    let mut first = env.subscribed(|| notify("default,user_message"));
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
     assert!(wait_for(Duration::from_secs(5), || {
         fs::read_to_string(&out).is_ok_and(|t| t.lines().count() >= 2)
@@ -5094,8 +5091,8 @@ fn adr_0005_notify_works_as_a_bridge() {
         script.display().to_string()
     );
     env.write_config(&config);
-    env.start(&[]);
-    sleep(Duration::from_millis(500));
+    // The bridge's notify subscribes on the socket.
+    env.subscribed(|| env.start(&[]));
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
     assert!(wait_for(Duration::from_secs(5), || out.exists()));
     assert_eq!(fs::read_to_string(&out).unwrap(), "turn_ended sess-1\n");
@@ -5159,12 +5156,12 @@ fn adr_0005_notify_stdin_ends_with_its_input() {
 fn adr_0005_notify_fails_when_cut_off() {
     let env = Env::new("c-notifycut");
     env.start(&[]);
-    let mut notify = env
-        .brnr(&["event", "notify", "sess-1", "--", "true"])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(500));
+    let mut notify = env.subscribed(|| {
+        env.brnr(&["event", "notify", "sess-1", "--", "true"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     kill(env.host_pid(), libc::SIGKILL);
     let exited = wait_exit(&mut notify, Duration::from_secs(15));
     if !exited {
@@ -5237,12 +5234,12 @@ fn adr_0005_notify_stopped_stops_its_command() {
     env.start(&[]);
     let pids = env.dir.join("pids");
     let script = format!("echo $$ >> '{}'; exec sleep 60", pids.display());
-    let mut stopped = env
-        .brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(500));
+    let mut stopped = env.subscribed(|| {
+        env.brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply again"]);
     let command = command_pid(&pids);
     kill(stopped.id() as i32, libc::SIGTERM);
@@ -5269,12 +5266,12 @@ fn adr_0010_notify_cut_off_catches_up_once_its_command_is_done() {
         gate.display(),
         out.display()
     );
-    let mut notify = env
-        .brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(500));
+    let mut notify = env.subscribed(|| {
+        env.brnr(&["event", "notify", "sess-1", "--", "sh", "-c", &script])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     // The first turn's end starts the command, which waits for the gate;
     // the next four turns' messages, 24 MB, cut notify off meanwhile.
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
@@ -5308,11 +5305,8 @@ fn adr_0005_notify_cuts_what_the_environment_cant_hold() {
         "printf %s \"$BRNR_MESSAGE\" | wc -c > '{0}.tmp'; mv '{0}.tmp' '{0}'",
         out.display()
     );
-    let mut notify = env
-        .brnr(&["event", "notify", "sess-1", "--events", "turn_ended", "--", "sh", "-c", &script])
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(500));
+    let args = ["event", "notify", "sess-1", "--events", "turn_ended", "--", "sh", "-c", &script];
+    let mut notify = env.subscribed(|| env.brnr(&args).spawn().unwrap());
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 1100000"]);
     assert!(wait_for(Duration::from_secs(10), || out.exists()), "the command didn't run");
     let bytes: usize = fs::read_to_string(&out).unwrap().trim().parse().unwrap();
@@ -5333,8 +5327,8 @@ fn adr_0005_a_bridge_that_closes_its_stdout_gets_events() {
     env.write_config(&format!(
         "[[profiles.default.bridges]]\ncommand = \"sh\"\nargs = [\"-c\", {script:?}]\n"
     ));
+    // Subscribed from its start, before `session new` returns (ADR 5.7).
     env.start(&[]);
-    sleep(Duration::from_millis(300));
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply hi"]);
     let ended = || fs::read_to_string(&out).unwrap_or_default().contains(r#""event":"turn_ended""#);
     assert!(wait_for(Duration::from_secs(5), ended), "the bridge got no events");

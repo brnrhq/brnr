@@ -574,12 +574,8 @@ fn adr_0004_allow_during_stop_fails() {
 fn adr_0005_held_messages_are_reported_on_exit() {
     let env = Env::new("held");
     env.start(&["--prompt", "hang on"]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "message_dropped,process_exited"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(300));
+    let args = ["event", "watch", "sess-1", "--json", "--events", "message_dropped,process_exited"];
+    let mut watch = env.subscribed(|| env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap());
     let out = env.run(&["prompt", "send", "sess-1", "--prompt", "later"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held (message m2)");
     assert!(env.run(&["process", "stop", &env.pid()]).status.success());
@@ -1213,13 +1209,13 @@ fn adr_0010_slow_watcher_is_disconnected() {
     // About 30 MB of events: more than a peer's queue holds.
     let env = Env::new("slowwatch").agent("FLOOD", "40000");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--events", "all"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(300));
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--events", "all"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     kill(watch.id() as i32, libc::SIGSTOP);
     // Stopped until the turn has ended, so every event came while it was:
     // continued sooner, it would be reading again when the turn's 20 MB
@@ -1254,6 +1250,28 @@ fn watcher(env: &Env, args: &[&str]) -> (Child, std::thread::JoinHandle<Vec<Valu
     (watch, lines)
 }
 
+/// The host log notes a subscription once the peer has it, naming the peer
+/// as the answer does: what the tests wait for before they make an event an
+/// observer must see (ADR 10.2, #333).
+#[test]
+fn adr_0010_the_host_log_notes_each_subscription() {
+    let env = Env::new("subnoted");
+    env.start(&[]);
+    assert_eq!(env.subscriptions(), 0, "noted with no subscription");
+    let host = env.hosts().remove(0);
+    let mut conn = UnixStream::connect(host["socket"].as_str().unwrap()).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    let mut from_host = BufReader::new(conn.try_clone().unwrap()).lines();
+    writeln!(conn, r#"{{"cmd":"subscribe","events":["turn_ended"]}}"#).unwrap();
+    let answer: Value = serde_json::from_str(&from_host.next().unwrap().unwrap()).unwrap();
+    env.wait_subscriptions(1);
+    let log = host_logs(&env);
+    let noted = log.lines().find(|l| l.contains(r#""event":"peer_subscribed""#)).unwrap();
+    let noted: Value = serde_json::from_str(noted).unwrap();
+    assert_eq!(noted["event"]["peer"], answer["peer"], "{noted} {answer}");
+    env.stop();
+}
+
 /// The positions of `events` (ADR 10.2).
 fn seqs(events: &[Value]) -> Vec<u64> {
     events.iter().map(|e| e["seq"].as_u64().unwrap_or_else(|| panic!("no seq: {e}"))).collect()
@@ -1267,11 +1285,12 @@ fn seqs(events: &[Value]) -> Vec<u64> {
 fn adr_0010_a_watcher_cut_off_catches_up() {
     let env = Env::new("catchup");
     env.start(&[]);
+    let subscribed = env.subscriptions();
     let (mut watch, lines) =
         watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
     let args = ["event", "watch", "sess-1", "--json", "--events", "peer_cut_off"];
     let (mut told, told_lines) = watcher(&env, &args);
-    sleep(Duration::from_millis(300));
+    env.wait_subscriptions(subscribed + 2);
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..2 {
         env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
@@ -1315,8 +1334,11 @@ fn adr_0010_a_watcher_cut_off_catches_up() {
 
     let told = told_lines.join().unwrap();
     let cut = told.iter().find(|e| e["event"] == "peer_cut_off").expect("not told");
+    // Its `peer_dropped`, not another record of the peer's (`peer_subscribed`).
     let host = host_logs(&env);
-    assert!(host.contains(&format!(r#""peer":"{}""#, cut["peer"].as_str().unwrap())), "{cut}");
+    let dropped = host.lines().find(|l| l.contains(r#""event":"peer_dropped""#));
+    let peer = format!(r#""peer":"{}""#, cut["peer"].as_str().unwrap());
+    assert!(dropped.is_some_and(|l| l.contains(&peer)), "{cut} {dropped:?}");
     assert!(cut["last_queued_seq"].as_u64() < Some(*got.last().unwrap()), "{cut}");
 }
 
@@ -1328,9 +1350,8 @@ fn adr_0010_a_watcher_cut_off_catches_up() {
 fn adr_0010_a_burst_past_64_mib_reaches_a_watcher() {
     let env = Env::new("burst117");
     env.start(&[]);
-    let (mut watch, lines) =
-        watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
-    sleep(Duration::from_millis(300));
+    let (mut watch, lines) = env
+        .subscribed(|| watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]));
     kill(watch.id() as i32, libc::SIGSTOP);
     let size = (16 << 20) + 1;
     env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size} think")]);
@@ -1363,6 +1384,7 @@ fn adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed() {
     env.start(&[]);
     let (mut watch, lines) =
         watcher(&env, &["event", "watch", "sess-1", "--json", "--events", "all"]);
+    // No host log notes the subscription: there is none with `log = "off"`.
     sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..2 {
@@ -1418,13 +1440,13 @@ fn adr_0010_a_wait_cut_off_catches_up() {
 fn adr_0010_event_wait_cut_off_catches_up() {
     let env = Env::new("evwaitcatchup").agent("PERM_PAD", "6000000");
     env.start(&[]);
-    let wait = env
-        .brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    sleep(Duration::from_millis(300));
+    let wait = env.subscribed(|| {
+        env.brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     kill(wait.id() as i32, libc::SIGSTOP);
     env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit 4"]);
     let pending = || env.ok(&["permission", "requests", "sess-1"]).contains("p4 ");
@@ -1454,12 +1476,13 @@ fn adr_0010_event_wait_cut_off_catches_up() {
 fn adr_0010_reading_watcher_stays_connected() {
     let env = Env::new("fastwatch").agent("FLOOD", "20000");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--events", "all"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--events", "all"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let read = Arc::new(AtomicUsize::new(0));
     let counted = read.clone();
@@ -1468,7 +1491,6 @@ fn adr_0010_reading_watcher_stays_connected() {
             counted.fetch_add(1, Relaxed);
         }
     });
-    sleep(Duration::from_millis(300));
     assert!(env.run(&["prompt", "send", "sess-1", "--prompt", "go"]).status.success());
     let burst = || read.load(Relaxed) > 20000 || watch.try_wait().unwrap().is_some();
     assert!(wait_for(Duration::from_secs(60), burst), "watch read {} lines", read.load(Relaxed));
@@ -1488,14 +1510,14 @@ fn adr_0010_reading_watcher_stays_connected() {
 fn adr_0010_huge_message_reaches_watchers() {
     let env = Env::new("huge");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let first = std::thread::spawn(move || BufReader::new(stdout).lines().next());
-    sleep(Duration::from_millis(300));
     let size = 20_000_000;
     assert!(
         env.run(&["prompt", "send", "sess-1", "--prompt", &format!("big {size}")]).status.success()
@@ -1532,12 +1554,13 @@ fn adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer() {
     assert!(out.status.success(), "session new --wait: {}", stderr(&out));
     assert_eq!(out.stdout.len(), size + 1, "session new --wait: {}", stderr(&out));
 
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "all"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "all"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || {
         let lines = BufReader::new(stdout).lines().map_while(Result::ok);
@@ -1550,7 +1573,6 @@ fn adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer() {
         }
         sizes
     });
-    sleep(Duration::from_millis(300));
     let out = env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", &format!("big {size}")]);
     assert!(out.status.success(), "send --wait: {}", stderr(&out));
     assert_eq!(out.stdout.len(), size + 1, "send --wait: {}", stderr(&out));
@@ -1590,15 +1612,15 @@ fn adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer() {
 fn adr_0010_a_long_message_doesnt_put_a_watcher_behind() {
     let env = Env::new("longmsg");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || BufReader::new(stdout).lines().count());
-    sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [8_000_000, 12_000_000] {
         let out =
@@ -1679,13 +1701,13 @@ fn adr_0011_bridges_next_to_a_symlinked_brnr() {
 fn adr_0010_big_message_to_a_lagging_watcher() {
     let env = Env::new("lagbig");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
-    sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for size in [6_000_000, 12_000_000] {
         let out =
@@ -1710,6 +1732,7 @@ fn adr_0010_big_message_to_a_lagging_watcher() {
 fn adr_0010_every_watcher_sees_the_exit() {
     let env = Env::new("exitall");
     env.start(&[]);
+    let subscribed = env.subscriptions();
     let watchers: Vec<_> = (0..8)
         .map(|_| {
             env.brnr(&["event", "watch", "sess-1", "--json", "--events", "process_exited"])
@@ -1719,7 +1742,7 @@ fn adr_0010_every_watcher_sees_the_exit() {
                 .unwrap()
         })
         .collect();
-    sleep(Duration::from_millis(500));
+    env.wait_subscriptions(subscribed + 8);
     assert!(env.run(&["process", "stop", &env.pid()]).status.success());
     for watch in watchers {
         let out = watch.wait_with_output().unwrap();
@@ -3135,8 +3158,7 @@ headers = { Authorization = "Bearer header-secret" }
     );
     env.start(&["--wait", "--prompt", "reply hi"]);
     let args = ["event", "watch", "sess-1", "--events", "acp", "--json"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(300));
+    let mut watch = env.subscribed(|| env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap());
     env.ok(&["session", "fork", "sess-1"]);
     let redacted = |servers: &Value| {
         let env = serde_json::json!([{ "name": "GITHUB_TOKEN", "value": "<redacted>" }]);
@@ -3192,8 +3214,7 @@ fn adr_0009_an_editors_mcp_secrets_are_redacted() {
     writeln!(to_agent, "{INITIALIZE}").unwrap();
     answer(1);
     let args = ["event", "watch", "--pid", &env.pid(), "--events", "acp", "--json"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
-    sleep(Duration::from_millis(300));
+    let mut watch = env.subscribed(|| env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap());
     let header = serde_json::json!({ "name": "Authorization", "value": "Bearer editor-secret" });
     let url = "https://example.invalid";
     let server =
@@ -4808,12 +4829,13 @@ fn adr_0002_a_deep_request_is_followed() {
         let out = read_out(&mut watch);
         (watch, out)
     };
+    let subscribed = env.subscriptions();
     let (mut watch_json, shown_json) = watch(&["--json"]);
     let (mut watch_text, shown_text) = watch(&[]);
     let args = ["event", "wait", "sess-1", "--for", "permission", "--timeout", "30"];
     let mut wait = env.brnr(&args).stdout(Stdio::piped()).spawn().unwrap();
     let waited = read_out(&mut wait);
-    sleep(Duration::from_millis(300));
+    env.wait_subscriptions(subscribed + 3);
     let prompt = format!("odd deep {LIMIT}");
     let args = ["prompt", "send", "sess-1", "--wait", "--timeout", "30", "--prompt", &prompt];
     let mut send = env.brnr(&args).stderr(Stdio::piped()).spawn().unwrap();
@@ -4857,8 +4879,8 @@ fn adr_0002_a_deep_request_is_notified() {
     let out = env.dir.join("notified");
     let script = format!("cat >> {}", quoted(&out.to_string_lossy()));
     let args = ["event", "notify", "sess-1", "--events", "permission_request", "--"];
-    let mut notify = env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap();
-    sleep(Duration::from_millis(300));
+    let mut notify =
+        env.subscribed(|| env.brnr(&args).args(["sh", "-c", &script]).spawn().unwrap());
     env.ok(&["prompt", "send", "sess-1", "--prompt", &format!("odd deep {LIMIT}")]);
     assert!(wait_for(Duration::from_secs(10), || notified(&out)), "not run");
     env.ok(&["permission", "allow", "sess-1", "p1"]);
@@ -4895,10 +4917,11 @@ fn adr_0002_a_deep_event_is_caught_up() {
     let env = Env::new("deep-catchup");
     env.start(&[]);
     let args = ["event", "watch", "sess-1", "--json", "--events", "all"];
-    let mut watch = env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    });
     let stdout = BufReader::new(watch.stdout.take().unwrap());
     let lines = std::thread::spawn(move || stdout.lines().map_while(Result::ok).collect());
-    sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..2 {
         env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);

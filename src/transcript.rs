@@ -9,8 +9,8 @@
 //! of the path ([`open`]): nothing is looked in or read through a symlink,
 //! the state directory, `projects`, `hosts` and a project folder included,
 //! nor is what isn't the user's own directory or regular file, or has
-//! another hard link. What is written there is refused anyway; read, it
-//! would be whatever the link points at.
+//! another hard link or an access control list. What is written there is
+//! refused anyway; read, it would be whatever the link points at.
 //!
 //! A record is a line that is a JSON object: `{"format","ts","host_id",
 //! "pid","proxy_pid","agent_pid"[,"session"],…}`, then `"event":{…}` for a
@@ -136,8 +136,9 @@ fn entries(root: &Path, sub: &str, kind: fn(&fs::FileType) -> bool) -> Vec<PathB
 /// laid out otherwise, its folder), each part opened from the one before
 /// without following a symlink, and checked through what was opened. A
 /// symlink, one that isn't a directory or regular file, one of another
-/// user's, or a file with another hard link is refused; a FIFO is refused,
-/// not waited on. Nothing is made private: reading changes nothing.
+/// user's, one with an access control list, or a file with another hard
+/// link is refused; a FIFO is refused, not waited on. Nothing is made
+/// private, and no access control list removed: reading changes nothing.
 pub(crate) fn open(path: &Path) -> io::Result<File> {
     let up = |n| path.ancestors().nth(n).filter(|p| !p.as_os_str().is_empty());
     let named = |n, name: &str| up(n).and_then(Path::file_name).is_some_and(|f| f == name);
@@ -183,7 +184,7 @@ fn walk(root: &Path, names: &[&OsStr], file: bool) -> io::Result<File> {
 
 /// `opened`, the part of a transcript's path at `path`, if it is what
 /// [`walk`] takes: a regular file with no other name (`file`) or a
-/// directory, the user's.
+/// directory, the user's, with no access control list.
 fn check(opened: io::Result<File>, path: &Path, file: bool, last: bool) -> io::Result<File> {
     // A symlink is ELOOP, or ENOTDIR on macOS for a directory; what it is is
     // looked at only for the message.
@@ -205,6 +206,9 @@ fn check(opened: io::Result<File>, path: &Path, file: bool, last: bool) -> io::R
         // Another name for it could be anywhere: it would be read as a
         // transcript of the user's.
         return Err(refused(path, last, &format!("has {} hard links", meta.nlink())));
+    } else if sys::has_acl(&opened)? {
+        // macOS: others may have written it, or read it, whatever its mode.
+        return Err(refused(path, last, &paths::acl_refused(path, !file, "")));
     }
     Ok(opened)
 }

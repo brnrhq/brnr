@@ -52,6 +52,31 @@ fn private_dir_error(err: &str) {
     assert!(err.contains("not a private directory owned by this user"), "{err}");
 }
 
+/// Gives `at` an access control list with `entry` (`chmod +a`): on macOS
+/// one can let others in whatever the mode says.
+#[cfg(target_os = "macos")]
+fn add_acl(at: &Path, entry: &str) {
+    let ok = Command::new("chmod").args(["+a", entry]).arg(at).status().unwrap();
+    assert!(ok.success(), "chmod +a {entry} {}", at.display());
+}
+
+/// Whether `at` has an access control list: `ls -lde` shows its entries
+/// below it.
+#[cfg(target_os = "macos")]
+fn has_acl(at: &Path) -> bool {
+    let out = Command::new("ls").arg("-lde").arg(at).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().count() > 1
+}
+
+/// That `err` refuses `at` for its access control list with the `chmod -N`
+/// that removes it, and that brnr left it there (P4).
+#[cfg(target_os = "macos")]
+fn acl_refused(err: &str, at: &Path) {
+    assert!(err.contains("has an access control list (ls -le), which can let others"), "{err}");
+    assert!(err.contains(&format!("(chmod -N {} removes it)", at.display())), "{err}");
+    assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
+}
+
 // ---- the runtime directory and its sockets (P13) ----------------------
 
 /// What brnr makes is private to the user whatever the umask: a umask of 0
@@ -153,6 +178,31 @@ fn a_runtime_dir_of_another_users_is_refused() {
     private_dir_error(&stderr(&out));
 }
 
+/// On macOS an access control list can let others into a runtime directory
+/// whatever its mode: the process refuses one with an ACL, writing nothing
+/// there and starting no agent, and so does every command that reads it,
+/// with the `chmod -N` that removes it. `doctor` fails it and `--fix` leaves
+/// it (ADR 3.9).
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0003_a_runtime_dir_with_an_acl_is_refused() {
+    let env = Env::new("s-run-acl");
+    let run = env.dir.join("run");
+    fs::create_dir(&run).unwrap();
+    chmod(&run, 0o700);
+    add_acl(&run, "everyone allow list,search,add_file");
+    acl_refused(&stderr(&env.run(&new_args(&[]))), &run);
+    assert!(fs::read_dir(&run).unwrap().next().is_none(), "wrote into it");
+    assert!(env.calls().is_empty(), "an agent was started");
+    acl_refused(&env.fails(&["session", "list"]), &run);
+    for args in [&["doctor"][..], &["doctor", "--fix"]] {
+        let out = env.run(args);
+        assert!(!out.status.success());
+        acl_refused(&String::from_utf8_lossy(&out.stdout), &run);
+    }
+    assert_eq!(mode(&run), 0o700);
+}
+
 /// A state directory whose `sessions/` is the given mode, and that.
 fn session_locks(env: &Env, mode: u32) -> PathBuf {
     let sessions = env.dir.join("home/sessions");
@@ -193,6 +243,23 @@ fn adr_0003_session_locks_are_private_and_never_followed() {
     assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
     assert!(lock_failed(&env), "no lock_failed");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me");
+}
+
+/// A `sessions/` with an access control list (macOS) is refused as the
+/// runtime directory is: a new headless session can't be locked, and so
+/// isn't started, saying the `chmod -N` that removes it, which brnr leaves
+/// to the user (ADR 3.9).
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0003_session_locks_with_an_acl_are_refused() {
+    let env = Env::new("s-locks-acl");
+    let sessions = session_locks(&env, 0o700);
+    add_acl(&sessions, "everyone allow add_file,delete_child");
+    let err = env.fails(&new_args(&[]));
+    assert!(err.contains("the agent opened sess-1, which can't be locked:"), "{err}");
+    acl_refused(&err, &sessions);
+    assert!(lock_failed(&env), "no lock_failed");
+    assert!(fs::read_dir(&sessions).unwrap().next().is_none(), "a lock written there");
 }
 
 /// A command doesn't talk to a process through a runtime directory others
@@ -366,6 +433,71 @@ fn adr_0009_a_symlinked_transcript_is_never_followed() {
     assert!(err.contains("home: is a symlink, so brnr won't write a transcript there"), "{err}");
     assert!(env.prompts().is_empty(), "prompted");
     assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "wrote through it");
+}
+
+/// On macOS an access control list can let others read or write a
+/// transcript whatever its mode: one on a session's events file, or on the
+/// state directory, is refused, not removed. The session is served without
+/// its file and the host log says why (`session_log_failed`); with the state
+/// directory, the process doesn't start. Each says the `chmod -N` that
+/// removes it (ADR 9.3).
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0009_a_transcript_with_an_acl_is_never_written() {
+    let env = Env::new("s-log-acl");
+    let project = served_once(&env);
+    let events = project.join("old-1.jsonl");
+    add_acl(&events, "everyone allow read");
+    let before = fs::read_to_string(&events).unwrap();
+    env.resume("old-1", &["--wait", "--prompt", "reply private-token"]);
+    let failed = || everything_in(&env.dir.join("home/hosts")).contains("session_log_failed");
+    assert!(wait_for(Duration::from_secs(5), failed), "no session_log_failed");
+    let hosts = everything_in(&env.dir.join("home/hosts"));
+    let why = format!("{}: has an access control list", events.display());
+    assert!(hosts.contains(&why) && hosts.contains("so brnr won't write a transcript there"));
+    acl_refused(&hosts, &events);
+    assert_eq!(fs::read_to_string(&events).unwrap(), before, "written to");
+    env.stop();
+
+    let env = Env::new("s-home-acl");
+    let home = env.dir.join("home");
+    fs::create_dir(&home).unwrap();
+    chmod(&home, 0o700);
+    add_acl(&home, "everyone allow list,search");
+    let err = env.fails(&new_args(&["--prompt", "private-token"]));
+    assert!(err.contains("so brnr won't write a transcript there (chmod -N "), "{err}");
+    acl_refused(&err, &home);
+    assert!(env.prompts().is_empty(), "prompted");
+    assert!(fs::read_dir(&home).unwrap().next().is_none(), "wrote in it");
+}
+
+/// Nor is a transcript with an access control list read (ADR 9.3): a session
+/// whose events file, or project folder, has one isn't listed or logged, as
+/// what is in it may be anyone's. `doctor` says which and the `chmod -N`
+/// that removes it, and `--fix` leaves it.
+#[cfg(target_os = "macos")]
+#[test]
+fn adr_0009_a_transcript_with_an_acl_is_never_read() {
+    let env = Env::new("s-read-acl");
+    let project = served_once(&env);
+    for (at, entry) in [
+        (project.join("old-1.jsonl"), "everyone allow write"),
+        (project, "everyone allow add_file"),
+    ] {
+        add_acl(&at, entry);
+        let listed: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+        assert_eq!(listed, json!({ "sessions": [] }));
+        let err = env.fails(&["event", "log", "old-1"]);
+        assert!(err.contains("no session old-1 "), "{err}");
+        for args in [&["doctor"][..], &["doctor", "--fix"]] {
+            let out = String::from_utf8_lossy(&env.run(args).stdout).into_owned();
+            assert!(out.contains(&format!("e.g. {} has an access control list", at.display())));
+            acl_refused(&out, &at);
+        }
+        assert!(Command::new("chmod").arg("-N").arg(&at).status().unwrap().success());
+    }
+    let list: Value = serde_json::from_str(&env.ok(&["session", "list", "--json"])).unwrap();
+    assert_eq!(list["sessions"][0]["session"], "old-1", "{list}");
 }
 
 /// What reads transcripts reads them only where the logger could have
@@ -759,18 +891,18 @@ env = {{ GITHUB_TOKEN = "bridge-secret" }}
 fn adr_0010_was_cut_off_says_where_never_what() {
     let env = Env::new("s-cutoff");
     env.start(&[]);
-    let mut watch = env
-        .brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut watch = env.subscribed(|| {
+        env.brnr(&["event", "watch", "sess-1", "--json", "--events", "agent_message,turn_ended"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    });
     let stdout = watch.stdout.take().unwrap();
     let lines = std::thread::spawn(move || {
         let lines = BufReader::new(stdout).lines().map_while(Result::ok);
         lines.map(|l| serde_json::from_str::<Value>(&l).unwrap()).collect::<Vec<_>>()
     });
-    sleep(Duration::from_millis(300));
     kill(watch.id() as i32, libc::SIGSTOP);
     for _ in 0..4 {
         env.ok(&["prompt", "send", "sess-1", "--wait", "--prompt", "big 6000000"]);
@@ -1223,14 +1355,6 @@ fn adr_0009_a_symlinked_config_is_checked_where_it_points() {
 fn adr_0009_a_config_with_an_acl_is_refused() {
     let env = Env::new("s-config-acl");
     let path = config(&env, "[profiles.default]\nlog = \"off\"\n", 0o600, 0o700);
-    let acl = |entry: &str, at: &Path| {
-        let ok = std::process::Command::new("chmod").args(["+a", entry]).arg(at).status().unwrap();
-        assert!(ok.success(), "chmod +a {entry} {}", at.display());
-    };
-    let has_acl = |at: &Path| {
-        let out = std::process::Command::new("ls").arg("-lde").arg(at).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).lines().count() > 1
-    };
     let folder = path.parent().unwrap().to_owned();
     for (at, entry, says) in [
         (
@@ -1244,7 +1368,7 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
             "has an access control list (ls -le), which can let others change what is in it",
         ),
     ] {
-        acl(entry, at);
+        add_acl(at, entry);
         let err = env.fails(&new_args(&["--prompt", "hi"]));
         assert!(err.contains(says), "{err}");
         assert!(err.contains("so brnr won't read the config"), "{err}");
@@ -1255,7 +1379,7 @@ fn adr_0009_a_config_with_an_acl_is_refused() {
         assert!(err.contains("chmod -N ") && err.ends_with(&name), "{err}");
         assert!(has_acl(at), "brnr removed the ACL of {}", at.display());
         assert!(env.hosts().is_empty() && env.calls().is_empty());
-        let ok = std::process::Command::new("chmod").arg("-N").arg(at).status().unwrap();
+        let ok = Command::new("chmod").arg("-N").arg(at).status().unwrap();
         assert!(ok.success());
     }
     env.start(&["--prompt", "hi"]);
