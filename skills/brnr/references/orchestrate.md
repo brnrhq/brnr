@@ -40,8 +40,9 @@ brnr prompt send $s --json --prompt "also update the changelog"
 
 `status` is `delivered` (sent now), `held`, `steered` or `interrupting`.
 
-**Wait.** For the session to be idle (no turn running, nothing held), or for
-one message's turn, always with a timeout:
+**Wait.** For the session to be idle (no turn running, nothing held, no
+approval or elicitation waiting), or for one message's turn, always with a
+timeout:
 
 ```sh
 brnr event wait $s --timeout 900 --json

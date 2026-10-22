@@ -273,6 +273,13 @@ brnr's own conventions:
 
 ### Fixed
 
+- `event wait` waits while an approval or an elicitation is waiting, also
+  one whose turn has ended, and says the session is idle once it is
+  answered; `--for exit` prints the `process_exited` it makes for a process
+  gone without one only once it has seen the process exit, and fails, 1,
+  when the connection fails while the process lives. A count a process's
+  status doesn't have fails `event wait` and `session status`, saying
+  which, and isn't taken as 0 (ADR 8.3).
 - A permission request or an elicitation the agent cancels with
   `$/cancel_request` ends: it is gone from `permission requests`,
   `elicitation requests` and a bridge's `pending`, the session is no longer

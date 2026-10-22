@@ -822,9 +822,11 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
   `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile` (an id
   with files in two folders, #121),
-  `adr_0003_resume_takes_the_newest_opening_of_every_folder` (the newest
-  record, an editor's deletion, in both files). That a resume in another cwd starts a
-  file in that folder is shown, for a bridge's resume, by ADR 5.6's
+  `adr_0003_resume_takes_the_newest_opening_of_every_folder` (resumed
+  in the first folder again, with another agent); ADR 8.1's
+  `adr_0008_an_editors_deletion_in_every_folder_isnt_activity` shows it
+  with an editor's deletion, the newest record, in both files. That a
+  resume in another cwd starts a file in that folder is shown, for a bridge's resume, by ADR 5.6's
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
   for a start's by ADR 5.1's
   `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`

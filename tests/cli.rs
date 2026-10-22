@@ -272,6 +272,45 @@ fn adr_0008_wait_for_exit() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "agent exited with code 0\n");
 }
 
+/// A session with an approval or an elicitation waiting isn't idle, though
+/// its turn has ended (ADR 3.8): `event wait` waits until the request is
+/// answered, then says it is idle and exits as its last turn ended.
+#[test]
+fn adr_0008_a_session_with_a_request_waiting_isnt_idle() {
+    let env = Env::new("c-waitasked");
+    let env = env.agent("ASK_AND_END", "1");
+    env.start(&[]);
+    for (n, (prompt, what, answer)) in [
+        ("perm edit", "permission", ["permission", "allow", "sess-1", "p1"]),
+        ("elicit form", "elicitation", ["elicitation", "decline", "sess-1", "e1"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", prompt]);
+        env.ok(&["event", "wait", "sess-1", "--for", what, "--timeout", "10"]);
+        let ended = || events_named(&env, "turn_ended").len() == n + 1;
+        assert!(wait_for(Duration::from_secs(10), ended), "the turn didn't end");
+        let waited = env.run(&["event", "wait", "sess-1", "--timeout", "1"]);
+        assert_eq!(code(&waited), 124, "{what}: {}", stderr(&waited));
+        let wait = env
+            .brnr(&["event", "wait", "sess-1", "--timeout", "10", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        sleep(Duration::from_millis(300));
+        env.ok(&answer);
+        let out = wait.wait_with_output().unwrap();
+        assert_eq!(code(&out), 0, "{what}: {}", stderr(&out));
+        let idle: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            (&idle["state"], &idle["last_turn"]["stop_reason"]),
+            (&"idle".into(), &"end_turn".into())
+        );
+    }
+}
+
 // ---- cancel and the queue ------------------------------------------------
 
 #[test]
@@ -2620,10 +2659,10 @@ fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
 }
 
 /// Of a session with files in two folders, the cwd, agent and profile are
-/// those of the newest `session_opened` of them all, whatever file the
-/// newest record is in: here a process that never opened the session, an
-/// editor's deleting it, recorded the same record into both (ADR 3.11, ADR
-/// 5.1, ADR 8.1).
+/// those of the newest `session_opened` of them all, the last in its file,
+/// not its file's first record: here the session, opened in `a`, then
+/// resumed in `b` with another agent, is resumed in `a` again with that
+/// agent (ADR 3.11, ADR 5.1, ADR 5.10).
 #[test]
 fn adr_0003_resume_takes_the_newest_opening_of_every_folder() {
     let env = Env::new("c-newest-opening");
@@ -2636,22 +2675,66 @@ fn adr_0003_resume_takes_the_newest_opening_of_every_folder() {
     });
     closed_session(&env, "s-1", &["--cwd", &a]);
     let other = agent.to_string_lossy();
-    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--", &other]);
-    env.ok(&["session", "close", "s-1"]);
-    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
-    let deleted = r#"{"format":1,"ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1,"proxy_pid":null,"agent_pid":2,"session":"s-1","event":{"event":"session_deleted","session":"s-1","by":"editor"}}"#;
-    for cwd in [&a, &b] {
-        let path = env.dir.join("home/projects").join(folder_of(cwd)).join("s-1.jsonl");
-        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{deleted}").unwrap();
+    for cwd in [&b, &a] {
+        env.ok(&["session", "resume", "s-1", "--cwd", cwd, "--", &other]);
+        env.ok(&["session", "close", "s-1"]);
+        assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
     }
     let rows = session_list(&env, &[]);
     let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(
         (&rows[0]["cwd"], &rows[0]["agent"]["program"]),
+        (&a.as_str().into(), &"other-agent.py".into())
+    );
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], a.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!(hosts[0]["agent"], json!([other]), "{hosts:?}");
+    env.stop();
+}
+
+/// An editor's deletion, recorded by its process into each of the
+/// session's files though it never opened the session there, isn't
+/// activity (ADR 8.1): of a session with files in two folders, `session
+/// list` keeps LAST ACTIVE, cwd and agent from where the session was last
+/// served, and `session resume` resumes it there (ADR 3.11, ADR 5.1).
+#[test]
+fn adr_0008_an_editors_deletion_in_every_folder_isnt_activity() {
+    let env = Env::new("c-deleted-folders");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--", &other]);
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    let of = |rows: &[Value]| -> Value {
+        let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        rows[0].clone()
+    };
+    let before = of(&session_list(&env, &[]));
+    let deleted = r#"{"format":1,"ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1,"proxy_pid":null,"agent_pid":2,"session":"s-1","event":{"event":"session_deleted","session":"s-1","by":"editor","ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1}}"#;
+    for cwd in [&a, &b] {
+        let path = env.dir.join("home/projects").join(folder_of(cwd)).join("s-1.jsonl");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{deleted}").unwrap();
+    }
+    assert_eq!(
+        (&before["cwd"], &before["agent"]["program"]),
         (&b.as_str().into(), &"other-agent.py".into())
     );
+    let after = of(&session_list(&env, &[]));
+    let row = |r: &Value| (r["last_active"].clone(), r["cwd"].clone(), r["agent"].clone());
+    assert_eq!(row(&after), row(&before), "{after}");
     env.ok(&["session", "resume", "s-1"]);
     let resumed = env.calls_of("session/resume");
     assert_eq!(resumed.last().unwrap()["params"]["cwd"], b.as_str(), "{resumed:?}");
@@ -3690,11 +3773,11 @@ fn ask(env: &Env) {
     env.ok(&["event", "wait", "sess-1", "--for", "permission", "--timeout", "10"]);
 }
 
-/// The fake agent's answers, in order: its requests are each `perm-1` while
-/// no other is waiting.
+/// The fake agent's answers to its permission requests (`perm-N`), in order.
 fn answers(env: &Env) -> Vec<Value> {
+    let ours = |c: &Value| c["id"].as_str().is_some_and(|id| id.starts_with("perm-"));
     (env.calls().into_iter())
-        .filter(|c| c["id"] == "perm-1" && c.get("method").is_none())
+        .filter(|c| ours(c) && c.get("method").is_none())
         .map(|c| c["result"]["outcome"].clone())
         .collect()
 }
@@ -4428,6 +4511,42 @@ fn adr_0004_a_turn_that_ends_leaves_its_request_waiting() {
     assert!(wait_for(Duration::from_secs(10), || !elicited(&env).is_empty()), "unanswered");
     assert_eq!(elicited(&env), [json!({ "action": "cancel" })]);
     assert_eq!(events_named(&env, "turn_ended").len(), 1, "its answer ended a turn");
+}
+
+/// The agent cancels each request it has open, one made after an earlier
+/// one was answered as well as the one made before it: each ends, by the
+/// agent, and nothing is left waiting.
+#[test]
+fn adr_0004_the_agent_cancels_each_request_it_has_open() {
+    let env = Env::new("c-giveupmany");
+    let gate = env.dir.join("give-up");
+    let env = env.agent("ASK_AND_END", "1").agent("GIVE_UP", gate.to_str().unwrap());
+    env.start(&[]);
+    let waiting = |want: &str| {
+        let has = || env.ok(&["permission", "requests"]).contains(want);
+        assert!(wait_for(Duration::from_secs(10), has), "{want} isn't waiting");
+    };
+    for request in ["p1", "p2"] {
+        env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+        waiting(request);
+    }
+    env.ok(&["permission", "allow", "sess-1", "p1"]);
+    assert!(wait_for(Duration::from_secs(10), || outcome(&env, "perm-1").is_some()), "unanswered");
+    env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit"]);
+    waiting("p3");
+    fs::write(&gate, "").unwrap();
+    let ended = || resolved(&env).len() == 3;
+    assert!(wait_for(Duration::from_secs(10), ended), "not all ended: {:?}", resolved(&env));
+    assert_eq!(env.ok(&["permission", "requests"]), "nothing waiting\n");
+    let outcomes =
+        ["perm-1", "perm-2", "perm-3"].map(|r| outcome(&env, r).map(|o| o["outcome"].clone()));
+    assert_eq!(
+        outcomes,
+        [Some("selected".into()), Some("cancelled".into()), Some("cancelled".into())]
+    );
+    let by: Vec<_> =
+        resolved(&env).iter().map(|e| (e["request"].clone(), e["by"].clone())).collect();
+    assert_eq!(by[1..], [(json!("p2"), json!("agent")), (json!("p3"), json!("agent"))], "{by:?}");
 }
 
 // ---- lifecycle -----------------------------------------------------------
