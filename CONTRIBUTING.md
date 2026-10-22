@@ -65,11 +65,12 @@ says `skipped:` on stderr, which `--nocapture` shows. In CI, or with
 `tests/common/mod.rs`). `another_user_cant_connect` needs root, to connect
 as `nobody`, so `cargo test` ignores it. CI runs it as root on Linux. To
 run it yourself, build as yourself and run only the test binary as root,
-so `target/` has no files of root's:
+so `target/` has no files of root's, with a `TMPDIR` that `nobody` can
+reach and strict on, so a check in it that can't run fails:
 
 ```sh
 cargo test --release --test security --no-run   # says the test binary's path
-sudo -E target/release/deps/security-<hash> --ignored --exact another_user_cant_connect
+sudo -E TMPDIR=/tmp BRNR_TESTS_STRICT=1 target/release/deps/security-<hash> --ignored --exact another_user_cant_connect
 ```
 
 `.github/workflows/coverage.yml` also runs the Rust unit and integration

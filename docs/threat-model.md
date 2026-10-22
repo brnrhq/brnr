@@ -98,8 +98,9 @@ the user from their own processes.
 Each claim with what enforces it (file and function) and the test that checks
 it. Tests are in `tests/` unless a module is named; `security.rs` holds those
 written for this document. A test that can't run where it is (as root,
-without `lsof`) fails in CI or with `BRNR_TESTS_STRICT` set, and says it is
-skipped otherwise (`skip`, tests/common/mod.rs): it never passes unrun.
+without `lsof`) fails in CI or with `BRNR_TESTS_STRICT` set (`skip`,
+tests/common/mod.rs), so in CI it never passes unrun. Elsewhere it passes
+without checking its claim, and says `skipped:` on stderr.
 
 ### B1: the runtime directory and sockets refuse others
 
