@@ -718,7 +718,9 @@ impl Conn {
             let fresh =
                 UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
             let mut conn = match fresh {
-                Ok(conn) => conn,
+                // The same process: its errors there say how it differs
+                // from this brnr, as here (ADR 8.8).
+                Ok(conn) => Conn { meta: self.meta.clone(), ..conn },
                 // Gone: its transcript is whole (ADR 5.5), and is read to its end.
                 Err(_) if cut.is_some() || f.cut_off_before_it_went() => {
                     // Its socket goes before its last records are written.
@@ -1359,7 +1361,7 @@ mod tests {
     /// `until` is null only for a process that has gone. One that stays
     /// gives up at the 4th, `until` where it said it cut the peer off
     /// (`last_queued_seq`, 30), or null with the error saying why if it said no
-    /// position.
+    /// position. An older brnr's errors there say how to restart it.
     #[test]
     fn adr_0010_a_new_subscription_that_fails_is_one_more_cut_off() {
         // A process that says it cut the peer off (`last_queued_seq`) and fails
@@ -1455,6 +1457,18 @@ mod tests {
             once(thread.join().unwrap(), tries);
             let _ = fs::remove_dir_all(&dir);
         }
+
+        // An older brnr's, which says no `protocol`: its errors on the new
+        // connections say how to restart it, as on the first (ADR 8.8).
+        let (mut conn, thread, dir) = process("older", Some(30), tries, true);
+        conn.meta = Some(json!({ "id": "7" }));
+        assert!(conn.next_event(None).is_err());
+        let note = conn.missed().expect("no events_missed note").clone();
+        let error = note["error"]["message"].as_str().unwrap();
+        assert!(error.contains("connection gone; process 7 runs an older brnr"), "{note}");
+        assert!(error.contains("stop it (brnr process stop 7)"), "{note}");
+        once(thread.join().unwrap(), tries);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A live process that can't be caught up with (here, it has records it

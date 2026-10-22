@@ -1521,4 +1521,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`;
   [src/ctl/talk.rs](../../src/ctl/talk.rs):
   `adr_0008_a_count_the_status_doesnt_have_isnt_0` (a `status` answer
-  without a count, from a process of another brnr).
+  without a count, from a process of another brnr); and, on the
+  connections made to catch up, ADR 10.2's
+  `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`
+  ([src/ctl/client.rs](../../src/ctl/client.rs)).
