@@ -96,8 +96,7 @@ fn readable_transcripts_are_made_private() {
 #[test]
 fn adr_0009_doctor_says_what_it_cant_open_and_what_fix_left() {
     if uid() == 0 {
-        eprintln!("skipped: root can open a file of mode 000");
-        return;
+        return skip("root can open a file of mode 000");
     }
     let env = Env::new("dr-closed");
     let home = env.dir.join("home");
