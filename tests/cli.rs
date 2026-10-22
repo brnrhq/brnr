@@ -4487,8 +4487,13 @@ fn adr_0005_notify_fails_when_cut_off() {
         .unwrap();
     sleep(Duration::from_millis(500));
     kill(env.host_pid(), libc::SIGKILL);
-    assert!(wait_exit(&mut notify, Duration::from_secs(15)), "notify kept running");
-    assert!(!notify.wait().unwrap().success(), "notify exited 0");
+    let exited = wait_exit(&mut notify, Duration::from_secs(15));
+    if !exited {
+        notify.kill().unwrap();
+    }
+    let out = notify.wait_with_output().unwrap();
+    assert!(exited, "notify kept running (then {}); its stderr: {}", out.status, stderr(&out));
+    assert!(!out.status.success(), "notify exited 0; its stderr: {}", stderr(&out));
 }
 
 /// The pid a notify command wrote to `file` (`echo $$`), once it has.
