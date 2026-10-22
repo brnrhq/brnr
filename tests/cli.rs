@@ -2594,6 +2594,48 @@ fn adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile() {
     env.stop();
 }
 
+/// Of a session with files in two folders, the cwd, agent and profile are
+/// those of the newest `session_opened` of them all, whatever file the
+/// newest record is in: here a process that never opened the session, an
+/// editor's deleting it, recorded the same record into both (ADR 3.11, ADR
+/// 5.1, ADR 8.1).
+#[test]
+fn adr_0003_resume_takes_the_newest_opening_of_every_folder() {
+    let env = Env::new("c-newest-opening");
+    let agent = env.dir.join("other-agent.py");
+    install(Path::new(AGENT), &agent);
+    let [a, b] = ["a", "b"].map(|d| {
+        let dir = env.dir.join(d);
+        fs::create_dir(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    });
+    closed_session(&env, "s-1", &["--cwd", &a]);
+    let other = agent.to_string_lossy();
+    env.ok(&["session", "resume", "s-1", "--cwd", &b, "--", &other]);
+    env.ok(&["session", "close", "s-1"]);
+    assert!(wait_for(Duration::from_secs(10), || env.hosts().is_empty()), "it lives on");
+    let deleted = r#"{"format":1,"ts":"2999-01-01T00:00:00.000000Z","host_id":"29990101T000000-1","pid":1,"proxy_pid":null,"agent_pid":2,"session":"s-1","event":{"event":"session_deleted","session":"s-1","by":"editor"}}"#;
+    for cwd in [&a, &b] {
+        let path = env.dir.join("home/projects").join(folder_of(cwd)).join("s-1.jsonl");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{deleted}").unwrap();
+    }
+    let rows = session_list(&env, &[]);
+    let rows: Vec<&Value> = rows.iter().filter(|r| r["session"] == "s-1").collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (&rows[0]["cwd"], &rows[0]["agent"]["program"]),
+        (&b.as_str().into(), &"other-agent.py".into())
+    );
+    env.ok(&["session", "resume", "s-1"]);
+    let resumed = env.calls_of("session/resume");
+    assert_eq!(resumed.last().unwrap()["params"]["cwd"], b.as_str(), "{resumed:?}");
+    let hosts = env.hosts();
+    assert_eq!(hosts.len(), 1, "{hosts:?}");
+    assert_eq!(hosts[0]["agent"], json!([other]), "{hosts:?}");
+    env.stop();
+}
+
 /// The trace in #121: a session resumed in another cwd, loaded, records
 /// none of the replay there, as brnr has its transcript in the first folder
 /// (ADR 5.6), and a `history` event says so; `event log` still shows the

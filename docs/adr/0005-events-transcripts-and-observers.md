@@ -120,11 +120,15 @@ Reading:
   is read backwards, so a long transcript costs no more than its last
   records. Of a session with files in more than one folder, the first
   record is the oldest file's and the last is the newest record of them
-  all: `session resume` takes its cwd, agent and profile from that newest
+  all: `session resume` takes where it was last served from that newest
   record (ADR 3.11), and `session list` its row, one per id (#121). That
   record is the newest a process recorded (a deletion's, ADR 8.1, is no
-  process's), and its cwd, profile and agent are those that process's
-  `session_opened` in its file names (ADR 5.10). A file whose newest
+  process's); its cwd, profile and agent are those the newest
+  `session_opened` of them all names (ADR 5.10), in whichever file it is.
+  One process serves the session at a time (ADR 3.9), so that is the
+  opening of the process that last served it; the newest record may be in
+  another file, as an editor's deletion is recorded in every file of the
+  session by a process that may never have opened it (ADR 8.1). A file whose newest
   record is in a format brnr doesn't read is passed over (ADR 5.10). A
   line cut short is never taken for a record: a JSON object ends only at
   its last byte. So, for a transcript:
