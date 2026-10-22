@@ -9,12 +9,12 @@
 //! [`Host::pending`] has what waits for an answer there, and [`Conn::open`]
 //! subscribes to its events and asks it things on the same connection. A
 //! request waits [`ANSWER_WAIT`] for its answer, or [`AGENT_WAIT`] for one
-//! that waits on the agent, and a write that makes no progress for
-//! [`ANSWER_WAIT`] fails the same way: "not answering". An answer is the
-//! process's `ok` and `error` taken off: an error it says is the command's,
-//! also one it says to no request in particular, before it closes the
-//! connection (a request too long to read, too many connections: ADR 10.3,
-//! ADR 10.4). What the agent sent nests no
+//! that waits on the agent, and a connection the process doesn't take, or
+//! a write that makes no progress, for [`ANSWER_WAIT`] fails the same way:
+//! "not answering". An answer is the process's `ok` and `error` taken off:
+//! an error it says is the command's, also one it says to no request in
+//! particular, before it closes the connection (a request too long to read,
+//! too many connections: ADR 10.3, ADR 10.4). What the agent sent nests no
 //! deeper than [`json::DEPTH`], and the host wraps it in a few levels of its
 //! own: a line past [`json::OWN_DEPTH`] is none the host makes, and is
 //! refused, and said (P3).
@@ -133,7 +133,29 @@ impl Host {
     fn connect(&self) -> io::Result<UnixStream> {
         let socket =
             self.meta["socket"].as_str().ok_or(io::Error::other("no socket in metadata"))?;
-        UnixStream::connect(PathBuf::from(socket))
+        connect(Path::new(socket))
+    }
+}
+
+/// A connection to a process's `socket`, waiting [`ANSWER_WAIT`] for the
+/// process to take it: on Linux one whose backlog is full (a stopped
+/// process's) makes a connection wait for as long as it stays full. One
+/// not taken by then fails, "not answering" (`TimedOut`).
+fn connect(socket: &Path) -> io::Result<UnixStream> {
+    match sys::connect_within(socket, ANSWER_WAIT) {
+        Err(e) if e.kind() == ErrorKind::TimedOut => {
+            Err(io::Error::new(ErrorKind::TimedOut, "not answering"))
+        }
+        connected => connected,
+    }
+}
+
+/// Whether anyone listens on `socket`, asked without waiting: a full backlog
+/// (Linux) is someone listening, as a connection taken is. `Err`: why not.
+pub(super) fn listening(socket: &Path) -> io::Result<()> {
+    match sys::connect_within(socket, Duration::ZERO) {
+        Err(e) if e.kind() == ErrorKind::TimedOut => Ok(()),
+        connected => connected.map(drop),
     }
 }
 
@@ -236,6 +258,7 @@ impl Pending {
 /// How much longer than a probe's own wait [`discover`] waits for it: the
 /// probe's starts once it has connected, and telling a process gone takes a
 /// moment more (see `gone`), so one that answers just in time still counts.
+/// One that took its time to connect (a full backlog, on Linux) may not.
 const PROBE_MARGIN: Duration = Duration::from_secs(1);
 
 /// Every process with a metadata file, asking each for its live status.
@@ -250,8 +273,8 @@ pub(super) fn discover() -> Result<Vec<Host>, String> {
 /// [`discover`] in runtime directory `dir`. Each process is asked on a
 /// thread of its own, so that k processes that don't answer cost one wait,
 /// not k (ADR 10.4). One not back by then counts as not answering, and its
-/// thread is left behind: a connection can block for good (a full backlog,
-/// on Linux), and it mustn't hold the command.
+/// thread isn't waited for: it ends by itself, as its connection, write and
+/// read each wait [`ANSWER_WAIT`] at most, but needn't hold the command.
 fn discover_in(dir: &Path) -> Result<Vec<Host>, String> {
     match paths::check_private(dir) {
         Ok(()) => {}
@@ -342,7 +365,7 @@ pub(super) fn gone(pid: i64, socket: &Path, file: &Path, err: &io::Error) -> boo
         return false;
     }
     std::thread::sleep(REFUSED_AGAIN);
-    match UnixStream::connect(socket) {
+    match listening(socket) {
         Err(e) if refused(&e) => !made(pid, file),
         _ => false,
     }
@@ -364,7 +387,7 @@ fn gone_within(socket: &Path, wait: Duration) -> bool {
     loop {
         let gone = match pid {
             Some(pid) => sys::exited(pid),
-            None => UnixStream::connect(socket).is_err_and(|e| refused(&e)),
+            None => listening(socket).is_err_and(|e| refused(&e)),
         };
         if gone {
             return true;
@@ -641,8 +664,7 @@ impl Conn {
         };
         let cut = match self.follow.as_ref() {
             Some(f) => {
-                match UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new)
-                {
+                match connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new) {
                     Ok(mut conn) => {
                         let asked = conn.was_cut_off(&f.peer);
                         drop(conn);
@@ -690,8 +712,7 @@ impl Conn {
         let mut cut: Option<Option<u64>> = None;
         let (live, until) = loop {
             f.tries += 1;
-            let fresh =
-                UnixStream::connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
+            let fresh = connect(&f.socket).map_err(|e| e.to_string()).and_then(Conn::new);
             let mut conn = match fresh {
                 Ok(conn) => conn,
                 // Gone: its transcript is whole (ADR 5.5), and is read to its end.

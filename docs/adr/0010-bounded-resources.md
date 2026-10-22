@@ -503,8 +503,15 @@ never waits on a process without end (N2, P6, P3).
   names a session) by asking each for its status, all at once, each on a
   thread of its own: it waits about 5 s in all (5 s and a margin of 1 s),
   not 5 s for each. A process not answering by then is listed as not
-  answering (ADR 3.9). Its thread is left behind, so a connection that
-  blocks (a full backlog, on Linux) can't hold the command.
+  answering (ADR 3.9). Its thread isn't waited for; it ends by itself, as
+  each of its steps waits at most 5 s (below).
+- Connecting to a process waits at most 5 s for it to take the connection:
+  on Linux a stopped process whose backlog is full makes a connection wait
+  for as long as it stays full (macOS refuses it). Past that, the command
+  says `not answering`, as for a request. So every step a command takes
+  against a process is bounded, and no thread is left blocked for good:
+  a command that finds the processes twice (reading a session that is
+  closing) doesn't pile them up.
 - Every request a command makes waits 5 s for its answer, on a connection
   of its own or on one it is subscribed on: none of those it makes there
   (`subscribe`, `status`, `pending`, `logged`, `was_cut_off`, `send`) waits
@@ -515,6 +522,8 @@ never waits on a process without end (N2, P6, P3).
   Past its wait, a request fails with `not answering`.
 - A request whose write makes no progress for 5 s (the process has stopped
   reading) fails the same way.
+- Whether anyone listens on a socket, to tell a process gone (ADR 3.9), is
+  asked without waiting: a full backlog is someone listening.
 - An error the process says to no request in particular (no `req_id`),
   before it closes the connection, is the answer to the request waiting:
   a request too long to read (ADR 10.3), too many connections. The command
@@ -523,6 +532,9 @@ never waits on a process without end (N2, P6, P3).
 **Consequences.**
 
 - A command over k processes that don't answer waits about 5 s, not 5k s.
+- A process that takes a connection only just before 5 s, then answers
+  late, keeps its probe's thread past the command's 6 s, each step 5 s at
+  most: the command lists it as not answering and goes on without it.
 - A 129th client gets an error rather than a connection; brnr's own
   commands say it. A client of the user's that holds 128 connections open
   keeps brnr's commands out of that process until it lets them go
@@ -538,7 +550,8 @@ never waits on a process without end (N2, P6, P3).
 file descriptors spun on its accepting thread; each connection took two
 threads and a queue, without a limit on how many (#269). `discover` asked
 the processes one after another, 5 s each, so k stopped processes cost
-5k s for every command. A request on a subscribed connection had no
+5k s for every command; on Linux a connection to a stopped process whose
+backlog was full blocked for good. A request on a subscribed connection had no
 timeout, and a write none either, so a process that stopped reading or
 answering held the command for good, with nothing said (P3).
 
@@ -548,6 +561,11 @@ answering held the command for good, with nothing said (P3).
   would be listed as not answering more often, and k of them still add up.
 - An async runtime for the probes: a crate, for what a thread each does
   (N1: few crates).
+- A connection that blocks, left on a thread of its own the command doesn't
+  wait for: a thread for each stopped process, every time the processes are
+  found, blocked for as long as the process is stopped.
+- A bounded pool of threads for the probes: blocked connections still hold
+  its threads, and k processes over n threads cost k/n waits.
 - Making the 129th connection wait in the backlog rather than answering
   it: the backlog is the kernel's and small, its client can't tell a full
   process from a stopped one, and on macOS a full backlog refuses
@@ -636,6 +654,8 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_processes_not_answering_cost_one_wait_in_all`,
     `adr_0010_a_request_not_answered_or_taken_is_not_answering`,
     `adr_0010_an_error_said_to_no_request_is_the_answer`.
+  - [src/sys.rs](../../src/sys.rs):
+    `adr_0010_a_connection_a_full_backlog_holds_waits_at_most_its_wait`.
 
   Not covered by a Rust test: an accept failing for real (running a test
   process out of file descriptors would fail its other tests); the back-off

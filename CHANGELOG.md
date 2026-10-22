@@ -228,7 +228,10 @@ brnr's own conventions:
 - A request on a subscribed connection (`prompt send --wait`, `event watch`,
   `event notify`) waits 5 s for its answer, and a request's write 5 s for the
   process to take it, then fails with `not answering`, instead of waiting
-  for ever. An error the process says before it closes the connection is the
+  for ever. So does connecting to a process, in every command: on Linux a
+  stopped process whose backlog is full held a connection for as long as it
+  stayed stopped, and a command that found the processes left a thread
+  blocked on each. An error the process says before it closes the connection is the
   command's error, not `the process closed the connection` (ADR 10.4).
 - A permission request or an elicitation the agent cancels with
   `$/cancel_request` ends: it is gone from `permission requests`,

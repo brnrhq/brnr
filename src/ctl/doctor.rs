@@ -44,7 +44,6 @@ use std::fs::{self, File};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,7 +53,7 @@ use crate::host::check_bridge;
 use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
 
 use super::args::Error;
-use super::client::{Host, Probe, gone, probe, read_meta};
+use super::client::{Host, Probe, gone, listening, probe, read_meta};
 use super::{Args, text, when};
 
 /// The longest pid a socket name may need: Linux's pid_max is at most 2^22.
@@ -297,15 +296,16 @@ fn session_locks(r: &mut Report) {
 }
 
 /// Whether what a process left without its metadata (`<pid>.sock`,
-/// `<pid>.json.tmp`) is a process's that is starting: its socket accepts.
+/// `<pid>.json.tmp`) is a process's that is starting: its socket is
+/// listened on.
 fn starting(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let Some(pid) = name.split('.').next().and_then(|pid| pid.parse::<i64>().ok()) else {
         return false;
     };
     let socket = path.with_file_name(format!("{pid}.sock"));
-    match UnixStream::connect(&socket) {
-        Ok(_) => true,
+    match listening(&socket) {
+        Ok(()) => true,
         Err(e) => !gone(pid, &socket, path, &e),
     }
 }
