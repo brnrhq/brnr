@@ -36,7 +36,7 @@ brnr's own conventions:
   is for, in the same words: a burner phone for your coding agents, and
   four things it does, each with an example on the page and the
   introduction. The diagram is an image, light and dark, in place of the
-  text one (#376).
+  text one (ADR 1, #376).
 
 ## [0.10.0] - 2026-10-22
 

@@ -276,7 +276,7 @@ brnr permission allow $s p1 --json</pre>
         <p class="intro">Bridges, programs you write or choose, forward events to Slack or push notifications, and send your answers back.</p>
       </div>
       <div class="body">
-<pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'</pre>
+<pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'</pre>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]
@@ -284,7 +284,7 @@ agent = ["brnr-claude-adapter"]
 [[profiles.work.bridges]]
 command = "~/bin/slack-bridge"      <span class="c"># yours: events in, answers out</span>
 events = ["permission_request", "turn_ended"]</pre>
-        <p><code>event notify</code> runs a command for each event: here, a push notification through ntfy. A bridge speaks brnr's JSON-lines protocol both ways.</p>
+        <p><code>event notify</code> runs a command for each event: here, a push notification through ntfy, to a topic only you know (<code>NTFY_TOPIC</code>): anyone who knows an ntfy.sh topic can read it. A bridge speaks brnr's JSON-lines protocol both ways.</p>
       </div>
     </div>
   </section>
