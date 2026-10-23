@@ -181,9 +181,9 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Notifications: curl is a stand-in, first on PATH, that prints its
     // arguments.
     (
-        r#"brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'"#,
+        r#"brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'"#,
         Idle,
-        Follows("-d turn ended: end_turn (control) ntfy.sh/my-agents"),
+        Follows("-d turn ended: end_turn (control) https://ntfy.sh/"),
     ),
     // Headless sessions
     (

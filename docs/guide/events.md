@@ -82,8 +82,11 @@ stopped by a signal, it stops the command it is running, says on stderr that
 no more notifications come, and exits non-zero.
 
 ```sh
-brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'
 ```
+
+`NTFY_TOPIC` is a topic only you know. Anyone who knows an ntfy.sh topic can
+read it, and the event text can carry your prompts and your code.
 
 In a profile it is a bridge, for every process the profile starts, and reads
 the events the process writes on its stdin:
