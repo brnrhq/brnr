@@ -1281,6 +1281,33 @@ fn seqs(events: &[Value]) -> Vec<u64> {
 /// replies came, each as its ACP message and its event) catches up from the
 /// transcript and goes on live: it gets every event once, in order, as the
 /// transcript has them. Another watcher is told it was cut off.
+/// The copy of a `session/new` or `session/fork` in the new session's raw
+/// file has no position: the request has its `seq` where it was first
+/// recorded, the host log for a `session/new`, the forked session's raw file
+/// for a `session/fork`, so a position names one record (ADR 5.1, ADR 10.2).
+#[test]
+fn adr_0010_a_copied_open_request_has_no_position() {
+    let env = Env::new("copy-seq");
+    env.start(&["--wait", "--prompt", "reply hi"]);
+    env.ok(&["session", "fork", "sess-1"]);
+    let acp = |session: &str, method: &str| -> Vec<Value> {
+        let log = env.ok(&["event", "log", session, "--events", "acp", "--json"]);
+        let records = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+        records.filter(|e| e["msg"]["method"] == method).collect()
+    };
+    // The copies.
+    let new = acp("sess-1", "session/new");
+    assert!(new.len() == 1 && new[0].get("seq").is_none(), "{new:?}");
+    let fork = acp("sess-2", "session/fork");
+    assert!(fork.len() == 1 && fork[0].get("seq").is_none(), "{fork:?}");
+    // The requests as first recorded, with their positions.
+    let host = host_logs(&env);
+    let line = host.lines().find(|l| l.contains(r#""method":"session/new""#));
+    assert!(line.is_some_and(|l| l.contains(r#""seq":"#)), "{host}");
+    let forked = acp("sess-1", "session/fork");
+    assert!(forked.len() == 1 && forked[0]["seq"].is_u64(), "{forked:?}");
+}
+
 #[test]
 fn adr_0010_a_watcher_cut_off_catches_up() {
     let env = Env::new("catchup");

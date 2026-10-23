@@ -43,10 +43,10 @@ Events:
   `host_id`, `pid` (the brnr process), `proxy_pid`, `agent_pid` and, in a
   session's files, `session`, for joining. Every event, and every raw ACP record, has `seq`, its position
   in its process (ADR 10.2), and every event `pid` too (ADR 5.9), but for
-  two records: the copy of a `session/new` or `session/fork` in the
-  session's raw file, whose position is the host log's record of it, so
-  that a position names one record (ADR 10.2); and `session_deleted`, a
-  record of no process's.
+  two records: the copy of a `session/new` or `session/fork` in the new
+  session's raw file, whose position is that of the request where it was
+  first recorded, so that a position names one record (ADR 10.2); and
+  `session_deleted`, a record of no process's.
 - A session's events file starts with `session_opened`, the same record as
   the host log's: `session`, `cwd`, `profile` and `agent` (the process's,
   ADR 3.11), `events_log`, `acp_log` (null with `log = "events"`),

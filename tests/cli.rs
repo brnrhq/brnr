@@ -6612,7 +6612,7 @@ fn adr_0008_delete_keeps_the_transcript() {
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"control".into(), &Value::Null));
     // No process's: no `pid`, and no position (ADR 5.1).
-    assert_eq!(deleted[0]["pid"], Value::Null, "{deleted:?}");
+    assert_eq!(deleted[0].get("pid"), Some(&Value::Null), "{deleted:?}");
     assert!(deleted[0].get("seq").is_none(), "{deleted:?}");
     assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
     let list =
