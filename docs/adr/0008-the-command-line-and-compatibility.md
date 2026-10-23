@@ -565,8 +565,8 @@ would never change; a 2.0 can add one if it needs one.
 - Exit status: 0 when the condition is met and, for `idle` and `turn`, the
   last turn ended normally (`end_turn`). 1 if that turn failed or stopped
   for another reason, if its message was dropped, if the agent exited first
-  (but for `exit`), or (for `turn` and `permission`) if the session closed
-  first. 124 on `--timeout`, as timeout(1) does; a timeout doesn't cancel
+  (but for `exit`), or (for `turn`, `permission` and `elicitation`) if the
+  session closed first. 124 on `--timeout`, as timeout(1) does; a timeout doesn't cancel
   the turn. 3 when the command was cut off for falling behind and couldn't
   catch up from the transcript, saying what it missed (ADR 10.2). The same
   codes for `prompt send --wait`, `session new --wait` and

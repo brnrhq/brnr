@@ -952,8 +952,9 @@ impl Host {
             self.sessions[i].state.result(result.unwrap_or(&Value::Null));
         }
         if let Some(request) = request {
-            // A copy, in the session's file, of what the host log has with its
-            // position: none here (ADR 10.2).
+            // A copy, in the session's file, of what the host log (a fork's:
+            // the forked session's file) has with its position: none here
+            // (ADR 10.2).
             self.sink.msg(session.as_deref(), dir, &request, None);
         }
         session

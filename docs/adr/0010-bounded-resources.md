@@ -156,8 +156,11 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 - An event carries `seq` as its last key, live and in the transcript. A raw
   ACP record carries it before `dir` (`…,"session":"sess-1","seq":12,
   "dir":…`), and `event log` gives it to the `acp` event it makes of the
-  record. The copy of a `session/new` in the session's raw file has none;
-  the host log has it with its position.
+  record. The copy of a `session/new` or `session/fork` in the new
+  session's raw file has none: the request has its position where it was
+  first recorded, the host log for a `session/new` (no session is open
+  yet), the forked session's raw file for a `session/fork`. A position
+  names one record, so a reader that merges the files never meets it twice.
 - `subscribe`'s answer says where the subscription starts: `peer`, the
   connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
   and `seq`, the last position before it. `session new --wait`'s ready report
@@ -639,6 +642,7 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
 - 10.2:
   - [tests/headless.rs](../../tests/headless.rs):
     `adr_0010_a_watcher_cut_off_catches_up`,
+    `adr_0010_a_copied_open_request_has_no_position`,
     `adr_0010_a_burst_past_64_mib_reaches_a_watcher`,
     `adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed`,
     `adr_0010_a_wait_cut_off_catches_up`,

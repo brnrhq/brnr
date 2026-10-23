@@ -378,7 +378,8 @@ process (exit 1); and whether it happens without another run alongside.
   forever; a start with a prompt sends it at the commit (ADR 3.4), so the
   session is busy at once. `0` is as soon as it is idle.
 - Never while an editor is attached.
-- Closing emits `session_closed` with `by: idle` (ADR 5.2). The last
+- Closing emits `session_closed` with `by: control` and `reason: idle`
+  (ADR 5.2). The last
   session, stopping the process, gets `process_exited` instead, which isn't also
   `session_closed`.
 - With `stop_when_idle` set and an agent that can't close sessions,

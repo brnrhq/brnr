@@ -3026,11 +3026,12 @@ fn adr_0005_close_ends_what_follows_the_session() {
     ]);
     let turn = spawn(&["event", "wait", "sess-2", "--for", "turn"]);
     let permission = spawn(&["event", "wait", "sess-2", "--for", "permission"]);
+    let elicitation = spawn(&["event", "wait", "sess-2", "--for", "elicitation"]);
     let idle = spawn(&["event", "wait", "sess-2", "--json"]);
     let sent = spawn(&["prompt", "send", "sess-2", "--wait", "--prompt", "later"]);
     let held = || env.ok(&["queue", "list", "sess-2"]).contains("later");
     assert!(wait_for(Duration::from_secs(5), held), "not held");
-    env.wait_subscriptions(subscribed + 6);
+    env.wait_subscriptions(subscribed + 7);
     env.ok(&["session", "close", "sess-2"]);
 
     let watch = watch.wait_with_output().unwrap();
@@ -3048,6 +3049,8 @@ fn adr_0005_close_ends_what_follows_the_session() {
     assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
     let permission = permission.wait_with_output().unwrap();
     code_is(&permission, "session_closed");
+    let elicitation = elicitation.wait_with_output().unwrap();
+    code_is(&elicitation, "session_closed");
     assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
     // The session is idle once its turn is cancelled, and the wait exits as
     // that turn ended.
@@ -6608,6 +6611,9 @@ fn adr_0008_delete_keeps_the_transcript() {
     let deleted = logged(&env, "sess-1", "session_deleted");
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"control".into(), &Value::Null));
+    // No process's: no `pid`, and no position (ADR 5.1).
+    assert_eq!(deleted[0].get("pid"), Some(&Value::Null), "{deleted:?}");
+    assert!(deleted[0].get("seq").is_none(), "{deleted:?}");
     assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
     let list =
         serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
