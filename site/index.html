@@ -276,7 +276,7 @@ brnr permission allow $s p1 --json</pre>
         <p class="intro">Bridges, programs you write or choose, forward events to Slack or push notifications, and send your answers back.</p>
       </div>
       <div class="body">
-<pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'</pre>
+<pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'</pre>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
 [profiles.work]
 agent = ["brnr-claude-adapter"]
