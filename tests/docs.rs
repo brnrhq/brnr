@@ -181,9 +181,9 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // Notifications: curl is a stand-in, first on PATH, that prints its
     // arguments.
     (
-        r#"brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'"#,
+        r#"brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'"#,
         Idle,
-        Follows("-d turn ended: end_turn (control) https://ntfy.sh/"),
+        Follows("-d turn ended: end_turn (control) https://ntfy.sh/brnr-docs-topic"),
     ),
     // Headless sessions
     (
@@ -775,9 +775,11 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
     let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap());
     let args: Vec<&str> = args[1..].iter().map(String::as_str).collect();
     let mut cmd = env.brnr(&args);
-    // HOME is the scratch directory: `skill install` writes under it.
+    // HOME is the scratch directory: `skill install` writes under it. The
+    // ntfy example needs its topic set.
     cmd.env("PATH", path)
         .env("HOME", &dir)
+        .env("NTFY_TOPIC", "brnr-docs-topic")
         .stdin(match &stdin {
             Some(file) => Stdio::from(File::open(dir.join(file)).unwrap()),
             None => Stdio::null(),

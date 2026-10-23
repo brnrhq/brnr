@@ -153,7 +153,7 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
 line. It runs until the session closes.
 
 ```sh
-brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/$NTFY_TOPIC"'
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'
 ```
 
 `NTFY_TOPIC` is a topic only you know. Anyone who knows an ntfy.sh topic can
