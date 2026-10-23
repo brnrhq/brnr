@@ -36,12 +36,17 @@ Events:
   the process doesn't know whether it was a fork, and the first
   `session_opened` in the file says.
 - `session delete` writes `session_deleted` into the session's events
-  file itself, a record of no process's (`host_id` null), and with
-  `--purge` deletes both files (ADR 8.1).
+  file itself, a record of no process's (`host_id` and `pid` null, and no
+  `seq`: it has no position in any process), and with `--purge` deletes
+  both files (ADR 8.1).
 - Every record starts with its `format` (ADR 5.10), then carries `ts`,
   `host_id`, `pid` (the brnr process), `proxy_pid`, `agent_pid` and, in a
   session's files, `session`, for joining. Every event, and every raw ACP record, has `seq`, its position
-  in its process (ADR 10.2), and every event `pid` too (ADR 5.9).
+  in its process (ADR 10.2), and every event `pid` too (ADR 5.9), but for
+  two records: the copy of a `session/new` or `session/fork` in the
+  session's raw file, whose position is the host log's record of it, so
+  that a position names one record (ADR 10.2); and `session_deleted`, a
+  record of no process's.
 - A session's events file starts with `session_opened`, the same record as
   the host log's: `session`, `cwd`, `profile` and `agent` (the process's,
   ADR 3.11), `events_log`, `acp_log` (null with `log = "events"`),

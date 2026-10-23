@@ -1328,6 +1328,8 @@ fn adr_0010_a_watcher_cut_off_catches_up() {
     let log = env.ok(&["event", "log", "sess-1", "--events", "all", "--json"]);
     let logged: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     // The session's `session/new` has its position in the host log only.
+    let new = logged.iter().find(|e| e["msg"]["method"] == "session/new");
+    assert!(new.is_some_and(|e| e.get("seq").is_none()), "{new:?}");
     let logged = logged.iter().filter_map(|e| e["seq"].as_u64());
     let logged: Vec<u64> = logged.filter(|n| *n >= got[0]).collect();
     assert_eq!(got, logged, "the watcher's events and the transcript's");

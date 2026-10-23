@@ -156,8 +156,9 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 - An event carries `seq` as its last key, live and in the transcript. A raw
   ACP record carries it before `dir` (`…,"session":"sess-1","seq":12,
   "dir":…`), and `event log` gives it to the `acp` event it makes of the
-  record. The copy of a `session/new` in the session's raw file has none;
-  the host log has it with its position.
+  record. The copy of a `session/new` or `session/fork` in the session's
+  raw file has none: the host log has it with its position, and a position
+  names one record, so a reader that merges the files never meets it twice.
 - `subscribe`'s answer says where the subscription starts: `peer`, the
   connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
   and `seq`, the last position before it. `session new --wait`'s ready report
