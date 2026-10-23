@@ -8,8 +8,10 @@ transcript), `session new --foreground --json`, `event notify`'s stdin, and
 the transcript's records. Each is one JSON object on one line; the examples
 here show it across lines.
 
-Every name and fixed value is snake_case, the subject first
+Every name and fixed value brnr makes is snake_case, the subject first
 ([ADR 5.9](../adr/0005-events-transcripts-and-observers.md#59-events-records-and-their-fields-follow-one-naming-scheme)).
+ACP's names and values keep ACP's spelling (`sessionId`, `end_turn`), and an
+`acp` record's `dir` names the two ends (`editor->agent`).
 Who acted is `by`: `editor`, `agent` or `control` (brnr's commands, bridges
 and timers). Beside it, `peer` is the connection that asked, where brnr knows
 one (`socket#7`, a bridge's name), and `reason` is why, a word.

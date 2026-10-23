@@ -1031,6 +1031,28 @@ fn row(name: &str, ty: &str) -> Result<Row, String> {
     Ok(row)
 }
 
+/// Whether each of `values` has a type its `row` names, into `problems`: a
+/// `number` is an integer (overview.md), and a null needs "or null".
+fn typed<const N: usize>(
+    row: &Row,
+    values: [(&str, &Value); N],
+    at: &str,
+    problems: &mut Vec<String>,
+) {
+    for (side, v) in values {
+        if v.is_null() {
+            if !row.null && N == 1 {
+                problems.push(format!("{at}: {side} null, and its row doesn't say \"or null\""));
+            }
+        } else if !row.kinds.is_empty() && !row.kinds.contains(&kind(v)) {
+            let types = row.kinds.join(" or ");
+            problems.push(format!("{at}: {side} {}, and its row says {types}", kind(v)));
+        } else if row.kinds.contains(&"a number") && v.is_number() && !(v.is_i64() || v.is_u64()) {
+            problems.push(format!("{at}: {side} {v}, and a number is an integer"));
+        }
+    }
+}
+
 /// A JSON value's type, as a problem names it.
 fn kind(v: &Value) -> &'static str {
     match v {
@@ -1302,13 +1324,8 @@ fn shape(
     let row = rows.iter().find(|r| !inside && r.name == path);
     let acp = inside || row.is_some_and(|r| r.acp);
     let at_ = if at.is_empty() { "the example" } else { at };
-    if let Some(row) = row.filter(|r| !r.kinds.is_empty()) {
-        for (side, v) in [("the example has", example), ("brnr printed", real)] {
-            if !v.is_null() && !row.kinds.contains(&kind(v)) {
-                let types = row.kinds.join(" or ");
-                problems.push(format!("{at_}: {side} {}, and its row says {types}", kind(v)));
-            }
-        }
+    if let Some(row) = row {
+        typed(row, [("the example has", example), ("brnr printed", real)], at_, problems);
     }
     match (example, real) {
         (Value::Null, _) | (_, Value::Null) if !inside || example.is_null() != real.is_null() => {
@@ -1329,6 +1346,19 @@ fn shape(
             }
             for k in b.keys().filter(|k| !a.contains_key(*k) && !optional(k)) {
                 problems.push(format!("{}: printed by brnr, not in the example", dot(at, k)));
+            }
+            // An optional field on one side only: its value still has its row's type.
+            let one_side = (a.iter().filter(|(k, _)| !b.contains_key(*k)))
+                .map(|(k, v)| (k, "the example has", v))
+                .chain(
+                    b.iter()
+                        .filter(|(k, _)| !a.contains_key(*k))
+                        .map(|(k, v)| (k, "brnr printed", v)),
+                );
+            for (k, side, v) in one_side.filter(|(k, ..)| optional(k)) {
+                if let Some(row) = rows.iter().find(|r| !acp && r.name == dot(path, k)) {
+                    typed(row, [(side, v)], &dot(at, k), problems);
+                }
             }
             for (k, v) in a {
                 if let Some(real) = b.get(k) {

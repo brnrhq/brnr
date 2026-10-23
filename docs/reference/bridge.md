@@ -767,6 +767,7 @@ refused.
 | Field | Type | Meaning |
 |---|---|---|
 | `pid` | number | The process. |
+| `session` | string | The session's id, the one resumed. |
 | `message` | string or null | The prompt's message id; null without a prompt. |
 
 <!-- example: bridge; before: Idle -->
