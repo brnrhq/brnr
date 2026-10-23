@@ -33,6 +33,7 @@ use common::{AGENT, Env, kill, script, wait_for, with_default_interrupt};
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
     "README.md",
+    "docs/introduction.md",
     "docs/install.md",
     "docs/guide/editor.md",
     "docs/guide/outside.md",

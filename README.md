@@ -12,42 +12,40 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15315/badge)](https://www.bestpractices.dev/projects/15315)
 
 
-A burner phone for your coding agents.
+**A burner phone for your coding agents.**
 
-brnr sits between your editor and an [ACP](https://agentclientprotocol.com/)
-agent (Claude Code, Codex, …). The editor talks to the agent exactly as before,
-but the agent now lives in a process of its own that you can also reach from
-outside the editor: watch everything its sessions do, and carry them on once
-the editor has gone. Or run sessions with no editor at all, and send them
-messages and answer their approvals from somewhere else. (Doing that to an
-editor's session is [experimental](https://brnrhq.github.io/brnr/docs/guide/editor.html#experimental-actions).)
+brnr keeps a coding agent reachable outside the editor that started it, and
+lets its session carry on after the editor closes. You can watch, steer and
+approve many agents from one terminal, from your phone, or from another
+agent.
 
-```text
-editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
-                                             │
-                                  control socket ── brnr prompt send / event watch / …
-                                             │
-                                          bridges (Slack, push, …)
-```
+- **The session outlives the window.** Your editor is one way in, not the
+  only one: close it and carry its session on headless
+  (`brnr session resume`), or start sessions with no editor at all.
+  Watching an editor's session always works; acting on it is
+  [experimental](https://brnrhq.github.io/brnr/docs/guide/editor.html#experimental-actions),
+  enabled per action in a profile.
+- **One place for many agents.** `brnr session list` and
+  `brnr permission requests` show every session and every waiting approval,
+  from editors and headless runs.
+- **Agents that drive agents.** A CLI with `--json`, documented exit codes,
+  events and a [bundled skill](https://brnrhq.github.io/brnr/docs/guide/agents.html):
+  Claude Code or Codex can start workers, give them work, wait for them,
+  and answer their approvals.
+- **Reach it from anywhere.** [Bridges](https://brnrhq.github.io/brnr/docs/guide/profiles.html#bridges),
+  programs you write or choose, forward events to Slack or push
+  notifications, and send your answers back.
 
-- **brnr acp** is what the editor runs as its agent. It only relays bytes.
-- **The brnr process** owns the agent for its whole life, out of the editor's
-  process group and process tree. When the editor goes, the agent goes, as if
-  the editor had run it. `brnr process list` lists these processes.
-- **The other commands** (`brnr prompt send`, `brnr event watch`, …) talk to
-  a session through its process, over a Unix socket that only you can open.
-  Most are a group, what they act on, and a verb: `brnr <group> --help` lists
-  a group's ([ADR 8.1](docs/adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
-  `--help` exits 0, and a command used wrongly exits 2 with its usage on
-  stderr, having done nothing ([ADR 8.3](docs/adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status)).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/brnrhq/brnr/main/site/brand/diagram-dark.svg">
+  <img src="https://raw.githubusercontent.com/brnrhq/brnr/main/site/brand/diagram-light.svg" width="960" alt="The editor runs brnr acp, which relays bytes to the brnr process over socketpairs; the brnr process owns the agent and talks to it over pipes. You, from a terminal, and other agents reach the process over its control socket, and bridges a profile starts talk to it over pipes. A headless session has no editor and no brnr acp.">
+</picture>
 
-macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
-was considered, is in [docs/adr](docs/adr/README.md).
-
-brnr never phones home: it makes no network requests of its own and sends
-no telemetry ([P15](docs/adr/0001-principles.md)). Who can
-reach a session, and what keeps others out, is in the
-[threat model](docs/threat-model.md).
+How the parts fit is in the
+[introduction](https://brnrhq.github.io/brnr/docs/introduction.html#how-it-works).
+brnr runs on macOS and Linux, and never phones home: it makes no network
+requests of its own and sends no telemetry. Who can reach a session, and
+what keeps others out, is in the [threat model](https://brnrhq.github.io/brnr/docs/threat-model.html).
 
 ## Install
 

@@ -32,6 +32,11 @@ brnr's own conventions:
   and the threat model. The README is short: what brnr is, installing, a
   quick start and links to the book. The landing page links to the book
   (ADR 11.8, #374).
+- The landing page, the README and the book's introduction say what brnr
+  is for, in the same words: a burner phone for your coding agents, and
+  four things it does, each with an example on the page and the
+  introduction. The diagram is an image, light and dark, in place of the
+  text one (#376).
 
 ## [0.10.0] - 2026-10-22
 

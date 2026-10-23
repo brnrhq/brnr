@@ -1,56 +1,129 @@
 # brnr
 
-[![License](https://img.shields.io/github/license/brnrhq/brnr)](https://github.com/brnrhq/brnr/blob/main/LICENSE)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
-[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbrnrhq%2Fbrnr%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&suffix=%2B)](https://github.com/brnrhq/brnr/blob/main/CONTRIBUTING.md#building-and-testing)
-[![CI](https://github.com/brnrhq/brnr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brnrhq/brnr/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/brnrhq/brnr)](https://github.com/brnrhq/brnr/releases/latest)
-[![Homebrew](https://img.shields.io/badge/brew-brnrhq%2Ftap%2Fbrnr-orange)](install.md#install)
-[![crates.io](https://img.shields.io/crates/v/brnr)](https://crates.io/crates/brnr)
+**A burner phone for your coding agents.**
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/brnrhq/brnr/badge)](https://scorecard.dev/viewer/?uri=github.com/brnrhq/brnr)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15315/badge)](https://www.bestpractices.dev/projects/15315)
+brnr keeps a coding agent reachable outside the editor that started it, and
+lets its session carry on after the editor closes. You can watch, steer and
+approve many agents from one terminal, from your phone, or from another
+agent.
 
-A burner phone for your coding agents.
+It works with any [ACP](https://agentclientprotocol.com/) agent: Claude Code
+and Codex through their [adapters](guide/adapters.md), and others as they
+are. `$s` below is a session's id, as `brnr session list` shows it.
 
-brnr sits between your editor and an [ACP](https://agentclientprotocol.com/)
-agent (Claude Code, Codex, …). The editor talks to the agent exactly as before,
-but the agent now lives in a process of its own that you can also reach from
-outside the editor: watch everything its sessions do, and carry them on once
-the editor has gone. Or run sessions with no editor at all, and send them
-messages and answer their approvals from somewhere else. (Doing that to an
-editor's session is [experimental](guide/editor.md#experimental-actions).)
+## The session outlives the window
 
-```text
-editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
-                                             │
-                                  control socket ── brnr prompt send / event watch / …
-                                             │
-                                          bridges (Slack, push, …)
+Your editor is one way in, not the only one. Close the editor and carry its
+session on headless. You can also start sessions with no editor at all.
+
+```sh
+brnr acp -- brnr-claude-adapter  # your editor's agent command
+brnr session resume $s           # after the editor closes: carry it on headless
+brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter
 ```
 
-- **brnr acp** is what the editor runs as its agent. It only relays bytes.
-- **The brnr process** owns the agent for its whole life, out of the editor's
-  process group and process tree. When the editor goes, the agent goes, as if
-  the editor had run it. `brnr process list` lists these processes.
-- **The other commands** (`brnr prompt send`, `brnr event watch`, …) talk to
-  a session through its process, over a Unix socket that only you can open.
-  Most are a group, what they act on, and a verb: `brnr <group> --help` lists
-  a group's ([ADR 8.1](adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
+Watching an editor's session always works. Acting on it (sending, approving,
+changing the mode) is experimental, enabled one action at a time in a
+profile ([experimental actions](guide/editor.md#experimental-actions)).
+[Use it from an editor](guide/editor.md) and
+[headless sessions](guide/headless.md) have the rest.
+
+## One place for many agents
+
+`brnr session list` and `brnr permission requests` show every session and
+every waiting approval, from editors and headless runs.
+
+```sh
+brnr session list                  # brnr's sessions: open ones and ended ones
+brnr permission requests           # approvals waiting, in every session
+brnr event watch $s                # live: messages, tools, plan, approvals
+```
+
+[Talk to it from outside](guide/outside.md),
+[approvals](guide/approvals.md) and [events](guide/events.md) have the rest.
+
+## Agents that drive agents
+
+A CLI with `--json`, documented exit codes, events and a bundled skill.
+Claude Code or Codex can use it to start workers, give them work, wait for
+them, and answer their approvals.
+
+```sh
+brnr skill install                 # for Claude Code and Codex
+brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter < task.md
+brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?"
+brnr permission allow $s p1 --json
+```
+
+Each situation has one exit code in every command; from 1.0.0 the codes,
+`--json` and events are kept within a major version
+([ADR 8.4](adr/0008-the-command-line-and-compatibility.md#84-what-the-compatibility-promise-covers)).
+[For agents](guide/agents.md) has the rest.
+
+## Reach it from anywhere
+
+Bridges, programs you write or choose, forward events to Slack or push
+notifications, and send your answers back. `brnr event notify` runs a
+command for each event.
+
+```toml
+[profiles.work]
+agent = ["brnr-claude-adapter"]
+
+[[profiles.work.bridges]]
+command = "~/bin/slack-bridge"      # yours: events in, answers out
+events = ["permission_request", "turn_ended"]
+```
+
+```sh
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+```
+
+[Events and notifications](guide/events.md) and
+[bridges](guide/profiles.md#bridges) have the rest.
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/diagram-dark.svg">
+  <img src="brand/diagram-light.svg" width="960" style="max-width: 100%; height: auto" alt="The editor runs brnr acp, which relays bytes to the brnr process over socketpairs; the brnr process owns the agent and talks to it over pipes. You, from a terminal, and other agents reach the process over its control socket, and bridges a profile starts talk to it over pipes. A headless session has no editor and no brnr acp.">
+</picture>
+
+- **brnr acp** is what the editor runs as its agent. It only relays bytes,
+  between the editor's stdio and the brnr process.
+- **The brnr process** owns the agent for its whole life, out of the
+  editor's process group and process tree. When the editor goes, the agent
+  goes, as if the editor had run it; `brnr session resume` carries a session
+  on. A headless session has a brnr process and no `brnr acp`.
+  `brnr process list` lists these processes.
+- **The control socket** is each process's Unix socket, which only you can
+  open. The other commands (`brnr prompt send`, `brnr event watch`, …) talk
+  to a session through it, whoever runs them: you or another agent. Most
+  are a group, what they act on, and a verb: `brnr <group> --help` lists a
+  group's ([ADR 8.1](adr/0008-the-command-line-and-compatibility.md#81-commands-are-grouped-by-what-they-act-on-with-acps-verbs)).
   `--help` exits 0, and a command used wrongly exits 2 with its usage on
   stderr, having done nothing ([ADR 8.3](adr/0008-the-command-line-and-compatibility.md#83-waiting-and-exit-status)).
+- **Bridges** a profile starts are the process's own children, on pipes:
+  it sends them events on their stdin and reads their requests on their
+  stdout. They speak the protocol the control socket speaks.
 
-macOS and Linux (Unix sockets only). Why brnr does what it does, and what else
-was considered, is in [docs/adr](adr/README.md).
+## Scope
+
+brnr is not an orchestrator, and decides nothing for you: it carries out
+what you, or an agent you run, ask, and never picks an answer for you. It
+runs as your user, and anything running as you can reach its socket and act
+as you there ([threat model](threat-model.md)).
+
+macOS and Linux (Unix sockets only). Why brnr does what it does, and what
+else was considered, is in the [decision records](adr/README.md).
 
 brnr never phones home: it makes no network requests of its own and sends
-no telemetry ([P15](adr/0001-principles.md)). Who can
-reach a session, and what keeps others out, is in the
-[threat model](threat-model.md).
+no telemetry ([P15](adr/0001-principles.md)).
 
-## Interface reference
+## Where next
 
-The [external interface reference](interface.md) describes command
-syntax, inputs and outputs, JSON results, exit codes, configuration, and
-the bridge/control-socket protocol. Use it when writing scripts or bridges;
-the sections below provide examples and explain the workflows.
+[Install](install.md) brnr and an adapter, then the guide: start with
+[use it from an editor](guide/editor.md) or
+[headless sessions](guide/headless.md). The
+[interface reference](interface.md) has the commands, JSON, exit codes,
+configuration and the bridge protocol, for scripts and bridges.

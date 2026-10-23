@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """brnr's diagram: the editor, brnr acp, the brnr process and the agent, and
 what reaches the process besides. One description, drawn in the site's two
-schemes, writes next to this file:
+schemes, writes next to this file and in docs/brand/, for the book (whose
+local build has no site/ beside it):
 
   diagram-light.svg  the light scheme of site/index.html
   diagram-dark.svg   its dark scheme
@@ -16,6 +17,7 @@ import os
 from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BOOK = os.path.join(HERE, "..", "..", "docs", "brand")
 W, H = 960, 476
 SANS = "ui-sans-serif, -apple-system, 'Segoe UI', sans-serif"
 MONO = "ui-monospace, 'SF Mono', Menlo, monospace"
@@ -137,6 +139,8 @@ def svg(p):
     return "\n".join(out)
 
 
+os.makedirs(BOOK, exist_ok=True)
 for name, scheme in SCHEMES.items():
-    with open(os.path.join(HERE, f"diagram-{name}.svg"), "w") as f:
-        f.write(svg(scheme))
+    for folder in (HERE, BOOK):
+        with open(os.path.join(folder, f"diagram-{name}.svg"), "w") as f:
+            f.write(svg(scheme))
