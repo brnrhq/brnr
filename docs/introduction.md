@@ -67,7 +67,7 @@ notifications, and send your answers back. `brnr event notify` runs a
 command for each event.
 
 ```toml
-[profiles.work]
+[profiles.work]                     # for sessions started with --profile work
 agent = ["brnr-claude-adapter"]
 
 [[profiles.work.bridges]]

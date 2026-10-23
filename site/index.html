@@ -278,7 +278,7 @@ brnr permission allow $s p1 --json</pre>
       <div class="body">
 <pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'</pre>
 <pre><span class="c"># ~/.config/brnr/config.toml</span>
-[profiles.work]
+[profiles.work]                     <span class="c"># for sessions started with --profile work</span>
 agent = ["brnr-claude-adapter"]
 
 [[profiles.work.bridges]]
