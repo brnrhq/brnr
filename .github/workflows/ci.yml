@@ -8,7 +8,8 @@
 # (deny.toml) and cargo vet that each is audited or exempted (supply-chain/);
 # the code builds with the oldest Rust Cargo.toml says it does
 # (rust-version); and what isn't Rust is linted: the workflows (actionlint,
-# zizmor), the shell scripts (shellcheck) and the Python (ruff).
+# zizmor), the shell scripts (shellcheck) and the Python (ruff); and the
+# documentation, docs/, builds as a book (mdBook, ADR 11.8).
 name: ci
 
 on:
@@ -177,3 +178,4 @@ jobs:
         with:
           version: 0.15.10
           args: format --check
+      - run: bash .github/scripts/book.sh

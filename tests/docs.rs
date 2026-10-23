@@ -9,11 +9,12 @@
 //! - every `toml` block loads as a config, every key in its part, as
 //!   `brnr doctor` checks one;
 //! - every command (a group's with its verb) and option `brnr --help`
-//!   lists is in the README.
+//!   lists is in the book's guide ([`GUIDE`]).
 //!
 //! What the examples name that a test can't have (a real adapter, a model
 //! the fake agent doesn't offer) is in [`STAND_INS`], with what stands in for
-//! it. Another document joins by going in [`DOCS`].
+//! it. Another document joins by going in [`DOCS`]: the README, the book
+//! (`docs/`, ADR 11.8), the site and the skill are there.
 
 mod common;
 
@@ -32,6 +33,16 @@ use common::{AGENT, Env, kill, script, wait_for, with_default_interrupt};
 /// The documents whose examples are tested, from the repository's root.
 const DOCS: &[&str] = &[
     "README.md",
+    "docs/install.md",
+    "docs/guide/editor.md",
+    "docs/guide/outside.md",
+    "docs/guide/approvals.md",
+    "docs/guide/events.md",
+    "docs/guide/headless.md",
+    "docs/guide/agents.md",
+    "docs/guide/profiles.md",
+    "docs/guide/doctor.md",
+    "docs/project/releasing.md",
     "docs/interface.md",
     "site/index.html",
     "skills/brnr/SKILL.md",
@@ -41,8 +52,22 @@ const DOCS: &[&str] = &[
     "skills/brnr/references/setup.md",
 ];
 
-/// The document that must mention every command and option of `--help`.
-const REFERENCE: &str = "README.md";
+/// The book's guide, which together must mention every command and option
+/// of `--help`.
+const GUIDE: &[&str] = &[
+    "docs/introduction.md",
+    "docs/install.md",
+    "docs/guide/editor.md",
+    "docs/guide/outside.md",
+    "docs/guide/approvals.md",
+    "docs/guide/events.md",
+    "docs/guide/headless.md",
+    "docs/guide/agents.md",
+    "docs/guide/profiles.md",
+    "docs/guide/transcripts.md",
+    "docs/guide/adapters.md",
+    "docs/guide/doctor.md",
+];
 
 /// What runs before an example: the state of its session, `$s`.
 #[derive(Clone, Copy)]
@@ -425,9 +450,9 @@ fn adr_0008_every_toml_block_loads() {
 }
 
 #[test]
-fn the_readme_has_every_command_and_option() {
+fn the_guide_has_every_command_and_option() {
     let help = Env::new("help").ok(&["--help"]);
-    let readme = read(REFERENCE);
+    let guide = GUIDE.iter().map(|doc| read(doc)).collect::<Vec<_>>().join("\n");
     // A group's commands are its name and verb: `brnr process list`.
     let commands = help.lines().filter_map(|l| {
         let mut words = l.strip_prefix("  brnr ")?.split_whitespace();
@@ -442,9 +467,9 @@ fn the_readme_has_every_command_and_option() {
         .filter(|w| w.starts_with("--") && w.len() > 2)
         .map(str::to_owned);
     let mut missing: Vec<String> =
-        commands.chain(options).filter(|w| !mentions(&readme, w)).collect();
+        commands.chain(options).filter(|w| !mentions(&guide, w)).collect();
     missing.dedup();
-    assert!(missing.is_empty(), "{REFERENCE} doesn't mention {missing:?}");
+    assert!(missing.is_empty(), "the guide ({GUIDE:?}) doesn't mention {missing:?}");
 }
 
 // ---- the documents --------------------------------------------------------

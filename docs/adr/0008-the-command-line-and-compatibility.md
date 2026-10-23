@@ -913,7 +913,7 @@ ways, with nothing the command line doesn't say.
   a semver change from 1.0.0: the library would hold still for users it was
   never written for, and every refactor would be a major version or a
   break.
-- `#[doc(hidden)]` on public modules, with the README and ADR 11.6 saying
+- `#[doc(hidden)]` on public modules, with the documentation and ADR 11.6 saying
   the library isn't covered: the items would still be reachable by path,
   and a promise kept only in prose is one a user can miss and a tool like
   `cargo semver-checks` doesn't see. Private modules are the compiler's
@@ -1037,7 +1037,7 @@ How it ships:
 Left out: an MCP server or scripts (S1); a Claude Code plugin
 (`skill install` covers it for now, and a plugin can package the same
 files later); writing bridges (the bridge protocol is for programs, the
-README has it, and the skill points there); acting on an editor's session
+documentation has it, and the skill points there); acting on an editor's session
 (ADR 7.1's experimental actions; the skill says not to, S5); `doctor`
 checking an installed skill against the binary's.
 
@@ -1060,7 +1060,7 @@ October 2026.
   cleaned up. The examples' tests check that the skill's commands are
   right, not that an agent follows its rules.
 - A change to the CLI that breaks an example in the skill fails the tests,
-  as one in the README does.
+  as one in the documentation does.
 
 **Considered.**
 
@@ -1376,7 +1376,7 @@ semver reading.
 
 Run `cargo test --release adr_0008_`. Named claims, by section:
 
-- 8.1: [tests/cli.rs](../../tests/cli.rs):
+- 8.1: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_old_commands_are_unknown`,
   `adr_0008_old_socket_commands_are_unknown`,
   `adr_0008_profile_keys_and_actions_have_the_new_names`,
@@ -1425,25 +1425,25 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_pid_opening_keeps_the_process_running`,
   `adr_0008_pid_opening_in_a_stopping_process_fails`,
   `adr_0008_pid_take_over_refused_before_closing`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0008_an_editors_delete_is_recorded`,
   `adr_0008_pid_refused_in_an_editors_process`;
-  [tests/security.rs](../../tests/security.rs):
+  [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0008_timeout_rejects_once_else_cancels_the_turn`,
   `adr_0008_purge_deletes_only_that_sessions_files`;
-  [src/render.rs](../../src/render.rs):
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0008_a_deletion_is_shown_with_who_deleted`;
-  [src/paths.rs](../../src/paths.rs):
+  [src/paths.rs](https://github.com/brnrhq/brnr/blob/main/src/paths.rs):
   `adr_0008_a_sessions_files_are_its_own_and_those_set_aside`;
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0008_a_time_is_read_with_its_offset_and_written_in_utc`,
   `adr_0008_what_isnt_an_rfc3339_time_isnt_read`;
-  [src/ctl/args.rs](../../src/ctl/args.rs):
+  [src/ctl/args.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/args.rs):
   `adr_0008_a_flags_value_is_never_a_positional`,
   `adr_0008_every_flag_is_in_its_verbs_usage`,
   `adr_0008_positionals_and_unknown_options`,
   `adr_0008_a_prompt_is_a_flags_value`.
-- 8.2: [tests/cli.rs](../../tests/cli.rs):
+- 8.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,
   `adr_0008_a_cancelled_turns_tool_calls_are_not_running`,
@@ -1454,15 +1454,15 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_count_is_named_so` (and, for `process list`'s `state` and
   `owner`, ADR 3's `adr_0003_ps_lists_the_processes` and
   `adr_0003_a_silent_process_keeps_its_session`);
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0008_the_agent_is_what_it_says_it_is` (#335),
   `adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running`,
   `adr_0008_a_failed_loads_history_leaves_no_tool_call_running`,
   `adr_0008_a_replays_call_with_a_finished_calls_id_is_not_running`;
-  [src/ctl.rs](../../src/ctl.rs): `adr_0008_status_says_the_sessions_state`;
-  [src/render.rs](../../src/render.rs):
+  [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs): `adr_0008_status_says_the_sessions_state`;
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0008_text_shows_values_not_json`.
-- 8.3: [tests/cli.rs](../../tests/cli.rs):
+- 8.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_send_wait_prints_the_reply`,
   `adr_0008_start_wait_prints_the_reply_and_the_turns_result`,
   `adr_0008_send_wait_times_out`, `adr_0008_timeout_goes_with_wait`,
@@ -1476,30 +1476,30 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_session_with_a_request_waiting_isnt_idle`,
   `adr_0008_a_usage_error_exits_2`,
   `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`;
-  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
   `adr_0008_wait_for_exit_says_exited_only_once_the_process_has`,
   `adr_0008_a_count_the_status_doesnt_have_isnt_0`.
 - 8.4: none: it is a promise that applies from 1.0.0.
-- 8.5: [tests/cli.rs](../../tests/cli.rs):
+- 8.5: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
   process, ends with the exit status the binary exits with for the same
   words.
-- 8.6: [tests/docs.rs](../../tests/docs.rs):
+- 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs`,
-  `adr_0008_every_toml_block_loads`; [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_every_toml_block_loads`; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_skill_prints_the_skill_and_its_references`,
   `adr_0008_skill_install_writes_it_for_claude_code_and_codex`.
-- 8.7: [tests/cli.rs](../../tests/cli.rs):
+- 8.7: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_a_failed_command_prints_its_error_as_json`,
   `adr_0008_no_error_is_reported_without_a_code`,
   `adr_0008_a_starting_process_refuses_another_session`,
   `adr_0008_a_failed_take_over_keeps_its_code`,
   `adr_0008_an_error_after_a_stream_is_on_stderr_alone`;
-  [tests/docs.rs](../../tests/docs.rs):
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_error_code_is_listed_and_reached`;
-  [src/error.rs](../../src/error.rs):
+  [src/error.rs](https://github.com/brnrhq/brnr/blob/main/src/error.rs):
   `adr_0008_an_error_is_a_code_and_a_message`;
-  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  [src/ctl/ownership.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/ownership.rs):
   `adr_0008_a_refusal_has_its_places_code`. tests/common's `coded` checks
   every error in what each test's commands print and each record their
   processes write. A test asserts a code with `code_is`
@@ -1510,18 +1510,18 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   code is one some test has seen brnr report, or in its `UNREACHED`, with
   why. A code named only in a comment, a fixture or a request doesn't
   count.
-- 8.8: [tests/cli.rs](../../tests/cli.rs):
+- 8.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_a_process_says_which_brnr_it_is`,
   `adr_0008_a_field_the_process_doesnt_have_is_refused`,
   `adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have`,
   `adr_0008_an_older_process_is_said_with_how_to_restart_it` (an unknown
   command, from a process of another brnr), and
   `adr_0008_old_socket_commands_are_unknown`;
-  [src/ctl/client.rs](../../src/ctl/client.rs):
+  [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
   `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`;
-  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
   `adr_0008_a_count_the_status_doesnt_have_isnt_0` (a `status` answer
   without a count, from a process of another brnr); and, on the
   connections made to catch up, ADR 10.2's
   `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`
-  ([src/ctl/client.rs](../../src/ctl/client.rs)).
+  ([src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs)).

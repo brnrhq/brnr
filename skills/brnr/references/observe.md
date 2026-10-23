@@ -161,4 +161,5 @@ above).
 
 Set one up only when the user asks for notifications; for your own waiting,
 `event wait` is simpler. Bridges (programs that speak brnr's protocol on the
-control socket) are in brnr's README.
+control socket) are in brnr's documentation:
+[Bridges](https://brnrhq.github.io/brnr/docs/guide/profiles.html#bridges).

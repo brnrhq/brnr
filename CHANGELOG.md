@@ -24,6 +24,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation is a book, at
+  [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with
+  search: the guide that was the README, the interface reference, the ADRs
+  and the threat model. The README is short: what brnr is, installing, a
+  quick start and links to the book. The landing page links to the book
+  (ADR 11.8, #374).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added

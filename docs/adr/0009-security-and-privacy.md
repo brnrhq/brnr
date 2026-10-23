@@ -339,24 +339,24 @@ refuses its keys on the same terms.
 Run `cargo test --release adr_0009_`. Named claims, by section:
 
 - 9.1:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     `adr_0009_a_resumed_sessions_secrets_are_redacted`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0009_a_profiles_mcp_secrets_are_redacted`,
     `adr_0009_an_editors_mcp_secrets_are_redacted`.
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     `adr_0009_secrets_are_redacted_keys_and_structure_stay`.
 - 9.2:
-  - [src/paths.rs](../../src/paths.rs):
+  - [src/paths.rs](https://github.com/brnrhq/brnr/blob/main/src/paths.rs):
     - `adr_0009_distinct_ids_get_distinct_names`.
     - `adr_0009_a_cwd_has_a_folder_of_its_own`: the names of `/`, `/a-b`,
       `/a/b`, `/A`, `/a` and `/Users/me/src`, written down once; a trailing
       `/` is the same cwd; `/a-b` and `/a/b`, `/A` and `/a` differ, also
       folded to lowercase.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0009_distinct_ids_never_share_a_transcript`,
     `adr_0009_distinct_ids_never_share_a_lock`.
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     - `adr_0009_cwds_alike_are_listed_apart`: `<dir>/x-y` and
       `<dir>/x/y`, named alike by `~/.claude/projects`, have two folders,
       each with only its own sessions' files, and each lists only its own
@@ -369,7 +369,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       session's two files, in the folder of the earlier rule, stay as they
       were when it is resumed in its cwd, which writes in its own folder.
 - 9.3:
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     - `adr_0009_new_and_private_paths_are_opened_as_they_are`: what is
       created is 0700 and 0600, and a private file is appended to as it is.
     - `adr_0009_what_others_can_reach_is_made_private_before_a_write`: a
@@ -381,7 +381,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_only_the_users_own_directories_and_files_are_written_to`: a
       file with another hard link, a FIFO, a file where a directory goes
       and another user's directory are refused.
-  - [src/transcript.rs](../../src/transcript.rs):
+  - [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
     - `adr_0009_a_transcript_is_read_only_where_it_could_be_written`: a
       symlinked project folder isn't looked in; a symlink, a FIFO and a
       directory aren't read.
@@ -389,7 +389,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       symlinked `projects`, `hosts` or state directory isn't looked in or
       read through, nor is a file with another hard link or a directory of
       another user's.
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     - `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`:
       a resumed session's events and raw ACP files, made 0644 beneath
       private and beneath 0755 parents, are private when it writes to them,
@@ -413,17 +413,17 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       whose events file, or project folder, has an ACL isn't listed or
       logged; `doctor` warns of it with the `chmod -N`, and `--fix` leaves
       it.
-  - [tests/doctor.rs](../../tests/doctor.rs):
+  - [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
     `adr_0009_doctor_says_what_it_cant_open_and_what_fix_left`: a
     transcript of mode 000 is a warning, `--fix` leaves it, and the example
     it then gives is what is left, not what it made private.
-  - [src/ctl/doctor.rs](../../src/ctl/doctor.rs):
+  - [src/ctl/doctor.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/doctor.rs):
     `adr_0009_fix_changes_what_was_opened_not_its_name`: a file `--fix`
     looked at, then swapped for a symlink, is made private as it was
     opened, and what the link points at is left as it was; looked at
     again, the symlink is a problem `--fix` doesn't fix.
 - 9.4:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config
       file the group or others can read or write, and one in a folder they
       can write, fail `session new` and `brnr acp` before an agent starts,
@@ -439,7 +439,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       and its folder, with an access control list are refused with the
       `chmod -N` that removes it, and the ACL stays.
     - `adr_0009_a_missing_config_is_no_config`.
-  - [tests/doctor.rs](../../tests/doctor.rs):
+  - [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
     `adr_0009_doctor_fails_a_config_others_can_reach`: the file and the
     folder fail the config check with their fixes, `--fix` changes
     neither, and a missing config and a symlink to a private one are ok.

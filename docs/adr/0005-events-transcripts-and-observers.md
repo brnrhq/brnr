@@ -261,7 +261,7 @@ served, a fixed rule that doesn't depend on where the command runs (P4).
   exit 1, saying `m3 was dropped (cancel)` on stderr and
   `dropped: "cancel"` in `--json`. `event wait` ends as ADR 8.3 says;
   `event watch` and `event notify` on a session end when it closes.
-- All three are in `EVENTS` and the README's list for bridges, and in the
+- All three are in `EVENTS` and the documentation's list for bridges, and in the
   default events of `event watch`, `event log` and bridges (ADR 5.3).
   `event notify`'s default is its own (ADR 5.8).
 
@@ -1286,13 +1286,13 @@ the transcript, which is covered.
 Run `cargo test --release adr_0005_`, and the tests of other topics named
 under a section by their names. Named claims, by section:
 
-- 5.1: [tests/headless.rs](../../tests/headless.rs):
+- 5.1: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_transcripts_are_two_files`,
   `adr_0005_log_events_leaves_out_the_raw_acp`,
   `adr_0005_a_transcript_cut_short_is_still_its_sessions`,
   `adr_0010_a_copied_open_request_has_no_position` (the copied request has
   no `seq`);
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_delete_keeps_the_transcript` (`session_deleted` has a null
   `host_id` and `pid`, and no `seq`),
   `adr_0005_log_shows_the_conversation`,
@@ -1302,44 +1302,44 @@ under a section by their names. Named claims, by section:
   `adr_0005_log_follows_the_raw_acp_too`,
   `adr_0005_session_changed_says_what_changed`,
   `adr_0005_closing_sessions_closes_their_files`;
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0005_a_closed_session_has_its_records_and_then_no_file`;
-  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  [src/ctl/ownership.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/ownership.rs):
   `adr_0005_a_session_without_a_transcript_has_none_to_read`;
-  [src/transcript.rs](../../src/transcript.rs):
+  [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
   `adr_0005_the_first_and_last_records_are_ones_brnr_can_read`,
   `adr_0005_the_end_of_a_file_is_its_last_lines`,
   `adr_0005_a_record_is_the_event_watch_showed`,
   `adr_0005_a_sessions_files_are_read_merged_as_they_grow`,
   `adr_0005_a_sessions_files_in_every_folder_are_read_as_one`; one
   session's files in two folders read as one transcript (#121):
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one` (text,
   `--json`, `--events acp`, `--last`, and one `session list` row), and,
   for its `session resume`, ADR 3.11's
   `adr_0003_resume_takes_the_newest_records_cwd_agent_and_profile`.
-- 5.2: [tests/headless.rs](../../tests/headless.rs):
+- 5.2: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_held_messages_are_reported_on_exit`,
   `adr_0005_editor_close_is_an_event`,
   `adr_0005_a_failed_load_drops_its_held_context`;
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_send_wait_on_a_dropped_message`,
   `adr_0005_queue_lists_and_drops`,
   `adr_0005_close_ends_what_follows_the_session`,
   `adr_0005_idle_close_is_an_event`,
   `adr_0005_dropped_context_is_an_event`.
-- 5.3: [tests/cli.rs](../../tests/cli.rs):
+- 5.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_every_event_chosen_is_shown_in_text`,
   `adr_0005_log_shows_only_the_events_asked_for`,
   `adr_0005_thoughts_are_shown_when_asked`,
   `adr_0005_watch_is_readable_by_default`,
   `adr_0005_a_tool_call_again_updates_the_one_running`;
-  [src/render.rs](../../src/render.rs):
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0005_every_event_has_a_line`,
   `adr_0005_lines_of_the_quiet_and_new_events`.
-- 5.4: [tests/cli.rs](../../tests/cli.rs):
+- 5.4: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_last_counts_user_messages_including_an_unfinished_turn`.
-- 5.5: [tests/headless.rs](../../tests/headless.rs):
+- 5.5: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_an_exit_is_written_before_the_process_goes`,
   `adr_0005_a_signal_gives_up_on_a_stalled_disk_at_exit`,
   `adr_0005_a_foreground_exit_given_up_on_says_what_it_didnt_write`,
@@ -1355,16 +1355,16 @@ under a section by their names. Named claims, by section:
   `adr_0005_a_start_whose_load_failed_is_written_before_the_session_is_resumed`,
   `adr_0005_an_editors_failed_resume_holds_its_lock_until_written`,
   `adr_0005_an_editors_failed_load_holds_its_lock_until_written`;
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_log_shows_what_the_process_has_recorded`;
-  [src/host/sessions.rs](../../src/host/sessions.rs):
+  [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
   `adr_0005_nothing_is_let_go_of_without_a_lock_or_an_answer`. That a
   session closing in its process is said to be closing, not opening, by every
   command that refuses it is ADR 3.9's
   `adr_0003_the_lock_decides_and_closing_comes_before_opening` and
   `adr_0003_each_place_is_refused_in_the_same_words`
-  ([src/ctl/ownership.rs](../../src/ctl/ownership.rs)).
-- 5.6: [tests/cli.rs](../../tests/cli.rs):
+  ([src/ctl/ownership.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/ownership.rs)).
+- 5.6: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_a_first_load_records_the_replayed_history`,
   `adr_0005_a_load_without_the_transcript_records_the_history`,
   `adr_0005_a_load_of_an_empty_history_says_so`,
@@ -1374,7 +1374,7 @@ under a section by their names. Named claims, by section:
   log` shows the history from the first folder),
   `adr_0005_a_load_after_a_failed_load_records_the_history`,
   `adr_0005_a_bridges_load_after_a_failed_load_records_the_history`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_an_editors_load_records_the_history_only_without_a_transcript`,
   `adr_0005_an_editors_load_of_a_session_open_here_records_nothing_again`,
   `adr_0005_overlapping_loads_in_an_editor_have_one_history`,
@@ -1393,30 +1393,30 @@ under a section by their names. Named claims, by section:
   `adr_0005_a_session_closed_with_nothing_recorded_is_no_transcript`,
   `adr_0005_an_editors_prompt_the_agent_has_no_session_for_opens_nothing`,
   `adr_0005_an_editors_prompt_the_agent_serves_opens_its_session`;
-  [src/host/sessions.rs](../../src/host/sessions.rs):
+  [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
   `adr_0005_a_prompted_session_outlasts_a_failed_load_while_its_turn_runs`,
   `adr_0005_a_prompted_session_is_held_until_its_resume_is_answered`;
-  [src/transcript.rs](../../src/transcript.rs):
+  [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
   `adr_0005_only_openings_are_no_transcript`;
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0005_a_record_beyond_the_opening_counts_at_once`;
-  [src/host/sessions.rs](../../src/host/sessions.rs):
+  [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
   `adr_0005_an_editors_failed_load_closes_the_session_it_opened`,
   `adr_0005_a_replay_outlasts_its_sessions_close_until_its_last_load`. That
   a session brnr has a transcript of keeps the replay out of it however often it
   loads, with a `history` event each time, is ADR 3.11's
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`
-  ([tests/cli.rs](../../tests/cli.rs)).
-- 5.7: [tests/security.rs](../../tests/security.rs):
+  ([tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs)).
+- 5.7: [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_bad_request_line_is_answered`,
   `adr_0005_a_bridge_whose_stderr_isnt_utf8_carries_on`;
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_a_bridge_that_closes_its_stdout_gets_events`;
-  [tests/chaos.rs](../../tests/chaos.rs):
+  [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
   `adr_0005_killed_bridge_mid_turn_leaves_owner_and_lock_intact`.
-- 5.8: [tests/cli.rs](../../tests/cli.rs):
+- 5.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_notify_runs_a_command_per_event`,
   `adr_0005_notify_reads_events_as_watch_does`,
   `adr_0005_notify_works_as_a_bridge`,
@@ -1426,7 +1426,7 @@ under a section by their names. Named claims, by section:
   `adr_0005_notify_cut_off_as_a_bridge_stops_its_command`,
   `adr_0005_notify_stopped_stops_its_command`,
   `adr_0005_notify_cuts_what_the_environment_cant_hold`.
-- 5.9: [tests/cli.rs](../../tests/cli.rs):
+- 5.9: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_every_line_printed_is_named_and_placed_alike` (`event log
   --json` and `event watch --json` print snake_case names, each one
   `--events` takes, and every line has `ts`, `host_id` and `pid`),
@@ -1440,17 +1440,17 @@ under a section by their names. Named claims, by section:
   `session delete`), and
   `adr_0005_notify_reads_stdin_as_a_bridge` (`BRNR_SESSION`, and
   `BRNR_EVENT=process_exited` at the end);
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0005_a_sessions_opening_is_the_same_in_both_files`,
   `adr_0005_an_editors_delete_passes_an_older_transcript_over`, and
   `adr_0010_a_stalled_disk_skips_records_and_says_so` (`--events
   records_skipped` shows the one gap, with `session`, `ts`, `host_id` and
   `pid`);
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0005_a_gap_note_has_the_fields_of_an_event`.
 - 5.10: the fixtures in
-  [tests/fixtures/transcripts](../../tests/fixtures/transcripts), format 1
-  as 1.0 writes it, frozen; [tests/cli.rs](../../tests/cli.rs):
+  [tests/fixtures/transcripts](https://github.com/brnrhq/brnr/tree/main/tests/fixtures/transcripts), format 1
+  as 1.0 writes it, frozen; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0005_every_record_brnr_writes_has_its_format` (events, raw ACP, the
   host log and a deletion's record; `session_opened`'s profile and agent),
   `adr_0005_a_format_1_transcript_is_read_by_every_1x_brnr` (`session
@@ -1466,6 +1466,6 @@ under a section by their names. Named claims, by section:
   (partial writes: a broken line and a cut end, and a resume appending on
   a line of its own),
   `adr_0005_a_transcript_of_openings_only_gets_the_history` (missing
-  history: the next load records it); [src/transcript.rs](../../src/transcript.rs):
+  history: the next load records it); [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
   `adr_0005_a_record_is_read_by_its_format`. The replay rules are 5.6's
   tests.

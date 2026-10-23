@@ -1,0 +1,24 @@
+# The documentation, an mdBook from docs/ (ADR 11.8). `mdbook build` writes
+# it to target/book; pages.yml publishes it at /brnr/docs/, beside site/.
+[book]
+title = "brnr"
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+# Not the index preprocessor: it would make docs/adr/README.md index.html,
+# and the links to it wouldn't follow.
+use-default-preprocessors = false
+
+[preprocessor.links]
+
+[output.html]
+site-url = "/brnr/docs/"
+git-repository-url = "https://github.com/brnrhq/brnr"
+additional-css = ["docs/theme/brnr.css"]
+# The ADRs carry their own numbers; mdBook's would double them.
+no-section-label = true
+
+[output.html.search]
+enable = true

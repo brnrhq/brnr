@@ -129,7 +129,7 @@ wrong (F5, P5). ACP has the MCP server's form, so brnr's own takes it.
 
 **Considered.**
 
-- A flat profile, with the headless-only keys marked in the README and
+- A flat profile, with the headless-only keys marked in the documentation and
   `doctor`: an editor's profile would still carry settings it silently
   ignores.
 - Merging the flags into the profile's options by id in the CLI, and
@@ -240,7 +240,7 @@ the request fails up front (P7).
 
 Run `cargo test --release adr_0006_`. Named claims, by section:
 
-- 6.1: [tests/cli.rs](../../tests/cli.rs):
+- 6.1: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0006_profile_layout_errors_say_where`,
   `adr_0006_start_flags_win_over_the_profile` (`--model` over a profile's
   model option, with the id `model` and with another; the mode likewise,
@@ -252,19 +252,19 @@ Run `cargo test --release adr_0006_`. Named claims, by section:
   `log = true` fail to load, and `doctor` names them; `log = "off"` keeps
   no transcript; a bridge of `command` and `args` starts, and one with a
   list `command` fails to load).
-- 6.2: [tests/cli.rs](../../tests/cli.rs):
+- 6.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0006_mode_lists_and_switches`, `adr_0006_model_and_config`,
   `adr_0006_model_is_the_option_of_category_model`,
   `adr_0006_mode_as_a_config_option`,
   `adr_0006_start_applies_mode_and_model_before_the_prompt`,
   `adr_0006_commands_lists_the_agents_commands`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0006_a_boolean_option_is_set_as_a_boolean`;
-  [src/host/state.rs](../../src/host/state.rs):
+  [src/host/state.rs](https://github.com/brnrhq/brnr/blob/main/src/host/state.rs):
   `adr_0006_a_config_value_is_sent_as_its_option_type_has_it`;
-  [src/host/requests.rs](../../src/host/requests.rs):
+  [src/host/requests.rs](https://github.com/brnrhq/brnr/blob/main/src/host/requests.rs):
   `adr_0006_a_start_refuses_a_boolean_it_cant_send_before_sending_any`.
-- 6.3: [tests/cli.rs](../../tests/cli.rs):
+- 6.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0006_mcp_servers_reach_the_agent`.
-- 6.4: [tests/cli.rs](../../tests/cli.rs):
+- 6.4: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0006_files_and_images_go_with_the_prompt`.

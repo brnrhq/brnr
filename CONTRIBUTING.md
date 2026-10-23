@@ -206,7 +206,8 @@ then the old form is deprecated, and keeps working.
 - Commits say what is now true, in a sentence (`event notify, cut off, stops
   its command and says so`), with the why in the body. The ADR a commit
   implements goes in brackets: `(ADR 5.8)`.
-- The README, the skill (`skills/brnr/`) and the ADRs change with the code
+- The documentation (the book in `docs/`, and the README), the skill
+  (`skills/brnr/`) and the ADRs change with the code
   they describe. Their examples, and the site's, run as tests
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
   it can't.
@@ -219,7 +220,8 @@ then the old form is deprecated, and keeps working.
   do instead; from 1.0.0 only in a major release, and a form deprecated
   before then goes under Deprecated, with what to use instead (ADR 8.4).
   That section is the next release's notes.
-- Releases are the maintainers' (`release.sh`, in the README).
+- Releases are the maintainers' (`release.sh`, in
+  [Releasing](https://brnrhq.github.io/brnr/docs/project/releasing.html)).
 
 ## Security
 

@@ -9,7 +9,7 @@ From 1.0.0, what is marked **Covered** here is kept compatible within a
 major version, and what is marked **Not covered** can change in any release
 ([ADR 8.4](adr/0008-the-command-line-and-compatibility.md#84-what-the-compatibility-promise-covers));
 [compatibility](#compatibility) has the rules.
-For installation and a walkthrough, start with the [README](../README.md).
+For installation and a walkthrough, start with the [introduction](introduction.md).
 
 The command line is the interface. The `brnr` crate's Rust library is not
 a second one: its one public item is `brnr::run(args)`, `brnr <args>` as a
@@ -206,7 +206,7 @@ field.
 | `brnr session delete` | Starts the agent recorded for an inactive session (or `--profile`/`-- <agent>`) to delete its copy (`session/delete`); refused for a session open in a process or an agent without `sessionCapabilities.delete`. brnr's transcript stays, with a `session_deleted` record, unless `--purge`, which deletes the session's events and raw ACP files in every project folder, an older brnr's too, and those set aside beside them (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …), not the host logs, whatever the agent answered. | Summary, or JSON with `session`, `deleted` (whether the agent did), `error` (`agent_failed` with the agent's as `rpc_error`, or why there is no answer, else null), `recorded_in` and `purged` (file paths), `failed` (why a file wasn't deleted, or, without `--purge`, wasn't recorded in; exit 1, the others done all the same). A transcript made private first is `path_made_private: <path> (its mode was …)` on stderr. Exit 1 too if the agent didn't delete the session, unless, with `--purge`, it doesn't have it (`resource_not_found`). |
 | `brnr event log` | Reads saved events, including inactive sessions, from the session's files in every project folder, merged by time; `--last` selects recent turns of what is merged and `--follow` continues live. | Text events or newline-delimited JSON (one event per line). |
 | `brnr event watch` | Subscribes to live events for a session or host PID. | Text events or newline-delimited JSON; a session watch ends when that session closes. |
-| `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](../README.md#notifications). |
+| `brnr event notify` | Runs the supplied command for selected events; `--stdin` consumes bridge event lines instead of connecting. | Child command output; notification failures/cutoffs reported on stderr. See [notifications](guide/events.md#notifications). |
 | `brnr config get` | Lists the config options and the agent's v1 modes; `--mode`, `--model`, `--thought-level` (by category) and repeatable `--option <id>` narrow it. It lists only the options the agent advertised, so one the agent doesn't have fails. | Table of each option, then its choices (the current one marked `*`), or JSON with `session` and `options`, each with `option` (null for the v1 modes), `category`, `value`, `name`, `description`, and `choices`, each with `value`, `name`, `description`. |
 | `brnr config set` | Sets `--mode`, `--model`, `--thought-level` (the option of that category; a mode is `session/set_mode` only with v1 modes and no mode option) and repeatable `--option <id>=<value>`, resolved as `session new`'s settings are: two values for one setting fail, or a mode, model or thought level the agent has no option for, before anything is sent; each is sent once, the mode first. An `--option` id the agent hasn't advertised is sent too, for the agent to take or refuse; a refusal names what was already set. | One `<option>=<value>` line per setting sent (`mode=` for v1 modes); JSON has `session` and `set`, each with `option`, `category`, `value`. |
 | `brnr prompt commands` | Lists the agent's advertised slash commands; invoke them by sending text. | JSON has `session` and `commands`, each with `command`, `hint`, `description`. |
@@ -272,8 +272,8 @@ field.
   Ctrl-C stops the session. It cannot be combined with `--wait`.
 - `--strict` on `acp`, `session new` and `session resume` selects stable ACP only. Actions on an editor's
   session require the corresponding experimental profile setting. See
-  [strict mode](../README.md#strict-mode-and-feature-flags) and
-  [experimental actions](../README.md#experimental-actions).
+  [strict mode](guide/editor.md#strict-mode-and-feature-flags) and
+  [experimental actions](guide/editor.md#experimental-actions).
 
 ### Status fields
 
@@ -312,7 +312,7 @@ can give a situation that has none a code of its own.
 | `event watch`, `event notify`, `event wait`, `session new --wait`, `session resume --wait`, `prompt send --wait` | 3 when the process cut the command off for falling behind and it couldn't catch up from the transcript: what it missed is an `events_missed` note, with `ts`, `host_id` and `pid` as an event has them, `after_seq` the last event it got, `until_seq` where it subscribed again, or, if subscribing again failed each time, where the process said it cut the command off (null only for a process gone, or one that said no position, as `error` then says), and `error`, why ([ADR 10.2](adr/0010-bounded-resources.md#102-a-peer-cut-off-catches-up-from-the-transcript)). `event watch` prints it as its last event; the others say it on stderr. |
 | `brnr acp` | A usage error exits 2; a config error or a host startup failure exits 1; after startup the proxy follows the agent's exit/signal status. |
 | `session new --foreground`, `session resume --foreground` | Follows the agent's exit status; startup failure is nonzero. |
-| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](../adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
+| `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`, which the pinned `brnr-claude-adapter` ([adapters/package.json](https://github.com/brnrhq/brnr/blob/main/adapters/package.json)) doesn't answer: it answers `-32603`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
 | `doctor` | Nonzero if a check fails; read its checks for the cause. |
 
 A failed control command does not imply the host or agent stopped. In
@@ -395,7 +395,7 @@ ends when `brnr acp` exits. Both streams share one connection and a 16 MiB
 buffer, so an editor that stops reading one eventually holds up the other
 ([ADR 2.6](adr/0002-acp-faithfully.md#26-the-editors-stdin-and-stdout-end-when-the-agents-do-and-its-stderr-comes-as-written)). The editor initializes the protocol and owns its
 sessions.
-See [editor setup and deviations](../README.md#use-it-from-an-editor) and
+See [editor setup and deviations](guide/editor.md#use-it-from-an-editor) and
 [ADR 3.1](adr/0003-processes-sessions-and-ownership.md#31-the-editors-process-brnr-acp-relays-the-host-owns-the-agent). The editor's `initialize` reaches
 the agent without its `fs` and `terminal` client capabilities, as ACP v2
 has neither, but those the profile's `client_capabilities` names; in strict
@@ -413,7 +413,7 @@ and the agent: unchanged, but for the changes the README and ADRs 3.1 and 3.9 an
 
 ## Configuration and environment
 
-Configuration is TOML. [Profiles](../README.md#profiles) gives a complete
+Configuration is TOML. [Profiles](guide/profiles.md#profiles) gives a complete
 example. Unknown keys, keys in the wrong section, and unknown feature/action
 names fail to load. `doctor` validates every profile.
 
@@ -441,7 +441,7 @@ doesn't load in an earlier one.
 | Bridge table | `command`: the program, a nonempty string (a list fails to load); optional `args`: string array, as an MCP server's; optional `events`: event-name array (default all except `acp`). |
 | MCP server table | `name` plus stdio `command`, optional `args` and string-map `env`; or remote `url`, `type` (`http` by default, or `sse`) and string-map `headers`. See [MCP servers](adr/0006-settings-and-profiles.md#63-mcp-servers-for-headless-sessions). |
 
-[Environment variables](../README.md#environment) define `BRNR_HOME`
+[Environment variables](guide/profiles.md#environment) define `BRNR_HOME`
 (transcripts and session locks), `BRNR_CONFIG` (configuration file),
 `BRNR_DIR` (private runtime directory), and `BRNR_START_TIMEOUT` (startup
 deadline, default 120 seconds), including their default paths. How
@@ -456,7 +456,7 @@ agent-specific. A started bridge additionally receives `BRNR_PID` and
 variables `BRNR_EVENT`, `BRNR_TEXT`, `BRNR_TITLE`, `BRNR_MESSAGE`,
 `BRNR_SESSION`, `BRNR_REQUEST`, `BRNR_PID`. The displayed text values
 are escaped and limited to 32 KiB; JSON on stdin is not truncated. See
-[notifications](../README.md#notifications) for event selection and lifetime.
+[notifications](guide/events.md#notifications) for event selection and lifetime.
 
 ## Bridge and control socket protocol
 
@@ -545,7 +545,7 @@ request the agent cancelled with `$/cancel_request` (ADR 4.5): headless,
 brnr answered it `cancelled` or `cancel`; an editor answers its own. It is no
 longer pending, and an `allow`, `reject` or `elicitation` for it fails.
 `peer_cut_off` (`peer`, `last_queued_seq`) tells the other peers that one was
-cut off. The [event catalogue](../README.md#events)
+cut off. The [event catalogue](guide/events.md#events)
 lists every event and its meaning, including message/turn correlation,
 approvals, elicitations, config patches and process exits. `process_exited`, `line_too_long`
 and `line_too_deep` are process events. Notes are what brnr adds to a stream of events, and are
@@ -588,12 +588,12 @@ Profile bridges
 get final events and then stdin EOF when their host stops; they should exit
 on EOF and receive SIGTERM if still running two seconds later. Closing a
 started bridge's stdout only ends its requests, not its event subscription.
-See [buffering and cutoffs](../README.md#when-a-reader-falls-behind) for the
+See [buffering and cutoffs](guide/events.md#when-a-reader-falls-behind) for the
 16 MiB observer queue, long-line handling and foreground skipped events.
 
 ## Files, output safety and compatibility
 
-[Transcripts](../README.md#transcripts) documents the JSON-lines file paths,
+[Transcripts](guide/transcripts.md#transcripts) documents the JSON-lines file paths,
 host/session identity fields, logging modes, redaction and `records_skipped`
 gap notes. Every record starts with its `format`, 1 for all of 1.x; a
 record in another format, an older brnr's without one or a newer one's,
@@ -645,8 +645,8 @@ default, are not. Error codes are covered ([errors](#errors)).
   one.
 - Ignore the fields and events you don't know.
 - A deprecated form keeps working until the next major version; the
-  [changelog](../CHANGELOG.md) says what to use instead.
+  [changelog](project/changelog.md) says what to use instead.
 
 Security fixes are made on the latest major version; see
-[SECURITY.md](../SECURITY.md). Before 1.0.0-rc.1, the names and shapes of
+[SECURITY.md](https://github.com/brnrhq/brnr/blob/main/SECURITY.md). Before 1.0.0-rc.1, the names and shapes of
 `--json` output (#150) are still being settled.

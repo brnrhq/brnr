@@ -144,7 +144,7 @@ must not change how the editor and the agent interact. Bytes, signals,
 stderr, stdin EOF and the exit status pass through unchanged. What brnr does
 through the side channel aims to keep the editor's view in step with the
 agent's state; where that can't be done, the gap is a caveat, stated in the
-README. The deliberate changes to the stream are few, and each is named:
+documentation. The deliberate changes to the stream are few, and each is named:
 requests reach the agent with the host's ids (ADR 2.4); by default the
 editor's `fs` and `terminal` capabilities are dropped, unless the profile
 names them (ADR 2.7); an editor's load of a session another process owns is

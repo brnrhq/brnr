@@ -45,7 +45,7 @@ are what N2 asks of it.
   profile passes those it names, and in strict mode they pass through
   (ADR 2.1, ADR 2.7).
 
-**Consequences.** What the editor sees differently, stated in the README:
+**Consequences.** What the editor sees differently, stated in the documentation:
 
 - A SIGKILL sent to the proxy can't be passed on as such. The host sees its
   links go without the editor's stdin ending first, closes the agent's
@@ -209,7 +209,7 @@ at launch (P10).
   --wait: read events ◀───────────── … turn_ended
 ```
 
-**Consequences.** The README's promise holds for the whole start: if the
+**Consequences.** The documentation's promise holds for the whole start: if the
 command gives up, or is interrupted, before the commit, the process stops
 too and the prompt is never sent. No idle clock waits for a prompt
 (ADR 3.8).
@@ -766,20 +766,20 @@ must not end the others (P11).
 Run `cargo test --release adr_0003_`. Named claims, by section:
 
 - 3.1:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     `adr_0003_acp_passes_bytes_unchanged`,
     `adr_0003_acp_passes_stderr_and_the_exit_status`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_acp_is_what_an_editor_runs`,
     `adr_0003_editor_gone_takes_the_agents_children`,
     `adr_0003_a_signal_doesnt_wait_behind_a_stalled_agents_stdin`,
     `adr_0003_an_editors_process_needs_its_signal_link`,
     `adr_0003_non_blocking_stdin_is_waited_on`,
     `adr_0003_acp_with_sigchld_ignored`.
-- 3.2: [tests/cli.rs](../../tests/cli.rs):
+- 3.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_ps_lists_the_processes`,
   `adr_0003_session_targets_are_exact_ids_not_prefixes_or_pids`.
-- 3.3: [tests/headless.rs](../../tests/headless.rs):
+- 3.3: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0003_start_hands_over_one_request`,
   `adr_0003_host_is_not_run_by_hand`,
   `adr_0003_a_bad_request_is_refused`,
@@ -788,46 +788,46 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0003_acp_reports_a_config_error`,
   `adr_0003_acp_hands_over_one_request`.
 - 3.4:
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_abandoned_start_sends_no_prompt`,
     `adr_0003_start_gone_as_ready_is_written_sends_no_prompt`,
     `adr_0003_start_gone_after_ready_leaves_the_session_running`,
     `adr_0003_start_timeout_stops_the_host`,
     `adr_0003_empty_prompt_is_refused`,
     `adr_0003_large_prompt_from_stdin`.
-  - [tests/chaos.rs](../../tests/chaos.rs):
+  - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
     `adr_0003_seeded_setup_failure_never_commits_a_prompt`.
-  - [src/host/fuzz.rs](../../src/host/fuzz.rs):
+  - [src/host/fuzz.rs](https://github.com/brnrhq/brnr/blob/main/src/host/fuzz.rs):
     `adr_0003_a_step_answered_after_the_start_failed_goes_no_further`.
 - 3.5:
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_foreground_start_failure_is_reported`,
     `adr_0003_foreground_close_of_the_last_session`,
     `adr_0003_foreground_outlives_its_stdout`,
     `adr_0003_slow_foreground_reader_is_told_what_it_missed`,
     `adr_0003_foreground_with_sigchld_ignored`.
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     `adr_0003_foreground_start_shows_the_session`.
-- 3.6: [tests/headless.rs](../../tests/headless.rs):
+- 3.6: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0003_foreground_passes_the_agents_stderr`,
   `adr_0003_failed_start_shows_the_agents_stderr`.
 - 3.7:
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_a_panic_is_recorded`,
     `adr_0003_a_panic_while_starting_is_recorded`.
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     `adr_0003_how_the_process_ended_is_never_skipped`.
-  - [src/ctl/client.rs](../../src/ctl/client.rs):
+  - [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
     `adr_0003_a_zombie_process_is_gone`.
-  - [tests/chaos.rs](../../tests/chaos.rs):
+  - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
     `adr_0003_seeded_agent_crash_records_death_and_releases_session`,
     `adr_0003_killed_proxy_mid_fault_stops_host_and_agent`.
-- 3.8: [tests/cli.rs](../../tests/cli.rs):
+- 3.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_fork_is_refused_when_it_could_never_close`,
   `adr_0003_stop_when_idle`,
   `adr_0003_a_closing_session_doesnt_wake_the_host`.
 - 3.9:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     `adr_0003_session_locks_are_private_and_never_followed`,
     `adr_0003_a_runtime_dir_with_an_acl_is_refused` (macOS): the process
     starts no agent and writes nothing there, `session list` fails, each
@@ -836,7 +836,7 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     headless session isn't locked, so isn't started, and the ACL stays;
     and, not named for a claim,
     `what_brnr_makes_is_private_whatever_the_umask`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_an_editors_load_of_a_held_session_is_refused`,
     `adr_0003_an_editors_prompt_of_a_held_session_is_refused`,
     `adr_0003_an_editors_session_that_cant_be_locked_is_passed_through`,
@@ -845,7 +845,7 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_an_editors_load_held_by_an_editor_elsewhere_names_its_runtime_dir`,
     `adr_0003_a_load_answered_after_another_process_took_its_session_isnt_served`,
     `adr_0003_a_resume_answered_after_another_process_took_its_session_isnt_served`.
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     `adr_0003_resume_of_a_held_session_is_refused`,
     `adr_0003_take_over_moves_a_session`,
     `adr_0003_a_silent_process_keeps_its_session`,
@@ -856,28 +856,28 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_a_second_owner_of_a_new_session_isnt_started`,
     `adr_0003_a_session_is_owned_once_however_the_runtime_dir_is_found`,
     `adr_0003_the_brnr_dir_said_is_one_shell_word`.
-  - [tests/doctor.rs](../../tests/doctor.rs):
+  - [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
     `adr_0003_what_keeps_a_session_from_being_locked_fails`; and, not
     named for a claim, `stale_session_locks_are_removed`.
-  - [tests/chaos.rs](../../tests/chaos.rs):
+  - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
     `adr_0003_killed_host_mid_flood_is_diagnosed_and_releases_session`.
-  - [src/paths.rs](../../src/paths.rs):
+  - [src/paths.rs](https://github.com/brnrhq/brnr/blob/main/src/paths.rs):
     `adr_0003_brnr_dir_is_one_shell_word`,
     `adr_0003_a_private_directory_is_checked_through_what_was_opened`: one
     that isn't there is `NotFound`; a symlink to a private one, a file and
     one others can search are refused, and, on macOS, one with an ACL,
     which stays.
-  - [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  - [src/ctl/ownership.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/ownership.rs):
     `adr_0003_each_place_is_refused_in_the_same_words`,
     `adr_0003_the_lock_decides_and_closing_comes_before_opening`,
     `adr_0003_a_resume_into_its_own_process_is_refused`.
-  - [src/host/sessions.rs](../../src/host/sessions.rs):
+  - [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
     `adr_0003_a_claim_is_known_until_the_agent_opens_it_or_not`,
     `adr_0003_a_session_another_process_holds_fails_a_headless_start`.
-- 3.10: [tests/headless.rs](../../tests/headless.rs):
+- 3.10: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0003_shared_sessions_let_an_editor_load_a_held_session`,
   `adr_0003_shared_sessions_serve_a_load_answered_after_another_process_took_it`.
-- 3.11: [tests/cli.rs](../../tests/cli.rs):
+- 3.11: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_resume_a_session_only_the_agent_knows`,
   `adr_0003_resume_continues_a_session`,
   `adr_0003_resume_by_loading_keeps_the_replay_out_of_the_transcript`,
@@ -892,11 +892,11 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   `adr_0005_a_bridges_load_finds_the_transcript_in_another_folder`, and
   for a start's by ADR 5.1's
   `adr_0005_log_reads_a_sessions_files_in_every_folder_as_one`
-  ([tests/cli.rs](../../tests/cli.rs)).
+  ([tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs)).
 - 3.12:
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     `adr_0003_fork_and_close`,
     `adr_0003_close_cancels_the_turn_first`,
     `adr_0003_a_fork_keeps_its_source`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0003_an_editors_fork_keeps_its_source`.

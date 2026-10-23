@@ -438,7 +438,7 @@ answers would be (ADR 4.6).
   `adr_0004_headless_advertises_elicitation` checks what brnr advertises.
 - A headless turn waits on an elicitation. `response_timeout` has no
   default (P4: brnr doesn't pick a deadline for the user), so an
-  unattended run must set it, and the README, interface.md and the skill
+  unattended run must set it, and the documentation, interface.md and the skill
   say so.
 - Bridges that list `pending` see an `elicitations` key; one that answers
   elicitations sends `elicitation`.
@@ -547,15 +547,15 @@ codex-acp's other method, `chat-gpt`, opens a browser.
 
 Run `cargo test --release adr_0004_`. Named claims, by section:
 
-- 4.1: [tests/headless.rs](../../tests/headless.rs):
+- 4.1: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0004_steer_goes_into_the_running_turn`,
   `adr_0004_steer_answered_after_its_turn_is_in_that_turn`,
   `adr_0004_steer_refused_after_its_turn_is_dropped`,
   `adr_0004_steer_never_answered_is_dropped_by_close`,
   `adr_0004_interrupt_waits_for_the_steers_into_the_turn_before`;
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_start_json_gives_the_prompts_message`;
-  [src/host/turns.rs](../../src/host/turns.rs):
+  [src/host/turns.rs](https://github.com/brnrhq/brnr/blob/main/src/host/turns.rs):
   `adr_0004_a_turn_ended_waits_for_its_steers_and_so_does_what_is_held`,
   `adr_0004_a_steer_injected_while_its_turn_runs_is_in_that_turn`,
   `adr_0004_a_steer_turned_back_goes_next_ahead_of_what_is_held`,
@@ -563,39 +563,39 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_an_interrupt_while_steers_wait_is_held_with_no_turn_to_cancel`,
   `adr_0004_a_dropped_steer_lets_its_turn_end`,
   `adr_0004_the_editors_turns_are_its_own`.
-- 4.2: [tests/headless.rs](../../tests/headless.rs):
+- 4.2: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0004_interrupts_keep_their_order`,
   `adr_0004_send_while_a_turn_runs_is_held`,
   `adr_0004_steer_without_a_turn_is_a_prompt`,
   `adr_0004_steer_needs_the_agents_steering`;
-  [src/host/turns.rs](../../src/host/turns.rs):
+  [src/host/turns.rs](https://github.com/brnrhq/brnr/blob/main/src/host/turns.rs):
   `adr_0004_interrupts_go_ahead_of_held_messages_in_their_order`,
   `adr_0004_context_goes_with_the_next_prompt`,
   `adr_0004_queue_drops_held_messages_and_interrupts`;
-  [src/host/fuzz.rs](../../src/host/fuzz.rs):
+  [src/host/fuzz.rs](https://github.com/brnrhq/brnr/blob/main/src/host/fuzz.rs):
   `adr_0004_a_bridge_sends_through_the_sessions_turns`.
-- 4.3: [tests/cli.rs](../../tests/cli.rs):
+- 4.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_cancel_drops_held_messages_and_says_so`,
   `adr_0004_cancel_can_keep_held_messages`;
-  [src/host/turns.rs](../../src/host/turns.rs):
+  [src/host/turns.rs](https://github.com/brnrhq/brnr/blob/main/src/host/turns.rs):
   `adr_0004_cancel_drops_what_is_held_and_unanswered_steers`.
-- 4.4: [tests/cli.rs](../../tests/cli.rs):
+- 4.4: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_a_turns_tokens_are_what_the_agent_reported`,
   `adr_0004_a_count_the_agent_didnt_give_is_null`,
   `adr_0004_a_turn_without_usage_has_its_tokens_unknown`;
-  [tests/security.rs](../../tests/security.rs):
+  [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0004_the_editor_gets_the_answers_usage_as_the_agent_sent_it`;
-  [src/render.rs](../../src/render.rs):
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0004_text_shows_the_counts_the_agent_gave`.
-- 4.5: [tests/security.rs](../../tests/security.rs):
+- 4.5: [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0004_an_unanswered_request_waits`,
   `adr_0004_a_timeout_never_allows`,
   `adr_0004_a_request_is_answered_only_in_its_session`,
   `adr_0004_a_timeout_cancels_never_accepts`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0004_allow_during_stop_fails`,
   `adr_0004_an_editors_elicitation_is_seen_and_reaches_the_editor`;
-  [tests/cli.rs](../../tests/cli.rs):
+  [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_show_explains_a_permission_request`,
   `adr_0004_show_escapes_a_spoofed_command`,
   `adr_0004_requests_passes_over_a_silent_process`,
@@ -609,22 +609,22 @@ Run `cargo test --release adr_0004_`. Named claims, by section:
   `adr_0004_a_bridge_sees_the_elicitation`,
   `adr_0004_a_request_scoped_elicitation_is_answered_by_pid`,
   `adr_0004_prompt_cancel_cancels_the_sessions_elicitations`;
-  [src/render.rs](../../src/render.rs):
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0004_elicitation_events_have_lines`;
-  [src/host/approvals.rs](../../src/host/approvals.rs):
+  [src/host/approvals.rs](https://github.com/brnrhq/brnr/blob/main/src/host/approvals.rs):
   `adr_0004_handles_are_never_used_again`,
   `adr_0004_every_way_a_request_ends_leaves_nothing_behind`,
   `adr_0004_an_answer_that_cant_be_sent_leaves_the_request_waiting`,
   `adr_0004_a_timeout_rejects_once_or_cancels_the_turn`,
   `adr_0004_the_agents_cancel_ends_only_what_waits`. A request the agent
-  cancels with `$/cancel_request`: [tests/cli.rs](../../tests/cli.rs):
+  cancels with `$/cancel_request`: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_a_request_the_agent_cancels_ends_by_the_agent`,
   `adr_0004_a_turn_that_ends_leaves_its_request_waiting`,
   `adr_0004_the_agent_cancels_each_request_it_has_open`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0004_an_editor_gets_the_agents_cancel_and_answers_it`.
-- 4.6: [tests/cli.rs](../../tests/cli.rs):
+- 4.6: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_agent_requests_wait_for_their_answer_without_blocking_the_host`.
-- 4.7: [tests/cli.rs](../../tests/cli.rs):
+- 4.7: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0004_login_needed_is_explained`,
   `adr_0004_auth_runs_the_login_method_named`.

@@ -107,7 +107,7 @@ editor brnr supports, with each editor's and adapter's version, what was
 seen, and the cells left untested, said as such. The synthetic suite
 (`tests/fake_agent.py`) passing isn't that evidence: it shows what brnr
 sends, not what an editor makes of it. The compensations are adjusted per
-editor from what is seen, and the README states what is known as caveats.
+editor from what is seen, and the documentation states what is known as caveats.
 
 **Why.** ACP has one client per session. With an editor attached, the
 editor is that client and owns the session (P11). Observing it and
@@ -275,7 +275,7 @@ renders.
 
 Run `cargo test --release adr_0007_`. Named claims, by section:
 
-- 7.1: [tests/headless.rs](../../tests/headless.rs):
+- 7.1: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0007_take_over_from_an_editor_is_refused`,
   `adr_0007_experimental_actions_are_refused_without_opt_in`,
   `adr_0007_cancel_withdraws_the_editors_requests`,
@@ -284,11 +284,11 @@ Run `cargo test --release adr_0007_`. Named claims, by section:
   `adr_0007_close_tells_the_editor`,
   `adr_0007_take_over_from_an_editor`,
   `adr_0007_the_editors_own_steer_is_recorded`;
-  [src/host/sessions.rs](../../src/host/sessions.rs):
+  [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
   `adr_0007_a_session_closed_under_the_editor_is_its_again_once_loaded`.
   The real-editor checks have no automated test: they are what the matrix
   records.
-- 7.2: [tests/headless.rs](../../tests/headless.rs):
+- 7.2: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0007_send_to_an_editors_session_waits_for_no_turn`,
   `adr_0007_context_joins_the_editors_next_prompt`,
   `adr_0007_messages_can_be_shown_as_user_message_chunks`.
