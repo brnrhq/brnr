@@ -25,7 +25,7 @@ their exit status instead, and no code; `doctor` exits 1 with its checks.
 | `error` | object | The failure, where a command or a reply has one. |
 | `error.code` | string | One of the [codes](#codes) below. |
 | `error.message` | string | What failed, for people. Not covered. |
-| `error.rpc_error` | object | With `agent_failed` only: the agent's JSON-RPC error, whole, as it sent it (`{code, message, data}`). |
+| `error.rpc_error` | object, optional, ACP's | With `agent_failed` only: the agent's JSON-RPC error, whole, as it sent it (`{code, message, data}`). |
 
 Where the agent's answer failed, the code is `agent_failed`, and `rpc_error`
 is the agent's error, whole. Its numeric code is ACP's; brnr's codes are

@@ -143,7 +143,7 @@ cancelled.
 | `session` | string or null | The session; null for one outside any session. |
 | `request` | string | The handle. |
 | `action` | string | `accept`, `decline` or `cancel`. |
-| `content` | object or null | An accept's form values, with ACP's value types; null for a URL's accept, `decline` and `cancel`. |
+| `content` | object or null, ACP's | An accept's form values, with ACP's value types; null for a URL's accept, `decline` and `cancel`. |
 
 <!-- example: brnr elicitation accept $s e1 --field name=Ada --field color=green --json; before: Elicitation -->
 ```json

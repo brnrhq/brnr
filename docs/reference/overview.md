@@ -29,11 +29,16 @@ and error codes:
 - **Type**: `string`, `number` (an integer, but where the row says
   otherwise), `boolean`, `object`, `list of …`. **or null** says that the
   field can be null, and the row or the text under the table says when. A
-  field without "or null" is never null.
+  field without "or null" is never null. **optional** says that the field
+  is not always there, and the row says when. A field without "optional" is
+  always there. **ACP's** says that the value is ACP's, as the agent or the
+  editor sent it: its fields are ACP's, and have no rows here.
 - **Example**: what brnr printed for the command, against the test agent,
   `tests/fake_agent.py`. Ids, times and paths are those of that run. A test
   runs each example's command and checks that what brnr prints has the same
-  shape: the same fields at every level, each of the same JSON type
+  shape: the same fields at every level (but an optional one), each of the
+  same JSON type and of a type its row names, in every item of a list. It
+  checks that every field of the example, at every level, has a row
   ([tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs),
   `adr_0008_every_json_example_has_the_shape_brnr_prints`).
 - **Text output** is one sentence: it shows what `--json` has, for people,

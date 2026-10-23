@@ -23,6 +23,9 @@ directory.
 | `processes[].state` | string | `starting` (it hasn't committed its start), `running`, `stopping`, or `unreachable`: it doesn't answer. |
 | `processes[].owner` | string or null | `editor` or `headless`; null when it is `unreachable`. |
 | `processes[].agent` | object | The agent it runs, `{program, name, version}` ([conventions](overview.md#conventions)). `name` and `version` are null for a process that is `unreachable`. |
+| `processes[].agent.program` | string or null | The file name of the command brnr ran; null where brnr doesn't know it. |
+| `processes[].agent.name` | string or null | The agent's name, from `initialize`'s `agentInfo`. |
+| `processes[].agent.version` | string or null | The agent's version, from `initialize`'s `agentInfo`. |
 | `processes[].sessions` | list of objects | Its sessions, as `session list` rows with `session` and `state` only. |
 | `processes[].sessions[].session` | string | The session's id. |
 | `processes[].sessions[].state` | string | As in `session list`. An unreachable process's sessions are those it holds the locks of, each `unreachable`. |

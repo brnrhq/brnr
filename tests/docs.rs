@@ -13,9 +13,12 @@
 //! - every `json` block in the interface reference ([`REFERENCE`],
 //!   `docs/reference/`) has an `<!-- example: … -->` just above it, whose
 //!   command runs as an `sh` example does, and what brnr prints has the
-//!   block's shape: the same fields at every level, each of the same JSON
-//!   type, null only where its fields table says "or null"; or the block is
-//!   in [`JSON_SKIPPED`], with why. A bridge's example is a request and its
+//!   block's shape: the same fields at every level (but where the fields
+//!   table says "optional"), each of the same JSON type, one its row names,
+//!   null only where its row says "or null", in every item of a list; and
+//!   every field of the block, at every level, has a row (`dropped[].reason`
+//!   for a list's items), but inside a value whose row says "ACP's"; or the
+//!   block is in [`JSON_SKIPPED`], with why. A bridge's example is a request and its
 //!   reply, which a bridge started from the profile ([`BRIDGE`]) sends and
 //!   gets;
 //! - the reference's synopsis is `brnr --help`, and its errors page lists
@@ -984,24 +987,70 @@ struct Json {
     /// Its `<!-- example: … -->`, if it has one.
     spec: Option<String>,
     text: String,
-    /// The fields its section's tables, and its page's intro's, list
-    /// (`| Field | Type | Meaning |`), each by its last name
-    /// (`last_turn.stop_reason` is `stop_reason`), and those of them that can
-    /// be null (`or null` in its type).
-    fields: Vec<String>,
-    nullable: Vec<String>,
+    /// The rows of its section's fields tables (`| Field | Type | Meaning |`),
+    /// then its page's intro's.
+    rows: Vec<Row>,
+}
+
+/// A row of a fields table: the field's full name, an object's field after a
+/// dot and a list's item as `[]` (`last_turn.stop_reason`,
+/// `dropped[].reason`); the JSON types its type names (none for `any`, or
+/// a row without a type, which says where it is described);
+/// whether it says "or null"; whether it says "optional", a field not
+/// always there; and whether it says "ACP's", a value ACP defines, whose
+/// fields have no rows.
+#[derive(Clone)]
+struct Row {
+    name: String,
+    kinds: Vec<&'static str>,
+    null: bool,
+    optional: bool,
+    acp: bool,
+}
+
+/// The row of field `name` whose type is `ty`, as the reference writes types
+/// (overview.md, "How to read it"): `string or null`, `list of objects`,
+/// `string, number or null`, `number, optional`, `object, ACP's`.
+fn row(name: &str, ty: &str) -> Result<Row, String> {
+    let mut row =
+        Row { name: name.to_owned(), kinds: vec![], null: false, optional: false, acp: false };
+    for word in ty.split(", ").flat_map(|t| t.split(" or ")).map(str::trim) {
+        match word {
+            "null" => row.null = true,
+            "optional" => row.optional = true,
+            "ACP's" => row.acp = true,
+            "any" | "" => {}
+            _ if word.starts_with("list") => row.kinds.push("a list"),
+            "string" | "`\"all\"`" => row.kinds.push("a string"),
+            "number" => row.kinds.push("a number"),
+            "boolean" => row.kinds.push("a boolean"),
+            "object" => row.kinds.push("an object"),
+            _ => return Err(format!("`{name}`: {word}: not a type the test knows")),
+        }
+    }
+    Ok(row)
+}
+
+/// A JSON value's type, as a problem names it.
+fn kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    }
 }
 
 /// Every `json` block of the reference's pages.
 fn json_blocks() -> Vec<Json> {
-    // A section's fields, and those that can be null.
-    type Fields = (Vec<String>, Vec<String>);
     let mut blocks = Vec::new();
     for &page in REFERENCE {
         let text = read(page);
         let lines: Vec<&str> = text.lines().collect();
-        // The fields of each section, by the line its heading is on.
-        let mut sections: Vec<(usize, Fields)> = vec![(0, Default::default())];
+        // The rows of each section, by the line its heading is on.
+        let mut sections: Vec<(usize, Vec<Row>)> = vec![(0, Vec::new())];
         let mut in_table = false;
         let mut fence = false;
         for (n, line) in lines.iter().enumerate() {
@@ -1021,22 +1070,19 @@ fn json_blocks() -> Vec<Json> {
                 in_table = false;
             } else if in_table && line.starts_with("| `") {
                 let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-                let Some(name) = cells[1].split('`').nth(1) else { continue };
-                let name = name.rsplit('.').next().unwrap().to_owned();
-                let (fields, nullable) = &mut sections.last_mut().unwrap().1;
-                if cells.get(2).is_some_and(|t| t.contains("null")) {
-                    nullable.push(name.clone());
+                // `mode`, `model`: a row of more than one field.
+                for name in cells[1].split('`').skip(1).step_by(2) {
+                    let row = row(name, cells.get(2).copied().unwrap_or_default())
+                        .unwrap_or_else(|e| panic!("{page}:{}: {e}", n + 1));
+                    sections.last_mut().unwrap().1.push(row);
                 }
-                fields.push(name);
             }
         }
-        let fields_at = |n: usize| -> Fields {
-            let (first, mine) =
-                (&sections[0].1, &sections.iter().rfind(|(at, _)| *at <= n).unwrap().1);
-            let mut both = first.clone();
-            both.0.extend(mine.0.iter().cloned());
-            both.1.extend(mine.1.iter().cloned());
-            both
+        // A section's rows first: they are its fields where the intro has
+        // one of the same name.
+        let rows_at = |n: usize| -> Vec<Row> {
+            let mine = &sections.iter().rfind(|(at, _)| *at <= n).unwrap().1;
+            mine.iter().chain(&sections[0].1).cloned().collect()
         };
         for (lang, start, body) in md_blocks(&text) {
             if lang != "json" {
@@ -1050,15 +1096,13 @@ fn json_blocks() -> Vec<Json> {
                 .and_then(|l| l.strip_suffix("-->"))
                 .map(|l| l.trim().to_owned());
             let heading = lines[..fence].iter().rev().find(|l| l.starts_with('#'));
-            let (fields, nullable) = fields_at(fence);
             blocks.push(Json {
                 at: format!("{page}:{start}"),
                 page,
                 heading: heading.map_or("", |h| h).to_owned(),
                 spec,
                 text: body,
-                fields,
-                nullable,
+                rows: rows_at(fence),
             });
         }
     }
@@ -1173,13 +1217,8 @@ fn run_json(name: &str, block: &Json) -> Result<(), String> {
         }
     };
     let mut problems = Vec::new();
-    // Each field the example has is in the section's tables.
-    for key in example.as_object().into_iter().flat_map(|o| o.keys()) {
-        if !["ok", "req_id", "cmd"].contains(&key.as_str()) && !block.fields.contains(key) {
-            problems.push(format!("{key} is in no fields table"));
-        }
-    }
-    shape(&example, &real, "", "", &block.nullable, &mut problems);
+    unlisted(&example, "", &block.rows, &mut problems);
+    shape(&example, &real, ("", ""), false, &block.rows, &mut problems);
     match problems.is_empty() {
         true => Ok(()),
         false => Err(format!(
@@ -1215,59 +1254,100 @@ fn bridge_exchange(env: &Env, text: &str) -> Result<(Value, Value), String> {
     Ok((reply.clone(), answer))
 }
 
+/// Each field of `example`, the value at `path`, at every level, that has no
+/// row in `rows`, into `problems`: every item of a list, but not the fields
+/// of an ACP's value. A bridge's `ok`, `req_id` and `cmd` are the protocol's,
+/// in every message.
+fn unlisted(example: &Value, path: &str, rows: &[Row], problems: &mut Vec<String>) {
+    match example {
+        Value::Object(o) => {
+            for (k, v) in o {
+                let name = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                if path.is_empty() && ["ok", "req_id", "cmd"].contains(&k.as_str()) {
+                    continue;
+                }
+                match rows.iter().find(|r| r.name == name) {
+                    None => problems.push(format!("{name}: in no fields table")),
+                    Some(row) if row.acp => continue,
+                    Some(_) => {}
+                }
+                unlisted(v, &name, rows, problems);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                unlisted(item, &format!("{path}[]"), rows, problems);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Where `example` and `real` differ in shape, into `problems`: the keys at
-/// every level, and each value's JSON type; a list by its first element,
-/// where both have one. A null, on either side, only for a field
-/// `nullable` names. `key` is the field `example` is the value of, at
-/// `path`.
+/// every level, but where the row of one says "optional"; each value's JSON
+/// type, the same on both sides and one its row names; and every item of a
+/// list, each with the example's item of the same index, else its first. A
+/// null, on either side, only where the row says "or null"; inside an ACP's
+/// value (`inside`), which has no rows, where both sides have it. `path` names
+/// the field `example` is the value of, as its row does
+/// (`options[].choices`); `at`, as a problem does (`options[1].choices`).
 fn shape(
     example: &Value,
     real: &Value,
-    path: &str,
-    key: &str,
-    nullable: &[String],
+    (path, at): (&str, &str),
+    inside: bool,
+    rows: &[Row],
     problems: &mut Vec<String>,
 ) {
-    let kind = |v: &Value| match v {
-        Value::Null => "null",
-        Value::Bool(_) => "a boolean",
-        Value::Number(_) => "a number",
-        Value::String(_) => "a string",
-        Value::Array(_) => "a list",
-        Value::Object(_) => "an object",
-    };
-    let at = if path.is_empty() { "the example" } else { path };
+    let row = rows.iter().find(|r| !inside && r.name == path);
+    let acp = inside || row.is_some_and(|r| r.acp);
+    let at_ = if at.is_empty() { "the example" } else { at };
+    if let Some(row) = row.filter(|r| !r.kinds.is_empty()) {
+        for (side, v) in [("the example has", example), ("brnr printed", real)] {
+            if !v.is_null() && !row.kinds.contains(&kind(v)) {
+                let types = row.kinds.join(" or ");
+                problems.push(format!("{at_}: {side} {}, and its row says {types}", kind(v)));
+            }
+        }
+    }
     match (example, real) {
-        (Value::Null, _) | (_, Value::Null) => {
-            if !nullable.iter().any(|n| n == key) {
+        (Value::Null, _) | (_, Value::Null) if !inside || example.is_null() != real.is_null() => {
+            if !row.is_some_and(|r| r.null) {
                 problems.push(format!(
-                    "{at}: the example has {}, brnr printed {}, and its row doesn't say \"or null\"",
+                    "{at_}: the example has {}, brnr printed {}, and its row doesn't say \"or null\"",
                     kind(example),
                     kind(real)
                 ));
             }
         }
         (Value::Object(a), Value::Object(b)) => {
-            for k in a.keys().filter(|k| !b.contains_key(*k)) {
-                problems.push(format!("{path}.{k}: in the example, not in what brnr printed"));
+            let dot =
+                |p: &str, k: &str| if p.is_empty() { k.to_owned() } else { format!("{p}.{k}") };
+            let optional = |k: &str| rows.iter().any(|r| r.name == dot(path, k) && r.optional);
+            for k in a.keys().filter(|k| !b.contains_key(*k) && !optional(k)) {
+                problems.push(format!("{}: in the example, not in what brnr printed", dot(at, k)));
             }
-            for k in b.keys().filter(|k| !a.contains_key(*k)) {
-                problems.push(format!("{path}.{k}: printed by brnr, not in the example"));
+            for k in b.keys().filter(|k| !a.contains_key(*k) && !optional(k)) {
+                problems.push(format!("{}: printed by brnr, not in the example", dot(at, k)));
             }
             for (k, v) in a {
                 if let Some(real) = b.get(k) {
-                    shape(v, real, &format!("{path}.{k}"), k, nullable, problems);
+                    shape(v, real, (&dot(path, k), &dot(at, k)), acp, rows, problems);
                 }
             }
         }
         (Value::Array(a), Value::Array(b)) => {
-            if let (Some(a), Some(b)) = (a.first(), b.first()) {
-                shape(a, b, &format!("{path}[0]"), key, nullable, problems);
+            if let Some(first) = a.first() {
+                for (i, real) in b.iter().enumerate() {
+                    let example = a.get(i).unwrap_or(first);
+                    let (path, at) = (format!("{path}[]"), format!("{at}[{i}]"));
+                    shape(example, real, (&path, &at), acp, rows, problems);
+                }
             }
         }
         _ if kind(example) != kind(real) => {
             problems.push(format!(
-                "{at}: the example has {}, brnr printed {}",
+                "{at_}: the example has {}, brnr printed {}",
                 kind(example),
                 kind(real)
             ));

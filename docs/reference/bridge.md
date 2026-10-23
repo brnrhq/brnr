@@ -33,7 +33,9 @@ each is one line.
 | `cmd` | string | The request: one of the sections below. |
 | `req_id` | any | Optional. Echoed, as given, in the reply. Use a unique one. |
 | `ok` | boolean | In every reply: `true` for success. |
-| `error` | object | In a failed reply, `ok` `false`: `{code, message}`, an [error](errors.md). |
+| `error` | object, optional | In a failed reply, `ok` `false`: `{code, message}`, an [error](errors.md). Not there otherwise. |
+| `error.code` | string | The [error code](errors.md). |
+| `error.message` | string | What failed, for people. Not covered. |
 
 A `cmd` the process doesn't have, or a field the section doesn't list for
 it, is refused with `command_unknown`, and nothing is done: a process can be
@@ -124,8 +126,17 @@ The process's full report: its metadata, its state, and each session's.
 | `host_log` | string | Its host log. |
 | `socket` | string | Its control socket. Not covered. |
 | `started` | string | When it started. |
-| `capabilities` | object | What the agent advertised, as booleans: `resume`, `load`, `list`, `fork`, `close`, `image`, `steering`, `mcp_http`, `mcp_sse`. |
-| `agent_info` | object or null | The agent's `agentInfo` from `initialize`, as it sent it; null without one. |
+| `capabilities` | object | What the agent advertised, as booleans. |
+| `capabilities.resume` | boolean | `session/resume`. |
+| `capabilities.load` | boolean | `session/load`. |
+| `capabilities.list` | boolean | `session/list`. |
+| `capabilities.fork` | boolean | `session/fork`. |
+| `capabilities.close` | boolean | `session/close`. |
+| `capabilities.image` | boolean | Images in a prompt. |
+| `capabilities.steering` | boolean | `_session/steering`. |
+| `capabilities.mcp_http` | boolean | MCP servers over HTTP. |
+| `capabilities.mcp_sse` | boolean | MCP servers over SSE. |
+| `agent_info` | object or null, ACP's | The agent's `agentInfo` from `initialize`, as it sent it; null without one. |
 | `owner` | string | `editor` or `headless`. |
 | `pending_count` | number | Approvals waiting, in all its sessions. |
 | `elicitation_count` | number | Elicitations waiting, outside a session too. |
@@ -141,11 +152,11 @@ The process's full report: its metadata, its state, and each session's.
 | `sessions[].busy` | boolean | Whether a turn runs. |
 | `sessions[].title` | string or null | Its title. |
 | `sessions[].mode` | string or null | Its current mode. |
-| `sessions[].modes` | object or null | ACP's v1 modes, as the agent gave them. |
+| `sessions[].modes` | object or null, ACP's | ACP's v1 modes, as the agent gave them. |
 | `sessions[].model` | string or null | Its current model. |
-| `sessions[].config` | list or null | ACP's config options, as the agent gave them. |
-| `sessions[].commands` | list or null | ACP's available commands, as the agent gave them. |
-| `sessions[].plan` | list or null | The last plan's entries. |
+| `sessions[].config` | list or null, ACP's | ACP's config options, as the agent gave them. |
+| `sessions[].commands` | list or null, ACP's | ACP's available commands, as the agent gave them. |
+| `sessions[].plan` | list or null, ACP's | The last plan's entries. |
 | `sessions[].usage` | object or null | The last usage, as [`usage`](events.md#usage) has it. |
 | `sessions[].tools` | list of objects | The running tool calls, as [`tool_call`](events.md#tool_call) has them. |
 | `sessions[].last_message` | string or null | The agent's last message, at most 4000 characters of it. |
@@ -320,7 +331,7 @@ does. An accepted send is not a turn that has ended: subscribe, and match its
 |---|---|---|
 | `session` | string | The session. |
 | `text` | string | The text. It or `blocks` is needed. |
-| `blocks` | list of objects | ACP content blocks to add: `text`, `resource_link` (`uri`), `image` (`data`, `mimeType`). |
+| `blocks` | list of objects, ACP's | ACP content blocks to add: `text`, `resource_link` (`uri`), `image` (`data`, `mimeType`). |
 | `mode` | string | `prompt` (the default), `steer`, `interrupt` or `context`. `context` is text only. |
 | `replace` | boolean | With `context`: replace the last entry. |
 
@@ -330,7 +341,7 @@ does. An accepted send is not a turn that has ended: subscribe, and match its
 |---|---|---|
 | `status` | string | `delivered`, `held`, `steered` or `interrupting`; `held` for context. |
 | `session` | string | The session. |
-| `message` | string | The message's id. Not there for context, which has none. |
+| `message` | string, optional | The message's id. Not there for context, which has none. |
 
 <!-- example: bridge; before: Turn -->
 ```json
@@ -406,7 +417,7 @@ sessions on the client.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `events` | list of strings, `"all"` or null | The events. Not there, or null: every event but `acp`; `"all"`: every event; an empty list: none. A note's name is refused (`event_unknown`). |
+| `events` | list of strings, `"all"` or null, optional | The events. Not there, or null: every event but `acp`; `"all"`: every event; an empty list: none. A note's name is refused (`event_unknown`). |
 
 **Reply:**
 
@@ -475,7 +486,15 @@ The approvals and elicitations waiting in this process, in full.
 | Field | Type | Meaning |
 |---|---|---|
 | `pending` | list of objects | The approvals, as [`permission show --json`](permission.md#brnr-permission-show) prints them. |
+| `pending[].request` | string | As `permission show` has it. |
+| `pending[].session` | string | As `permission show` has it. |
+| `pending[].owner` | string | As `permission show` has it. |
+| `pending[].answerable` | boolean | As `permission show` has it. |
 | `pending[].why_not` | string or null | As `permission show` has it. |
+| `pending[].title` | string or null | As `permission show` has it. |
+| `pending[].kind` | string or null | As `permission show` has it. |
+| `pending[].tool_call` | object, ACP's | As `permission show` has it. |
+| `pending[].options` | list of objects, ACP's | As `permission show` has it. |
 | `pending[].timeout_left` | number or null | As `permission show` has it. |
 | `elicitations` | list of objects | The elicitations, as [`elicitation show --json`](elicitation.md#brnr-elicitation-show) prints them, each with the process's `pid`. |
 
@@ -555,7 +574,7 @@ Answers an approval, as [`permission allow` and
 |---|---|---|
 | `session` | string | The session. |
 | `request` | string | The handle. |
-| `outcome` | object | ACP's outcome, as sent. |
+| `outcome` | object, ACP's | ACP's outcome, as sent. |
 
 <!-- example: bridge; before: Approval -->
 ```json
@@ -593,7 +612,7 @@ do.
 |---|---|---|
 | `session` | string or null | The session. |
 | `request` | string | The handle. |
-| `result` | object | The response sent to the agent: `action`, and an accept's `content`. |
+| `result` | object, ACP's | The response sent to the agent: `action`, and an accept's `content`. |
 
 <!-- example: bridge; before: Elicitation -->
 ```json
@@ -625,8 +644,11 @@ At least one of `mode`, `model`, `thought_level` and `options` is needed.
 |---|---|---|
 | `session` | string | The session. |
 | `set` | list of objects | Each setting sent, `{option, category, value}`, as `config set` has them. |
+| `set[].option` | string or null | As `config set` has it. |
+| `set[].category` | string or null | As `config set` has it. |
+| `set[].value` | string | As `config set` has it. |
 | `mode` | string or null | The current mode. |
-| `config` | list or null | The agent's config options now, as ACP has them. |
+| `config` | list or null, ACP's | The agent's config options now, as ACP has them. |
 
 <!-- example: bridge; before: Idle -->
 ```json
@@ -703,7 +725,7 @@ sessions.
 | `cwd` | string | Its working directory, absolute; the process's by default. |
 | `mode`, `model`, `thought_level`, `options` | | As for `set_config`. |
 | `text` | string | The first prompt's text. |
-| `blocks` | list of objects | The first prompt's content blocks, as for `send`. |
+| `blocks` | list of objects, ACP's | The first prompt's content blocks, as for `send`. |
 | `timeout` | number | Seconds it may take; past it, the opening is abandoned. |
 
 **Reply:** answered once the session is open and its settings set, before

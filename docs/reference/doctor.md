@@ -49,6 +49,9 @@ this brnr doesn't read. See [doctor](../guide/doctor.md).
 | `brnr` | string | brnr's version. |
 | `os` | string | The OS, its version and the kernel's: `macOS 26.4 (Darwin 25.4.0, arm64)`. |
 | `adapters` | list of objects | The adapters' checks, `{level, check, message}`. |
+| `adapters[].level` | string | As in `checks`. |
+| `adapters[].check` | string | As in `checks`. |
+| `adapters[].message` | string | As in `checks`. |
 | `checks` | list of objects | The other checks that aren't `ok`, `{level, check, message}`. |
 | `host_logs` | list of objects | The most relevant host logs' ends. |
 | `host_logs[].run` | string | The process's run id. |

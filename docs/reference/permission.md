@@ -27,7 +27,7 @@ fields.
 | `requests[].owner` | string | `editor` or `headless`. |
 | `requests[].kind` | string or null | The tool call's kind, as the agent gave it (ACP's `toolCall.kind`); null if it gave none. |
 | `requests[].title` | string or null | The tool call's title, as the agent gave it; null if it gave none. |
-| `requests[].options` | list of objects | The agent's options, as ACP has them: `{optionId, name, kind}`. |
+| `requests[].options` | list of objects, ACP's | The agent's options, as ACP has them: `{optionId, name, kind}`. |
 
 <!-- example: brnr permission requests --json; before: Approval -->
 ```json
@@ -81,8 +81,8 @@ edit, and the options.
 | `why_not` | string or null | Why not; null when it is `answerable`. |
 | `title` | string or null | The tool call's title, as the agent gave it. |
 | `kind` | string or null | The tool call's kind, as the agent gave it. |
-| `tool_call` | object | The agent's tool call, whole, as ACP has it (`toolCall`). |
-| `options` | list of objects | The agent's options, `{optionId, name, kind}`. |
+| `tool_call` | object, ACP's | The agent's tool call, whole, as ACP has it (`toolCall`). |
+| `options` | list of objects, ACP's | The agent's options, `{optionId, name, kind}`. |
 | `timeout_left` | number or null | Seconds until the response timeout answers it; null without one. |
 
 <!-- example: brnr permission show $s p1 --json; before: Approval -->
@@ -163,7 +163,7 @@ lists the options; nothing is answered (`answer_invalid`).
 |---|---|---|
 | `session` | string | The session. |
 | `request` | string | The handle. |
-| `outcome` | object | The answer sent to the agent, ACP's `outcome`: `{"outcome": "selected", "optionId": …}`. |
+| `outcome` | object, ACP's | The answer sent to the agent, ACP's `outcome`: `{"outcome": "selected", "optionId": …}`. |
 
 <!-- example: brnr permission allow $s p1 --json; before: Approval -->
 ```json

@@ -52,7 +52,7 @@ usage error with it.
 
 | Flag | Meaning |
 |---|---|
-| `--cwd <dir>` | The session's working directory. Here by default; with `--pid`, here too (`resume`: the session's recorded cwd). |
+| `--cwd <dir>` | The session's working directory. By default the profile's `cwd`, else here; with `--pid`, here (`resume`: the session's recorded cwd first). |
 | `--mode <m>` | The agent's mode: its config option of category `mode`, else `session/set_mode` with ACP's v1 modes. |
 | `--model <m>` | The config option of category `model`. |
 | `--thought-level <l>` | The config option of category `thought_level`. |
@@ -160,12 +160,20 @@ or `session/load` where the agent has only that. It takes the flags of
 |---|---|
 | `--take-over` | Ask the process that holds the session to close it first, as `session close` does. With `--pid`, it first checks that the process would take it: it isn't starting or stopping, and its agent can resume sessions. |
 
-A session brnr has a transcript of resumes with the cwd, agent and profile of
-the newest record of all its files, in every project folder; `--cwd`,
-`--profile` and `-- <agent>` override them. A session brnr has no transcript
-of goes to the agent as given, in `--cwd` or here. With `--pid`, a session
-open in that process already is refused, and one another process holds is
-refused unless `--take-over`.
+Which agent and cwd it uses:
+
+- A session brnr has a transcript of resumes with the cwd, agent and profile
+  of the newest record of all its files, in every project folder. `--cwd`,
+  `--profile` and `-- <agent>` override them.
+- A session brnr has no transcript of (one only the agent knows) is resumed
+  by its id with the agent after `--`, else the profile's (`--profile`, else
+  `default`); with neither, it fails (`agent_not_started`). Its cwd is
+  `--cwd`, else the profile's `cwd`, else the current directory.
+- With `--pid`, the agent is that process's. The cwd is `--cwd`, else the
+  recorded cwd, else the current directory.
+
+With `--pid`, a session open in that process already is refused, and one
+another process holds is refused unless `--take-over`.
 
 **Output** (`--json`, without `--wait`); with `--wait`, as
 [`session new --wait --json`](#brnr-session-new):
@@ -221,7 +229,7 @@ Reads a running session's current state.
 | `mode` | string or null | The current mode; null if the agent has none. |
 | `model` | string or null | The current model; null if the agent has no model option. |
 | `tools` | list of objects | The running turn's tool calls the agent hasn't finished, one for each id, as [`tool_call`](events.md#tool_call) has them. Once a turn ends, cancelled or failed too, none of its calls is listed. |
-| `plan` | list or null | The agent's last plan entries, as ACP has them; null before any. |
+| `plan` | list or null, ACP's | The agent's last plan entries, as ACP has them; null before any. |
 | `pending_count` | number | Approvals waiting (`permission requests` lists them). |
 | `elicitation_count` | number | Elicitations waiting (`elicitation requests` lists them). |
 | `held_count` | number | Messages held (`queue list` lists them). |
@@ -438,6 +446,9 @@ agent started just for that).
 | `sessions[].state` | string | `idle`, `busy`, `waiting` (as `session status`), `unreachable` (its process doesn't answer) or `inactive` (open in no process). |
 | `sessions[].pid` | number or null | Its process; null when `inactive`. |
 | `sessions[].agent` | object | `{program, name, version}`. `name` and `version` only for a session open in a process that answers, else null. |
+| `sessions[].agent.program` | string or null | The file name of the command brnr ran; null where brnr doesn't know it. |
+| `sessions[].agent.name` | string or null | The agent's name, from `initialize`'s `agentInfo`. |
+| `sessions[].agent.version` | string or null | The agent's version, from `initialize`'s `agentInfo`. |
 | `sessions[].source` | string | Who knows it: `brnr`, `agent` or `both`. |
 | `sessions[].last_active` | string or null | When it was last active. An agent's `updatedAt` is converted to UTC from its offset. Null where it isn't known. |
 | `sessions[].forked_from` | string or null | The session a fork came from, as `session status` has it; once its process has ended, from its transcript's first record. Null for one that isn't a fork, and for a row only the agent knows. |

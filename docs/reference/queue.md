@@ -16,6 +16,8 @@ and what it dropped.
 | `held[].attachments` | number | How many attachments it has. |
 | `context` | list of strings | The held context entries' texts, in order. |
 | `dropped` | list of objects | The messages the command dropped, each `{message, text, reason}`, `reason` `queue`. |
+| `dropped[].message` | string | The message's id. |
+| `dropped[].text` | string | Its text. |
 | `dropped[].reason` | string | `queue`. |
 
 Dropping a held message or context is an event too:
@@ -67,7 +69,7 @@ its attachments as ACP content blocks.
 | `text` | string | Its text. |
 | `interrupt` | boolean | Whether it is an interrupt. |
 | `attachments` | number | How many attachments it has. |
-| `blocks` | list of objects | Its attachments, as the ACP content blocks that go with the prompt: a file's `resource_link` (`uri`, `name`), an image's `image` (`mimeType`, `data`, base64). |
+| `blocks` | list of objects, ACP's | Its attachments, as the ACP content blocks that go with the prompt: a file's `resource_link` (`uri`, `name`), an image's `image` (`mimeType`, `data`, base64). |
 
 <!-- example: brnr prompt send $s --prompt later --file src/api.rs && brnr queue show $s m2 --json; before: Turn -->
 ```json

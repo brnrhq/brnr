@@ -36,7 +36,7 @@ or [`message_dropped`](events.md#message_dropped)'s `message`.
 |---|---|---|
 | `status` | string | `delivered` (sent now), `held` (until the running turn ends; context is always `held`), `steered` (into the running turn) or `interrupting` (the running turn is being cancelled; this goes next). |
 | `session` | string | The session. |
-| `message` | string | The message's id (`m1`), which its turn's `user_message` and `turn_ended` carry. Not there for `--context`, which has none. |
+| `message` | string, optional | The message's id (`m1`), which its turn's `user_message` and `turn_ended` carry. Not there for `--context`, which has none. |
 
 <!-- example: brnr prompt send $s --json --prompt "also update the changelog"; before: Turn -->
 ```json

@@ -19,12 +19,12 @@ Every event has these fields:
 | Field | Type | Meaning |
 |---|---|---|
 | `event` | string | Its name: one of the sections below. |
-| `session` | string | The session it is of. Not there on the process's own events: `line_too_long`, `line_too_deep`, `peer_cut_off`, `process_exited`. |
+| `session` | string or null, optional | The session it is of. Null on an `acp` message of no session, and on an `elicitation_request`, `elicitation_resolved` or `elicitation_completed` outside any session. Not there on the process's own events (`line_too_long`, `line_too_deep`, `peer_cut_off`, `process_exited`), on `events_missed`, and on a `records_skipped` in the host log. |
 | `ts` | string | When it happened. |
 | `host_id` | string or null | The process's run, `<started>-<pid>`. Null on the `session_deleted` that `session delete` records, which no process does. |
 | `pid` | number or null | The process. Null where `host_id` is. |
-| `seq` | number | Its position: one more than the last event's or ACP message's of the process, live and in the transcript. Not there on the `session_deleted` that `session delete` records. |
-| `replayed` | boolean | `true` on an event of a load's replayed history, which brnr had no transcript of ([ADR 5.6](../adr/0005-events-transcripts-and-observers.md#56-a-loads-history-is-recorded-once)). Not there otherwise. |
+| `seq` | number, optional | Its position: one more than the last event's or ACP message's of the process, live and in the transcript. Not there on: the `session_deleted` that `session delete` records; the first `acp` message of a session in its raw ACP file, the copy of the `session/new` or `session/fork` that opened it, as the request has its position where it was first recorded (a `session/new` in the host log, as no session is open yet; a `session/fork` in the raw ACP file of the session it forks); and the notes, `records_skipped` and `events_missed`. |
+| `replayed` | boolean, optional | `true` on an event of a load's replayed history, which brnr had no transcript of ([ADR 5.6](../adr/0005-events-transcripts-and-observers.md#56-a-loads-history-is-recorded-once)). Not there otherwise. |
 
 The process's own events, `process_exited`, `line_too_long` and
 `line_too_deep`, are in every session's transcript; `peer_cut_off` is in the
@@ -47,7 +47,7 @@ A message sent to the agent, as its turn takes it.
 | Field | Type | Meaning |
 |---|---|---|
 | `by` | string | `control` (brnr's) or `editor` (the editor's own prompt). |
-| `message` | string | The message's id, `m1`, as `prompt send` gave it. Not there for an editor's own prompt. |
+| `message` | string, optional | The message's id, `m1`, as `prompt send` gave it. Not there for an editor's own prompt. |
 | `prompt` | string | The turn's key: its `session/prompt` request's JSON-RPC id, as JSON text (`"\"brnr-3\""`). `turn_ended` has the same. |
 | `text` | string | Its text; an attachment as `[resource_link <uri>]`, `[image]`. |
 
@@ -124,7 +124,7 @@ A tool call starting (`started`), and again ending (`status` `completed` or
 | `kind` | string | ACP's kind: `read`, `edit`, `execute`, … |
 | `status` | string | ACP's status: `pending`, `in_progress`, `completed`, `failed`. |
 | `locations` | list of objects | The paths it works on, as the agent gave them. |
-| `started` | boolean | `true` when it starts. Not there when it ends. |
+| `started` | boolean, optional | `true` when it starts. Not there when it ends. |
 
 <!-- example: brnr prompt send $s --wait --prompt tools && brnr event log $s --json; before: Idle; event: tool_call -->
 ```json
@@ -180,7 +180,7 @@ The agent's plan, whole, each time it changes.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `entries` | list of objects | ACP's plan entries: `content`, `status`, `priority`. |
+| `entries` | list of objects, ACP's | ACP's plan entries: `content`, `status`, `priority`. |
 
 <!-- example: brnr prompt send $s --wait --prompt tools && brnr event log $s --json; before: Idle; event: plan -->
 ```json
@@ -215,7 +215,7 @@ The context window and its cost, as the agent reports them.
 | `usage` | object | What the agent reported. |
 | `usage.used` | number | Tokens in the context window. |
 | `usage.size` | number | The context window's size. |
-| `usage.cost` | object or null | The cost, as the agent gave it (`{amount, currency}`); null if it gave none. |
+| `usage.cost` | object or null, ACP's | The cost, as the agent gave it (`{amount, currency}`); null if it gave none. |
 
 <!-- example: brnr prompt send $s --wait --prompt tools && brnr event log $s --events all --json; before: Idle; event: usage -->
 ```json
@@ -244,7 +244,7 @@ The session's title, mode, config options or commands changed.
 | Field | Type | Meaning |
 |---|---|---|
 | `what` | string | `title`, `mode`, `config` or `commands`. |
-| `value` | string or object | A `title`'s or `mode`'s new value. For `config` and `commands`, a JSON merge patch by option id or command name: each one new or changed, with its value (an option's `currentValue`, a command's object), and `null` for one gone: `{"review": {"name": "review", …}, "compact": null}`. |
+| `value` | string or object, ACP's | A `title`'s or `mode`'s new value. For `config` and `commands`, a JSON merge patch by option id or command name: each one new or changed, with its value (an option's `currentValue`, a command's object), and `null` for one gone: `{"review": {"name": "review", …}, "compact": null}`. |
 
 <!-- example: brnr prompt send $s --wait --prompt "settings large" && brnr event log $s --last 1 --json; before: Idle; event: session_changed -->
 ```json
@@ -274,8 +274,8 @@ show`](permission.md#brnr-permission-show) that don't change.
 | `owner` | string | `editor` or `headless`. |
 | `title` | string or null | The tool call's title, as the agent gave it. |
 | `kind` | string or null | The tool call's kind, as the agent gave it. |
-| `tool_call` | object | The agent's tool call, whole. |
-| `options` | list of objects | The agent's options, `{optionId, name, kind}`. |
+| `tool_call` | object, ACP's | The agent's tool call, whole. |
+| `options` | list of objects, ACP's | The agent's options, `{optionId, name, kind}`. |
 
 <!-- example: brnr event log $s --json; before: Approval; event: permission_request -->
 ```json
@@ -336,7 +336,7 @@ An approval answered.
 | `request` | string | Its handle. |
 | `answer` | string or null | `allowed`, `rejected` or `cancelled`; null for an editor's answer with an option of a kind brnr doesn't know. |
 | `option_kind` | string or null | The chosen option's kind; null when none was chosen. |
-| `outcome` | object | ACP's outcome, as sent: `{"outcome": "selected", "optionId": …}` or `{"outcome": "cancelled"}`. |
+| `outcome` | object, ACP's | ACP's outcome, as sent: `{"outcome": "selected", "optionId": …}` or `{"outcome": "cancelled"}`. |
 | `by` | string | `control`, `editor`, or `agent`: the agent gave the request up with `$/cancel_request`. |
 | `peer` | string or null | The connection that answered (`socket#7`, a bridge's name); null where there is none. |
 | `reason` | string or null | Why brnr answered by itself: `timeout` (the response timeout) or `cancel` (its turn was cancelled); null when someone answered. |
@@ -420,7 +420,7 @@ An elicitation answered.
 | `session` | string or null | Its session; null for one outside any session. |
 | `request` | string | Its handle. |
 | `action` | string or null | ACP's action: `accept`, `decline` or `cancel`, or what an editor sent. |
-| `content` | object or null | An accept's form values; null otherwise. |
+| `content` | object or null, ACP's | An accept's form values; null otherwise. |
 | `by` | string | `control`, `editor` or `agent`, as for `permission_resolved`. |
 | `peer` | string or null | The connection that answered; null where there is none. |
 | `reason` | string or null | `timeout` or `cancel` when brnr answered by itself; null otherwise. |
@@ -753,7 +753,9 @@ The agent exited, and the process with it.
 | Field | Type | Meaning |
 |---|---|---|
 | `exit_status` | object or null | `{"code": n}`, or `{"signal": n}` for one a signal ended; null where it isn't known. |
-| `error` | object | Why, `{code, message}`, when brnr itself failed (`process_panicked`). Not there otherwise. |
+| `exit_status.code` | number, optional | The exit code. Not there when a signal ended it. |
+| `exit_status.signal` | number, optional | The signal that ended it. Not there otherwise. |
+| `error` | object, optional | Why, `{code, message}`, when brnr itself failed (`process_panicked`). Not there otherwise. |
 
 <!-- example: brnr session new --stop-when-idle 0 --prompt "slow 1" -- brnr-claude-adapter && brnr event wait $s --for exit --json; before: Nothing -->
 ```json
@@ -779,7 +781,7 @@ read from the raw ACP file; never in the events file.
 |---|---|---|
 | `dir` | string | `editor->agent`, `agent->editor`, `control->agent` (brnr's: a prompt, a cancel, an answer as the client), `control->editor` (a message sent through brnr, shown to the editor), `agent->control` (an answer for brnr), or `agent_stderr`. |
 | `session` | string or null | The session it is of; null for one of none. |
-| `msg` | object or string | The message, as brnr read it; a line that isn't JSON as a string. |
+| `msg` | object or string, ACP's | The message, as brnr read it; a line that isn't JSON as a string. |
 
 <!-- example: brnr event log $s --events acp --json; before: Idle; event: acp msg.method=session/prompt -->
 ```json
@@ -825,9 +827,9 @@ in `event log`.
 | `acp_count` | number | Raw ACP records skipped. |
 | `since` | string | When the first was made. |
 | `until` | string | When the last was made. |
-| `first_seq` | number | The first's position. Not there when none had one. |
-| `last_seq` | number | The last's position. Not there when none had one. |
-| `error` | object | Why, `{code, message}`. Not there when brnr knows none. |
+| `first_seq` | number, optional | The first's position. Not there when none had one. |
+| `last_seq` | number, optional | The last's position. Not there when none had one. |
+| `error` | object, optional | Why, `{code, message}`. Not there when brnr knows none. |
 
 It has `ts`, `host_id` and `pid`, and `session` in a session's file.
 
