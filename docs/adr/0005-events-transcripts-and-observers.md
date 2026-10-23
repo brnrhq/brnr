@@ -1283,7 +1283,8 @@ the transcript, which is covered.
 
 ## Tests
 
-Run `cargo test --release adr_0005_`. Named claims, by section:
+Run `cargo test --release adr_0005_`, and the tests of other topics named
+under a section by their names. Named claims, by section:
 
 - 5.1: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_transcripts_are_two_files`,
@@ -1292,8 +1293,8 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
   `adr_0010_a_copied_open_request_has_no_position` (the copied request has
   no `seq`);
   [tests/cli.rs](../../tests/cli.rs):
-  `adr_0008_delete_keeps_the_transcript` (`session_deleted` has no `seq`
-  and a null `pid`),
+  `adr_0008_delete_keeps_the_transcript` (`session_deleted` has a null
+  `host_id` and `pid`, and no `seq`),
   `adr_0005_log_shows_the_conversation`,
   `adr_0005_log_merges_the_raw_acp_in_time`,
   `adr_0005_log_reads_an_inactive_session`,
