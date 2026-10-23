@@ -420,7 +420,7 @@ publication wherever possible.
 - The documentation is an mdBook whose source is `docs/` (`book.toml` at
   the repository's root; `mdbook build` writes it to `target/book`, never
   into the repository): an introduction, installing, the guide, the
-  interface reference (`docs/interface.md`), the design (ADR 1, these
+  interface reference (`docs/reference/`), the design (ADR 1, these
   records and the threat model, at the paths the code and the skill link
   to) and the project's pages. It has mdBook's own search, and resolves
   #374.
@@ -442,6 +442,14 @@ publication wherever possible.
   (`tests/docs.rs`, ADR 8.6): each page with `sh` or `toml` blocks is in
   its `DOCS`, and the guide's pages, together, must name every command and
   option of `brnr --help`.
+- The interface reference is a section of the book, `docs/reference/`: an
+  overview with the synopsis `brnr --help` prints, a page for each command
+  group, and pages for the events, the bridge protocol, exit codes, errors,
+  the configuration and the files. Each output has a table of its fields,
+  one row for each, and an example. Each `json` block there is an example
+  whose command a test runs, comparing the shape of what brnr prints with it
+  (the fields at every level, each one's JSON type, null only where its row
+  says so), or is in the test's `JSON_SKIPPED`, with why (#375).
 
 Not covered by a Rust test: that the book builds, and that the site
 publishes it. ci.yml's lint job builds it on every pull request, and
@@ -513,7 +521,11 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
 - 11.6, 11.7: none; see the sections.
 - 11.8: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs` and
-  `adr_0008_every_toml_block_loads` run the book's examples (ADR 8.6), and
+  `adr_0008_every_toml_block_loads` run the book's examples (ADR 8.6),
+  `adr_0008_every_json_example_has_the_shape_brnr_prints` runs the
+  reference's JSON examples and checks their shape,
+  `the_interface_reference_matches_cli_help` checks the reference's
+  synopsis against `brnr --help`, and
   `the_guide_has_every_command_and_option` checks that the guide names
   every command and option; the build and publication, none (see the
   section).

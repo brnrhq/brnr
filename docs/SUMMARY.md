@@ -19,7 +19,24 @@
 
 # Reference
 
-- [Interface reference](interface.md)
+- [Overview](reference/overview.md)
+- [process](reference/process.md)
+- [session](reference/session.md)
+- [prompt](reference/prompt.md)
+- [queue](reference/queue.md)
+- [permission](reference/permission.md)
+- [elicitation](reference/elicitation.md)
+- [config](reference/config.md)
+- [event](reference/event.md)
+- [acp](reference/acp.md)
+- [doctor](reference/doctor.md)
+- [skill](reference/skill.md)
+- [Events](reference/events.md)
+- [Bridge protocol](reference/bridge.md)
+- [Exit codes](reference/exit-codes.md)
+- [Errors](reference/errors.md)
+- [Configuration](reference/configuration.md)
+- [Files and compatibility](reference/files.md)
 
 # Design
 

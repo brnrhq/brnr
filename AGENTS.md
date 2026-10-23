@@ -73,7 +73,9 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   `tests/security.rs` checks the claims of the threat model.
   `tests/docs.rs` runs the examples in the README, the book (`docs/`), the
   site and the skill (`skills/brnr/`): an example added or changed needs its
-  line in `EXAMPLES` there (or `SKIPPED`, with why). To make a flaky test fail,
+  line in `EXAMPLES` there (or `SKIPPED`, with why), and a `json` block in
+  the interface reference (`docs/reference/`) its `<!-- example: … -->`
+  just above it (or a line in `JSON_SKIPPED`, with why). To make a flaky test fail,
   run it under load with `tests/flake-loop.sh` (`-h`), not a loop of your
   own: its stressors stop with it.
 - `fuzz/`: cargo-fuzz targets for the parsers that read bytes from outside

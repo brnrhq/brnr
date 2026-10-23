@@ -128,5 +128,5 @@ no telemetry ([P15](adr/0001-principles.md)).
 [Install](install.md) brnr and an adapter, then the guide: start with
 [use it from an editor](guide/editor.md) or
 [headless sessions](guide/headless.md). The
-[interface reference](interface.md) has the commands, JSON, exit codes,
+[interface reference](reference/overview.md) has the commands, JSON, exit codes,
 configuration and the bridge protocol, for scripts and bridges.

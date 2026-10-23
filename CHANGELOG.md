@@ -37,6 +37,12 @@ brnr's own conventions:
   four things it does, each with an example on the page and the
   introduction. The diagram is an image, light and dark, in place of the
   text one (ADR 1, #376).
+- The interface reference is a section of the book, `docs/reference/`: a
+  page for each command group, and pages for the events, the bridge
+  protocol, exit codes, errors, the configuration and the files. Each output
+  has a table of its fields and an example, which a test runs and compares
+  with what brnr prints. `docs/interface.md` is gone (ADR 8.4, ADR 11.8,
+  #375).
 
 ## [0.10.0] - 2026-10-22
 

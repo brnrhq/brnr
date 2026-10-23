@@ -99,7 +99,7 @@ The documentation is a book at
   [transcripts](https://brnrhq.github.io/brnr/docs/guide/transcripts.html),
   [adapters](https://brnrhq.github.io/brnr/docs/guide/adapters.html),
   [doctor](https://brnrhq.github.io/brnr/docs/guide/doctor.html)
-- [Interface reference](https://brnrhq.github.io/brnr/docs/interface.html): commands, JSON, exit codes,
+- [Interface reference](https://brnrhq.github.io/brnr/docs/reference/overview.html): commands, JSON, exit codes,
   configuration and the bridge protocol, for scripts and bridges
 - Design: [principles](https://brnrhq.github.io/brnr/docs/adr/0001-principles.html),
   [decision records](https://brnrhq.github.io/brnr/docs/adr/README.html),

@@ -59,7 +59,7 @@ environment has `BRNR_PID` and `BRNR_SOCKET`.
 
 Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `was_cut_off`, `pending`, `allow`, `reject`, `set_config`, `fork`, `new`,
-`resume`, `close`, `stop` (see the [request and response reference](../interface.md#bridge-and-control-socket-protocol)); a failure is `{"ok": false, "error": {"code", "message"}}`, its code one of [these](../interface.md#errors); those about a session name it by
+`resume`, `close`, `stop` (see the [request and response reference](../reference/bridge.md)); a failure is `{"ok": false, "error": {"code", "message"}}`, its code one of [these](../reference/errors.md#codes); those about a session name it by
 its exact id, and those that act on an editor's session are
 [experimental](editor.md#experimental-actions), as the CLI's are. Events:
 [as above](events.md#events). A started bridge gets them from the process's start.

@@ -90,7 +90,7 @@ the message (`brnr: no session s (see brnr session list) [session_not_found]`);
 with `--json` it prints the error as its JSON, `{"error": {"code": …,
 "message": …}}`. A wait that got its turn prints the turn instead, a
 failed one too (exit 1): its `error` says why. Scripts match the `code`, never the message:
-[the interface reference](../interface.md#errors) lists the codes, and
+[the interface reference](../reference/errors.md#codes) lists the codes, and
 `unclassified` promises nothing. Where the agent's answer failed, a turn's
 `error` too, the code is `agent_failed`, and `rpc_error` is the agent's
 JSON-RPC error as it sent it.

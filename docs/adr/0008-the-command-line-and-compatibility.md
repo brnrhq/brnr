@@ -695,8 +695,8 @@ Covered:
 - **`--json` structures**: what each command prints with `--json`, its
   fields, their types and what they mean. A field that is a message for
   people carries text whose wording isn't covered.
-- **Exit codes**: what each command exits with, in each situation
-  `docs/interface.md` lists.
+- **Exit codes**: what each command exits with, in each situation the
+  interface reference lists (`docs/reference/exit-codes.md`).
 - **Error codes**: each error's `code` (ADR 8.7), wherever brnr reports an
   error as data, and what it means; its `message` isn't covered, nor is
   `unclassified`, which promises nothing. ACP's error the agent answered
@@ -800,7 +800,9 @@ requests, such as answering a permission, with no promise.
 
 **Consequences.**
 
-- `docs/interface.md` marks what is covered and what isn't; SECURITY.md,
+- The interface reference, `docs/reference/` in the book, marks what is
+  covered and what isn't, with a table of each output's fields and an
+  example of it that a test runs (#375); SECURITY.md,
   CHANGELOG.md's conventions, CONTRIBUTING.md and AGENTS.md say the 1.0
   policy next to the pre-1.0 one.
 - From 1.0.0, a breaking change to what is covered waits for 2.0.0. A
@@ -1184,7 +1186,7 @@ The codes, by subject:
 | `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs (ADR 7.1). |
 | `unclassified` | Anything else. No promise: don't match it. |
 
-src/error.rs has the list, docs/interface.md lists it for users, and a test
+src/error.rs has the list, docs/reference/errors.md lists it for users, and a test
 checks that the two agree and that a test reaches each code.
 
 **Why.** At 8d4b1dd every error was text, at about 155 places: a reply was
@@ -1370,7 +1372,7 @@ semver reading.
   profile's bridge `events`, a note or an event that brnr doesn't have.
 - A release that adds to what the socket speaks makes `PROTOCOL`
   (src/host/control.rs) one more, and says so under Added in the changelog;
-  docs/interface.md lists each request's fields.
+  docs/reference/bridge.md lists each request's fields.
 
 ## Tests
 
@@ -1479,7 +1481,10 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
   `adr_0008_wait_for_exit_says_exited_only_once_the_process_has`,
   `adr_0008_a_count_the_status_doesnt_have_isnt_0`.
-- 8.4: none: it is a promise that applies from 1.0.0.
+- 8.4: the promise applies from 1.0.0; what it covers is documented with
+  examples that can't drift:
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_every_json_example_has_the_shape_brnr_prints`.
 - 8.5: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
   process, ends with the exit status the binary exits with for the same

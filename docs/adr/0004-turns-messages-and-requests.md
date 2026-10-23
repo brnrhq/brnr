@@ -438,7 +438,7 @@ answers would be (ADR 4.6).
   `adr_0004_headless_advertises_elicitation` checks what brnr advertises.
 - A headless turn waits on an elicitation. `response_timeout` has no
   default (P4: brnr doesn't pick a deadline for the user), so an
-  unattended run must set it, and the documentation, interface.md and the skill
+  unattended run must set it, and the documentation, the interface reference and the skill
   say so.
 - Bridges that list `pending` see an `elicitations` key; one that answers
   elicitations sends `elicitation`.

@@ -210,7 +210,8 @@ then the old form is deprecated, and keeps working.
   (`skills/brnr/`) and the ADRs change with the code
   they describe. Their examples, and the site's, run as tests
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
-  it can't.
+  it can't; a JSON example in the interface reference (`docs/reference/`),
+  an `<!-- example: … -->` just above it naming its command.
 - A change users notice (a command, a flag, an output, a behaviour, a fix)
   adds its entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md),
   which follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),

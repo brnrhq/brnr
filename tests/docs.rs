@@ -9,7 +9,17 @@
 //! - every `toml` block loads as a config, every key in its part, as
 //!   `brnr doctor` checks one;
 //! - every command (a group's with its verb) and option `brnr --help`
-//!   lists is in the book's guide ([`GUIDE`]).
+//!   lists is in the book's guide ([`GUIDE`]);
+//! - every `json` block in the interface reference ([`REFERENCE`],
+//!   `docs/reference/`) has an `<!-- example: … -->` just above it, whose
+//!   command runs as an `sh` example does, and what brnr prints has the
+//!   block's shape: the same fields at every level, each of the same JSON
+//!   type, null only where its fields table says "or null"; or the block is
+//!   in [`JSON_SKIPPED`], with why. A bridge's example is a request and its
+//!   reply, which a bridge started from the profile ([`BRIDGE`]) sends and
+//!   gets;
+//! - the reference's synopsis is `brnr --help`, and its errors page lists
+//!   the error codes brnr has, as ADR 8.7 does.
 //!
 //! What the examples name that a test can't have (a real adapter, a model
 //! the fake agent doesn't offer) is in [`STAND_INS`], with what stands in for
@@ -26,7 +36,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use common::{AGENT, Env, kill, script, wait_for, with_default_interrupt};
 
@@ -44,7 +54,6 @@ const DOCS: &[&str] = &[
     "docs/guide/profiles.md",
     "docs/guide/doctor.md",
     "docs/project/releasing.md",
-    "docs/interface.md",
     "site/index.html",
     "skills/brnr/SKILL.md",
     "skills/brnr/references/orchestrate.md",
@@ -68,6 +77,37 @@ const GUIDE: &[&str] = &[
     "docs/guide/transcripts.md",
     "docs/guide/adapters.md",
     "docs/guide/doctor.md",
+];
+
+/// The interface reference's pages (ADR 8.4): every `json` block in them is
+/// an example the test runs, or is in [`JSON_SKIPPED`].
+const REFERENCE: &[&str] = &[
+    "docs/reference/overview.md",
+    "docs/reference/process.md",
+    "docs/reference/session.md",
+    "docs/reference/prompt.md",
+    "docs/reference/queue.md",
+    "docs/reference/permission.md",
+    "docs/reference/elicitation.md",
+    "docs/reference/config.md",
+    "docs/reference/event.md",
+    "docs/reference/acp.md",
+    "docs/reference/doctor.md",
+    "docs/reference/skill.md",
+    "docs/reference/events.md",
+    "docs/reference/bridge.md",
+    "docs/reference/exit-codes.md",
+    "docs/reference/errors.md",
+    "docs/reference/configuration.md",
+    "docs/reference/files.md",
+];
+
+/// The reference's `json` blocks no test runs, by page and heading, and why.
+const JSON_SKIPPED: &[(&str, &str, &str)] = &[
+    ("events.md", "`session_reopened`", "needs an editor's load the agent answers after the close"),
+    ("events.md", "`peer_cut_off`", "needs a peer 16 MiB behind"),
+    ("events.md", "`records_skipped`", "needs a disk too slow for the transcript"),
+    ("events.md", "`events_missed`", "needs a command cut off that can't catch up"),
 ];
 
 /// What runs before an example: the state of its session, `$s`.
@@ -473,12 +513,60 @@ fn the_guide_has_every_command_and_option() {
     assert!(missing.is_empty(), "the guide ({GUIDE:?}) doesn't mention {missing:?}");
 }
 
+/// Every `json` block in the reference is an example: what brnr prints for
+/// the command in the `<!-- example: … -->` just above it has its shape
+/// (`run_json`), or the block is in [`JSON_SKIPPED`], with why. A block in
+/// neither fails the test, as does an entry no block has any more.
+#[test]
+fn adr_0008_every_json_example_has_the_shape_brnr_prints() {
+    let blocks = json_blocks();
+    let mut problems = Vec::new();
+    let mut skips = vec![false; JSON_SKIPPED.len()];
+    let mut jobs = Vec::new();
+    for (i, block) in blocks.iter().enumerate() {
+        let skipped = JSON_SKIPPED.iter().position(|(page, heading, _)| {
+            block.page.ends_with(page) && block.heading.contains(heading)
+        });
+        match (&block.spec, skipped) {
+            (Some(_), Some(k)) => {
+                problems.push(format!("{}: an example, and JSON_SKIPPED[{k}] too", block.at))
+            }
+            (Some(_), None) => jobs.push((format!("j{i}"), block)),
+            (None, Some(k)) => skips[k] = true,
+            (None, None) => problems.push(format!(
+                "{}: no <!-- example: … --> above it, and not in JSON_SKIPPED",
+                block.at
+            )),
+        }
+    }
+    for (k, (page, heading, _)) in JSON_SKIPPED.iter().enumerate().filter(|(k, _)| !skips[*k]) {
+        problems.push(format!("JSON_SKIPPED[{k}]: no block under {heading} in {page}"));
+    }
+    let next = AtomicUsize::new(0);
+    let failed = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS {
+            scope.spawn(|| {
+                while let Some((name, block)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if let Err(e) = run_json(name, block) {
+                        let spec = block.spec.as_deref().unwrap_or_default();
+                        failed.lock().unwrap().push(format!("{} ({spec}): {e}", block.at));
+                    }
+                }
+            });
+        }
+    });
+    problems.extend(failed.into_inner().unwrap());
+    eprintln!("{} json examples checked, {} skipped", jobs.len(), skips.len());
+    assert!(problems.is_empty(), "\n{}", problems.join("\n\n"));
+}
+
 // ---- the documents --------------------------------------------------------
 
 #[test]
 fn the_interface_reference_matches_cli_help() {
     let help = Env::new("reference-help").ok(&["--help"]);
-    let reference = read("docs/interface.md");
+    let reference = read("docs/reference/overview.md");
     let synopsis = reference
         .split_once("```text\n")
         .expect("interface reference needs the CLI synopsis")
@@ -494,8 +582,8 @@ fn the_interface_reference_matches_cli_help() {
 /// test in src/.
 const UNREACHED: &[(&str, &str)] = &[];
 
-/// The error codes, as brnr has them, are the ones docs/interface.md and
-/// ADR 8.7 list, in the same order; and a test asserts that brnr reported
+/// The error codes, as brnr has them, are the ones docs/reference/errors.md
+/// and ADR 8.7 list, in the same order; and a test asserts that brnr reported
 /// each one, but those in [`UNREACHED`], with why (ADR 8.7).
 #[test]
 fn adr_0008_every_error_code_is_listed_and_reached() {
@@ -509,7 +597,7 @@ fn adr_0008_every_error_code_is_listed_and_reached() {
         rows.filter_map(|l| Some(l.split('`').nth(1)?.to_owned())).collect()
     };
     let adr = "docs/adr/0008-the-command-line-and-compatibility.md";
-    for (doc, heading) in [("docs/interface.md", "### Errors"), (adr, "## 8.7 ")] {
+    for (doc, heading) in [("docs/reference/errors.md", "## Codes"), (adr, "## 8.7 ")] {
         assert_eq!(listed(doc, heading), codes, "{doc} lists other codes than src/error.rs");
     }
     // The tests: tests/, and the unit tests in src/ (after a module's
@@ -719,74 +807,11 @@ fn variants((words, _): &(Vec<Word>, usize)) -> Vec<Vec<Word>> {
 
 /// Runs one example in an environment of its own, `name`.
 fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), String> {
-    let env = Env::new(name);
+    let env = scratch(name, before, &[], false);
     let dir = env.dir.clone();
-    let agent = format!("[{AGENT:?}]");
-    env.write_config(&format!(
-        "[profiles.default]\nagent = {agent}\n\n[profiles.work]\nagent = {agent}\n"
-    ));
-    fs::create_dir_all(dir.join("project")).unwrap();
-    fs::create_dir_all(dir.join("src")).unwrap();
-    fs::create_dir_all(dir.join("bin")).unwrap();
-    fs::write(dir.join("task.md"), "reply readme\n").unwrap();
-    fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
-    fs::write(dir.join("screenshot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-    script(&dir.join("bin/curl"), "#!/bin/sh\necho curl \"$@\"\n");
-
     let s = "sess-1";
-    match before {
-        Nothing => {}
-        Idle | Ended => drop(env.start(&["--wait", "--prompt", "reply hi"])),
-        Turn => drop(env.start(&["--prompt", "hang"])),
-        Slow => drop(env.start(&["--prompt", "slow 1"])),
-        Approval => {
-            env.start(&["--prompt", "perm edit"]);
-            env.ok(&["event", "wait", s, "--for", "permission", "--timeout", "10"]);
-        }
-        Elicitation => {
-            env.start(&["--prompt", "elicit form"]);
-            env.ok(&["event", "wait", s, "--for", "elicitation", "--timeout", "10"]);
-        }
-    }
-    if let Ended = before {
-        env.ok(&["session", "close", s]);
-    }
-
-    let (mut args, mut stdin, mut stdout) = (Vec::new(), None, "stdout".to_owned());
-    let mut it = words.iter();
-    while let Some(w) = it.next() {
-        let text = STAND_INS.iter().find(|(from, _)| *from == w.text).map_or(&*w.text, |s| s.1);
-        let text = match text {
-            "{pid}" => env.pid(),
-            _ => text.to_owned(),
-        };
-        let text = text
-            .replace("{s}", s)
-            .replace("{agent}", AGENT)
-            .replace("{dir}", &dir.to_string_lossy());
-        match (w.quoted, &*text) {
-            (false, "<") => stdin = Some(it.next().ok_or("< and no file")?.text.clone()),
-            (false, ">") => stdout = it.next().ok_or("> and no file")?.text.clone(),
-            _ => args.push(text),
-        }
-    }
-    if args.first().map(String::as_str) != Some("brnr") {
-        return Err("not a brnr command".into());
-    }
-    let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap());
-    let args: Vec<&str> = args[1..].iter().map(String::as_str).collect();
-    let mut cmd = env.brnr(&args);
-    // HOME is the scratch directory: `skill install` writes under it. The
-    // ntfy example needs its topic set.
-    cmd.env("PATH", path)
-        .env("HOME", &dir)
-        .env("NTFY_TOPIC", "brnr-docs-topic")
-        .stdin(match &stdin {
-            Some(file) => Stdio::from(File::open(dir.join(file)).unwrap()),
-            None => Stdio::null(),
-        })
-        .stdout(File::create(dir.join(&stdout)).unwrap())
-        .stderr(File::create(dir.join("stderr")).unwrap());
+    let (mut cmd, stdout) = command(&env, words)?;
+    cmd.stderr(File::create(dir.join("stderr")).unwrap());
     let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
     let printed = || fs::read_to_string(dir.join(&stdout)).unwrap_or_default();
     let stderr = || fs::read_to_string(dir.join("stderr")).unwrap_or_default();
@@ -835,4 +860,418 @@ fn finish(child: &mut Child) -> Option<bool> {
         return None;
     }
     Some(child.wait().unwrap().success())
+}
+
+/// An environment of its own, `name`, for an example: the config (with
+/// [`BRIDGE`] started from the default profile if `bridge`), the files the
+/// examples name, curl's stand-in, the fake agent's `agent` variables, and
+/// `$s` in the state `before` says.
+fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool) -> Env {
+    let env = agent.iter().fold(Env::new(name), |env, (k, v)| env.agent(k, v));
+    let dir = env.dir.clone();
+    let agent = format!("[{AGENT:?}]");
+    let mut config =
+        format!("[profiles.default]\nagent = {agent}\n\n[profiles.work]\nagent = {agent}\n");
+    fs::create_dir_all(dir.join("project")).unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("bin")).unwrap();
+    if bridge {
+        script(&dir.join("bin/bridge"), BRIDGE);
+        let (command, args) = (dir.join("bin/bridge"), [dir.to_string_lossy()]);
+        config.push_str(&format!(
+            "\n[[profiles.default.bridges]]\ncommand = {command:?}\nargs = {args:?}\n"
+        ));
+    }
+    env.write_config(&config);
+    fs::write(dir.join("task.md"), "reply readme\n").unwrap();
+    fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
+    fs::write(dir.join("screenshot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    script(&dir.join("bin/curl"), "#!/bin/sh\necho curl \"$@\"\n");
+
+    let s = "sess-1";
+    match before {
+        Nothing => {}
+        Idle | Ended => drop(env.start(&["--wait", "--prompt", "reply hi"])),
+        Turn => drop(env.start(&["--prompt", "hang"])),
+        Slow => drop(env.start(&["--prompt", "slow 1"])),
+        Approval => {
+            env.start(&["--prompt", "perm edit"]);
+            env.ok(&["event", "wait", s, "--for", "permission", "--timeout", "10"]);
+        }
+        Elicitation => {
+            env.start(&["--prompt", "elicit form"]);
+            env.ok(&["event", "wait", s, "--for", "elicitation", "--timeout", "10"]);
+        }
+    }
+    if let Ended = before {
+        env.ok(&["session", "close", s]);
+    }
+    env
+}
+
+/// The command `words` are, as sh would run it in `env`'s scratch directory,
+/// [`STAND_INS`] in place, its stdin from the file after `<`; and the file
+/// its stdout goes to, the one after `>` or `stdout`.
+fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String), String> {
+    let (dir, s) = (&env.dir, "sess-1");
+    let (mut args, mut stdin, mut stdout) = (Vec::new(), None, "stdout".to_owned());
+    let mut it = words.iter();
+    while let Some(w) = it.next() {
+        let text = STAND_INS.iter().find(|(from, _)| *from == w.text).map_or(&*w.text, |s| s.1);
+        let text = match text {
+            "{pid}" => env.pid(),
+            _ => text.to_owned(),
+        };
+        let text = text
+            .replace("{s}", s)
+            .replace("{agent}", AGENT)
+            .replace("{dir}", &dir.to_string_lossy());
+        match (w.quoted, &*text) {
+            (false, "<") => stdin = Some(it.next().ok_or("< and no file")?.text.clone()),
+            (false, ">") => stdout = it.next().ok_or("> and no file")?.text.clone(),
+            _ => args.push(text),
+        }
+    }
+    if args.first().map(String::as_str) != Some("brnr") {
+        return Err("not a brnr command".into());
+    }
+    let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap());
+    let args: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+    let mut cmd = env.brnr(&args);
+    // HOME is the scratch directory: `skill install` writes under it. The
+    // ntfy example needs its topic set.
+    cmd.env("PATH", path)
+        .env("HOME", dir)
+        .env("NTFY_TOPIC", "brnr-docs-topic")
+        .stdin(match &stdin {
+            Some(file) => Stdio::from(File::open(dir.join(file)).unwrap()),
+            None => Stdio::null(),
+        })
+        .stdout(File::create(dir.join(&stdout)).unwrap());
+    Ok((cmd, stdout))
+}
+
+// ---- the reference's JSON ------------------------------------------------
+
+/// A started bridge for the reference's examples of the bridge protocol: once
+/// `<dir>/bridge.in` exists, it writes it on its stdout, the requests; it
+/// appends every line on its stdin, the replies and events, to
+/// `<dir>/bridge.out`; it exits when its stdin ends.
+const BRIDGE: &str = r#"#!/usr/bin/env python3
+import os, sys, threading, time
+d = sys.argv[1]
+def ask():
+    path = os.path.join(d, "bridge.in")
+    while not os.path.exists(path):
+        time.sleep(0.02)
+    with open(path) as f:
+        sys.stdout.write(f.read())
+    sys.stdout.flush()
+threading.Thread(target=ask, daemon=True).start()
+with open(os.path.join(d, "bridge.out"), "a") as out:
+    for line in sys.stdin:
+        out.write(line)
+        out.flush()
+"#;
+
+/// A `json` block of the reference, and what the test knows of it.
+struct Json {
+    /// `docs/reference/session.md:120`.
+    at: String,
+    page: &'static str,
+    /// The heading it is under, `## \`brnr session status\``.
+    heading: String,
+    /// Its `<!-- example: … -->`, if it has one.
+    spec: Option<String>,
+    text: String,
+    /// The fields its section's tables, and its page's intro's, list
+    /// (`| Field | Type | Meaning |`), each by its last name
+    /// (`last_turn.stop_reason` is `stop_reason`), and those of them that can
+    /// be null (`or null` in its type).
+    fields: Vec<String>,
+    nullable: Vec<String>,
+}
+
+/// Every `json` block of the reference's pages.
+fn json_blocks() -> Vec<Json> {
+    // A section's fields, and those that can be null.
+    type Fields = (Vec<String>, Vec<String>);
+    let mut blocks = Vec::new();
+    for &page in REFERENCE {
+        let text = read(page);
+        let lines: Vec<&str> = text.lines().collect();
+        // The fields of each section, by the line its heading is on.
+        let mut sections: Vec<(usize, Fields)> = vec![(0, Default::default())];
+        let mut in_table = false;
+        let mut fence = false;
+        for (n, line) in lines.iter().enumerate() {
+            if line.starts_with("```") {
+                fence = !fence;
+            }
+            if fence {
+                continue;
+            }
+            // The title's section, the page's intro, is every section's.
+            if line.starts_with("##") {
+                sections.push((n, Default::default()));
+            }
+            if line.starts_with("| Field | Type |") {
+                in_table = true;
+            } else if !line.starts_with('|') {
+                in_table = false;
+            } else if in_table && line.starts_with("| `") {
+                let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+                let Some(name) = cells[1].split('`').nth(1) else { continue };
+                let name = name.rsplit('.').next().unwrap().to_owned();
+                let (fields, nullable) = &mut sections.last_mut().unwrap().1;
+                if cells.get(2).is_some_and(|t| t.contains("null")) {
+                    nullable.push(name.clone());
+                }
+                fields.push(name);
+            }
+        }
+        let fields_at = |n: usize| -> Fields {
+            let (first, mine) =
+                (&sections[0].1, &sections.iter().rfind(|(at, _)| *at <= n).unwrap().1);
+            let mut both = first.clone();
+            both.0.extend(mine.0.iter().cloned());
+            both.1.extend(mine.1.iter().cloned());
+            both
+        };
+        for (lang, start, body) in md_blocks(&text) {
+            if lang != "json" {
+                continue;
+            }
+            // The fence is on line `start - 1`, counting from 1.
+            let fence = start - 2;
+            let above = lines[..fence].iter().rev().find(|l| !l.trim().is_empty());
+            let spec = above
+                .and_then(|l| l.trim().strip_prefix("<!-- example: "))
+                .and_then(|l| l.strip_suffix("-->"))
+                .map(|l| l.trim().to_owned());
+            let heading = lines[..fence].iter().rev().find(|l| l.starts_with('#'));
+            let (fields, nullable) = fields_at(fence);
+            blocks.push(Json {
+                at: format!("{page}:{start}"),
+                page,
+                heading: heading.map_or("", |h| h).to_owned(),
+                spec,
+                text: body,
+                fields,
+                nullable,
+            });
+        }
+    }
+    blocks
+}
+
+/// What an `<!-- example: … -->` says: the commands to run, `$s` in the
+/// state `before` names; the event to pick of the last one's lines; the exit
+/// status it must have; the fake agent's variables. Written
+/// `<!-- example: <command>[ && <command>]...; before: <state>[; event:
+/// <name>[ <field>=<value>]][; exit: <n>][; agent: <VAR>=<value>]... -->`,
+/// `<field>` dotted (`msg.method`); `bridge` in place of the commands for a
+/// bridge's request and reply. Each command but the last must exit 0.
+struct Spec {
+    commands: Vec<Vec<Word>>,
+    bridge: bool,
+    before: Before,
+    event: Option<String>,
+    exit: i32,
+    agent: Vec<(String, String)>,
+}
+
+fn spec(text: &str) -> Result<Spec, String> {
+    let mut parts = text.split("; ");
+    let commands = parts.next().unwrap_or_default();
+    let bridge = commands == "bridge";
+    let commands = match bridge {
+        true => Vec::new(),
+        false => commands.split(" && ").map(|c| lex(c).0).collect(),
+    };
+    let mut spec = Spec { commands, bridge, before: Nothing, event: None, exit: 0, agent: vec![] };
+    for part in parts {
+        let (key, value) = part.split_once(": ").ok_or(format!("{part}: not <key>: <value>"))?;
+        match key {
+            "before" => {
+                spec.before = match value {
+                    "Nothing" => Nothing,
+                    "Idle" => Idle,
+                    "Turn" => Turn,
+                    "Slow" => Slow,
+                    "Approval" => Approval,
+                    "Elicitation" => Elicitation,
+                    "Ended" => Ended,
+                    _ => return Err(format!("before: {value}: no such state")),
+                }
+            }
+            "event" => spec.event = Some(value.to_owned()),
+            "exit" => spec.exit = value.parse().map_err(|_| format!("exit: {value}"))?,
+            "agent" => {
+                let (k, v) = value.split_once('=').ok_or(format!("agent: {value}: not K=V"))?;
+                spec.agent.push((k.to_owned(), v.to_owned()));
+            }
+            _ => return Err(format!("{key}: not before, event, exit or agent")),
+        }
+    }
+    Ok(spec)
+}
+
+/// Runs the example `block` is, in an environment of its own, `name`, and
+/// checks that what brnr prints has its shape.
+fn run_json(name: &str, block: &Json) -> Result<(), String> {
+    let spec = spec(block.spec.as_deref().unwrap_or_default())?;
+    let env = scratch(name, spec.before, &spec.agent, spec.bridge);
+    let (example, real) = match spec.bridge {
+        true => bridge_exchange(&env, &block.text)?,
+        false => {
+            let mut printed = String::new();
+            for (i, words) in spec.commands.iter().enumerate() {
+                let (mut cmd, stdout) = command(&env, words)?;
+                cmd.stderr(File::create(env.dir.join("stderr")).unwrap());
+                let mut child = cmd.spawn().unwrap();
+                let status = match wait_for(TIMEOUT, || child.try_wait().unwrap().is_some()) {
+                    true => child.wait().unwrap().code(),
+                    false => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!("still running after {TIMEOUT:?}"));
+                    }
+                };
+                printed = fs::read_to_string(env.dir.join(&stdout)).unwrap_or_default();
+                let stderr = fs::read_to_string(env.dir.join("stderr")).unwrap_or_default();
+                let wanted = if i + 1 == spec.commands.len() { spec.exit } else { 0 };
+                if status != Some(wanted) {
+                    let n = i + 1;
+                    return Err(format!(
+                        "command {n} exited {status:?}, not {wanted}\nstdout:\n{printed}stderr:\n{stderr}"
+                    ));
+                }
+            }
+            let real: Value = match &spec.event {
+                None => serde_json::from_str(&printed).map_err(|e| format!("{e}: {printed}"))?,
+                Some(event) => {
+                    // `acp msg.method=session/prompt`: the first `acp` event
+                    // whose `msg.method` is `session/prompt`.
+                    let (name, field) = event.split_once(' ').unwrap_or((event, ""));
+                    let (path, value) = field.split_once('=').unwrap_or_default();
+                    let pointer = format!("/{}", path.replace('.', "/"));
+                    let picked = |e: &Value| {
+                        e["event"] == name
+                            && (path.is_empty() || e.pointer(&pointer) == Some(&json!(value)))
+                    };
+                    printed
+                        .lines()
+                        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                        .find(picked)
+                        .ok_or(format!("no {event} in what it printed:\n{printed}"))?
+                }
+            };
+            let example: Value =
+                serde_json::from_str(&block.text).map_err(|e| format!("the example: {e}"))?;
+            (example, real)
+        }
+    };
+    let mut problems = Vec::new();
+    // Each field the example has is in the section's tables.
+    for key in example.as_object().into_iter().flat_map(|o| o.keys()) {
+        if !["ok", "req_id", "cmd"].contains(&key.as_str()) && !block.fields.contains(key) {
+            problems.push(format!("{key} is in no fields table"));
+        }
+    }
+    shape(&example, &real, "", "", &block.nullable, &mut problems);
+    match problems.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "{}\nbrnr printed:\n{}",
+            problems.join("\n"),
+            serde_json::to_string_pretty(&real).unwrap()
+        )),
+    }
+}
+
+/// The example's request and reply, `text`'s two JSON values, and the reply
+/// [`BRIDGE`], started in `env`, got when it sent the request.
+fn bridge_exchange(env: &Env, text: &str) -> Result<(Value, Value), String> {
+    let values: Vec<Value> = serde_json::Deserializer::from_str(text)
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("the example: {e}"))?;
+    let [request, reply] = &values[..] else {
+        return Err("a bridge example is a request and its reply".into());
+    };
+    let id = request["req_id"].as_str().ok_or("the request has no req_id")?;
+    let draft = env.dir.join("bridge.draft");
+    fs::write(&draft, format!("{request}\n")).unwrap();
+    fs::rename(&draft, env.dir.join("bridge.in")).unwrap();
+    let mut answer = None;
+    wait_for(TIMEOUT, || {
+        let out = fs::read_to_string(env.dir.join("bridge.out")).unwrap_or_default();
+        let lines = out.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok());
+        answer = lines.into_iter().find(|v| v["req_id"] == id);
+        answer.is_some()
+    });
+    let answer = answer.ok_or(format!("no reply to {id} in {TIMEOUT:?}"))?;
+    Ok((reply.clone(), answer))
+}
+
+/// Where `example` and `real` differ in shape, into `problems`: the keys at
+/// every level, and each value's JSON type; a list by its first element,
+/// where both have one. A null, on either side, only for a field
+/// `nullable` names. `key` is the field `example` is the value of, at
+/// `path`.
+fn shape(
+    example: &Value,
+    real: &Value,
+    path: &str,
+    key: &str,
+    nullable: &[String],
+    problems: &mut Vec<String>,
+) {
+    let kind = |v: &Value| match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    };
+    let at = if path.is_empty() { "the example" } else { path };
+    match (example, real) {
+        (Value::Null, _) | (_, Value::Null) => {
+            if !nullable.iter().any(|n| n == key) {
+                problems.push(format!(
+                    "{at}: the example has {}, brnr printed {}, and its row doesn't say \"or null\"",
+                    kind(example),
+                    kind(real)
+                ));
+            }
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            for k in a.keys().filter(|k| !b.contains_key(*k)) {
+                problems.push(format!("{path}.{k}: in the example, not in what brnr printed"));
+            }
+            for k in b.keys().filter(|k| !a.contains_key(*k)) {
+                problems.push(format!("{path}.{k}: printed by brnr, not in the example"));
+            }
+            for (k, v) in a {
+                if let Some(real) = b.get(k) {
+                    shape(v, real, &format!("{path}.{k}"), k, nullable, problems);
+                }
+            }
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            if let (Some(a), Some(b)) = (a.first(), b.first()) {
+                shape(a, b, &format!("{path}[0]"), key, nullable, problems);
+            }
+        }
+        _ if kind(example) != kind(real) => {
+            problems.push(format!(
+                "{at}: the example has {}, brnr printed {}",
+                kind(example),
+                kind(real)
+            ));
+        }
+        _ => {}
+    }
 }

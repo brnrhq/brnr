@@ -24,7 +24,7 @@ macro_rules! codes {
         }
 
         impl Code {
-            /// Every code, in the order docs/interface.md lists them.
+            /// Every code, in the order docs/reference/errors.md lists them.
             pub(crate) const ALL: &[Code] = &[$(Code::$name,)+];
 
             /// Its name, as it is in JSON.
@@ -131,7 +131,7 @@ codes! {
     unclassified,
 }
 
-/// Every code's name, as docs/interface.md lists them: for the tests.
+/// Every code's name, as docs/reference/errors.md lists them: for the tests.
 #[cfg(any(test, feature = "internals"))]
 pub fn names() -> Vec<&'static str> {
     Code::ALL.iter().map(|c| c.name()).collect()
