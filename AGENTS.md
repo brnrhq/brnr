@@ -71,9 +71,11 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   (its docstring lists them). `tests/common/mod.rs` has the helpers (`Env`,
   and `skip` for a test that can't run where it is: it fails in CI);
   `tests/security.rs` checks the claims of the threat model.
-  `tests/docs.rs` runs the examples in the README, the site and the skill
-  (`skills/brnr/`): an example added or changed needs its line in
-  `EXAMPLES` there (or `SKIPPED`, with why). To make a flaky test fail,
+  `tests/docs.rs` runs the examples in the README, the book (`docs/`), the
+  site and the skill (`skills/brnr/`): an example added or changed needs its
+  line in `EXAMPLES` there (or `SKIPPED`, with why), and a `json` block in
+  the interface reference (`docs/reference/`) its `<!-- example: … -->`
+  just above it (or a line in `JSON_SKIPPED`, with why). To make a flaky test fail,
   run it under load with `tests/flake-loop.sh` (`-h`), not a loop of your
   own: its stressors stop with it.
 - `fuzz/`: cargo-fuzz targets for the parsers that read bytes from outside
@@ -84,7 +86,11 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
   it and its test, and the gaps. A change to a boundary (permissions, the
   socket, redaction, approvals, what `brnr acp` changes) updates it.
 - `adapters/`: the Claude Code and Codex ACP adapters, built with bun.
-- `docs/adr/`, `README.md`, `site/`: what brnr does, for people.
+- `docs/`: the documentation, an mdBook (`book.toml`; `mdbook build`
+  writes it to `target/book`), published with `site/` by `pages.yml`
+  (ADR 11.8): the guide, the interface reference, the ADRs and the threat
+  model. `README.md` is the short entry point, and `site/` the landing
+  page: what brnr does, for people.
 
 ## Checks
 
@@ -119,9 +125,9 @@ runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version
 - What brnr prints, it prints the same in text and `--json` (P5). It never
   guesses or picks for the user (P4), and never drops something silently
   (P3): an error, an exit status or an event says so.
-- A behaviour change comes with a test that shows it, and the README and the
-  ADRs say what the code now does. What users notice gets its line under
-  `[Unreleased]` in CHANGELOG.md, with its ADR, under its
+- A behaviour change comes with a test that shows it, and the documentation
+  (`docs/`, the README) and the ADRs say what the code now does. What users
+  notice gets its line under `[Unreleased]` in CHANGELOG.md, with its ADR, under its
   [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) change type.
 
 ## Git

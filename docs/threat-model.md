@@ -5,7 +5,7 @@ reach it over a Unix socket, including answering the agent's approvals from
 outside the editor. That makes it a security boundary: whoever can reach the
 process can act as the agent's user. This document says who can reach what,
 how brnr keeps it so, and which test checks each claim. Where a claim has no
-enforcement or no test, it is listed as a gap. [SECURITY.md](../SECURITY.md)
+enforcement or no test, it is listed as a gap. [SECURITY.md](https://github.com/brnrhq/brnr/blob/main/SECURITY.md)
 says what is in scope for a report; the principles cited are
 [ADR 1](adr/0001-principles.md)'s.
 
@@ -327,6 +327,6 @@ What brnr doesn't enforce, or doesn't test, today.
 
 ## Out of scope
 
-As [SECURITY.md](../SECURITY.md) has it: the agents and the upstream adapters
+As [SECURITY.md](https://github.com/brnrhq/brnr/blob/main/SECURITY.md) has it: the agents and the upstream adapters
 themselves, what an agent does with an approval its user gave, and anyone who
 can already run code as the user.

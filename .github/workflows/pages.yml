@@ -1,10 +1,16 @@
-# Publishes site/ to GitHub Pages.
+# Publishes site/ to GitHub Pages, with the documentation, the mdBook built
+# from docs/, at docs/ beside it (ADR 11.8).
 name: pages
 
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/pages.yml"]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "book.toml"
+      - ".github/scripts/book.sh"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,9 +36,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - run: bash .github/scripts/book.sh
+      - name: The landing page at the root, the book at docs/
+        run: |
+          mkdir _site
+          cp -R site/. _site/
+          cp -R target/book _site/docs
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: site
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

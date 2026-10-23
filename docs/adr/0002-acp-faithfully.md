@@ -539,7 +539,7 @@ decision part of #69.
   commands in processes of its own, where run directly it might do all
   three through the editor. That is the cost of following v2 ahead of it;
   a profile's `client_capabilities`, or strict mode, gives them back. The
-  README says so.
+  documentation says so.
 - With them passed, the editor serves those requests
   (docs/threat-model.md, B3). What it answers them with (files as its
   buffers have them, unsaved changes and a `.env` included, and the
@@ -583,48 +583,48 @@ decision part of #69.
 
 Run `cargo test --release adr_0002_`. Named claims, by section:
 
-- 2.1: [tests/headless.rs](../../tests/headless.rs):
+- 2.1: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0002_strict_mode_refuses_steering_and_fork`,
   `adr_0002_strict_mode_has_no_experimental_actions`.
-- 2.2: [tests/cli.rs](../../tests/cli.rs):
+- 2.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0002_a_start_in_an_acp_version_brnr_doesnt_speak_fails`: a start
   whose agent answers with version 999, 0, `"1"`, 1.5, 70000 or none,
   strict or not, exits 1 with the cause, sends nothing after
   `initialize`, and leaves no process or agent running; `session list`
   stops at `initialize` too; version 1 starts.
-- 2.3: [tests/cli.rs](../../tests/cli.rs):
+- 2.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0002_an_update_the_schema_doesnt_know_changes_nothing`;
-  [src/schema.rs](../../src/schema.rs):
+  [src/schema.rs](https://github.com/brnrhq/brnr/blob/main/src/schema.rs):
   `adr_0002_what_the_adapters_send_is_read_as_the_schemas_types`,
   `adr_0002_a_part_of_a_line_at_the_limit_reads_as_its_type`,
   `adr_0002_what_the_types_dont_take_is_left_to_value`,
   `adr_0002_stable_is_what_the_schema_has_without_its_unstable_features`.
-- 2.4: [tests/headless.rs](../../tests/headless.rs):
+- 2.4: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0002_an_editors_prompt_ends_only_with_its_own_answer`,
   `adr_0002_an_editors_request_with_a_host_requests_id_is_the_editors`,
   `adr_0002_ids_come_back_as_the_editor_wrote_them`,
   `adr_0002_the_editors_cancel_request_is_for_its_own_request`;
-  [src/json.rs](../../src/json.rs):
+  [src/json.rs](https://github.com/brnrhq/brnr/blob/main/src/json.rs):
   `adr_0002_an_id_is_found_where_it_is_and_nowhere_else`;
-  [src/host/outbound.rs](../../src/host/outbound.rs):
+  [src/host/outbound.rs](https://github.com/brnrhq/brnr/blob/main/src/host/outbound.rs):
   `adr_0002_ids_are_never_given_twice`,
   `adr_0002_an_answer_is_its_requests_once`,
   `adr_0002_a_second_answer_reaches_nobody`,
   `adr_0002_an_answer_for_a_closed_session_goes_to_whoever_asked`. Also
-  [tests/security.rs](../../tests/security.rs):
+  [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0003_acp_passes_bytes_unchanged` (ADR 3.1's), which checks that
   only the ids change.
-- 2.5: [src/json.rs](../../src/json.rs):
+- 2.5: [src/json.rs](https://github.com/brnrhq/brnr/blob/main/src/json.rs):
   `adr_0002_a_line_is_read_to_its_limit_and_no_deeper`,
   `adr_0002_any_stack_takes_a_value_at_the_limit`;
-  [src/host/fuzz.rs](../../src/host/fuzz.rs):
+  [src/host/fuzz.rs](https://github.com/brnrhq/brnr/blob/main/src/host/fuzz.rs):
   `adr_0002_the_host_holds_nothing_of_a_line_past_the_limit`;
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0002_a_message_at_the_limit_is_recorded_as_json`;
-  [src/ctl/client.rs](../../src/ctl/client.rs):
+  [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
   `adr_0002_an_answer_is_read_to_the_limit_and_no_deeper`,
   `adr_0002_a_status_with_an_error_at_the_limit_is_an_answer`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0002_a_lone_surrogate_is_read`, `adr_0002_a_line_at_the_limit_is_read`,
   `adr_0002_a_line_past_the_limit_passes_through_unread`,
   `adr_0002_an_editors_rest_past_the_limit_passes_through_unread`,
@@ -637,26 +637,26 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   `adr_0002_a_deep_request_is_notified`,
   `adr_0002_a_deep_event_is_caught_up`,
   `adr_0002_a_deep_request_is_logged`;
-  [src/host/outbound.rs](../../src/host/outbound.rs):
+  [src/host/outbound.rs](https://github.com/brnrhq/brnr/blob/main/src/host/outbound.rs):
   `adr_0002_an_answer_to_an_unknown_id_goes_on_as_it_came`;
-  [src/host/approvals.rs](../../src/host/approvals.rs):
+  [src/host/approvals.rs](https://github.com/brnrhq/brnr/blob/main/src/host/approvals.rs):
   `adr_0002_a_late_answer_from_the_editor_is_dropped`;
-  [src/transcript.rs](../../src/transcript.rs):
+  [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
   `adr_0002_a_record_is_read_to_the_limit_and_no_deeper`.
-- 2.6: [tests/security.rs](../../tests/security.rs):
+- 2.6: [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0002_the_editors_stdout_ends_with_the_agents`,
   `adr_0002_stderr_comes_as_it_is_written`,
   `adr_0002_stdout_and_stderr_end_on_their_own`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0002_a_timed_out_start_shows_the_line_stderr_is_in`,
   `adr_0002_the_editors_write_fails_once_the_agents_stdin_closes`;
-  [src/host/fuzz.rs](../../src/host/fuzz.rs):
+  [src/host/fuzz.rs](https://github.com/brnrhq/brnr/blob/main/src/host/fuzz.rs):
   `adr_0002_brnrs_own_lines_end_with_the_agents_stdout`,
   `adr_0002_stderr_goes_on_before_its_line_ends`,
   `adr_0002_the_editors_stdin_ends_with_the_agents`. Not covered by a Rust
   test: the editor's stdin closing when the agent exits on its own, which
   takes a stop's path (`close_agent_stdin`).
-- 2.7: [tests/headless.rs](../../tests/headless.rs):
+- 2.7: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0002_fs_and_terminal_reach_the_agent_in_strict_mode_or_when_named`,
   `adr_0002_the_agents_file_and_terminal_requests_reach_the_editor`,
   `adr_0002_headless_sessions_offer_neither`. The real-editor checks

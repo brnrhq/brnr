@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" width="960" height="476" role="img" aria-labelledby="title desc">
+<title id="title">brnr's architecture</title>
+<desc id="desc">An optional editor's session: the editor runs brnr acp over stdio, and brnr acp, which only relays bytes, is joined to the brnr process by socketpairs. The brnr process owns the agent (Claude Code, Codex, any ACP agent) and talks to it over pipes. A headless session has no editor and no brnr acp. Below the brnr process is its control socket, a Unix socket only you can open. You reach it from a terminal (brnr prompt send, brnr event watch, and the other commands), and another agent reaches it through the same commands and brnr's skill. Bridges, such as Slack or push notifications, are started by a profile and talk to the brnr process over pipes.</desc>
+<rect width="960" height="476" rx="12" fill="#1c1f1a"/>
+<rect x="12" y="24" width="320" height="164" rx="14" fill="none" stroke="#9da48f" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="28" y="56" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="15" font-weight="400" text-anchor="start" font-style="italic">optional: an editor's session</text>
+<path d="M128 128H184" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<text x="156" y="119" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">stdio</text>
+<path d="M316 128H452" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<text x="384" y="119" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">socketpairs</text>
+<path d="M692 128H764" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<text x="728" y="119" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">pipes</text>
+<path d="M520 172V240" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<path d="M520 300V372" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<path d="M520 336H168V372" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<path d="M684 172V336H834V372" fill="none" stroke="#9da48f" stroke-width="1.5"/>
+<text x="694" y="262" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="start">pipes</text>
+<text x="28" y="236" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="start">A headless session has no editor</text>
+<text x="28" y="256" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="start">and no brnr acp.</text>
+<rect x="28" y="84" width="100" height="88" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="78" y="135" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">editor</text>
+<rect x="184" y="84" width="132" height="88" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="250" y="125" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">brnr acp</text>
+<text x="250" y="148" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">relays bytes</text>
+<rect x="452" y="84" width="240" height="88" rx="10" fill="#9fd06a" stroke="#0f110d" stroke-width="1.5"/>
+<text x="572" y="125" fill="#17260c" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">brnr process</text>
+<text x="572" y="148" fill="#17260c" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">owns the agent</text>
+<rect x="764" y="84" width="172" height="88" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="850" y="115" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">agent</text>
+<text x="850" y="138" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">Claude Code, Codex,</text>
+<text x="850" y="158" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">any ACP agent</text>
+<rect x="380" y="240" width="280" height="60" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="520" y="267" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">control socket</text>
+<text x="520" y="290" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">a Unix socket only you can open</text>
+<rect x="28" y="372" width="280" height="84" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="168" y="401" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">you, in a terminal</text>
+<text x="168" y="424" fill="#9da48f" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="16" font-weight="400" text-anchor="middle">brnr prompt send</text>
+<text x="168" y="444" fill="#9da48f" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="16" font-weight="400" text-anchor="middle">brnr event watch, …</text>
+<rect x="380" y="372" width="280" height="84" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="520" y="401" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">another agent</text>
+<text x="520" y="424" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">the same commands,</text>
+<text x="520" y="444" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">with brnr's skill</text>
+<rect x="732" y="372" width="204" height="84" rx="10" fill="#262a22" stroke="#383d32" stroke-width="1.5"/>
+<text x="834" y="401" fill="#e1e6d6" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="20" font-weight="700" text-anchor="middle">bridges</text>
+<text x="834" y="424" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">Slack, push, …</text>
+<text x="834" y="444" fill="#9da48f" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="400" text-anchor="middle">a profile starts them</text>
+</svg>

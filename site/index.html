@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brnr</title>
-<meta name="description" content="A burner phone for your coding agents. Watch Claude Code or Codex sessions from outside the editor, or run them headless and message and approve them from anywhere.">
+<meta name="description" content="A burner phone for your coding agents. brnr keeps a coding agent reachable outside the editor that started it, and lets its session carry on after the editor closes.">
 <link rel="icon" href="brand/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="brand/apple-touch-icon.png">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://brnrhq.github.io/brnr/">
 <meta property="og:title" content="brnr">
-<meta property="og:description" content="A burner phone for your coding agents. Watch Claude Code or Codex sessions from outside the editor, or run them headless and message and approve them from anywhere.">
+<meta property="og:description" content="A burner phone for your coding agents. brnr keeps a coding agent reachable outside the editor that started it, and lets its session carry on after the editor closes.">
 <meta property="og:image" content="https://brnrhq.github.io/brnr/brand/social.png">
 <meta property="og:image:width" content="1280">
 <meta property="og:image:height" content="640">
@@ -180,6 +180,9 @@
   dt { font-weight: 600; }
   dd { margin: 0.125rem 0 0; color: var(--muted); max-width: 38rem; }
 
+  .diagram { margin: 0; }
+  .diagram img { display: block; width: 100%; height: auto; border-radius: 12px; }
+
   footer { border-top: 1px solid var(--rule); padding-top: 1.5rem; padding-bottom: 2.5rem; color: var(--muted); font-size: 0.9375rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
 </style>
 </head>
@@ -187,13 +190,13 @@
 <div class="wrap">
   <header class="top">
     <a class="wordmark" href="./">brnr</a>
-    <nav><a href="https://github.com/brnrhq/brnr">GitHub</a></nav>
+    <nav><a href="docs/">Documentation</a><a href="https://github.com/brnrhq/brnr">GitHub</a></nav>
   </header>
 
   <div class="hero">
     <div>
       <h1>A burner phone for your coding agents.</h1>
-      <p class="lede">Run Claude Code or Codex from your editor as usual, and watch it from any terminal. Or run it with no editor at all, message it and answer its approvals from anywhere, and pick up an editor's session after the editor closes.</p>
+      <p class="lede">brnr keeps a coding agent reachable outside the editor that started it, and lets its session carry on after the editor closes. You can watch, steer and approve many agents from one terminal, from your phone, or from another agent.</p>
       <div class="install">
         <code id="brew">brew install brnrhq/tap/brnr</code>
         <button type="button" id="copy" aria-describedby="brew">Copy</button>
@@ -222,19 +225,86 @@
   <section>
     <div class="cols">
       <div>
+        <h2>The session outlives the window</h2>
+        <p class="intro">Your editor is one way in, not the only one. Close the editor and carry its session on headless. You can also start sessions with no editor at all.</p>
+      </div>
+      <div class="body">
+<pre>brnr acp -- brnr-claude-adapter  <span class="c"># your editor's agent command</span>
+brnr session resume $s           <span class="c"># the editor closed: carry on</span>
+brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
+        <p>Watching an editor's session always works. Acting on it (sending, approving, changing the mode) is <a href="docs/guide/editor.html#experimental-actions">experimental</a>, enabled one action at a time in a profile.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>One place for many agents</h2>
+        <p class="intro"><code>brnr session list</code> and <code>brnr permission requests</code> show every session and every waiting approval, from editors and headless runs.</p>
+      </div>
+      <div class="body">
+<pre>brnr session list                  <span class="c"># every session, open and ended</span>
+brnr permission requests           <span class="c"># every approval waiting</span>
+brnr permission allow $s p1
+brnr event watch $s                <span class="c"># one session, live</span></pre>
+        <p><code>$s</code> is a session's id, as <code>brnr session list</code> shows it. Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Agents that drive agents</h2>
+        <p class="intro">A CLI with <code>--json</code>, documented exit codes, events and a bundled skill. Claude Code or Codex can use it to start workers, give them work, wait for them, and answer their approvals.</p>
+      </div>
+      <div class="body">
+<pre>brnr skill install                 <span class="c"># for Claude Code and Codex</span>
+brnr session new --json --stop-when-idle 600 --prompt - -- brnr-claude-adapter &lt; task.md
+brnr prompt send $s --wait --timeout 600 --json --prompt "what did you change?"
+brnr permission allow $s p1 --json</pre>
+        <p>The skill teaches an agent brnr's way: exact ids, waiting rather than polling, never approving what you didn't delegate, and cleaning up what it starts.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
+        <h2>Reach it from anywhere</h2>
+        <p class="intro">Bridges, programs you write or choose, forward events to Slack or push notifications, and send your answers back.</p>
+      </div>
+      <div class="body">
+<pre>brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'</pre>
+<pre><span class="c"># ~/.config/brnr/config.toml</span>
+[profiles.work]                     <span class="c"># for sessions started with --profile work</span>
+agent = ["brnr-claude-adapter"]
+
+[[profiles.work.bridges]]
+command = "~/bin/slack-bridge"      <span class="c"># yours: events in, answers out</span>
+events = ["permission_request", "turn_ended"]</pre>
+        <p><code>event notify</code> runs a command for each event: here, a push notification through ntfy, to a topic only you know (<code>NTFY_TOPIC</code>): anyone who knows an ntfy.sh topic can read it. A bridge speaks brnr's JSON-lines protocol both ways.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols">
+      <div>
         <h2>How it works</h2>
         <p class="intro">Your editor still talks to the agent over <a href="https://agentclientprotocol.com/">ACP</a>. brnr moves the agent into a process of its own that you can reach from outside.</p>
       </div>
       <div class="body">
-<pre>editor ──stdio── brnr acp ──socketpairs── brnr process ──pipes── agent
-                                             │
-                                  control socket ── brnr prompt send / event watch / …
-                                             │
-                                          bridges (Slack, push, …)</pre>
+        <picture class="diagram">
+          <source media="(prefers-color-scheme: dark)" srcset="brand/diagram-dark.svg">
+          <img src="brand/diagram-light.svg" width="960" height="476" alt="The editor runs brnr acp, which relays bytes to the brnr process over socketpairs; the brnr process owns the agent and talks to it over pipes. You, from a terminal, and other agents reach the process over its control socket, and bridges a profile starts talk to it over pipes. A headless session has no editor and no brnr acp.">
+        </picture>
       <dl>
         <div><dt>brnr acp</dt><dd>What the editor runs as its agent. It only relays bytes.</dd></div>
         <div><dt>The brnr process</dt><dd>Owns the agent for its whole life, out of the editor's process group. When the editor goes, it stops the agent the way the editor would have. <code>brnr process list</code> lists them.</dd></div>
-        <div><dt>Control commands</dt><dd>Talk to running sessions over a Unix socket that only you can open. Bridges use the same JSON-lines protocol to forward events to Slack, push notifications or anything else.</dd></div>
+        <div><dt>The control socket</dt><dd>A Unix socket that only you can open. The other commands talk to a session through it, whoever runs them: you or another agent.</dd></div>
+        <div><dt>Bridges</dt><dd>Started by a profile, as the process's children: events on their stdin, requests on their stdout.</dd></div>
       </dl>
     </div>
   </div>
@@ -243,56 +313,14 @@
   <section>
     <div class="cols">
       <div>
-        <h2>Use it from your editor</h2>
-        <p class="intro">Set your editor's ACP agent command to <code>brnr acp</code> and put the agent after <code>--</code>.</p>
+        <h2>Install</h2>
+        <p class="intro">brnr, and an adapter for each agent you use.</p>
       </div>
       <div class="body">
-<pre>brnr acp -- brnr-claude-adapter
-brnr acp -- brnr-codex-adapter
-brnr acp --profile work          <span class="c"># agent and settings from a profile</span></pre>
-        <p>The editor and the agent talk as before. Watching the editor's sessions from outside always works; acting on them (sending, approving, changing the mode) is experimental, and enabled one action at a time in the profile.</p>
-        <p>When the editor goes away, the agent stops the way it would if the editor had started it. <code>brnr session resume</code> carries on with its session headless.</p>
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <div class="cols">
-      <div>
-        <h2>Talk to it from outside</h2>
-        <p class="intro">Name a session by its id, as <code>brnr session list</code> shows it with the agent's title.</p>
-      </div>
-      <div class="body">
-<pre>brnr session list                  <span class="c"># open sessions and ended ones; -- &lt;agent&gt;: the agent's too</span>
-brnr prompt send $s --prompt "also update the changelog"   <span class="c"># held while a turn runs</span>
-brnr prompt send $s --steer --prompt "and the tests too"   <span class="c"># into the running turn</span>
-brnr prompt send $s --interrupt --prompt "stop, wrong branch"
-brnr event watch $s                <span class="c"># messages, tools, plan and approvals, live</span>
-brnr permission requests           <span class="c"># approvals waiting for an answer</span>
-brnr permission allow $s p1
-brnr session close $s
-brnr session delete $s --purge     <span class="c"># the agent's copy, and brnr's transcript</span></pre>
-        <p>Messages you send reach the agent as ordinary user messages, one turn at a time: brnr never sends a second prompt while a turn runs. In an editor's session, <code>prompt send</code> and <code>permission allow</code> work once its profile enables them.</p>
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <div class="cols">
-      <div>
-        <h2>Run it without an editor</h2>
-        <p class="intro">Start a headless session and check in on it later.</p>
-      </div>
-      <div class="body">
-<pre>brnr session new --cwd ~/work/project --prompt "fix the failing tests" -- brnr-claude-adapter</pre>
-        <p>Approvals wait for <code>brnr permission allow</code>, <code>reject</code> or a bridge, and the agent's questions (a form, or a login URL) for <code>brnr elicitation accept</code>; how much the agent asks is its own mode (<code>--mode</code>). Every session gets a transcript under <code>~/.brnr/projects</code>, in folders named after those of Claude Code's own transcripts, one per cwd.</p>
-<pre><span class="c"># ~/.config/brnr/config.toml</span>
-[profiles.work]
-agent = ["brnr-claude-adapter"]
-
-[profiles.work.headless]            <span class="c"># for brnr session new and resume</span>
-stop_when_idle = 600                <span class="c"># close a session idle 10 minutes</span>
-mode = "acceptEdits"                <span class="c"># the agent's mode, before the first prompt</span></pre>
+<pre>brew install brnrhq/tap/brnr
+brew install brnrhq/tap/brnr-claude-adapter   <span class="c"># for Claude Code</span>
+brew install brnrhq/tap/brnr-codex-adapter    <span class="c"># for Codex</span></pre>
+        <p>Or brnr alone with <code>cargo install brnr --locked</code>, and the adapters from npm. <a href="docs/install.html">Install</a> has the rest. brnr runs on macOS and Linux.</p>
       </div>
     </div>
   </section>
@@ -304,15 +332,14 @@ mode = "acceptEdits"                <span class="c"># the agent's mode, before t
         <p class="intro">brnr works with any ACP agent. It doesn't include one.</p>
       </div>
       <div class="body">
-        <p>For Claude Code and Codex, brnr uses the community's ACP adapters: <a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a> by Zed Industries and contributors, and <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a> by JetBrains. Install them from npm, or with Homebrew (<code>brew install brnrhq/tap/brnr-claude-adapter</code> or <code>brnrhq/tap/brnr-codex-adapter</code>), which compiles them on your machine into standalone executables that need no Node.js. Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
-        <p>brnr runs on macOS and Linux.</p>
+        <p>For Claude Code and Codex, brnr uses the community's ACP adapters: <a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a> by Zed Industries and contributors, and <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a> by JetBrains. Install them from npm, or with Homebrew, which compiles them on your machine into standalone executables that need no Node.js. Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
       </div>
     </div>
   </section>
 
   <footer>
     <span>brnr is licensed under Apache-2.0.</span>
-    <a href="https://github.com/brnrhq/brnr#readme">Read the full README</a>
+    <a href="docs/">Read the documentation</a>
     <a href="https://github.com/brnrhq/homebrew-tap">Homebrew tap</a>
   </footer>
 </div>

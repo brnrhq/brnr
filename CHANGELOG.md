@@ -24,6 +24,26 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation is a book, at
+  [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with
+  search: the guide that was the README, the interface reference, the ADRs
+  and the threat model. The README is short: what brnr is, installing, a
+  quick start and links to the book. The landing page links to the book
+  (ADR 11.8, #374).
+- The landing page, the README and the book's introduction say what brnr
+  is for, in the same words: a burner phone for your coding agents, and
+  four things it does, each with an example on the page and the
+  introduction. The diagram is an image, light and dark, in place of the
+  text one (ADR 1, #376).
+- The interface reference is a section of the book, `docs/reference/`: a
+  page for each command group, and pages for the events, the bridge
+  protocol, exit codes, errors, the configuration and the files. Each output
+  has a table of its fields and an example, which a test runs and compares
+  with what brnr prints. `docs/interface.md` is gone (ADR 8.4, ADR 11.8,
+  #375).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added
