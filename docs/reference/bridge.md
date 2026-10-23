@@ -402,6 +402,17 @@ full, as [`queue show`](queue.md#brnr-queue-show) prints it.
 | `context` | list of strings | The held context. |
 | `dropped` | list of objects | The messages dropped, `{message, text, reason}`. |
 
+With `show`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `session` | string | The session. |
+| `message` | string | The message's id. |
+| `text` | string | Its text. |
+| `interrupt` | boolean | Whether it is an interrupt. |
+| `attachments` | number | How many attachments it has. |
+| `blocks` | list of objects, ACP's | Its attachments, as the ACP content blocks that go with the prompt, as [`queue show`](queue.md#brnr-queue-show) has them. |
+
 <!-- example: bridge; before: Idle -->
 ```json
 {"cmd":"queue","session":"sess-1","req_id":"r1"}
