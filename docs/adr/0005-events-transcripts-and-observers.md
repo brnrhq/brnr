@@ -44,9 +44,10 @@ Events:
   session's files, `session`, for joining. Every event, and every raw ACP record, has `seq`, its position
   in its process (ADR 10.2), and every event `pid` too (ADR 5.9), but for
   two records: the copy of a `session/new` or `session/fork` in the new
-  session's raw file, whose position is that of the request where it was
-  first recorded, so that a position names one record (ADR 10.2); and
-  `session_deleted`, a record of no process's.
+  session's raw file, which has no `seq`, as the request keeps its position
+  where it was first recorded (the host log for a `session/new`, the forked
+  session's raw file for a `session/fork`), so that a position names one
+  record (ADR 10.2); and `session_deleted`, a record of no process's.
 - A session's events file starts with `session_opened`, the same record as
   the host log's: `session`, `cwd`, `profile` and `agent` (the process's,
   ADR 3.11), `events_log`, `acp_log` (null with `log = "events"`),
@@ -1287,8 +1288,12 @@ Run `cargo test --release adr_0005_`. Named claims, by section:
 - 5.1: [tests/headless.rs](../../tests/headless.rs):
   `adr_0005_transcripts_are_two_files`,
   `adr_0005_log_events_leaves_out_the_raw_acp`,
-  `adr_0005_a_transcript_cut_short_is_still_its_sessions`;
+  `adr_0005_a_transcript_cut_short_is_still_its_sessions`,
+  `adr_0010_a_copied_open_request_has_no_position` (the copied request has
+  no `seq`);
   [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_delete_keeps_the_transcript` (`session_deleted` has no `seq`
+  and a null `pid`),
   `adr_0005_log_shows_the_conversation`,
   `adr_0005_log_merges_the_raw_acp_in_time`,
   `adr_0005_log_reads_an_inactive_session`,
