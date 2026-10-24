@@ -35,7 +35,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -290,7 +290,10 @@ struct Capture {
 #[derive(Default)]
 pub(crate) struct Stop {
     stopped: AtomicBool,
-    conns: Mutex<Vec<UnixStream>>,
+    /// The command's open connections, by the number [`stoppable`] gave
+    /// each.
+    conns: Mutex<Vec<(u64, UnixStream)>>,
+    next: AtomicU64,
 }
 
 impl Stop {
@@ -298,9 +301,23 @@ impl Stop {
     pub(crate) fn stop(&self) {
         let mut conns = self.conns.lock().unwrap_or_else(PoisonError::into_inner);
         self.stopped.store(true, Relaxed);
-        for conn in conns.drain(..) {
+        for (_, conn) in conns.drain(..) {
             let _ = conn.shutdown(Shutdown::Both);
         }
+    }
+}
+
+/// A connection [`Stop`] shuts while it is open: dropped with it, as one
+/// that catching up replaces is, it goes from the list.
+pub(super) struct Stoppable {
+    stop: Arc<Stop>,
+    id: u64,
+}
+
+impl Drop for Stoppable {
+    fn drop(&mut self) {
+        let mut conns = self.stop.conns.lock().unwrap_or_else(PoisonError::into_inner);
+        conns.retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -376,15 +393,19 @@ fn stopped() -> bool {
 }
 
 /// `conn`, a connection the command opened to a process, to be shut when
-/// the facade stops the command; at once if it has.
-fn stoppable(conn: &UnixStream) {
-    let stop = CAPTURE.with_borrow(|c| c.as_ref().and_then(|c| c.stop.clone()));
-    let (Some(stop), Ok(conn)) = (stop, conn.try_clone()) else { return };
+/// the facade stops the command, at once if it has, until the returned
+/// [`Stoppable`] is dropped with the connection.
+fn stoppable(conn: &UnixStream) -> Option<Stoppable> {
+    let stop = CAPTURE.with_borrow(|c| c.as_ref().and_then(|c| c.stop.clone()))?;
+    let conn = conn.try_clone().ok()?;
+    let id = stop.next.fetch_add(1, Relaxed);
     let mut conns = stop.conns.lock().unwrap_or_else(PoisonError::into_inner);
     match stop.stopped.load(Relaxed) {
         true => drop(conn.shutdown(Shutdown::Both)),
-        false => conns.push(conn),
+        false => conns.push((id, conn)),
     }
+    drop(conns);
+    Some(Stoppable { stop, id })
 }
 
 /// Keeps `note`, an `events_missed` (ADR 10.2), for the facade's command,
@@ -1209,6 +1230,38 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection the facade would shut to stop a stream's command leaves
+    /// its list as it closes, so a command that connects again and again,
+    /// catching up, keeps no more than it has open (ADR 10.4); stopped, the
+    /// command's next connection is shut as it opens.
+    #[test]
+    fn adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes() {
+        let stop = Arc::new(Stop::default());
+        let capture = |stop: &Arc<Stop>| Capture {
+            out: Out::Kept(String::new()),
+            stdin: None,
+            missed: None,
+            stop: Some(stop.clone()),
+        };
+        CAPTURE.set(Some(capture(&stop)));
+        let open = || stop.conns.lock().unwrap().len();
+        let (a, _a) = UnixStream::pair().unwrap();
+        let (b, _b) = UnixStream::pair().unwrap();
+        let (first, second) = (stoppable(&a).unwrap(), stoppable(&b).unwrap());
+        assert_eq!(open(), 2);
+        drop(first);
+        assert_eq!(open(), 1);
+        drop(second);
+        assert_eq!(open(), 0);
+        stop.stop();
+        let (c, mut theirs) = UnixStream::pair().unwrap();
+        let _c = stoppable(&c).unwrap();
+        assert_eq!(open(), 0);
+        let mut buf = [0];
+        assert_eq!(io::Read::read(&mut theirs, &mut buf).unwrap(), 0, "shut as it opens");
+        CAPTURE.take();
+    }
 
     /// `session status` says the state its JSON has: idle, busy (working, and
     /// for how long when it knows) or waiting for an approval (ADR 8.2), or for

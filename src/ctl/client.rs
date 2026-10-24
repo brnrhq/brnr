@@ -551,6 +551,9 @@ pub(super) struct Conn {
     /// The process's metadata, to say how it differs from this brnr
     /// ([`skewed`]); none on the start channel, whose process is this brnr.
     meta: Option<Value>,
+    /// Its place in the facade's list of what to shut to stop the command,
+    /// left as the connection goes.
+    _stoppable: Option<super::Stoppable>,
 }
 
 impl Conn {
@@ -567,7 +570,7 @@ impl Conn {
     /// One over `stream`: a control connection, or the start channel. A
     /// request the process takes nothing of for [`ANSWER_WAIT`] fails.
     pub(super) fn new(stream: UnixStream) -> Result<Conn, String> {
-        super::stoppable(&stream);
+        let stoppable = super::stoppable(&stream);
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
         closed_ok(writer.set_write_timeout(Some(ANSWER_WAIT))).map_err(|e| e.to_string())?;
         Ok(Conn {
@@ -580,6 +583,7 @@ impl Conn {
             missed: None,
             reconnects: 0,
             meta: None,
+            _stoppable: stoppable,
         })
     }
 
