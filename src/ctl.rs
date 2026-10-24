@@ -408,6 +408,20 @@ fn stoppable(conn: &UnixStream) -> Option<Stoppable> {
     Some(Stoppable { stop, id })
 }
 
+/// For a test: this thread runs a stream's command, which `stop` stops
+/// (`None`: none).
+#[cfg(test)]
+fn stopping(stop: Option<Arc<Stop>>) {
+    let out = Out::Kept(String::new());
+    CAPTURE.set(stop.map(|stop| Capture { out, stdin: None, missed: None, stop: Some(stop) }));
+}
+
+/// For a test: how many connections `stop` would shut.
+#[cfg(test)]
+fn stoppables(stop: &Stop) -> usize {
+    stop.conns.lock().unwrap().len()
+}
+
 /// Keeps `note`, an `events_missed` (ADR 10.2), for the facade's command,
 /// which returns it.
 fn missed(note: &Value) {

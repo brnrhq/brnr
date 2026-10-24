@@ -915,6 +915,9 @@ impl Conn {
         self.events.append(&mut conn.events);
         std::mem::swap(&mut self.reader, &mut conn.reader);
         std::mem::swap(&mut self.writer, &mut conn.writer);
+        // The facade stops the connection read from now on; the old one's
+        // place goes with it (ADR 8.5).
+        std::mem::swap(&mut self._stoppable, &mut conn._stoppable);
         self.reconnects += 1;
         self.follow = Some(f);
         Ok(())
@@ -1092,6 +1095,7 @@ mod tests {
     use crate::error::code_is;
     use std::env;
     use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
     use std::thread;
 
     /// A process, 7, that answers each connection's request with the next of
@@ -1413,6 +1417,65 @@ mod tests {
         assert_eq!(seqs, [11, 12, 13]);
         assert_eq!(conn.reconnects, 2);
         process.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stream the facade stops after it has caught up once has the
+    /// connection it reads now shut, and only that one in the facade's list:
+    /// the read it waits in ends (ADR 8.5, 10.4).
+    #[test]
+    fn adr_0008_a_stream_stopped_after_catching_up_has_its_new_connection_shut() {
+        let dir = env::temp_dir().join(format!("brnr-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (socket, host_log) = (dir.join("h.sock"), dir.join("host.jsonl"));
+        let event = json!({ "event": "turn_ended", "seq": 11 });
+        let record = json!({ "format": 1, "ts": "t", "host_id": "h", "event": event });
+        fs::write(&host_log, format!("{record}\n")).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        // One connection, subscribed at 11, that then sends nothing: it
+        // ends when the command shuts it.
+        let process = thread::spawn(move || {
+            let mut stream = listener.incoming().next().unwrap().unwrap();
+            let lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            for line in lines.map_while(Result::ok) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let mut answer = match req["cmd"].as_str().unwrap() {
+                    "was_cut_off" => json!({ "ok": true, "cut_off": true }),
+                    "subscribe" => {
+                        json!({ "ok": true, "peer": "socket#1", "host_id": "h", "seq": 11 })
+                    }
+                    _ => json!({ "ok": true, "lost": false }),
+                };
+                answer["req_id"] = req["req_id"].clone();
+                writeln!(stream, "{answer}").unwrap();
+            }
+        });
+        let stop = Arc::new(super::super::Stop::default());
+        super::super::stopping(Some(stop.clone()));
+        // Cut off before it read anything.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let mut conn = Conn::new(ours).unwrap();
+        conn.follow = Some(Follow {
+            socket,
+            host_id: "h".into(),
+            pid: json!(7),
+            host_log,
+            peer: "socket#0".into(),
+            events: vec!["turn_ended".into()],
+            session: None,
+            last: 10,
+            tries: 0,
+        });
+        assert_eq!(conn.next_event(None).unwrap().unwrap()["seq"], 11);
+        assert_eq!(conn.reconnects, 1);
+        assert_eq!(super::super::stoppables(&stop), 1, "the connection it reads, and no other");
+        stop.stop();
+        let wait = Instant::now().checked_add(Duration::from_secs(10));
+        assert!(conn.next_event(wait).is_err(), "the read it waits in goes on");
+        process.join().unwrap();
+        super::super::stopping(None);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1597,7 +1597,9 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   panics, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
   `adr_0008_a_facade_error_has_the_commands_code`,
   `adr_0008_the_facade_has_session_prune`. [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs):
-  `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`.
+  `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`;
+  [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
+  `adr_0008_a_stream_stopped_after_catching_up_has_its_new_connection_shut`.
   [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_rust_block_is_a_compiled_doc_example`: the documents'
   uses of the facade are src/lib.rs's doc examples, which `cargo test`
