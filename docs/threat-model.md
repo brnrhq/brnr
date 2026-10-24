@@ -202,10 +202,11 @@ What brnr doesn't enforce, or doesn't test, today.
   bridge that ignores EOF, is blocked, or leaves descendants can survive it.
   `doctor --fix` repairs stale metadata and locks; it does not kill those
   survivors. `chaos.rs` checks a flooding agent exits on its broken pipe,
-  and that killing the proxy during a hung turn lets the surviving host
-  stop its agent. Neither establishes unconditional cleanup after host
+  and that killing the proxy during a hung setup or turn lets the surviving
+  host stop its agent. Neither establishes unconditional cleanup after host
   SIGKILL; that would require a separate lifetime supervisor on both macOS
-  and Linux.
+  and Linux (#391). Its test, `killed_host_leaves_no_agent_or_child_behind`,
+  fails today and is ignored until then.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
 - **No peer credentials on the socket.** The process doesn't check who
