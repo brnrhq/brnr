@@ -651,6 +651,7 @@ impl Conn {
     /// up; else as `why`.
     pub(super) fn ended(&self, why: Error) -> Result<ExitCode, Error> {
         let Some(note) = &self.missed else { return Err(why) };
+        super::missed(note);
         let text = render::event(note, &render::Options { session: false, time: false });
         errln!("brnr: {}", text.unwrap_or_default());
         Ok(ExitCode::from(MISSED))

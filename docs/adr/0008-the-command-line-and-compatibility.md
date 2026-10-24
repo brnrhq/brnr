@@ -1,8 +1,7 @@
 # 8. The command line and compatibility
 
-Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade (#215) isn't built, and 8.6's evals with a real
-agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+Draft 2026-10-24. Implemented, but 8.4 is a promise that applies from
+1.0.0, and 8.6's evals with a real agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -839,8 +838,8 @@ requests, such as answering a permission, with no promise.
 
 ## 8.5 The library is private, and its facade mirrors the command line
 
-Implemented, but for the typed facade (#215): `brnr::run` is the library's
-one public item.
+Implemented: `brnr::run` and the typed facade (#215) are the library's
+public items.
 
 - The library is private. Its modules are `mod`, not `pub mod`, and an item
   is `pub(crate)` unless something outside reaches it (below).
@@ -848,8 +847,8 @@ one public item.
   else. From 1.0.0 the facade is covered by the compatibility promise
   (ADR 8.4); what isn't in it is not. Only the facade is what the crate
   published on crates.io offers (ADR 11.6).
-- `brnr::run(args)` is the facade's coarsest piece, and its only one so
-  far: `brnr <args>` as a function, `args` being the words after `brnr`,
+- `brnr::run(args)` is the facade's coarsest piece: `brnr <args>` as a
+  function, `args` being the words after `brnr`,
   run to the exit status the binary would exit with. The dispatch (`acp`,
   `host`, the rest) is `run`, and the command modules (`ctl.rs`, `ctl/`)
   are the library's; `main.rs` calls `run` with its arguments and does
@@ -858,14 +857,57 @@ one public item.
 - The typed facade has this shape: one module per command group
   (`process`, `session`, `prompt`, `queue`, `permission`, `elicitation`,
   `config`, `event`, ADR 8.1), and the tools at the top level (`doctor`,
-  `skill`), with one function per verb (`brnr::session::list`,
-  `brnr::prompt::send`), taking the command's arguments and flags, and
-  returning the data its `--json` prints, with the same names and shapes.
-  An error carries the code the command's error has (ADR 8.7); its
-  message, like the command's, is not covered. It isn't
-  built yet (#215): its return types are the `--json` shapes, which ADR
-  8.2 makes one name and one shape per concept (#150). A record of its own
-  says so if it departs from this shape.
+  `skill`, and `skill::install`), with one function per verb
+  (`brnr::session::list`, `brnr::prompt::send`), taking the command's
+  positional arguments as arguments and its flags as a struct
+  (`session::ListFlags`), and returning the data its `--json` prints, with
+  the same names and shapes. An error is `brnr::Error`, with the code the
+  command's error has (`brnr::Code`, ADR 8.7); its message, like the
+  command's, is not covered.
+- A function runs its command, in this process: it builds the command's
+  words from its arguments, runs them as `run` would with `--json`, and
+  reads what the command printed into its type. What it returns is the
+  command's data by construction, one interpretation (P5), and a test for
+  each verb compares the two (`tests/facade.rs`). What the command says on
+  stderr, it says.
+- Its types are the `--json` shapes: a struct for each object brnr makes,
+  each field named as in JSON; `serde_json::Value` for what is ACP's, as
+  the agent sent it (a tool call, options, a plan, a content block); and
+  `brnr::Event` for an event, its name and its fields as JSON
+  (docs/reference/events.md has them). Every struct, of data and of flags,
+  and `Code`, is `#[non_exhaustive]`, so that a minor release can add a
+  field, a flag or a code (ADR 8.4); flags are set on their `Default`.
+  Fixed values (`state`, `owner`) are strings: a minor release can add one.
+- Where the command's exit status says more than that it failed, the
+  function returns `brnr::Exit`: `Success` (0) and `Failure` (1) with what
+  it printed, `TimedOut` (124) and `Missed` (3) with the `events_missed`
+  note (ADR 8.3, 10.2). These are the waits (`session new` and `resume`,
+  `prompt send`, `event wait`), `event watch`, `session delete` and
+  `doctor`. A verb whose `--json` has a shape for each flag (`--wait`,
+  `--for`) returns an enum of them (`session::Started`, `event::Waited`).
+- A stream, `event log` and `event watch`, gives each event to a closure
+  as it comes, until the command ends or the closure breaks. The command
+  runs on a thread of its own, its events passed one at a time, so a
+  caller slow to take them is a reader slow to read, and a process cuts it
+  off as it would the command (ADR 10.1). Broken off, the function returns
+  at once; the command ends where it next writes, as with its reader gone.
+- What is in the command line and not in the facade, and why:
+  `--foreground` and `--quiet` attach the process to a terminal, and
+  `event notify` runs a command for each event, with signals of its own: a
+  program does both with `event::watch`. `doctor --report` is not covered
+  (ADR 8.4). `--help` and `--version` are for people. `--prompt -` and
+  `elicitation accept -` read stdin: the facade takes the prompt and the
+  fields as arguments, a prompt that is `-` too.
+- A usage error, which the command line exits 2 for without a code (ADR
+  8.3), is `usage_invalid`: a function has no exit status to say it with.
+  The flags' types rule out what they can (`prompt send`'s modes are an
+  enum); the rest the command checks, as it does its words.
+- `session new` and `session resume` start the process from the running
+  program, as `<program> host`, as brnr does from its own binary (ADR
+  3.3): the process is the same brnr as the facade that started it (ADR
+  8.8). A program that starts processes so hands its arguments to
+  `brnr::run` when the first is `host`, before anything else, as brnr's
+  `main` does. Adapters are looked for next to that program (ADR 11.2).
 - The crate's own tests and fuzz targets reach internals through
   `brnr::internals`, a `#[doc(hidden)]` module behind the `internals` Cargo
   feature, off by default. It re-exports what they use (`frame`'s reading
@@ -906,8 +948,13 @@ ways, with nothing the command line doesn't say.
   the binary the tests drive is built with `internals` too, and so has the
   fuzz harness and its `StartChannel` variant, which nothing in the binary
   calls. `cargo build` and `cargo install`, what users run, build without.
-- Until the typed facade is built, a program that wants brnr's data runs
-  the binary, or `brnr::run`, with `--json`.
+- A program that wants brnr's data calls the facade's function for the
+  command, or runs the binary, or `brnr::run`, with `--json`: the same
+  data each way.
+- A change to a command's `--json` is a change to its facade type, in the
+  same pull request: its test fails otherwise.
+- `src/config.rs`, the config file, is `src/profiles.rs`: the facade's
+  `config` module, the command group's, is `brnr::config`.
 
 **Considered.**
 
@@ -936,6 +983,30 @@ ways, with nothing the command line doesn't say.
 - Building the typed facade before #150: its return types would be
   `--json` shapes that #150 changes, so it would be built twice or would
   freeze them.
+- Functions that do the commands' work themselves, the commands printing
+  what they return: one interpretation too, but each command split in two,
+  about thirty of them, and the commands' output, errors and exit statuses
+  checked again. Running the command is the command, and the test for each
+  verb keeps the types to its JSON.
+- `serde_json::Value` for every result: no type to read, and nothing for
+  the compiler to check. A struct for each object brnr makes is the
+  `--json` reference's tables as code.
+- A Rust enum for each event, by name: about thirty, each with the fields
+  events.md lists. The events' fields are the most numerous and the most
+  added to; a follow-up can type them (#388).
+- A Rust enum for each fixed value (`state`, `owner`, `level`): a minor
+  release can add a value, which a closed enum would make a break.
+- An iterator for a stream: the command pushes its events, so an iterator
+  needs the same thread, and its errors come only once it ends.
+- A setting for the executable that `session new` starts: a second way to
+  start a process, and a brnr whose version may not be the facade's (ADR
+  8.8). The running program is the facade's brnr.
+- Leaving out `session new` and `resume` without `--pid`, for the program
+  having to hand `host` on: a program could open sessions only in a
+  process the binary started.
+- Keeping the facade's commands quiet on stderr: what they say there
+  (a process not answering, an approval waiting) is in no `--json`, and
+  would be lost (P3).
 
 ## 8.6 A skill for agents that use brnr
 
@@ -1185,6 +1256,7 @@ The codes, by subject:
 | `transcript_unsupported` | The transcript is in a format this brnr doesn't read (ADR 5.9, 5.10). |
 | `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs (ADR 7.1). |
 | `unclassified` | Anything else. No promise: don't match it. |
+| `usage_invalid` | The arguments don't make a command: what the command line exits 2 for, without a code (ADR 8.3). Only the library's facade returns it (ADR 8.5). |
 
 src/error.rs has the list, docs/reference/errors.md lists it for users, and a test
 checks that the two agree and that a test reaches each code.
@@ -1227,7 +1299,8 @@ already reads; on stderr, a script would parse lines written for people.
   people (warnings, a process not answering), so it would not be one JSON
   value; stdout is where `--json` is.
 - An error object for usage errors too: exit 2 says it, and a usage error
-  is found before `--json` is known to be one of the command's flags.
+  is found before `--json` is known to be one of the command's flags. The
+  facade has no exit status, so it has a code, `usage_invalid` (ADR 8.5).
 - `internal` for the catch-all: what falls under it isn't only brnr's bugs
   (a full disk, an agent's malformed answer), and brnr's bug has a code of
   its own, `process_panicked`.
@@ -1244,7 +1317,8 @@ already reads; on stderr, a script would parse lines written for people.
 - A new failure is given an existing code where a caller would act on it
   the same way, else a new one; `unclassified` only where no caller could
   act on it.
-- The typed facade (#215) returns the code with its error (ADR 8.5).
+- The typed facade returns the code with its error (ADR 8.5), and
+  `usage_invalid` where the command line exits 2.
 - ADR 8.8 answers a request, or a field of one, that an older process
   doesn't have with `command_unknown`, and the CLI says how to restart it.
 
@@ -1488,7 +1562,21 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
 - 8.5: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
   process, ends with the exit status the binary exits with for the same
-  words.
+  words. [tests/facade.rs](https://github.com/brnrhq/brnr/blob/main/tests/facade.rs),
+  one for each command group, each verb's function compared with its
+  command's `--json` and exit status:
+  `adr_0008_the_facade_has_process_list_and_stop`,
+  `adr_0008_the_facade_has_session_new_and_resume` (a process the facade
+  starts, and `usage_invalid`),
+  `adr_0008_the_facade_has_session_status_list_fork_close_and_delete`,
+  `adr_0008_the_facade_has_prompt_send_cancel_and_commands`,
+  `adr_0008_the_facade_has_queue_list_show_drop_and_clear`,
+  `adr_0008_the_facade_has_permission_requests_show_allow_and_reject`,
+  `adr_0008_the_facade_has_the_elicitation_verbs`,
+  `adr_0008_the_facade_has_config_get_and_set`,
+  `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
+  a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  `adr_0008_a_facade_error_has_the_commands_code`.
 - 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs`,
   `adr_0008_every_toml_block_loads`; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):

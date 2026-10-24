@@ -20,9 +20,11 @@ adapters from Homebrew or npm:
 cargo install brnr --locked
 ```
 
-The crate is the binary. Its library isn't an API to build on: its one
-public item is `brnr::run`, the command line as a function
-([ADR 8.5](adr/0008-the-command-line-and-compatibility.md#85-the-library-is-private-and-its-facade-mirrors-the-command-line)).
+The crate is the binary. Its library is the command line as functions:
+`brnr::run`, and a typed facade, a function for each command that returns
+what its `--json` prints
+([ADR 8.5](adr/0008-the-command-line-and-compatibility.md#85-the-library-is-private-and-its-facade-mirrors-the-command-line),
+[reference](reference/overview.md)).
 
 Or from source, below.
 

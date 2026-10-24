@@ -24,6 +24,19 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- The library has a typed facade: a module for each command group and a
+  function for each verb (`brnr::session::list`, `brnr::prompt::send`),
+  which runs the command and returns what its `--json` prints, with the
+  same names and shapes, and an error with its code (`brnr::Error`,
+  `brnr::Code`). Waits return their exit status with their data
+  (`brnr::Exit`); `event log` and `event watch` give each event to a
+  closure. `session new` and `session resume` start the process as
+  `<program> host`, which the program hands to `brnr::run`. A usage error is
+  the new code `usage_invalid`, which only the facade returns
+  (ADR 8.5, 8.7, #215).
+
 ### Changed
 
 - The documentation is a book, at

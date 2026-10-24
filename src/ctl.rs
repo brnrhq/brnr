@@ -27,12 +27,14 @@
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `event log`, `event watch` and `session new --foreground`).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -174,15 +176,8 @@ const START_GRACE: Duration = Duration::from_secs(10);
 /// asked for goes to stdout and exits 0; a usage error, the command's usage
 /// on stderr, exits 2, nothing done; a failure exits 1 (ADR 8.3).
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
-    let cmd = args.first().map_or("", String::as_str);
+    let (cmd, verb, rest) = split(&args);
     let grouped = GROUPS.contains(&cmd);
-    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
-    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
-    // `skill install` is a verb of a command outside the groups.
-    let (verb, rest) = match rest {
-        [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
-        _ => (verb, rest),
-    };
     let mut json = false;
     let result = match args::spec(cmd, verb) {
         Some(spec) if spec.asks_help(rest) => {
@@ -230,6 +225,22 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// `args` as a command, its verb and the words after them: `brnr <group>
+/// <verb>`, `brnr skill install` or `brnr <command>`.
+fn split(args: &[String]) -> (&str, Option<&str>, &[String]) {
+    let cmd = args.first().map_or("", String::as_str);
+    let grouped = GROUPS.contains(&cmd);
+    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
+    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
+    // `skill install` is a verb of a command outside the groups.
+    match rest {
+        [install, rest @ ..] if cmd == "skill" && install == "install" => {
+            (cmd, Some("install"), rest)
+        }
+        _ => (cmd, verb, rest),
+    }
+}
+
 /// A command's failure (ADR 8.7): on stderr, its message and its code,
 /// `brnr: no session s (see brnr session list) [session_not_found]`; with
 /// `--json`, also as the command's JSON, `{"error": {code, message}}`, if it
@@ -243,6 +254,92 @@ fn failed(error: &error::Error, json: bool) {
 
 /// Whether the command has printed anything on stdout.
 static PRINTED: AtomicBool = AtomicBool::new(false);
+
+// ---- the library's facade ------------------------------------------------
+
+thread_local! {
+    /// The command this thread runs for the library's facade, if any (see
+    /// [`call`]).
+    static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+}
+
+/// A command run for the library's typed facade (ADR 8.5): what it prints,
+/// what it reads as its stdin, and what it missed.
+struct Capture {
+    out: Out,
+    /// Its stdin: `--prompt -`'s prompt, `elicitation accept -`'s fields.
+    stdin: Option<String>,
+    /// The `events_missed` note of a command cut off that couldn't catch up
+    /// (ADR 10.2), which it says on stderr, or as its last event.
+    missed: Option<Value>,
+}
+
+/// Where a facade's command prints: kept until it ends, or each write sent
+/// on as it comes, a stream's events.
+enum Out {
+    Kept(String),
+    Sent(SyncSender<String>),
+}
+
+/// What a command run for the facade did: its exit status, what it printed
+/// if it was kept, and the note of what it missed.
+pub(crate) struct Ran {
+    pub(crate) status: u8,
+    pub(crate) out: String,
+    pub(crate) missed: Option<Value>,
+}
+
+/// Runs `brnr <args>` for the library's facade, as [`main`] would, but that
+/// what it prints is kept (or sent on `lines`, each write as it comes), its
+/// stdin is `stdin`, and a usage error, which has no code on the command
+/// line, is `usage_invalid` (ADR 8.5). What it says on stderr, it says. No
+/// command line is written by a person here, so help isn't asked for.
+pub(crate) fn call(
+    args: &[String],
+    stdin: Option<String>,
+    lines: Option<SyncSender<String>>,
+) -> Result<Ran, error::Error> {
+    let out = lines.map_or(Out::Kept(String::new()), Out::Sent);
+    CAPTURE.set(Some(Capture { out, stdin, missed: None }));
+    // Taken however the command ends, a panic too: this thread's next
+    // command, `brnr::run`'s, prints.
+    struct Taken;
+    impl Drop for Taken {
+        fn drop(&mut self) {
+            CAPTURE.take();
+        }
+    }
+    let _taken = Taken;
+    let (cmd, verb, rest) = split(args);
+    let usage = |e: args::Error| match e {
+        args::Error::Failed(error) => error,
+        args::Error::Invalid(message) => error::Error::new(Code::usage_invalid, message),
+        args::Error::Usage => error::Error::new(Code::usage_invalid, usage_of(cmd, verb)),
+    };
+    let result = match args::spec(cmd, verb) {
+        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)).map_err(usage),
+        None => Err(usage(args::Error::Usage)),
+    };
+    let capture = CAPTURE.take().expect("set until now");
+    let status = result?;
+    let status = (0..=u8::MAX).find(|&n| ExitCode::from(n) == status).unwrap_or(1);
+    let out = match capture.out {
+        Out::Kept(out) => out,
+        Out::Sent(_) => String::new(),
+    };
+    Ok(Ran { status, out, missed: capture.missed })
+}
+
+/// Whether this thread runs a command for the facade.
+fn capturing() -> bool {
+    CAPTURE.with_borrow(Option::is_some)
+}
+
+/// Keeps `note`, an `events_missed` (ADR 10.2), for the facade's command,
+/// which returns it.
+fn missed(note: &Value) {
+    CAPTURE.with_borrow_mut(|c| c.iter_mut().for_each(|c| c.missed = Some(note.clone())));
+}
 
 /// Runs the verb `spec` is, with its arguments `a`.
 fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
@@ -307,6 +404,9 @@ pub(crate) fn command(args: &[String]) -> String {
 fn out(text: &str) {
     match write_out(text) {
         Ok(()) => {}
+        // The facade's caller has stopped reading: the command finds out
+        // where it writes a stream's next event (`write_out`).
+        Err(e) if e.kind() == ErrorKind::BrokenPipe && capturing() => {}
         Err(e) if e.kind() == ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => panic!("writing to stdout: {e}"),
     }
@@ -315,11 +415,27 @@ fn out(text: &str) {
 /// Writes `text`, [`render::clean`]ed, to stdout, and flushes it. All a
 /// command prints goes through here, so that [`failed`] knows whether it has
 /// printed any (a stream's events), and prints no `{"error"}` after it
-/// (ADR 8.7).
+/// (ADR 8.7). A command run for the facade writes to it instead (see
+/// [`call`]): a caller gone is a reader gone, `BrokenPipe`.
 fn write_out(text: &str) -> io::Result<()> {
+    let text = render::clean(text);
+    let captured = CAPTURE.with_borrow_mut(|c| {
+        c.as_mut().map(|c| match &mut c.out {
+            Out::Kept(kept) => {
+                kept.push_str(&text);
+                Ok(())
+            }
+            Out::Sent(lines) => {
+                lines.send(text.to_string()).map_err(|_| io::Error::from(ErrorKind::BrokenPipe))
+            }
+        })
+    });
+    if let Some(written) = captured {
+        return written;
+    }
     PRINTED.store(true, Relaxed);
     let mut stdout = io::stdout().lock();
-    stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush())
+    stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush())
 }
 
 /// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
@@ -936,6 +1052,7 @@ fn watch(a: &Args) -> Result<ExitCode, args::Error> {
             Ok(None) => continue,
             Err(why) => match conn.missed() {
                 Some(note) => {
+                    missed(note);
                     let _ = show(note);
                     return Ok(ExitCode::from(catch_up::MISSED));
                 }
@@ -1009,7 +1126,12 @@ fn text(v: &Value) -> String {
     v.as_str().unwrap_or("?").to_owned()
 }
 
+/// The command's stdin, read to its end; the facade's, for a command run
+/// for it.
 fn read_stdin() -> Result<String, error::Error> {
+    if let Some(given) = CAPTURE.with_borrow_mut(|c| c.as_mut().map(|c| c.stdin.take())) {
+        return Ok(given.unwrap_or_default());
+    }
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).map_err(|e| format!("stdin: {e}"))?;
     Ok(text)

@@ -8,14 +8,36 @@ For installing and a walkthrough, start with the
 [introduction](../introduction.md) and the guide.
 
 The command line is the interface. The `brnr` crate's Rust library is not a
-second one: its one public item is `brnr::run(args)`, `brnr <args>` as a
-function. `args` are the words after `brnr`, and it returns the exit status
-the command would exit with. Its modules are private. A typed facade, one
-module per command group and one function per verb that returns the data
-`--json` prints, is to come (#215). The `internals` feature, which the
-crate's own tests and fuzz targets use, is not covered by any compatibility
-promise
+second one: it is the command line as functions
 ([ADR 8.5](../adr/0008-the-command-line-and-compatibility.md#85-the-library-is-private-and-its-facade-mirrors-the-command-line)).
+`brnr::run(args)` is `brnr <args>`, run to the exit status the command would
+exit with. The typed facade has a module for each command group and a
+function for each verb, `brnr::session::list`, `brnr::prompt::send`, which
+return what the command prints with `--json`, as these pages describe it,
+with the same names; an error is `brnr::Error`, with its [code](errors.md).
+A function runs its command in the calling process, which says on stderr
+what the command says there.
+
+```rust
+let mut flags = brnr::session::ListFlags::default();
+flags.include = vec!["active".into()];
+for row in brnr::session::list(&flags)?.sessions {
+    println!("{} {}", row.session, row.state);
+}
+```
+
+- A command that waits, and `event watch`, `session delete` and `doctor`,
+  return `brnr::Exit`: its exit status, with what it printed. `event log`
+  and `event watch` give each event to a closure.
+- `session new` and `session resume` start the process from the running
+  program, as `<program> host`: a program that calls them hands its
+  arguments to `brnr::run` when the first is `host`, first thing in its
+  `main`.
+- Not in the facade: `--foreground`, `event notify` (`event::watch` does
+  what it does), `doctor --report`, `--help` and `--version`.
+
+The `internals` feature, which the crate's own tests and fuzz targets use,
+is not covered by any compatibility promise.
 
 ## How to read it
 

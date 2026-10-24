@@ -16,15 +16,47 @@
 //!
 //! brnr is a command-line tool, and this crate is its binary's library: its
 //! modules are private, and its public API is a facade that mirrors the
-//! command line (ADR 8.5 in docs/adr). Today that is [`run`], the command
-//! line as a function; a typed facade, one module per command group and one
-//! function per verb, follows once `--json`'s shapes are settled (#150).
+//! command line (ADR 8.5 in docs/adr). [`run`] is the command line as a
+//! function. The typed facade has a module for each command group,
+//! [`process`], [`session`], [`prompt`], [`queue`], [`permission`],
+//! [`elicitation`], [`config`] and [`event`], and the tools, [`doctor`] and
+//! [`skill`](fn@skill): a function for each verb, taking the command's
+//! arguments, and its flags as a struct, and returning what the command
+//! prints with `--json`, with the same names and shapes. An error is an
+//! [`Error`], with its [`Code`]. A function runs its command in this
+//! process, which says on stderr what the command says there.
+//!
+//! ```no_run
+//! let mut flags = brnr::session::StartFlags::default();
+//! flags.prompt = Some("reply hi".into());
+//! flags.wait = true;
+//! if let Some(brnr::session::Started::Turn(turn)) = brnr::session::new(&flags)?.value() {
+//!     println!("{}", turn.reply);
+//! }
+//! # Ok::<(), brnr::Error>(())
+//! ```
+//!
+//! [`session::new`] and [`session::resume`] start the process from the
+//! running program, as `<program> host`, as brnr does from its binary. A
+//! program that calls them hands its arguments to [`run`] when the first is
+//! `host`, first thing:
+//!
+//! ```no_run
+//! fn main() -> std::process::ExitCode {
+//!     if std::env::args_os().nth(1).is_some_and(|a| a == "host") {
+//!         return brnr::run(std::env::args_os().skip(1));
+//!     }
+//!     // …
+//! #   std::process::ExitCode::SUCCESS
+//! }
+//! ```
+//!
 //! From 1.0.0 the facade is covered by the compatibility promise. Nothing
 //! else is: `internals`, which the crate's own tests and fuzz targets reach
 //! behind the `internals` feature, is hidden and can change in any release.
 
-// Every `pub` item is reachable: through `run` or, with the feature on,
-// through `internals`; what isn't is `pub(crate)`. Checked when the
+// Every `pub` item is reachable: through the facade or, with the feature
+// on, through `internals`; what isn't is `pub(crate)`. Checked when the
 // feature is on, since the re-exports are what reach most of them.
 #![cfg_attr(feature = "internals", warn(unreachable_pub))]
 
@@ -34,6 +66,7 @@ use std::process::ExitCode;
 mod bug;
 mod ctl;
 mod error;
+mod facade;
 mod frame;
 mod host;
 mod json;
@@ -49,6 +82,11 @@ mod signals;
 mod spawn;
 mod sys;
 mod transcript;
+
+pub use facade::{
+    Agent, Check, Checks, Code, DoctorFlags, Dropped, Error, Event, Exit, Reply, Target, Turn,
+    config, doctor, elicitation, event, permission, process, prompt, queue, session, skill,
+};
 
 /// `brnr <args>` as a function: the command line, `args` being the words
 /// after `brnr`, run to its exit status. `acp` is what an editor runs as its

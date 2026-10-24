@@ -321,6 +321,13 @@ What brnr doesn't enforce, or doesn't test, today.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 11.2); that directory is trusted as
   `PATH` is.
+- **A process the library's facade starts is the calling program.**
+  `brnr::session::new` and `resume` start it as `<program> host` (ADR 8.5),
+  and look up bare names next to that program: the program, which runs as
+  the user, is trusted as the `brnr` executable is. A program that doesn't
+  hand `host` to `brnr::run` runs its own code there, with the start
+  request on its stdin, and the start fails: no process says it is ready.
+  Tested only for a program that does (`tests/facade.rs`).
 - **The adapters' dependencies.** Pinned and locked, but brnr doesn't review
   them: a compromised version of an adapter's package, pinned in a release,
   runs as the agent.

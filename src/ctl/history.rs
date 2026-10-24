@@ -147,7 +147,11 @@ impl Show {
         let Some(text) = text else { return Ok(0) };
         match super::write_out(&format!("{text}\n")) {
             Ok(()) => Ok(1),
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+            // The facade's caller stopped reading: an error that ends the
+            // command, which nobody reads.
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe && !super::capturing() => {
+                std::process::exit(0)
+            }
             Err(e) => Err(e.into()),
         }
     }
