@@ -94,6 +94,23 @@ brnr permission allow $s p1        # with its allow_once option; --always: allow
 brnr doctor                        # checks what brnr depends on
 ```
 
+## How light it is
+
+`brnr acp` relays bytes to a process that reads ACP once. What that adds,
+on an Apple M4 Pro (14 cores, macOS 26.4) busy with other work, brnr 0.10.0
+(81ae7d0), against a fake agent that answers at once:
+
+| | Direct pipe | Through `brnr acp` |
+|---|---:|---:|
+| A prompt's round trip (median) | 10 µs | 68 µs |
+| A turn that streams 20 MB | 784 MB/s | 157 MB/s |
+
+At rest, `brnr acp` takes 2.7 MiB of memory and 3 threads, and its process
+3.9 MiB and 12 threads; each connection to the process adds 2 threads, and
+each bridge 4. A real agent takes far longer than this to answer, so what
+brnr adds is a small part of a turn. Every pull request measures these
+numbers against budgets ([N3](https://brnrhq.github.io/brnr/docs/adr/0001-principles.html#n3-performance)).
+
 ## Documentation
 
 The documentation is a book at

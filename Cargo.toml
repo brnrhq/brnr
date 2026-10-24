@@ -43,6 +43,12 @@ brnr = { path = ".", features = ["internals"] }
 name = "facade"
 harness = false
 
+# What `brnr acp` adds (ADR 1, N3): `cargo bench --bench acp`, its budgets
+# in benches/budgets.toml, run on every pull request (.github/workflows/bench.yml).
+[[bench]]
+name = "acp"
+harness = false
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 # --cfg sanitized: built under a sanitizer (.github/workflows/sanitizers.yml),

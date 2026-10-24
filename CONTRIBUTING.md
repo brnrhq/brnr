@@ -151,6 +151,19 @@ ls /tmp/reports                # empty: nothing was found
 MemorySanitizer is `-Zsanitizer=memory`, with `MSAN_OPTIONS`. On a Mac: `--target aarch64-apple-darwin` and
 `detect_leaks=0` (macOS has no leak detection, and no MemorySanitizer).
 
+What `brnr acp` adds (ADR 1, N3) is measured against budgets on every
+pull request (`.github/workflows/bench.yml`): latency and throughput, each
+over the same fake agent on a direct pipe, memory at rest and threads. The
+job fails when a number passes its budget, and a comment on the pull
+request has the numbers. To run it yourself:
+
+```sh
+cargo bench --bench acp           # -- --quick for fewer rounds
+```
+
+The budgets are in `benches/budgets.toml`. A change that needs more raises
+the budget there, and its pull request says why.
+
 The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
 the pull request.

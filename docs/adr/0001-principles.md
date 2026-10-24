@@ -95,6 +95,35 @@ control socket) is a gap measured against it. Principles: P6, P10, P14.
 brnr is light: one small process per agent, that adds little latency
 between editor and agent and little load to the machine. Principles: P6.
 
+What it adds is measured on every pull request (#35): `cargo bench --bench
+acp` (benches/acp.rs), which .github/workflows/bench.yml runs on Linux and
+macOS, fails when a measure passes its budget in benches/budgets.toml, and
+one comment on the pull request has the numbers. The measures, and their
+budgets:
+
+- Latency: a prompt's round trip through `brnr acp`, the median, over the
+  same agent's on a direct pipe: at most 25 times.
+- Throughput: the time a turn that streams 20 MB takes through `brnr acp`
+  (1 KiB chunks, 16 to a message), over the direct pipe's: at most 20
+  times.
+- Memory at rest: the resident memory of `brnr acp`, 8 MiB at most, and of
+  its process, 16 MiB, initialized with a session open; and of the process
+  after the streams, 64 MiB (a busy machine queues more of the stream, up
+  to ADR 10.1's caps, and the allocator keeps some of it).
+- Threads: `brnr acp` 3; its process at rest, with an editor attached, 12;
+  each control connection adds 2, and each bridge 4.
+
+The agent is a fake that answers at once, so the numbers are brnr's own:
+with a real agent, brnr adds the same time, and the ratio is smaller. Shared CI
+runners are noisy, so latency and throughput are ratios to the direct
+pipe, measured at the same time on the same machine, with wide margins,
+and the job doesn't fail on a slow runner. Threads don't vary, so their
+budgets are today's counts: a new thread is a change its pull request
+chooses, raising the budget and saying why. A message assembled whole from
+its chunks is ADR 10.3's gap, not measured here: the stream is many
+messages. The README and the book's introduction give one run's numbers,
+with the machine and the version.
+
 #### N4. Simplicity
 
 brnr has few concepts, each with one owner in the code, as a focused
@@ -292,3 +321,10 @@ more than what it could learn. Opt-in telemetry was considered and not
 taken: it needs a server and someone to run it, and its counters would be
 one more thing to trust in a tool whose point is that it is trusted.
 Opt-out telemetry would send the user's data before they knew to stop it.
+
+## Tests
+
+The principles aren't proved by a finite suite: the decisions that apply
+them have the tests. N3's measures are checked by `cargo bench --bench acp`
+on every pull request (.github/workflows/bench.yml), not by a Rust test:
+their numbers depend on the machine.
