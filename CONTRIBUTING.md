@@ -59,9 +59,10 @@ fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
 stressors that stop with it however it ends, or when the load average
 reaches its limit (`tests/flake-loop.sh -h`). `tests/chaos.rs` kills the
 host, the proxy and a bridge at a seeded point (`FAULT` in
-`fake_agent.py`): each test runs fixed seeds and one new one, and one that
-fails prints its seed and the command that replays it
-(`BRNR_CHAOS_SEED=<n>`).
+`fake_agent.py`). A seeded test runs fixed seeds and one new one, and one
+that fails prints its seed and the command that replays it
+(`BRNR_CHAOS_SEED=<n>`). `adr_0003_killed_host_mid_start_commits_nothing`
+has no seed: it faults at each setup step in turn (`FAULT_AT`).
 
 A test that can't run where it is (as root, or without `lsof`) passes and
 says `skipped:` on stderr, which `--nocapture` shows. In CI, or with

@@ -2,8 +2,9 @@
 //! and 5.7). Each signal targets a pid obtained from this fixture, never a
 //! process-name match.
 //!
-//! Each test runs the fixed seeds and one new seed. A test that fails says
-//! its seed; `BRNR_CHAOS_SEED=<n>` runs that seed alone, to replay it.
+//! A seeded test runs the fixed seeds and one new seed. One that fails says
+//! its seed; `BRNR_CHAOS_SEED=<n>` runs that seed alone, to replay it. The
+//! start test has no seed: it faults at each setup step in turn.
 
 mod common;
 
