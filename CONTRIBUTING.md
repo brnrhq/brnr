@@ -49,7 +49,6 @@ cargo test --release           # release, as CI: some tests stream tens of thous
 adapters/build.sh              # only if you change adapters/ (needs bun)
 adapters/check.py --brnr target/release
 adapters/test_check.py         # only if you change adapters/check.py
-adapters/smoke.py junie        # by hand, with the agent logged in: docs/guide/native-agents.md
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to
@@ -59,6 +58,15 @@ change in behaviour comes with a test that shows it. To make a flaky test
 fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
 stressors that stop with it however it ends, or when the load average
 reaches its limit (`tests/flake-loop.sh -h`).
+
+Not in CI, and not needed to merge: a check by hand, with the agent logged
+in, on your quota, of an agent with ACP of its own through brnr
+([ADR 11.9](docs/adr/0011-building-releasing-and-support.md#119-agents-with-acp-of-their-own-are-checked-by-hand-with-a-smoke-check);
+results in [the guide](docs/guide/native-agents.md#results)):
+
+```sh
+adapters/smoke.py junie        # or cursor, or -- <agent> [args...]
+```
 
 A test that can't run where it is (as root, or without `lsof`) passes and
 says `skipped:` on stderr, which `--nocapture` shows. In CI, or with
