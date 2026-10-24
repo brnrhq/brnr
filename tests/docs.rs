@@ -22,7 +22,10 @@
 //!   reply, which a bridge started from the profile ([`BRIDGE`]) sends and
 //!   gets;
 //! - the reference's synopsis is `brnr --help`, and its errors page lists
-//!   the error codes brnr has, as ADR 8.7 does.
+//!   the error codes brnr has, as ADR 8.7 does;
+//! - every `rust` block, in [`DOCS`] and [`REFERENCE`], is one of the
+//!   library's doc examples (src/lib.rs), which `cargo test` compiles: a
+//!   use of the facade (ADR 8.5) that can't drift from it.
 //!
 //! What the examples name that a test can't have (a real adapter, a model
 //! the fake agent doesn't offer) is in [`STAND_INS`], with what stands in for
@@ -217,6 +220,11 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr session close $s", Idle, Says("closed")),
     ("brnr session delete $s", Ended, Says("deleted sess-1; brnr's transcript of it stays")),
     ("brnr session delete $s --purge", Ended, Says("deleted sess-1, and brnr's transcript")),
+    (
+        "brnr session prune --older-than 2592000 --dry-run",
+        Ended,
+        Says("nothing to prune was last active before"),
+    ),
     ("brnr session list -- brnr-claude-adapter", Nothing, Says("old-1")),
     ("brnr session resume <id> -- brnr-claude-adapter", Nothing, Says("started old-1")),
     ("brnr session resume $s --take-over", Idle, Says("started sess-1")),
@@ -472,6 +480,40 @@ fn adr_0008_every_example_is_run_or_skipped_and_runs() {
     });
     problems.extend(failed.into_inner().unwrap());
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+}
+
+/// Every `rust` block in the documents is one of src/lib.rs's doc
+/// examples, line for line, which `cargo test --doc` compiles: the facade's
+/// uses can't drift from it (ADR 8.5). A block runs nothing, as the doc
+/// example is `no_run`: it would start processes.
+#[test]
+fn adr_0008_every_rust_block_is_a_compiled_doc_example() {
+    let lib = read("src/lib.rs");
+    let examples: Vec<String> = lib
+        .split("//! ```")
+        .skip(1)
+        .step_by(2)
+        .map(|block| {
+            let body = block.split_once('\n').map_or("", |(_, body)| body);
+            let lines = body.lines().map(|l| l.trim_start().trim_start_matches("//!"));
+            let lines = lines.map(|l| l.strip_prefix(' ').unwrap_or(l));
+            lines.filter(|l| !l.starts_with("# ")).map(|l| format!("{l}\n")).collect()
+        })
+        .collect();
+    let mut found = 0;
+    for doc in DOCS.iter().chain(REFERENCE) {
+        for (lang, start, body) in md_blocks(&read(doc)) {
+            if lang == "rust" {
+                found += 1;
+                let at = format!("{doc}:{start}");
+                assert!(
+                    examples.contains(&body),
+                    "{at} isn't a doc example in src/lib.rs:\n{body}"
+                );
+            }
+        }
+    }
+    assert!(found > 0, "no rust block: the reference's overview has one");
 }
 
 #[test]

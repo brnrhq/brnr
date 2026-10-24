@@ -17,8 +17,8 @@
 //! the CLI and process management are the same with it and without.
 
 use super::Host;
-use crate::config::Experimental;
 use crate::error::{Code, Error};
+use crate::profiles::Experimental;
 use crate::schema;
 
 /// What brnr does beyond stable ACP, which strict mode doesn't. A

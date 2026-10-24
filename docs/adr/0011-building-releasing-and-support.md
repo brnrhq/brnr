@@ -319,8 +319,9 @@ the user chose to paste (#23, #24).
   (which `brnr skill` embeds), the README, and the license and NOTICE,
   which Apache-2.0 asks a redistribution to carry. The tests, docs, site
   and workflows stay in the repository.
-- The published library is private but for `brnr::run`; only its facade is
-  covered by compatibility (ADR 8.5).
+- The published library is private but for its facade, `brnr::run` and the
+  typed functions that mirror the command line; only the facade is covered
+  by compatibility (ADR 8.5).
 - `cargo install brnr --locked` is documented next to Homebrew. It installs
   brnr only. The adapters come from Homebrew or npm (ADR 11.1), because a
   crate can't build them.

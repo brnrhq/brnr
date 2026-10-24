@@ -51,6 +51,10 @@ are what N2 asks of it.
   links go without the editor's stdin ending first, closes the agent's
   stdin and SIGKILLs its process group itself (`link_gone`): the same end,
   a moment later.
+- A host that dies without a word (SIGKILL) closes the link: the proxy
+  says `brnr acp: lost the connection to its process` on stderr and exits
+  1, and the editor sees its agent go. A flooding agent exits on its
+  broken pipe; one that isn't reading outlives the host (ADR 3.7, #391).
 - The editor's child is the proxy, not the agent, so its pid and process
   tree differ. That separation is what lets the side channel exist.
 - Side-channel actions, where a profile enables them: ADR 7.1.
@@ -344,16 +348,21 @@ every session).
 
 - A killed host can't write `process_exited`: `doctor` reports its incomplete log
   and repairs stale runtime files, and the session's lock can be taken
-  again (ADR 3.9). A killed proxy leaves the host alive to record its death
-  and stop even a blocked agent. A killed bridge leaves the session and its
-  ownership intact (ADR 5.7). Setup faults never commit the prompt
-  (ADR 3.4). `tests/chaos.rs` injects these.
+  again (ADR 3.9). A host killed during a start fails the start, and the
+  prompt is never sent (ADR 3.4). A killed proxy, in setup or a turn,
+  leaves the host alive to record its death and stop even a blocked agent.
+  A killed bridge leaves the session and its ownership intact (ADR 5.7).
+  Setup faults never commit the prompt (ADR 3.4). `tests/chaos.rs` injects
+  these at a seeded point, and says the seed of a run that fails, to
+  replay it.
 - The host is the only supervisor. SIGKILL closes its pipes but can't make
   it signal its children: a blocked agent, a bridge that ignores EOF, or
   their descendants can outlive it. The host-SIGKILL test checks a flooding
   agent that exits on its broken pipe, not cleanup in every case. That
   stronger promise needs a separate supervisor, and a decision about its
-  own lifetime. `doctor` doesn't kill processes inferred from stale pids.
+  own lifetime (#391; `killed_host_leaves_no_agent_or_child_behind` in
+  `tests/chaos.rs` shows it, ignored until then). `doctor` doesn't kill
+  processes inferred from stale pids.
 
 **Why.** In October 2026 an editor's host, agent and proxy died together
 three times, with no `exited`, no `editor-disconnected` and no `signal`
@@ -776,6 +785,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_an_editors_process_needs_its_signal_link`,
     `adr_0003_non_blocking_stdin_is_waited_on`,
     `adr_0003_acp_with_sigchld_ignored`.
+  - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
+    `adr_0003_killed_host_mid_turn_ends_the_editors_proxy`.
 - 3.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_ps_lists_the_processes`,
   `adr_0003_session_targets_are_exact_ids_not_prefixes_or_pids`.
@@ -796,7 +807,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_empty_prompt_is_refused`,
     `adr_0003_large_prompt_from_stdin`.
   - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
-    `adr_0003_seeded_setup_failure_never_commits_a_prompt`.
+    `adr_0003_seeded_setup_failure_never_commits_a_prompt`,
+    `adr_0003_killed_host_mid_start_commits_nothing`.
   - [src/host/fuzz.rs](https://github.com/brnrhq/brnr/blob/main/src/host/fuzz.rs):
     `adr_0003_a_step_answered_after_the_start_failed_goes_no_further`.
 - 3.5:
@@ -821,7 +833,8 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
     `adr_0003_a_zombie_process_is_gone`.
   - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
     `adr_0003_seeded_agent_crash_records_death_and_releases_session`,
-    `adr_0003_killed_proxy_mid_fault_stops_host_and_agent`.
+    `adr_0003_killed_proxy_mid_fault_stops_host_and_agent`,
+    `adr_0003_killed_proxy_mid_setup_stops_host_and_agent`.
 - 3.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_fork_is_refused_when_it_could_never_close`,
   `adr_0003_stop_when_idle`,

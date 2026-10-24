@@ -63,6 +63,41 @@ output are in the raw file only. `log = "events"` leaves out the
 raw file, most of the space; `log = "off"` writes nothing but the session
 locks.
 
+## How long brnr keeps them
+
+By default, until you delete them: brnr deletes nothing on its own. Two ways
+prune by age (ADR 9.5):
+
+```sh
+brnr session prune --older-than 2592000 --dry-run   # what was last active more than 30 days ago
+brnr session prune --older-than 2592000             # delete it
+```
+
+```toml
+retention = 2592000   # at the top of config.toml: every process prunes so as it starts
+```
+
+- The age is in seconds, as every duration in brnr is. `brnr doctor` says
+  the retention in days, so a value meant in days shows.
+- A session's age is its last activity, `session list`'s LAST ACTIVE: the
+  newest record a process wrote for it, not when it began, and not a
+  `session delete`. Its files go as `session delete --purge` deletes them:
+  every project folder's events and raw ACP, and those set aside.
+- A process's host log goes once the process has gone and its newest record
+  is that old. A process that runs longer keeps its host log until it exits.
+- Never pruned: a session open in a process, or whose lock is held; the
+  session a start resumes; and a file brnr can't read the age of (another
+  format, which `doctor` lists, or no record).
+- `--older-than 0` prunes every session no process has open. `retention = 0`
+  fails to load: leave `retention` out to keep everything, or set a
+  profile's `log = "off"` to record nothing.
+- The agent's own copy of a session stays: `brnr session delete` asks the
+  agent to delete it.
+- A process records what it pruned in its host log, `transcripts_pruned`.
+  `--json` has the same fields, and `--dry-run` deletes nothing.
+
+## Gaps, secrets and privacy
+
 Records skipped behind a slow disk are counted, and a `records_skipped` note
 (`count`, `acp_count` of them raw ACP, `since`, `until`, and the positions of the
 events among them, `first_seq` and `last_seq`, with `ts`, `host_id`, `pid`
