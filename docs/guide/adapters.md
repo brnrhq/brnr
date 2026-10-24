@@ -1,5 +1,8 @@
 # Adapters
 
+Agents that speak ACP themselves, such as Junie and Cursor, need no adapter:
+see [Agents with ACP of their own](native-agents.md).
+
 The ACP adapters aren't brnr's work. `adapters/` packages two existing
 open-source adapters, unchanged, as standalone executables
 (`bun build --compile`). Each carries its own JavaScript runtime, so it needs

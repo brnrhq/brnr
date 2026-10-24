@@ -1,14 +1,16 @@
 # 11. Building, releasing and support
 
-Draft 2026-10-19. Implemented. Factor: N1 (ADR 1). Brings together former
-ADRs 37, 38, 39, 40, 45, 47 and 52 (docs/adr/README.md maps them).
+Draft 2026-10-19, 11.9 2026-10-24. Implemented. Factors: N1, and F1 for
+11.9 (ADR 1). Brings together former ADRs 37, 38, 39, 40, 45, 47 and 52
+(docs/adr/README.md maps them).
 
 How brnr and its adapters are built, found, versioned, released and
-published, how its documentation is published, and how a user reports a
-bug. The supply chain serves N1: pinned
-builds compiled where they run, reproducible release builds with an SBOM,
-publication without a stored token, and bug reports that send nothing the
-user didn't choose to paste.
+published, how its documentation is published, how a user reports a bug,
+and how agents with ACP of their own are checked. The supply chain serves
+N1: pinned builds compiled where they run, reproducible release builds with
+an SBOM, publication without a stored token, and bug reports that send
+nothing the user didn't choose to paste. The check of agents with ACP of
+their own serves F1: what brnr does with each is seen, not assumed.
 
 ## 11.1 Adapters through Homebrew
 
@@ -488,6 +490,72 @@ documentation says can't drift silently).
 - The documentation in GitHub's wiki: not versioned with the code, and
   its examples can't be tested.
 
+## 11.9 Agents with ACP of their own are checked by hand, with a smoke check
+
+- brnr runs an agent that speaks ACP itself (JetBrains Junie, `junie
+  --acp true`; Cursor, `cursor-agent acp`) as it runs an adapter: the
+  command after `--`, or a profile's `agent`. The guide has a profile for
+  each (docs/guide/native-agents.md).
+- `adapters/smoke.py` checks such an agent through brnr, with the agent
+  itself: `adapters/smoke.py junie`, `cursor`, or `-- <agent> [args...]`.
+  It says brnr's version and the agent's (its `--version`, and the
+  `agentInfo` of `initialize`), then checks initialize, session/new, a
+  prompt answered "ok", a turn cancelled once it runs, and a clean
+  shutdown (`brnr process stop`: the process, the agent and every process
+  the agent started gone, and the host log ending with `process_exited`).
+  Fork, list, resume (`session/resume`, else `session/load`) and close it
+  checks only where the agent advertises them, and says `unsupported`
+  where it doesn't (P7). The sessions it made it deletes from the agent's
+  store where the agent can, and says where it can't. However it ends, an
+  error, an exception or Ctrl-C, it stops the processes it started and
+  waits for them to go before it removes its scratch folder; one that
+  doesn't go keeps the folder, and fails the check, saying so (P14).
+- It runs by hand only, never in CI: it needs the agent installed and
+  logged in, and spends the user's quota (four short turns at most). It
+  runs in a scratch `BRNR_HOME`, `BRNR_DIR` and project folder, with the
+  user's `HOME`, for the agent's login. Its cwd has its symlinks resolved,
+  because an agent may record a cwd that way.
+- What it found, with the versions, the date and the machine, is in the
+  guide (docs/guide/native-agents.md), each failure with whose it is. A
+  failure that is brnr's gets a test with the fake agent and a fix, or an
+  issue. One that is the agent's is recorded, and brnr doesn't work around
+  it (F1).
+- A test runs it against `tests/fake_agent.py` as the agent: every check
+  passing, each capability left out reported `unsupported`, and a wrong
+  reply, a turn that can't be cancelled and an agent that doesn't start
+  failing it, and Ctrl-C leaving no process running.
+
+**Why.** #231: research named Junie's and Cursor's ACP entry points, but
+nobody had run them through brnr, so whether they work was a guess. F1
+says brnr behaves the same with every agent, and P2 that an agent's own
+behaviour can't be relied on: the way to know is to run each, and say what
+was seen. A check that needs the agent's login and quota can't run in CI,
+nor quietly (P15: what reaches the network is what the user runs), so it is
+a command a person runs, and its results are recorded with the versions
+they hold for.
+
+**Consequences.**
+
+- The results are as old as their date: a new version of the agent can
+  change them. Run the check again, and update the page.
+- Cursor 2026.10.19 fails two checks of its own (it ends every reply with
+  an error message, and its `session/load` replays no history), and
+  doesn't always exit when its stdin closes, so brnr's stop sends it
+  SIGTERM (ADR 3.2). The guide says so; brnr doesn't change for it.
+
+**Considered.**
+
+- Extending `adapters/check.py`: that checks the pinned adapters with stand-in
+  agents, with no login, on every pull request. This check needs the real
+  agent and its account; one script for both would run one way or the
+  other.
+- A nightly job with the agents logged in: credentials for third-party
+  accounts in CI, and quota spent every night, for what changes when an
+  agent's version moves.
+- An adapter or a mode per agent, to smooth over what each does wrong: brnr
+  doesn't compensate for an agent (F1), and one agent's behaviour isn't a
+  convention (P2).
+
 ## Tests
 
 Run `cargo test --release adr_0011_`. Named claims, by section:
@@ -530,3 +598,11 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
   `the_guide_has_every_command_and_option` checks that the guide names
   every command and option; the build and publication, none (see the
   section).
+- 11.9: [tests/smoke.rs](https://github.com/brnrhq/brnr/blob/main/tests/smoke.rs):
+  `adr_0011_the_smoke_check_runs_every_check_an_agent_advertises`,
+  `adr_0011_the_smoke_check_says_what_the_agent_doesnt_advertise`,
+  `adr_0011_the_smoke_check_fails_what_fails`,
+  `adr_0011_the_smoke_check_stops_what_it_started_when_interrupted`, with
+  the fake agent.
+  Not covered by a Rust test: the real agents, which the check runs by
+  hand (see the section).

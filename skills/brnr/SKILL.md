@@ -65,7 +65,10 @@ brnr elicitation requests --json                      # the agents asking for in
 brnr session close $s --json                          # done with it: {session}, closed
 ```
 
-Use `brnr-codex-adapter` for Codex. A start with `--cwd <dir>` works there;
+Use `brnr-codex-adapter` for Codex, `junie --acp true` for Junie and
+`cursor-agent acp` for Cursor (no adapter: they speak ACP themselves; Cursor
+can't close or fork a session: stop its process with `brnr
+process stop <pid>`). A start with `--cwd <dir>` works there;
 without it, in the current directory. The message is `--prompt`'s value, as
 given (`--prompt -` reads it from stdin), for `prompt send` as for a start.
 

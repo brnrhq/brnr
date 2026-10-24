@@ -110,6 +110,8 @@ The documentation is a book at
   [profiles, bridges and environment](https://brnrhq.github.io/brnr/docs/guide/profiles.html),
   [transcripts](https://brnrhq.github.io/brnr/docs/guide/transcripts.html),
   [adapters](https://brnrhq.github.io/brnr/docs/guide/adapters.html),
+  [agents with ACP of their own](https://brnrhq.github.io/brnr/docs/guide/native-agents.html)
+  (Junie, Cursor),
   [doctor](https://brnrhq.github.io/brnr/docs/guide/doctor.html)
 - [Interface reference](https://brnrhq.github.io/brnr/docs/reference/overview.html): commands, JSON, exit codes,
   configuration and the bridge protocol, for scripts and bridges
