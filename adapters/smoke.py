@@ -250,13 +250,24 @@ def cleanup():
     global cleaned
     if cleaned is not None:
         return cleaned
-    rc, got, _ = run("process", "list", "--json", wait=30)
-    pids = [p["pid"] for p in (got or {}).get("processes", [])]
-    for pid in pids:
-        run("process", "stop", str(pid), wait=30)
-    stopped = rc == 0 and got is not None and gone(pids, 20) is not None
+    # Again until a list finds none: a host whose start was cut short may
+    # write its metadata only after the first list.
+    pids, stopped = [], False
+    for _ in range(3):
+        rc, got, _ = run("process", "list", "--json", wait=30)
+        if rc != 0 or got is None:
+            break
+        found = [p["pid"] for p in got.get("processes", [])]
+        if not found:
+            stopped = True
+            break
+        pids += found
+        for pid in found:
+            run("process", "stop", str(pid), wait=30)
+        if gone(found, 20) is None:
+            break
     if not stopped:
-        left = [p for p in pids if alive(p)] if got is not None else "unknown"
+        left = [p for p in pids if alive(p)] or "unknown"
         say("FAIL", "cleanup", f"kept {scratch}: its processes may not have stopped ({left})")
     elif os.environ.get("BRNR_SMOKE_KEEP"):
         print(f"note: kept {scratch}, its transcripts and host logs")
