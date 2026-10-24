@@ -65,10 +65,10 @@ brnr's own conventions:
 
 ### Changed
 
-- `session delete --purge` deletes a session's events file last, after its
-  raw ACP and the files set aside, so a purge cut short leaves the file
-  the session is found by (ADR 9.5). `purged` lists them in that order.
-
+- **Breaking:** `session delete --purge` deletes a session's events file
+  last, after its raw ACP and the files set aside, so a purge cut short
+  leaves the file the session is found by (ADR 9.5). `purged` lists them
+  in that order.
 - The documentation is a book, at
   [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with
   search: the guide that was the README, the interface reference, the ADRs
