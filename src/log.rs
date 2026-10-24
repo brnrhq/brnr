@@ -1139,13 +1139,19 @@ pub(crate) fn purge(session: &str, dry_run: bool) -> (Vec<PathBuf>, Vec<String>)
             }
         };
         // An older brnr's set aside first (ADR 5.9), then its raw ACP, then
-        // its events.
-        let listed: Vec<String> = std::fs::read_dir(&path)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| e.file_name().into_string().ok())
-            .collect();
+        // its events. A folder that can't be listed is said and left whole:
+        // what it holds of the session isn't known.
+        let listed: io::Result<Vec<String>> = std::fs::read_dir(&path).and_then(|entries| {
+            let names = entries.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()));
+            names.collect()
+        });
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(e) => {
+                failed.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
         let mut files: Vec<&String> = listed
             .iter()
             .filter(|f| paths::is_sessions_file(&name, f) && **f != events && **f != acp)
