@@ -15,6 +15,7 @@
 - [Profiles, bridges and environment](guide/profiles.md)
 - [Transcripts](guide/transcripts.md)
 - [Adapters](guide/adapters.md)
+- [Agents with ACP of their own](guide/native-agents.md)
 - [Doctor](guide/doctor.md)
 
 # Reference

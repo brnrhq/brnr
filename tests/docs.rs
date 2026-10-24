@@ -55,6 +55,7 @@ const DOCS: &[&str] = &[
     "docs/guide/headless.md",
     "docs/guide/agents.md",
     "docs/guide/profiles.md",
+    "docs/guide/native-agents.md",
     "docs/guide/doctor.md",
     "docs/project/releasing.md",
     "site/index.html",
@@ -79,6 +80,7 @@ const GUIDE: &[&str] = &[
     "docs/guide/profiles.md",
     "docs/guide/transcripts.md",
     "docs/guide/adapters.md",
+    "docs/guide/native-agents.md",
     "docs/guide/doctor.md",
 ];
 
@@ -157,6 +159,14 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ("brnr acp -- brnr-claude-adapter", Nothing, Succeeds),
     ("brnr acp -- brnr-codex-adapter", Nothing, Succeeds),
     ("brnr acp --profile work", Nothing, Succeeds),
+    // Agents with ACP of their own: their arguments go to the fake agent.
+    ("brnr acp -- junie --acp true", Nothing, Succeeds),
+    ("brnr acp -- cursor-agent acp", Nothing, Succeeds),
+    (
+        r#"brnr session new --prompt "fix the failing tests" -- junie --acp true"#,
+        Nothing,
+        Says("started"),
+    ),
     // Talk to it from outside
     ("brnr session list", Idle, Says("sess-1")),
     ("brnr session status $s", Idle, Says("Fake session")),
@@ -401,6 +411,8 @@ const STAND_INS: &[(&str, &str)] = &[
     ("$s", "{s}"),
     ("brnr-claude-adapter", "{agent}"),
     ("brnr-codex-adapter", "{agent}"),
+    ("junie", "{agent}"),
+    ("cursor-agent", "{agent}"),
     ("~/work/project", "{dir}/project"),
     ("~/work/api", "{dir}/project"),
     ("~/work/web", "{dir}/project"),

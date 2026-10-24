@@ -24,6 +24,16 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Junie (`junie --acp true`) and Cursor (`cursor-agent acp`) through brnr:
+  profile examples, and `adapters/smoke.py`, a smoke check run by hand with
+  the real agent, which checks initialize, a session, a prompt, a cancel, a
+  clean shutdown, and fork, list, resume and close where the agent
+  advertises them. The guide records the results, with the versions: Junie
+  26.10.5 passes every check; Cursor 2026.10.19 fails two of its own
+  making, which brnr doesn't work around (ADR 11.9, #231).
+
 ### Changed
 
 - The documentation is a book, at
