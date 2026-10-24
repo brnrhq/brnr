@@ -27,6 +27,15 @@
 //! process, which says on stderr what the command says there.
 //!
 //! ```no_run
+//! let mut flags = brnr::session::ListFlags::default();
+//! flags.include = vec!["active".into()];
+//! for row in brnr::session::list(&flags)?.sessions {
+//!     println!("{} {}", row.session, row.state);
+//! }
+//! # Ok::<(), brnr::Error>(())
+//! ```
+//!
+//! ```no_run
 //! let mut flags = brnr::session::StartFlags::default();
 //! flags.prompt = Some("reply hi".into());
 //! flags.wait = true;

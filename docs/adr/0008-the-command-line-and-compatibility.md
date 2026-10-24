@@ -935,11 +935,12 @@ public items.
   1.0.0: its items change, move or go whenever the tests do. The crate's
   documentation, `Cargo.toml` and this record say so. With the feature on,
   `unreachable_pub` warns of a `pub` item that nothing outside reaches, so
-  `pub` keeps meaning reachable through `run` or `internals`.
+  `pub` keeps meaning reachable through the facade or `internals`.
 
 That nothing else is public is the compiler's to check: a private module
 can't be named from outside the crate, and `cargo doc` without the feature
-lists `run` alone. The fuzz targets building against `internals` is
+lists the facade alone: `run`, the typed facade's modules and functions, and
+their types. The fuzz targets building against `internals` is
 checked by the fuzz workflow's build (`.clusterfuzzlite/build.sh`).
 
 **Why.** `cargo publish` uploads the library at every release (ADR 11.6),
@@ -949,12 +950,13 @@ changes users never see; letting them move would break P9's promise for
 whoever used them. brnr's interface is its command line, with `--json` as
 its data for programs (ADR 8.2). A library is useful only as that
 interface again, not a second one: P5's one interpretation, reached two
-ways, with nothing the command line doesn't say.
+ways, with nothing the command line doesn't say. The typed facade is that:
+each function is its command, and its types are the command's `--json`.
 
 **Consequences.**
 
-- `cargo doc` without the feature lists `run` alone. The command line, with
-  `--json`, is the interface.
+- `cargo doc` without the feature lists the facade alone. The command line,
+  with `--json`, is the interface; the facade is it as functions.
 - A Cargo feature can't be hidden from crates.io: `internals` is in the
   published manifest and anyone can turn it on. What it reaches is no
   promise, and is said to be none.
@@ -1591,7 +1593,10 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
   its connection closed though no event follows, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
   `adr_0008_a_facade_error_has_the_commands_code`,
-  `adr_0008_the_facade_has_session_prune`.
+  `adr_0008_the_facade_has_session_prune`. [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_every_rust_block_is_a_compiled_doc_example`: the documents'
+  uses of the facade are src/lib.rs's doc examples, which `cargo test`
+  compiles.
 - 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs`,
   `adr_0008_every_toml_block_loads`; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
