@@ -7080,6 +7080,62 @@ fn adr_0009_a_process_prunes_as_it_starts_when_retention_is_set() {
     env.stop();
 }
 
+/// A session one of whose files has a newest record in a format this brnr
+/// doesn't read, a newer brnr's, has an age brnr can't tell: it is kept
+/// whole, with `--dry-run` and without (P4). The files an older brnr set
+/// aside beside a session are older than the one that took their place,
+/// and go with it (ADR 9.5).
+#[test]
+fn adr_0009_prune_keeps_a_session_it_cant_read_the_age_of() {
+    let env = Env::new("c-prune-format");
+    let old = "2026-01-01T00:00:00Z";
+    let kept = aged_transcript(&env, "-a", "mixed-1", &[old]);
+    let newer = env.dir.join("home/projects/-b/mixed-1.jsonl");
+    private_dirs(&env, newer.parent().unwrap());
+    let record = json!({ "format": 2, "ts": old, "session": "mixed-1",
+                         "event": { "event": "turn_ended", "session": "mixed-1" } });
+    write_private(&newer, &format!("{record}\n"));
+    let pruned = aged_transcript(&env, "-c", "aside-1", &[old]);
+    let aside = pruned.with_file_name("aside-1.older.jsonl");
+    write_private(&aside, "{\"ts\":\"2025-01-01T00:00:00Z\",\"session_id\":\"aside-1\"}\n");
+
+    for args in [&["--dry-run", "--json"][..], &["--json"]] {
+        let mut all = vec!["session", "prune", "--older-than", "86400"];
+        all.extend(args);
+        let out: Value = serde_json::from_str(&env.ok(&all)).unwrap();
+        let ids: Vec<&Value> =
+            out["sessions"].as_array().unwrap().iter().map(|s| &s["session"]).collect();
+        assert_eq!(ids, [&json!("aside-1")], "{out}");
+        let files = out["sessions"][0]["files"].as_array().unwrap();
+        assert_eq!(files[0], json!(aside.to_string_lossy()), "{out}");
+        assert_eq!(files.len(), 3, "{out}");
+    }
+    assert!(kept.exists() && newer.exists(), "a session of unknown age was pruned");
+    assert!(!pruned.exists() && !aside.exists());
+}
+
+/// A process with `retention` set that stops as soon as its turn is done
+/// waits for its prune, and records it, before its last records are
+/// written (ADR 9.5).
+#[test]
+fn adr_0009_a_process_records_its_prune_before_it_exits() {
+    let env = Env::new("c-retention-exit");
+    let old = aged_transcript(&env, "-old-1", "old-2", &["2026-01-01T00:00:00Z"]);
+    env.write_config(&format!("retention = 86400\n\n[profiles.default]\nagent = [{AGENT:?}]\n"));
+    env.start(&["--wait", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    assert!(!old.exists(), "old-2 wasn't pruned");
+    let logs = fs::read_dir(env.dir.join("home/hosts")).unwrap().flatten();
+    let recorded = logs.flat_map(|l| {
+        let text = fs::read_to_string(l.path()).unwrap();
+        text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>()
+    });
+    let pruned: Vec<Value> =
+        recorded.filter(|r| r["event"]["event"] == "transcripts_pruned").collect();
+    assert_eq!(pruned.len(), 1, "{pruned:?}");
+    assert_eq!(pruned[0]["event"]["sessions"][0]["session"], "old-2", "{pruned:?}");
+}
+
 /// `retention` is a whole number of seconds, and not 0, which would delete
 /// every transcript once its session closed: anything else fails to load,
 /// before an agent starts (ADR 9.5, ADR 6.1).

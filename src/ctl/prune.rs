@@ -22,7 +22,6 @@
 //! `session delete`'s.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -131,6 +130,7 @@ fn run(older_than: u64, dry_run: bool, leave: Option<&str>) -> Result<Pruned, er
             continue;
         }
         let (files, failed) = match dry_run {
+            true if !still_old(id, before) => continue,
             true => log::purge(id, true),
             // Its lock held while its files go, and only if nothing has
             // happened in it since it was listed.
@@ -190,14 +190,18 @@ fn older(ts: &Value, before: SystemTime) -> bool {
 }
 
 /// Whether session `id`, its lock held, still was last active before
-/// `before`: a process may have opened it, and closed it again, since it was
-/// listed.
+/// `before`, in every one of its events files: a process may have opened
+/// it, and closed it again, since it was listed. One whose newest record is
+/// in a format this brnr doesn't read, a newer brnr's, has an age brnr
+/// can't tell, and keeps the whole session (P4); one with no record at all
+/// says nothing either way. Files an older brnr set aside are older than
+/// the file that took their place, and aren't asked.
 fn still_old(id: &str, before: SystemTime) -> bool {
-    let last = |file: PathBuf| {
-        let newest = transcript::newest(&file).filter(transcript::readable)?;
-        Some(active_at(&file, &newest))
-    };
-    transcript::of_session(id).into_iter().filter_map(last).all(|at| older(&at, before))
+    transcript::of_session(id).iter().all(|file| match transcript::newest(file) {
+        None => true,
+        Some(newest) if transcript::readable(&newest) => older(&active_at(file, &newest), before),
+        Some(_) => false,
+    })
 }
 
 /// The text of what `pruned` did, the same data as its JSON (P5).
