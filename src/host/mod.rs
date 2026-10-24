@@ -392,6 +392,9 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<JoinHandle<()>>,
+    /// What the process prunes as it starts (ADR 9.5), waited for before
+    /// the logger finishes, so that its record is written.
+    prune: Option<JoinHandle<()>>,
     /// A headless start, until it commits or fails (see start.rs).
     start: Option<Start>,
     log: Logger,
@@ -629,6 +632,7 @@ impl Host {
             editor: editor.is_some(),
             link: None,
             link_writer: None,
+            prune: None,
             start,
             sink: log.sink(),
             log,
@@ -778,7 +782,9 @@ impl Host {
         // in the host log (ADR 9.5).
         if let Some((older_than, resumed)) = prune {
             let sink = self.sink.clone();
-            thread::spawn(move || crate::ctl::prune_as_started(older_than, resumed, &sink));
+            self.prune = Some(thread::spawn(move || {
+                crate::ctl::prune_as_started(older_than, resumed, &sink);
+            }));
         }
         let signals = signals::install();
         let t = tx.clone();
@@ -1051,6 +1057,11 @@ impl Host {
     /// (ADR 5.5). A signal gives up on it, and stderr, the display closed,
     /// says how much wasn't written; the logger is left to the exit.
     fn end_log(&mut self) {
+        // A prune still running records what it deleted first; a signal
+        // gives up on it too, and the exit stops it.
+        if let Some(prune) = self.prune.take() {
+            self.wait_out(|| prune.is_finished());
+        }
         let log = std::mem::replace(&mut self.log, Logger::disabled());
         log.finish();
         let unwritten = if self.wait_out(|| log.finished()) { 0 } else { log.unwritten() };
