@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 
 use crate::error::{self, Code};
 use crate::request::{self, Request, Role};
-use crate::{config, paths, render, signals, spawn, sys, transcript};
+use crate::{paths, profiles, render, signals, spawn, sys, transcript};
 
 use super::args::Error::{self, Failed, Invalid};
 use super::client::{Conn, Host, count, discover, missing, session_in};
@@ -468,7 +468,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, error::Error> {
             }
         }
     }
-    let cfg = config::load(a.profile.as_deref())?;
+    let cfg = profiles::load(a.profile.as_deref())?;
     // --profile p brings p's agent too, if p names one: a profile's agent
     // is that of each of its processes (ADR 3.11, ADR 6.1).
     if a.agent.is_empty() && !(named && cfg.agent.as_ref().is_some_and(|argv| !argv.is_empty())) {
@@ -485,7 +485,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, error::Error> {
         return Err(error::Error::new(Code::input_invalid, error));
     }
     let mcp_servers =
-        h.mcp_servers.iter().map(config::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
+        h.mcp_servers.iter().map(profiles::McpServer::to_acp).collect::<Result<Vec<_>, _>>()?;
     let defaults = request::Settings {
         mode: h.mode.clone(),
         model: h.model.clone(),

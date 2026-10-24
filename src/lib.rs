@@ -32,7 +32,6 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 mod bug;
-mod config;
 mod ctl;
 mod error;
 mod frame;
@@ -41,6 +40,7 @@ mod json;
 mod lock;
 mod log;
 mod paths;
+mod profiles;
 mod proxy;
 mod render;
 mod request;
