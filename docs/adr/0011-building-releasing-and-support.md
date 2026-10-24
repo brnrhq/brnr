@@ -508,7 +508,7 @@ documentation says can't drift silently).
   store where the agent can, and says where it can't. However it ends, an
   error, an exception or Ctrl-C, it stops the processes it started and
   waits for them to go before it removes its scratch folder; one that
-  doesn't go keeps the folder, and says so (P14).
+  doesn't go keeps the folder, and fails the check, saying so (P14).
 - It runs by hand only, never in CI: it needs the agent installed and
   logged in, and spends the user's quota (four short turns at most). It
   runs in a scratch `BRNR_HOME`, `BRNR_DIR` and project folder, with the
