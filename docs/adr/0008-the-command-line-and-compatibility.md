@@ -917,7 +917,11 @@ public items.
 - A usage error, which the command line exits 2 for without a code (ADR
   8.3), is `usage_invalid`: a function has no exit status to say it with.
   The flags' types rule out what they can (`prompt send`'s modes are an
-  enum); the rest the command checks, as it does its words.
+  enum); the rest the command checks, as it does its words. A positional
+  argument the command would read as an option (`--…`, or `-`) is one too,
+  checked before the command runs: `--json` as a session would make
+  `permission requests` another call, every session's. A flag's value is
+  the flag's, whatever it is (ADR 8.1).
 - `session new` and `session resume` start the process from the running
   program, as `<program> host`, as brnr does from its own binary (ADR
   3.3): the process is the same brnr as the facade that started it (ADR

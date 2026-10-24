@@ -707,6 +707,19 @@ fn tool_verbs(env: &Env) {
 }
 
 fn errors(env: &Env) {
+    // An argument the command would read as an option is refused, not run:
+    // `--json` as the session would list every session's requests.
+    for session in ["--json", "-"] {
+        let err = permission::requests(Some(session)).unwrap_err();
+        code_is(&serde_json::to_value(&err).unwrap(), "usage_invalid");
+    }
+    // A flag's value `--` is the flag's: the prompt, not the agent's words.
+    let (a, _) = pair(env, "reply hi", Some("turn"));
+    let mut flags = prompt::SendFlags::default();
+    (flags.prompt, flags.wait) = (Some("--".into()), true);
+    assert!(matches!(prompt::send(&a, &flags).unwrap(), Exit::Success(_)));
+    assert!(env.prompts().iter().any(|p| p == "--"), "{:?}", env.prompts());
+
     let err = session::status("sess-gone").unwrap_err();
     let (status, cli) = cli(env, &["session", "status", "sess-gone"]);
     assert_eq!(status, 1);

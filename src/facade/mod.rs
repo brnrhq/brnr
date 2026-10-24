@@ -245,17 +245,29 @@ pub(crate) struct Words {
     words: Vec<String>,
     /// What the command reads as its stdin.
     stdin: Option<String>,
+    /// Where `--` and the words after it start, if given.
+    rest_at: Option<usize>,
+    /// A positional argument the command would read as something else.
+    misread: Option<String>,
 }
 
 impl Words {
     pub(crate) fn new(cmd: &str, verb: Option<&str>) -> Words {
         let words = [Some(cmd), verb].into_iter().flatten().map(str::to_owned).collect();
-        Words { words, stdin: None }
+        Words { words, stdin: None, rest_at: None, misread: None }
     }
 
-    /// Positional arguments, those given.
+    /// Positional arguments, those given. One the command would read as an
+    /// option (`--…`, `-`) fails the call, `usage_invalid`, before anything
+    /// runs: `--json` as a session would make `permission requests` list
+    /// every session's, a call other than the one asked for.
     pub(crate) fn args<'a>(&mut self, args: impl IntoIterator<Item = &'a str>) {
-        self.words.extend(args.into_iter().map(str::to_owned));
+        for arg in args {
+            if (arg.starts_with("--") || arg == "-") && self.misread.is_none() {
+                self.misread = Some(arg.to_owned());
+            }
+            self.words.push(arg.to_owned());
+        }
     }
 
     pub(crate) fn arg(&mut self, arg: &str) {
@@ -315,6 +327,7 @@ impl Words {
     /// `-- <words>`, if given.
     pub(crate) fn rest(&mut self, rest: Option<&[String]>) {
         if let Some(rest) = rest {
+            self.rest_at = Some(self.words.len());
             self.words.push("--".to_owned());
             self.words.extend(rest.iter().cloned());
         }
@@ -322,13 +335,26 @@ impl Words {
 
     /// Runs the command, with `--json` if `json`; it must exit 0.
     fn ran(mut self, json: bool) -> Result<Ran, Error> {
+        self.misread()?;
         if json {
-            // Before `--`: what follows it is the agent's.
-            let at = self.words.iter().position(|w| w == "--").unwrap_or(self.words.len());
+            // Before `--`: what follows it is the agent's. A flag's value
+            // that is `--` is the flag's.
+            let at = self.rest_at.unwrap_or(self.words.len());
             self.words.insert(at, "--json".to_owned());
         }
         crate::signals::wait_for_children();
         ctl::call(&self.words, self.stdin, None)
+    }
+
+    /// The positional argument the command would misread, as an error.
+    fn misread(&self) -> Result<(), Error> {
+        match &self.misread {
+            Some(arg) => {
+                let error = format!("{arg:?} would be read as an option, not an argument");
+                Err(Error::new(Code::usage_invalid, error))
+            }
+            None => Ok(()),
+        }
     }
 
     /// Runs the command with `--json`: what it printed, as `T`.
@@ -370,6 +396,7 @@ impl Words {
         mut self,
         mut each: impl FnMut(Event) -> ControlFlow<()>,
     ) -> Result<Exit<()>, Error> {
+        self.misread()?;
         self.words.push("--json".to_owned());
         crate::signals::wait_for_children();
         // Unbuffered: a caller slow to take an event is a reader slow to
