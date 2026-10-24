@@ -11,7 +11,8 @@ enough for socket paths, and holds nothing left by processes that are gone
 (their metadata and sockets); that nothing keeps a session from being locked,
 and no lock is left by a process that is gone; that transcripts are readable
 only by you; that the config parses, with every key in its part, and each
-profile's agent, cwd, MCP servers and bridges are valid; where the adapters
+profile's agent, cwd, MCP servers and bridges are valid, and how long
+transcripts are kept (`retention`, in days); where the adapters
 are found; and that every running process answers, naming the sessions one
 that doesn't still serves. A process is gone when nobody listens on its
 socket, even if its pid now belongs to another process (after a reboot, say);

@@ -31,9 +31,9 @@ use super::approvals::{AgentRequest, Answered, Who};
 use super::strict::Beyond;
 use super::turns::Activity;
 use super::{Host, text_block};
-use crate::config::Experimental;
 use crate::error::{Code, Error};
 use crate::lock;
+use crate::profiles::Experimental;
 
 impl Host {
     /// Refuses `action` on an editor's session unless the editor's part of

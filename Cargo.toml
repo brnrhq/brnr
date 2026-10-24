@@ -36,6 +36,13 @@ internals = []
 [dev-dependencies]
 brnr = { path = ".", features = ["internals"] }
 
+# The typed facade's tests run without libtest's harness: the facade's
+# `session new` starts the process from the running program, `<program>
+# host`, which the test's own `main` hands to `brnr::run` (ADR 8.5).
+[[test]]
+name = "facade"
+harness = false
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 # --cfg sanitized: built under a sanitizer (.github/workflows/sanitizers.yml),

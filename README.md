@@ -47,6 +47,18 @@ brnr runs on macOS and Linux, and never phones home: it makes no network
 requests of its own and sends no telemetry. Who can reach a session, and
 what keeps others out, is in the [threat model](https://brnrhq.github.io/brnr/docs/threat-model.html).
 
+**What brnr keeps.** brnr records each session in `~/.brnr` (or
+`$BRNR_HOME`), readable only by you: its events and raw ACP under
+`projects/`, which hold your prompts, the agent's replies, tool calls with
+their input and output, and diffs of your code, and a log per process under
+`hosts/`. By default it keeps them all, with no time limit, until you
+delete them. `brnr session prune --older-than <s>` deletes what was last
+active more than `<s>` seconds ago, and `retention = <s>` in the config has
+every process do that as it starts; neither touches a session that is open.
+A profile's `log = "events"` or `log = "off"` records less, or nothing.
+[Transcripts](https://brnrhq.github.io/brnr/docs/guide/transcripts.html#how-long-brnr-keeps-them)
+has the details.
+
 ## Install
 
 ```sh

@@ -57,7 +57,12 @@ the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it. To make a flaky test
 fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
 stressors that stop with it however it ends, or when the load average
-reaches its limit (`tests/flake-loop.sh -h`).
+reaches its limit (`tests/flake-loop.sh -h`). `tests/chaos.rs` kills the
+host, the proxy and a bridge at a seeded point (`FAULT` in
+`fake_agent.py`). A seeded test runs fixed seeds and one new one, and one
+that fails prints its seed and the command that replays it
+(`BRNR_CHAOS_SEED=<n>`). `adr_0003_killed_host_mid_start_commits_nothing`
+has no seed: it faults at each setup step in turn (`FAULT_AT`).
 
 Not in CI, and not needed to merge: a check by hand, with the agent logged
 in, on your quota, of an agent with ACP of its own through brnr
@@ -111,8 +116,10 @@ through `_exit`, can be missing. This is an execution baseline, not proof
 that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
-The library's modules are private, and its one public item is `brnr::run`
-(ADR 8.5). The integration tests and fuzz targets, crates of their own, reach
+The library's modules are private, and its public items are its facade
+(ADR 8.5): `brnr::run`, and the typed functions in `src/facade/`, which run
+their command and return what its `--json` prints. A change to a command's
+`--json` changes its facade type too; `tests/facade.rs` compares the two. The integration tests and fuzz targets, crates of their own, reach
 what they need through `brnr::internals`, a hidden module behind the
 `internals` feature: the dev-dependency of the crate on itself in
 `Cargo.toml` turns it on for `cargo test`, and `fuzz/Cargo.toml` for the
