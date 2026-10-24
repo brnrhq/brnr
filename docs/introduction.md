@@ -9,7 +9,7 @@ agent.
 
 It works with any [ACP](https://agentclientprotocol.com/) agent: Claude Code
 and Codex through their [adapters](guide/adapters.md), and others as they
-are. `$s` below is a session's id, as `brnr session list` shows it.
+are, such as [Junie and Cursor](guide/native-agents.md). `$s` below is a session's id, as `brnr session list` shows it.
 
 ## The session outlives the window
 

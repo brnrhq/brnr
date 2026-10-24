@@ -47,6 +47,13 @@ brnr's own conventions:
   has every process do the same as it starts, and record it in its host
   log (`transcripts_pruned`). A session open in a process, or whose lock is
   held, is never pruned. `doctor` says the retention in days.
+- Junie (`junie --acp true`) and Cursor (`cursor-agent acp`) through brnr:
+  profile examples, and `adapters/smoke.py`, a smoke check run by hand with
+  the real agent, which checks initialize, a session, a prompt, a cancel, a
+  clean shutdown, and fork, list, resume and close where the agent
+  advertises them. The guide records the results, with the versions: Junie
+  26.10.5 passes every check; Cursor 2026.10.19 fails two of its own
+  making, which brnr doesn't work around (ADR 11.9, #231).
 - What `brnr acp` adds is measured on every pull request: a prompt's round
   trip and a streamed turn's time, each over the same agent on a direct
   pipe, the memory of `brnr acp` and its process at rest, and their

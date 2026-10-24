@@ -64,6 +64,15 @@ that fails prints its seed and the command that replays it
 (`BRNR_CHAOS_SEED=<n>`). `adr_0003_killed_host_mid_start_commits_nothing`
 has no seed: it faults at each setup step in turn (`FAULT_AT`).
 
+Not in CI, and not needed to merge: a check by hand, with the agent logged
+in, on your quota, of an agent with ACP of its own through brnr
+([ADR 11.9](docs/adr/0011-building-releasing-and-support.md#119-agents-with-acp-of-their-own-are-checked-by-hand-with-a-smoke-check);
+results in [the guide](docs/guide/native-agents.md#results)):
+
+```sh
+adapters/smoke.py junie        # or cursor, or -- <agent> [args...]
+```
+
 A test that can't run where it is (as root, or without `lsof`) passes and
 says `skipped:` on stderr, which `--nocapture` shows. In CI, or with
 `BRNR_TESTS_STRICT=1`, it fails with the reason instead (`skip`, in
