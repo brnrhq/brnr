@@ -624,6 +624,26 @@ fn event_verbs(env: &Env) {
     });
     assert_eq!(open_fds(), fds, "the watch's connection is still open");
 
+    // The same, the closure panicking at its only event: the panic goes on
+    // to the caller, the command stopped first.
+    let before = subscriptions(env);
+    let fds = open_fds();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            env.wait_subscriptions(before + 1);
+            env.ok(&["prompt", "send", &a, "--prompt", "reply hi"]);
+        });
+        // Quiet: this panic is the test's.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            event::watch(&target, &flags, |_| panic!("the caller's closure panics"))
+        }));
+        std::panic::set_hook(hook);
+        assert!(panicked.is_err());
+    });
+    assert_eq!(open_fds(), fds, "the watch's connection is still open after a panic");
+
     // event wait --for exit: the process's `process_exited`, once its last
     // session closes.
     let (a, b) = pair(env, "reply hi", Some("turn"));

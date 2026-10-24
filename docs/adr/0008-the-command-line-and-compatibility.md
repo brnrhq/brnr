@@ -904,7 +904,9 @@ public items.
   off as it would the command (ADR 10.1). Broken off, the function stops
   the command: its connections to the process are shut, it catches up on
   nothing, and it has ended, its thread and connections gone, when the
-  function returns, though no event comes after (ADR 10.4).
+  function returns, though no event comes after (ADR 10.4); so too when
+  the closure panics. While it runs, it holds only the connections it has
+  open: one that catching up replaces leaves what the facade shuts.
 - What is in the command line and not in the facade, and why:
   `--foreground` and `--quiet` attach the process to a terminal, and
   `event notify` runs a command for each event, with signals of its own: a
@@ -1591,9 +1593,12 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_the_elicitation_verbs`,
   `adr_0008_the_facade_has_config_get_and_set`,
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
-  its connection closed though no event follows, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  its connection closed though no event follows, and when its closure
+  panics, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
   `adr_0008_a_facade_error_has_the_commands_code`,
-  `adr_0008_the_facade_has_session_prune`. [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_the_facade_has_session_prune`. [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs):
+  `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`.
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_rust_block_is_a_compiled_doc_example`: the documents'
   uses of the facade are src/lib.rs's doc examples, which `cargo test`
   compiles.

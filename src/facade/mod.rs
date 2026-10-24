@@ -365,7 +365,7 @@ impl Words {
     /// given to `each` as it comes, until the command ends or `each` breaks.
     /// The command runs on a thread of its own. Broken, it is stopped: its
     /// connections are shut, and it ends before this returns, holding no
-    /// connection to a process (ADR 10.4).
+    /// connection to a process (ADR 10.4); as it does if `each` panics.
     pub(crate) fn events(
         mut self,
         mut each: impl FnMut(Event) -> ControlFlow<()>,
@@ -378,33 +378,46 @@ impl Words {
         let stop = Arc::new(Stop::default());
         let (words, stdin, stopping) = (self.words, self.stdin, stop.clone());
         let command = thread::spawn(move || ctl::call(&words, stdin, Some((lines, stopping))));
-        let ended = |command: thread::JoinHandle<_>| {
-            command.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-        };
-        for line in &events {
-            let broke = match read(&line) {
-                Ok(event) => each(event).is_break(),
-                Err(error) => {
-                    drop(events);
-                    stop.stop();
-                    let _ = ended(command);
-                    return Err(error);
-                }
-            };
-            if broke {
-                // Its next write fails, and what it waits on ends.
-                drop(events);
-                stop.stop();
-                let _ = ended(command);
+        let mut worker = Worker { events: Some(events), stop, command: Some(command) };
+        while let Some(line) = worker.events.as_ref().and_then(|e| e.recv().ok()) {
+            if each(read(&line)?).is_break() {
                 return Ok(Exit::Success(()));
             }
         }
-        let ran: Ran = ended(command)?;
+        let ran: Ran = match worker.end() {
+            Some(Ok(ran)) => ran?,
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            None => unreachable!("ended once"),
+        };
         match (ran.status, ran.missed) {
             (0, _) => Ok(Exit::Success(())),
             (MISSED, Some(note)) => Ok(Exit::Missed(read(&note.to_string())?)),
             (status, _) => Err(unexpected(status, "")),
         }
+    }
+}
+
+/// A stream's command, on its thread, ended however the function ends: its
+/// events no longer taken, so that its next write fails; its connections
+/// shut; and its thread joined.
+struct Worker {
+    events: Option<mpsc::Receiver<String>>,
+    stop: Arc<Stop>,
+    command: Option<thread::JoinHandle<Result<Ran, Error>>>,
+}
+
+impl Worker {
+    /// Ends the command, once: how its thread ended.
+    fn end(&mut self) -> Option<thread::Result<Result<Ran, Error>>> {
+        self.events.take();
+        self.stop.stop();
+        self.command.take().map(thread::JoinHandle::join)
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let _ = self.end();
     }
 }
 
