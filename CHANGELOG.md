@@ -24,7 +24,24 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- A retention policy for transcripts and host logs (ADR 9.5, #373). brnr
+  still keeps everything by default, and now says so: the README and the
+  transcripts guide say what it keeps, where, and for how long. `brnr
+  session prune --older-than <s> [--dry-run] [--json]` deletes brnr's
+  transcripts of the sessions last active more than `<s>` seconds ago,
+  and the host logs of processes that have gone and were, as `session
+  delete --purge` deletes them. `retention = <s>` at the top of the config
+  has every process do the same as it starts, and record it in its host
+  log (`transcripts_pruned`). A session open in a process, or whose lock is
+  held, is never pruned. `doctor` says the retention in days.
+
 ### Changed
+
+- `session delete --purge` deletes a session's events file last, after its
+  raw ACP and the files set aside, so a purge cut short leaves the file
+  the session is found by (ADR 9.5). `purged` lists them in that order.
 
 - The documentation is a book, at
   [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with

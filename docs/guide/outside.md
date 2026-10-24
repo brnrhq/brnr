@@ -133,6 +133,7 @@ brnr session resume --pid 4466 <id>                      # or one carried on the
 brnr session close $s              # cancel a running turn, then close the session
 brnr session delete $s             # the agent deletes its copy; brnr's transcript stays
 brnr session delete $s --purge     # and brnr's transcript of it goes too
+brnr session prune --older-than 2592000 --dry-run   # brnr's transcripts last active over 30 days ago; without --dry-run, deleted
 brnr session list -- brnr-claude-adapter   # this folder's (--cwd), joined with the agent's own list
 brnr session resume <id> -- brnr-claude-adapter   # any of them, even one brnr never saw
 brnr session resume $s --take-over # one another process serves: closed there, resumed here

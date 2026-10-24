@@ -61,6 +61,10 @@ features = ["shared_sessions"]      # process management (ADR 3.10)
 - A key in the wrong part, an unknown key or name, a headless `config`
   key, and the flat layout fail to load (P7, P9). `brnr doctor` says which
   and where.
+- Outside the profiles, at the top of the file, what every process uses
+  whatever its profile: `retention = <s>`, the age past which each process
+  prunes transcripts and host logs as it starts (ADR 9.5). It is the state
+  directory's, which every profile shares.
 
 One name, one meaning, one spelling in config too (#154, ADR 8.1):
 
@@ -76,8 +80,8 @@ One name, one meaning, one spelling in config too (#154, ADR 8.1):
   `agent` stays a list, the agent's argument vector, as `-- <agent>
   [args...]` is on the command line: another name, with one meaning.
 - A duration is in whole seconds, with no unit in its name
-  (`response_timeout`, `stop_when_idle`), as on the command line and in
-  `--json` (ADR 8.1).
+  (`response_timeout`, `stop_when_idle`, `retention`), as on the command
+  line and in `--json` (ADR 8.1).
 
 A start (`session new` or `session resume`, with `--pid` too) has two
 sources of settings: its flags (`--mode`, `--model`, `--thought-level`,

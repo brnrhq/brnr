@@ -201,6 +201,9 @@ session
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
+  brnr session prune --older-than <s> [--dry-run] [--json]
+                     delete brnr's transcripts of sessions, and the host logs of processes,
+                     last active more than <s> seconds ago
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]

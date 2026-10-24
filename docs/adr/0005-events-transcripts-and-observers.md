@@ -78,6 +78,10 @@ Files:
 - A transcript is written only where only the user can read it: what
   others can reach is made private first, and a symlink is refused
   (ADR 9.3, P13).
+- Transcripts and host logs are kept until the user deletes them: `session
+  delete --purge` one session's, `session prune --older-than <s>` what was
+  last active longer ago, and with `retention` set every process prunes so
+  as it starts (ADR 9.5).
 - A process holds a session's two files only while it serves the session.
   A close closes them once its last record, `session_closed`, is written;
   a session opened again appends to them, after another `session_opened`.

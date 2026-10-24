@@ -10,12 +10,18 @@
 //! `all`): a process that doesn't answer but holds a session's lock is
 //! serving it. Looking takes a shared lock for a moment, so a lock that is
 //! held is tried again for a little while before it counts as taken.
+//!
+//! A process takes one lock at a time ([`TAKING`]): a prune holds a
+//! session's lock while it deletes the session's files ([`holding`], ADR
+//! 9.5), and a take by another of the process's threads waits for it,
+//! rather than find the lock held by its own process.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -28,6 +34,11 @@ use crate::paths;
 /// taken it writes its pid right after.
 const TRIES: u32 = 20;
 const PAUSE: Duration = Duration::from_millis(5);
+
+/// Held while a thread of this process takes a lock, and while a prune
+/// holds one ([`holding`]): two locks of one process's are never taken at
+/// once, so a thread never finds a session's lock held by its own process.
+static TAKING: Mutex<()> = Mutex::new(());
 
 /// This process's hold on a session. Dropping it lets go.
 pub(crate) struct Lock {
@@ -74,6 +85,23 @@ impl Entry {
 
 /// Takes `session`'s lock, or says which process holds it.
 pub(crate) fn take(session: &str) -> Result<Lock, Error> {
+    let _one = TAKING.lock().unwrap_or_else(PoisonError::into_inner);
+    take_now(session)
+}
+
+/// Takes `session`'s lock, runs `then` while it is held, and lets go: what
+/// a prune does with a session (ADR 9.5). No other thread of this process
+/// takes a lock meanwhile; one that tries waits until `then` is done, and
+/// then takes it as if the prune had not been.
+pub(crate) fn holding<T>(session: &str, then: impl FnOnce() -> T) -> Result<T, Error> {
+    let _one = TAKING.lock().unwrap_or_else(PoisonError::into_inner);
+    let lock = take_now(session)?;
+    let done = then();
+    drop(lock);
+    Ok(done)
+}
+
+fn take_now(session: &str) -> Result<Lock, Error> {
     let dir = paths::session_locks();
     paths::ensure_private(&dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
     let path = paths::session_lock(session);

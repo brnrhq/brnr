@@ -8,7 +8,7 @@
 //! - history.rs: `event log`
 //! - settings.rs: `config get`, `config set`, `prompt commands`,
 //!   `session fork`, `session close`
-//! - delete.rs: `session delete`
+//! - delete.rs: `session delete`; prune.rs: `session prune`
 //! - sessions.rs: `session list`
 //! - show.rs: `permission show`; elicitation.rs: `elicitation requests`,
 //!   `show`, `accept`, `decline` and `cancel`; notify.rs: `event notify`;
@@ -65,6 +65,7 @@ mod elicitation;
 mod history;
 mod notify;
 mod ownership;
+mod prune;
 mod sessions;
 mod settings;
 mod show;
@@ -74,6 +75,7 @@ mod talk;
 use args::Args;
 use client::{Conn, Host, discover};
 use ownership::running_session;
+pub(crate) use prune::as_started as prune_as_started;
 
 /// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
@@ -100,6 +102,9 @@ session
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
+  brnr session prune --older-than <s> [--dry-run] [--json]
+                     delete brnr's transcripts of sessions, and the host logs of processes,
+                     last active more than <s> seconds ago
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
@@ -256,6 +261,7 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("session", Some("fork")) => code(settings::fork(a)),
         ("session", Some("close")) => code(settings::close(a)),
         ("session", Some("delete")) => code(delete::delete(a)),
+        ("session", Some("prune")) => code(prune::prune(a)),
         ("prompt", Some("send")) => code(talk::send(a)),
         ("prompt", Some("cancel")) => code(talk::cancel(a)),
         ("prompt", Some("commands")) => code(settings::commands(a)),
@@ -511,18 +517,7 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
         if running.contains(session) {
             continue;
         }
-        // The process that last served it. A deletion isn't serving (ADR
-        // 8.1): `session delete`'s record is no process's, and an editor's,
-        // through a process that may never have opened the session, goes
-        // into every file of it.
-        let serving =
-            |r: &Value| r["host_id"].is_string() && r["event"]["event"] != "session_deleted";
-        let served = match serving(&last) {
-            true => Some(last.clone()),
-            false => transcript::last(&file, serving),
-        };
-        // When a process last served it: a deletion isn't activity.
-        let at = served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone();
+        let at = active_at(&file, &last);
         let Some((oldest, newest, files)) = found.get_mut(session) else {
             found.insert(session.to_owned(), (first, (at, file.clone()), vec![file]));
             continue;
@@ -554,6 +549,20 @@ fn inactive_sessions(hosts: &[Host]) -> Vec<Value> {
     }
     past.sort_by(|a, b| b["last_active"].as_str().cmp(&a["last_active"].as_str()));
     past
+}
+
+/// When a process last served the session of the events file at `file`,
+/// whose newest record is `last`: a deletion isn't serving, nor activity
+/// (ADR 8.1). `session delete`'s record is no process's, and an editor's,
+/// through a process that may never have opened the session, goes into
+/// every file of it.
+fn active_at(file: &Path, last: &Value) -> Value {
+    let serving = |r: &Value| r["host_id"].is_string() && r["event"]["event"] != "session_deleted";
+    let served = match serving(last) {
+        true => Some(last.clone()),
+        false => transcript::last(file, serving),
+    };
+    served.as_ref().map_or(&last["ts"], |r| &r["ts"]).clone()
 }
 
 /// The session an open session `s` (as its process reports it) was forked

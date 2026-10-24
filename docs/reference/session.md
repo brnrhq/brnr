@@ -413,6 +413,88 @@ or recorded in; the others are done all the same.
 **Errors:** `session_active`, `session_closing`, `agent_not_started` (no agent
 recorded or named), `capability_missing`, `agent_failed`.
 
+## `brnr session prune`
+
+Deletes brnr's transcripts of the sessions last active more than `<s>`
+seconds ago, and the host logs of the processes that have gone and were,
+as `session delete --purge` deletes them. Nothing is asked of an agent: its
+own copy of a session stays. By default brnr keeps everything; the
+config's [`retention`](configuration.md#retention) has every process do
+this as it starts
+([ADR 9.5](../adr/0009-security-and-privacy.md#95-transcripts-are-kept-until-they-are-pruned)).
+
+    brnr session prune --older-than <s> [--dry-run] [--json]
+
+| Flag | Meaning |
+|---|---|
+| `--older-than <s>` | The age, in seconds: what was last active before this many seconds ago goes. `0` is every session no process has open. Needed. |
+| `--dry-run` | Say what would be deleted, and delete nothing. |
+| `--json` | Print what it did as JSON. |
+
+- A session's age is its last activity, `session list`'s `last_active`:
+  the newest record a process wrote in any of its files, not a deletion.
+- Never pruned: a session open in a process or whose lock is held, the
+  host log of a running process, and a file brnr can't read the age of (in
+  another format, or with no record).
+- A session's lock is held while its files go, and its age read again: one
+  used since it was listed stays. Its events file goes last.
+
+**Output** (`--json`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `older_than` | number | `--older-than`, in seconds. |
+| `before` | string | The time it gives: what was last active before it goes. |
+| `dry_run` | boolean | Whether nothing was deleted (`--dry-run`). |
+| `sessions` | list of objects | One for each session pruned. |
+| `sessions[].session` | string | The session's id. |
+| `sessions[].last_active` | string | When it was last active. |
+| `sessions[].files` | list of strings | Its files deleted, or that would be. |
+| `host_logs` | list of objects | One for each host log pruned. |
+| `host_logs[].host_id` | string | The process's run. |
+| `host_logs[].last_active` | string | Its newest record's time. |
+| `host_logs[].files` | list of strings | The host log, deleted or that would be. |
+| `failed` | list of strings | Why a file wasn't deleted, or a session's lock taken. |
+
+<!-- example: brnr session prune --older-than 0 --dry-run --json; before: Ended -->
+```json
+{
+  "older_than": 0,
+  "before": "2026-10-24T15:00:54.541419Z",
+  "dry_run": true,
+  "sessions": [
+    {
+      "session": "sess-1",
+      "last_active": "2026-10-24T15:00:54.120335Z",
+      "files": [
+        "/home/me/.brnr/projects/-home-me-project-abd1481c/sess-1.acp.jsonl",
+        "/home/me/.brnr/projects/-home-me-project-abd1481c/sess-1.jsonl"
+      ]
+    }
+  ],
+  "host_logs": [
+    {
+      "host_id": "20261024T150050-4466",
+      "last_active": "2026-10-24T15:00:54.302114Z",
+      "files": [
+        "/home/me/.brnr/hosts/20261024T150050-4466.jsonl"
+      ]
+    }
+  ],
+  "failed": []
+}
+```
+
+Text output: `pruned what was last active before 2026-10-24 15:00:54Z (more
+than 0s ago):`, then each session and host log with its last activity and
+its files; `would prune` with `--dry-run`; or `nothing was last active
+before …`. Each file not deleted is on stderr, `brnr: not deleted: <why>`.
+
+**Exit codes:** 0; 1 if a file couldn't be deleted, the others deleted all
+the same, or if it fails.
+**Errors:** `unclassified` (a runtime directory that can't be read: which
+sessions are open must be known).
+
 ## `brnr session list`
 
 brnr's sessions, open and with a transcript, in every cwd, with nothing

@@ -40,6 +40,7 @@ brnr session     new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
                    [-- <agent> [args...]]
                  | status <session> | fork <session> | close <session>
                  | delete <session> [--purge] [--profile <p>] [-- <agent> [args...]]
+                 | prune --older-than <s> [--dry-run]
 brnr prompt      send <session> [--steer | --interrupt | --context [--replace]]
                    [--prompt <text> | -] [--file <path>]... [--image <path>]...
                    [--wait [--timeout <s>]]
@@ -222,7 +223,9 @@ How words are read:
   and `<id>.acp.jsonl`, ADR 5.1) in every project folder, an older brnr's
   too, and the older brnr's files set aside beside them
   (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …, ADR 5.9): every file of
-  the session's id brnr finds, each said as it is deleted (N1, P3). Not
+  the session's id brnr finds, each said as it is deleted (N1, P3), the
+  events file last, so a purge cut short leaves what finds the rest
+  (ADR 9.5). Not
   the process logs, which are shared, whatever the agent answered. Nothing a symlink points at, nor an id that
   climbs out of its folder, is deleted. With `--purge` the command succeeds
   only if the agent deleted the session or doesn't have it (ACP's
@@ -235,6 +238,13 @@ How words are read:
   all the same". A symlinked project folder isn't looked in. A transcript
   made private first (ADR 9.3) is said on stderr: the command has no host
   log for `path_made_private`.
+
+`session prune --older-than <s> [--dry-run]` deletes brnr's transcripts of
+the sessions no process has open that were last active more than `<s>`
+seconds ago, and the host logs of the processes that have gone and were,
+as `--purge` deletes, with nothing asked of an agent. ADR 9.5 has the
+rules and its output; the config's `retention` does the same as each
+process starts.
 
 `prompt`, `queue` and `process`:
 
@@ -333,7 +343,8 @@ wins, and the other form goes, with no alias (P9):
   given as words is a word too many, a usage error (ADR 8.3), and the rule
   that `prompt send`'s options go before its prompt is gone.
 - A duration is in whole seconds, and its name has no unit: `--timeout`,
-  `--stop-when-idle`, `--response-timeout`, and the profile's
+  `--stop-when-idle`, `--response-timeout`, `--older-than` (ADR 9.5), the
+  config's `retention`, and the profile's
   `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
   `--json` and the socket's replies, `uptime_seconds` becomes `uptime`,
   `turn_seconds` `turn_elapsed`, and `timeout_seconds` (the time left

@@ -275,6 +275,9 @@ struct Parts {
     /// What the start channel is subscribed to once the start commits.
     events: Vec<String>,
     bridges: Vec<Bridge>,
+    /// The config's `retention`, and the session a headless start resumes,
+    /// which it leaves: what the process prunes as it starts (ADR 9.5).
+    prune: Option<(u64, Option<String>)>,
 }
 
 /// What a simulated host sends (see `Host::simulated`).
@@ -389,6 +392,9 @@ struct Host {
     /// host: signals, the control socket and bridges keep working.
     link: Option<Sender<(u8, Vec<u8>)>>,
     link_writer: Option<JoinHandle<()>>,
+    /// What the process prunes as it starts (ADR 9.5), waited for before
+    /// the logger finishes, so that its record is written.
+    prune: Option<JoinHandle<()>>,
     /// A headless start, until it commits or fails (see start.rs).
     start: Option<Start>,
     log: Logger,
@@ -485,7 +491,14 @@ impl Host {
         signal_link: Option<UnixStream>,
     ) -> Result<Host, (Error, u8)> {
         let recorded = req.recorded();
-        let Request { profile, agent, cwd, strict, log: logging, bridges, mut role } = req;
+        let Request { profile, agent, cwd, strict, log: logging, bridges, retention, mut role } =
+            req;
+        // The session a headless start resumes is in use from now on, though
+        // its lock is taken a moment later: the prune leaves it (ADR 9.5).
+        let resumed = match &role {
+            Role::Headless(h) => h.resume.clone(),
+            Role::Editor(_) => None,
+        };
         let (proxy_pid, mask, events) = match &mut role {
             Role::Editor(e) => (Some(e.proxy_pid), e.sigmask.clone(), Vec::new()),
             Role::Headless(h) => (None, Vec::new(), take(&mut h.events)),
@@ -561,6 +574,7 @@ impl Host {
             started,
             events,
             bridges,
+            prune: retention.map(|older_than| (older_than, resumed)),
         };
         match panic::catch_unwind(AssertUnwindSafe(|| host.set_up(parts))) {
             Ok(Ok(())) => Ok(host),
@@ -618,6 +632,7 @@ impl Host {
             editor: editor.is_some(),
             link: None,
             link_writer: None,
+            prune: None,
             start,
             sink: log.sink(),
             log,
@@ -682,6 +697,7 @@ impl Host {
             started,
             events,
             bridges,
+            prune,
         } = parts;
         let id = std::process::id().to_string();
         if self.logging != Log::Off {
@@ -762,6 +778,14 @@ impl Host {
         }
         let t = tx.clone();
         thread::spawn(move || control::serve(listener, t));
+        // Pruned beside the start, which doesn't wait for it; its record goes
+        // in the host log (ADR 9.5).
+        if let Some((older_than, resumed)) = prune {
+            let sink = self.sink.clone();
+            self.prune = Some(thread::spawn(move || {
+                crate::ctl::prune_as_started(older_than, resumed, &sink);
+            }));
+        }
         let signals = signals::install();
         let t = tx.clone();
         thread::spawn(move || read_signals(signals, t));
@@ -1033,6 +1057,11 @@ impl Host {
     /// (ADR 5.5). A signal gives up on it, and stderr, the display closed,
     /// says how much wasn't written; the logger is left to the exit.
     fn end_log(&mut self) {
+        // A prune still running records what it deleted first; a signal
+        // gives up on it too, and the exit stops it.
+        if let Some(prune) = self.prune.take() {
+            self.wait_out(|| prune.is_finished());
+        }
         let log = std::mem::replace(&mut self.log, Logger::disabled());
         log.finish();
         let unwritten = if self.wait_out(|| log.finished()) { 0 } else { log.unwritten() };
