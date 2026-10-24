@@ -24,6 +24,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- What `brnr acp` adds is measured on every pull request: a prompt's round
+  trip and a streamed turn's time, each over the same agent on a direct
+  pipe, the memory of `brnr acp` and its process at rest, and their
+  threads, with budgets in `benches/budgets.toml`. The job fails when a
+  number passes its budget, and a comment on the pull request has the
+  numbers. The README and the book give one run's (ADR 1, N3, #35).
+
 ### Changed
 
 - The documentation is a book, at
