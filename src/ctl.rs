@@ -31,10 +31,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -277,6 +280,28 @@ struct Capture {
     /// The `events_missed` note of a command cut off that couldn't catch up
     /// (ADR 10.2), which it says on stderr, or as its last event.
     missed: Option<Value>,
+    /// How the facade stops a stream it has stopped reading.
+    stop: Option<Arc<Stop>>,
+}
+
+/// How the facade stops a stream's command once its caller has stopped
+/// reading: the command's connections to the process are shut, so that it
+/// doesn't wait on them for an event to write, holding them (ADR 10.4).
+#[derive(Default)]
+pub(crate) struct Stop {
+    stopped: AtomicBool,
+    conns: Mutex<Vec<UnixStream>>,
+}
+
+impl Stop {
+    /// Stops the command: what it waits on ends, and it doesn't catch up.
+    pub(crate) fn stop(&self) {
+        let mut conns = self.conns.lock().unwrap_or_else(PoisonError::into_inner);
+        self.stopped.store(true, Relaxed);
+        for conn in conns.drain(..) {
+            let _ = conn.shutdown(Shutdown::Both);
+        }
+    }
 }
 
 /// Where a facade's command prints: kept until it ends, or each write sent
@@ -302,10 +327,13 @@ pub(crate) struct Ran {
 pub(crate) fn call(
     args: &[String],
     stdin: Option<String>,
-    lines: Option<SyncSender<String>>,
+    lines: Option<(SyncSender<String>, Arc<Stop>)>,
 ) -> Result<Ran, error::Error> {
-    let out = lines.map_or(Out::Kept(String::new()), Out::Sent);
-    CAPTURE.set(Some(Capture { out, stdin, missed: None }));
+    let (out, stop) = match lines {
+        Some((lines, stop)) => (Out::Sent(lines), Some(stop)),
+        None => (Out::Kept(String::new()), None),
+    };
+    CAPTURE.set(Some(Capture { out, stdin, missed: None, stop }));
     // Taken however the command ends, a panic too: this thread's next
     // command, `brnr::run`'s, prints.
     struct Taken;
@@ -338,6 +366,25 @@ pub(crate) fn call(
 /// Whether this thread runs a command for the facade.
 fn capturing() -> bool {
     CAPTURE.with_borrow(Option::is_some)
+}
+
+/// Whether the facade has stopped this thread's command (see [`Stop`]).
+fn stopped() -> bool {
+    CAPTURE.with_borrow(|c| {
+        c.as_ref().and_then(|c| c.stop.as_ref()).is_some_and(|s| s.stopped.load(Relaxed))
+    })
+}
+
+/// `conn`, a connection the command opened to a process, to be shut when
+/// the facade stops the command; at once if it has.
+fn stoppable(conn: &UnixStream) {
+    let stop = CAPTURE.with_borrow(|c| c.as_ref().and_then(|c| c.stop.clone()));
+    let (Some(stop), Ok(conn)) = (stop, conn.try_clone()) else { return };
+    let mut conns = stop.conns.lock().unwrap_or_else(PoisonError::into_inner);
+    match stop.stopped.load(Relaxed) {
+        true => drop(conn.shutdown(Shutdown::Both)),
+        false => conns.push(conn),
+    }
 }
 
 /// Keeps `note`, an `events_missed` (ADR 10.2), for the facade's command,

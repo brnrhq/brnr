@@ -601,21 +601,28 @@ fn event_verbs(env: &Env) {
         same(e, &logged[&seq], &[]);
     }
 
-    // event watch, broken off after its first event, returns then.
+    // event watch, broken off at its only event, returns then, its command
+    // ended and its connection to the process closed, though no event
+    // comes after (ADR 10.4).
     let target = Target::Pid(pid_of(env, &a));
+    let mut flags = event::WatchFlags::default();
+    flags.events = vec!["turn_ended".into()];
     let before = subscriptions(env);
+    let fds = open_fds();
     thread::scope(|scope| {
         scope.spawn(|| {
             env.wait_subscriptions(before + 1);
             env.ok(&["prompt", "send", &a, "--prompt", "reply hi"]);
         });
         let mut got = Vec::new();
-        let exit = event::watch(&target, &Default::default(), |e| {
+        let exit = event::watch(&target, &flags, |e| {
             got.push(e);
             ControlFlow::Break(())
         });
         assert_eq!((exit.unwrap(), got.len()), (Exit::Success(()), 1));
+        assert_eq!(got[0].event, "turn_ended");
     });
+    assert_eq!(open_fds(), fds, "the watch's connection is still open");
 
     // event wait --for exit: the process's `process_exited`, once its last
     // session closes.
@@ -635,6 +642,11 @@ fn event_verbs(env: &Env) {
     });
     exits(&lib, cli, &["pid", "host_id", "seq"]);
     assert!(matches!(&lib, Exit::Success(event::Waited::Exit(e)) if e.event == "process_exited"));
+}
+
+/// This process's open file descriptors.
+fn open_fds() -> usize {
+    fs::read_dir("/dev/fd").unwrap().count()
 }
 
 /// The subscriptions the processes have taken so far, each in their host

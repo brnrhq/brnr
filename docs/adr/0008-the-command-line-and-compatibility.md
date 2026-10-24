@@ -901,8 +901,10 @@ public items.
   as it comes, until the command ends or the closure breaks. The command
   runs on a thread of its own, its events passed one at a time, so a
   caller slow to take them is a reader slow to read, and a process cuts it
-  off as it would the command (ADR 10.1). Broken off, the function returns
-  at once; the command ends where it next writes, as with its reader gone.
+  off as it would the command (ADR 10.1). Broken off, the function stops
+  the command: its connections to the process are shut, it catches up on
+  nothing, and it has ended, its thread and connections gone, when the
+  function returns, though no event comes after (ADR 10.4).
 - What is in the command line and not in the facade, and why:
   `--foreground` and `--quiet` attach the process to a terminal, and
   `event notify` runs a command for each event, with signals of its own: a
@@ -1587,7 +1589,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_the_elicitation_verbs`,
   `adr_0008_the_facade_has_config_get_and_set`,
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
-  a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  its connection closed though no event follows, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
   `adr_0008_a_facade_error_has_the_commands_code`,
   `adr_0008_the_facade_has_session_prune`.
 - 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):

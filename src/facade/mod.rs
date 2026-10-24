@@ -10,14 +10,14 @@
 
 use std::fmt::Display;
 use std::ops::ControlFlow;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::ctl::{self, Ran};
+use crate::ctl::{self, Ran, Stop};
 pub use crate::error::{Code, Error};
 
 pub mod config;
@@ -363,8 +363,9 @@ impl Words {
 
     /// Runs a command that prints events, one per line, with `--json`, each
     /// given to `each` as it comes, until the command ends or `each` breaks.
-    /// The command runs on a thread of its own: broken, it stops where it
-    /// next writes, as it would with its reader gone.
+    /// The command runs on a thread of its own. Broken, it is stopped: its
+    /// connections are shut, and it ends before this returns, holding no
+    /// connection to a process (ADR 10.4).
     pub(crate) fn events(
         mut self,
         mut each: impl FnMut(Event) -> ControlFlow<()>,
@@ -374,14 +375,31 @@ impl Words {
         // Unbuffered: a caller slow to take an event is a reader slow to
         // read, as the process sees it (ADR 10.1).
         let (lines, events) = mpsc::sync_channel(0);
-        let (words, stdin) = (self.words, self.stdin);
-        let command = thread::spawn(move || ctl::call(&words, stdin, Some(lines)));
-        for line in events {
-            if each(read(&line)?).is_break() {
+        let stop = Arc::new(Stop::default());
+        let (words, stdin, stopping) = (self.words, self.stdin, stop.clone());
+        let command = thread::spawn(move || ctl::call(&words, stdin, Some((lines, stopping))));
+        let ended = |command: thread::JoinHandle<_>| {
+            command.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        };
+        for line in &events {
+            let broke = match read(&line) {
+                Ok(event) => each(event).is_break(),
+                Err(error) => {
+                    drop(events);
+                    stop.stop();
+                    let _ = ended(command);
+                    return Err(error);
+                }
+            };
+            if broke {
+                // Its next write fails, and what it waits on ends.
+                drop(events);
+                stop.stop();
+                let _ = ended(command);
                 return Ok(Exit::Success(()));
             }
         }
-        let ran = command.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+        let ran: Ran = ended(command)?;
         match (ran.status, ran.missed) {
             (0, _) => Ok(Exit::Success(())),
             (MISSED, Some(note)) => Ok(Exit::Missed(read(&note.to_string())?)),

@@ -567,6 +567,7 @@ impl Conn {
     /// One over `stream`: a control connection, or the start channel. A
     /// request the process takes nothing of for [`ANSWER_WAIT`] fails.
     pub(super) fn new(stream: UnixStream) -> Result<Conn, String> {
+        super::stoppable(&stream);
         let writer = stream.try_clone().map_err(|e| e.to_string())?;
         closed_ok(writer.set_write_timeout(Some(ANSWER_WAIT))).map_err(|e| e.to_string())?;
         Ok(Conn {
@@ -765,6 +766,8 @@ impl Conn {
                 Ok(None) => return Ok(None),
                 Ok(Some(msg)) if msg.get("event").is_some() => return Ok(Some(msg)),
                 Ok(Some(_)) => {} // A response nobody waits for.
+                // Stopped by the facade's caller: nothing to catch up for.
+                Err(why) if super::stopped() => return Err(why.into()),
                 Err(why) => self.catch_up(why)?,
             }
         }
