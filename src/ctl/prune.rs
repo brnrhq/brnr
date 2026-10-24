@@ -9,9 +9,10 @@
 //! log of a process that is running, here or with another runtime directory
 //! (its pid alive, and no `process_exited` at its end). A session's files
 //! are deleted holding its lock, and only if it is still that old then, as
-//! `session delete --purge` deletes them (`log::purge`). What brnr doesn't
-//! read, a file in another format (ADR 5.10) or with no record, isn't
-//! pruned: brnr can't tell its age.
+//! `session delete --purge` deletes them (`log::purge`), those an older
+//! brnr's set aside beside them too. What brnr can't read the age of, a
+//! session whose files are all in another format (ADR 5.10) or have no
+//! record, isn't pruned.
 //!
 //! `session prune --older-than <s>` prunes when asked, and `--dry-run` says
 //! what it would delete. With `retention` set, every process prunes as it

@@ -386,9 +386,12 @@ Never pruned:
   with another runtime directory, ADR 3.9). A long-lived process keeps its
   host log whole until it exits; the next prune after that, once the log is
   old enough, deletes it.
-- What brnr doesn't read: a file in another format (ADR 5.10), or with no
-  record brnr can read, as nothing in it says when it was last active (P4).
-  `doctor` lists the files in another format; they are deleted by hand.
+- What brnr can't read the age of: a session whose events files are all in
+  another format (ADR 5.10), or hold no record brnr can read, as nothing in
+  them says when it was last active (P4), and a host log likewise. `doctor`
+  lists the files in another format; they are deleted by hand. A session
+  brnr does read the age of takes the files an older brnr's set aside
+  beside its own with it, as `--purge` does: they are the session's.
 - The agent's own copy of a session: that is `session delete`'s.
 
 How:
@@ -408,7 +411,8 @@ How:
   waits while the prune holds one (`lock::holding`), so it never finds a
   session's lock held by its own process.
 - A file that can't be deleted is said, and the rest are deleted all the
-  same.
+  same. A project folder that can't be listed is said, and nothing in it is
+  deleted: what it holds of the session isn't known.
 
 What it says:
 
@@ -461,7 +465,11 @@ nothing a process uses.
   it (ADR 3.9) and may write into a file that is then deleted, as with
   `session delete --purge`. The prune holds the lock for the time its
   unlinks take.
-- Files in an older format stay until they are deleted by hand.
+- Files in an older format stay until they are deleted by hand, but those
+  set aside beside a session that is pruned.
+- A process that exits while its prune runs stops it there. What was
+  deleted by then isn't recorded in the host log; the next prune goes on.
+  Waiting for it would hold the exit for a status from every process.
 
 **Considered.**
 
