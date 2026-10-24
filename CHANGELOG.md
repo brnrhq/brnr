@@ -24,6 +24,8 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-24
+
 ### Added
 
 - The library has a typed facade: a module for each command group and a
@@ -63,10 +65,10 @@ brnr's own conventions:
 
 ### Changed
 
-- `session delete --purge` deletes a session's events file last, after its
-  raw ACP and the files set aside, so a purge cut short leaves the file
-  the session is found by (ADR 9.5). `purged` lists them in that order.
-
+- **Breaking:** `session delete --purge` deletes a session's events file
+  last, after its raw ACP and the files set aside, so a purge cut short
+  leaves the file the session is found by (ADR 9.5). `purged` lists them
+  in that order.
 - The documentation is a book, at
   [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with
   search: the guide that was the README, the interface reference, the ADRs
@@ -1331,7 +1333,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/brnrhq/brnr/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/brnrhq/brnr/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/brnrhq/brnr/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/brnrhq/brnr/compare/v0.7.0...v0.8.0
