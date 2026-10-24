@@ -27,12 +27,17 @@
 //! `--json` prints what the text says, as one JSON value (one event per line
 //! for `event log`, `event watch` and `session new --foreground`).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, ErrorKind, Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -179,15 +184,8 @@ const START_GRACE: Duration = Duration::from_secs(10);
 /// asked for goes to stdout and exits 0; a usage error, the command's usage
 /// on stderr, exits 2, nothing done; a failure exits 1 (ADR 8.3).
 pub(crate) fn main(args: Vec<String>) -> ExitCode {
-    let cmd = args.first().map_or("", String::as_str);
+    let (cmd, verb, rest) = split(&args);
     let grouped = GROUPS.contains(&cmd);
-    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
-    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
-    // `skill install` is a verb of a command outside the groups.
-    let (verb, rest) = match rest {
-        [install, rest @ ..] if cmd == "skill" && install == "install" => (Some("install"), rest),
-        _ => (verb, rest),
-    };
     let mut json = false;
     let result = match args::spec(cmd, verb) {
         Some(spec) if spec.asks_help(rest) => {
@@ -235,6 +233,22 @@ pub(crate) fn main(args: Vec<String>) -> ExitCode {
     }
 }
 
+/// `args` as a command, its verb and the words after them: `brnr <group>
+/// <verb>`, `brnr skill install` or `brnr <command>`.
+fn split(args: &[String]) -> (&str, Option<&str>, &[String]) {
+    let cmd = args.first().map_or("", String::as_str);
+    let grouped = GROUPS.contains(&cmd);
+    let verb = if grouped { args.get(1).map(String::as_str) } else { None };
+    let rest = args.get(if grouped { 2 } else { 1 }..).unwrap_or_default();
+    // `skill install` is a verb of a command outside the groups.
+    match rest {
+        [install, rest @ ..] if cmd == "skill" && install == "install" => {
+            (cmd, Some("install"), rest)
+        }
+        _ => (cmd, verb, rest),
+    }
+}
+
 /// A command's failure (ADR 8.7): on stderr, its message and its code,
 /// `brnr: no session s (see brnr session list) [session_not_found]`; with
 /// `--json`, also as the command's JSON, `{"error": {code, message}}`, if it
@@ -248,6 +262,171 @@ fn failed(error: &error::Error, json: bool) {
 
 /// Whether the command has printed anything on stdout.
 static PRINTED: AtomicBool = AtomicBool::new(false);
+
+// ---- the library's facade ------------------------------------------------
+
+thread_local! {
+    /// The command this thread runs for the library's facade, if any (see
+    /// [`call`]).
+    static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+}
+
+/// A command run for the library's typed facade (ADR 8.5): what it prints,
+/// what it reads as its stdin, and what it missed.
+struct Capture {
+    out: Out,
+    /// Its stdin: `--prompt -`'s prompt, `elicitation accept -`'s fields.
+    stdin: Option<String>,
+    /// The `events_missed` note of a command cut off that couldn't catch up
+    /// (ADR 10.2), which it says on stderr, or as its last event.
+    missed: Option<Value>,
+    /// How the facade stops a stream it has stopped reading.
+    stop: Option<Arc<Stop>>,
+}
+
+/// How the facade stops a stream's command once its caller has stopped
+/// reading: the command's connections to the process are shut, so that it
+/// doesn't wait on them for an event to write, holding them (ADR 10.4).
+#[derive(Default)]
+pub(crate) struct Stop {
+    stopped: AtomicBool,
+    /// The command's open connections, by the number [`stoppable`] gave
+    /// each.
+    conns: Mutex<Vec<(u64, UnixStream)>>,
+    next: AtomicU64,
+}
+
+impl Stop {
+    /// Stops the command: what it waits on ends, and it doesn't catch up.
+    pub(crate) fn stop(&self) {
+        let mut conns = self.conns.lock().unwrap_or_else(PoisonError::into_inner);
+        self.stopped.store(true, Relaxed);
+        for (_, conn) in conns.drain(..) {
+            let _ = conn.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+/// A connection [`Stop`] shuts while it is open: dropped with it, as one
+/// that catching up replaces is, it goes from the list.
+pub(super) struct Stoppable {
+    stop: Arc<Stop>,
+    id: u64,
+}
+
+impl Drop for Stoppable {
+    fn drop(&mut self) {
+        let mut conns = self.stop.conns.lock().unwrap_or_else(PoisonError::into_inner);
+        conns.retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// Where a facade's command prints: kept until it ends, or each write sent
+/// on as it comes, a stream's events.
+enum Out {
+    Kept(String),
+    Sent(SyncSender<String>),
+}
+
+/// What a command run for the facade did: its exit status, what it printed
+/// if it was kept, and the note of what it missed.
+pub(crate) struct Ran {
+    pub(crate) status: u8,
+    pub(crate) out: String,
+    pub(crate) missed: Option<Value>,
+}
+
+/// Runs `brnr <args>` for the library's facade, as [`main`] would, but that
+/// what it prints is kept (or sent on `lines`, each write as it comes), its
+/// stdin is `stdin`, and a usage error, which has no code on the command
+/// line, is `usage_invalid` (ADR 8.5). What it says on stderr, it says. No
+/// command line is written by a person here, so help isn't asked for.
+pub(crate) fn call(
+    args: &[String],
+    stdin: Option<String>,
+    lines: Option<(SyncSender<String>, Arc<Stop>)>,
+) -> Result<Ran, error::Error> {
+    let (out, stop) = match lines {
+        Some((lines, stop)) => (Out::Sent(lines), Some(stop)),
+        None => (Out::Kept(String::new()), None),
+    };
+    CAPTURE.set(Some(Capture { out, stdin, missed: None, stop }));
+    // Taken however the command ends, a panic too: this thread's next
+    // command, `brnr::run`'s, prints.
+    struct Taken;
+    impl Drop for Taken {
+        fn drop(&mut self) {
+            CAPTURE.take();
+        }
+    }
+    let _taken = Taken;
+    let (cmd, verb, rest) = split(args);
+    let usage = |e: args::Error| match e {
+        args::Error::Failed(error) => error,
+        args::Error::Invalid(message) => error::Error::new(Code::usage_invalid, message),
+        args::Error::Usage => error::Error::new(Code::usage_invalid, usage_of(cmd, verb)),
+    };
+    let result = match args::spec(cmd, verb) {
+        Some(spec) => spec.parse(rest).and_then(|a| run(spec, &a)).map_err(usage),
+        None => Err(usage(args::Error::Usage)),
+    };
+    let capture = CAPTURE.take().expect("set until now");
+    let status = result?;
+    let status = (0..=u8::MAX).find(|&n| ExitCode::from(n) == status).unwrap_or(1);
+    let out = match capture.out {
+        Out::Kept(out) => out,
+        Out::Sent(_) => String::new(),
+    };
+    Ok(Ran { status, out, missed: capture.missed })
+}
+
+/// Whether this thread runs a command for the facade.
+fn capturing() -> bool {
+    CAPTURE.with_borrow(Option::is_some)
+}
+
+/// Whether the facade has stopped this thread's command (see [`Stop`]).
+fn stopped() -> bool {
+    CAPTURE.with_borrow(|c| {
+        c.as_ref().and_then(|c| c.stop.as_ref()).is_some_and(|s| s.stopped.load(Relaxed))
+    })
+}
+
+/// `conn`, a connection the command opened to a process, to be shut when
+/// the facade stops the command, at once if it has, until the returned
+/// [`Stoppable`] is dropped with the connection.
+fn stoppable(conn: &UnixStream) -> Option<Stoppable> {
+    let stop = CAPTURE.with_borrow(|c| c.as_ref().and_then(|c| c.stop.clone()))?;
+    let conn = conn.try_clone().ok()?;
+    let id = stop.next.fetch_add(1, Relaxed);
+    let mut conns = stop.conns.lock().unwrap_or_else(PoisonError::into_inner);
+    match stop.stopped.load(Relaxed) {
+        true => drop(conn.shutdown(Shutdown::Both)),
+        false => conns.push((id, conn)),
+    }
+    drop(conns);
+    Some(Stoppable { stop, id })
+}
+
+/// For a test: this thread runs a stream's command, which `stop` stops
+/// (`None`: none).
+#[cfg(test)]
+fn stopping(stop: Option<Arc<Stop>>) {
+    let out = Out::Kept(String::new());
+    CAPTURE.set(stop.map(|stop| Capture { out, stdin: None, missed: None, stop: Some(stop) }));
+}
+
+/// For a test: how many connections `stop` would shut.
+#[cfg(test)]
+fn stoppables(stop: &Stop) -> usize {
+    stop.conns.lock().unwrap().len()
+}
+
+/// Keeps `note`, an `events_missed` (ADR 10.2), for the facade's command,
+/// which returns it.
+fn missed(note: &Value) {
+    CAPTURE.with_borrow_mut(|c| c.iter_mut().for_each(|c| c.missed = Some(note.clone())));
+}
 
 /// Runs the verb `spec` is, with its arguments `a`.
 fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
@@ -313,6 +492,9 @@ pub(crate) fn command(args: &[String]) -> String {
 fn out(text: &str) {
     match write_out(text) {
         Ok(()) => {}
+        // The facade's caller has stopped reading: the command finds out
+        // where it writes a stream's next event (`write_out`).
+        Err(e) if e.kind() == ErrorKind::BrokenPipe && capturing() => {}
         Err(e) if e.kind() == ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => panic!("writing to stdout: {e}"),
     }
@@ -321,11 +503,27 @@ fn out(text: &str) {
 /// Writes `text`, [`render::clean`]ed, to stdout, and flushes it. All a
 /// command prints goes through here, so that [`failed`] knows whether it has
 /// printed any (a stream's events), and prints no `{"error"}` after it
-/// (ADR 8.7).
+/// (ADR 8.7). A command run for the facade writes to it instead (see
+/// [`call`]): a caller gone is a reader gone, `BrokenPipe`.
 fn write_out(text: &str) -> io::Result<()> {
+    let text = render::clean(text);
+    let captured = CAPTURE.with_borrow_mut(|c| {
+        c.as_mut().map(|c| match &mut c.out {
+            Out::Kept(kept) => {
+                kept.push_str(&text);
+                Ok(())
+            }
+            Out::Sent(lines) => {
+                lines.send(text.to_string()).map_err(|_| io::Error::from(ErrorKind::BrokenPipe))
+            }
+        })
+    });
+    if let Some(written) = captured {
+        return written;
+    }
     PRINTED.store(true, Relaxed);
     let mut stdout = io::stdout().lock();
-    stdout.write_all(render::clean(text).as_bytes()).and_then(|()| stdout.flush())
+    stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush())
 }
 
 /// The usage of one command (its lines in [`USAGE`]): of `cmd`, or of
@@ -945,6 +1143,7 @@ fn watch(a: &Args) -> Result<ExitCode, args::Error> {
             Ok(None) => continue,
             Err(why) => match conn.missed() {
                 Some(note) => {
+                    missed(note);
                     let _ = show(note);
                     return Ok(ExitCode::from(catch_up::MISSED));
                 }
@@ -1018,7 +1217,12 @@ fn text(v: &Value) -> String {
     v.as_str().unwrap_or("?").to_owned()
 }
 
+/// The command's stdin, read to its end; the facade's, for a command run
+/// for it.
 fn read_stdin() -> Result<String, error::Error> {
+    if let Some(given) = CAPTURE.with_borrow_mut(|c| c.as_mut().map(|c| c.stdin.take())) {
+        return Ok(given.unwrap_or_default());
+    }
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).map_err(|e| format!("stdin: {e}"))?;
     Ok(text)
@@ -1040,6 +1244,38 @@ fn print_table<const N: usize>(rows: Vec<[String; N]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection the facade would shut to stop a stream's command leaves
+    /// its list as it closes, so a command that connects again and again,
+    /// catching up, keeps no more than it has open (ADR 10.4); stopped, the
+    /// command's next connection is shut as it opens.
+    #[test]
+    fn adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes() {
+        let stop = Arc::new(Stop::default());
+        let capture = |stop: &Arc<Stop>| Capture {
+            out: Out::Kept(String::new()),
+            stdin: None,
+            missed: None,
+            stop: Some(stop.clone()),
+        };
+        CAPTURE.set(Some(capture(&stop)));
+        let open = || stop.conns.lock().unwrap().len();
+        let (a, _a) = UnixStream::pair().unwrap();
+        let (b, _b) = UnixStream::pair().unwrap();
+        let (first, second) = (stoppable(&a).unwrap(), stoppable(&b).unwrap());
+        assert_eq!(open(), 2);
+        drop(first);
+        assert_eq!(open(), 1);
+        drop(second);
+        assert_eq!(open(), 0);
+        stop.stop();
+        let (c, mut theirs) = UnixStream::pair().unwrap();
+        let _c = stoppable(&c).unwrap();
+        assert_eq!(open(), 0);
+        let mut buf = [0];
+        assert_eq!(io::Read::read(&mut theirs, &mut buf).unwrap(), 0, "shut as it opens");
+        CAPTURE.take();
+    }
 
     /// `session status` says the state its JSON has: idle, busy (working, and
     /// for how long when it knows) or waiting for an approval (ADR 8.2), or for

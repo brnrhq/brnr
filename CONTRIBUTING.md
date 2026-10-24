@@ -102,8 +102,10 @@ through `_exit`, can be missing. This is an execution baseline, not proof
 that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
-The library's modules are private, and its one public item is `brnr::run`
-(ADR 8.5). The integration tests and fuzz targets, crates of their own, reach
+The library's modules are private, and its public items are its facade
+(ADR 8.5): `brnr::run`, and the typed functions in `src/facade/`, which run
+their command and return what its `--json` prints. A change to a command's
+`--json` changes its facade type too; `tests/facade.rs` compares the two. The integration tests and fuzz targets, crates of their own, reach
 what they need through `brnr::internals`, a hidden module behind the
 `internals` feature: the dev-dependency of the crate on itself in
 `Cargo.toml` turns it on for `cargo test`, and `fuzz/Cargo.toml` for the

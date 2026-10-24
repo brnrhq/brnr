@@ -19,6 +19,7 @@ Wherever brnr reports an error as data, it is `"error": {"code",
 On stderr a failure is `brnr: <message> [<code>]`, in text and with `--json`
 alike. A usage error (exit 2), a wait's timeout (124) and a cut-off (3) have
 their exit status instead, and no code; `doctor` exits 1 with its checks.
+The library's facade returns a usage error as `usage_invalid`.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -105,3 +106,4 @@ and `unclassified`.
 | `transcript_unsupported` | The transcript is in a format this brnr doesn't read. |
 | `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs. |
 | `unclassified` | Anything else. It promises nothing: don't match it. |
+| `usage_invalid` | The arguments don't make a command. Only the library's [facade](overview.md) returns it: the command line exits 2 for it, with its usage and no code. |

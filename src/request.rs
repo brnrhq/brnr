@@ -21,8 +21,8 @@ use libc::c_int;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log, Profile};
 use crate::error::{Code, Error};
+use crate::profiles::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log, Profile};
 use crate::{host, log, paths, spawn};
 
 #[derive(Serialize, Deserialize)]

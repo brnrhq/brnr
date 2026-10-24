@@ -52,7 +52,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::host::check_bridge;
-use crate::{bug, config, json, lock, log, paths, signals, spawn, sys, transcript};
+use crate::{bug, json, lock, log, paths, profiles, signals, spawn, sys, transcript};
 
 use super::args::Error;
 use super::client::{Host, Probe, gone, listening, probe, read_meta};
@@ -499,7 +499,7 @@ fn fixable(meta: &fs::Metadata, dir: bool) -> bool {
 fn config_file(r: &mut Report) {
     let what = "config";
     let path = paths::config_file();
-    let (profiles, retention) = match config::load_all() {
+    let (profiles, retention) = match profiles::load_all() {
         Ok(None) => {
             return r.line(Level::Ok, what, format!("{} (none; defaults apply)", path.display()));
         }
@@ -566,7 +566,7 @@ fn config_file(r: &mut Report) {
     }
 }
 
-fn describe_profile(profile: &config::Profile) -> String {
+fn describe_profile(profile: &profiles::Profile) -> String {
     let agent = profile.agent.as_ref().map_or("given on the command line".into(), |a| a.join(" "));
     let bridges = profile.bridges.len();
     let mut out = format!("agent {agent}, {bridges} bridge{}", plural(bridges));
@@ -591,7 +591,7 @@ fn describe_profile(profile: &config::Profile) -> String {
             out.push_str(&format!(", {what} {}", names.join(" ")));
         }
     }
-    if profile.editor.echo_as != config::EchoAs::ToolCall {
+    if profile.editor.echo_as != profiles::EchoAs::ToolCall {
         out.push_str(&format!(", echo_as {}", profile.editor.echo_as.name()));
     }
     out

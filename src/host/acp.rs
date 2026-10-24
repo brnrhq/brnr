@@ -102,10 +102,10 @@ use super::sessions::{Ending, Hold};
 use super::state::SessionState;
 use super::turns::{self, Activity, Do, Held, Turns};
 use super::{Host, id_key, text_block};
-use crate::config::{ClientCapability, EchoAs, Feature, Log};
 use crate::error::{Code, Error};
 use crate::lock;
 use crate::log::{self, Dir};
+use crate::profiles::{ClientCapability, EchoAs, Feature, Log};
 use crate::schema::{self, ContentBlock, MessageId, NewSessionResponse, SessionUpdate};
 use crate::{frame, json, paths, transcript};
 

@@ -65,11 +65,11 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::{c_int, pid_t};
 use serde_json::{Value, json};
 
-use crate::config::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log};
 use crate::error::{Code, Error};
 use crate::frame;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
+use crate::profiles::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log};
 use crate::request::{Request, Role, Settings};
 use crate::schema::AuthMethod;
 use crate::signals;

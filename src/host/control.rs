@@ -129,9 +129,9 @@ use super::requests::{HostRequest, Open, Opening, PeerOp, Setup, SetupOf, resolv
 use super::strict::Beyond;
 use super::turns::{Activity, Held, Mode, Status};
 use super::{Ev, Host};
-use crate::config::{Bridge, Experimental, Log};
 use crate::error::{Code, Error};
 use crate::log::{self, Dir};
+use crate::profiles::{Bridge, Experimental, Log};
 use crate::request::{Prompt, Settings};
 use crate::{json, paths, render, sys};
 

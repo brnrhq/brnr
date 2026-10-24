@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::error::{self, Code};
 use crate::schema::{self, AgentCapabilities, ListSessionsResponse, SessionInfo};
-use crate::{config, json, lock, log, paths, signals, spawn, sys, transcript};
+use crate::{json, lock, log, paths, profiles, signals, spawn, sys, transcript};
 
 use super::args::{self, Error::Invalid};
 use super::client::{Host, discover};
@@ -290,7 +290,7 @@ pub(super) fn named_agent(
     if profile.is_none() && agent.is_empty() {
         return Ok(None);
     }
-    let (cfg, _) = config::load(profile)?;
+    let (cfg, _) = profiles::load(profile)?;
     let agent = if agent.is_empty() { cfg.agent.clone().unwrap_or_default() } else { agent };
     if agent.is_empty() {
         let error = "no agent: give one after -- or set agent in the profile";
