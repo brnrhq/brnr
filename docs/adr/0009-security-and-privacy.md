@@ -386,12 +386,15 @@ Never pruned:
   with another runtime directory, ADR 3.9). A long-lived process keeps its
   host log whole until it exits; the next prune after that, once the log is
   old enough, deletes it.
-- What brnr can't read the age of: a session whose events files are all in
-  another format (ADR 5.10), or hold no record brnr can read, as nothing in
-  them says when it was last active (P4), and a host log likewise. `doctor`
+- What brnr can't read the age of: a session with an events file whose
+  newest record is in another format (ADR 5.10), a newer brnr's, or whose
+  files hold no record brnr can read, as nothing in them says when it was
+  last active (P4), and a host log likewise. `doctor`
   lists the files in another format; they are deleted by hand. A session
   brnr does read the age of takes the files an older brnr's set aside
-  beside its own with it, as `--purge` does: they are the session's.
+  beside its own with it, as `--purge` does: they are the session's, and
+  older than the file that took their place (ADR 5.10). Its age is read
+  again, from every file of it, under its lock, for `--dry-run` too.
 - The agent's own copy of a session: that is `session delete`'s.
 
 How:
@@ -467,9 +470,10 @@ nothing a process uses.
   unlinks take.
 - Files in an older format stay until they are deleted by hand, but those
   set aside beside a session that is pruned.
-- A process that exits while its prune runs stops it there. What was
-  deleted by then isn't recorded in the host log; the next prune goes on.
-  Waiting for it would hold the exit for a status from every process.
+- A process that exits while its prune runs waits for it before its last
+  records are written, as it waits for them (ADR 5.5): a few seconds at
+  most, the status of every process. A signal gives up on it, and the
+  exit stops it there; what was deleted by then isn't recorded.
 
 **Considered.**
 
@@ -626,6 +630,13 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       without `retention` nothing is pruned; with it, a start prunes an old
       session but the one it resumes, and the host log has
       `transcripts_pruned`.
+    - `adr_0009_prune_keeps_a_session_it_cant_read_the_age_of`: a session
+      with an old file and a file whose newest record is a newer brnr's is
+      kept, both files, with `--dry-run` and without; one whose older
+      brnr's file is set aside goes with that file.
+    - `adr_0009_a_process_records_its_prune_before_it_exits`: a process
+      that stops as soon as its turn is done has `transcripts_pruned` in
+      its host log.
     - `adr_0009_retention_is_a_number_of_seconds_not_0`: `0`, `"30d"` and
       `-1` fail to load, `config_invalid`, before an agent starts; `doctor`
       says the age in days.
