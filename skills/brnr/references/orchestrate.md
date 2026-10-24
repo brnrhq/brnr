@@ -77,6 +77,9 @@ brnr session close $s --json
 It prints `{session}` once closed. A running turn is cancelled first. The process stops with its last session.
 Deleting a session (`brnr session delete $s`: the agent's copy; with
 `--purge`, brnr's transcript too) can't be undone: only when the user asks.
+So is pruning (`brnr session prune --older-than <s>`: brnr's transcripts
+last active more than `<s>` seconds ago); `--dry-run` says what it would
+delete.
 
 ## Exit statuses
 

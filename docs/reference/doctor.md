@@ -4,7 +4,7 @@
 
 Checks what brnr depends on, and says what is wrong: the runtime directory,
 the session locks, the transcripts, the config file and every profile in
-it, the adapters, the running processes, the host logs, and files in a format
+it, how long transcripts are kept (`retention`), the adapters, the running processes, the host logs, and files in a format
 this brnr doesn't read. See [doctor](../guide/doctor.md).
 
     brnr doctor [--fix | --report] [--json]

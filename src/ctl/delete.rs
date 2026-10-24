@@ -82,7 +82,7 @@ pub(super) fn delete(a: &Args) -> Result<ExitCode, error::Error> {
         return Err(error.clone());
     }
     let (recorded, purged, failed) = if purge {
-        let (purged, failed) = log::purge(&id);
+        let (purged, failed) = log::purge(&id, false);
         if let Err(error) = &answer {
             if purged.is_empty() && failed.is_empty() {
                 return Err(error.clone().map(|e| format!("{e}; brnr has no transcript of {id}")));

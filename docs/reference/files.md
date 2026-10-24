@@ -22,6 +22,11 @@ records' process and session fields, the logging modes, redaction and the
   sets it aside, renamed `<name>.older.jsonl` (its raw ACP
   `<name>.older.acp.jsonl`), and starts a file of its own. A
   `session_log_moved` host-log record (`path`, `to`) says so.
+- brnr keeps every file here until it is deleted: `session delete --purge`
+  deletes a session's, and `session prune` and the config's `retention`
+  what was last active longer ago, a session's transcript and the host log
+  of a process that has gone
+  ([ADR 9.5](../adr/0009-security-and-privacy.md#95-transcripts-are-kept-until-they-are-pruned)).
 - A transcript is not a promise of complete history: a disk's backlog or
   errors, logging turned off, and a process that dies at once can lose
   records.

@@ -40,6 +40,9 @@ pub(crate) struct Request {
     pub(crate) log: Log,
     /// The profile's, each command as it is run, found as the agent's is.
     pub(crate) bridges: Vec<Bridge>,
+    /// The config's `retention`, in seconds: the process prunes what was
+    /// last active longer ago as it starts (ADR 9.5).
+    pub(crate) retention: Option<u64>,
     pub(crate) role: Role,
 }
 
@@ -174,6 +177,7 @@ impl Request {
             strict: profile.strict,
             log: profile.log,
             bridges,
+            retention: None,
             role,
         })
     }
