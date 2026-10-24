@@ -31,7 +31,10 @@ agentInfo it gives in initialize), then a line per check: `ok   <check>:
   stops with it; without it, the process is stopped.
 
 Then the sessions it made are deleted from the agent's store where the
-agent can, and said where it can't. Exits 1 if a check failed, else 0. A
+agent can, and said where it can't. However it ends (Ctrl-C too), it stops
+the processes it started and waits for them to go before it removes its
+scratch folder, which it keeps, saying so, if one doesn't go. Exits 1 if a
+check failed, else 0. A
 step has $BRNR_SMOKE_TIMEOUT seconds (default 120). $BRNR_SMOKE_PROMPT and
 $BRNR_SMOKE_LONG_PROMPT replace the prompts (the test with the fake agent
 uses them). $BRNR_SMOKE_KEEP set keeps the scratch folder, with brnr's
@@ -39,6 +42,7 @@ transcripts and host logs, to look into a failure. Where a failure comes from, b
 to find out; docs/guide/native-agents.md has the results.
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -236,6 +240,26 @@ def version():
         return f"(--version failed: {e})"
 
 
+def cleanup():
+    """Stops what is left in this scratch BRNR_DIR, and only that; removes
+    the scratch folder once they are gone, and keeps it if one isn't."""
+    rc, got, _ = run("process", "list", "--json", wait=30)
+    pids = [p["pid"] for p in (got or {}).get("processes", [])]
+    for pid in pids:
+        run("process", "stop", str(pid), wait=30)
+    stopped = rc == 0 and got is not None and gone(pids, 20) is not None
+    if not stopped:
+        left = [p for p in pids if alive(p)] if got is not None else "unknown"
+        print(f"note: kept {scratch}: its processes may not have stopped ({left})")
+    elif os.environ.get("BRNR_SMOKE_KEEP"):
+        print(f"note: kept {scratch}, its transcripts and host logs")
+    else:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+# Whatever ends the check, an exit, an exception or Ctrl-C, stops what it
+# started (P14).
+atexit.register(cleanup)
 rc, got, out = run("--version")
 print(f"brnr: {out.strip()} ({brnr})")
 print(f"agent: {' '.join(agent)}: {version()}")
@@ -248,14 +272,13 @@ st = status(pid) if rc == 0 and pid else None
 if not st:
     say("FAIL", "initialize", why(got, out))
     say("FAIL", "session/new", "no process")
-    shutil.rmtree(scratch, ignore_errors=True)
     sys.exit(1)
 caps = st.get("capabilities", {})
 info = st.get("agent_info") or {}
 advertised = ", ".join(k for k, v in caps.items() if v) or "nothing optional"
 named = f"{info.get('name')} {info.get('version')}" if info else "no agentInfo"
 say("ok", "initialize", f"{named}; advertises {advertised}")
-say("ok", "session/new", session)
+say("ok", "session/new", f"{session} in process {pid}")
 made.append(session)
 
 wait = ("--wait", "--timeout", f"{timeout:g}", "--json")
@@ -361,12 +384,4 @@ for s in made:
     if rc != 0:
         print(f"note: {s} stays in the agent's store: {why(got, out)}")
 
-# Anything left: only this scratch BRNR_DIR's processes.
-rc, got, out = run("process", "list", "--json")
-for process in (got or {}).get("processes", []):
-    run("process", "stop", str(process["pid"]))
-if os.environ.get("BRNR_SMOKE_KEEP"):
-    print(f"note: kept {scratch}, its transcripts and host logs")
-else:
-    shutil.rmtree(scratch, ignore_errors=True)
 sys.exit(1 if failed else 0)

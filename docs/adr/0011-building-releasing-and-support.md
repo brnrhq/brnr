@@ -505,7 +505,10 @@ documentation says can't drift silently).
   Fork, list, resume (`session/resume`, else `session/load`) and close it
   checks only where the agent advertises them, and says `unsupported`
   where it doesn't (P7). The sessions it made it deletes from the agent's
-  store where the agent can, and says where it can't.
+  store where the agent can, and says where it can't. However it ends, an
+  error, an exception or Ctrl-C, it stops the processes it started and
+  waits for them to go before it removes its scratch folder; one that
+  doesn't go keeps the folder, and says so (P14).
 - It runs by hand only, never in CI: it needs the agent installed and
   logged in, and spends the user's quota (four short turns at most). It
   runs in a scratch `BRNR_HOME`, `BRNR_DIR` and project folder, with the
@@ -519,7 +522,7 @@ documentation says can't drift silently).
 - A test runs it against `tests/fake_agent.py` as the agent: every check
   passing, each capability left out reported `unsupported`, and a wrong
   reply, a turn that can't be cancelled and an agent that doesn't start
-  failing it.
+  failing it, and Ctrl-C leaving no process running.
 
 **Why.** #231: research named Junie's and Cursor's ACP entry points, but
 nobody had run them through brnr, so whether they work was a guess. F1
@@ -597,6 +600,8 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
 - 11.9: [tests/smoke.rs](https://github.com/brnrhq/brnr/blob/main/tests/smoke.rs):
   `adr_0011_the_smoke_check_runs_every_check_an_agent_advertises`,
   `adr_0011_the_smoke_check_says_what_the_agent_doesnt_advertise`,
-  `adr_0011_the_smoke_check_fails_what_fails`, with the fake agent.
+  `adr_0011_the_smoke_check_fails_what_fails`,
+  `adr_0011_the_smoke_check_stops_what_it_started_when_interrupted`, with
+  the fake agent.
   Not covered by a Rust test: the real agents, which the check runs by
   hand (see the section).

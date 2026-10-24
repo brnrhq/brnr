@@ -4,9 +4,11 @@
 
 mod common;
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
-use common::AGENT;
+use common::{AGENT, alive, kill};
 
 const SMOKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/adapters/smoke.py");
 
@@ -42,7 +44,7 @@ fn adr_0011_the_smoke_check_runs_every_check_an_agent_advertises() {
             "brnr: brnr ",
             "agent: ",
             "ok   initialize: fake-agent 1.2.3; advertises resume, load, list, fork, close",
-            "ok   session/new: sess-1",
+            "ok   session/new: sess-1 in process ",
             "ok   prompt: replied 'ok' (end_turn)",
             "ok   cancel: the turn ended cancelled",
             "ok   fork sess-2, its prompt: replied 'ok'",
@@ -110,4 +112,39 @@ fn adr_0011_the_smoke_check_fails_what_fails() {
     let (status, out) = smoke(&[("EXIT", "3")]);
     assert_eq!(status, Some(1), "{out}");
     has(&out, &["FAIL initialize: ", "FAIL session/new: no process"]);
+}
+
+#[test]
+fn adr_0011_the_smoke_check_stops_what_it_started_when_interrupted() {
+    // Its first prompt runs until cancelled; Ctrl-C comes while it waits.
+    let mut smoke = Command::new(SMOKE)
+        .args(["--brnr", env!("CARGO_BIN_EXE_brnr"), "--", AGENT])
+        .env("BRNR_SMOKE_PROMPT", "hang")
+        .env("BRNR_SMOKE_TIMEOUT", "30")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(smoke.stdout.take().unwrap()).lines().map(Result::unwrap);
+    let mut seen = Vec::new();
+    let pid = lines
+        .by_ref()
+        .find_map(|line| {
+            seen.push(line.clone());
+            line.strip_prefix("ok   session/new: sess-1 in process ")?.parse::<i32>().ok()
+        })
+        .unwrap_or_else(|| panic!("no session/new line:\n{}", seen.join("\n")));
+    assert!(alive(pid));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(kill(smoke.id() as i32, libc::SIGINT));
+    seen.extend(lines);
+    let status = smoke.wait().unwrap();
+    let seen = seen.join("\n");
+    assert!(!status.success(), "{seen}");
+    // It waits for them to go before it exits.
+    let left = alive(pid);
+    if left {
+        kill(pid, libc::SIGTERM); // Not to leave it to the next test run.
+    }
+    assert!(!left, "process {pid} still runs:\n{seen}");
+    assert!(!seen.contains("note: kept"), "{seen}");
 }
