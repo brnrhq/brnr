@@ -49,6 +49,7 @@ cargo test --release           # release, as CI: some tests stream tens of thous
 adapters/build.sh              # only if you change adapters/ (needs bun)
 adapters/check.py --brnr target/release
 adapters/test_check.py         # only if you change adapters/check.py
+adapters/smoke.py junie        # by hand, with the agent logged in: docs/guide/native-agents.md
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to

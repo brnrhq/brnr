@@ -47,6 +47,7 @@ with environment variables:
                     late history, once the file exists, before its answer
   NO_CLOSE=1        don't offer session/close
   CLOSE_GATE=<file> wait for this file before answering session/close
+  NO_FORK=1         don't offer session/fork
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   LIST_TIMES=<json> session/list's first page also has these sessions, an
@@ -862,6 +863,8 @@ for line in sys.stdin.buffer:
             session_caps["resume"] = {}
         if env("NO_CLOSE"):
             del session_caps["close"]
+        if env("NO_FORK"):
+            del session_caps["fork"]
         if env("NO_LIST"):
             del session_caps["list"]
         if not env("NO_DELETE"):
