@@ -31,13 +31,28 @@ brnr's own conventions:
   which runs the command and returns what its `--json` prints, with the
   same names and shapes, and an error with its code (`brnr::Error`,
   `brnr::Code`). Waits return their exit status with their data
-  (`brnr::Exit`); `event log` and `event watch` give each event to a
+  (`brnr::Exit`), as do `session delete`, `session prune` and `doctor`;
+  `event log` and `event watch` give each event to a
   closure. `session new` and `session resume` start the process as
   `<program> host`, which the program hands to `brnr::run`. A usage error is
   the new code `usage_invalid`, which only the facade returns
   (ADR 8.5, 8.7, #215).
+- A retention policy for transcripts and host logs (ADR 9.5, #373). brnr
+  still keeps everything by default, and now says so: the README and the
+  transcripts guide say what it keeps, where, and for how long. `brnr
+  session prune --older-than <s> [--dry-run] [--json]` deletes brnr's
+  transcripts of the sessions last active more than `<s>` seconds ago,
+  and the host logs of processes that have gone and were, as `session
+  delete --purge` deletes them. `retention = <s>` at the top of the config
+  has every process do the same as it starts, and record it in its host
+  log (`transcripts_pruned`). A session open in a process, or whose lock is
+  held, is never pruned. `doctor` says the retention in days.
 
 ### Changed
+
+- `session delete --purge` deletes a session's events file last, after its
+  raw ACP and the files set aside, so a purge cut short leaves the file
+  the session is found by (ADR 9.5). `purged` lists them in that order.
 
 - The documentation is a book, at
   [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with

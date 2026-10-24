@@ -499,11 +499,11 @@ fn fixable(meta: &fs::Metadata, dir: bool) -> bool {
 fn config_file(r: &mut Report) {
     let what = "config";
     let path = paths::config_file();
-    let profiles = match profiles::load_all() {
+    let (profiles, retention) = match profiles::load_all() {
         Ok(None) => {
             return r.line(Level::Ok, what, format!("{} (none; defaults apply)", path.display()));
         }
-        Ok(Some(profiles)) => profiles,
+        Ok(Some(config)) => (config.profiles, config.retention),
         Err(problems) => {
             for problem in problems {
                 r.line(Level::Fail, what, format!("{}: {problem}", path.display()));
@@ -512,6 +512,17 @@ fn config_file(r: &mut Report) {
         }
     };
     r.line(Level::Ok, what, format!("{}: {} profiles", path.display(), profiles.len()));
+    // What brnr keeps, and for how long, said where a unit mistake shows
+    // (ADR 9.5).
+    let kept = match retention {
+        None => "transcripts and host logs are kept until deleted (no retention set)".to_owned(),
+        Some(secs) => format!(
+            "each process prunes, as it starts, transcripts and host logs last active more than \
+             {} ago (retention = {secs})",
+            super::prune::age(secs)
+        ),
+    };
+    r.line(Level::Ok, "retention", kept);
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
         let mut problems = Vec::new();
@@ -802,7 +813,7 @@ fn file_formats(r: &mut Report) {
 /// read. `process_exited` is the last thing a process writes but for what follows
 /// as it lets go (a bridge's exit, its own stderr), so it is in the end of
 /// the file.
-fn recorded_exit(path: &Path) -> Option<bool> {
+pub(super) fn recorded_exit(path: &Path) -> Option<bool> {
     Some(recorded(&transcript::tail(path, LOG_TAIL)?, "process_exited"))
 }
 

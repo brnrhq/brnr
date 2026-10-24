@@ -17,6 +17,7 @@ file is no configuration.
   brnr never changes the file's mode
   ([ADR 9.4](../adr/0009-security-and-privacy.md#94-the-config-file-is-read-only-if-only-you-can-change-or-read-it)).
 - Without `--profile`, the `default` profile applies, if there is one.
+- Beside the profiles, the file has one key of its own, `retention`.
 
 **Covered** from 1.0.0: the TOML below, its sections, keys, values and names;
 the environment variables below, `BRNR_DIR` as where the runtime directory
@@ -24,6 +25,19 @@ is, not what is in it; the `BRNR_*` variables `event notify` gives its
 command; and `BRNR_PID` in a started bridge's environment, but not
 `BRNR_SOCKET`. A configuration that uses a key added in a later 1.x release
 doesn't load in an earlier one.
+
+## `retention`
+
+At the top of the file, outside the profiles: what every process uses,
+whatever its profile.
+
+```toml
+retention = 2592000   # 30 days
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `retention` | integer | Seconds, 1 or more. Each process, as it starts, deletes brnr's transcripts of the sessions last active longer ago, and the host logs of processes that have gone and were, as [`session prune`](session.md#brnr-session-prune) does, and records what it deleted in its host log (`transcripts_pruned`). Unset, nothing is deleted. `0`, or a value that isn't a whole number (`"30d"`), fails to load ([ADR 9.5](../adr/0009-security-and-privacy.md#95-transcripts-are-kept-until-they-are-pruned)). |
 
 ## `[profiles.<name>]`
 

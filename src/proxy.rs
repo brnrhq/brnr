@@ -153,7 +153,7 @@ fn parse_args(
 /// The editor's process, as its start request has it: the profile's shared
 /// and editor parts, the agent, our cwd, the editor's signal mask.
 fn resolve(opts: Options, agent: Vec<String>, mask: Vec<c_int>) -> Result<Request, String> {
-    let profile = profiles::load(opts.profile.as_deref()).map_err(|e| e.message)?;
+    let (profile, retention) = profiles::load(opts.profile.as_deref()).map_err(|e| e.message)?;
     let cwd = env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let editor = request::Editor {
         proxy_pid: std::process::id(),
@@ -168,6 +168,7 @@ fn resolve(opts: Options, agent: Vec<String>, mask: Vec<c_int>) -> Result<Reques
     let mut request =
         Request::new(opts.profile, &profile, agent, cwd, role).map_err(|e| e.message)?;
     request.strict |= opts.strict;
+    request.retention = retention;
     Ok(request)
 }
 

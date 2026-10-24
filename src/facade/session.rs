@@ -188,6 +188,45 @@ pub struct Row {
     pub cwd: Option<String>,
 }
 
+/// `session prune`'s flags. Its `--older-than` is [`prune`]'s argument:
+/// it is needed.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct PruneFlags {
+    /// `--dry-run`: say what would be deleted, and delete nothing.
+    pub dry_run: bool,
+}
+
+/// `session prune --json`: what it deleted, or would (ADR 9.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Pruned {
+    pub older_than: u64,
+    pub before: String,
+    pub dry_run: bool,
+    pub sessions: Vec<PrunedSession>,
+    pub host_logs: Vec<PrunedHostLog>,
+    pub failed: Vec<String>,
+}
+
+/// A session pruned: its files, deleted or that would be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct PrunedSession {
+    pub session: String,
+    pub last_active: String,
+    pub files: Vec<String>,
+}
+
+/// A host log pruned, of a process that has gone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct PrunedHostLog {
+    pub host_id: String,
+    pub last_active: String,
+    pub files: Vec<String>,
+}
+
 /// `brnr session new`: a process for a headless session, in the background,
 /// and the session it opens; with `pid`, a session in that process. The
 /// process is this program, started again as `<program> host` (ADR 8.5).
@@ -268,4 +307,15 @@ pub fn list(flags: &ListFlags) -> Result<Sessions, Error> {
     w.value("--cwd", flags.cwd.as_ref());
     w.rest(flags.agent.as_deref());
     w.json()
+}
+
+/// `brnr session prune --older-than <s>`: deletes brnr's transcripts of the
+/// sessions, and the host logs of the processes, last active more than
+/// `older_than` seconds ago. [`Exit::Failure`] if a file couldn't be
+/// deleted; the others are deleted all the same.
+pub fn prune(older_than: u64, flags: &PruneFlags) -> Result<Exit<Pruned>, Error> {
+    let mut w = Words::new("session", Some("prune"));
+    w.value("--older-than", Some(older_than));
+    w.flag("--dry-run", flags.dry_run);
+    w.exit()
 }

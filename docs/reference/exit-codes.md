@@ -23,6 +23,7 @@ can give a situation that has none a code of its own.
 | `brnr acp` | 2 for a usage error; 1 for a config error or a process that fails to start; after the start, as the agent exited, or its signal. |
 | `session new --foreground`, `session resume --foreground` | The agent's exit status; a failed start is nonzero. |
 | `session delete` | 1 if the agent didn't delete the session (its error, or no answer), with `--purge` too, but for an agent that doesn't have it (`resource_not_found`): then 0, brnr's transcript deleted. 1 too if a file couldn't be deleted or recorded in. |
+| `session prune` | 1 if a file couldn't be deleted, or a session's lock couldn't be taken; the others are deleted all the same. |
 | `event notify` | Non-zero when its connection ends otherwise than with the process, or a signal stops it. |
 | `doctor` | 1 if a check failed: read its checks for the cause. |
 

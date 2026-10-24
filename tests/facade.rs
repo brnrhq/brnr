@@ -44,6 +44,8 @@ const TESTS: &[Test] = &[
     ("adr_0008_the_facade_has_event_log_watch_and_wait", event_verbs),
     ("adr_0008_the_facade_has_doctor_and_skill", tool_verbs),
     ("adr_0008_a_facade_error_has_the_commands_code", errors),
+    // Last: it deletes the transcripts the others left.
+    ("adr_0008_the_facade_has_session_prune", prune_verbs),
 ];
 
 /// The number the next session the test agent opens comes after: each
@@ -118,7 +120,8 @@ fn main() -> ExitCode {
 
 /// Fields whose values change between two runs of a command: time passing,
 /// and the ids of what each run made. Their types are compared.
-const CHANGING: &[&str] = &["uptime", "turn_elapsed", "timeout_left", "ts", "last_active"];
+const CHANGING: &[&str] =
+    &["uptime", "turn_elapsed", "timeout_left", "ts", "last_active", "before"];
 
 /// Asserts that `lib`, what a facade function returned, is `cli`, what its
 /// command printed with `--json`: the same fields at every level, with the
@@ -686,4 +689,26 @@ fn errors(env: &Env) {
         })
         .unwrap_err();
     code_is(&serde_json::to_value(&err).unwrap(), "session_not_found");
+}
+
+fn prune_verbs(env: &Env) {
+    let (a, b) = pair(env, "reply hi", Some("turn"));
+    env.ok(&["session", "close", &a]);
+    env.ok(&["session", "close", &b]);
+    let mut flags = session::PruneFlags::default();
+    flags.dry_run = true;
+    let dry = || session::prune(0, &flags).unwrap().into_value().unwrap();
+    reads(env, &["session", "prune", "--older-than", "0", "--dry-run"], dry, &[]);
+    let would = dry();
+    assert!(would.sessions.iter().any(|s| s.session == a), "{would:?}");
+    // Nothing is as old as a day: nothing goes.
+    let lib = session::prune(86_400, &Default::default()).unwrap();
+    exits(&lib, cli(env, &["session", "prune", "--older-than", "86400"]), &[]);
+    // Everything closed goes, and is gone.
+    let lib = session::prune(0, &Default::default()).unwrap();
+    assert!(
+        matches!(&lib, Exit::Success(p) if !p.dry_run && p.sessions.iter().any(|s| s.session == b))
+    );
+    let (status, left) = cli(env, &["session", "prune", "--older-than", "0", "--dry-run"]);
+    assert_eq!((status, &left["sessions"]), (0, &json!([])), "{left}");
 }

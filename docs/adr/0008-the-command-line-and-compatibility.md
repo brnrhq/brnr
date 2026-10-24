@@ -39,6 +39,7 @@ brnr session     new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
                    [-- <agent> [args...]]
                  | status <session> | fork <session> | close <session>
                  | delete <session> [--purge] [--profile <p>] [-- <agent> [args...]]
+                 | prune --older-than <s> [--dry-run]
 brnr prompt      send <session> [--steer | --interrupt | --context [--replace]]
                    [--prompt <text> | -] [--file <path>]... [--image <path>]...
                    [--wait [--timeout <s>]]
@@ -221,7 +222,9 @@ How words are read:
   and `<id>.acp.jsonl`, ADR 5.1) in every project folder, an older brnr's
   too, and the older brnr's files set aside beside them
   (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …, ADR 5.9): every file of
-  the session's id brnr finds, each said as it is deleted (N1, P3). Not
+  the session's id brnr finds, each said as it is deleted (N1, P3), the
+  events file last, so a purge cut short leaves what finds the rest
+  (ADR 9.5). Not
   the process logs, which are shared, whatever the agent answered. Nothing a symlink points at, nor an id that
   climbs out of its folder, is deleted. With `--purge` the command succeeds
   only if the agent deleted the session or doesn't have it (ACP's
@@ -234,6 +237,13 @@ How words are read:
   all the same". A symlinked project folder isn't looked in. A transcript
   made private first (ADR 9.3) is said on stderr: the command has no host
   log for `path_made_private`.
+
+`session prune --older-than <s> [--dry-run]` deletes brnr's transcripts of
+the sessions no process has open that were last active more than `<s>`
+seconds ago, and the host logs of the processes that have gone and were,
+as `--purge` deletes, with nothing asked of an agent. ADR 9.5 has the
+rules and its output; the config's `retention` does the same as each
+process starts.
 
 `prompt`, `queue` and `process`:
 
@@ -332,7 +342,8 @@ wins, and the other form goes, with no alias (P9):
   given as words is a word too many, a usage error (ADR 8.3), and the rule
   that `prompt send`'s options go before its prompt is gone.
 - A duration is in whole seconds, and its name has no unit: `--timeout`,
-  `--stop-when-idle`, `--response-timeout`, and the profile's
+  `--stop-when-idle`, `--response-timeout`, `--older-than` (ADR 9.5), the
+  config's `retention`, and the profile's
   `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
   `--json` and the socket's replies, `uptime_seconds` becomes `uptime`,
   `turn_seconds` `turn_elapsed`, and `timeout_seconds` (the time left
@@ -882,8 +893,9 @@ public items.
   function returns `brnr::Exit`: `Success` (0) and `Failure` (1) with what
   it printed, `TimedOut` (124) and `Missed` (3) with the `events_missed`
   note (ADR 8.3, 10.2). These are the waits (`session new` and `resume`,
-  `prompt send`, `event wait`), `event watch`, `session delete` and
-  `doctor`. A verb whose `--json` has a shape for each flag (`--wait`,
+  `prompt send`, `event wait`), `event watch`, `session delete`, `session
+  prune` and `doctor`. A flag a command needs is an argument
+  (`session::prune(older_than, …)`). A verb whose `--json` has a shape for each flag (`--wait`,
   `--for`) returns an enum of them (`session::Started`, `event::Waited`).
 - A stream, `event log` and `event watch`, gives each event to a closure
   as it comes, until the command ends or the closure breaks. The command
@@ -1576,7 +1588,8 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_config_get_and_set`,
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
   a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
-  `adr_0008_a_facade_error_has_the_commands_code`.
+  `adr_0008_a_facade_error_has_the_commands_code`,
+  `adr_0008_the_facade_has_session_prune`.
 - 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs`,
   `adr_0008_every_toml_block_loads`; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):

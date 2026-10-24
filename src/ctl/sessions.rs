@@ -290,7 +290,7 @@ pub(super) fn named_agent(
     if profile.is_none() && agent.is_empty() {
         return Ok(None);
     }
-    let cfg = profiles::load(profile)?;
+    let (cfg, _) = profiles::load(profile)?;
     let agent = if agent.is_empty() { cfg.agent.clone().unwrap_or_default() } else { agent };
     if agent.is_empty() {
         let error = "no agent: give one after -- or set agent in the profile";

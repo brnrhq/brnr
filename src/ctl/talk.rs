@@ -468,7 +468,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, error::Error> {
             }
         }
     }
-    let cfg = profiles::load(a.profile.as_deref())?;
+    let (cfg, retention) = profiles::load(a.profile.as_deref())?;
     // --profile p brings p's agent too, if p names one: a profile's agent
     // is that of each of its processes (ADR 3.11, ADR 6.1).
     if a.agent.is_empty() && !(named && cfg.agent.as_ref().is_some_and(|argv| !argv.is_empty())) {
@@ -513,6 +513,7 @@ fn start(mut a: StartArgs) -> Result<ExitCode, error::Error> {
     let role = Role::Headless(Box::new(headless));
     let mut request = Request::new(a.profile, &cfg, a.agent, cwd.clone(), role)?;
     request.strict |= a.strict;
+    request.retention = retention;
 
     let (channel, theirs) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
     let mut cmd = spawn::host_command().map_err(|e| e.to_string())?;

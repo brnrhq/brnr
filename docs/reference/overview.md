@@ -26,7 +26,8 @@ for row in brnr::session::list(&flags)?.sessions {
 }
 ```
 
-- A command that waits, and `event watch`, `session delete` and `doctor`,
+- A command that waits, and `event watch`, `session delete`, `session
+  prune` and `doctor`,
   return `brnr::Exit`: its exit status, with what it printed. `event log`
   and `event watch` give each event to a closure.
 - `session new` and `session resume` start the process from the running
@@ -223,6 +224,9 @@ session
   brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
   brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json]
                     [-- <agent> [args...]]
+  brnr session prune --older-than <s> [--dry-run] [--json]
+                     delete brnr's transcripts of sessions, and the host logs of processes,
+                     last active more than <s> seconds ago
 
 <new flags>
   process: [--profile <p>] [--auth <method>] [--strict] [--stop-when-idle <s>]
