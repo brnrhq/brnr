@@ -2,8 +2,8 @@
 # --bench acp`, on Linux and macOS, fails when a number passes its budget
 # (benches/budgets.toml). Its numbers go into the run's summary and into one
 # comment on the pull request, updated on each push. The comment needs a
-# token that can write, which a pull request from a fork doesn't get: its
-# numbers are in the summary only.
+# token that can write, which a pull request from a fork or from Dependabot
+# doesn't get: its numbers are in the summary only.
 name: bench
 
 on:
@@ -48,7 +48,11 @@ jobs:
 
   comment:
     needs: bench
-    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    # Dependabot's pull requests get a token that can't write either.
+    if: >-
+      always()
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:

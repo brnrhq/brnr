@@ -66,12 +66,16 @@ struct Measure {
 }
 
 fn main() -> ExitCode {
-    // cargo bench adds --bench.
-    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--bench").collect();
+    // cargo bench adds --bench. Without it, run by `cargo test
+    // --all-targets` (coverage.yml), the bench only shows that it works: a
+    // quick run, its budgets not checked, as an instrumented build is slow.
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--agent") {
         return agent();
     }
-    let (mut quick, mut markdown) = (false, None);
+    let benching = args.iter().any(|a| a == "--bench");
+    args.retain(|a| a != "--bench");
+    let (mut quick, mut markdown) = (!benching, None);
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         let file = if arg == "--markdown" { rest.next() } else { None };
@@ -101,7 +105,9 @@ fn main() -> ExitCode {
     if let Some(path) = markdown {
         fs::write(path, table(&measures, &machine)).unwrap();
     }
-    if over > 0 {
+    if over > 0 && !benching {
+        println!("{over} over budget, not checked: not run by cargo bench");
+    } else if over > 0 {
         println!("{over} over budget");
         return ExitCode::FAILURE;
     }
@@ -174,7 +180,7 @@ fn measure(scratch: &Scratch, budgets: &Budgets, quick: bool) -> Vec<Measure> {
         }),
         m("RSS, brnr acp at rest", mib(proxy_rss), kib(proxy_rss, budgets.proxy_rss_kib)),
         m("RSS, its process at rest", mib(host_rss), kib(host_rss, budgets.host_rss_kib)),
-        m("RSS, its process after the stream", mib(host_streamed_rss), {
+        m("RSS, its process after the streams", mib(host_streamed_rss), {
             kib(host_streamed_rss, budgets.host_streamed_rss_kib)
         }),
         m("threads, brnr acp", proxy_threads.to_string(), {
