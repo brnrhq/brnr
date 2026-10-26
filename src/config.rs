@@ -1,5 +1,5 @@
 //! Profiles from `config.toml` (see paths.rs for where it lives). A profile
-//! has three parts (ADR 6.1 in docs/adr): at the top what every process of
+//! has three execution parts (ADR 6.1 in docs/adr): at the top what every process of
 //! the profile uses, under `headless` what only `brnr session new` and
 //! `resume` use, and under `editor` what only `brnr acp` uses.
 //!
@@ -38,6 +38,8 @@
 //! features = ["shared_sessions"]      # process management (ADR 3.10)
 //! ```
 //!
+//! A routing profile instead contains only `remote = { target, profile }`;
+//! reusable `[remotes.<name>]` hold SSH destinations and paths (ADR 12.2).
 //! Without `--profile`, the `default` profile applies if there is one. A key
 //! in the wrong part, an unknown key or name, and the flat layout of before
 //! fail to load, saying which and where (P7, P9).
@@ -61,16 +63,44 @@ use serde_json::{Value, json};
 use crate::error::{Code, Error};
 use crate::{paths, sys};
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigFile {
+pub(crate) struct ConfigFile {
     #[serde(default)]
-    profiles: BTreeMap<String, Profile>,
+    pub(crate) profiles: BTreeMap<String, Profile>,
+    #[serde(default)]
+    pub(crate) remotes: BTreeMap<String, Remote>,
+}
+
+/// SSH destinations and remote paths (ADR 12.2). Authentication stays in SSH.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Remote {
+    pub(crate) host: String,
+    #[serde(default = "remote_executable")]
+    pub(crate) executable: String,
+    pub(crate) cwd: Option<String>,
+    pub(crate) runtime_dir: Option<String>,
+    pub(crate) home: Option<String>,
+    pub(crate) config: Option<String>,
+}
+
+fn remote_executable() -> String {
+    "brnr".into()
+}
+
+/// A local profile delegates to this target and optional remote profile.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfileRemote {
+    pub(crate) target: String,
+    pub(crate) profile: Option<String>,
 }
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Profile {
+    pub(crate) remote: Option<ProfileRemote>,
     pub(crate) agent: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) log: Log,
@@ -317,21 +347,44 @@ pub(crate) fn load(name: Option<&str>) -> Result<Profile, Error> {
 /// Every profile, or `None` if there is no config file. Otherwise what's
 /// wrong with it, each problem saying where.
 pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String>> {
+    Ok(load_file()?.map(|file| file.profiles))
+}
+
+/// The complete config, including routing settings, with the same private-file checks.
+pub(crate) fn load_file() -> Result<Option<ConfigFile>, Vec<String>> {
     let path = paths::config_file();
     let Some(text) = read_private(&path)? else { return Ok(None) };
+    parse_file(&text).map(Some)
+}
+
+pub(crate) fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
     let at_line = |e: toml::de::Error| match e.span() {
         Some(span) => {
             format!("line {}: {}", text[..span.start].matches('\n').count() + 1, e.message())
         }
         None => e.message().to_owned(),
     };
-    let table: toml::Table = toml::from_str(&text).map_err(|e| vec![at_line(e)])?;
+    let table: toml::Table = toml::from_str(text).map_err(|e| vec![at_line(e)])?;
     let problems = check(&table);
     if !problems.is_empty() {
         return Err(problems);
     }
-    let file: ConfigFile = toml::from_str(&text).map_err(|e| vec![at_line(e)])?;
-    Ok(Some(file.profiles))
+    let file: ConfigFile = toml::from_str(text).map_err(|e| vec![at_line(e)])?;
+    for (name, remote) in &file.remotes {
+        crate::remote::validate(remote).map_err(|e| vec![format!("remotes.{name}: {e}")])?;
+    }
+    for (name, profile) in &file.profiles {
+        if let Some(remote) = &profile.remote {
+            crate::remote::validate_host(&remote.target)
+                .map_err(|e| vec![format!("profiles.{name}.remote.target: {e}")])?;
+            if remote.profile.as_ref().is_some_and(|p| p.is_empty() || p.contains('\0')) {
+                return Err(vec![format!(
+                    "profiles.{name}.remote.profile is empty or contains NUL"
+                )]);
+            }
+        }
+    }
+    Ok(file)
 }
 
 // ---- who can reach it ---------------------------------------------------
@@ -343,7 +396,7 @@ pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String
 /// symlink is followed, and what is checked is the file it resolves to and
 /// that file's folder, through the descriptors the file is read from. brnr
 /// changes neither (P4): each problem says what is wrong, and how to fix it.
-fn read_private(path: &Path) -> Result<Option<String>, Vec<String>> {
+pub(crate) fn read_private(path: &Path) -> Result<Option<String>, Vec<String>> {
     let real = match fs::canonicalize(path) {
         Ok(real) => real,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
@@ -494,8 +547,14 @@ impl Part {
 fn check(file: &toml::Table) -> Vec<String> {
     let mut problems = Vec::new();
     for (key, value) in file {
+        if key == "remotes" {
+            // The typed parse checks each remote's keys and field types.
+            continue;
+        }
         if key != "profiles" {
-            problems.push(format!("unknown key {key} (the config has only [profiles.<name>])"));
+            problems.push(format!(
+                "unknown key {key} (the config has [profiles.<name>] and [remotes.<name>])"
+            ));
             continue;
         }
         let Some(profiles) = value.as_table() else {
@@ -514,12 +573,18 @@ fn check(file: &toml::Table) -> Vec<String> {
 }
 
 fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<String>) {
+    if part == Part::Shared && table.contains_key("remote") && table.len() != 1 {
+        problems.push(format!("{at}: a remote profile contains only [{}.remote]; agent settings belong on the remote host", at));
+    }
     let here = match part {
         Part::Shared => at.to_owned(),
         Part::Headless => format!("{at}.headless"),
         Part::Editor => format!("{at}.editor"),
     };
     for (key, value) in table {
+        if key == "remote" && part == Part::Shared {
+            continue;
+        }
         let sub = match key.as_str() {
             "headless" => Some(Part::Headless),
             "editor" => Some(Part::Editor),

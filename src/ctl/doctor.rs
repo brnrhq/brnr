@@ -514,6 +514,17 @@ fn config_file(r: &mut Report) {
     r.line(Level::Ok, what, format!("{}: {} profiles", path.display(), profiles.len()));
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
+        if let Some(remote) = &profile.remote {
+            r.line(
+                Level::Ok,
+                &what,
+                format!(
+                    "remote {} (check with brnr remote check {})",
+                    remote.target, remote.target
+                ),
+            );
+            continue;
+        }
         let mut problems = Vec::new();
         for server in &profile.headless.mcp_servers {
             match server.to_acp() {

@@ -24,6 +24,15 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Execute commands over system SSH with `--remote <[user@]host|name>`,
+  including ACP, session control and event streams. Named remotes and
+  routing profiles select remote executables, profiles and runtime paths;
+  `remote init`, `list`, `check` and `remove` manage existing remote
+  installations. SSH owns authentication and host trust; matching brnr
+  versions are required (ADR 12, #401).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added

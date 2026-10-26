@@ -95,6 +95,33 @@ the user from their own processes.
 
 ## Claims
 
+### Remote SSH transport
+
+An explicit `--remote` or selected routing profile (ADR 12) trusts the
+destination account, SSH server and the user's system SSH client/config.
+The client owns key handling, host verification and encryption. brnr uses
+`BatchMode=yes`, `StrictHostKeyChecking=yes` and no terminal; it neither
+accepts unknown host keys nor stores credentials. Destination sockets and
+transcripts keep their existing user-only boundaries. Provider credentials
+stay remotely configured; profiles are not copied between machines.
+
+`remote::script` quotes each shell word and validates the destination so
+it cannot become an SSH option. The preflight reads `/dev/null` and keeps
+successful output off ACP/JSON streams. `_remote` prevents routing loops
+without exposing a marker to agents. Config editing uses the existing
+private-file reader, a private create-new temporary file and atomic rename;
+it refuses symlinked config paths and remote removal while a routing
+profile references the name. Same-user processes remain trusted.
+
+`tests/remote.rs` checks command injection, prompt/delimiter parsing,
+isolated remote state, version/authentication failures, ACP/stdin streams,
+private config edits, retained data and observer disconnects. Its Linux
+system-SSH test uses an isolated loopback server and temporary keys, without
+modifying the user's SSH configuration or known_hosts. Black-hole detection
+time, editor path mapping and external authentication agents remain
+environment-dependent. SSH transport failures can have no JSON, and
+signals/individual pipe closures differ from local proxy semantics.
+
 Each claim with what enforces it (file and function) and the test that checks
 it. Tests are in `tests/` unless a module is named; `security.rs` holds those
 written for this document. A test that can't run where it is (as root,

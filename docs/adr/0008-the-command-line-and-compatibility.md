@@ -13,6 +13,12 @@ skill that teaches agents to use brnr.
 
 ## 8.1 Commands are grouped by what they act on, with ACP's verbs
 
+Every public execution command also accepts `--remote <target>` before
+`--`, and `--profile` can select a local routing profile (ADR 12). Transport
+selection respects flag values and the delimiter. Help stays local. The
+`remote init|list|check|remove` group manages local connection settings and
+does not itself accept remote routing.
+
 A command is `brnr <entity> <verb>`: the entity it acts on, and ACP's verb
 wherever ACP has one (P1). The entities are brnr's model of a process:
 

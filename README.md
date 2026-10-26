@@ -771,6 +771,97 @@ may load a session another brnr process serves. The agent then serves it to
 both and the conversation splits; the process holding the session's lock still
 writes its transcript, and `session status` says the session is shared.
 
+## Remote hosts
+
+Run any execution command on another host with `--remote`. brnr uses the
+installed OpenSSH client; the remote host needs a matching brnr version,
+with remote support, and its own agents, adapters and provider credentials.
+Establish authentication and host trust with SSH first:
+
+```sh
+ssh agent@linux
+brnr session list --remote agent@linux
+brnr acp --remote agent@linux --profile coding
+```
+
+The destination is `[user@]host` or an SSH alias. Without a username,
+SSH's `User` setting or its normal default applies. Keep keys, ports and
+jump hosts in `~/.ssh/config`. brnr uses `BatchMode=yes` and
+`StrictHostKeyChecking=yes`: it fails rather than waiting for an invisible
+authentication or host-verification prompt in an editor.
+
+Save a connection and check its setup:
+
+```sh
+brnr remote init linux --host agent@linux --executable /home/agent/.local/bin/brnr
+brnr remote list
+brnr remote check linux
+brnr session list --remote linux --json
+brnr event watch $s --remote linux
+brnr remote remove linux
+```
+
+`init` checks SSH access and brnr's version, then saves the target in your
+local config. It checks an existing installation; it does not install brnr
+or adapters. Repeating it updates the supplied settings. `check` runs the
+remote doctor. `remove` deletes only local connection settings, refusing
+while a routing profile uses them. All four management commands support
+`--json`.
+
+A saved remote and a local routing profile can look like this:
+
+```toml
+[remotes.linux]
+host = "agent@linux"
+executable = "/home/agent/.local/bin/brnr" # default: brnr on remote PATH
+cwd = "/home/agent/work"                 # optional remote starting directory
+runtime_dir = "/run/user/1000/brnr"       # optional BRNR_DIR
+# home = "/home/agent/.brnr"              # optional BRNR_HOME
+# config = "/home/agent/.config/brnr/config.toml" # optional BRNR_CONFIG
+
+[profiles.remote-work.remote]
+target = "linux"
+profile = "coding"                       # execution profile on linux
+```
+
+Then the same profile selects the connection from an editor or terminal:
+
+```sh
+brnr acp --profile remote-work
+brnr session list --profile remote-work
+brnr prompt send $s --profile remote-work --prompt "Continue"
+```
+
+A routing profile contains only its `remote` table. Agent settings and
+credentials belong on the destination; local and remote execution settings
+are not merged. Explicit `--remote` wins, and with it `--profile` names a
+remote execution profile. Without either flag, only `acp`, `session new`
+and `session resume` consult a routing `default` profile; other commands
+stay local. Routing happens once; another remote hop is refused.
+
+Input, output, JSON and live event streams pass through SSH. File/image
+attachments, working directories, skill installation and notification
+commands refer to the remote host. There is no file transfer or path
+translation: the editor must send paths that match the remote workspace.
+Configured paths must be absolute, without `~`. Use `--runtime-dir` at
+initialisation when SSH's environment differs from the environment that
+started the remote sessions.
+`remote init` also accepts `--cwd` for the remote starting directory,
+`--home` for `BRNR_HOME`, and `--config` for `BRNR_CONFIG`.
+
+ACP starts an editor-owned remote agent. Closing the editor or a detected
+SSH disconnect ends that connection; there is no automatic reconnect or
+conversion to headless ownership. A headless session survives commands and
+watchers disconnecting. Signals and individual pipe closures follow SSH's
+semantics, which differ from a local process. Transport failures exit 255
+with SSH's stderr and may have no JSON result. Help remains local, and the
+`remote` management commands act on local configuration.
+
+Management preserves unrelated config text and comments. Inline or dotted
+remote definitions and symlinked config files can be used for execution,
+but must be edited manually (or set `BRNR_CONFIG` to the symlink's real
+path). See [ADR 12](docs/adr/0012-remote-execution.md) for the contract.
+
 ## Profiles
 
 `~/.config/brnr/config.toml`:

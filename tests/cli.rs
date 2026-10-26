@@ -5768,12 +5768,16 @@ fn adr_0008_help_exits_0_on_stdout() {
     }
     // As an option, before any `--`: `--strict -h` too, but not a flag's value.
     let acp = env.ok(&["acp", "--strict", "--help"]);
-    assert!(acp.starts_with("usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
+    assert!(acp.starts_with(
+        "usage: brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]\n"
+    ));
     let out = env.run(&["acp", "--profile", "-h"]);
     assert_eq!(code(&out), 1, "-h, the profile");
     assert_eq!(stdout(&out), "");
     let help = env.ok(&["--help"]);
-    assert!(help.contains("  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]\n"));
+    assert!(help.contains(
+        "  brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]\n"
+    ));
     assert!(env.ok(&["skill", "-h"]).starts_with("usage:\n  brnr skill "));
     assert!(env.ok(&["doctor", "--help"]).starts_with("usage:\n  brnr doctor "));
 }

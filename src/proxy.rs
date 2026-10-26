@@ -34,14 +34,17 @@ use serde_json::Value;
 use crate::request::{self, Request, Role};
 use crate::{config, frame, signals, spawn, sys};
 
-const USAGE: &str = "usage: brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]";
+const USAGE: &str =
+    "usage: brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]";
 
 /// `brnr acp --help`: the usage, and what it is.
 const HELP: &str = "What an editor runs as its ACP agent, in place of the agent itself:
     brnr acp -- brnr-claude-adapter
 The agent runs in a process of its own, which brnr's other commands can
 reach (brnr session list, prompt send, event watch, permission allow, ...); it
-stops when the editor goes.";
+stops when the editor goes.
+--remote <[user@]host|name> runs it through system SSH; --profile can also
+select a local routing profile. Establish SSH authentication and trust first.";
 
 /// The fds the host finds its end of the link and of the signal link on.
 const HOST_LINK_FD: c_int = 3;
