@@ -1,8 +1,7 @@
 # 8. The command line and compatibility
 
-Draft 2026-10-20. Implemented, but 8.4 is a promise that applies from
-1.0.0, 8.5's typed facade (#215) isn't built, and 8.6's evals with a real
-agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
+Draft 2026-10-24. Implemented, but 8.4 is a promise that applies from
+1.0.0, and 8.6's evals with a real agent aren't done. Factor: F5 (ADR 1). Brings together former ADRs 63, 15, 34,
 21, 64, 66 and 46 (docs/adr/README.md maps them).
 
 brnr is a Unix command-line utility, and its command line is its
@@ -40,6 +39,7 @@ brnr session     new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
                    [-- <agent> [args...]]
                  | status <session> | fork <session> | close <session>
                  | delete <session> [--purge] [--profile <p>] [-- <agent> [args...]]
+                 | prune --older-than <s> [--dry-run]
 brnr prompt      send <session> [--steer | --interrupt | --context [--replace]]
                    [--prompt <text> | -] [--file <path>]... [--image <path>]...
                    [--wait [--timeout <s>]]
@@ -222,7 +222,9 @@ How words are read:
   and `<id>.acp.jsonl`, ADR 5.1) in every project folder, an older brnr's
   too, and the older brnr's files set aside beside them
   (`<id>.older.jsonl`, `<id>.older.acp.jsonl`, …, ADR 5.9): every file of
-  the session's id brnr finds, each said as it is deleted (N1, P3). Not
+  the session's id brnr finds, each said as it is deleted (N1, P3), the
+  events file last, so a purge cut short leaves what finds the rest
+  (ADR 9.5). Not
   the process logs, which are shared, whatever the agent answered. Nothing a symlink points at, nor an id that
   climbs out of its folder, is deleted. With `--purge` the command succeeds
   only if the agent deleted the session or doesn't have it (ACP's
@@ -235,6 +237,13 @@ How words are read:
   all the same". A symlinked project folder isn't looked in. A transcript
   made private first (ADR 9.3) is said on stderr: the command has no host
   log for `path_made_private`.
+
+`session prune --older-than <s> [--dry-run]` deletes brnr's transcripts of
+the sessions no process has open that were last active more than `<s>`
+seconds ago, and the host logs of the processes that have gone and were,
+as `--purge` deletes, with nothing asked of an agent. ADR 9.5 has the
+rules and its output; the config's `retention` does the same as each
+process starts.
 
 `prompt`, `queue` and `process`:
 
@@ -333,7 +342,8 @@ wins, and the other form goes, with no alias (P9):
   given as words is a word too many, a usage error (ADR 8.3), and the rule
   that `prompt send`'s options go before its prompt is gone.
 - A duration is in whole seconds, and its name has no unit: `--timeout`,
-  `--stop-when-idle`, `--response-timeout`, and the profile's
+  `--stop-when-idle`, `--response-timeout`, `--older-than` (ADR 9.5), the
+  config's `retention`, and the profile's
   `stop_when_idle` and `response_timeout` (ADR 6.1) are so already. In
   `--json` and the socket's replies, `uptime_seconds` becomes `uptime`,
   `turn_seconds` `turn_elapsed`, and `timeout_seconds` (the time left
@@ -565,8 +575,8 @@ would never change; a 2.0 can add one if it needs one.
 - Exit status: 0 when the condition is met and, for `idle` and `turn`, the
   last turn ended normally (`end_turn`). 1 if that turn failed or stopped
   for another reason, if its message was dropped, if the agent exited first
-  (but for `exit`), or (for `turn` and `permission`) if the session closed
-  first. 124 on `--timeout`, as timeout(1) does; a timeout doesn't cancel
+  (but for `exit`), or (for `turn`, `permission` and `elicitation`) if the
+  session closed first. 124 on `--timeout`, as timeout(1) does; a timeout doesn't cancel
   the turn. 3 when the command was cut off for falling behind and couldn't
   catch up from the transcript, saying what it missed (ADR 10.2). The same
   codes for `prompt send --wait`, `session new --wait` and
@@ -695,8 +705,8 @@ Covered:
 - **`--json` structures**: what each command prints with `--json`, its
   fields, their types and what they mean. A field that is a message for
   people carries text whose wording isn't covered.
-- **Exit codes**: what each command exits with, in each situation
-  `docs/interface.md` lists.
+- **Exit codes**: what each command exits with, in each situation the
+  interface reference lists (`docs/reference/exit-codes.md`).
 - **Error codes**: each error's `code` (ADR 8.7), wherever brnr reports an
   error as data, and what it means; its `message` isn't covered, nor is
   `unclassified`, which promises nothing. ACP's error the agent answered
@@ -800,7 +810,9 @@ requests, such as answering a permission, with no promise.
 
 **Consequences.**
 
-- `docs/interface.md` marks what is covered and what isn't; SECURITY.md,
+- The interface reference, `docs/reference/` in the book, marks what is
+  covered and what isn't, with a table of each output's fields and an
+  example of it that a test runs (#375); SECURITY.md,
   CHANGELOG.md's conventions, CONTRIBUTING.md and AGENTS.md say the 1.0
   policy next to the pre-1.0 one.
 - From 1.0.0, a breaking change to what is covered waits for 2.0.0. A
@@ -837,8 +849,8 @@ requests, such as answering a permission, with no promise.
 
 ## 8.5 The library is private, and its facade mirrors the command line
 
-Implemented, but for the typed facade (#215): `brnr::run` is the library's
-one public item.
+Implemented: `brnr::run` and the typed facade (#215) are the library's
+public items.
 
 - The library is private. Its modules are `mod`, not `pub mod`, and an item
   is `pub(crate)` unless something outside reaches it (below).
@@ -846,8 +858,8 @@ one public item.
   else. From 1.0.0 the facade is covered by the compatibility promise
   (ADR 8.4); what isn't in it is not. Only the facade is what the crate
   published on crates.io offers (ADR 11.6).
-- `brnr::run(args)` is the facade's coarsest piece, and its only one so
-  far: `brnr <args>` as a function, `args` being the words after `brnr`,
+- `brnr::run(args)` is the facade's coarsest piece: `brnr <args>` as a
+  function, `args` being the words after `brnr`,
   run to the exit status the binary would exit with. The dispatch (`acp`,
   `host`, the rest) is `run`, and the command modules (`ctl.rs`, `ctl/`)
   are the library's; `main.rs` calls `run` with its arguments and does
@@ -856,14 +868,66 @@ one public item.
 - The typed facade has this shape: one module per command group
   (`process`, `session`, `prompt`, `queue`, `permission`, `elicitation`,
   `config`, `event`, ADR 8.1), and the tools at the top level (`doctor`,
-  `skill`), with one function per verb (`brnr::session::list`,
-  `brnr::prompt::send`), taking the command's arguments and flags, and
-  returning the data its `--json` prints, with the same names and shapes.
-  An error carries the code the command's error has (ADR 8.7); its
-  message, like the command's, is not covered. It isn't
-  built yet (#215): its return types are the `--json` shapes, which ADR
-  8.2 makes one name and one shape per concept (#150). A record of its own
-  says so if it departs from this shape.
+  `skill`, and `skill::install`), with one function per verb
+  (`brnr::session::list`, `brnr::prompt::send`), taking the command's
+  positional arguments as arguments and its flags as a struct
+  (`session::ListFlags`), and returning the data its `--json` prints, with
+  the same names and shapes. An error is `brnr::Error`, with the code the
+  command's error has (`brnr::Code`, ADR 8.7); its message, like the
+  command's, is not covered.
+- A function runs its command, in this process: it builds the command's
+  words from its arguments, runs them as `run` would with `--json`, and
+  reads what the command printed into its type. What it returns is the
+  command's data by construction, one interpretation (P5), and a test for
+  each verb compares the two (`tests/facade.rs`). What the command says on
+  stderr, it says.
+- Its types are the `--json` shapes: a struct for each object brnr makes,
+  each field named as in JSON; `serde_json::Value` for what is ACP's, as
+  the agent sent it (a tool call, options, a plan, a content block); and
+  `brnr::Event` for an event, its name and its fields as JSON
+  (docs/reference/events.md has them). Every struct, of data and of flags,
+  and `Code`, is `#[non_exhaustive]`, so that a minor release can add a
+  field, a flag or a code (ADR 8.4); flags are set on their `Default`.
+  Fixed values (`state`, `owner`) are strings: a minor release can add one.
+- Where the command's exit status says more than that it failed, the
+  function returns `brnr::Exit`: `Success` (0) and `Failure` (1) with what
+  it printed, `TimedOut` (124) and `Missed` (3) with the `events_missed`
+  note (ADR 8.3, 10.2). These are the waits (`session new` and `resume`,
+  `prompt send`, `event wait`), `event watch`, `session delete`, `session
+  prune` and `doctor`. A flag a command needs is an argument
+  (`session::prune(older_than, …)`). A verb whose `--json` has a shape for each flag (`--wait`,
+  `--for`) returns an enum of them (`session::Started`, `event::Waited`).
+- A stream, `event log` and `event watch`, gives each event to a closure
+  as it comes, until the command ends or the closure breaks. The command
+  runs on a thread of its own, its events passed one at a time, so a
+  caller slow to take them is a reader slow to read, and a process cuts it
+  off as it would the command (ADR 10.1). Broken off, the function stops
+  the command: its connections to the process are shut, it catches up on
+  nothing, and it has ended, its thread and connections gone, when the
+  function returns, though no event comes after (ADR 10.4); so too when
+  the closure panics. While it runs, it holds only the connections it has
+  open: one that catching up replaces leaves what the facade shuts.
+- What is in the command line and not in the facade, and why:
+  `--foreground` and `--quiet` attach the process to a terminal, and
+  `event notify` runs a command for each event, with signals of its own: a
+  program does both with `event::watch`. `doctor --report` is not covered
+  (ADR 8.4). `--help` and `--version` are for people. `--prompt -` and
+  `elicitation accept -` read stdin: the facade takes the prompt and the
+  fields as arguments, a prompt that is `-` too.
+- A usage error, which the command line exits 2 for without a code (ADR
+  8.3), is `usage_invalid`: a function has no exit status to say it with.
+  The flags' types rule out what they can (`prompt send`'s modes are an
+  enum); the rest the command checks, as it does its words. A positional
+  argument the command would read as an option (`--…`, or `-`) is one too,
+  checked before the command runs: `--json` as a session would make
+  `permission requests` another call, every session's. A flag's value is
+  the flag's, whatever it is (ADR 8.1).
+- `session new` and `session resume` start the process from the running
+  program, as `<program> host`, as brnr does from its own binary (ADR
+  3.3): the process is the same brnr as the facade that started it (ADR
+  8.8). A program that starts processes so hands its arguments to
+  `brnr::run` when the first is `host`, before anything else, as brnr's
+  `main` does. Adapters are looked for next to that program (ADR 11.2).
 - The crate's own tests and fuzz targets reach internals through
   `brnr::internals`, a `#[doc(hidden)]` module behind the `internals` Cargo
   feature, off by default. It re-exports what they use (`frame`'s reading
@@ -877,11 +941,12 @@ one public item.
   1.0.0: its items change, move or go whenever the tests do. The crate's
   documentation, `Cargo.toml` and this record say so. With the feature on,
   `unreachable_pub` warns of a `pub` item that nothing outside reaches, so
-  `pub` keeps meaning reachable through `run` or `internals`.
+  `pub` keeps meaning reachable through the facade or `internals`.
 
 That nothing else is public is the compiler's to check: a private module
 can't be named from outside the crate, and `cargo doc` without the feature
-lists `run` alone. The fuzz targets building against `internals` is
+lists the facade alone: `run`, the typed facade's modules and functions, and
+their types. The fuzz targets building against `internals` is
 checked by the fuzz workflow's build (`.clusterfuzzlite/build.sh`).
 
 **Why.** `cargo publish` uploads the library at every release (ADR 11.6),
@@ -891,12 +956,13 @@ changes users never see; letting them move would break P9's promise for
 whoever used them. brnr's interface is its command line, with `--json` as
 its data for programs (ADR 8.2). A library is useful only as that
 interface again, not a second one: P5's one interpretation, reached two
-ways, with nothing the command line doesn't say.
+ways, with nothing the command line doesn't say. The typed facade is that:
+each function is its command, and its types are the command's `--json`.
 
 **Consequences.**
 
-- `cargo doc` without the feature lists `run` alone. The command line, with
-  `--json`, is the interface.
+- `cargo doc` without the feature lists the facade alone. The command line,
+  with `--json`, is the interface; the facade is it as functions.
 - A Cargo feature can't be hidden from crates.io: `internals` is in the
   published manifest and anyone can turn it on. What it reaches is no
   promise, and is said to be none.
@@ -904,8 +970,13 @@ ways, with nothing the command line doesn't say.
   the binary the tests drive is built with `internals` too, and so has the
   fuzz harness and its `StartChannel` variant, which nothing in the binary
   calls. `cargo build` and `cargo install`, what users run, build without.
-- Until the typed facade is built, a program that wants brnr's data runs
-  the binary, or `brnr::run`, with `--json`.
+- A program that wants brnr's data calls the facade's function for the
+  command, or runs the binary, or `brnr::run`, with `--json`: the same
+  data each way.
+- A change to a command's `--json` is a change to its facade type, in the
+  same pull request: its test fails otherwise.
+- `src/config.rs`, the config file, is `src/profiles.rs`: the facade's
+  `config` module, the command group's, is `brnr::config`.
 
 **Considered.**
 
@@ -913,7 +984,7 @@ ways, with nothing the command line doesn't say.
   a semver change from 1.0.0: the library would hold still for users it was
   never written for, and every refactor would be a major version or a
   break.
-- `#[doc(hidden)]` on public modules, with the README and ADR 11.6 saying
+- `#[doc(hidden)]` on public modules, with the documentation and ADR 11.6 saying
   the library isn't covered: the items would still be reachable by path,
   and a promise kept only in prose is one a user can miss and a tool like
   `cargo semver-checks` doesn't see. Private modules are the compiler's
@@ -934,6 +1005,30 @@ ways, with nothing the command line doesn't say.
 - Building the typed facade before #150: its return types would be
   `--json` shapes that #150 changes, so it would be built twice or would
   freeze them.
+- Functions that do the commands' work themselves, the commands printing
+  what they return: one interpretation too, but each command split in two,
+  about thirty of them, and the commands' output, errors and exit statuses
+  checked again. Running the command is the command, and the test for each
+  verb keeps the types to its JSON.
+- `serde_json::Value` for every result: no type to read, and nothing for
+  the compiler to check. A struct for each object brnr makes is the
+  `--json` reference's tables as code.
+- A Rust enum for each event, by name: about thirty, each with the fields
+  events.md lists. The events' fields are the most numerous and the most
+  added to; a follow-up can type them (#388).
+- A Rust enum for each fixed value (`state`, `owner`, `level`): a minor
+  release can add a value, which a closed enum would make a break.
+- An iterator for a stream: the command pushes its events, so an iterator
+  needs the same thread, and its errors come only once it ends.
+- A setting for the executable that `session new` starts: a second way to
+  start a process, and a brnr whose version may not be the facade's (ADR
+  8.8). The running program is the facade's brnr.
+- Leaving out `session new` and `resume` without `--pid`, for the program
+  having to hand `host` on: a program could open sessions only in a
+  process the binary started.
+- Keeping the facade's commands quiet on stderr: what they say there
+  (a process not answering, an approval waiting) is in no `--json`, and
+  would be lost (P3).
 
 ## 8.6 A skill for agents that use brnr
 
@@ -1037,7 +1132,7 @@ How it ships:
 Left out: an MCP server or scripts (S1); a Claude Code plugin
 (`skill install` covers it for now, and a plugin can package the same
 files later); writing bridges (the bridge protocol is for programs, the
-README has it, and the skill points there); acting on an editor's session
+documentation has it, and the skill points there); acting on an editor's session
 (ADR 7.1's experimental actions; the skill says not to, S5); `doctor`
 checking an installed skill against the binary's.
 
@@ -1060,7 +1155,7 @@ October 2026.
   cleaned up. The examples' tests check that the skill's commands are
   right, not that an agent follows its rules.
 - A change to the CLI that breaks an example in the skill fails the tests,
-  as one in the README does.
+  as one in the documentation does.
 
 **Considered.**
 
@@ -1183,8 +1278,9 @@ The codes, by subject:
 | `transcript_unsupported` | The transcript is in a format this brnr doesn't read (ADR 5.9, 5.10). |
 | `turn_owned_by_editor` | The editor's session's turns are the editor's: a steer, an interrupt, or a prompt while its turn runs (ADR 7.1). |
 | `unclassified` | Anything else. No promise: don't match it. |
+| `usage_invalid` | The arguments don't make a command: what the command line exits 2 for, without a code (ADR 8.3). Only the library's facade returns it (ADR 8.5). |
 
-src/error.rs has the list, docs/interface.md lists it for users, and a test
+src/error.rs has the list, docs/reference/errors.md lists it for users, and a test
 checks that the two agree and that a test reaches each code.
 
 **Why.** At 8d4b1dd every error was text, at about 155 places: a reply was
@@ -1225,7 +1321,8 @@ already reads; on stderr, a script would parse lines written for people.
   people (warnings, a process not answering), so it would not be one JSON
   value; stdout is where `--json` is.
 - An error object for usage errors too: exit 2 says it, and a usage error
-  is found before `--json` is known to be one of the command's flags.
+  is found before `--json` is known to be one of the command's flags. The
+  facade has no exit status, so it has a code, `usage_invalid` (ADR 8.5).
 - `internal` for the catch-all: what falls under it isn't only brnr's bugs
   (a full disk, an agent's malformed answer), and brnr's bug has a code of
   its own, `process_panicked`.
@@ -1242,7 +1339,8 @@ already reads; on stderr, a script would parse lines written for people.
 - A new failure is given an existing code where a caller would act on it
   the same way, else a new one; `unclassified` only where no caller could
   act on it.
-- The typed facade (#215) returns the code with its error (ADR 8.5).
+- The typed facade returns the code with its error (ADR 8.5), and
+  `usage_invalid` where the command line exits 2.
 - ADR 8.8 answers a request, or a field of one, that an older process
   doesn't have with `command_unknown`, and the CLI says how to restart it.
 
@@ -1370,13 +1468,13 @@ semver reading.
   profile's bridge `events`, a note or an event that brnr doesn't have.
 - A release that adds to what the socket speaks makes `PROTOCOL`
   (src/host/control.rs) one more, and says so under Added in the changelog;
-  docs/interface.md lists each request's fields.
+  docs/reference/bridge.md lists each request's fields.
 
 ## Tests
 
 Run `cargo test --release adr_0008_`. Named claims, by section:
 
-- 8.1: [tests/cli.rs](../../tests/cli.rs):
+- 8.1: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_old_commands_are_unknown`,
   `adr_0008_old_socket_commands_are_unknown`,
   `adr_0008_profile_keys_and_actions_have_the_new_names`,
@@ -1425,25 +1523,25 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_pid_opening_keeps_the_process_running`,
   `adr_0008_pid_opening_in_a_stopping_process_fails`,
   `adr_0008_pid_take_over_refused_before_closing`;
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0008_an_editors_delete_is_recorded`,
   `adr_0008_pid_refused_in_an_editors_process`;
-  [tests/security.rs](../../tests/security.rs):
+  [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
   `adr_0008_timeout_rejects_once_else_cancels_the_turn`,
   `adr_0008_purge_deletes_only_that_sessions_files`;
-  [src/render.rs](../../src/render.rs):
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0008_a_deletion_is_shown_with_who_deleted`;
-  [src/paths.rs](../../src/paths.rs):
+  [src/paths.rs](https://github.com/brnrhq/brnr/blob/main/src/paths.rs):
   `adr_0008_a_sessions_files_are_its_own_and_those_set_aside`;
-  [src/log.rs](../../src/log.rs):
+  [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
   `adr_0008_a_time_is_read_with_its_offset_and_written_in_utc`,
   `adr_0008_what_isnt_an_rfc3339_time_isnt_read`;
-  [src/ctl/args.rs](../../src/ctl/args.rs):
+  [src/ctl/args.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/args.rs):
   `adr_0008_a_flags_value_is_never_a_positional`,
   `adr_0008_every_flag_is_in_its_verbs_usage`,
   `adr_0008_positionals_and_unknown_options`,
   `adr_0008_a_prompt_is_a_flags_value`.
-- 8.2: [tests/cli.rs](../../tests/cli.rs):
+- 8.2: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_status_summarizes_the_session`,
   `adr_0008_stop_and_close_take_json`,
   `adr_0008_a_cancelled_turns_tool_calls_are_not_running`,
@@ -1454,15 +1552,15 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_count_is_named_so` (and, for `process list`'s `state` and
   `owner`, ADR 3's `adr_0003_ps_lists_the_processes` and
   `adr_0003_a_silent_process_keeps_its_session`);
-  [tests/headless.rs](../../tests/headless.rs):
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0008_the_agent_is_what_it_says_it_is` (#335),
   `adr_0008_a_turn_ending_in_a_replay_leaves_no_tool_call_running`,
   `adr_0008_a_failed_loads_history_leaves_no_tool_call_running`,
   `adr_0008_a_replays_call_with_a_finished_calls_id_is_not_running`;
-  [src/ctl.rs](../../src/ctl.rs): `adr_0008_status_says_the_sessions_state`;
-  [src/render.rs](../../src/render.rs):
+  [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs): `adr_0008_status_says_the_sessions_state`;
+  [src/render.rs](https://github.com/brnrhq/brnr/blob/main/src/render.rs):
   `adr_0008_text_shows_values_not_json`.
-- 8.3: [tests/cli.rs](../../tests/cli.rs):
+- 8.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_send_wait_prints_the_reply`,
   `adr_0008_start_wait_prints_the_reply_and_the_turns_result`,
   `adr_0008_send_wait_times_out`, `adr_0008_timeout_goes_with_wait`,
@@ -1476,30 +1574,56 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_a_session_with_a_request_waiting_isnt_idle`,
   `adr_0008_a_usage_error_exits_2`,
   `adr_0008_help_exits_0_on_stdout`, `adr_0008_a_failed_operation_exits_1`;
-  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
   `adr_0008_wait_for_exit_says_exited_only_once_the_process_has`,
   `adr_0008_a_count_the_status_doesnt_have_isnt_0`.
-- 8.4: none: it is a promise that applies from 1.0.0.
-- 8.5: [tests/cli.rs](../../tests/cli.rs):
+- 8.4: the promise applies from 1.0.0; what it covers is documented with
+  examples that can't drift:
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_every_json_example_has_the_shape_brnr_prints`.
+- 8.5: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_run_is_the_command_line`: `brnr::run`, called in the test's
   process, ends with the exit status the binary exits with for the same
-  words.
-- 8.6: [tests/docs.rs](../../tests/docs.rs):
+  words. [tests/facade.rs](https://github.com/brnrhq/brnr/blob/main/tests/facade.rs),
+  one for each command group, each verb's function compared with its
+  command's `--json` and exit status:
+  `adr_0008_the_facade_has_process_list_and_stop`,
+  `adr_0008_the_facade_has_session_new_and_resume` (a process the facade
+  starts, and `usage_invalid`),
+  `adr_0008_the_facade_has_session_status_list_fork_close_and_delete`,
+  `adr_0008_the_facade_has_prompt_send_cancel_and_commands`,
+  `adr_0008_the_facade_has_queue_list_show_drop_and_clear`,
+  `adr_0008_the_facade_has_permission_requests_show_allow_and_reject`,
+  `adr_0008_the_facade_has_the_elicitation_verbs`,
+  `adr_0008_the_facade_has_config_get_and_set`,
+  `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
+  its connection closed though no event follows, and when its closure
+  panics, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  `adr_0008_a_facade_error_has_the_commands_code`,
+  `adr_0008_the_facade_has_session_prune`. [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs):
+  `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`;
+  [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
+  `adr_0008_a_stream_stopped_after_catching_up_has_its_new_connection_shut`.
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_every_rust_block_is_a_compiled_doc_example`: the documents'
+  uses of the facade are src/lib.rs's doc examples, which `cargo test`
+  compiles.
+- 8.6: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_example_is_run_or_skipped_and_runs`,
-  `adr_0008_every_toml_block_loads`; [tests/cli.rs](../../tests/cli.rs):
+  `adr_0008_every_toml_block_loads`; [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_skill_prints_the_skill_and_its_references`,
   `adr_0008_skill_install_writes_it_for_claude_code_and_codex`.
-- 8.7: [tests/cli.rs](../../tests/cli.rs):
+- 8.7: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_a_failed_command_prints_its_error_as_json`,
   `adr_0008_no_error_is_reported_without_a_code`,
   `adr_0008_a_starting_process_refuses_another_session`,
   `adr_0008_a_failed_take_over_keeps_its_code`,
   `adr_0008_an_error_after_a_stream_is_on_stderr_alone`;
-  [tests/docs.rs](../../tests/docs.rs):
+  [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
   `adr_0008_every_error_code_is_listed_and_reached`;
-  [src/error.rs](../../src/error.rs):
+  [src/error.rs](https://github.com/brnrhq/brnr/blob/main/src/error.rs):
   `adr_0008_an_error_is_a_code_and_a_message`;
-  [src/ctl/ownership.rs](../../src/ctl/ownership.rs):
+  [src/ctl/ownership.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/ownership.rs):
   `adr_0008_a_refusal_has_its_places_code`. tests/common's `coded` checks
   every error in what each test's commands print and each record their
   processes write. A test asserts a code with `code_is`
@@ -1510,18 +1634,18 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   code is one some test has seen brnr report, or in its `UNREACHED`, with
   why. A code named only in a comment, a fixture or a request doesn't
   count.
-- 8.8: [tests/cli.rs](../../tests/cli.rs):
+- 8.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0008_a_process_says_which_brnr_it_is`,
   `adr_0008_a_field_the_process_doesnt_have_is_refused`,
   `adr_0008_subscribe_leaves_out_an_event_the_process_doesnt_have`,
   `adr_0008_an_older_process_is_said_with_how_to_restart_it` (an unknown
   command, from a process of another brnr), and
   `adr_0008_old_socket_commands_are_unknown`;
-  [src/ctl/client.rs](../../src/ctl/client.rs):
+  [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
   `adr_0008_an_error_from_another_brnrs_process_says_how_to_restart_it`;
-  [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
   `adr_0008_a_count_the_status_doesnt_have_isnt_0` (a `status` answer
   without a count, from a process of another brnr); and, on the
   connections made to catch up, ADR 10.2's
   `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`
-  ([src/ctl/client.rs](../../src/ctl/client.rs)).
+  ([src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs)).

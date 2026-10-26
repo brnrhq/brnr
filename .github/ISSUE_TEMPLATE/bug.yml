@@ -1,5 +1,5 @@
 name: Bug
-description: brnr did something it shouldn't, or didn't do what the README says.
+description: brnr did something it shouldn't, or didn't do what the documentation says.
 body:
   - type: textarea
     id: what

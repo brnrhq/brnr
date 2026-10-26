@@ -1,14 +1,17 @@
 # 11. Building, releasing and support
 
-Draft 2026-10-19. Implemented; Muse's authenticated acceptance review (#223)
-is not complete. Factor: N1 (ADR 1). Brings together former
-ADRs 37, 38, 39, 40, 45, 47 and 52 (docs/adr/README.md maps them).
+Draft 2026-10-19, 11.9 2026-10-24. Implemented; Muse's authenticated
+acceptance review (#223) is not complete. Factors: N1, and F1 for 11.9
+(ADR 1). Brings together former ADRs 37, 38, 39, 40, 45, 47 and 52
+(docs/adr/README.md maps them).
 
 How brnr and its adapters are built, found, versioned, released and
-published, and how a user reports a bug. The supply chain serves N1: pinned
-builds compiled where they run, reproducible release builds with an SBOM,
-publication without a stored token, and bug reports that send nothing the
-user didn't choose to paste.
+published, how its documentation is published, how a user reports a bug,
+and how agents with ACP of their own are checked. The supply chain serves
+N1: pinned builds compiled where they run, reproducible release builds with
+an SBOM, publication without a stored token, and bug reports that send
+nothing the user didn't choose to paste. The check of agents with ACP of
+their own serves F1: what brnr does with each is seen, not assumed.
 
 ## 11.1 Adapters through Homebrew
 
@@ -315,7 +318,7 @@ the user chose to paste (#23, #24).
 
 - The report shows the host log's lines as they are, prompts included (the
   `process_started` record has the `start_request`, ADR 3.3): only what brnr knows is
-  secret is redacted. The comment at its top, the README and the form say
+  secret is redacted. The comment at its top, the documentation and the form say
   to read it first.
 - A panic that keeps the hook from running (an abort, ADR 3.7) prints no
   link.
@@ -351,8 +354,9 @@ the user chose to paste (#23, #24).
   (which `brnr skill` embeds), the README, and the license and NOTICE,
   which Apache-2.0 asks a redistribution to carry. The tests, docs, site
   and workflows stay in the repository.
-- The published library is private but for `brnr::run`; only its facade is
-  covered by compatibility (ADR 8.5).
+- The published library is private but for its facade, `brnr::run` and the
+  typed functions that mirror the command line; only the facade is covered
+  by compatibility (ADR 8.5).
 - `cargo install brnr --locked` is documented next to Homebrew. It installs
   brnr only. The adapters come from Homebrew or npm (ADR 11.1), because a
   crate can't build them.
@@ -447,19 +451,157 @@ publication wherever possible.
 - Running the smoke test from the release checkout: it can accidentally
   test a local binary, and bypass what the user downloads and installs.
 
+## 11.8 The documentation is a book on the site, and the README is short
+
+- The documentation is an mdBook whose source is `docs/` (`book.toml` at
+  the repository's root; `mdbook build` writes it to `target/book`, never
+  into the repository): an introduction, installing, the guide, the
+  interface reference (`docs/reference/`), the design (ADR 1, these
+  records and the threat model, at the paths the code and the skill link
+  to) and the project's pages. It has mdBook's own search, and resolves
+  #374.
+- `pages.yml` publishes it with the landing page: `site/` at the root of
+  `https://brnrhq.github.io/brnr/`, the book at `docs/`, so the book is at
+  `https://brnrhq.github.io/brnr/docs/`. It runs when `docs/`, `site/`,
+  `book.toml`, the build script or the workflow changes. `ci.yml`'s lint
+  job builds the book too, so a pull request that breaks it fails, not
+  only the deploy.
+- mdBook is the release's Linux binary, at a pinned version, checked
+  against a pinned SHA-256 before it runs
+  (`.github/scripts/book.sh`); not `cargo install`, nor a third-party
+  action.
+- The README is the short entry point: badges, what brnr is and its
+  diagram, installing, a quick start, links to the book's pages, and how
+  to contribute and the license. The crate packages it (ADR 11.6), and
+  crates.io shows it, so its links to the book are absolute.
+- The examples in the book are tested as the README's are
+  (`tests/docs.rs`, ADR 8.6): each page with `sh` or `toml` blocks is in
+  its `DOCS`, and the guide's pages, together, must name every command and
+  option of `brnr --help`.
+- The interface reference is a section of the book, `docs/reference/`: an
+  overview with the synopsis `brnr --help` prints, a page for each command
+  group, and pages for the events, the bridge protocol, exit codes, errors,
+  the configuration and the files. Each output has a table of its fields,
+  one row for each, and an example. Each `json` block there is an example
+  whose command a test runs, comparing the shape of what brnr prints with it
+  (the fields at every level, each one's JSON type, null only where its row
+  says so), or is in the test's `JSON_SKIPPED`, with why (#375).
+
+Not covered by a Rust test: that the book builds, and that the site
+publishes it. ci.yml's lint job builds it on every pull request, and
+pages.yml publishes it from main.
+
+**Why.** The README had grown to over a thousand lines: a reference, a
+guide and the project's process in one page, with no search and no way to
+find a section but its headings. The ADRs and the threat model, the why
+behind it all, were files in a folder (F5: a focused command line needs its
+reference easy to find). A book keeps every page where it is in the
+repository, so that a change to the code changes its page in the same pull
+request, and runs its examples as tests, as before (P3: what the
+documentation says can't drift silently).
+
+**Consequences.**
+
+- What users read is the book on the site, built from main; the README
+  points there. A released version's documentation is its tag's `docs/`.
+- Links in `docs/` to files outside it (the code, the tests, `SECURITY.md`)
+  are absolute links to the repository on GitHub, so that they work in
+  the book too.
+- mdBook is one more pinned tool in CI, outside Cargo's lockfile; a new
+  version is a new version and SHA-256 in `book.sh`.
+
+**Considered.**
+
+- Keeping the README as the whole documentation: no search, no structure
+  beyond its headings, and crates.io and GitHub render all of it.
+- A docs site generator with a theme of its own (Docusaurus, MkDocs):
+  Node.js or Python and their dependencies in CI, for what mdBook, a
+  single Rust binary, does.
+- `cargo install mdbook` or an action that installs it: a build from
+  source on every run, or a third party's code with the workflow's
+  permissions, where a checked release binary does.
+- The documentation in GitHub's wiki: not versioned with the code, and
+  its examples can't be tested.
+
+## 11.9 Agents with ACP of their own are checked by hand, with a smoke check
+
+- brnr runs an agent that speaks ACP itself (JetBrains Junie, `junie
+  --acp true`; Cursor, `cursor-agent acp`) as it runs an adapter: the
+  command after `--`, or a profile's `agent`. The guide has a profile for
+  each (docs/guide/native-agents.md).
+- `adapters/smoke.py` checks such an agent through brnr, with the agent
+  itself: `adapters/smoke.py junie`, `cursor`, or `-- <agent> [args...]`.
+  It says brnr's version and the agent's (its `--version`, and the
+  `agentInfo` of `initialize`), then checks initialize, session/new, a
+  prompt answered "ok", a turn cancelled once it runs, and a clean
+  shutdown (`brnr process stop`: the process, the agent and every process
+  the agent started gone, and the host log ending with `process_exited`).
+  Fork, list, resume (`session/resume`, else `session/load`) and close it
+  checks only where the agent advertises them, and says `unsupported`
+  where it doesn't (P7). The sessions it made it deletes from the agent's
+  store where the agent can, and says where it can't. However it ends, an
+  error, an exception or Ctrl-C, it stops the processes it started and
+  waits for them to go before it removes its scratch folder; one that
+  doesn't go keeps the folder, and fails the check, saying so (P14).
+- It runs by hand only, never in CI: it needs the agent installed and
+  logged in, and spends the user's quota (four short turns at most). It
+  runs in a scratch `BRNR_HOME`, `BRNR_DIR` and project folder, with the
+  user's `HOME`, for the agent's login. Its cwd has its symlinks resolved,
+  because an agent may record a cwd that way.
+- What it found, with the versions, the date and the machine, is in the
+  guide (docs/guide/native-agents.md), each failure with whose it is. A
+  failure that is brnr's gets a test with the fake agent and a fix, or an
+  issue. One that is the agent's is recorded, and brnr doesn't work around
+  it (F1).
+- A test runs it against `tests/fake_agent.py` as the agent: every check
+  passing, each capability left out reported `unsupported`, and a wrong
+  reply, a turn that can't be cancelled and an agent that doesn't start
+  failing it, and Ctrl-C leaving no process running.
+
+**Why.** #231: research named Junie's and Cursor's ACP entry points, but
+nobody had run them through brnr, so whether they work was a guess. F1
+says brnr behaves the same with every agent, and P2 that an agent's own
+behaviour can't be relied on: the way to know is to run each, and say what
+was seen. A check that needs the agent's login and quota can't run in CI,
+nor quietly (P15: what reaches the network is what the user runs), so it is
+a command a person runs, and its results are recorded with the versions
+they hold for.
+
+**Consequences.**
+
+- The results are as old as their date: a new version of the agent can
+  change them. Run the check again, and update the page.
+- Cursor 2026.10.19 fails two checks of its own (it ends every reply with
+  an error message, and its `session/load` replays no history), and
+  doesn't always exit when its stdin closes, so brnr's stop sends it
+  SIGTERM (ADR 3.2). The guide says so; brnr doesn't change for it.
+
+**Considered.**
+
+- Extending `adapters/check.py`: that checks the pinned adapters with stand-in
+  agents, with no login, on every pull request. This check needs the real
+  agent and its account; one script for both would run one way or the
+  other.
+- A nightly job with the agents logged in: credentials for third-party
+  accounts in CI, and quota spent every night, for what changes when an
+  agent's version moves.
+- An adapter or a mode per agent, to smooth over what each does wrong: brnr
+  doesn't compensate for an agent (F1), and one agent's behaviour isn't a
+  convention (P2).
+
 ## Tests
 
 Run `cargo test --release adr_0011_`. Named claims, by section:
 
 - 11.1: none; see the section.
-- 11.2: [tests/headless.rs](../../tests/headless.rs):
+- 11.2: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0011_adapters_next_to_a_symlinked_brnr`,
   `adr_0011_bridges_next_to_a_symlinked_brnr`.
-- 11.3: [tests/doctor.rs](../../tests/doctor.rs):
+- 11.3: [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
   `adr_0011_adapter_versions`.
   `adr_0011_muse_npm_identity_is_scoped` checks scoped npm metadata, refuses
   the unrelated npm package, and bounds a native version probe that hangs.
-- 11.4: [tests/release.rs](../../tests/release.rs):
+- 11.4: [tests/release.rs](https://github.com/brnrhq/brnr/blob/main/tests/release.rs):
   - `adr_0011_a_releases_notes_are_its_changelog_section`.
   - `adr_0011_a_version_without_a_section_has_no_notes`.
   - `adr_0011_a_release_names_unreleased_and_moves_its_links`, through
@@ -474,10 +616,28 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
     `release.sh notes` in a scratch repository with tags, including the
     refusal of Git older than 2.13 before it can produce notes from the
     wrong tag.
-- 11.5: [tests/headless.rs](../../tests/headless.rs):
+- 11.5: [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
   `adr_0011_a_panic_prints_a_link_to_report_it`;
-  [tests/doctor.rs](../../tests/doctor.rs):
+  [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
   `adr_0011_the_report_is_what_to_paste`,
   `adr_0011_the_report_redacts_a_deep_line`,
   `adr_0011_the_report_shows_a_death_without_a_record`.
 - 11.6, 11.7: none; see the sections.
+- 11.8: [tests/docs.rs](https://github.com/brnrhq/brnr/blob/main/tests/docs.rs):
+  `adr_0008_every_example_is_run_or_skipped_and_runs` and
+  `adr_0008_every_toml_block_loads` run the book's examples (ADR 8.6),
+  `adr_0008_every_json_example_has_the_shape_brnr_prints` runs the
+  reference's JSON examples and checks their shape,
+  `the_interface_reference_matches_cli_help` checks the reference's
+  synopsis against `brnr --help`, and
+  `the_guide_has_every_command_and_option` checks that the guide names
+  every command and option; the build and publication, none (see the
+  section).
+- 11.9: [tests/smoke.rs](https://github.com/brnrhq/brnr/blob/main/tests/smoke.rs):
+  `adr_0011_the_smoke_check_runs_every_check_an_agent_advertises`,
+  `adr_0011_the_smoke_check_says_what_the_agent_doesnt_advertise`,
+  `adr_0011_the_smoke_check_fails_what_fails`,
+  `adr_0011_the_smoke_check_stops_what_it_started_when_interrupted`, with
+  the fake agent.
+  Not covered by a Rust test: the real agents, which the check runs by
+  hand (see the section).

@@ -6,29 +6,35 @@
 //!
 //! Every reply that fails, every event or record that reports a failure and
 //! every command that fails with `--json` says one of these; a failure no
-//! code is given to is [`Code::unclassified`], which promises nothing.
+//! code is given to is [`Code::unclassified`], which promises nothing. The
+//! typed facade returns them as they are (ADR 8.5): [`Error`] and [`Code`]
+//! are public.
 
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
 /// Declares [`Code`], its codes' names (each its variant's) and their list.
 macro_rules! codes {
     ($($(#[doc = $doc:literal])+ $name:ident,)+) => {
         /// What failed, for a program to act on: one code for each failure a
-        /// caller can do something about, not for each place brnr fails.
+        /// caller can do something about, not for each place brnr fails. Each
+        /// is named as JSON has it (`session_not_found`); a minor release can
+        /// add one (ADR 8.7).
         #[allow(non_camel_case_types)]
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub(crate) enum Code {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        pub enum Code {
             $($(#[doc = $doc])+ $name,)+
         }
 
         impl Code {
-            /// Every code, in the order docs/interface.md lists them.
+            /// Every code, in the order docs/reference/errors.md lists them.
             pub(crate) const ALL: &[Code] = &[$(Code::$name,)+];
 
             /// Its name, as it is in JSON.
-            pub(crate) fn name(self) -> &'static str {
+            pub fn name(self) -> &'static str {
                 match self {
                     $(Code::$name => stringify!($name),)+
                 }
@@ -129,9 +135,13 @@ codes! {
     /// Anything else. It promises nothing: scripts must not match it, and a
     /// failure under it may get a code of its own in a minor release.
     unclassified,
+    /// The arguments don't make a command: what the command line exits 2
+    /// for, with its usage and no code (ADR 8.3). Only the library's facade
+    /// returns it, which has no exit status to say it with (ADR 8.5).
+    usage_invalid,
 }
 
-/// Every code's name, as docs/interface.md lists them: for the tests.
+/// Every code's name, as docs/reference/errors.md lists them: for the tests.
 #[cfg(any(test, feature = "internals"))]
 pub fn names() -> Vec<&'static str> {
     Code::ALL.iter().map(|c| c.name()).collect()
@@ -150,16 +160,49 @@ impl fmt::Display for Code {
     }
 }
 
+/// As JSON has it: its name.
+impl Serialize for Code {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
+    }
+}
+
+/// A name this brnr doesn't have is `unclassified`, as `Error::of` reads it.
+impl<'de> Deserialize<'de> for Code {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Code, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(Code::named(&name).unwrap_or(Code::unclassified))
+    }
+}
+
 /// An error: its code, its message, and the agent's JSON-RPC error when the
-/// agent's answer is what failed.
+/// agent's answer is what failed. As JSON, `{code, message}`, and
+/// `rpc_error` with `agent_failed`: what a command prints with `--json`, and
+/// what the facade returns (ADR 8.7).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Error {
+pub struct Error {
     pub(crate) code: Code,
     pub(crate) message: String,
     pub(crate) rpc_error: Option<Value>,
 }
 
 impl Error {
+    /// What failed: match this, never the message.
+    pub fn code(&self) -> Code {
+        self.code
+    }
+
+    /// What failed, for people. Its wording can change in any release.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The agent's JSON-RPC error, whole, as it sent it: with
+    /// [`Code::agent_failed`] only.
+    pub fn rpc_error(&self) -> Option<&Value> {
+        self.rpc_error.as_ref()
+    }
+
     pub(crate) fn new(code: Code, message: impl Into<String>) -> Error {
         Error { code, message: message.into(), rpc_error: None }
     }
@@ -217,6 +260,20 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Serialize for Error {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.json().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Error {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Error, D::Error> {
+        Value::deserialize(d).map(|error| Error::of(&error))
     }
 }
 

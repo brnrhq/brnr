@@ -6,11 +6,12 @@ ADRs 25, 53 and 59 (docs/adr/README.md maps them).
 What brnr records and where, and what it reads: secrets kept out of what
 it writes, session ids made safe file names and each cwd a folder of its
 own, transcripts written only
-where only the user can read them, and the config file read only where
-only the user can change or read it. Security comes first (N1).
+where only the user can read them, the config file read only where
+only the user can change or read it, and how long transcripts are kept.
+Security comes first (N1).
 docs/threat-model.md says, for each trust boundary, what enforces each
-claim and what the gaps are: B6 for 9.1, B4 for 9.2, B2 for 9.3, B7 for
-9.4.
+claim and what the gaps are: B6 for 9.1, B4 for 9.2, B2 for 9.3 and 9.5,
+B7 for 9.4.
 
 ## 9.1 Secrets are redacted in what brnr records
 
@@ -334,29 +335,198 @@ refuses its keys on the same terms.
   others can search is common.
 - A setting to allow a config the group can read: P13 is "only you".
 
+## 9.5 Transcripts are kept until they are pruned
+
+Resolves #373.
+
+By default brnr keeps every transcript and host log until the user deletes
+it: nothing has an age limit, and nothing is deleted without being asked
+for. Two controls prune by age, by one rule:
+
+- `brnr session prune --older-than <s> [--dry-run] [--json]` prunes when
+  it is run (ADR 8.1). `--dry-run` says what it would delete, and deletes
+  nothing.
+- `retention = <s>`, at the top of the config file (ADR 6.1), outside the
+  profiles: every brnr process prunes as it starts, whatever its profile.
+  Unset, nothing is pruned. The command that starts the process reads it
+  and puts it in the start request, as it does the profile (P10).
+
+What is pruned:
+
+- A session's transcript, every file `session delete --purge` deletes
+  (ADR 8.1): its events and raw ACP files in every project folder, and
+  those set aside beside them (ADR 5.10).
+- The host log of a process that has gone.
+
+Age:
+
+- A session's age is its last activity: the time of the newest record a
+  process recorded in any of its files that isn't a deletion, `session
+  list`'s `last_active` (ADR 5.1). Not when it was created: a session in
+  use for months is kept as long as it is used.
+- A host log's age is its newest record's time.
+- `<s>` is a whole number of seconds, as every duration is (ADR 8.1): what
+  was last active more than `<s>` seconds ago is pruned. `--older-than 0`
+  prunes every session no process has open. `retention = 0` fails to load
+  (`config_invalid`): a process would delete every transcript as soon as
+  its session closed, and other tools read 0 as "no limit" (P4). A value
+  that isn't a whole number of seconds (`"30d"`, `-1`) fails to load too.
+
+Never pruned:
+
+- A session open in a process, or whose lock a process holds (ADR 3.9),
+  however old its last activity. A session's lock is taken before its
+  files are deleted, and its age read again under it: one opened, and
+  closed, since it was listed is kept. A session whose lock is held is
+  passed over, and one whose lock can't be taken is said, in `failed`.
+- The session a headless start resumes, by the process that resumes it:
+  it is in use from then on, though its lock is taken a moment later.
+- The host log of a running process: one `process list` lists, or one
+  whose pid is alive and that doesn't end with `process_exited` (a process
+  with another runtime directory, ADR 3.9). A long-lived process keeps its
+  host log whole until it exits; the next prune after that, once the log is
+  old enough, deletes it.
+- What brnr can't read the age of: a session with an events file whose
+  newest record is in another format (ADR 5.10), a newer brnr's, or whose
+  files hold no record brnr can read, as nothing in them says when it was
+  last active (P4), and a host log likewise. `doctor`
+  lists the files in another format; they are deleted by hand. A session
+  brnr does read the age of takes the files an older brnr's set aside
+  beside its own with it, as `--purge` does: they are the session's, and
+  older than the file that took their place (ADR 5.10). Its age is read
+  again, from every file of it, under its lock, for `--dry-run` too.
+- The agent's own copy of a session: that is `session delete`'s.
+
+How:
+
+- Files are deleted as `--purge` deletes them (ADR 9.3, B2): the state
+  directory, `projects` or `hosts`, and each project folder opened without
+  following a symlink, each from the one before (`openat`, `O_NOFOLLOW`),
+  and only the session's own names, escaped (ADR 9.2), removed from what
+  was opened (`unlinkat`). A symlinked folder isn't looked in, and a
+  symlink with a transcript's name is removed, not what it points at. A
+  host log that is a symlink isn't listed.
+- A session's events file goes last, so a prune cut short leaves the file
+  the session is found by, and the next prune deletes the rest.
+- A process prunes on a thread of its own, beside its start, which doesn't
+  wait for it (N3). The thread finds what is open as the commands do: from
+  the processes and the locks. A thread of the process that takes a lock
+  waits while the prune holds one (`lock::holding`), so it never finds a
+  session's lock held by its own process.
+- A file that can't be deleted is said, and the rest are deleted all the
+  same. A project folder that can't be listed is said, and nothing in it is
+  deleted: what it holds of the session isn't known.
+
+What it says:
+
+- `--json` is `{older_than, before, dry_run, sessions, host_logs, failed}`:
+  `before` the time the age gives, each session `{session, last_active,
+  files}`, each host log `{host_id, last_active, files}`, `files` the
+  paths deleted (or that would be, with `--dry-run`), and `failed` why a
+  file wasn't deleted or a lock taken, as `session delete`'s `failed`. Text
+  says the same: what it pruned, each session and host log with its last
+  activity and its files, or `nothing was last active before …`.
+- The command exits 1 if a file couldn't be deleted, 0 otherwise. Which
+  sessions are open must be known: a runtime directory that can't be read
+  fails it, with its error, and nothing is deleted.
+- A process records what it pruned in its host log, `transcripts_pruned`,
+  with the fields of `--json` but `dry_run`, when it pruned something or
+  something failed. It can say nothing else: an editor's process has no
+  terminal (P1), and a headless start isn't waiting for it. With `log =
+  "off"` there is no host log, and nothing records it.
+- `doctor` says what is kept: everything, or what each process prunes, with
+  the age in days (`more than 30 days ago (retention = 2592000)`), so a
+  value meant in days shows as seconds.
+- No error code is added (ADR 8.7): a value that isn't one is a usage
+  error (exit 2) or `config_invalid`, and a file that can't be deleted is
+  an I/O error on brnr's own files, `unclassified`, in `failed`.
+
+**Why.** A transcript holds prompts, replies, tool calls with their input
+and output, diffs of the user's code and, where the profile or strict mode
+passes `fs` and `terminal`, unsaved buffers and command output (ADR 2.7).
+An enterprise's policy, or a user's, limits how long such data is kept, and
+`--purge` one session at a time can't apply one; the host logs, shared,
+could not be removed at all (N1). Keeping everything by default is what
+brnr did, and deleting what a user didn't ask to delete would lose it
+silently (P3): the default is said in the README and the docs instead. Age
+by last activity is `session list`'s, one notion of when a session was used
+(N4), and never deletes a session in use. Seconds are every duration's unit
+in brnr (ADR 8.1); `doctor` turns them into days where a mistake would show.
+The same deletion as `--purge`, and the session's lock held while it runs,
+keep the boundary B2 already has: nothing outside the state directory, and
+nothing a process uses.
+
+**Consequences.**
+
+- `retention` deletes, at every start, what is older: setting it is
+  choosing that. `session prune --older-than <s> --dry-run` shows what the
+  same age would delete.
+- A session resumed after it was pruned starts a new transcript; what came
+  before is gone from brnr, and the agent's copy, if it kept one, is the
+  agent's.
+- An editor that loads a session in the moment a prune deletes it shares
+  it (ADR 3.9) and may write into a file that is then deleted, as with
+  `session delete --purge`. The prune holds the lock for the time its
+  unlinks take.
+- Files in an older format stay until they are deleted by hand, but those
+  set aside beside a session that is pruned.
+- A process that exits while its prune runs waits for it before its last
+  records are written, as it waits for them (ADR 5.5): a few seconds at
+  most, the status of every process. A signal gives up on it, and the
+  exit stops it there; what was deleted by then isn't recorded.
+
+**Considered.**
+
+- Deleting after an age by default (30 or 90 days): data the user didn't
+  ask to delete would go, silently (P3).
+- A duration with a unit (`"30d"`, `--older-than 30d`), as the issue had
+  it: easier to read, but a second way to write a duration, in config and
+  on the command line, beside every other in seconds (ADR 8.1, N4).
+- A floor (a day) on `retention`, against a value meant in days: one more
+  rule; `doctor` shows the age in days instead.
+- Age by creation, or by the file's modification time: a session in use
+  for months would go; a file's time changes with a backup or a copy, and
+  `session list` has the record's.
+- Rotating a long-lived process's host log: the host log is one file that
+  `doctor` and a catch-up read whole (ADR 10.2), and two would be one more
+  thing to join. A process that runs for longer than the retention keeps
+  its log until it exits.
+- Pruning from `doctor --fix`: `doctor` never deletes a log (P4), and the
+  command already does it when asked.
+- Pruning by mtime what brnr doesn't read: a guess at an age (P4), in files
+  `doctor` already lists.
+- A per-profile `retention`: the state directory is one for every profile,
+  and a session's profile can change as it is resumed; one value for all
+  is one rule.
+- `brnr prune` at the top level, or under `event`: the transcripts are
+  sessions', as `session delete --purge` deletes them, and the host logs
+  go by the same age.
+- Pruning synchronously before the start: the start would wait for a walk
+  of every transcript and a status from every process (N3).
+
 ## Tests
 
 Run `cargo test --release adr_0009_`. Named claims, by section:
 
 - 9.1:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     `adr_0009_a_resumed_sessions_secrets_are_redacted`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0009_a_profiles_mcp_secrets_are_redacted`,
     `adr_0009_an_editors_mcp_secrets_are_redacted`.
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     `adr_0009_secrets_are_redacted_keys_and_structure_stay`.
 - 9.2:
-  - [src/paths.rs](../../src/paths.rs):
+  - [src/paths.rs](https://github.com/brnrhq/brnr/blob/main/src/paths.rs):
     - `adr_0009_distinct_ids_get_distinct_names`.
     - `adr_0009_a_cwd_has_a_folder_of_its_own`: the names of `/`, `/a-b`,
       `/a/b`, `/A`, `/a` and `/Users/me/src`, written down once; a trailing
       `/` is the same cwd; `/a-b` and `/a/b`, `/A` and `/a` differ, also
       folded to lowercase.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0009_distinct_ids_never_share_a_transcript`,
     `adr_0009_distinct_ids_never_share_a_lock`.
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     - `adr_0009_cwds_alike_are_listed_apart`: `<dir>/x-y` and
       `<dir>/x/y`, named alike by `~/.claude/projects`, have two folders,
       each with only its own sessions' files, and each lists only its own
@@ -369,7 +539,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       session's two files, in the folder of the earlier rule, stay as they
       were when it is resumed in its cwd, which writes in its own folder.
 - 9.3:
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     - `adr_0009_new_and_private_paths_are_opened_as_they_are`: what is
       created is 0700 and 0600, and a private file is appended to as it is.
     - `adr_0009_what_others_can_reach_is_made_private_before_a_write`: a
@@ -381,7 +551,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
     - `adr_0009_only_the_users_own_directories_and_files_are_written_to`: a
       file with another hard link, a FIFO, a file where a directory goes
       and another user's directory are refused.
-  - [src/transcript.rs](../../src/transcript.rs):
+  - [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
     - `adr_0009_a_transcript_is_read_only_where_it_could_be_written`: a
       symlinked project folder isn't looked in; a symlink, a FIFO and a
       directory aren't read.
@@ -389,7 +559,7 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       symlinked `projects`, `hosts` or state directory isn't looked in or
       read through, nor is a file with another hard link or a directory of
       another user's.
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     - `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`:
       a resumed session's events and raw ACP files, made 0644 beneath
       private and beneath 0755 parents, are private when it writes to them,
@@ -413,17 +583,17 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       whose events file, or project folder, has an ACL isn't listed or
       logged; `doctor` warns of it with the `chmod -N`, and `--fix` leaves
       it.
-  - [tests/doctor.rs](../../tests/doctor.rs):
+  - [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
     `adr_0009_doctor_says_what_it_cant_open_and_what_fix_left`: a
     transcript of mode 000 is a warning, `--fix` leaves it, and the example
     it then gives is what is left, not what it made private.
-  - [src/ctl/doctor.rs](../../src/ctl/doctor.rs):
+  - [src/ctl/doctor.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/doctor.rs):
     `adr_0009_fix_changes_what_was_opened_not_its_name`: a file `--fix`
     looked at, then swapped for a symlink, is made private as it was
     opened, and what the link points at is left as it was; looked at
     again, the symlink is a problem `--fix` doesn't fix.
 - 9.4:
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     - `adr_0009_a_config_others_can_read_or_write_is_refused`: a config
       file the group or others can read or write, and one in a folder they
       can write, fail `session new` and `brnr acp` before an agent starts,
@@ -439,7 +609,34 @@ Run `cargo test --release adr_0009_`. Named claims, by section:
       and its folder, with an access control list are refused with the
       `chmod -N` that removes it, and the ACL stays.
     - `adr_0009_a_missing_config_is_no_config`.
-  - [tests/doctor.rs](../../tests/doctor.rs):
+  - [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
     `adr_0009_doctor_fails_a_config_others_can_reach`: the file and the
     folder fail the config check with their fixes, `--fix` changes
     neither, and a missing config and a symlink to a private one are ok.
+- 9.5:
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
+    - `adr_0009_prune_deletes_what_was_last_active_before_the_age`: a
+      session last active long ago is pruned, its raw ACP before its
+      events, and one opened long ago but active since is kept; a deletion
+      isn't activity; the host log of a process gone is pruned, and one
+      whose pid is alive kept unless it ends with `process_exited`;
+      `--dry-run` says the same and deletes nothing; a symlinked folder or
+      host log isn't followed; `--older-than 0` prunes every session no
+      process has open.
+    - `adr_0009_prune_never_touches_an_open_or_locked_session`: an open
+      session, a session whose lock another process holds, and a running
+      process's host log stay, with `--older-than 0`.
+    - `adr_0009_a_process_prunes_as_it_starts_when_retention_is_set`:
+      without `retention` nothing is pruned; with it, a start prunes an old
+      session but the one it resumes, and the host log has
+      `transcripts_pruned`.
+    - `adr_0009_prune_keeps_a_session_it_cant_read_the_age_of`: a session
+      with an old file and a file whose newest record is a newer brnr's is
+      kept, both files, with `--dry-run` and without; one whose older
+      brnr's file is set aside goes with that file.
+    - `adr_0009_a_process_records_its_prune_before_it_exits`: a process
+      that stops as soon as its turn is done has `transcripts_pruned` in
+      its host log.
+    - `adr_0009_retention_is_a_number_of_seconds_not_0`: `0`, `"30d"` and
+      `-1` fail to load, `config_invalid`, before an agent starts; `doctor`
+      says the age in days.

@@ -43,7 +43,7 @@ brnr keeps it so, the test for each claim, and the known gaps.
 - Secrets: a value brnr knows is secret (ADR 9.1) written unredacted to a
   transcript, host log or event; a transcript readable by others.
 - `brnr acp` changing what passes between the editor and the agent beyond
-  what the README and ADRs name.
+  what the documentation and ADRs name.
 - The release: the workflows, the Homebrew formulae and the adapters
   brnr builds (`adapters/`).
 

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::Host;
-use crate::config::{ClientCapability, EchoAs, Experimental, Feature};
+use crate::profiles::{ClientCapability, EchoAs, Experimental, Feature};
 use crate::request::{Editor, Headless, Prompt, Role, Settings};
 
 /// How far the clock moves at each [`Harness::tick`]: past every timeout

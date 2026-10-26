@@ -106,6 +106,11 @@ fn show(a: &Args, last: Option<usize>, events: Vec<String>) -> Result<ExitCode, 
             reader.cut_short(true);
             return Ok(ExitCode::SUCCESS);
         }
+        // Stopped by the facade's caller, it ends here, not at its next
+        // event.
+        if super::stopped() {
+            return Ok(ExitCode::SUCCESS);
+        }
         sleep(POLL);
     }
 }
@@ -147,7 +152,11 @@ impl Show {
         let Some(text) = text else { return Ok(0) };
         match super::write_out(&format!("{text}\n")) {
             Ok(()) => Ok(1),
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+            // The facade's caller stopped reading: an error that ends the
+            // command, which nobody reads.
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe && !super::capturing() => {
+                std::process::exit(0)
+            }
             Err(e) => Err(e.into()),
         }
     }

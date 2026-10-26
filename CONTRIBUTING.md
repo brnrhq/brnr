@@ -46,9 +46,10 @@ cargo build --release
 cargo fmt --check
 cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release, as CI: some tests stream tens of thousands of events
-adapters/build.sh              # only if you change adapters/ (needs bun)
+adapters/build.sh              # only if you change adapters/ (bun, Rust, Python 3.11+, git)
 adapters/check.py --brnr target/release
 adapters/test_check.py         # only if you change adapters/check.py
+python3 adapters/test_muse.py  # if you change the Muse source build
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to
@@ -57,7 +58,21 @@ the real binary against `tests/fake_agent.py`, so they need `python3`. A
 change in behaviour comes with a test that shows it. To make a flaky test
 fail, `tests/flake-loop.sh` runs it again and again, in parallel, beside CPU
 stressors that stop with it however it ends, or when the load average
-reaches its limit (`tests/flake-loop.sh -h`).
+reaches its limit (`tests/flake-loop.sh -h`). `tests/chaos.rs` kills the
+host, the proxy and a bridge at a seeded point (`FAULT` in
+`fake_agent.py`). A seeded test runs fixed seeds and one new one, and one
+that fails prints its seed and the command that replays it
+(`BRNR_CHAOS_SEED=<n>`). `adr_0003_killed_host_mid_start_commits_nothing`
+has no seed: it faults at each setup step in turn (`FAULT_AT`).
+
+Not in CI, and not needed to merge: a check by hand, with the agent logged
+in, on your quota, of an agent with ACP of its own through brnr
+([ADR 11.9](docs/adr/0011-building-releasing-and-support.md#119-agents-with-acp-of-their-own-are-checked-by-hand-with-a-smoke-check);
+results in [the guide](docs/guide/native-agents.md#results)):
+
+```sh
+adapters/smoke.py junie        # or cursor, or -- <agent> [args...]
+```
 
 A test that can't run where it is (as root, or without `lsof`) passes and
 says `skipped:` on stderr, which `--nocapture` shows. In CI, or with
@@ -102,8 +117,10 @@ through `_exit`, can be missing. This is an execution baseline, not proof
 that every behaviour is asserted; it also excludes doc tests and macOS-only
 paths in CI.
 
-The library's modules are private, and its one public item is `brnr::run`
-(ADR 8.5). The integration tests and fuzz targets, crates of their own, reach
+The library's modules are private, and its public items are its facade
+(ADR 8.5): `brnr::run`, and the typed functions in `src/facade/`, which run
+their command and return what its `--json` prints. A change to a command's
+`--json` changes its facade type too; `tests/facade.rs` compares the two. The integration tests and fuzz targets, crates of their own, reach
 what they need through `brnr::internals`, a hidden module behind the
 `internals` feature: the dev-dependency of the crate on itself in
 `Cargo.toml` turns it on for `cargo test`, and `fuzz/Cargo.toml` for the
@@ -134,6 +151,19 @@ ls /tmp/reports                # empty: nothing was found
 
 MemorySanitizer is `-Zsanitizer=memory`, with `MSAN_OPTIONS`. On a Mac: `--target aarch64-apple-darwin` and
 `detect_leaks=0` (macOS has no leak detection, and no MemorySanitizer).
+
+What `brnr acp` adds (ADR 1, N3) is measured against budgets on every
+pull request (`.github/workflows/bench.yml`): latency and throughput, each
+over the same fake agent on a direct pipe, memory at rest and threads. The
+job fails when a number passes its budget, and a comment on the pull
+request has the numbers. To run it yourself:
+
+```sh
+cargo bench --bench acp           # -- --quick for fewer rounds
+```
+
+The budgets are in `benches/budgets.toml`. A change that needs more raises
+the budget there, and its pull request says why.
 
 The minimum Rust version is `rust-version` in `Cargo.toml`: what the code
 needs, not older. Raising it for a feature worth having is fine; say so in
@@ -206,10 +236,12 @@ then the old form is deprecated, and keeps working.
 - Commits say what is now true, in a sentence (`event notify, cut off, stops
   its command and says so`), with the why in the body. The ADR a commit
   implements goes in brackets: `(ADR 5.8)`.
-- The README, the skill (`skills/brnr/`) and the ADRs change with the code
+- The documentation (the book in `docs/`, and the README), the skill
+  (`skills/brnr/`) and the ADRs change with the code
   they describe. Their examples, and the site's, run as tests
   (`tests/docs.rs`): a new one needs a line there saying how it runs, or why
-  it can't.
+  it can't; a JSON example in the interface reference (`docs/reference/`),
+  an `<!-- example: … -->` just above it naming its command.
 - A change users notice (a command, a flag, an output, a behaviour, a fix)
   adds its entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md),
   which follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
@@ -219,7 +251,8 @@ then the old form is deprecated, and keeps working.
   do instead; from 1.0.0 only in a major release, and a form deprecated
   before then goes under Deprecated, with what to use instead (ADR 8.4).
   That section is the next release's notes.
-- Releases are the maintainers' (`release.sh`, in the README).
+- Releases are the maintainers' (`release.sh`, in
+  [Releasing](https://brnrhq.github.io/brnr/docs/project/releasing.html)).
 
 ## Security
 

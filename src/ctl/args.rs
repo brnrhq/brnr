@@ -185,6 +185,7 @@ pub(super) const VERBS: &[Spec] = &[
             Flag("--cwd", One("a directory")),
         ])
         .rest(Rest::Dashed),
+    verb("session", "prune", &[]).flags(&[Flag("--older-than", Seconds), switch("--dry-run")]),
     verb("prompt", "send", SESSION).flags(&[
         switch("--steer"),
         switch("--interrupt"),

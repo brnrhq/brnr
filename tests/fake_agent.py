@@ -16,6 +16,8 @@ with environment variables:
   FAULT=<kind>     crash (exit 86), hang (stop reading), or flood until cut off
   FAULT_SEED=<n>   reproducible checkpoint, default 0; turn emits 0..31 chunks
                     before faulting, setup chooses initialize or session/new
+  FAULT_AT=<point> the checkpoint itself, in place of the seed's: a number
+                    of chunks for a turn, initialize or session/new for setup
   FAULT_PHASE=<p>  turn (default) or setup (before the selected reply)
   FAULT_LOG=<file> append kind, seed, checkpoint and pid just before faulting
   FLOOD=<n>         stream n agent_message_chunk updates for every prompt
@@ -47,6 +49,7 @@ with environment variables:
                     late history, once the file exists, before its answer
   NO_CLOSE=1        don't offer session/close
   CLOSE_GATE=<file> wait for this file before answering session/close
+  NO_FORK=1         don't offer session/fork
   NO_LIST=1         don't offer session/list
   LIST_TITLE=<t>    session/list gives sess-1 this title (none by default)
   LIST_TIMES=<json> session/list's first page also has these sessions, an
@@ -834,6 +837,10 @@ fault_point = fault_random.randrange(32)
 fault_setup = fault_random.choice(("initialize", "session/new"))
 if env("FAULT") not in (None, "crash", "hang", "flood"):
     raise ValueError("FAULT must be crash, hang or flood")
+if env("FAULT_AT") in ("initialize", "session/new"):
+    fault_setup = env("FAULT_AT")
+elif env("FAULT_AT"):
+    fault_point = int(env("FAULT_AT"))
 
 model = "small"
 mode = "default"
@@ -881,6 +888,8 @@ for line in sys.stdin.buffer:
             session_caps["resume"] = {}
         if env("NO_CLOSE"):
             del session_caps["close"]
+        if env("NO_FORK"):
+            del session_caps["fork"]
         if env("NO_LIST"):
             del session_caps["list"]
         if not env("NO_DELETE"):

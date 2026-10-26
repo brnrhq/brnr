@@ -156,8 +156,11 @@ waits for an observer (P1, ADR 10.1); nothing is guessed (P4).
 - An event carries `seq` as its last key, live and in the transcript. A raw
   ACP record carries it before `dir` (`…,"session":"sess-1","seq":12,
   "dir":…`), and `event log` gives it to the `acp` event it makes of the
-  record. The copy of a `session/new` in the session's raw file has none;
-  the host log has it with its position.
+  record. The copy of a `session/new` or `session/fork` in the new
+  session's raw file has none: the request has its position where it was
+  first recorded, the host log for a `session/new` (no session is open
+  yet), the forked session's raw file for a `session/fork`. A position
+  names one record, so a reader that merges the files never meets it twice.
 - `subscribe`'s answer says where the subscription starts: `peer`, the
   connection's name as the host log has it (`socket#7`), `host_id`, `pid`,
   and `seq`, the last position before it. `session new --wait`'s ready report
@@ -618,7 +621,7 @@ answering held the command for good, with nothing said (P3).
 Run `cargo test --release adr_0010_`. Named claims, by section:
 
 - 10.1:
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0010_slow_watcher_is_disconnected`,
     `adr_0010_reading_watcher_stays_connected`,
     `adr_0010_huge_message_reaches_watchers`,
@@ -629,52 +632,53 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_stalled_agent_holds_the_editor_back`,
     `adr_0010_a_long_message_doesnt_put_a_watcher_behind`,
     `adr_0010_a_reply_bigger_than_the_queue_reaches_every_peer`.
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     `adr_0010_past_the_cap_records_are_skipped_and_noted_before_the_next`,
     `adr_0010_a_gap_is_noted_in_the_host_log_and_each_session_that_lost_records`,
     `adr_0010_a_failed_write_is_noted_once_the_file_takes_records_again`.
-  - [src/host/control.rs](../../src/host/control.rs):
+  - [src/host/control.rs](https://github.com/brnrhq/brnr/blob/main/src/host/control.rs):
     `adr_0010_a_message_and_its_acp_line_fit_at_once`,
     `adr_0010_a_peer_that_stopped_reading_is_cut_off_soon_after_the_limit`.
 - 10.2:
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0010_a_watcher_cut_off_catches_up`,
+    `adr_0010_a_copied_open_request_has_no_position`,
     `adr_0010_a_burst_past_64_mib_reaches_a_watcher`,
     `adr_0010_a_watcher_that_cant_catch_up_says_what_it_missed`,
     `adr_0010_a_wait_cut_off_catches_up`,
     `adr_0010_event_wait_cut_off_catches_up`,
     `adr_0010_the_host_log_notes_each_subscription`.
-  - [tests/cli.rs](../../tests/cli.rs):
+  - [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
     `adr_0010_notify_cut_off_catches_up_once_its_command_is_done`.
-  - [tests/security.rs](../../tests/security.rs):
+  - [tests/security.rs](https://github.com/brnrhq/brnr/blob/main/tests/security.rs):
     `adr_0010_was_cut_off_says_where_never_what`.
-  - [src/ctl/client.rs](../../src/ctl/client.rs):
+  - [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
     `adr_0010_a_cut_off_while_catching_up_is_tried_again_then_given_up`,
     `adr_0010_a_live_process_that_cant_be_caught_up_with_says_until_where`,
     `adr_0010_a_new_subscription_that_fails_is_one_more_cut_off`,
     `adr_0010_a_peer_cut_off_by_a_stopping_process_catches_up`,
     `adr_0010_a_process_has_gone_once_it_has_exited`,
     `adr_0010_an_event_live_while_subscribing_again_comes_once`.
-  - [src/ctl/talk.rs](../../src/ctl/talk.rs):
+  - [src/ctl/talk.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/talk.rs):
     `adr_0010_event_wait_cut_off_looking_says_what_it_missed`,
     `adr_0010_a_start_channel_cut_off_catches_up_or_says_what_it_missed`.
-  - [src/ctl/notify.rs](../../src/ctl/notify.rs):
+  - [src/ctl/notify.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/notify.rs):
     `adr_0010_notify_cut_off_looking_runs_for_what_it_read_then_says_what_it_missed`.
-  - [src/transcript.rs](../../src/transcript.rs):
+  - [src/transcript.rs](https://github.com/brnrhq/brnr/blob/main/src/transcript.rs):
     `adr_0010_a_records_position_is_read_from_its_end_or_head`.
-  - [src/log.rs](../../src/log.rs):
+  - [src/log.rs](https://github.com/brnrhq/brnr/blob/main/src/log.rs):
     `adr_0010_what_the_transcript_lost_is_said_by_position`.
 - 10.3:
-  - [src/host/approvals.rs](../../src/host/approvals.rs):
+  - [src/host/approvals.rs](https://github.com/brnrhq/brnr/blob/main/src/host/approvals.rs):
     `adr_0010_answered_requests_past_the_cap_lose_the_oldest`,
     `adr_0010_a_sessions_answered_requests_go_with_its_close`,
     `adr_0010_given_up_requests_past_the_cap_lose_the_oldest`,
     `adr_0010_a_sessions_given_up_requests_go_with_its_close`.
-  - [src/host/sessions.rs](../../src/host/sessions.rs):
+  - [src/host/sessions.rs](https://github.com/brnrhq/brnr/blob/main/src/host/sessions.rs):
     `adr_0010_sessions_closed_under_the_editor_past_the_cap_lose_the_oldest`,
     `adr_0010_a_closed_sessions_answered_requests_go`,
     `adr_0010_a_request_cancelled_after_its_close_is_not_kept`.
-  - [tests/headless.rs](../../tests/headless.rs):
+  - [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
     `adr_0010_headless_an_agent_line_past_the_limit_is_dropped_and_said`,
     `adr_0010_a_long_line_to_an_editor_that_stops_reading_is_held_back`,
     `adr_0010_an_editor_line_past_the_limit_goes_to_the_agent_unread`,
@@ -688,11 +692,11 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_the_processs_own_stderr_goes_to_the_host_log_in_pieces`,
     `adr_0010_a_request_past_the_limit_is_answered_and_cut_off`,
     `adr_0010_a_bridges_request_past_the_limit_cuts_it_off`.
-  - [src/host/mod.rs](../../src/host/mod.rs):
+  - [src/host/mod.rs](https://github.com/brnrhq/brnr/blob/main/src/host/mod.rs):
     `adr_0010_stderr_read_as_lines_ends_with_what_a_piece_left`,
     `adr_0010_a_stderr_note_is_at_most_a_piece_once_decoded`,
     `adr_0010_a_tails_line_is_cut_between_characters`.
-  - [src/host/lines.rs](../../src/host/lines.rs):
+  - [src/host/lines.rs](https://github.com/brnrhq/brnr/blob/main/src/host/lines.rs):
     `adr_0010_lines_are_read_whole_however_the_reads_split_them`,
     `adr_0010_a_line_that_ends_at_the_limit_is_read_whole`,
     `adr_0010_a_relayed_line_past_the_limit_goes_on_as_it_comes`,
@@ -701,19 +705,19 @@ Run `cargo test --release adr_0010_`. Named claims, by section:
     `adr_0010_a_character_a_cut_would_split_starts_the_next_part`,
     `adr_0010_a_cut_is_between_characters`,
     `adr_0010_a_byte_at_a_time_reads_as_all_at_once`.
-  - [src/host/control.rs](../../src/host/control.rs):
+  - [src/host/control.rs](https://github.com/brnrhq/brnr/blob/main/src/host/control.rs):
     `adr_0010_a_request_is_read_up_to_the_limit_and_no_further`.
 - 10.4:
-  - [src/host/control.rs](../../src/host/control.rs):
+  - [src/host/control.rs](https://github.com/brnrhq/brnr/blob/main/src/host/control.rs):
     `adr_0010_a_connection_past_the_cap_is_told_and_closed`,
     `adr_0010_a_cut_off_connection_closes_once_written_or_after_a_wait`,
     `adr_0010_a_writer_let_go_of_ends_after_its_wait`,
     `adr_0010_accept_errors_back_off_doubling_to_a_second`.
-  - [src/ctl/client.rs](../../src/ctl/client.rs):
+  - [src/ctl/client.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl/client.rs):
     `adr_0010_processes_not_answering_cost_one_wait_in_all`,
     `adr_0010_a_request_not_answered_or_taken_is_not_answering`,
     `adr_0010_an_error_said_to_no_request_is_the_answer`.
-  - [src/sys.rs](../../src/sys.rs):
+  - [src/sys.rs](https://github.com/brnrhq/brnr/blob/main/src/sys.rs):
     `adr_0010_a_connection_a_full_backlog_holds_waits_at_most_its_wait`.
 
   Not covered by a Rust test: an accept failing for real (running a test

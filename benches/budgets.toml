@@ -1,0 +1,30 @@
+# What `brnr acp` may add (ADR 1, N3): upper bounds for what
+# `cargo bench --bench acp` measures, checked on every pull request
+# (.github/workflows/bench.yml). A change that passes one fails CI, and
+# raising a budget is a decision its pull request says why it makes.
+#
+# Shared CI runners are noisy: latency and throughput are budgeted as ratios
+# to the same fake agent on a direct pipe, measured at the same time, and
+# with wide margins. Memory has room for the runners' differences. Threads
+# don't vary: their budgets are today's counts, so that a new thread is a
+# change someone chose.
+
+# brnr acp's median round trip of a prompt, over the direct pipe's.
+latency_ratio = 25.0
+# The time a turn streaming 20 MB takes through brnr acp, over the direct
+# pipe's.
+throughput_ratio = 20.0
+
+# Resident memory, in KiB: brnr acp and its process at rest (initialized,
+# a session open), and the process after the streams: from 8 to 32 MiB on
+# a Mac, as much more of the stream queues on a busy machine.
+proxy_rss_kib = 8192
+host_rss_kib = 16384
+host_streamed_rss_kib = 65536
+
+# Threads: brnr acp's; its process's at rest, with the editor attached; and
+# what each control connection and each bridge adds (src/host/control.rs).
+proxy_threads = 3
+host_threads = 12
+connection_threads = 2
+bridge_threads = 4
