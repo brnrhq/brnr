@@ -49,7 +49,7 @@ brnr keeps it so, the test for each claim, and the known gaps.
 
 ## Out of scope
 
-- The agents (Claude Code, Codex) and the upstream ACP adapters; report those
+- The agents (Claude Code, Codex, Muse Code) and the upstream ACP adapters; report those
   to their projects. A flaw in how brnr builds or runs them is in scope.
 - What an agent does with an approval its user gave.
 - Anyone who can already run code as the user.

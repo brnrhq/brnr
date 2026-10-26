@@ -1,12 +1,12 @@
 ---
 name: brnr
-description: Run, supervise and talk to coding-agent sessions (Claude Code, Codex) through brnr, the CLI that keeps ACP agents in a process other commands can reach. Use when asked to start headless agent workers, send them work, wait for their turns, read what they did, bring their approvals to the user, or set brnr up. Not for working on brnr's own source code.
+description: Run, supervise and talk to coding-agent sessions (Claude Code, Codex, Muse Code) through brnr, the CLI that keeps ACP agents in a process other commands can reach. Use when asked to start headless agent workers, send them work, wait for their turns, read what they did, bring their approvals to the user, or set brnr up. Not for working on brnr's own source code.
 ---
 
 # brnr
 
 brnr runs an ACP agent (Claude Code through `brnr-claude-adapter`, Codex
-through `brnr-codex-adapter`) in a process of its own. You start sessions
+through `brnr-codex-adapter`, Muse Code through `brnr-muse-adapter`) in a process of its own. You start sessions
 headless, send them messages, wait for their turns, and read their events,
 all with `brnr` commands. A session is a worker; you are its supervisor.
 
@@ -65,7 +65,8 @@ brnr elicitation requests --json                      # the agents asking for in
 brnr session close $s --json                          # done with it: {session}, closed
 ```
 
-Use `brnr-codex-adapter` for Codex. A start with `--cwd <dir>` works there;
+Use `brnr-codex-adapter` for Codex or `brnr-muse-adapter` for Muse Code.
+A start with `--cwd <dir>` works there;
 without it, in the current directory. The message is `--prompt`'s value, as
 given (`--prompt -` reads it from stdin), for `prompt send` as for a start.
 

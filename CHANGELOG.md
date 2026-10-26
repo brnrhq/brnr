@@ -24,6 +24,10 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Muse Code through `brnr-muse-adapter`, built from pinned upstream Rust source; adapter discovery and version reporting, ACP v1 checks, Dependabot and canary coverage (ADR 11.1–11.3).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added

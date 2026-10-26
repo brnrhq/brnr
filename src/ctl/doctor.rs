@@ -590,11 +590,13 @@ fn describe_profile(profile: &config::Profile) -> String {
 
 /// The adapters doctor looks for, and the npm package each is (or is built
 /// from).
-const ADAPTERS: [(&str, &str); 4] = [
+const ADAPTERS: [(&str, &str); 6] = [
     ("brnr-claude-adapter", "@agentclientprotocol/claude-agent-acp"),
     ("brnr-codex-adapter", "@agentclientprotocol/codex-acp"),
+    ("brnr-muse-adapter", "@brokkai/muse-acp"),
     ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
     ("codex-acp", "@agentclientprotocol/codex-acp"),
+    ("muse-acp", "@brokkai/muse-acp"),
 ];
 
 /// brnr's adapters and the npm packages', where they are and the version of
@@ -605,11 +607,29 @@ fn adapters(r: &mut Report) {
             r.line(Level::Info, name, "not found next to brnr or on PATH");
             continue;
         };
+        if name == "muse-acp" && npm_version(&path, "muse-acp").is_some() {
+            r.line(
+                Level::Info,
+                name,
+                format!(
+                    "{} (unrelated npm package muse-acp; use @brokkai/muse-acp)",
+                    path.display()
+                ),
+            );
+            continue;
+        }
         let version = if name.starts_with("brnr-") {
-            built_version(&path)
-                .unwrap_or_else(|| "version unknown: built before brnr 0.3.0".to_owned())
+            built_version(&path, package).unwrap_or_else(|| {
+                if name == "brnr-muse-adapter" {
+                    "version unknown: --version did not report a version".to_owned()
+                } else {
+                    "version unknown: built before brnr 0.3.0".to_owned()
+                }
+            })
         } else {
-            npm_version(&path, package).unwrap_or_else(|| "version unknown".to_owned())
+            npm_version(&path, package)
+                .or_else(|| (name == "muse-acp").then(|| built_version(&path, package)).flatten())
+                .unwrap_or_else(|| "version unknown".to_owned())
         };
         r.line(Level::Ok, name, format!("{} ({version})", path.display()));
     }
@@ -618,7 +638,7 @@ fn adapters(r: &mut Report) {
 /// What a brnr adapter says it was built from (`--version`): `<package>
 /// <version>`. Older builds don't know `--version` and would wait for an
 /// editor, so stdin is closed and they get a few seconds.
-fn built_version(path: &Path) -> Option<String> {
+fn built_version(path: &Path, expected_package: &str) -> Option<String> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let mut cmd = Command::new(path);
@@ -637,7 +657,13 @@ fn built_version(path: &Path) -> Option<String> {
     // brnr-claude-adapter 0.85.1 (@agentclientprotocol/claude-agent-acp)
     let line = String::from_utf8(out.stdout).ok()?;
     let mut words = line.split_whitespace();
-    let (_, version, package) = (words.next()?, words.next()?, words.next()?);
+    let (name, version) = (words.next()?, words.next()?);
+    // Muse's source-built binary keeps its upstream identity when renamed.
+    if expected_package == "@brokkai/muse-acp" {
+        return (name == "muse-acp" && words.next().is_none())
+            .then(|| format!("{expected_package} {version}"));
+    }
+    let package = words.next()?;
     Some(format!("{} {version}", package.trim_matches(['(', ')'])))
 }
 

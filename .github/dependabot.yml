@@ -28,6 +28,7 @@ updates:
       default-days: 7
     allow:
       - dependency-name: "@agentclientprotocol/*"
+      - dependency-name: "@brokkai/muse-acp"
     commit-message:
       prefix: adapters
 

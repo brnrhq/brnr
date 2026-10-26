@@ -14,10 +14,12 @@ import tempfile
 import unittest
 
 here = os.path.dirname(os.path.abspath(__file__))
-pins = json.load(open(os.path.join(here, "package.json")))["dependencies"]
+manifest = json.load(open(os.path.join(here, "package.json")))
+pins = manifest["dependencies"] | manifest["devDependencies"]
 packages = {
     "brnr-claude-adapter": "@agentclientprotocol/claude-agent-acp",
     "brnr-codex-adapter": "@agentclientprotocol/codex-acp",
+    "brnr-muse-adapter": "@brokkai/muse-acp",
 }
 result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}, "authMethods": []}
 exited = {
@@ -54,17 +56,24 @@ answers = {
         "result": dict(result, agentCapabilities=[]),
     },
     "wrong id": {"jsonrpc": "2.0", "id": 2, "result": result},
+    "wrong muse version": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": dict(result, agentInfo={"name": "muse-acp", "version": "0.0.0"}),
+    },
     "malformed": "not json \x1b[31m" + "x" * 1000,
     "eof": None,
     "hang": "hang",
 }
 
 stub = """#!{python}
-import json, sys, time
+import json, os, subprocess, sys, time
 if sys.argv[1:] == ["--version"]:
     print({version!r})
     sys.exit(0)
 sys.stdin.readline()
+if {muse!r}:
+    subprocess.run([os.environ["MUSE_CLI"], "serve"])
 answer = {answer!r}
 if answer == "hang":
     time.sleep(60)
@@ -73,14 +82,35 @@ elif answer is not None:
 """
 
 
-def check(claude="result", codex="exited", version=None):
+def check(claude="result", codex="exited", muse="result", version=None):
     """check.py's exit status and output, run on stubs answering claude and codex."""
     with tempfile.TemporaryDirectory() as out:
-        for name, answer in (("brnr-claude-adapter", claude), ("brnr-codex-adapter", codex)):
+        for name, answer in (
+            ("brnr-claude-adapter", claude),
+            ("brnr-codex-adapter", codex),
+            ("brnr-muse-adapter", muse),
+        ):
             path = os.path.join(out, name)
             with open(path, "w") as f:
-                v = version or f"{name} {pins[packages[name]]} ({packages[name]})"
-                f.write(stub.format(python=sys.executable, version=v, answer=answers[answer]))
+                v = version or (
+                    f"muse-acp {pins[packages[name]]}"
+                    if name == "brnr-muse-adapter"
+                    else f"{name} {pins[packages[name]]} ({packages[name]})"
+                )
+                response = answers[answer]
+                is_muse = name == "brnr-muse-adapter"
+                if (
+                    is_muse
+                    and isinstance(response, dict)
+                    and isinstance(response.get("result"), dict)
+                ):
+                    response = dict(response, result=dict(response["result"]))
+                    response["result"].setdefault(
+                        "agentInfo", {"name": "muse-acp", "version": pins[packages[name]]}
+                    )
+                f.write(
+                    stub.format(python=sys.executable, version=v, answer=response, muse=is_muse)
+                )
             os.chmod(path, 0o755)
         p = subprocess.run(
             [os.path.join(here, "check.py"), out],
@@ -93,6 +123,11 @@ def check(claude="result", codex="exited", version=None):
 
 
 class Check(unittest.TestCase):
+    def test_muse_version_in_initialize_must_match_the_pin(self):
+        status, output = check(muse="wrong muse version")
+        self.assertEqual(status, 1, output)
+        self.assertIn("Muse agentInfo version does not match the pin", output)
+
     def test_passes_when_claude_initializes_and_codex_reports_its_exit(self):
         status, output = check()
         self.assertEqual(status, 0, output)
@@ -137,7 +172,11 @@ class Check(unittest.TestCase):
             ("eof", "no answer: its output ended"),
             ("hang", "no answer in 1s"),
         ):
-            for name, answered in (("claude", {"claude": answer}), ("codex", {"codex": answer})):
+            for name, answered in (
+                ("claude", {"claude": answer}),
+                ("codex", {"codex": answer}),
+                ("muse", {"muse": answer}),
+            ):
                 with self.subTest(answer, adapter=name):
                     status, output = check(**answered)
                     self.assertEqual(status, 1, output)

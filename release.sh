@@ -171,7 +171,7 @@ unnamed() { die "CHANGELOG.md needs '## [Unreleased]' and '[Unreleased]: https:/
 adapter_version() {
     local package=$1 rev=${2:-}
     if [ -n "$rev" ]; then git show "$rev:adapters/package.json"; else cat adapters/package.json; fi |
-        python3 -c 'import json, sys; print(json.load(sys.stdin)["dependencies"].get(sys.argv[1], "-"))' "$package"
+        python3 -c 'import json, sys; p=json.load(sys.stdin); print((p["dependencies"] | p.get("devDependencies", {})).get(sys.argv[1], "-"))' "$package"
 }
 
 on_clean_main() {
@@ -297,10 +297,11 @@ release_notes() {
     fi
     echo "## Adapters (Homebrew formula versions)"
     local name package now before moved=
-    for name in claude codex; do
+    for name in claude codex muse; do
         case $name in
             claude) package=@agentclientprotocol/claude-agent-acp ;;
             codex) package=@agentclientprotocol/codex-acp ;;
+            muse) package=@brokkai/muse-acp ;;
         esac
         now=$(adapter_version "$package")
         before=$([ -n "$last" ] && adapter_version "$package" "$last" || echo "-")

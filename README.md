@@ -15,7 +15,7 @@
 A burner phone for your coding agents.
 
 brnr sits between your editor and an [ACP](https://agentclientprotocol.com/)
-agent (Claude Code, Codex, …). The editor talks to the agent exactly as before,
+agent (Claude Code, Codex, Muse Code, …). The editor talks to the agent exactly as before,
 but the agent now lives in a process of its own that you can also reach from
 outside the editor: watch everything its sessions do, and carry them on once
 the editor has gone. Or run sessions with no editor at all, and send them
@@ -62,13 +62,14 @@ the sections below provide examples and explain the workflows.
 brew install brnrhq/tap/brnr
 brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
+brew install brnrhq/tap/brnr-muse-adapter     # for Muse Code, built from Rust source
 ```
 
-The adapter formulae compile the community's ACP adapters for Claude Code and
-Codex into standalone executables that need no Node.js ([Adapters](#adapters)
+The adapter formulae compile the community's ACP adapters for Claude Code,
+Codex and Muse Code into standalone executables that need no Node.js ([Adapters](#adapters)
 says whose they are), and link them next to `brnr`, where brnr finds them
 even when an editor's `PATH` doesn't include Homebrew. Each is versioned by
-the npm package it builds, so `brew upgrade` rebuilds an adapter when that
+its upstream adapter, so `brew upgrade` rebuilds an adapter when that
 package moves. `brnr doctor` shows which version each adapter was built from.
 
 Or brnr alone, from [crates.io](https://crates.io/crates/brnr), with the
@@ -110,11 +111,11 @@ More at
 
 ```sh
 cargo build --release          # target/release/brnr
-adapters/build.sh              # optional: target/release/brnr-claude-adapter, brnr-codex-adapter (needs bun)
+adapters/build.sh              # optional: all three adapters in target/release (bun, Rust, Python 3.11+, git)
 ```
 
 `brnr` is one binary. The adapters are separate, single-file builds of the ACP
-adapters for Claude Code and Codex; see [Adapters](#adapters).
+adapters for Claude Code, Codex and Muse Code; see [Adapters](#adapters).
 
 ## Use it from an editor
 
@@ -123,6 +124,7 @@ Configure your editor's ACP agent command as:
 ```sh
 brnr acp -- brnr-claude-adapter  # or claude-agent-acp, from npm
 brnr acp -- brnr-codex-adapter   # or codex-acp, from npm
+brnr acp -- brnr-muse-adapter    # or muse-acp, from @brokkai/muse-acp
 brnr acp --profile work          # agent and settings from a profile
 ```
 
@@ -1018,27 +1020,45 @@ override; `log = "off"` writes no transcripts.
 
 ## Adapters
 
-The ACP adapters aren't brnr's work. `adapters/` packages two existing
-open-source adapters, unchanged, as standalone executables
-(`bun build --compile`). Each carries its own JavaScript runtime, so it needs
-no Node.js (or bun) installed, unlike the npm packages:
+The ACP adapters aren't brnr's work. `adapters/` packages three existing
+open-source adapters as standalone executables. Claude Code and Codex use
+`bun build --compile` and carry their own JavaScript runtime; Muse Code is
+built with Cargo from upstream Rust source. None needs Node.js or bun at runtime:
 
 | Command | Builds | By | License |
 |---|---|---|---|
 | `brnr-claude-adapter` | [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp) | Zed Industries, Inc. and contributors | Apache-2.0; it includes Anthropic's [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript), under Anthropic's [Commercial Terms](https://www.anthropic.com/legal/commercial-terms) |
 | `brnr-codex-adapter` | [codex-acp](https://github.com/agentclientprotocol/codex-acp) | JetBrains s.r.o. | Apache-2.0 |
+| `brnr-muse-adapter` | [muse-acp](https://github.com/BrokkAi/muse-acp) | BrokkAi and contributors | Apache-2.0 |
 
 brnr adds only a few lines in front of each (`adapters/claude.ts`,
 `adapters/codex.ts`, `adapters/find.ts`): finding the user's own agent, and
 `--version`. The commands have names of their own so they don't clash with
-the npm packages' (`claude-agent-acp`, `codex-acp`) when both are installed.
+the npm packages' (`claude-agent-acp`, `codex-acp`, `muse-acp`) when both are installed.
+Muse's Rust sources are unchanged; its own `--version` and agent lookup are
+used. Its version pin is the scoped `@brokkai/muse-acp` devDependency, used
+only to select a source tag and receive Dependabot updates. Its npm binaries
+aren't installed by the source build. Build only Muse with
+`adapters/build.sh target-dir muse`; bun isn't needed for that build.
 
-They don't include the agents. Each runs the user's own `claude` or `codex`
+They don't include the agents. Each runs the user's own `claude`, `codex` or `muse`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
-`CODEX_PATH`). `build.sh` copies every package's license file (`LICENSE`,
+`CODEX_PATH` / `MUSE_CLI`). Muse also searches `MUSE_INSTALL_DIR`, then
+`~/.local/bin`, when `PATH` has no `muse`; run `muse login` first.
+The alternative npm package is **`@brokkai/muse-acp`**: the unscoped
+`muse-acp` is an unrelated project.
+
+Muse uses ACP v1, including brnr's existing steering, session list/resume,
+approvals and config options. Approval Mode (`approval_mode`) and Auto-review
+(`auto_review`) remain the adapter's policy; brnr doesn't enable either for you.
+Muse-specific extensions and metadata pass through the editor connection and
+are preserved in raw ACP transcripts; dedicated headless commands are separate work.
+
+`build.sh` copies every package's license file (`LICENSE`,
 `license`, `License.txt`, …), nested packages' too, to `licenses/`. The Claude
 Agent SDK's license isn't an open-source one; check Anthropic's terms before
-redistributing a build of brnr-claude-adapter.
+redistributing a build of brnr-claude-adapter. Muse's upstream LICENSE and NOTICE
+are copied alongside them.
 
 ## Doctor
 

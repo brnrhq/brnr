@@ -1,0 +1,52 @@
+class BrnrMuseAdapter < Formula
+  desc "Muse Code ACP adapter, built from source for brnr"
+  homepage "https://github.com/brnrhq/brnr"
+  url "@BRNR_URL@"
+  version "@MUSE_VERSION@"
+  sha256 "@BRNR_SHA256@"
+  license "Apache-2.0"
+
+  depends_on "python@3.14" => :build
+  depends_on "rust" => :build
+
+  resource "muse-acp" do
+    url "https://github.com/BrokkAi/muse-acp/archive/refs/tags/v@MUSE_VERSION@.tar.gz"
+    sha256 "@MUSE_SHA256@"
+  end
+
+  def install
+    resource("muse-acp").stage do
+      system Formula["python@3.14"].opt_bin/"python3.14", buildpath/"adapters/muse.py",
+             buildpath/"out", "--source", Pathname.pwd
+    end
+    bin.install buildpath/"out/brnr-muse-adapter"
+    (pkgshare/"licenses").install Dir[buildpath/"out/licenses/*"]
+  end
+
+  test do
+    assert_equal "muse-acp #{version}", shell_output("#{bin}/brnr-muse-adapter --version").strip
+    ENV["MUSE_CLI"] = "/usr/bin/false"
+    request = {jsonrpc: "2.0", id: 1, method: "initialize",
+               params: {protocolVersion: 1, clientCapabilities: {}}}
+    require "open3"
+    require "timeout"
+    Open3.popen3(bin/"brnr-muse-adapter") do |stdin, stdout, stderr, wait|
+      reader = Thread.new { stderr.read }
+      begin
+        stdin.puts request.to_json
+        stdin.flush
+        response = JSON.parse(Timeout.timeout(30) { stdout.gets })
+        assert_equal 1, response.dig("result", "protocolVersion")
+      ensure
+        stdin.close
+        begin
+          Timeout.timeout(10) { wait.value }
+        rescue Timeout::Error
+          Process.kill("KILL", wait.pid)
+          wait.value
+        end
+        reader.join
+      end
+    end
+  end
+end

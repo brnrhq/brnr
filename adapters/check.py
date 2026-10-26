@@ -6,6 +6,8 @@ a stand-in that prints its arguments on stderr and exits 3:
 - brnr-claude-adapter initializes (Claude Code isn't needed for it): the
   answer is a result with protocolVersion 1, and agentCapabilities and
   authMethods, if given, an object and a list.
+- brnr-muse-adapter answers ACP v1 initialize after its stand-in `muse serve`
+  exits. This is transport only, not authenticated Muse behavior.
 - brnr-codex-adapter can't initialize without the Codex CLI, so this checks
   what it can, and says so (transport only): that it ran the stand-in as
   `codex app-server` and answered with the error it gives when Codex exits:
@@ -45,12 +47,14 @@ with_brnr = "--brnr" in args
 args = [a for a in args if a != "--brnr"]
 out = os.path.abspath(args[0] if args else os.path.join(here, "..", "target", "release"))
 timeout = float(os.environ.get("BRNR_CHECK_TIMEOUT", "30"))
-pins = json.load(open(os.path.join(here, "package.json")))["dependencies"]
+manifest = json.load(open(os.path.join(here, "package.json")))
+pins = manifest["dependencies"] | manifest["devDependencies"]
 # Each adapter's package, and the code and message of the error its initialize
 # must give instead of a result when its agent is the stand-in, with what it
 # needs to initialize.
 adapters = {
     "brnr-claude-adapter": ("@agentclientprotocol/claude-agent-acp", None),
+    "brnr-muse-adapter": ("@brokkai/muse-acp", None),
     "brnr-codex-adapter": (
         "@agentclientprotocol/codex-acp",
         (
@@ -72,10 +76,20 @@ request = {
 }
 
 agent = os.path.join(tempfile.mkdtemp(), "agent")
+agent_calls = agent + ".calls"
 with open(agent, "w") as f:
-    f.write('#!/bin/sh\necho "stand-in agent: $*" >&2\nexit 3\n')
+    f.write(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$BRNR_CHECK_AGENT_LOG"\n'
+        'echo "stand-in agent: $*" >&2\nexit 3\n'
+    )
 os.chmod(agent, 0o755)
-env = dict(os.environ, CLAUDE_CODE_EXECUTABLE=agent, CODEX_PATH=agent)
+env = dict(
+    os.environ,
+    CLAUDE_CODE_EXECUTABLE=agent,
+    CODEX_PATH=agent,
+    MUSE_CLI=agent,
+    BRNR_CHECK_AGENT_LOG=agent_calls,
+)
 
 
 def shown(s):
@@ -94,8 +108,9 @@ def first_line(p):
         return None
 
 
-def initialize(path, expected):
+def initialize(name, path, expected):
     """What's wrong with path's answer to initialize, or None; and what it showed."""
+    open(agent_calls, "w").close()
     try:
         # Stdin stays open until the answer is in: an adapter may exit at EOF.
         p = subprocess.Popen(
@@ -138,13 +153,28 @@ def initialize(path, expected):
         return f"agentCapabilities not an object: {shown(line)}", None
     if not isinstance(result.get("authMethods", []), list):
         return f"authMethods not a list: {shown(line)}", None
+    if name == "brnr-muse-adapter":
+        info = result.get("agentInfo")
+        if not isinstance(info, dict) or info.get("version") != pins["@brokkai/muse-acp"]:
+            return f"Muse agentInfo version does not match the pin: {shown(line)}", None
+        with open(agent_calls) as calls:
+            if not any(call.strip() == "serve" or call.startswith("serve ") for call in calls):
+                return "Muse did not launch the stand-in as `muse serve`", None
+        return (
+            None,
+            "initialize, transport only: protocol version 1 after stand-in `muse serve` exited",
+        )
     return None, "initialize: a result, protocol version 1"
 
 
 failed = False
 for name, (package, expected) in adapters.items():
     path = os.path.join(out, name)
-    want = f"{name} {pins[package]} ({package})"
+    want = (
+        f"muse-acp {pins[package]}"
+        if name == "brnr-muse-adapter"
+        else f"{name} {pins[package]} ({package})"
+    )
     try:
         got = subprocess.run(
             [path, "--version"], capture_output=True, text=True, timeout=timeout
@@ -156,7 +186,7 @@ for name, (package, expected) in adapters.items():
         failed = True
     else:
         print(f"ok   {name} --version: {pins[package]} ({package})")
-    wrong, seen = initialize(path, expected)
+    wrong, seen = initialize(name, path, expected)
     if wrong:
         print(f"FAIL {name} initialize: {wrong}")
         failed = True
