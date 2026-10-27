@@ -35,8 +35,10 @@ class BrnrMuseAdapter < Formula
       brnr builds it, unchanged, from its Rust source.
 
       It runs your own Muse Code (muse); install that separately, and run
-      muse login first. In an editor, or with brnr session new:
+      muse login first. In an editor:
         brnr acp -- brnr-muse-adapter
+      Headless:
+        brnr session new --prompt "fix the failing tests" -- brnr-muse-adapter
 
       Its license and notice are in:
         #{opt_pkgshare}/licenses

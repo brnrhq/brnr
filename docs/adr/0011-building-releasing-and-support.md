@@ -47,8 +47,9 @@ Not covered by a Rust test: Homebrew formulae live in the separate tap
 repository; this checkout cannot prove their installation or license
 declarations. The adapters CI job builds and exercises the pinned Node
 adapters and Muse's source build; the release workflow tests the public brnr
-formula, and the tap's own CI builds, tests and audits every formula,
-Muse's included, from source on Linux and macOS.
+formula, and the tap's own CI builds, tests and audits its formulae from
+source on Linux and macOS. A new adapter's formula joins that CI after the
+release that first writes it to the tap.
 
 **Why.** brnr runs the community's ACP adapters for Claude Code and Codex.
 They are Node packages. claude-agent-acp compiles in Anthropic's Claude
