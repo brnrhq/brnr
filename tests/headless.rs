@@ -4755,12 +4755,17 @@ fn taken_meanwhile(env: &Env, session: &str) -> String {
     headless["host_pid"].to_string()
 }
 
-/// The editor's host log, as JSON, once it has an `event`.
+/// The editor's host log, as JSON, once it has an `event`. Only its whole
+/// lines: the host may be writing the last one as it is read.
 fn host_log_with(env: &Env, event: &str) -> Vec<Value> {
     let path = editor_process(env)["host_log"].as_str().unwrap().to_owned();
-    let has = || fs::read_to_string(&path).is_ok_and(|t| t.contains(&format!("\"{event}\"")));
+    let mut log = String::new();
+    let has = || {
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        log = text[..text.rfind('\n').map_or(0, |end| end + 1)].to_owned();
+        log.contains(&format!("\"{event}\""))
+    };
     assert!(wait_for(Duration::from_secs(5), has), "no {event} in the host log");
-    let log = fs::read_to_string(&path).unwrap();
     log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take()).collect()
 }
 
