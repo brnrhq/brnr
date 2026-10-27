@@ -24,6 +24,8 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-27
+
 ### Added
 
 - Muse Code through `brnr-muse-adapter`, built from pinned upstream Rust source; adapter discovery and version reporting, ACP v1 checks, Dependabot and canary coverage (ADR 11.1–11.3).
@@ -1374,7 +1376,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/brnrhq/brnr/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/brnrhq/brnr/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/brnrhq/brnr/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/brnrhq/brnr/compare/v0.8.0...v0.9.0
