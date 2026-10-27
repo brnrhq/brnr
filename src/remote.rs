@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
 
-use crate::config::{self, Remote};
+use crate::profiles::{self, Remote};
 use crate::{ctl, paths};
 
 /// None leaves a local command to its existing parser and implementation.
@@ -39,8 +39,8 @@ pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
     let remote = if let Some(target) = route.remote.as_deref() {
         Remote::new(target)
     } else {
-        let profiles = match config::load_all() {
-            Ok(Some(profiles)) => profiles,
+        let profiles = match profiles::load_all() {
+            Ok(Some(config)) => config.profiles,
             // Local commands retain their existing diagnostics on failure.
             _ => return None,
         };

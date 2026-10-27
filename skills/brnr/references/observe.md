@@ -153,12 +153,16 @@ connection that asked `peer`, and why `reason`. As brnr prints them (`ts`,
 line. It runs until the session closes.
 
 ```sh
-brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" ntfy.sh/my-agents'
+brnr event notify $s -- sh -c 'curl -s -d "$BRNR_TEXT" "https://ntfy.sh/${NTFY_TOPIC:?set it to a private topic}"'
 ```
+
+`NTFY_TOPIC` is a topic only you know. Anyone who knows an ntfy.sh topic can
+read it, and the event text can carry your prompts and your code.
 
 `--events` chooses others, as for `event watch` (`default` is the three
 above).
 
 Set one up only when the user asks for notifications; for your own waiting,
 `event wait` is simpler. Bridges (programs that speak brnr's protocol on the
-control socket) are in brnr's README.
+control socket) are in brnr's documentation:
+[Bridges](https://brnrhq.github.io/brnr/docs/guide/profiles.html#bridges).

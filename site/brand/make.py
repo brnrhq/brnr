@@ -9,7 +9,8 @@ inkscape, the PNGs:
   social.svg, .png      1280 x 640, for link previews (og:image, and the
                         repository's social preview, uploaded by hand)
 
-Colours: the dark scheme of site/index.html.
+Colours: the dark scheme of site/index.html. The diagram, light and dark, is
+diagram.py's.
 """
 
 import os

@@ -3026,11 +3026,12 @@ fn adr_0005_close_ends_what_follows_the_session() {
     ]);
     let turn = spawn(&["event", "wait", "sess-2", "--for", "turn"]);
     let permission = spawn(&["event", "wait", "sess-2", "--for", "permission"]);
+    let elicitation = spawn(&["event", "wait", "sess-2", "--for", "elicitation"]);
     let idle = spawn(&["event", "wait", "sess-2", "--json"]);
     let sent = spawn(&["prompt", "send", "sess-2", "--wait", "--prompt", "later"]);
     let held = || env.ok(&["queue", "list", "sess-2"]).contains("later");
     assert!(wait_for(Duration::from_secs(5), held), "not held");
-    env.wait_subscriptions(subscribed + 6);
+    env.wait_subscriptions(subscribed + 7);
     env.ok(&["session", "close", "sess-2"]);
 
     let watch = watch.wait_with_output().unwrap();
@@ -3048,6 +3049,8 @@ fn adr_0005_close_ends_what_follows_the_session() {
     assert!(stderr(&turn).contains("turn stopped: cancelled"), "{}", stderr(&turn));
     let permission = permission.wait_with_output().unwrap();
     code_is(&permission, "session_closed");
+    let elicitation = elicitation.wait_with_output().unwrap();
+    code_is(&elicitation, "session_closed");
     assert!(stderr(&permission).contains("the session closed"), "{}", stderr(&permission));
     // The session is idle once its turn is cancelled, and the wait exits as
     // that turn ended.
@@ -6612,6 +6615,9 @@ fn adr_0008_delete_keeps_the_transcript() {
     let deleted = logged(&env, "sess-1", "session_deleted");
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!((&deleted[0]["by"], &deleted[0]["host_id"]), (&"control".into(), &Value::Null));
+    // No process's: no `pid`, and no position (ADR 5.1).
+    assert_eq!(deleted[0].get("pid"), Some(&Value::Null), "{deleted:?}");
+    assert!(deleted[0].get("seq").is_none(), "{deleted:?}");
     assert_eq!(transcript_files(&env), ["sess-1.acp.jsonl", "sess-1.jsonl"]);
     let list =
         serde_json::from_str::<Value>(&env.ok(&["session", "list", "--json"])).unwrap()["sessions"]
@@ -6734,7 +6740,9 @@ fn adr_0008_delete_purge() {
     let purged: Vec<&str> =
         json["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert_eq!(purged.len(), 2, "{json}");
-    assert!(purged[0].ends_with("/sess-2.jsonl") && purged[1].ends_with("/sess-2.acp.jsonl"));
+    // The events file last: a purge cut short leaves the file the session
+    // is found by (ADR 9.5).
+    assert!(purged[0].ends_with("/sess-2.acp.jsonl") && purged[1].ends_with("/sess-2.jsonl"));
     assert_eq!(json["recorded_in"], serde_json::json!([]), "{json}");
     assert_eq!(transcript_files(&env), ["gone-1.acp.jsonl", "gone-1.jsonl"]);
 
@@ -6781,13 +6789,15 @@ fn adr_0008_purge_deletes_an_older_brnrs_files_too() {
     let out: Value = serde_json::from_str(&out).unwrap();
     let purged: Vec<&str> =
         out["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    // In each folder, an older brnr's set aside, then the raw ACP, then the
+    // events file.
     let want = [
-        before_hash.clone(),
         before_hash.with_extension("acp.jsonl"),
-        older.clone(),
-        older.with_extension("acp.jsonl"),
+        before_hash.clone(),
         folder.join("old-1.older.acp.jsonl"),
         aside,
+        older.with_extension("acp.jsonl"),
+        older.clone(),
     ];
     let want: Vec<String> = want.iter().map(|p| p.to_string_lossy().into_owned()).collect();
     assert_eq!(purged, want, "{out}");
@@ -6826,6 +6836,331 @@ fn adr_0008_delete_purge_fails_when_the_agent_does() {
     assert_eq!(json["error"], said, "{json}");
     assert_eq!(json["purged"].as_array().map(Vec::len), Some(2), "{json}");
     assert!(transcript_files(&env).is_empty(), "{:?}", transcript_files(&env));
+}
+
+// ---- retention (ADR 9.5) ------------------------------------------------
+
+/// A transcript of `session`, by a process long gone, in project folder
+/// `folder`: its events file, a record at each of `times` (the first its
+/// opening), and its raw ACP. Each record as a process writes it, so brnr
+/// reads its age from it.
+fn aged_transcript(env: &Env, folder: &str, session: &str, times: &[&str]) -> PathBuf {
+    let dir = env.dir.join("home/projects").join(folder);
+    private_dirs(env, &dir);
+    let head = |ts: &str| {
+        format!(
+            r#"{{"format":{FORMAT},"ts":"{ts}","host_id":"20260101T000000-1","pid":1,"proxy_pid":null,"agent_pid":2,"session":"{session}","#
+        )
+    };
+    let mut text = String::new();
+    for (i, ts) in times.iter().enumerate() {
+        let event = match i {
+            0 => json!({ "event": "session_opened", "session": session, "cwd": "/tmp",
+                         "profile": null, "agent": [AGENT], "seq": 1 }),
+            _ => json!({ "event": "turn_ended", "session": session, "seq": i + 1 }),
+        };
+        text.push_str(&format!("{}\"event\":{event}}}\n", head(ts)));
+    }
+    let path = dir.join(format!("{session}.jsonl"));
+    write_private(&path, &text);
+    let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "session/prompt" });
+    let raw = format!("{}\"seq\":1,\"dir\":\"editor->agent\",\"msg\":{msg}}}\n", head(times[0]));
+    write_private(&dir.join(format!("{session}.acp.jsonl")), &raw);
+    path
+}
+
+/// A host log of run `run`, whose process was `pid`, last written at `ts`,
+/// with `process_exited` last if `exited`.
+fn aged_host_log(env: &Env, run: &str, pid: u32, ts: &str, exited: bool) -> PathBuf {
+    let dir = env.dir.join("home/hosts");
+    private_dirs(env, &dir);
+    let head = format!(
+        r#"{{"format":{FORMAT},"ts":"{ts}","host_id":"{run}","pid":{pid},"proxy_pid":null,"agent_pid":2,"#
+    );
+    let mut text = format!("{head}\"event\":{{\"event\":\"process_started\"}}}}\n");
+    if exited {
+        text.push_str(&format!("{head}\"event\":{{\"event\":\"process_exited\"}}}}\n"));
+    }
+    let path = dir.join(format!("{run}.jsonl"));
+    write_private(&path, &text);
+    path
+}
+
+/// `dir` and the state directory down to it, made and private.
+fn private_dirs(env: &Env, dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(dir).unwrap();
+    let home = env.dir.join("home");
+    for d in dir.ancestors().take_while(|d| d.starts_with(&home)) {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+
+fn write_private(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, text).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// A pid no process has: one that has exited and been reaped.
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// `session prune --older-than <s>` deletes brnr's transcript of each
+/// session whose last activity, the newest record a process wrote that
+/// isn't a deletion, is older, and the host log of each process that has
+/// gone and was last active before then; `--dry-run` says the same and
+/// deletes nothing. A session active since, though opened long ago, stays;
+/// so do another session's files, the host log of a process still alive,
+/// and what is reached only through a symlink (ADR 9.5).
+#[test]
+fn adr_0009_prune_deletes_what_was_last_active_before_the_age() {
+    let env = Env::new("c-prune");
+    ended(&env, &[]);
+    let old = aged_transcript(&env, "-old-1", "old-1", &["2026-01-01T00:00:00Z"]);
+    let recent = aged_transcript(
+        &env,
+        "-old-1",
+        "busy-1",
+        &["2026-01-01T00:00:00Z", &brnr::internals::log::rfc3339(SystemTime::now())],
+    );
+    // A deletion isn't activity: `session delete`'s record is no process's.
+    env.ok(&["session", "delete", "old-1"]);
+    let gone = aged_host_log(&env, "20260101T000000-1", dead_pid(), "2026-01-01T00:00:00Z", false);
+    let alive =
+        aged_host_log(&env, "20260101T000000-2", std::process::id(), "2026-01-01T00:00:00Z", false);
+    let exited =
+        aged_host_log(&env, "20260101T000000-3", std::process::id(), "2026-01-01T00:00:00Z", true);
+    // Reached only through links: never looked in, never deleted.
+    let outside = env.dir.join("outside");
+    fs::create_dir_all(outside.join("hosts")).unwrap();
+    aged_transcript(&env, "-moved", "link-1", &["2026-01-01T00:00:00Z"]);
+    fs::rename(env.dir.join("home/projects/-moved"), outside.join("moved")).unwrap();
+    let linked = outside.join("moved/link-1.jsonl");
+    std::os::unix::fs::symlink(outside.join("moved"), env.dir.join("home/projects/-linked"))
+        .unwrap();
+    let target = outside.join("hosts/20260101T000000-4.jsonl");
+    write_private(&target, "keep\n");
+    std::os::unix::fs::symlink(&target, env.dir.join("home/hosts/20260101T000000-4.jsonl"))
+        .unwrap();
+    let files = transcript_files(&env);
+
+    let day = "86400";
+    let dry: Value = serde_json::from_str(&env.ok(&[
+        "session",
+        "prune",
+        "--older-than",
+        day,
+        "--dry-run",
+        "--json",
+    ]))
+    .unwrap();
+    assert_eq!(transcript_files(&env), files, "a dry run deleted");
+    assert!(gone.exists() && exited.exists());
+    assert_eq!(dry["dry_run"], true, "{dry}");
+    assert_eq!(dry["older_than"], 86400, "{dry}");
+    let out = env.ok(&["session", "prune", "--older-than", day, "--json"]);
+    let done: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(done["dry_run"], false, "{done}");
+    for json in [&dry, &done] {
+        let sessions: Vec<&Value> = json["sessions"].as_array().unwrap().iter().collect();
+        assert_eq!(sessions.len(), 1, "{json}");
+        assert_eq!(sessions[0]["session"], "old-1", "{json}");
+        assert_eq!(sessions[0]["last_active"], "2026-01-01T00:00:00Z", "{json}");
+        let want = [
+            old.with_extension("acp.jsonl").to_string_lossy().into_owned(),
+            old.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(sessions[0]["files"], json!(want), "{json}");
+        let runs: Vec<&Value> =
+            json["host_logs"].as_array().unwrap().iter().map(|h| &h["host_id"]).collect();
+        assert_eq!(runs, [&json!("20260101T000000-1"), &json!("20260101T000000-3")], "{json}");
+        assert_eq!(json["host_logs"][0]["files"], json!([gone.to_string_lossy()]), "{json}");
+        assert_eq!(json["failed"], json!([]), "{json}");
+    }
+    assert!(!old.exists() && !old.with_extension("acp.jsonl").exists());
+    assert!(recent.exists() && !gone.exists() && !exited.exists() && alive.exists());
+    assert!(linked.exists() && target.exists(), "followed a symlink");
+    let list = env.ok(&["session", "list"]);
+    assert!(
+        list.contains("sess-1") && list.contains("busy-1") && !list.contains("old-1"),
+        "{list}"
+    );
+
+    // Nothing left that old: said, in text as in JSON.
+    let text = env.ok(&["session", "prune", "--older-than", day]);
+    assert!(text.starts_with("nothing was last active before "), "{text}");
+    assert!(text.ends_with(" (more than 1 day ago)\n"), "{text}");
+    // Everything inactive, with 0: the ended session, and its process's log.
+    let text = env.ok(&["session", "prune", "--older-than", "0"]);
+    assert!(text.starts_with("pruned what was last active before "), "{text}");
+    assert!(
+        text.contains("\n  session sess-1, last active ") && text.contains("\n  host log "),
+        "{text}"
+    );
+    assert!(text.contains("\n  session busy-1, last active "), "{text}");
+    let left: Vec<String> =
+        transcript_files(&env).into_iter().filter(|f| !f.starts_with("link-1")).collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// A session open in a process, or whose lock a process holds, is never
+/// pruned, however old its last activity, nor is a running process's host
+/// log (ADR 9.5).
+#[test]
+fn adr_0009_prune_never_touches_an_open_or_locked_session() {
+    let env = Env::new("c-prune-open");
+    env.start(&["--wait", "--prompt", "reply first"]);
+    let host_log = env.hosts()[0]["host_log"].as_str().unwrap().to_owned();
+    let held = aged_transcript(&env, "-old-1", "held-1", &["2026-01-01T00:00:00Z"]);
+    // A lock held as a process holds one: flock, with its pid written in.
+    let locks = env.dir.join("home/sessions");
+    private_dirs(&env, &locks);
+    let lock = locks.join("held-1.lock");
+    let ready = env.dir.join("locked");
+    let script = format!(
+        "import fcntl, json, os, sys, time\n\
+         f = open({lock:?}, 'w')\n\
+         fcntl.flock(f, fcntl.LOCK_EX)\n\
+         f.write(json.dumps({{'pid': os.getpid(), 'session': 'held-1', 'dir': {run:?}}}) + '\\n')\n\
+         f.flush()\n\
+         open({ready:?}, 'w').close()\n\
+         time.sleep(60)\n",
+        lock = lock.to_string_lossy(),
+        run = env.dir.join("run").to_string_lossy(),
+        ready = ready.to_string_lossy(),
+    );
+    let mut holder = std::process::Command::new("python3").args(["-c", &script]).spawn().unwrap();
+    assert!(wait_for(Duration::from_secs(10), || ready.exists()), "the lock wasn't taken");
+
+    let out: Value =
+        serde_json::from_str(&env.ok(&["session", "prune", "--older-than", "0", "--json"]))
+            .unwrap();
+    let _ = holder.kill();
+    let _ = holder.wait();
+    assert_eq!(out["sessions"], json!([]), "{out}");
+    assert_eq!(out["host_logs"], json!([]), "{out}");
+    assert!(held.exists() && Path::new(&host_log).exists());
+    let list = env.ok(&["session", "list"]);
+    assert!(list.contains("sess-1"), "{list}");
+    idle(&env);
+    env.stop();
+}
+
+/// Without `retention`, brnr keeps everything; with it, a process prunes
+/// what was last active longer ago as it starts, but the session a headless
+/// start resumes, and records in its host log what it deleted (ADR 9.5).
+#[test]
+fn adr_0009_a_process_prunes_as_it_starts_when_retention_is_set() {
+    let env = Env::new("c-retention");
+    let old = aged_transcript(&env, "-old-1", "old-2", &["2026-01-01T00:00:00Z"]);
+    let resumed = aged_transcript(&env, "-old-1", "old-1", &["2026-01-01T00:00:00Z"]);
+    ended(&env, &[]);
+    assert!(old.exists() && resumed.exists(), "pruned without retention");
+
+    env.write_config(&format!("retention = 86400\n\n[profiles.default]\nagent = [{AGENT:?}]\n"));
+    env.resume("old-1", &["--wait", "--prompt", "reply again"]);
+    assert!(wait_for(Duration::from_secs(10), || !old.exists()), "old-2 wasn't pruned");
+    assert!(resumed.exists(), "the session resumed was pruned");
+    let host_log = PathBuf::from(env.hosts()[0]["host_log"].as_str().unwrap());
+    let record = || {
+        let text = fs::read_to_string(&host_log).unwrap_or_default();
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|r| r["event"]["event"] == "transcripts_pruned")
+    };
+    assert!(wait_for(Duration::from_secs(10), || record().is_some()), "not recorded");
+    let event = record().unwrap()["event"].clone();
+    assert_eq!(event["older_than"], 86400, "{event}");
+    let sessions: Vec<&Value> =
+        event["sessions"].as_array().unwrap().iter().map(|s| &s["session"]).collect();
+    assert_eq!(sessions, [&json!("old-2")], "{event}");
+    assert!(event.get("dry_run").is_none(), "{event}");
+    assert_eq!(event["failed"], json!([]), "{event}");
+    env.stop();
+}
+
+/// A session one of whose files has a newest record in a format this brnr
+/// doesn't read, a newer brnr's, has an age brnr can't tell: it is kept
+/// whole, with `--dry-run` and without (P4). The files an older brnr set
+/// aside beside a session are older than the one that took their place,
+/// and go with it (ADR 9.5).
+#[test]
+fn adr_0009_prune_keeps_a_session_it_cant_read_the_age_of() {
+    let env = Env::new("c-prune-format");
+    let old = "2026-01-01T00:00:00Z";
+    let kept = aged_transcript(&env, "-a", "mixed-1", &[old]);
+    let newer = env.dir.join("home/projects/-b/mixed-1.jsonl");
+    private_dirs(&env, newer.parent().unwrap());
+    let record = json!({ "format": 2, "ts": old, "session": "mixed-1",
+                         "event": { "event": "turn_ended", "session": "mixed-1" } });
+    write_private(&newer, &format!("{record}\n"));
+    let pruned = aged_transcript(&env, "-c", "aside-1", &[old]);
+    let aside = pruned.with_file_name("aside-1.older.jsonl");
+    write_private(&aside, "{\"ts\":\"2025-01-01T00:00:00Z\",\"session_id\":\"aside-1\"}\n");
+
+    for args in [&["--dry-run", "--json"][..], &["--json"]] {
+        let mut all = vec!["session", "prune", "--older-than", "86400"];
+        all.extend(args);
+        let out: Value = serde_json::from_str(&env.ok(&all)).unwrap();
+        let ids: Vec<&Value> =
+            out["sessions"].as_array().unwrap().iter().map(|s| &s["session"]).collect();
+        assert_eq!(ids, [&json!("aside-1")], "{out}");
+        let files = out["sessions"][0]["files"].as_array().unwrap();
+        assert_eq!(files[0], json!(aside.to_string_lossy()), "{out}");
+        assert_eq!(files.len(), 3, "{out}");
+    }
+    assert!(kept.exists() && newer.exists(), "a session of unknown age was pruned");
+    assert!(!pruned.exists() && !aside.exists());
+}
+
+/// A process with `retention` set that stops as soon as its turn is done
+/// waits for its prune, and records it, before its last records are
+/// written (ADR 9.5).
+#[test]
+fn adr_0009_a_process_records_its_prune_before_it_exits() {
+    let env = Env::new("c-retention-exit");
+    let old = aged_transcript(&env, "-old-1", "old-2", &["2026-01-01T00:00:00Z"]);
+    env.write_config(&format!("retention = 86400\n\n[profiles.default]\nagent = [{AGENT:?}]\n"));
+    env.start(&["--wait", "--stop-when-idle", "0", "--prompt", "reply hi"]);
+    assert!(wait_for(Duration::from_secs(15), || env.hosts().is_empty()), "still running");
+    assert!(!old.exists(), "old-2 wasn't pruned");
+    let logs = fs::read_dir(env.dir.join("home/hosts")).unwrap().flatten();
+    let recorded = logs.flat_map(|l| {
+        let text = fs::read_to_string(l.path()).unwrap();
+        text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>()
+    });
+    let pruned: Vec<Value> =
+        recorded.filter(|r| r["event"]["event"] == "transcripts_pruned").collect();
+    assert_eq!(pruned.len(), 1, "{pruned:?}");
+    assert_eq!(pruned[0]["event"]["sessions"][0]["session"], "old-2", "{pruned:?}");
+}
+
+/// `retention` is a whole number of seconds, and not 0, which would delete
+/// every transcript once its session closed: anything else fails to load,
+/// before an agent starts (ADR 9.5, ADR 6.1).
+#[test]
+fn adr_0009_retention_is_a_number_of_seconds_not_0() {
+    let env = Env::new("c-retention-bad");
+    for (value, said) in [
+        ("0", "retention = 0 would delete every transcript once its session closed"),
+        ("\"30d\"", "retention is a whole number of seconds, not \"30d\""),
+        ("-1", "retention is a whole number of seconds, not -1"),
+    ] {
+        env.write_config(&format!("retention = {value}\n"));
+        let out = env.run(&new_args(&[]));
+        assert_eq!(code(&out), 1, "{value}");
+        let err = stderr(&out);
+        assert!(err.contains(said) && err.contains("[config_invalid]"), "{value}: {err}");
+        assert!(env.calls().is_empty(), "an agent started");
+    }
+    env.write_config("retention = 2592000\n");
+    let doctor = stdout(&env.run(&["doctor"]));
+    assert!(doctor.contains("more than 30 days ago (retention = 2592000)"), "{doctor}");
 }
 
 /// With `--purge`, a transcript that can't be deleted (a project folder

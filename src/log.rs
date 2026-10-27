@@ -66,7 +66,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fmt::Display;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, ErrorKind, Write};
@@ -1095,42 +1095,33 @@ pub(crate) fn record_in_transcripts(
     (written, failed, made)
 }
 
-/// Deletes `session`'s transcripts (ADR 8.1): in each project folder under
-/// the state directory, its events file and its raw ACP, named for its id
-/// (ADR 9.2), whoever wrote them, and an older brnr's set aside beside them
-/// (`paths::is_sessions_file`, ADR 5.9), and nothing else: not the host logs, which are shared, nor
-/// another session's files. The state directory, `projects` and each folder
-/// are opened without following a symlink, each from the one before, and
-/// the names removed from what was opened (`unlinkat`), so nothing outside
-/// the state directory is reached through a link put in it: a symlinked
-/// folder isn't looked in, and a symlink with a transcript's name is removed,
-/// not what it points at. The paths deleted, and what couldn't be.
-pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
+/// Deletes `session`'s transcripts (ADR 8.1, ADR 9.5): in each project
+/// folder under the state directory, its events file and its raw ACP, named
+/// for its id (ADR 9.2), whoever wrote them, and an older brnr's set aside
+/// beside them (`paths::is_sessions_file`, ADR 5.9), and nothing else: not
+/// the host logs, which are shared, nor another session's files. The state
+/// directory, `projects` and each folder are opened without following a
+/// symlink, each from the one before, and the names removed from what was
+/// opened (`unlinkat`), so nothing outside the state directory is reached
+/// through a link put in it: a symlinked folder isn't looked in, and a
+/// symlink with a transcript's name is removed, not what it points at. The
+/// events file goes last, so a purge cut short leaves the file a session is
+/// found by, for the next to delete. With `dry_run`, nothing is deleted.
+/// The paths deleted (or that would be), and what couldn't be.
+pub(crate) fn purge(session: &str, dry_run: bool) -> (Vec<PathBuf>, Vec<String>) {
     let (mut deleted, mut failed) = (Vec::new(), Vec::new());
-    let root = paths::state_dir();
-    let projects_path = root.join("projects");
+    let projects_path = paths::state_dir().join("projects");
     let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW;
-    fn named(path: &Path) -> impl Fn(io::Error) -> io::Error + '_ {
-        move |e| io::Error::new(e.kind(), format!("{}: {e}", path.display()))
-    }
-    let opened = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(&root)
-        .map_err(named(&root))
-        .and_then(|root| {
-            sys::openat(root.as_fd(), c"projects", flags, 0).map_err(named(&projects_path))
-        });
-    let projects = match opened {
-        Ok(projects) => projects,
-        Err(e) if e.kind() == ErrorKind::NotFound => return (deleted, failed),
+    let projects = match state_part(c"projects") {
+        Ok(Some(projects)) => projects,
+        Ok(None) => return (deleted, failed),
         Err(e) => {
             failed.push(e.to_string());
             return (deleted, failed);
         }
     };
     let name = paths::file_name(session);
-    let own = [format!("{name}.jsonl"), format!("{name}.acp.jsonl")];
+    let (events, acp) = (format!("{name}.jsonl"), format!("{name}.acp.jsonl"));
     let entries = std::fs::read_dir(&projects_path).into_iter().flatten().flatten();
     let mut folders: Vec<_> = entries.map(|e| e.file_name()).collect();
     folders.sort();
@@ -1147,14 +1138,33 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
                 continue;
             }
         };
-        // Its own files first, then an older brnr's set aside (ADR 5.9).
-        let listed = std::fs::read_dir(&path).into_iter().flatten().flatten();
-        let mut aside: Vec<String> = listed
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|f| paths::is_sessions_file(&name, f) && !own.contains(f))
+        // An older brnr's set aside first (ADR 5.9), then its raw ACP, then
+        // its events. A folder that can't be listed is said and left whole:
+        // what it holds of the session isn't known.
+        let listed: io::Result<Vec<String>> = std::fs::read_dir(&path).and_then(|entries| {
+            let names = entries.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()));
+            names.collect()
+        });
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(e) => {
+                failed.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        let mut files: Vec<&String> = listed
+            .iter()
+            .filter(|f| paths::is_sessions_file(&name, f) && **f != events && **f != acp)
             .collect();
-        aside.sort();
-        for file in own.iter().chain(&aside) {
+        files.sort();
+        files.extend([&acp, &events]);
+        for file in files {
+            if dry_run {
+                if listed.contains(file) {
+                    deleted.push(path.join(file));
+                }
+                continue;
+            }
             // An escaped name has no NUL (ADR 9.2).
             let c_file = CString::new(file.as_str()).expect("an escaped name");
             match sys::unlinkat(dir.as_fd(), &c_file, 0) {
@@ -1165,6 +1175,64 @@ pub(crate) fn purge(session: &str) -> (Vec<PathBuf>, Vec<String>) {
         }
     }
     (deleted, failed)
+}
+
+/// Deletes the host log at `path`, `hosts/<run id>.jsonl` under the state
+/// directory (ADR 9.5), as [`purge`] deletes a session's files: the state
+/// directory and `hosts` opened without following a symlink, and the name
+/// removed from what was opened (`unlinkat`). With `dry_run`, nothing is
+/// deleted. Whether there was one to delete, or why it couldn't be.
+pub(crate) fn purge_host_log(path: &Path, dry_run: bool) -> Result<bool, String> {
+    let named = |e: io::Error| format!("{}: {e}", path.display());
+    let name =
+        path.file_name().filter(|_| path.parent() == Some(&paths::state_dir().join("hosts")));
+    let Some(name) = name.and_then(|n| CString::new(n.as_bytes()).ok()) else {
+        return Err(format!("{}: is not a host log", path.display()));
+    };
+    let Some(hosts) = state_part(c"hosts").map_err(|e| e.to_string())? else { return Ok(false) };
+    if dry_run {
+        let file = sys::openat(
+            hosts.as_fd(),
+            &name,
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            0,
+        );
+        return match file {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(named(e)),
+        };
+    }
+    match sys::unlinkat(hosts.as_fd(), &name, 0) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(named(e)),
+    }
+}
+
+/// `sub`, a directory of the state directory's, opened from it, neither
+/// followed through a symlink; none if either isn't there.
+fn state_part(sub: &CStr) -> io::Result<Option<File>> {
+    let root = paths::state_dir();
+    let named = |path: &Path| {
+        let path = path.to_owned();
+        move |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+    };
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW;
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(&root)
+        .map_err(named(&root))
+        .and_then(|dir| {
+            let path = root.join(sub.to_string_lossy().as_ref());
+            sys::openat(dir.as_fd(), sub, flags, 0).map_err(named(&path))
+        });
+    match opened {
+        Ok(dir) => Ok(Some(dir)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// Why no transcript is written at `path`, and what to do.

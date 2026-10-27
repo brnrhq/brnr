@@ -383,6 +383,16 @@ fn adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux() {
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
 
+    for (program, flag) in [("ssh-keygen", "-?"), ("/usr/sbin/sshd", "-V"), ("/usr/bin/ssh", "-V")]
+    {
+        // The version/help exit status varies; only inability to execute means
+        // the prerequisite is missing. Setup failures below remain failures.
+        if let Err(error) = Command::new(program).arg(flag).output() {
+            common::skip(&format!("OpenSSH prerequisite {program} unavailable: {error}"));
+            return;
+        }
+    }
+
     struct Daemon(std::process::Child);
     impl Drop for Daemon {
         fn drop(&mut self) {

@@ -169,6 +169,9 @@ a fake SSH client, without requiring credentials:
 On Linux, `adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux`
 uses a real loopback OpenSSH server with temporary host/client keys,
 known_hosts and client configuration. CI installs OpenSSH for this test.
+The test checks that `ssh-keygen`, `/usr/sbin/sshd` and `/usr/bin/ssh`
+can execute before setup, and uses the shared `skip` helper if any cannot;
+this is a failure in CI or with `BRNR_TESTS_STRICT` set.
 
 Not covered by a Rust test: real editor rendering and path agreement,
 third-party SSH authentication agents, and detection time after a network

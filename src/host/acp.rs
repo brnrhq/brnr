@@ -102,10 +102,10 @@ use super::sessions::{Ending, Hold};
 use super::state::SessionState;
 use super::turns::{self, Activity, Do, Held, Turns};
 use super::{Host, id_key, text_block};
-use crate::config::{ClientCapability, EchoAs, Feature, Log};
 use crate::error::{Code, Error};
 use crate::lock;
 use crate::log::{self, Dir};
+use crate::profiles::{ClientCapability, EchoAs, Feature, Log};
 use crate::schema::{self, ContentBlock, MessageId, NewSessionResponse, SessionUpdate};
 use crate::{frame, json, paths, transcript};
 
@@ -952,8 +952,9 @@ impl Host {
             self.sessions[i].state.result(result.unwrap_or(&Value::Null));
         }
         if let Some(request) = request {
-            // A copy, in the session's file, of what the host log has with its
-            // position: none here (ADR 10.2).
+            // A copy, in the session's file, of what the host log (a fork's:
+            // the forked session's file) has with its position: none here
+            // (ADR 10.2).
             self.sink.msg(session.as_deref(), dir, &request, None);
         }
         session

@@ -1,0 +1,43 @@
+/* The landing page's colours (site/index.html, :root) on mdBook's light and
+   coal themes; the others are mdBook's own. */
+.light, html:not(.js) {
+    --bg: #e4e7df;
+    --fg: #24291d;
+    --sidebar-bg: #d6dbcc;
+    --sidebar-fg: #24291d;
+    --sidebar-active: #3f5520;
+    --sidebar-spacer: #c3c8b7;
+    --links: #3f5520;
+    --inline-code-color: #24291d;
+    --quote-bg: #d6dbcc;
+    --quote-border: #c3c8b7;
+    --table-border-color: #c3c8b7;
+    --table-header-bg: #c3c8b7;
+    --table-alternate-bg: #dde1d6;
+    --theme-popup-bg: #e4e7df;
+    --theme-popup-border: #c3c8b7;
+    --theme-hover: #d6dbcc;
+    --icons: #59604d;
+    --icons-hover: #24291d;
+}
+
+.coal {
+    --bg: #1c1f1a;
+    --fg: #e1e6d6;
+    --sidebar-bg: #262a22;
+    --sidebar-fg: #e1e6d6;
+    --sidebar-active: #c3d89a;
+    --sidebar-spacer: #383d32;
+    --links: #c3d89a;
+    --inline-code-color: #e1e6d6;
+    --quote-bg: #262a22;
+    --quote-border: #383d32;
+    --table-border-color: #383d32;
+    --table-header-bg: #383d32;
+    --table-alternate-bg: #22261f;
+    --theme-popup-bg: #1c1f1a;
+    --theme-popup-border: #383d32;
+    --theme-hover: #262a22;
+    --icons: #9da48f;
+    --icons-hover: #e1e6d6;
+}

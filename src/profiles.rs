@@ -40,6 +40,14 @@
 //!
 //! A routing profile instead contains only a `remote` table naming an SSH
 //! destination and optional brnr-specific overrides (ADR 12.2).
+//!
+//! Beside the profiles, at the top of the file, what every process uses
+//! whatever its profile (ADR 9.5):
+//!
+//! ```toml
+//! retention = 2592000                 # seconds: prune what was last active longer ago
+//! ```
+//!
 //! Without `--profile`, the `default` profile applies if there is one. A key
 //! in the wrong part, an unknown key or name, and the flat layout of before
 //! fail to load, saying which and where (P7, P9).
@@ -66,6 +74,7 @@ use crate::{paths, sys};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    retention: Option<u64>,
     #[serde(default)]
     profiles: BTreeMap<String, Profile>,
 }
@@ -101,6 +110,15 @@ impl Remote {
             config: None,
         }
     }
+}
+
+/// The config file, loaded.
+pub(crate) struct Config {
+    /// How long, in seconds, transcripts and host logs are kept after
+    /// their last activity: every process prunes what is older as it
+    /// starts (ADR 9.5). None keeps them.
+    pub(crate) retention: Option<u64>,
+    pub(crate) profiles: BTreeMap<String, Profile>,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -329,41 +347,38 @@ pub(crate) struct Bridge {
     pub(crate) events: Option<Vec<String>>,
 }
 
-/// The named profile, or `default` (or nothing) when no name is given.
-/// A file that doesn't load is `config_invalid`; a profile it doesn't have,
-/// `profile_not_found` (ADR 8.7).
-pub(crate) fn load(name: Option<&str>) -> Result<Profile, Error> {
+/// The named profile, or `default` (or nothing) when no name is given, and
+/// the config's `retention` (ADR 9.5). A file that doesn't load is
+/// `config_invalid`; a profile it doesn't have, `profile_not_found` (ADR
+/// 8.7).
+pub(crate) fn load(name: Option<&str>) -> Result<(Profile, Option<u64>), Error> {
     let path = paths::config_file();
     let invalid = |e: String| Error::new(Code::config_invalid, format!("{}: {e}", path.display()));
-    let profiles = match load_all() {
-        Ok(Some(profiles)) => profiles,
-        Ok(None) if name.is_none() => return Ok(Profile::default()),
+    let config = match load_all() {
+        Ok(Some(config)) => config,
+        Ok(None) if name.is_none() => return Ok((Profile::default(), None)),
         Ok(None) => return Err(invalid("no such file".into())),
         Err(problems) => return Err(invalid(problems.join("; "))),
     };
-    match name {
-        Some(name) => profiles.get(name).cloned().ok_or_else(|| {
+    let profile = match name {
+        Some(name) => config.profiles.get(name).cloned().ok_or_else(|| {
             let error = format!("no profile {name:?} in {}", path.display());
             Error::new(Code::profile_not_found, error)
-        }),
-        None => Ok(profiles.get("default").cloned().unwrap_or_default()),
-    }
+        })?,
+        None => config.profiles.get("default").cloned().unwrap_or_default(),
+    };
+    Ok((profile, config.retention))
 }
 
-/// Every profile, or `None` if there is no config file. Otherwise what's
+/// The config, or `None` if there is no config file. Otherwise what's
 /// wrong with it, each problem saying where.
-pub(crate) fn load_all() -> Result<Option<BTreeMap<String, Profile>>, Vec<String>> {
-    Ok(load_file()?.map(|file| file.profiles))
-}
-
-/// The complete config, including routing settings, with the same private-file checks.
-fn load_file() -> Result<Option<ConfigFile>, Vec<String>> {
+pub(crate) fn load_all() -> Result<Option<Config>, Vec<String>> {
     let path = paths::config_file();
     let Some(text) = read_private(&path)? else { return Ok(None) };
     parse_file(&text).map(Some)
 }
 
-fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
+fn parse_file(text: &str) -> Result<Config, Vec<String>> {
     let at_line = |e: toml::de::Error| match e.span() {
         Some(span) => {
             format!("line {}: {}", text[..span.start].matches('\n').count() + 1, e.message())
@@ -387,7 +402,7 @@ fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
             }
         }
     }
-    Ok(file)
+    Ok(Config { retention: file.retention, profiles: file.profiles })
 }
 
 // ---- who can reach it ---------------------------------------------------
@@ -544,14 +559,20 @@ impl Part {
 }
 
 /// What the typed parse can't say well: keys in the wrong part (the flat
-/// layout of before among them), unknown keys and names, `log`'s values and
-/// a bridge's `command` given as a list.
-/// Types are left to it.
+/// layout of before among them), unknown keys and names, `log`'s values, a
+/// bridge's `command` given as a list, and a `retention` that isn't a
+/// number of seconds, or is 0. Other types are left to it.
 fn check(file: &toml::Table) -> Vec<String> {
     let mut problems = Vec::new();
     for (key, value) in file {
+        if key == "retention" {
+            problems.extend(check_retention(value));
+            continue;
+        }
         if key != "profiles" {
-            problems.push(format!("unknown key {key} (the config has only [profiles.<name>])"));
+            problems.push(format!(
+                "unknown key {key} (the config has retention and [profiles.<name>])"
+            ));
             continue;
         }
         let Some(profiles) = value.as_table() else {
@@ -567,6 +588,21 @@ fn check(file: &toml::Table) -> Vec<String> {
         }
     }
     problems
+}
+
+/// What is wrong with `retention`'s value: it is a whole number of seconds
+/// (ADR 6.1), and not 0, which would delete every transcript as soon as its
+/// session closed, and which another tool may read as "no limit" (P4).
+fn check_retention(value: &toml::Value) -> Option<String> {
+    match value.as_integer() {
+        Some(0) => Some(
+            "retention = 0 would delete every transcript once its session closed: leave \
+             retention out to keep them, or set log = \"off\" in a profile to write none"
+                .into(),
+        ),
+        Some(n) if n > 0 => None,
+        _ => Some(format!("retention is a whole number of seconds, not {value}")),
+    }
 }
 
 fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<String>) {

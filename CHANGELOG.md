@@ -43,6 +43,69 @@ brnr's own conventions:
   `[profiles.<name>.remote]`. `remote check --profile <p>` checks a routing
   profile's installation (ADR 12.2).
 
+## [0.11.0] - 2026-10-24
+
+### Added
+
+- The library has a typed facade: a module for each command group and a
+  function for each verb (`brnr::session::list`, `brnr::prompt::send`),
+  which runs the command and returns what its `--json` prints, with the
+  same names and shapes, and an error with its code (`brnr::Error`,
+  `brnr::Code`). Waits return their exit status with their data
+  (`brnr::Exit`), as do `session delete`, `session prune` and `doctor`;
+  `event log` and `event watch` give each event to a
+  closure. `session new` and `session resume` start the process as
+  `<program> host`, which the program hands to `brnr::run`. A usage error is
+  the new code `usage_invalid`, which only the facade returns
+  (ADR 8.5, 8.7, #215).
+- A retention policy for transcripts and host logs (ADR 9.5, #373). brnr
+  still keeps everything by default, and now says so: the README and the
+  transcripts guide say what it keeps, where, and for how long. `brnr
+  session prune --older-than <s> [--dry-run] [--json]` deletes brnr's
+  transcripts of the sessions last active more than `<s>` seconds ago,
+  and the host logs of processes that have gone and were, as `session
+  delete --purge` deletes them. `retention = <s>` at the top of the config
+  has every process do the same as it starts, and record it in its host
+  log (`transcripts_pruned`). A session open in a process, or whose lock is
+  held, is never pruned. `doctor` says the retention in days.
+- Junie (`junie --acp true`) and Cursor (`cursor-agent acp`) through brnr:
+  profile examples, and `adapters/smoke.py`, a smoke check run by hand with
+  the real agent, which checks initialize, a session, a prompt, a cancel, a
+  clean shutdown, and fork, list, resume and close where the agent
+  advertises them. The guide records the results, with the versions: Junie
+  26.10.5 passes every check; Cursor 2026.10.19 fails two of its own
+  making, which brnr doesn't work around (ADR 11.9, #231).
+- What `brnr acp` adds is measured on every pull request: a prompt's round
+  trip and a streamed turn's time, each over the same agent on a direct
+  pipe, the memory of `brnr acp` and its process at rest, and their
+  threads, with budgets in `benches/budgets.toml`. The job fails when a
+  number passes its budget, and a comment on the pull request has the
+  numbers. The README and the book give one run's (ADR 1, N3, #35).
+
+### Changed
+
+- **Breaking:** `session delete --purge` deletes a session's events file
+  last, after its raw ACP and the files set aside, so a purge cut short
+  leaves the file the session is found by (ADR 9.5). `purged` lists them
+  in that order.
+- The documentation is a book, at
+  [brnrhq.github.io/brnr/docs](https://brnrhq.github.io/brnr/docs/), with
+  search: the guide that was the README, the interface reference, the ADRs
+  and the threat model. The README is short: what brnr is, installing, a
+  quick start and links to the book. The landing page links to the book
+  (ADR 11.8, #374).
+- The landing page, the README and the book's introduction say what brnr
+  is for, in the same words: a burner phone for your coding agents, and
+  four things it does, each with an example on the page and the
+  introduction. The diagram is an image, light and dark, in place of the
+  text one (ADR 1, #376).
+- The interface reference is a section of the book, `docs/reference/`: a
+  page for each command group, and pages for the events, the bridge
+  protocol, exit codes, errors, the configuration and the files. Each output
+  has a table of its fields and an example, which a test runs and compares
+  with what brnr prints. `docs/interface.md` is gone (ADR 8.4, ADR 11.8,
+  #375).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added
@@ -1289,7 +1352,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/brnrhq/brnr/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/brnrhq/brnr/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/brnrhq/brnr/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/brnrhq/brnr/compare/v0.7.0...v0.8.0

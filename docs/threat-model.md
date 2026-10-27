@@ -5,7 +5,7 @@ reach it over a Unix socket, including answering the agent's approvals from
 outside the editor. That makes it a security boundary: whoever can reach the
 process can act as the agent's user. This document says who can reach what,
 how brnr keeps it so, and which test checks each claim. Where a claim has no
-enforcement or no test, it is listed as a gap. [SECURITY.md](../SECURITY.md)
+enforcement or no test, it is listed as a gap. [SECURITY.md](https://github.com/brnrhq/brnr/blob/main/SECURITY.md)
 says what is in scope for a report; the principles cited are
 [ADR 1](adr/0001-principles.md)'s.
 
@@ -22,7 +22,8 @@ says what is in scope for a report; the principles cited are
   the wrong party, or for nobody, is input the user didn't give; a URL the
   agent sends is its text, and opening it is the user's to do.
 - **Prompts and code in transcripts.** `~/.brnr` keeps every session's events
-  and raw ACP (ADR 5.1): prompts, the agent's replies, tool calls with their
+  and raw ACP (ADR 5.1), until the user deletes them, or, with `retention`
+  set, until they are older than it (ADR 9.5): prompts, the agent's replies, tool calls with their
   input and output, diffs of the user's code, and, in an editor's session,
   what the editor answered the agent's file and terminal requests with,
   where the profile or strict mode passes them: files as its buffers have
@@ -155,6 +156,7 @@ without checking its claim, and says `skipped:` on stderr.
 | Before a record goes into a session's events, its raw ACP or a host log, the state directory, each directory below it and the file are the user's and have no group or other bits (and on macOS no access control list, which is refused, below), however they came to exist: one others can reach is made private through the descriptor that is then written to (`fchmod`), beneath private parents or traversable ones, and the host log records `path_made_private` with the mode it had (`brnr session delete`, which records `session_deleted` with no host log, says so on stderr, ADR 8.1). There is no override (ADR 9.3). | `open_private`, `keep_private` (src/log.rs), the one open of all three (`open_append`); `Writer::made_private`; `record_in_transcripts` (src/log.rs), `delete` (src/ctl/delete.rs) | `security.rs`: `adr_0009_a_transcript_others_can_read_is_made_private_before_it_is_written`; `cli.rs`: `adr_0008_delete_records_in_each_transcript_it_can`; src/log.rs: `adr_0009_what_others_can_reach_is_made_private_before_a_write` |
 | A transcript, a directory on the way or the state directory that is a symlink is never followed; one that isn't a directory or regular file, is another user's, has another hard link, or, on macOS, has an access control list, which can grant what the mode doesn't show, is refused (an ACL with the `chmod -N` that removes it; brnr doesn't). Each is opened from the one above it (`openat`, `O_NOFOLLOW`) and checked by `fstat` of what was opened, so nothing can be swapped in between. A refused host log fails the start; a refused session file is `session_log_failed` in the host log, or, for `brnr session delete`, said on stderr, and the command fails. What reads transcripts (`session list`, `event log`, `session resume`, `session delete`, catching up, `doctor`) holds every part of the path to the same rules, opened the same way from the state directory it is in, and checked by `fstat`: nothing is looked in or read through a symlink (the state directory, `projects`, `hosts`, a project folder, the file), nor is what isn't the user's own directory or regular file, or has another hard link, which could be any file of the user's taken for a session, or an access control list (ADR 8.1, ADR 9.3). | `open_private`, `keep_private`, `at` (src/log.rs); `sys::openat`, `sys::mkdirat`, `sys::has_acl` (src/sys.rs); `open`, `walk`, `check`, `entries` (src/transcript.rs), the one place transcripts are read | `security.rs`: `adr_0009_a_symlinked_transcript_is_never_followed`, `adr_0009_a_symlinked_transcript_is_never_read`, `adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read`, `adr_0009_a_transcript_with_an_acl_is_never_written` (macOS), `adr_0009_a_transcript_with_an_acl_is_never_read` (macOS); src/log.rs: `adr_0009_a_symlink_is_never_followed`, `adr_0009_only_the_users_own_directories_and_files_are_written_to`; src/transcript.rs: `adr_0009_a_transcript_is_read_only_where_it_could_be_written`, `adr_0009_every_part_of_a_transcripts_path_is_the_users_own`; `cli.rs`: `adr_0008_delete_records_in_each_transcript_it_can` |
 | `session delete --purge` deletes only the session's own files: in each project folder under the state directory, its events file and raw ACP, named for its id escaped (ADR 9.2), so an id can't name another session's file or climb out. The state directory, `projects` and each folder are opened without following a symlink, each from the one before, and the names removed from what was opened (`unlinkat`): a symlinked folder isn't looked in, and a symlink named like the transcript is removed, not what it points at. The host logs stay (ADR 8.1). | `purge` (src/log.rs); `sys::openat`, `sys::unlinkat` (src/sys.rs); `paths::file_name` (src/paths.rs) | `security.rs`: `adr_0008_purge_deletes_only_that_sessions_files`; `cli.rs`: `adr_0008_delete_purge` |
+| `session prune --older-than <s>`, and each process as it starts with the config's `retention`, delete only what was last active more than `<s>` seconds ago, as `--purge` deletes it: a session's own files, named for its id escaped, removed from the folders opened without following a symlink (`openat`, `O_NOFOLLOW`, `unlinkat`), its events file last; and the host log of a process that has gone, from `hosts` opened the same way. Never a session open in a process or whose lock is held: its lock is taken first, and its age read again under it. Never the host log of a running process (listed, or its pid alive without `process_exited`), nor a file brnr can't read the age of. Nothing has an age limit unless the user sets one (ADR 9.5). | `prune`, `run`, `still_old` (src/ctl/prune.rs); `purge`, `purge_host_log` (src/log.rs); `lock::holding` (src/lock.rs); `check_retention` (src/profiles.rs) | `cli.rs`: `adr_0009_prune_deletes_what_was_last_active_before_the_age`, `adr_0009_prune_never_touches_an_open_or_locked_session`, `adr_0009_a_process_prunes_as_it_starts_when_retention_is_set`, `adr_0009_retention_is_a_number_of_seconds_not_0`, `adr_0009_prune_keeps_a_session_it_cant_read_the_age_of`, `adr_0009_a_process_records_its_prune_before_it_exits` |
 | `doctor` warns of transcripts others can read, of one with an access control list (macOS), with the `chmod -N` that removes it, which `--fix` doesn't do, of one it can't open, which `--fix` leaves too, and of a state directory, `hosts` or `projects` that isn't a directory, and `--fix` makes them private, never through a symlink: each path is opened from the one above it (`openat`, `O_NOFOLLOW`), checked by `fstat`, a directory listed through what was opened, and a mode changed through it (`fchmod`), so it doesn't look below a symlinked state directory, `hosts` or `projects`, nor change what is put at a name after it looked (ADR 9.3). | `transcripts`, `Found` (src/ctl/doctor.rs); `sys::openat`, `sys::names`, `sys::has_acl` (src/sys.rs) | `doctor.rs`: `readable_transcripts_are_made_private`, `a_state_part_that_is_not_a_directory_is_a_problem`, `adr_0009_doctor_says_what_it_cant_open_and_what_fix_left`; src/ctl/doctor.rs: `adr_0009_fix_changes_what_was_opened_not_its_name`; `security.rs`: `adr_0009_a_symlinked_hosts_or_projects_folder_is_never_read`, `adr_0009_a_transcript_with_an_acl_is_never_read` (macOS) |
 
 ### B3: `brnr acp` passes bytes unchanged but for the named changes
@@ -211,7 +213,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/config.rs), from `load_all`, the one place the config is read; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
+| Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/profiles.rs), from `load_all`, including local routing profiles and `remote check --profile`; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
 | `doctor` fails a config file others can reach, with the same problems and fixes, and `--fix` doesn't change it. | `config_file` (src/ctl/doctor.rs), through `load_all` | `doctor.rs`: `adr_0009_doctor_fails_a_config_others_can_reach` |
 
 ### The adapters and the release
@@ -232,10 +234,11 @@ What brnr doesn't enforce, or doesn't test, today.
   bridge that ignores EOF, is blocked, or leaves descendants can survive it.
   `doctor --fix` repairs stale metadata and locks; it does not kill those
   survivors. `chaos.rs` checks a flooding agent exits on its broken pipe,
-  and that killing the proxy during a hung turn lets the surviving host
-  stop its agent. Neither establishes unconditional cleanup after host
+  and that killing the proxy during a hung setup or turn lets the surviving
+  host stop its agent. Neither establishes unconditional cleanup after host
   SIGKILL; that would require a separate lifetime supervisor on both macOS
-  and Linux.
+  and Linux (#391). Its test, `killed_host_leaves_no_agent_or_child_behind`,
+  fails today and is ignored until then.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
 - **No peer credentials on the socket.** The process doesn't check who
@@ -353,12 +356,19 @@ What brnr doesn't enforce, or doesn't test, today.
 - **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
   next to the `brnr` executable first (ADR 11.2); that directory is trusted as
   `PATH` is.
+- **A process the library's facade starts is the calling program.**
+  `brnr::session::new` and `resume` start it as `<program> host` (ADR 8.5),
+  and look up bare names next to that program: the program, which runs as
+  the user, is trusted as the `brnr` executable is. A program that doesn't
+  hand `host` to `brnr::run` runs its own code there, with the start
+  request on its stdin, and the start fails: no process says it is ready.
+  Tested only for a program that does (`tests/facade.rs`).
 - **The adapters' dependencies.** Pinned and locked, but brnr doesn't review
   them: a compromised version of an adapter's package, pinned in a release,
   runs as the agent.
 
 ## Out of scope
 
-As [SECURITY.md](../SECURITY.md) has it: the agents and the upstream adapters
+As [SECURITY.md](https://github.com/brnrhq/brnr/blob/main/SECURITY.md) has it: the agents and the upstream adapters
 themselves, what an agent does with an approval its user gave, and anyone who
 can already run code as the user.
