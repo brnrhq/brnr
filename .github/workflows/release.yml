@@ -159,6 +159,8 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The first release adds the Muse formula; -a skips untracked files.
+          git add Formula/brnr-muse-adapter.rb
           git commit -am "brnr ${GITHUB_REF_NAME#v}"
           git push
 

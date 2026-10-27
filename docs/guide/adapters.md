@@ -27,8 +27,8 @@ aren't installed by the source build. Build only Muse with
 
 They don't include the agents. Each runs the user's own `claude`, `codex` or `muse`
 (from `PATH` or the usual install locations, or `CLAUDE_CODE_EXECUTABLE` /
-`CODEX_PATH` / `MUSE_CLI`). Muse also searches `MUSE_INSTALL_DIR`, then
-`~/.local/bin`, when `PATH` has no `muse`; run `muse login` first.
+`CODEX_PATH` / `MUSE_CLI`). When `PATH` has no `muse`, Muse searches
+`MUSE_INSTALL_DIR`, or `~/.local/bin` when that is unset; run `muse login` first.
 The alternative npm package is **`@brokkai/muse-acp`**: the unscoped
 `muse-acp` is an unrelated project.
 
