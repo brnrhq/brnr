@@ -262,10 +262,9 @@ points (N1).
 ## 9.4 The config file is read only if only you can change or read it
 
 Remote definitions and routing profiles use the same reader and checks
-(ADR 12.2). Remote management additionally requires a private directory,
-refuses to edit a symlink path, and atomically replaces only the selected
-remote table through a create-new 0600 temporary file. It never weakens an
-existing config's permissions. Reading a symlinked config remains supported.
+(ADR 12.2). The remote command group only inspects configuration and remote
+installations; it has no configuration-editing commands. Symlinked config
+files retain the normal read-only support below.
 
 - Before brnr reads the config file (`$BRNR_CONFIG`, else
   `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml`),

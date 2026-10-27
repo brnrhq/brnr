@@ -108,14 +108,16 @@ stay remotely configured; profiles are not copied between machines.
 `remote::script` quotes each shell word and validates the destination so
 it cannot become an SSH option. The preflight reads `/dev/null` and keeps
 successful output off ACP/JSON streams. `_remote` prevents routing loops
-without exposing a marker to agents. Config editing uses the existing
-private-file reader, a private create-new temporary file and atomic rename;
-it refuses symlinked config paths and remote removal while a routing
-profile references the name. Same-user processes remain trusted.
+without exposing a marker to agents. Remote settings are
+maintained manually; `remote list` and `remote check` read configuration
+through the existing private-file reader and never write it. No remote
+command creates or edits config. Same-user processes remain trusted;
+removing CLI config editing does not prevent direct file access when the
+agent's filesystem permissions already allow it.
 
 `tests/remote.rs` checks command injection, prompt/delimiter parsing,
 isolated remote state, version/authentication failures, ACP/stdin streams,
-private config edits, retained data and observer disconnects. Its Linux
+read-only config inspection and observer disconnects. Its Linux
 system-SSH test uses an isolated loopback server and temporary keys, without
 modifying the user's SSH configuration or known_hosts. Black-hole detection
 time, editor path mapping and external authentication agents remain

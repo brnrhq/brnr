@@ -1,4 +1,4 @@
-//! Remote target setup and management (ADR 12.2).
+//! Read-only remote target inspection (ADR 12.2).
 
 use super::{Args, args, print_json};
 use crate::remote;
@@ -25,41 +25,6 @@ pub(super) fn main(verb: &str, a: &Args) -> Result<ExitCode, args::Error> {
         "check" => {
             return remote::check(&remote::destination(&file, &a.positional[0])?, a.json)
                 .map_err(Into::into);
-        }
-        "init" => {
-            let name = &a.positional[0];
-            let mut settings = remote::destination(&file, name)?;
-            if let Some(host) = a.value("--host") {
-                settings.host = host.into();
-            }
-            if let Some(executable) = a.value("--executable") {
-                settings.executable = executable.into();
-            }
-            for (flag, value) in [
-                ("--cwd", &mut settings.cwd),
-                ("--runtime-dir", &mut settings.runtime_dir),
-                ("--home", &mut settings.home),
-                ("--config", &mut settings.config),
-            ] {
-                if let Some(given) = a.value(flag) {
-                    *value = Some(given.into());
-                }
-            }
-            remote::init(name, &settings)?;
-            if a.json {
-                print_json(&json!({"remote": name, "settings": settings}))?;
-            } else {
-                show(name, &settings);
-            }
-        }
-        "remove" => {
-            let name = &a.positional[0];
-            remote::remove(name)?;
-            if a.json {
-                print_json(&json!({"remote": name, "removed": true}))?;
-            } else {
-                outln!("remote {name}: removed");
-            }
         }
         _ => unreachable!("remote verb was validated"),
     }

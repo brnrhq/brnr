@@ -159,11 +159,8 @@ event
                   [--json]
 
 remote
-  brnr remote init <name> [--host <destination>] [--executable <program>]
-                   [--cwd <dir>] [--runtime-dir <dir>] [--home <dir>] [--config <file>] [--json]
   brnr remote list [--json]
   brnr remote check <target> [--json]
-  brnr remote remove <name> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]

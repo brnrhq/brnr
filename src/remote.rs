@@ -2,17 +2,11 @@
 //! Routing happens before local profile resolution and socket discovery.
 
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
 
 use crate::config::{self, ConfigFile, Remote};
 use crate::{ctl, paths};
-use serde::Deserialize;
-use std::collections::BTreeMap;
 
 /// None leaves a local command to its existing parser and implementation.
 pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
@@ -188,7 +182,7 @@ fn script(remote: &Remote, args: &[String], json: bool) -> Result<String, String
         script.push_str(&format!("cd {} || {{ printf '%s\\n' 'brnr: remote cwd unavailable [unclassified]' >&2; {error_json}exit 1; }}; ", paths::shell_word(cwd)));
     }
     script.push_str(&format!(
-        "v=$({program} _remote --version </dev/null) || {{ printf '%s\\n' 'brnr: remote executable unavailable or lacks remote support; check brnr remote init and executable [unclassified]' >&2; {error_json}exit 1; }}; \
+        "v=$({program} _remote --version </dev/null) || {{ printf '%s\\n' 'brnr: remote executable unavailable or lacks remote support; check the configured remote executable [unclassified]' >&2; {error_json}exit 1; }}; \
          if [ \"$v\" != {expected} ]; then printf '%s\\n' \"brnr: remote version mismatch: expected \"{expected}\", got $v; install matching brnr versions [unclassified]\" >&2; {error_json}exit 1; fi; exec {program} _remote"
     ));
     for arg in args {
@@ -212,115 +206,4 @@ pub(crate) fn check(remote: &Remote, json: bool) -> Result<ExitCode, String> {
     }
     let error = ssh(remote, &args, json)?.exec();
     Err(format!("cannot execute ssh: {error}; install the OpenSSH client"))
-}
-
-/// Explicit initialisation verifies the executable/version before storing
-/// anything. Trust and authentication are established with SSH itself.
-pub(crate) fn init(name: &str, remote: &Remote) -> Result<(), String> {
-    validate_host(name)?;
-    validate(remote)?;
-    let mut command = ssh(remote, &["--version".into()], false)?;
-    let status = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
-        .map_err(|e| format!("cannot execute ssh: {e}; install the OpenSSH client"))?;
-    if !status.success() {
-        return Err(format!(
-            "remote check failed ({status}); run ssh {} to establish host trust and authentication, and install brnr {} on the destination",
-            remote.host,
-            env!("CARGO_PKG_VERSION")
-        ));
-    }
-    edit(name, Some(remote))
-}
-
-pub(crate) fn remove(name: &str) -> Result<(), String> {
-    edit(name, None)
-}
-
-/// A private create-new temporary file also serialises brnr's config edits.
-/// Rename commits once; a failed edit leaves the old config unchanged.
-fn edit(name: &str, remote: Option<&Remote>) -> Result<(), String> {
-    validate_host(name)?;
-    let path = paths::config_file();
-    let path = match fs::symlink_metadata(&path) {
-        Ok(m) if m.file_type().is_symlink() => {
-            return Err(
-                "remote management refuses a config symlink; set BRNR_CONFIG to its real path"
-                    .into(),
-            );
-        }
-        Ok(_) => path,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => path,
-        Err(e) => return Err(e.to_string()),
-    };
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    paths::ensure_private(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let temp =
-        path.with_file_name(format!(".{}.remote.tmp", path.file_name().unwrap().to_string_lossy()));
-    let mut file =
-        OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp).map_err(|e| {
-            format!("{}: {e}; another remote edit may be in progress", temp.display())
-        })?;
-    let result = (|| -> Result<(), String> {
-        let text = config::read_private(&path).map_err(|e| e.join("; "))?.unwrap_or_default();
-        let parsed = config::parse_file(&text).map_err(|e| e.join("; "))?;
-        if remote.is_none() {
-            if !parsed.remotes.contains_key(name) {
-                return Err(format!("no configured remote {name:?}"));
-            }
-            for (profile, value) in &parsed.profiles {
-                if value.remote.as_ref().is_some_and(|r| r.target == name) {
-                    return Err(format!(
-                        "remote {name:?} is used by profile {profile:?}; update that profile first"
-                    ));
-                }
-            }
-        }
-        let text = edit_text(&text, name, remote)?;
-        config::parse_file(&text).map_err(|e| e.join("; "))?;
-        file.write_all(text.as_bytes()).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
-        fs::rename(&temp, &path).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
-type Fields = BTreeMap<String, toml::Spanned<toml::Value>>;
-
-#[derive(Deserialize)]
-struct Spans {
-    #[serde(default)]
-    remotes: BTreeMap<String, toml::Spanned<Fields>>,
-}
-
-/// Change only the target's table, preserving other settings and comments.
-/// Unusual inline/dotted layouts can still be read, but must be edited by hand.
-fn edit_text(text: &str, name: &str, remote: Option<&Remote>) -> Result<String, String> {
-    let spans: Spans = toml::from_str(text).map_err(|e| e.to_string())?;
-    let replacement = if let Some(remote) = remote {
-        let value = toml::Value::try_from(remote).map_err(|e| e.to_string())?;
-        let entries = toml::Table::from_iter([(name.into(), value)]);
-        toml::to_string_pretty(&toml::Table::from_iter([("remotes".into(), entries.into())]))
-            .map_err(|e| e.to_string())?
-    } else {
-        String::new()
-    };
-    let mut edited = text.to_owned();
-    if let Some(table) = spans.remotes.get(name) {
-        let start = table.span().start;
-        if !text[start..].starts_with('[') {
-            return Err("remote management edits [remotes.<name>] tables; edit inline or dotted remote definitions manually".into());
-        }
-        let last = table.get_ref().values().map(|v| v.span().end).max().unwrap_or(table.span().end);
-        let end = text[last..].find('\n').map_or(text.len(), |n| last + n + 1);
-        edited.replace_range(start..end, &replacement);
-    } else {
-        edited.push_str("\n\n");
-        edited.push_str(&replacement);
-    }
-    Ok(edited)
 }

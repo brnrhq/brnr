@@ -134,11 +134,8 @@ event
                   [--json]
 
 remote
-  brnr remote init <name> [--host <destination>] [--executable <program>]
-                   [--cwd <dir>] [--runtime-dir <dir>] [--home <dir>] [--config <file>] [--json]
   brnr remote list [--json]
   brnr remote check <target> [--json]
-  brnr remote remove <name> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -162,7 +159,7 @@ Remote paths and event notify commands are on the destination. See brnr remote -
 All execution commands, including `acp`, `doctor`, `skill` and
 `--version`, accept `--remote <target>` before `--`. The target is a saved
 remote name or SSH destination `[user@]host`. Help remains local. The
-`remote` management group remains local and does not accept `--remote`.
+`remote` inspection group remains local and does not accept `--remote`.
 
 System OpenSSH executes the same command remotely, with inherited standard
 streams, no terminal, `BatchMode=yes` and `StrictHostKeyChecking=yes`.
@@ -186,20 +183,15 @@ There is no file transfer, path translation or implicit credential copy.
 Local ACP signal/pipe fidelity is limited by SSH's channel semantics.
 
 ```text
-brnr remote init <name> [--host <destination>] [--executable <program>]
-                 [--cwd <dir>] [--runtime-dir <dir>] [--home <dir>]
-                 [--config <file>] [--json]
 brnr remote list [--json]
 brnr remote check <target> [--json]
-brnr remote remove <name> [--json]
 ```
 
-Init verifies access/version and saves local settings for an existing
-installation; supplied flags replace existing settings. It does not
-install packages. Check executes the destination's doctor. Remove deletes
-only local settings and refuses a target used by a routing profile.
-List JSON is `{remotes: [{name, settings}]}`, init is `{remote, settings}`,
-remove is `{remote, removed: true}`, and check returns doctor's interface.
+List reads locally configured remote settings; check executes the
+destination's doctor after the version preflight. List JSON is
+`{remotes: [{name, settings}]}`; check returns doctor's interface. Maintain
+remote settings manually in the config file; these commands do not create,
+edit or delete local configuration.
 
 Config permits `[remotes.<name>]` with required string `host`, string
 `executable` (default `brnr`), and optional strings `cwd`, `runtime_dir`,
@@ -211,11 +203,9 @@ and optional destination `profile`. Execution settings stay on the
 destination. SSH keys, usernames omitted from destinations, ports and
 jump hosts are managed through SSH configuration.
 
-Remote management preserves text outside the selected remote table,
-creates private directories/files (0700/0600), and atomically replaces the
-config. Inline/dotted definitions require manual edits. Symlinked configs
-are read normally but management refuses to edit them; point `BRNR_CONFIG`
-at the real file instead. See [ADR 12](adr/0012-remote-execution.md).
+Remote inspection uses the existing private config-file checks, including
+symlink support, and does not create a config file or directory when
+missing. See [ADR 12](adr/0012-remote-execution.md).
 
 ## CLI inputs and results
 

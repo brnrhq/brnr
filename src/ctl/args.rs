@@ -246,17 +246,8 @@ pub(super) const VERBS: &[Spec] = &[
     verb("event", "wait", SESSION)
         .flags(&[Flag("--for", One("a value")), Flag("--timeout", Seconds)]),
     command("doctor", &[]).flags(&[switch("--fix"), switch("--report")]),
-    verb("remote", "init", &["<name>"]).flags(&[
-        Flag("--host", One("a destination")),
-        Flag("--executable", One("a program or absolute path")),
-        Flag("--cwd", One("an absolute remote path")),
-        Flag("--runtime-dir", One("an absolute remote path")),
-        Flag("--home", One("an absolute remote path")),
-        Flag("--config", One("an absolute remote path")),
-    ]),
     verb("remote", "list", &[]),
     verb("remote", "check", &["<target>"]),
-    verb("remote", "remove", &["<name>"]),
     command("skill", &["<reference>"]).optional().no_json(),
     verb("skill", "install", &[]).flags(&[Flag("--dir", Many("a directory"))]).no_json(),
 ];

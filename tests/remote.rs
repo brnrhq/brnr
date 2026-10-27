@@ -210,84 +210,39 @@ fn adr_0012_direct_user_destinations_use_remote_path_without_initialisation() {
 }
 
 #[test]
-fn adr_0012_management_saves_private_settings_and_never_deletes_remote_data() {
-    let s = Setup::new("management");
-    let original = fs::read_to_string(s.local.config()).unwrap();
-    s.local.write_config(&format!(
-        "# keep this comment\n{original}\n[profiles.local]\n# keep this too\nlog = 'events'\n"
-    ));
-    s.run(&[
-        "remote",
-        "init",
-        "server",
-        "--host",
-        "agent@linux",
-        "--executable",
-        env!("CARGO_BIN_EXE_brnr"),
-        "--json",
-    ]);
-    let listed = s.run(&["remote", "list", "--json"]);
-    assert_eq!(listed["remotes"].as_array().unwrap().len(), 2);
-    assert_eq!(fs::metadata(s.local.config()).unwrap().permissions().mode() & 0o777, 0o600);
-    assert_eq!(
-        fs::metadata(s.local.config().parent().unwrap()).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    let sentinel = s.remote.dir.join("keep");
-    fs::write(&sentinel, "keep").unwrap();
-    s.run(&["remote", "remove", "server", "--json"]);
-    let edited = fs::read_to_string(s.local.config()).unwrap();
-    assert!(edited.contains("# keep this comment"));
-    assert!(edited.contains("# keep this too\nlog = 'events'"));
-    assert!(sentinel.exists());
-    assert_eq!(s.run(&["remote", "list", "--json"])["remotes"].as_array().unwrap().len(), 1);
-    let original = fs::read_to_string(s.local.config()).unwrap();
-    let out = s
-        .cmd(&["remote", "init", "bad", "--host", "linux"])
-        .env("SSH_FAIL", "255")
-        .output()
+fn adr_0012_remote_inspection_never_writes_configuration() {
+    let s = Setup::new("inspection");
+    let original = fs::read(s.local.config()).unwrap();
+    fs::set_permissions(s.local.config(), fs::Permissions::from_mode(0o400)).unwrap();
+    fs::set_permissions(s.local.config().parent().unwrap(), fs::Permissions::from_mode(0o500))
         .unwrap();
-    assert!(!out.status.success());
-    assert_eq!(fs::read_to_string(s.local.config()).unwrap(), original);
-    s.local.write_config(&format!("{original}\n[profiles.work.remote]\ntarget='linux'\n"));
-    let out = s.cmd(&["remote", "remove", "linux"]).output().unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("used by profile"));
-}
-
-#[test]
-fn adr_0012_management_updates_preserve_unrelated_config_and_doctor_is_remote() {
-    let s = Setup::new("update");
-    let original = fs::read_to_string(s.local.config()).unwrap();
-    s.local.write_config(&format!(
-        "# retained\n{original}\n[profiles.local]\nlog='events' # retained too\n"
-    ));
-    s.run(&["remote", "init", "linux", "--cwd", s.remote.dir.to_str().unwrap(), "--json"]);
-    let updated = fs::read_to_string(s.local.config()).unwrap();
-    assert!(updated.contains("log='events' # retained too"));
-    assert!(updated.starts_with("# retained"));
-    assert_eq!(
-        s.run(&["remote", "list", "--json"])["remotes"][0]["settings"]["cwd"],
-        s.remote.dir.to_str().unwrap()
-    );
-    let out = s.cmd(&["remote", "check", "linux", "--json"]).output().unwrap();
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let listed = s.run(&["remote", "list", "--json"]);
+    assert_eq!(listed["remotes"][0]["name"], "linux");
+    assert!(s.arguments().is_empty(), "listing must not connect");
+    let checked = s.cmd(&["remote", "check", "linux", "--json"]).output().unwrap();
+    let result: Value = serde_json::from_slice(&checked.stdout).unwrap();
     assert!(result["checks"].is_array(), "{result}");
     assert!(s.arguments().last().unwrap()[6].as_str().unwrap().contains("_remote doctor --json"));
-    // A new config and private directory can be created without touching profiles.
+    for verb in ["init", "remove"] {
+        let out = s.cmd(&["remote", verb, "linux", "--json"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("unknown command"));
+    }
+    assert_eq!(s.arguments().len(), 1, "removed commands must not connect");
+    assert_eq!(fs::read(s.local.config()).unwrap(), original);
+    assert_eq!(fs::metadata(s.local.config()).unwrap().permissions().mode() & 0o777, 0o400);
+    fs::set_permissions(s.local.config().parent().unwrap(), fs::Permissions::from_mode(0o700))
+        .unwrap();
+    fs::set_permissions(s.local.config(), fs::Permissions::from_mode(0o600)).unwrap();
     fs::remove_file(s.local.config()).unwrap();
     fs::remove_dir(s.local.config().parent().unwrap()).unwrap();
-    s.run(&[
-        "remote",
-        "init",
-        "fresh",
-        "--host",
-        "agent@linux",
-        "--executable",
-        env!("CARGO_BIN_EXE_brnr"),
-        "--json",
-    ]);
-    assert_eq!(s.run(&["remote", "list", "--json"])["remotes"][0]["name"], "fresh");
+    assert_eq!(s.run(&["remote", "list", "--json"])["remotes"], json!([]));
+    let checked = s.cmd(&["remote", "check", "linux", "--json"]).output().unwrap();
+    assert!(serde_json::from_slice::<Value>(&checked.stdout).unwrap()["checks"].is_array());
+    assert!(
+        !s.local.config().parent().unwrap().exists(),
+        "inspection must not create local config"
+    );
 }
 
 #[test]

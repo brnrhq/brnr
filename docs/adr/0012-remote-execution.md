@@ -1,6 +1,6 @@
 # 12. Remote execution
 
-Draft 2026-10-26. Implemented. Factors: F3, F5, N1, N2 and N4 (ADR 1).
+Draft 2026-10-27. Implemented. Factors: F3, F5, N1, N2 and N4 (ADR 1).
 Resolves #401.
 
 ## 12.1 Public commands can execute through the system SSH client
@@ -43,7 +43,7 @@ shell must support POSIX shell syntax, and shell startup files must leave
 stdout clean. No local shell interprets arguments.
 
 All execution commands support this, including `doctor`, `skill` and
-`--version`. Management commands under `remote` remain local; they refuse
+`--version`. Inspection commands under `remote` remain local; they refuse
 `--remote`. For `skill install`, installation is remote. Attachments,
 `--cwd`, `--dir`, agent executables and `event notify` callbacks are remote
 paths/programs. There is no file transfer or path translation. An editor
@@ -119,41 +119,32 @@ applies. Execution settings are not merged between machines.
 - Routing is resolved once. A destination profile that delegates again
   fails before another SSH process starts.
 
-The management commands are:
+Remote settings are maintained manually in the config file. The remote
+CLI has no command that creates, edits or deletes config. Its inspection
+commands are:
 
-- `remote init <name> [--host <destination>] [--executable <program>]
-  [--cwd <dir>] [--runtime-dir <dir>] [--home <dir>] [--config <file>]`:
-  verify SSH access and the remote executable/version, then save settings.
-  A new name defaults to that SSH destination; an existing name retains
-  settings not explicitly replaced. No package installation, adapter
-  installation or remote credential changes are performed.
-- `remote list`: configured names and connection settings.
+- `remote list`: configured names and connection settings, read locally.
 - `remote check <target>`: version preflight followed by the remote
-  `doctor`, using the saved environment and executable. The normal doctor
-  result and exit status are returned.
-- `remote remove <name>`: remove only local connection settings. Refuse
-  while a local routing profile refers to the name. No remote data is
-  removed.
+  `doctor`, using the configured environment and executable. The normal
+  doctor result and exit status are returned.
 
-These commands support `--json`. List is `{remotes: [{name, settings}]}`;
-init is `{remote, settings}`; remove is `{remote, removed: true}`. Check
-returns doctor's interface.
-
-Management writes the same config that routing reads, under its private
-directory. A create-new 0600 temporary file serialises edits; syncing and
-renaming commits an edit atomically. Failed edits leave the old config.
-Only the selected remote's table is replaced; other text and comments are
-preserved. Inline/dotted remote definitions can be read but management
-refuses to rewrite them. Editing a symlinked config is refused; set
-`BRNR_CONFIG` to its real path. An abandoned `.NAME.remote.tmp` must be
-removed manually after checking no edit is active. `doctor` validates
-local routing profiles without checking remote executables locally or
-initiating a connection.
+Both support `--json`. List is `{remotes: [{name, settings}]}`; check
+returns doctor's interface. Neither writes local config or creates its
+file or directory when missing. Config access retains the existing
+private-file and symlink rules (ADR 9.4). `doctor` validates local routing
+profiles without checking remote executables locally or connecting.
 
 **Why.** Connections are reusable across profiles (N4), a profile names a
 working setup (F5), and execution settings have one owner (P4/P12).
-Initialisation is explicit; ordinary commands never install software or
-change host trust (N1/P7/P15).
+Keeping the remote CLI read-only for configuration avoids giving agents
+that can invoke brnr an additional configuration-editing interface (N1).
+Direct file access still depends on the agent's filesystem permissions;
+this does not establish a boundary against unrestricted same-user code
+(P13). Commands never install software or change host trust (P7/P15).
+
+**Considered.** `remote init` and `remote remove`: both write configuration,
+which can select programs, remote hosts and execution settings. Those
+edits remain the user's responsibility, outside brnr's command interface.
 
 ## Tests
 
@@ -165,11 +156,10 @@ a fake SSH client, without requiring credentials:
 - `adr_0012_shell_quoting_preserves_prompts_and_delimiters`
 - `adr_0012_auth_missing_client_version_and_bad_targets_fail`
 - `adr_0012_direct_user_destinations_use_remote_path_without_initialisation`
-- `adr_0012_management_saves_private_settings_and_never_deletes_remote_data`
+- `adr_0012_remote_inspection_never_writes_configuration`
 - `adr_0012_acp_has_clean_streams_and_remote_profile_resolution`
 - `adr_0012_help_and_invalid_commands_never_connect`
 - `adr_0012_event_streams_deliver_live_events_and_disconnect_without_stopping_headless`
-- `adr_0012_management_updates_preserve_unrelated_config_and_doctor_is_remote`
 - `adr_0012_remote_environment_paths_and_default_launch_profiles_are_resolved_once`
 
 On Linux, `adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux`

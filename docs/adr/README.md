@@ -51,7 +51,7 @@ topic 3's ninth decision).
 | [9](0009-security-and-privacy.md) | Security and privacy | 9.1 Secrets are redacted in what brnr records; 9.2 One file name per session id, one folder per cwd; 9.3 Transcripts are written only where only you can read them; 9.4 The config file is read only if only you can change or read it | yes |
 | [10](0010-bounded-resources.md) | Bounded resources | 10.1 How far behind a reader may fall; 10.2 A peer cut off catches up from the transcript; 10.3 Lines too long to read; 10.4 Connections and waits | yes |
 | [11](0011-building-releasing-and-support.md) | Building, releasing and support | 11.1 Adapters through Homebrew; 11.2 The adapters' names, and finding them next to brnr; 11.3 Which adapter version is built; 11.4 `release.sh`; 11.5 Bug reports; 11.6 brnr on crates.io; 11.7 Reproducible builds and an SBOM | yes |
-| [12](0012-remote-execution.md) | Remote execution | 12.1 Public commands through system SSH; 12.2 Named remotes, routing profiles and setup management | yes |
+| [12](0012-remote-execution.md) | Remote execution | 12.1 Public commands through system SSH; 12.2 Named remotes, routing profiles and read-only inspection | yes |
 
 ## Where the former records went
 

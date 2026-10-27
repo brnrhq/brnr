@@ -29,9 +29,16 @@ brnr's own conventions:
 - Execute commands over system SSH with `--remote <[user@]host|name>`,
   including ACP, session control and event streams. Named remotes and
   routing profiles select remote executables, profiles and runtime paths;
-  `remote init`, `list`, `check` and `remove` manage existing remote
-  installations. SSH owns authentication and host trust; matching brnr
-  versions are required (ADR 12, #401).
+  `remote list` and `remote check` inspect manually configured remotes
+  and existing installations. SSH owns authentication and host trust;
+  matching brnr versions are required (ADR 12, #401).
+
+### Removed
+
+- **Breaking:** Removed `remote init` and `remote remove`, and their
+  configuration-writing implementation. Maintain named remotes manually
+  in the config file; the remote command group is read-only for local
+  configuration (ADR 12).
 
 ## [0.10.0] - 2026-10-22
 

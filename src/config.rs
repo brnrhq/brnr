@@ -357,7 +357,7 @@ pub(crate) fn load_file() -> Result<Option<ConfigFile>, Vec<String>> {
     parse_file(&text).map(Some)
 }
 
-pub(crate) fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
+fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
     let at_line = |e: toml::de::Error| match e.span() {
         Some(span) => {
             format!("line {}: {}", text[..span.start].matches('\n').count() + 1, e.message())
@@ -396,7 +396,7 @@ pub(crate) fn parse_file(text: &str) -> Result<ConfigFile, Vec<String>> {
 /// symlink is followed, and what is checked is the file it resolves to and
 /// that file's folder, through the descriptors the file is read from. brnr
 /// changes neither (P4): each problem says what is wrong, and how to fix it.
-pub(crate) fn read_private(path: &Path) -> Result<Option<String>, Vec<String>> {
+fn read_private(path: &Path) -> Result<Option<String>, Vec<String>> {
     let real = match fs::canonicalize(path) {
         Ok(real) => real,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
