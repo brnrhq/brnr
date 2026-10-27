@@ -12,6 +12,13 @@ skill that teaches agents to use brnr.
 
 ## 8.1 Commands are grouped by what they act on, with ACP's verbs
 
+Every public execution command also accepts `--remote <target>` before
+`--`, and `--profile` can select a local routing profile (ADR 12). Transport
+selection respects flag values and the delimiter. Help stays local. The
+`remote check (<target> | --profile <p>)` checks installations through SSH
+destinations or local routing profiles. It never writes local config and
+does not itself accept remote routing.
+
 A command is `brnr <entity> <verb>`: the entity it acts on, and ACP's verb
 wherever ACP has one (P1). The entities are brnr's model of a process:
 
@@ -864,7 +871,9 @@ public items.
   `host`, the rest) is `run`, and the command modules (`ctl.rs`, `ctl/`)
   are the library's; `main.rs` calls `run` with its arguments and does
   nothing else. `run` adds no surface the command line doesn't have: its
-  words and exit statuses are the command line's.
+  words and exit statuses are the command line's. Remote dispatch (ADR 12)
+  replaces the calling process with SSH; it returns only if routing or
+  executing SSH fails.
 - The typed facade has this shape: one module per command group
   (`process`, `session`, `prompt`, `queue`, `permission`, `elicitation`,
   `config`, `event`, ADR 8.1), and the tools at the top level (`doctor`,
@@ -913,7 +922,9 @@ public items.
   program does both with `event::watch`. `doctor --report` is not covered
   (ADR 8.4). `--help` and `--version` are for people. `--prompt -` and
   `elicitation accept -` read stdin: the facade takes the prompt and the
-  fields as arguments, a prompt that is `-` too.
+  fields as arguments, a prompt that is `-` too. SSH routing and
+  `remote check` are CLI-only: they replace the process and inherit its
+  streams, while typed facade calls must return data to their caller.
 - A usage error, which the command line exits 2 for without a code (ADR
   8.3), is `usage_invalid`: a function has no exit status to say it with.
   The flags' types rule out what they can (`prompt send`'s modes are an

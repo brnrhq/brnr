@@ -1,5 +1,5 @@
 //! Profiles from `config.toml` (see paths.rs for where it lives). A profile
-//! has three parts (ADR 6.1 in docs/adr): at the top what every process of
+//! has three execution parts (ADR 6.1 in docs/adr): at the top what every process of
 //! the profile uses, under `headless` what only `brnr session new` and
 //! `resume` use, and under `editor` what only `brnr acp` uses.
 //!
@@ -37,6 +37,9 @@
 //! echo_as = "tool_call"               # or "user_message_chunk" (ADR 7.2)
 //! features = ["shared_sessions"]      # process management (ADR 3.10)
 //! ```
+//!
+//! A routing profile instead contains only a `remote` table naming an SSH
+//! destination and optional brnr-specific overrides (ADR 12.2).
 //!
 //! Beside the profiles, at the top of the file, what every process uses
 //! whatever its profile (ADR 9.5):
@@ -76,6 +79,39 @@ struct ConfigFile {
     profiles: BTreeMap<String, Profile>,
 }
 
+/// SSH destinations and remote paths (ADR 12.2). Authentication stays in SSH.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Remote {
+    pub(crate) target: String,
+    pub(crate) profile: Option<String>,
+    #[serde(default = "remote_executable")]
+    pub(crate) executable: String,
+    pub(crate) cwd: Option<String>,
+    pub(crate) runtime_dir: Option<String>,
+    pub(crate) home: Option<String>,
+    pub(crate) config: Option<String>,
+}
+
+fn remote_executable() -> String {
+    "brnr".into()
+}
+
+impl Remote {
+    /// A direct SSH destination uses brnr on PATH and remote defaults.
+    pub(crate) fn new(target: &str) -> Self {
+        Self {
+            target: target.into(),
+            profile: None,
+            executable: remote_executable(),
+            cwd: None,
+            runtime_dir: None,
+            home: None,
+            config: None,
+        }
+    }
+}
+
 /// The config file, loaded.
 pub(crate) struct Config {
     /// How long, in seconds, transcripts and host logs are kept after
@@ -88,6 +124,7 @@ pub(crate) struct Config {
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Profile {
+    pub(crate) remote: Option<Remote>,
     pub(crate) agent: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) log: Log,
@@ -338,19 +375,34 @@ pub(crate) fn load(name: Option<&str>) -> Result<(Profile, Option<u64>), Error> 
 pub(crate) fn load_all() -> Result<Option<Config>, Vec<String>> {
     let path = paths::config_file();
     let Some(text) = read_private(&path)? else { return Ok(None) };
+    parse_file(&text).map(Some)
+}
+
+fn parse_file(text: &str) -> Result<Config, Vec<String>> {
     let at_line = |e: toml::de::Error| match e.span() {
         Some(span) => {
             format!("line {}: {}", text[..span.start].matches('\n').count() + 1, e.message())
         }
         None => e.message().to_owned(),
     };
-    let table: toml::Table = toml::from_str(&text).map_err(|e| vec![at_line(e)])?;
+    let table: toml::Table = toml::from_str(text).map_err(|e| vec![at_line(e)])?;
     let problems = check(&table);
     if !problems.is_empty() {
         return Err(problems);
     }
-    let file: ConfigFile = toml::from_str(&text).map_err(|e| vec![at_line(e)])?;
-    Ok(Some(Config { retention: file.retention, profiles: file.profiles }))
+    let file: ConfigFile = toml::from_str(text).map_err(|e| vec![at_line(e)])?;
+    for (name, profile) in &file.profiles {
+        if let Some(remote) = &profile.remote {
+            crate::remote::validate(remote)
+                .map_err(|e| vec![format!("profiles.{name}.remote: {e}")])?;
+            if remote.profile.as_ref().is_some_and(|p| p.is_empty() || p.contains('\0')) {
+                return Err(vec![format!(
+                    "profiles.{name}.remote.profile is empty or contains NUL"
+                )]);
+            }
+        }
+    }
+    Ok(Config { retention: file.retention, profiles: file.profiles })
 }
 
 // ---- who can reach it ---------------------------------------------------
@@ -554,12 +606,18 @@ fn check_retention(value: &toml::Value) -> Option<String> {
 }
 
 fn check_part(at: &str, part: Part, table: &toml::Table, problems: &mut Vec<String>) {
+    if part == Part::Shared && table.contains_key("remote") && table.len() != 1 {
+        problems.push(format!("{at}: a remote profile contains only [{}.remote]; agent settings belong on the remote host", at));
+    }
     let here = match part {
         Part::Shared => at.to_owned(),
         Part::Headless => format!("{at}.headless"),
         Part::Editor => format!("{at}.editor"),
     };
     for (key, value) in table {
+        if key == "remote" && part == Part::Shared {
+            continue;
+        }
         let sub = match key.as_str() {
             "headless" => Some(Part::Headless),
             "editor" => Some(Part::Editor),

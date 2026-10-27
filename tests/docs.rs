@@ -56,6 +56,7 @@ const DOCS: &[&str] = &[
     "docs/guide/approvals.md",
     "docs/guide/events.md",
     "docs/guide/headless.md",
+    "docs/guide/remote.md",
     "docs/guide/agents.md",
     "docs/guide/profiles.md",
     "docs/guide/native-agents.md",
@@ -79,6 +80,7 @@ const GUIDE: &[&str] = &[
     "docs/guide/approvals.md",
     "docs/guide/events.md",
     "docs/guide/headless.md",
+    "docs/guide/remote.md",
     "docs/guide/agents.md",
     "docs/guide/profiles.md",
     "docs/guide/transcripts.md",
@@ -101,6 +103,7 @@ const REFERENCE: &[&str] = &[
     "docs/reference/event.md",
     "docs/reference/acp.md",
     "docs/reference/doctor.md",
+    "docs/reference/remote.md",
     "docs/reference/skill.md",
     "docs/reference/events.md",
     "docs/reference/bridge.md",
@@ -400,6 +403,22 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
 
 /// The lines of `sh` blocks that don't run here, and why.
 const SKIPPED: &[(&str, &str)] = &[
+    ("ssh agent@linux", "establishes authentication and host trust with an external SSH host"),
+    (
+        "brnr session list --remote agent@linux",
+        "requires an SSH host; tests/remote.rs exercises transport",
+    ),
+    ("brnr acp --remote agent@linux --profile coding", "requires an SSH host and remote profile"),
+    ("brnr remote check linux", "requires an SSH host"),
+    ("brnr remote check --profile remote-work", "requires a routing profile and SSH host"),
+    ("brnr session list --remote linux --json", "requires an SSH host"),
+    ("brnr event watch $s --remote linux", "requires a remote session"),
+    ("brnr acp --profile remote-work", "requires a routing profile and SSH host"),
+    ("brnr session list --profile remote-work", "requires a routing profile and SSH host"),
+    (
+        r#"brnr prompt send $s --profile remote-work --prompt "Continue""#,
+        "requires a remote session",
+    ),
     ("brew install brnrhq/tap/brnr", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-claude-adapter", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-codex-adapter", "installs from the Homebrew tap"),

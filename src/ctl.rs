@@ -61,7 +61,7 @@ macro_rules! errln {
     ($($arg:tt)*) => { eprintln!("{}", $crate::render::clean(&format!($($arg)*))) };
 }
 
-mod args;
+pub(crate) mod args;
 mod catch_up;
 mod client;
 mod delete;
@@ -71,6 +71,7 @@ mod history;
 mod notify;
 mod ownership;
 mod prune;
+mod remotes;
 mod sessions;
 mod settings;
 mod show;
@@ -84,11 +85,20 @@ pub(crate) use prune::as_started as prune_as_started;
 
 /// The command groups (ADR 8.1): `brnr <group> <verb>`, a group being what
 /// its commands act on.
-const GROUPS: &[&str] =
-    &["process", "session", "prompt", "queue", "permission", "elicitation", "config", "event"];
+const GROUPS: &[&str] = &[
+    "process",
+    "session",
+    "prompt",
+    "queue",
+    "permission",
+    "elicitation",
+    "config",
+    "event",
+    "remote",
+];
 
 const USAGE: &str = "usage:
-  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
+  brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
 process
@@ -158,6 +168,9 @@ event
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
 
+remote
+  brnr remote check (<target> | --profile <p>) [--json]
+
 brnr
   brnr doctor [--fix | --report] [--json]
   brnr skill [<reference> | install [--dir <dir>]...]
@@ -169,7 +182,12 @@ shows it. <request> is a pending approval's or elicitation's handle, as brnr per
 and brnr elicitation requests show them. <pid> is a brnr process, which runs one agent for one or
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
-running turn, no session fork.";
+running turn, no session fork.
+Execution commands accept --remote <[user@]host> before --: execute over SSH.
+With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
+Without --remote, --profile <p> is loaded locally and can select a routing profile.
+SSH uses existing host trust and keys.
+Remote paths and event notify commands are on the destination. See brnr remote --help.";
 
 /// How long a start may take until it commits, in seconds, unless
 /// `BRNR_START_TIMEOUT` says otherwise. It goes in the start request: the
@@ -253,7 +271,7 @@ fn split(args: &[String]) -> (&str, Option<&str>, &[String]) {
 /// `brnr: no session s (see brnr session list) [session_not_found]`; with
 /// `--json`, also as the command's JSON, `{"error": {code, message}}`, if it
 /// printed none before it failed.
-fn failed(error: &error::Error, json: bool) {
+pub(crate) fn failed(error: &error::Error, json: bool) {
     errln!("brnr: {}", render::coded(&error.message, error.code.name()));
     if json && !PRINTED.load(Relaxed) {
         let _ = print_json(&json!({ "error": error.json() }));
@@ -463,6 +481,7 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
         ("doctor", None) => code(doctor::main(a)),
+        ("remote", Some("check")) => code(remotes::check(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
         (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),
