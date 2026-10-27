@@ -300,6 +300,106 @@ The process's full report: its metadata, its state, and each session's.
 }
 ```
 
+## `start_request`
+
+The request the process was started with, as its host log's
+`process_started` record has it, secrets redacted, without the prompt and
+`foreground`: what [`profile show --pid`](profile.md#brnr-profile-show)
+prints
+([ADR 6.5](../adr/0006-settings-and-profiles.md#65-brnr-profile-reads-the-profiles-and-never-writes)).
+
+**Request:** no fields.
+
+**Reply:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `start_request` | object | What the process was started with, as its host log's `process_started` record has it, without the prompt and `foreground`. |
+| `start_request.profile` | string or null | The profile's name; null where none was given. |
+| `start_request.agent` | list of strings | The agent's command as it was run. |
+| `start_request.cwd` | string | The directory the process started in. |
+| `start_request.strict` | boolean | Stable ACP only. |
+| `start_request.log` | string | What it records. |
+| `start_request.bridges` | list of objects | The bridges, each command as it was run. |
+| `start_request.bridges[].command` | string | The program. |
+| `start_request.bridges[].args` | list of strings | Its arguments. |
+| `start_request.bridges[].events` | list of strings or null | The events it gets; null: every event but `acp`. |
+| `start_request.retention` | number or null | The config's `retention`. |
+| `start_request.role` | object | `headless` or `editor`, with what that role was started with. |
+| `start_request.role.headless` | object, optional | A headless process's. |
+| `start_request.role.headless.resume` | string or null | The session it resumed. |
+| `start_request.role.headless.transcript` | boolean | Whether brnr had the resumed session's transcript. |
+| `start_request.role.headless.settings` | object | What the start's flags set: `mode`, `model`, `thought_level`, `options`. |
+| `start_request.role.headless.settings.mode` | string or null | `--mode`. |
+| `start_request.role.headless.settings.model` | string or null | `--model`. |
+| `start_request.role.headless.settings.thought_level` | string or null | `--thought-level`. |
+| `start_request.role.headless.settings.options` | object | `--option`, by id. |
+| `start_request.role.headless.defaults` | object | What the profile set, the same fields: the flags win over it. |
+| `start_request.role.headless.defaults.mode` | string or null | The profile's `mode`. |
+| `start_request.role.headless.defaults.model` | string or null | The profile's `model`. |
+| `start_request.role.headless.defaults.thought_level` | string or null | The profile's `thought_level`. |
+| `start_request.role.headless.defaults.options` | object | The profile's `options`. |
+| `start_request.role.headless.mcp_servers` | list of objects, ACP's | The MCP servers as `session/new` sends them, the values of `env` and `headers` `<redacted>`. |
+| `start_request.role.headless.auth` | string or null | The login method. |
+| `start_request.role.headless.events` | list of strings | The events the start followed its first turn by (`--wait`). |
+| `start_request.role.headless.start_timeout` | number | Seconds the start had. |
+| `start_request.role.headless.stop_when_idle` | number or null | Seconds until an idle session is closed. |
+| `start_request.role.headless.response_timeout` | number or null | Seconds an approval or elicitation waits. |
+| `start_request.role.editor` | object, optional | An editor's process's. |
+| `start_request.role.editor.proxy_pid` | number | The `brnr acp` process. |
+| `start_request.role.editor.sigmask` | list of numbers | The editor's signal mask, which the agent got. |
+| `start_request.role.editor.experimental` | list of strings | The experimental actions enabled. |
+| `start_request.role.editor.client_capabilities` | list of strings | The editor's capabilities that reach the agent. |
+| `start_request.role.editor.echo_as` | string | How a message sent through brnr is shown to the editor. |
+| `start_request.role.editor.features` | list of strings | The process-management features enabled. |
+
+<!-- example: bridge; before: Idle -->
+```json
+{"cmd":"start_request","req_id":"r1"}
+{
+  "ok": true,
+  "req_id": "r1",
+  "start_request": {
+    "profile": null,
+    "agent": [
+      "/opt/homebrew/bin/brnr-claude-adapter"
+    ],
+    "cwd": "/home/me/project",
+    "strict": false,
+    "log": "all",
+    "bridges": [],
+    "retention": null,
+    "role": {
+      "headless": {
+        "resume": null,
+        "transcript": false,
+        "settings": {
+          "mode": null,
+          "model": null,
+          "thought_level": null,
+          "options": {}
+        },
+        "defaults": {
+          "mode": null,
+          "model": null,
+          "thought_level": null,
+          "options": {}
+        },
+        "mcp_servers": [],
+        "auth": null,
+        "events": [
+          "agent_message",
+          "turn_ended"
+        ],
+        "start_timeout": 120,
+        "stop_when_idle": null,
+        "response_timeout": null
+      }
+    }
+  }
+}
+```
+
 ## `logged`
 
 Answered once what the process recorded before it was asked is in its

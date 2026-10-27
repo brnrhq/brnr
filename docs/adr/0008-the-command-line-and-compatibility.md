@@ -13,11 +13,11 @@ skill that teaches agents to use brnr.
 ## 8.1 Commands are grouped by what they act on, with ACP's verbs
 
 Every public execution command also accepts `--remote <target>` before
-`--`, and `--profile` can select a local routing profile (ADR 12). Transport
-selection respects flag values and the delimiter. Help stays local. The
-`remote check (<target> | --profile <p>)` checks installations through SSH
-destinations or local routing profiles. It never writes local config and
-does not itself accept remote routing.
+`--`, the one transport (ADR 12). With it, `--profile` is the
+destination's; without it, nothing connects. Transport selection respects
+flag values and the delimiter. Help stays local. `remote check <target>`
+checks a destination's installation through SSH. It reads no local config
+and does not itself accept `--remote`.
 
 A command is `brnr <entity> <verb>`: the entity it acts on, and ACP's verb
 wherever ACP has one (P1). The entities are brnr's model of a process:
@@ -35,7 +35,9 @@ process
 
 A command's group is its entity, not its depth: a nested entity takes its
 parent as an argument (`brnr permission allow <session> <request>`). Tools
-that act on no entity stay at the top level. The commands:
+that act on no entity stay at the top level. Two groups act on what is
+outside the process: `profile`, the config file's profiles (ADR 6.5), and
+`remote`, an SSH destination's brnr (ADR 12.2). The commands:
 
 ```text
 brnr process     list | stop <pid>
@@ -69,6 +71,8 @@ brnr event       log <session> [--last <n>] [--follow] [--events <e>,...]
                    -- <command> [args...]
                  | wait <session> [--for idle|turn|permission|elicitation|exit]
                    [--timeout <s>]
+brnr profile     list | show [<name> | --pid <pid>] | keys       (ADR 6.5)
+brnr remote      check <target>                                  (ADR 12.2)
 brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
 brnr doctor [--fix | --report] | skill [<reference> | install [--dir <dir>]...]
      | --version
@@ -876,7 +880,7 @@ public items.
   executing SSH fails.
 - The typed facade has this shape: one module per command group
   (`process`, `session`, `prompt`, `queue`, `permission`, `elicitation`,
-  `config`, `event`, ADR 8.1), and the tools at the top level (`doctor`,
+  `config`, `event`, `profile`, ADR 8.1), and the tools at the top level (`doctor`,
   `skill`, and `skill::install`), with one function per verb
   (`brnr::session::list`, `brnr::prompt::send`), taking the command's
   positional arguments as arguments and its flags as a struct
@@ -1275,6 +1279,8 @@ The codes, by subject:
 | `process_stopping` | The process is stopping, or its agent takes no more input. |
 | `process_unreachable` | The process doesn't answer, or can't be reached from here (another `BRNR_DIR`, ADR 3.9). |
 | `profile_not_found` | The config has no profile of that name. |
+| `remote_brnr_not_found` | `--remote`: no `brnr` on the destination shell's PATH; set it in `~/.zshenv` or `~/.bashrc` there (ADR 12.2). |
+| `remote_version_mismatch` | `--remote`: the destination's brnr is another version, or has no remote support (ADR 12.1). |
 | `request_not_found` | No permission request or elicitation of that handle is waiting (ADR 4.1). |
 | `session_active` | The session is open in a process, where the command needs it not to be: close it first, or take it over (ADR 3.9). |
 | `session_closed` | The session closed before the command was done. |
@@ -1610,6 +1616,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
   its connection closed though no event follows, and when its closure
   panics, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  `adr_0008_the_facade_has_profile_list_show_and_keys`,
   `adr_0008_a_facade_error_has_the_commands_code`,
   `adr_0008_the_facade_has_session_prune`. [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs):
   `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`;

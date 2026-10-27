@@ -7787,3 +7787,227 @@ fn adr_0008_an_older_process_is_said_with_how_to_restart_it() {
     let event: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(event["event"], "turn_ended", "{event}");
 }
+
+// ---- brnr profile (ADR 6.5) ----------------------------------------------
+
+/// `brnr <args> --json`, which must succeed: what it printed.
+fn json_of(env: &Env, args: &[&str]) -> Value {
+    let args = [args, &["--json"]].concat();
+    serde_json::from_str(&env.ok(&args)).unwrap()
+}
+
+/// `profile show` is the profile a start uses: `default` without a name, or
+/// the empty profile when there is none, saying which; each key the file
+/// doesn't set at its default, or null, and named in `unset`, in text and
+/// JSON; and it fails where a start fails, with the same code.
+#[test]
+fn adr_0006_show_is_what_start_would_use() {
+    let env = Env::new("c-profile-show");
+    let agent = format!("[{AGENT:?}]");
+    env.write_config(&format!(
+        "[profiles.default]\nagent = {agent}\n\n[profiles.work]\nagent = {agent}\n\
+         [profiles.work.headless]\ncwd = {:?}\n",
+        env.dir
+    ));
+    let shown = json_of(&env, &["profile", "show"]);
+    assert_eq!((&shown["name"], &shown["found"]), (&json!("default"), &json!(true)), "{shown}");
+    assert_eq!(shown["config"], env.config().to_str().unwrap());
+    let work = json_of(&env, &["profile", "show", "work"]);
+    assert_eq!(work["profile"]["agent"], json!([AGENT]));
+    assert_eq!(work["profile"]["headless"]["cwd"], env.dir.to_str().unwrap());
+    assert_eq!(work["profile"]["log"], "all");
+    assert_eq!(work["profile"]["editor"]["echo_as"], "tool_call");
+    assert!(work["profile"]["headless"]["mode"].is_null());
+    let unset: Vec<&str> =
+        work["unset"].as_array().unwrap().iter().flat_map(Value::as_str).collect();
+    for path in ["log", "strict", "bridges", "headless.mode", "headless.options", "editor.features"]
+    {
+        assert!(unset.contains(&path), "{path}: {unset:?}");
+    }
+    assert!(!unset.contains(&"agent") && !unset.contains(&"headless.cwd"), "{unset:?}");
+    // Text: TOML in the file's layout, unset keys marked, which loads as the
+    // same profile.
+    let text = env.ok(&["profile", "show", "work"]);
+    assert!(text.contains("log = \"all\"  # not set: the default"), "{text}");
+    assert!(text.contains("# mode: not set; --mode, else the agent's"), "{text}");
+    let parsed: toml::Table = toml::from_str(&text).unwrap();
+    assert_eq!(parsed["profiles"]["work"]["agent"][0].as_str(), Some(AGENT));
+    // What a start of the profile runs is what it shows.
+    env.ok(&["session", "new", "--profile", "work", "--prompt", "reply hi", "--wait"]);
+    let started = json_of(&env, &["profile", "show", "--pid", &env.pid()]);
+    assert_eq!(started["start_request"]["agent"], work["profile"]["agent"]);
+    assert_eq!(started["start_request"]["cwd"], work["profile"]["headless"]["cwd"]);
+    env.stop();
+    // No default profile: the empty one, said.
+    env.write_config(&format!("[profiles.work]\nagent = {agent}\n"));
+    let empty = json_of(&env, &["profile", "show"]);
+    assert_eq!((&empty["name"], &empty["found"]), (&json!("default"), &json!(false)));
+    assert!(empty["profile"]["agent"].is_null());
+    assert_eq!(empty["unset"].as_array().unwrap().len(), 17, "{empty}");
+    assert!(env.ok(&["profile", "show"]).contains("the empty profile applies"));
+    // It fails where a start fails: an unknown name, a file that doesn't
+    // load, a name with no file.
+    let cases: [(Option<&str>, &str, &str); 3] = [
+        (Some("[profiles.work]\n"), "nope", "profile_not_found"),
+        (Some("[profiles.work]\nbogus = 1\n"), "work", "config_invalid"),
+        (None, "work", "config_invalid"),
+    ];
+    for (config, name, code) in cases {
+        match config {
+            Some(config) => env.write_config(config),
+            None => fs::remove_file(env.config()).unwrap(),
+        }
+        let shown = env.run(&["profile", "show", name, "--json"]);
+        assert_eq!(shown.status.code(), Some(1));
+        code_is(&shown, code);
+        let start = env.run(&new_args(&["--profile", name]));
+        assert_eq!(start.status.code(), Some(1));
+        code_is(&start, code);
+    }
+}
+
+/// The MCP servers' `env` and `headers` values are `<redacted>`, their
+/// names kept, by name and by `--pid`, in text and JSON; their arguments are
+/// not.
+#[test]
+fn adr_0006_show_redacts_mcp_secrets() {
+    let env = Env::new("c-profile-redact");
+    env.write_config(
+        r#"[[profiles.default.headless.mcp_servers]]
+name = "files"
+command = "true"
+args = ["--visible-arg"]
+env = { TOKEN = "s3cret-env" }
+
+[[profiles.default.headless.mcp_servers]]
+name = "web"
+url = "https://example.invalid/mcp"
+headers = { Authorization = "Bearer s3cret-header" }
+"#,
+    );
+    env.start(&[]);
+    let pid = env.pid();
+    for args in [vec!["profile", "show"], vec!["profile", "show", "--pid", &pid]] {
+        for json in [false, true] {
+            let args = if json { [&args[..], &["--json"]].concat() } else { args.clone() };
+            let out = env.ok(&args);
+            assert!(!out.contains("s3cret"), "{args:?}: {out}");
+            for kept in ["TOKEN", "Authorization", "<redacted>", "--visible-arg"] {
+                assert!(out.contains(kept), "{args:?}: no {kept} in {out}");
+            }
+        }
+    }
+    let shown = json_of(&env, &["profile", "show"]);
+    let servers = &shown["profile"]["headless"]["mcp_servers"];
+    assert_eq!(servers[0]["env"], json!({ "TOKEN": "<redacted>" }));
+    assert_eq!(servers[1]["headers"], json!({ "Authorization": "<redacted>" }));
+}
+
+/// `--pid` asks the process, not the file: after the file changes, it still
+/// shows what the process was started with; it has no prompt and no
+/// `foreground`; and it works with the file unreadable.
+#[test]
+fn adr_0006_show_pid_is_the_start_request() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("c-profile-pid");
+    env.write_config("[profiles.work]\nstrict = false\n");
+    env.start(&["--profile", "work", "--prompt", "reply the-prompt-text", "--wait"]);
+    let pid = env.pid();
+    env.write_config("[profiles.work]\nstrict = true\n");
+    fs::set_permissions(env.config(), std::fs::Permissions::from_mode(0o644)).unwrap();
+    code_is(&env.run(&["profile", "show", "work", "--json"]), "config_invalid");
+    let shown = json_of(&env, &["profile", "show", "--pid", &pid]);
+    assert_eq!(shown["pid"].as_u64().map(|p| p.to_string()), Some(pid.clone()));
+    let request = &shown["start_request"];
+    assert_eq!((&request["profile"], &request["strict"]), (&json!("work"), &json!(false)));
+    let headless = request["role"]["headless"].as_object().unwrap();
+    assert!(!headless.contains_key("prompt") && !headless.contains_key("foreground"));
+    let text = env.ok(&["profile", "show", "--pid", &pid]);
+    for printed in [text.as_str(), &shown.to_string()] {
+        assert!(!printed.contains("the-prompt-text"), "{printed}");
+    }
+    assert!(text.contains("strict = false"), "{text}");
+    code_is(&env.run(&["profile", "show", "--pid", "1", "--json"]), "process_not_found");
+}
+
+/// Every key `profile keys` lists loads in its part and fails in the others,
+/// as the layout check has it; and a key `profile show` leaves unset has the
+/// default `keys` gives it.
+#[test]
+fn adr_0006_keys_are_the_parsers() {
+    let env = Env::new("c-profile-keys");
+    let keys = json_of(&env, &["profile", "keys"]);
+    let keys = keys["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 17);
+    let empty = json_of(&env, &["profile", "show"]);
+    for key in keys {
+        let (name, part, kind) = (
+            key["key"].as_str().unwrap(),
+            key["part"].as_str().unwrap(),
+            key["type"].as_str().unwrap(),
+        );
+        assert_ne!(key["default"].is_null(), key["rule"].is_null(), "{key}");
+        let first = key["names"][0].as_str();
+        let value = match (kind, first) {
+            ("string", Some(n)) => format!("{n:?}"),
+            ("list of strings", Some(n)) => format!("[{n:?}]"),
+            ("string", None) => "\"x\"".into(),
+            ("list of strings", None) => "[\"x\"]".into(),
+            ("boolean", _) => "true".into(),
+            ("integer", _) => "1".into(),
+            ("table of strings", _) => "{}".into(),
+            (array, _) if array.starts_with("array of tables") => "[]".into(),
+            other => panic!("{name}: no sample for {other:?}"),
+        };
+        for other in ["shared", "headless", "editor"] {
+            let table = match other {
+                "shared" => "[profiles.p]".to_owned(),
+                sub => format!("[profiles.p.{sub}]"),
+            };
+            env.write_config(&format!("{table}\n{name} = {value}\n"));
+            let out = env.run(&["profile", "list", "--json"]);
+            match other == part {
+                true => assert!(out.status.success(), "{name} in {other}: {}", stderr(&out)),
+                false => code_is(&out, "config_invalid"),
+            }
+        }
+        let at = match part {
+            "shared" => format!("/profile/{name}"),
+            sub => format!("/profile/{sub}/{name}"),
+        };
+        let shown = empty.pointer(&at).unwrap_or_else(|| panic!("{at}: {empty}"));
+        assert_eq!(shown, &key["default"], "{name}");
+    }
+}
+
+/// `profile list` fails on a file that doesn't load, with each problem
+/// located, in text and JSON; with no file, defaults apply, and it succeeds.
+#[test]
+fn adr_0006_list_fails_on_a_file_that_does_not_load() {
+    let env = Env::new("c-profile-list");
+    let none = json_of(&env, &["profile", "list"]);
+    assert_eq!((&none["exists"], &none["profiles"]), (&json!(false), &json!([])));
+    assert!(env.ok(&["profile", "list"]).contains("defaults apply"));
+    env.write_config("[profiles.work]\nbogus = 1\n\n[profiles.other.headless]\nlog = \"all\"\n");
+    for json in [false, true] {
+        let args: &[&str] =
+            if json { &["profile", "list", "--json"] } else { &["profile", "list"] };
+        let out = env.run(args);
+        assert_eq!(out.status.code(), Some(1));
+        code_is(&out, "config_invalid");
+        let err = stderr(&out);
+        assert!(err.contains("profiles.work: unknown key bogus"), "{err}");
+        assert!(err.contains("profiles.other.headless: log is"), "{err}");
+        if json {
+            let printed: Value = serde_json::from_slice(&out.stdout).unwrap();
+            code_is(&printed, "config_invalid");
+        }
+    }
+    env.write_config("[profiles.work\n");
+    assert!(env.fails(&["profile", "list"]).contains("line 1"));
+    env.write_config(&format!("[profiles.work]\nagent = [{AGENT:?}]\nstrict = true\n"));
+    let listed = json_of(&env, &["profile", "list"]);
+    assert_eq!(listed["profiles"][0]["name"], "work");
+    assert_eq!(listed["profiles"][0]["strict"], true);
+    assert!(env.ok(&["profile", "list"]).contains("work: agent"));
+}

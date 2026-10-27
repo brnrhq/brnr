@@ -92,6 +92,8 @@ and `unclassified`.
 | `process_stopping` | The process is stopping, or its agent takes no more input. |
 | `process_unreachable` | The process doesn't answer, or can't be reached from here (another `BRNR_DIR`). |
 | `profile_not_found` | The config has no profile of that name. |
+| `remote_brnr_not_found` | `--remote`: no `brnr` on the destination shell's PATH; set it in `~/.zshenv` or `~/.bashrc` there (ADR 12.2). |
+| `remote_version_mismatch` | `--remote`: the destination's brnr is another version, or has no remote support (ADR 12.1). |
 | `request_not_found` | No permission request or elicitation of that handle is waiting. |
 | `session_active` | The session is open in a process, where the command needs it not to be: close it first, or take it over. |
 | `session_closed` | The session closed before the command was done. |

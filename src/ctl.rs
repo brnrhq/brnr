@@ -70,6 +70,7 @@ mod elicitation;
 mod history;
 mod notify;
 mod ownership;
+mod profile;
 mod prune;
 mod remotes;
 mod sessions;
@@ -94,6 +95,7 @@ const GROUPS: &[&str] = &[
     "elicitation",
     "config",
     "event",
+    "profile",
     "remote",
 ];
 
@@ -168,8 +170,16 @@ event
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
 
+profile
+  brnr profile list [--json]
+  brnr profile show [<name> | --pid <pid>] [--json]
+                    the profile session new and acp use with --profile <name> (default
+                    without), or what process <pid> was started with; secrets redacted
+  brnr profile keys [--json]
+                    every key a profile can have
+
 remote
-  brnr remote check (<target> | --profile <p>) [--json]
+  brnr remote check <target> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -183,10 +193,10 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
-Execution commands accept --remote <[user@]host> before --: execute over SSH.
-With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
-Without --remote, --profile <p> is loaded locally and can select a routing profile.
-SSH uses existing host trust and keys.
+Execution commands accept --remote <[user@]host> before --: execute over SSH, with brnr on
+the remote shell's PATH. Without --remote, no command connects to another machine.
+A profile is loaded on the machine that runs the command: with --remote, --profile <p> is the
+destination's, and local brnr config isn't read. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.";
 
 /// How long a start may take until it commits, in seconds, unless
@@ -481,6 +491,9 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
         ("doctor", None) => code(doctor::main(a)),
+        ("profile", Some("list")) => done(profile::list(a)),
+        ("profile", Some("show")) => done(profile::show(a)),
+        ("profile", Some("keys")) => done(profile::keys(a)),
         ("remote", Some("check")) => code(remotes::check(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),

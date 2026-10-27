@@ -525,18 +525,6 @@ fn config_file(r: &mut Report) {
     r.line(Level::Ok, "retention", kept);
     for (name, profile) in &profiles {
         let what = format!("profile {name}");
-        if let Some(remote) = &profile.remote {
-            r.line(
-                Level::Ok,
-                &what,
-                format!(
-                    "remote {} (check with brnr remote check --profile {})",
-                    remote.target,
-                    paths::shell_word(name)
-                ),
-            );
-            continue;
-        }
         let mut problems = Vec::new();
         for server in &profile.headless.mcp_servers {
             match server.to_acp() {
@@ -578,7 +566,8 @@ fn config_file(r: &mut Report) {
     }
 }
 
-fn describe_profile(profile: &profiles::Profile) -> String {
+/// A profile's line, as doctor and `profile list` give it.
+pub(super) fn describe_profile(profile: &profiles::Profile) -> String {
     let agent = profile.agent.as_ref().map_or("given on the command line".into(), |a| a.join(" "));
     let bridges = profile.bridges.len();
     let mut out = format!("agent {agent}, {bridges} bridge{}", plural(bridges));

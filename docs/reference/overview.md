@@ -52,7 +52,7 @@ and error codes:
 - **Field**: the name in the JSON. A dotted name (`last_turn.stop_reason`) is
   a field of an object in a field. `[]` after a name is each item of a list.
 - **Type**: `string`, `number` (an integer, but where the row says
-  otherwise), `boolean`, `object`, `list of …`. **or null** says that the
+  otherwise), `boolean`, `object`, `list of …`, or `any` JSON value. **or null** says that the
   field can be null, and the row or the text under the table says when. A
   field without "or null" is never null. **optional** says that the field
   is not always there, and the row says when. A field without "optional" is
@@ -77,12 +77,12 @@ compatibility rules.
 ## Remote execution
 
 All execution commands, including `acp`, `doctor`, `skill` and `--version`,
-accept `--remote <[user@]host>` before `--`. SSH resolves aliases, usernames,
-ports and keys. An explicit target bypasses local brnr config; `--profile`
-then names an execution profile on the destination. Otherwise `--profile`
-can select a local [routing profile](configuration.md#profilesnameremote).
-Only `acp`, `session new` and `session resume` consult a default routing
-profile implicitly. Routing happens once; a second hop is refused.
+accept `--remote <[user@]host>` before `--`, the one transport: without it,
+nothing connects to another machine. SSH resolves aliases, usernames, ports
+and keys. A profile is loaded where the command runs: with `--remote`, local
+brnr config isn't read, and `--profile` names a profile on the destination,
+for every command that takes it. brnr is the `brnr` on the remote shell's
+PATH, with that shell's environment. A second hop is refused.
 
 Arguments, stdin, stdout, stderr and ordinary exit statuses pass through
 system SSH, without a terminal. Paths, attachments, skill installation and
@@ -296,8 +296,16 @@ event
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
 
+profile
+  brnr profile list [--json]
+  brnr profile show [<name> | --pid <pid>] [--json]
+                    the profile session new and acp use with --profile <name> (default
+                    without), or what process <pid> was started with; secrets redacted
+  brnr profile keys [--json]
+                    every key a profile can have
+
 remote
-  brnr remote check (<target> | --profile <p>) [--json]
+  brnr remote check <target> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -311,9 +319,9 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
-Execution commands accept --remote <[user@]host> before --: execute over SSH.
-With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
-Without --remote, --profile <p> is loaded locally and can select a routing profile.
-SSH uses existing host trust and keys.
+Execution commands accept --remote <[user@]host> before --: execute over SSH, with brnr on
+the remote shell's PATH. Without --remote, no command connects to another machine.
+A profile is loaded on the machine that runs the command: with --remote, --profile <p> is the
+destination's, and local brnr config isn't read. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.
 ```

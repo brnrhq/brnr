@@ -93,7 +93,7 @@ const LOG_BYTES: usize = 64 << 20;
 const ROOM_BYTES: usize = LOG_BYTES / 2;
 
 /// What a secret is recorded as.
-const REDACTED: &str = "<redacted>";
+pub(crate) const REDACTED: &str = "<redacted>";
 
 /// Requests whose params carry MCP servers: `env` and `headers` with
 /// tokens in them (ADR 9.1 in docs/adr).

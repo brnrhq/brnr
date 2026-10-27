@@ -89,7 +89,29 @@ on (`experimental` in the profile's `editor` part, in brnr's documentation:
 `~/.config/brnr/config.toml` (or `$BRNR_CONFIG`) holds profiles; without
 `--profile`, the `default` one applies, if there is one. brnr reads it only
 if only the user can read and write it (`chmod 600`, its folder `chmod
-700`), and says what to run otherwise. A profile for workers:
+700`), and says what to run otherwise.
+
+Read the profiles with brnr, not from the file, which you may not be
+allowed to open:
+
+```sh
+brnr profile list
+brnr profile show
+brnr profile show work
+brnr profile keys
+```
+
+`profile show <name>` prints the profile as a start would use it, as TOML,
+each key the file doesn't set marked with its default or rule; without a
+name, the one used without `--profile`. `profile show --pid <pid>` prints
+what a running process was started with: use it to find out why a session
+behaves as it does. `profile keys` lists every key, its part, type, default
+and the names it takes. Secrets in MCP servers' `env` and `headers` show as
+`<redacted>`. brnr never writes the config: to change it, say what to
+change, and the user edits it. With `--remote <host>`, these read that
+host's profiles.
+
+A profile for workers:
 
 ```toml
 [profiles.work]
