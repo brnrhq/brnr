@@ -204,3 +204,16 @@ impl Request {
         request
     }
 }
+
+/// `recorded`, a request as [`Request::recorded`] has it, without what a
+/// process's start alone needs: the prompt, which is the session's, and
+/// `foreground`, which is the terminal's. What `brnr profile show --pid`
+/// shows (ADR 6.5).
+pub(crate) fn shown(recorded: &Value) -> Value {
+    let mut request = recorded.clone();
+    if let Some(Value::Object(headless)) = request.pointer_mut("/role/headless") {
+        headless.remove("prompt");
+        headless.remove("foreground");
+    }
+    request
+}

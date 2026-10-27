@@ -175,6 +175,34 @@ fn adr_0012_with_remote_profile_reaches_the_destination_for_every_verb_that_take
     assert_eq!(s.arguments().len(), before);
 }
 
+/// `brnr profile show <name> --remote` shows the destination's profile,
+/// from its config, through the fake SSH client; the source's config isn't
+/// read (ADR 6.5).
+#[test]
+fn adr_0006_profile_show_reaches_the_destination() {
+    let s = Setup::new("profile-show");
+    s.local.write_config("[profiles.coding]\nstrict = true\n");
+    let shown = s.run(&["profile", "show", "coding", "--remote", "linux", "--json"]);
+    assert_eq!((&shown["name"], &shown["found"]), (&json!("coding"), &json!(true)));
+    assert_eq!(shown["config"], s.remote.config().to_str().unwrap());
+    assert_eq!(shown["profile"]["agent"], json!(["python3", AGENT]));
+    assert_eq!(shown["profile"]["strict"], false);
+    let listed = s.run(&["profile", "list", "--remote", "linux", "--json"]);
+    assert_eq!(listed["profiles"][0]["name"], "coding");
+    let keys = s.run(&["profile", "keys", "--remote", "linux", "--json"]);
+    assert!(keys["keys"].as_array().is_some_and(|k| !k.is_empty()));
+    let new = s.run(&["session", "new", "--remote", "linux", "--profile", "coding", "--json"]);
+    let pid = new["pid"].as_u64().unwrap().to_string();
+    let started = s.run(&["profile", "show", "--pid", &pid, "--remote", "linux", "--json"]);
+    assert_eq!(started["start_request"]["profile"], "coding");
+    let mut out = s.cmd(&["profile", "show", "coding", "--remote", "linux", "--profile", "x"]);
+    assert_eq!(out.output().unwrap().status.code(), Some(2));
+    assert_eq!(s.arguments().len(), 5);
+    for sent in s.arguments() {
+        assert!(sent[6].as_str().unwrap().contains("_remote"), "{sent}");
+    }
+}
+
 /// The destination runs the command itself: a `--remote` it receives is
 /// refused, never another hop.
 #[test]

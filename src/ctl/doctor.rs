@@ -566,7 +566,8 @@ fn config_file(r: &mut Report) {
     }
 }
 
-fn describe_profile(profile: &profiles::Profile) -> String {
+/// A profile's line, as doctor and `profile list` give it.
+pub(super) fn describe_profile(profile: &profiles::Profile) -> String {
     let agent = profile.agent.as_ref().map_or("given on the command line".into(), |a| a.join(" "));
     let bridges = profile.bridges.len();
     let mut out = format!("agent {agent}, {bridges} bridge{}", plural(bridges));

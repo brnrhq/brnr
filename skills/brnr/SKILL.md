@@ -83,5 +83,6 @@ Each is in `references/` next to this file, or printed by
   delegation, what to show the user.
 - `observe`: `session status`, `event log`, `event watch`, `event notify`,
   choosing events, and the events' JSON.
-- `setup`: installing brnr and the adapters, editors, profiles, `doctor`,
-  installing this skill.
+- `setup`: installing brnr and the adapters, editors, profiles (read them
+  with `brnr profile show` and `brnr profile keys`, not from the file),
+  `doctor`, installing this skill.

@@ -47,7 +47,10 @@
 //!
 //! Without `--profile`, the `default` profile applies if there is one. A key
 //! in the wrong part, an unknown key or name, and the flat layout of before
-//! fail to load, saying which and where (P7, P9).
+//! fail to load, saying which and where (P7, P9). [`KEYS`] is every key, the
+//! one table that the layout check, `brnr profile show` and `brnr profile
+//! keys` read (ADR 6.5). A profile holds no routing: `--remote` is the one
+//! transport (ADR 12.2).
 //!
 //! The file names the commands brnr runs and may hold secrets, so it is read
 //! only if it is the user's own and nobody else can read or write it, nor
@@ -615,8 +618,7 @@ pub(crate) const KEYS: &[Key] = &[
     key(Part::Headless, "cwd", "string", "6.1").rule("--cwd, else where brnr session new runs"),
     key(Part::Headless, "mode", "string", "6.2").rule("--mode, else the agent's"),
     key(Part::Headless, "model", "string", "6.2").rule("--model, else the agent's"),
-    key(Part::Headless, "thought_level", "string", "6.2")
-        .rule("--thought-level, else the agent's"),
+    key(Part::Headless, "thought_level", "string", "6.2").rule("--thought-level, else the agent's"),
     key(Part::Headless, "options", "table of strings", "6.2").default("{}"),
     key(Part::Headless, "response_timeout", "integer", "4.5")
         .rule("--response-timeout, else a request waits as long as the process runs"),

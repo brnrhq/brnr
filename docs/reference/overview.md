@@ -52,7 +52,7 @@ and error codes:
 - **Field**: the name in the JSON. A dotted name (`last_turn.stop_reason`) is
   a field of an object in a field. `[]` after a name is each item of a list.
 - **Type**: `string`, `number` (an integer, but where the row says
-  otherwise), `boolean`, `object`, `list of …`. **or null** says that the
+  otherwise), `boolean`, `object`, `list of …`, or `any` JSON value. **or null** says that the
   field can be null, and the row or the text under the table says when. A
   field without "or null" is never null. **optional** says that the field
   is not always there, and the row says when. A field without "optional" is
@@ -295,6 +295,14 @@ event
                     -- <command> [args...]
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
+
+profile
+  brnr profile list [--json]
+  brnr profile show [<name> | --pid <pid>] [--json]
+                    the profile session new and acp use with --profile <name> (default
+                    without), or what process <pid> was started with; secrets redacted
+  brnr profile keys [--json]
+                    every key a profile can have
 
 remote
   brnr remote check <target> [--json]

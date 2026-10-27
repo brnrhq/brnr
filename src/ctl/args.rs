@@ -247,6 +247,12 @@ pub(super) const VERBS: &[Spec] = &[
     verb("event", "wait", SESSION)
         .flags(&[Flag("--for", One("a value")), Flag("--timeout", Seconds)]),
     command("doctor", &[]).flags(&[switch("--fix"), switch("--report")]),
+    verb("profile", "list", &[]),
+    verb("profile", "show", &["<name>"])
+        .flags(&[Flag("--pid", One("a pid"))])
+        .optional()
+        .instead("--pid"),
+    verb("profile", "keys", &[]),
     verb("remote", "check", &["<target>"]),
     command("skill", &["<reference>"]).optional().no_json(),
     verb("skill", "install", &[]).flags(&[Flag("--dir", Many("a directory"))]).no_json(),

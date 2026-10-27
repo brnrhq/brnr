@@ -70,7 +70,7 @@ use crate::frame;
 use crate::log::{self, Dir, Ids, Logger, Sink};
 use crate::paths;
 use crate::profiles::{Bridge, ClientCapability, EchoAs, Experimental, Feature, Log};
-use crate::request::{Request, Role, Settings};
+use crate::request::{self, Request, Role, Settings};
 use crate::schema::AuthMethod;
 use crate::signals;
 use crate::sys;
@@ -366,6 +366,10 @@ struct Host {
     /// the start failing.
     start_done: bool,
     info: Value,
+    /// The request it was started with, as the host log's `process_started`
+    /// has it, without the prompt and `foreground`: `start_request`'s answer
+    /// (`brnr profile show --pid`, ADR 6.5).
+    start_request: Value,
     host_id: String,
     /// How long an unanswered permission request waits before it is
     /// rejected, and an elicitation before it is cancelled (ADR 4.5).
@@ -560,7 +564,8 @@ impl Host {
         // the agent with them (P14) and records how it ended (ADR 3.7).
         let (tx, rx) = mpsc::sync_channel(EVENTS_QUEUED);
         let new = Host::new(role, cwd, strict, logging, agent_pid, rx);
-        let mut host = Host { host_id, sock_path, meta_path, ..new };
+        let start_request = request::shown(&recorded);
+        let mut host = Host { host_id, sock_path, meta_path, start_request, ..new };
         let parts = Parts {
             child,
             listener,
@@ -621,6 +626,7 @@ impl Host {
             startup_reported: false,
             start_done: editor.is_some(),
             info: Value::Null,
+            start_request: Value::Null,
             host_id: String::new(),
             response_timeout: h.response_timeout.map(Duration::from_secs),
             agent_pid,

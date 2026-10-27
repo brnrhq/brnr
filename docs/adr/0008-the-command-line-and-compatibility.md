@@ -35,7 +35,9 @@ process
 
 A command's group is its entity, not its depth: a nested entity takes its
 parent as an argument (`brnr permission allow <session> <request>`). Tools
-that act on no entity stay at the top level. The commands:
+that act on no entity stay at the top level. Two groups act on what is
+outside the process: `profile`, the config file's profiles (ADR 6.5), and
+`remote`, an SSH destination's brnr (ADR 12.2). The commands:
 
 ```text
 brnr process     list | stop <pid>
@@ -69,6 +71,8 @@ brnr event       log <session> [--last <n>] [--follow] [--events <e>,...]
                    -- <command> [args...]
                  | wait <session> [--for idle|turn|permission|elicitation|exit]
                    [--timeout <s>]
+brnr profile     list | show [<name> | --pid <pid>] | keys       (ADR 6.5)
+brnr remote      check <target>                                  (ADR 12.2)
 brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
 brnr doctor [--fix | --report] | skill [<reference> | install [--dir <dir>]...]
      | --version
@@ -876,7 +880,7 @@ public items.
   executing SSH fails.
 - The typed facade has this shape: one module per command group
   (`process`, `session`, `prompt`, `queue`, `permission`, `elicitation`,
-  `config`, `event`, ADR 8.1), and the tools at the top level (`doctor`,
+  `config`, `event`, `profile`, ADR 8.1), and the tools at the top level (`doctor`,
   `skill`, and `skill::install`), with one function per verb
   (`brnr::session::list`, `brnr::prompt::send`), taking the command's
   positional arguments as arguments and its flags as a struct
@@ -1612,6 +1616,7 @@ Run `cargo test --release adr_0008_`. Named claims, by section:
   `adr_0008_the_facade_has_event_log_watch_and_wait` (a stream broken off,
   its connection closed though no event follows, and when its closure
   panics, a timeout), `adr_0008_the_facade_has_doctor_and_skill`,
+  `adr_0008_the_facade_has_profile_list_show_and_keys`,
   `adr_0008_a_facade_error_has_the_commands_code`,
   `adr_0008_the_facade_has_session_prune`. [src/ctl.rs](https://github.com/brnrhq/brnr/blob/main/src/ctl.rs):
   `adr_0008_a_streams_connection_leaves_what_the_facade_shuts_as_it_closes`;

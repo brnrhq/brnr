@@ -14,6 +14,9 @@
 //! refused, `command_unknown`: a newer brnr's request, which would otherwise
 //! be done without what it asked (ADR 8.8, P7).
 //! - `status`
+//! - `start_request`: the request the process was started with, as its
+//!   `process_started` record has it (secrets redacted, ADR 9.1), without
+//!   the prompt and `foreground` (`brnr profile show --pid`, ADR 6.5)
 //! - `logged`: answered once what the process recorded before it was asked
 //!   is in its transcript, which a logger thread writes (`brnr event log`,
 //!   ADR 5.5); `lost` if a file has lost records it hasn't noted yet (ADR 10.2)
@@ -169,13 +172,14 @@ pub(crate) const EVENTS: &[&str] = &[
 /// replies, and the events, in `<pid>.json` and `status` beside brnr's own
 /// (ADR 8.8). One more in a release that adds to it; within a major version
 /// it only grows, as the bridge protocol is covered (ADR 8.4).
-pub(crate) const PROTOCOL: u64 = 1;
+pub(crate) const PROTOCOL: u64 = 2;
 
 /// Each request, and its fields but `cmd` and `req_id`, which every request
 /// may have. What isn't here the process doesn't have, and refuses
 /// (`command_unknown`, ADR 8.8).
 const REQUESTS: &[(&str, &[&str])] = &[
     ("status", &[]),
+    ("start_request", &[]),
     ("logged", &[]),
     ("send", &["session", "text", "blocks", "mode", "replace"]),
     ("cancel", &["session", "keep_held"]),
@@ -837,6 +841,7 @@ impl Host {
         check_request(cmd, req)?;
         match cmd {
             "status" => Ok(Some(self.status_report())),
+            "start_request" => Ok(Some(json!({ "ok": true, "start_request": self.start_request }))),
             "logged" => {
                 self.when_logged(peer, req.get("req_id").cloned());
                 Ok(None)

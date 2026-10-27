@@ -60,6 +60,16 @@ experimental and refused unless enabled by name (ADR 7.1), and strict mode has
 none of them (ADR 2.1). Those protect the editor's view from surprises, not
 the user from their own processes.
 
+`brnr profile` (ADR 6.5) is a hole made on purpose in what a user may have
+set up within the user: an agent that its tool permissions keep from
+`~/.config` can still run brnr, and `brnr profile` reads the profiles for
+any same-user process, the values of MCP servers' `env` and `headers`
+redacted. `profile show --pid` reads a process's start request from its
+socket, for an agent in a sandbox that can reach the runtime directory. A
+user who wants an agent kept from the profiles denies it `brnr profile`
+as well. There is no command that writes the config, so none that an agent
+could use to change its own (N1).
+
 ## Trust boundaries
 
 ```text
@@ -207,6 +217,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 |---|---|---|
 | The values of MCP servers' `env` and `headers` reach the agent unchanged, and are `<redacted>` in the host log, the raw ACP, the `started` record and `acp` events, for a profile's `session/new`, `session/fork`, `session/resume` and `session/load`, and for an editor's own `session/new`, `load`, `resume` and `fork`. | `log::redacted`, `redact_mcp_servers` (src/log.rs); `Request::recorded` (src/request.rs); `host_request` (src/host/requests.rs); `editor_message` (src/host/acp.rs) | `headless.rs`: `adr_0009_a_profiles_mcp_secrets_are_redacted`, `adr_0009_an_editors_mcp_secrets_are_redacted`; `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted`, `adr_0003_acp_passes_bytes_unchanged`, `adr_0005_a_bridge_gets_no_raw_acp_unless_it_asks`; src/log.rs: `adr_0009_secrets_are_redacted_keys_and_structure_stay` |
 | `doctor --report`, made to be pasted into an issue, redacts what ADR 9.1 redacts again in the host-log lines it shows, a line nested past 128 too, read as transcripts are (ADR 2.5: to 256; a deeper one isn't shown), shows no record in a format this brnr doesn't read (ADR 5.10), and shows the home directory as `~`; the rest of those lines is as recorded, prompts included, so it says to read it first (ADR 11.5). | `report_line` (src/ctl/doctor.rs), `record` (src/transcript.rs), `redact_record` (src/log.rs) | `doctor.rs`: `adr_0011_the_report_is_what_to_paste`, `adr_0011_the_report_redacts_a_deep_line` |
+| `brnr profile show <name>` and `show --pid` show the values of MCP servers' `env` and `headers` as `<redacted>`, their names kept, in text and JSON; no flag shows them. The `start_request` socket request answers with the recorded, redacted request, without the prompt. Arguments are not redacted. | `redacted` (src/ctl/profile.rs); `Request::recorded`, `request::shown` (src/request.rs) | `cli.rs`: `adr_0006_show_redacts_mcp_secrets`, `adr_0006_show_pid_is_the_start_request` |
 | `session status`, `process list` and `session list` carry no secret. | the process's metadata and status hold no request (`Host::start`, `status_report`) | `security.rs`: `adr_0009_a_resumed_sessions_secrets_are_redacted` |
 
 ### B7: the config file is only the user's
@@ -214,6 +225,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 | Claim | Enforced by | Tested by |
 |---|---|---|
 | Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/profiles.rs), from `load_all`, for every command that reads it, `brnr profile` too; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
+| No command writes the config file: `brnr profile` reads it, and `remote check` reads none of it (ADR 6.5, 12.2). | no write path: `profiles::load_all` is the one reader, and nothing opens the file to write | `remote.rs`: `adr_0012_remote_checks_never_write_or_require_local_configuration`; `cli.rs`: `adr_0006_show_is_what_start_would_use` |
 | `doctor` fails a config file others can reach, with the same problems and fixes, and `--fix` doesn't change it. | `config_file` (src/ctl/doctor.rs), through `load_all` | `doctor.rs`: `adr_0009_doctor_fails_a_config_others_can_reach` |
 
 ### The adapters and the release

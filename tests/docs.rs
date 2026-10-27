@@ -102,6 +102,7 @@ const REFERENCE: &[&str] = &[
     "docs/reference/config.md",
     "docs/reference/event.md",
     "docs/reference/acp.md",
+    "docs/reference/profile.md",
     "docs/reference/doctor.md",
     "docs/reference/remote.md",
     "docs/reference/skill.md",
@@ -393,6 +394,12 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     // setup
     ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
+    // Reading profiles
+    ("brnr profile list", Nothing, Says("work: agent")),
+    ("brnr profile show work", Nothing, Says("[profiles.work]")),
+    ("brnr profile show", Nothing, Says("[profiles.default]")),
+    ("brnr profile show --pid 4466", Idle, Says("start_timeout = 120")),
+    ("brnr profile keys", Nothing, Says("shared_sessions")),
     ("brnr session new --profile work --json --prompt - < task.md", Nothing, Says(r#""session""#)),
     ("brnr skill", Nothing, Says("name: brnr")),
     ("brnr skill orchestrate", Nothing, Says("# Orchestrating workers")),

@@ -49,6 +49,37 @@ and the `chmod` or `chown` that fixes it; brnr doesn't change it for you. A
 symlink is followed, and the file it points at, and its folder, are checked
 ([ADR 9.4](../adr/0009-security-and-privacy.md#94-the-config-file-is-read-only-if-only-you-can-change-or-read-it)).
 
+A profile is read on the machine that runs the command. It holds no
+routing: `--remote` on the command line is the one way to another machine,
+and there `--profile` is that machine's ([remote hosts](remote.md)).
+
+## Reading profiles
+
+brnr never writes the file; you edit it. `brnr profile` reads it, for you
+or for an agent that its tool permissions or a sandbox keep out of
+`~/.config`:
+
+```sh
+brnr profile list
+brnr profile show work
+brnr profile show --pid 4466
+brnr profile keys
+```
+
+`list` gives each profile with `doctor`'s line for it. `show` gives a
+profile as `session new --profile work` and `acp --profile work` would use
+it, as TOML in the file's layout: each key the file doesn't set is marked,
+with its default or the rule that applies instead. Without a name it shows
+the profile used without `--profile`, `default` or the empty one, and says
+which. `show --pid` asks a running process what it was started with: it
+doesn't read the file, so it stays true after you edit it, and works where
+the file can't be read. `keys` lists every key a profile can have, its
+part, type, default or rule, the names it takes, and its ADR. The values of
+MCP servers' `env` and `headers` show as `<redacted>`, in every form;
+arguments don't, so put secrets in `env`. A user who wants an agent kept
+from the profiles denies it `brnr profile` too
+([ADR 6.5](../adr/0006-settings-and-profiles.md#65-brnr-profile-reads-the-profiles-and-never-writes)).
+
 # Bridges
 
 A bridge is any process that speaks brnr's JSON-lines protocol: one started by
@@ -57,7 +88,7 @@ stdin, its stderr in the host log; a bare command found next to `brnr` first,
 as an agent's is), or anything that connects to the control socket. Its
 environment has `BRNR_PID` and `BRNR_SOCKET`.
 
-Requests: `status`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
+Requests: `status`, `start_request`, `logged`, `send`, `cancel`, `queue`, `subscribe`,
 `was_cut_off`, `pending`, `allow`, `reject`, `set_config`, `fork`, `new`,
 `resume`, `close`, `stop` (see the [request and response reference](../reference/bridge.md)); a failure is `{"ok": false, "error": {"code", "message"}}`, its code one of [these](../reference/errors.md#codes); those about a session name it by
 its exact id, and those that act on an editor's session are

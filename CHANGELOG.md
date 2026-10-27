@@ -41,7 +41,11 @@ brnr's own conventions:
   it (its unset keys marked, with their defaults or rules), what a running
   process was started with, and every key a profile can have. MCP servers'
   `env` and `headers` values show as `<redacted>`. With `--remote`, they
-  read the destination's (ADR 6.5, #409).
+  read the destination's. The library's facade has them as
+  `brnr::profile` (ADR 6.5, 8.5, #409).
+- The bridge protocol's `start_request`: the request the process was
+  started with, redacted, without the prompt. The protocol is now version
+  2 (ADR 6.5, 8.8).
 
 ### Removed
 

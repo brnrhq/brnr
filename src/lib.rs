@@ -95,7 +95,8 @@ mod transcript;
 
 pub use facade::{
     Agent, Check, Checks, Code, DoctorFlags, Dropped, Error, Event, Exit, Reply, Target, Turn,
-    config, doctor, elicitation, event, permission, process, prompt, queue, session, skill,
+    config, doctor, elicitation, event, permission, process, profile, prompt, queue, session,
+    skill,
 };
 
 /// `brnr <args>` as a function: the command line, `args` being the words

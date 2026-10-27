@@ -1,13 +1,14 @@
 # 6. Settings and profiles
 
-Draft 2026-10-20. Implemented. Factor: F3 (ADR 1). Brings together
-former ADRs 33, 58, 28, 31 and 32 (docs/adr/README.md maps them).
+Draft 2026-10-20, 6.5 2026-10-27. Implemented. Factor: F3 (ADR 1). Brings
+together former ADRs 33, 58, 28, 31 and 32 (docs/adr/README.md maps them).
 
 How a brnr process is set up: the profiles in `config.toml`, a start's
 flags over its profile, the agent's mode, model and config options, MCP
-servers for headless sessions, and files and images in a message. These are
-what brnr adds around ACP so that a headless session can run without an
-editor (F3), with each setting's role in the config itself.
+servers for headless sessions, files and images in a message, and reading
+the profiles without the file. These are what brnr adds around ACP so that
+a headless session can run without an editor (F3), with each setting's role
+in the config itself.
 
 ## 6.1 Profiles, and a start's flags over them
 
@@ -244,6 +245,121 @@ the request fails up front (P7).
   `embeddedContext` capability (both adapters have it), and duplicates
   what the agent can read anyway.
 
+## 6.5 `brnr profile` reads the profiles and never writes
+
+Resolves #409, which replaces a draft that was never merged.
+
+Profiles are only in the config file. The CLI never writes it (N1, ADR
+12.2): if it could, an agent that uses the CLI could change its own
+configuration. But an agent must be able to read it, to set up a start, or
+to find out why a session behaves as it does (a mode, an MCP server that
+isn't there). Two things can keep an agent from the file, though it can
+run brnr:
+
+- Its tool permissions, such as a deny rule on `~/.config`. These don't
+  bind brnr, so brnr can read the file for it.
+- An OS sandbox (Seatbelt, Landlock). This binds brnr too when the agent
+  runs it, so brnr can't read the file either. A process started outside
+  the sandbox can still answer on its socket, wherever the agent can reach
+  the runtime directory.
+
+`brnr profile` is a group of commands that read and never write:
+
+```text
+brnr profile list [--json]
+brnr profile show [<name> | --pid <pid>] [--json]
+brnr profile keys [--json]
+```
+
+- `list` prints the config file's path, then each profile with doctor's
+  line for it (agent, bridges, MCP servers, strict, the editor part's
+  names). With no file, it says that defaults apply, and exits 0. A file
+  that doesn't load fails it, `config_invalid`, with each problem located,
+  as doctor gives them (P7).
+- `show <name>` prints the profile as `session new --profile <name>` and
+  `acp --profile <name>` would use it, from the file as it is now.
+  - Without a name, it shows the profile used without `--profile`:
+    `default`, or the empty profile when there is none. It says which (P4).
+  - It fails where a start fails, with the same code: a name the file
+    doesn't have (`profile_not_found`), a file that doesn't load, or a name
+    with no file (`config_invalid`).
+  - Every key of the three parts is shown, under its part's table, which
+    says who uses it (6.1). A key the file doesn't set shows its default,
+    or the rule that applies instead, marked as not from the file.
+  - Text is TOML in the file's layout, the marks as comments, so that it
+    loads as the same profile. JSON is `{config, name, found, profile,
+    unset}`: `profile` has the three parts, each key the file doesn't set
+    at its default, or null where a rule applies; `unset` has the paths of
+    those keys (`log`, `headless.cwd`) (P5).
+- `show --pid <pid>` prints what that process was started with. It asks
+  the process on its socket (`start_request`) and doesn't read the file.
+  The answer is the start request as the host log's `process_started`
+  record has it (ADR 3.3, 9.1), without `prompt` and `foreground`: the
+  agent and bridges as run, `cwd`, `strict`, `log` and the role's part,
+  a headless start's settings in two groups, the flags' and the
+  profile's (6.1). It works where the file can't be read, and stays true
+  of that process after the file changes (P10). Observing an editor's
+  process isn't an action on its session, so it isn't experimental (P1).
+  Text is the same as TOML, the null fields left out. JSON is `{pid,
+  start_request}`.
+- `keys` prints every key a profile can have: its part, its type, its
+  default or the rule without it, the names it takes (`log`'s values, the
+  experimental actions, the features) and its ADR. It reads the one table
+  of keys in profiles.rs that the layout check and `show` read too, so the
+  three can't disagree.
+- The values of MCP servers' `env` and `headers` are `<redacted>`, their
+  keys kept, in both forms of `show` (ADR 9.1). No flag shows them.
+  Arguments are not redacted: a token in an agent's, a bridge's or an MCP
+  server's arguments shows, as it does in the `process_started` record.
+  Secrets go in `env`.
+- With `--remote <target>` they read the destination's profiles, through
+  ADR 12.2's routing: `brnr profile show <name> --remote <target>`.
+
+**Why.** An agent that has to ask the user what the file says can't set up
+a start or explain a session itself (F3). Reading through brnr helps an
+agent its tool permissions keep out; asking the process helps one in a
+sandbox, and is the one way to know what a process started before an edit
+runs with (P10). One key table keeps `keys` from drifting from the parser
+(P5). Redaction keeps the restriction a user set up from being undone by a
+command (N1); the user has the file anyway.
+
+**Consequences.**
+
+- A process of the user's that can run brnr can read the profiles, but the
+  redacted values, even where its permissions keep it from the file. That
+  is the point, and a hole made on purpose. A user who wants an agent kept
+  from them denies it `brnr profile` as well (docs/threat-model.md).
+- A process that can reach a brnr process's socket can read that process's
+  start request, without the prompt, secrets redacted. The host log already
+  holds the same request.
+- `--json` of `show --pid` has the start request's fields, which are then
+  covered (ADR 8.4).
+
+**Considered.**
+
+- `profile check [<file> | -]`, which would check a draft config: it would
+  open any path an agent names. A deny rule on, for example, `~/.ssh`
+  doesn't bind brnr, and a parse error can quote a value. `doctor` checks
+  the config file.
+- Calling it `brnr config`: that name is the agent's config options' (6.2),
+  and one word would have two meanings (ADR 8.1).
+- A `--reveal` flag for the redacted values: it would hand the secrets to
+  the agents the restriction keeps out.
+- Not redacting `show <name>`, since the user's own processes are inside
+  the boundary: the user set up the restriction on purpose, and a command
+  that hands over its secrets would undo it.
+- Reading the file only, with no `--pid`: no help to an agent in a
+  sandbox, and no way to say what a process started before an edit runs
+  with.
+- The start request in `session status`: `status` is about a session, the
+  request is the process's, and every `status` answer would grow.
+- A hand-written key list in the skill instead of `keys`: it would drift
+  from the parser.
+- Commands that write the config (`set`, `edit`, `init`): N1. The CLI
+  never writes config.
+- `retention`, at the top of the file, in `keys` and `show`: it is no
+  profile's, and `doctor` shows it.
+
 ## Tests
 
 Run `cargo test --release adr_0006_`. Named claims, by section:
@@ -276,3 +392,15 @@ Run `cargo test --release adr_0006_`. Named claims, by section:
   `adr_0006_mcp_servers_reach_the_agent`.
 - 6.4: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0006_files_and_images_go_with_the_prompt`.
+- 6.5: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
+  `adr_0006_show_is_what_start_would_use` (the `default` rule, with and
+  without a `default` profile; unset keys marked in text and JSON; the text
+  loads; it fails where a start fails, with its code),
+  `adr_0006_show_redacts_mcp_secrets` (by name and by `--pid`, in text and
+  JSON), `adr_0006_show_pid_is_the_start_request` (after the file is
+  edited, and with it unreadable; no prompt, no `foreground`),
+  `adr_0006_keys_are_the_parsers` (every key loads in its part and fails
+  in the others; its default is what `show` gives it),
+  `adr_0006_list_fails_on_a_file_that_does_not_load`;
+  [tests/remote.rs](https://github.com/brnrhq/brnr/blob/main/tests/remote.rs):
+  `adr_0006_profile_show_reaches_the_destination`.

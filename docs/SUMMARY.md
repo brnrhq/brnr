@@ -31,6 +31,7 @@
 - [config](reference/config.md)
 - [event](reference/event.md)
 - [acp](reference/acp.md)
+- [profile](reference/profile.md)
 - [remote](reference/remote.md)
 - [doctor](reference/doctor.md)
 - [skill](reference/skill.md)

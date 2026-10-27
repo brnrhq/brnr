@@ -25,6 +25,7 @@ pub mod elicitation;
 pub mod event;
 pub mod permission;
 pub mod process;
+pub mod profile;
 pub mod prompt;
 pub mod queue;
 pub mod session;

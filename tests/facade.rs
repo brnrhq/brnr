@@ -24,7 +24,7 @@ use std::thread;
 use std::time::Duration;
 
 use brnr::{Event, Exit, Target, config, elicitation, event, permission, process, prompt, queue};
-use brnr::{session, skill};
+use brnr::{profile, session, skill};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -43,6 +43,7 @@ const TESTS: &[Test] = &[
     ("adr_0008_the_facade_has_config_get_and_set", config_verbs),
     ("adr_0008_the_facade_has_event_log_watch_and_wait", event_verbs),
     ("adr_0008_the_facade_has_doctor_and_skill", tool_verbs),
+    ("adr_0008_the_facade_has_profile_list_show_and_keys", profile_verbs),
     ("adr_0008_a_facade_error_has_the_commands_code", errors),
     // Last: it deletes the transcripts the others left.
     ("adr_0008_the_facade_has_session_prune", prune_verbs),
@@ -704,6 +705,25 @@ fn tool_verbs(env: &Env) {
         files
     };
     assert_eq!(files(&env.dir.join("lib-skills")), files(&cli_dir));
+}
+
+fn profile_verbs(env: &Env) {
+    env.write_config(&format!(
+        "[profiles.work]\nagent = [{AGENT:?}]\n\n[[profiles.work.headless.mcp_servers]]\n\
+         name = \"m\"\ncommand = \"true\"\nenv = {{ TOKEN = \"t\" }}\n"
+    ));
+    reads(env, &["profile", "list"], || profile::list().unwrap(), &[]);
+    reads(env, &["profile", "show", "work"], || profile::show(Some("work")).unwrap(), &[]);
+    reads(env, &["profile", "show"], || profile::show(None).unwrap(), &[]);
+    reads(env, &["profile", "keys"], || profile::keys().unwrap(), &[]);
+    let session = start(env, "reply hi", true);
+    let pid = pid_of(env, &session);
+    let args = ["profile", "show", "--pid", &pid.to_string()];
+    reads(env, &args, || profile::show_pid(pid).unwrap(), &[]);
+    let err = profile::show(Some("nope")).unwrap_err();
+    code_is(&serde_json::to_value(&err).unwrap(), "profile_not_found");
+    env.ok(&["session", "close", &session]);
+    fs::remove_file(env.config()).unwrap();
 }
 
 fn errors(env: &Env) {

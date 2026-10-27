@@ -70,6 +70,7 @@ mod elicitation;
 mod history;
 mod notify;
 mod ownership;
+mod profile;
 mod prune;
 mod remotes;
 mod sessions;
@@ -94,6 +95,7 @@ const GROUPS: &[&str] = &[
     "elicitation",
     "config",
     "event",
+    "profile",
     "remote",
 ];
 
@@ -167,6 +169,14 @@ event
                     -- <command> [args...]
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
+
+profile
+  brnr profile list [--json]
+  brnr profile show [<name> | --pid <pid>] [--json]
+                    the profile session new and acp use with --profile <name> (default
+                    without), or what process <pid> was started with; secrets redacted
+  brnr profile keys [--json]
+                    every key a profile can have
 
 remote
   brnr remote check <target> [--json]
@@ -481,6 +491,9 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
         ("doctor", None) => code(doctor::main(a)),
+        ("profile", Some("list")) => done(profile::list(a)),
+        ("profile", Some("show")) => done(profile::show(a)),
+        ("profile", Some("keys")) => done(profile::keys(a)),
         ("remote", Some("check")) => code(remotes::check(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
