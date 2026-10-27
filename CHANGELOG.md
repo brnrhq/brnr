@@ -33,6 +33,12 @@ brnr's own conventions:
   routing profile's installation. SSH owns authentication and host trust;
   matching brnr versions are required (ADR 12, #401).
 
+### Changed
+
+- CLI help and the remote guide call out where profiles are loaded: source
+  routing profiles without `--remote`, destination execution profiles with
+  it, and the separate destination name in `remote.profile` (ADR 12.2).
+
 ### Removed
 
 - **Breaking:** Removed `remote init` and `remote remove`, and their

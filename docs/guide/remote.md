@@ -11,6 +11,27 @@ brnr session list --remote agent@linux
 brnr acp --remote agent@linux --profile coding
 ```
 
+## Which machine loads the profile?
+
+**`--remote` changes where `--profile` is looked up.** The source is the
+machine where you invoke brnr; the destination is the SSH host.
+
+| Invocation | Where the profile is loaded |
+|---|---|
+| `brnr acp --remote agent@linux --profile coding` | `coding` is loaded from brnr config on **linux**. Source brnr config is bypassed entirely. |
+| `brnr acp --profile remote-work` | `remote-work` is loaded from brnr config on the **source**. If it has a `remote` table, that table selects the destination and its execution profile. |
+
+In the routing example below, `remote-work` exists on the source and
+`coding` exists on linux. Their names do not need to match. Adding
+`--remote linux` to a command that uses `--profile remote-work` would look
+for `remote-work` on linux and bypass the source profile's settings.
+Local and destination execution settings are never merged.
+
+`brnr remote check --profile remote-work` always reads the **source**
+routing profile to check its connection and overrides.
+
+## SSH destinations and routing profiles
+
 The destination is `[user@]host` or an SSH alias. Without a username,
 SSH's `User` setting or its normal default applies. Keep keys, ports and
 jump hosts in `~/.ssh/config`. brnr uses `BatchMode=yes` and
@@ -38,6 +59,18 @@ runtime_dir = "/run/user/1000/brnr"       # optional BRNR_DIR
 # home = "/home/agent/.brnr"              # optional BRNR_HOME
 # config = "/home/agent/.config/brnr/config.toml" # optional BRNR_CONFIG
 ```
+
+The execution profile is defined separately in brnr config **on linux**:
+
+```toml
+[profiles.coding]
+agent = ["brnr-claude-adapter"]
+```
+
+For `brnr acp --profile remote-work`, brnr loads `remote-work` on the
+source, connects to linux, then loads `coding` there. Omitting `profile`
+from the source's `remote` table makes ACP use the destination's `default`
+profile, if configured.
 
 Check the destination with defaults, or use the profile's overrides:
 

@@ -184,7 +184,9 @@ more sessions, as brnr process list shows them. --json prints the same data as t
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
 Execution commands accept --remote <[user@]host> before --: execute over SSH.
---profile <p> can select a local routing profile. SSH uses existing host trust and keys.
+With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
+Without --remote, --profile <p> is loaded locally and can select a routing profile.
+SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.";
 
 /// How long a start may take until it commits, in seconds, unless

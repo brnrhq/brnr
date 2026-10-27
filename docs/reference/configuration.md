@@ -52,6 +52,14 @@ What every process of the profile uses.
 
 ## `[profiles.<name>.remote]`
 
+**This table lives on the source machine.** Without `--remote`,
+`--profile <name>` selects it locally; its `profile` key names the execution
+profile loaded from the destination's config. These are separate profiles,
+and their names can differ. With explicit `--remote`, the CLI's `--profile`
+instead names a destination profile and source config is bypassed. See
+[which machine loads the profile](../guide/remote.md#which-machine-loads-the-profile)
+for side-by-side examples.
+
 A routing profile contains only this table; execution settings belong on
 its destination. No local and remote execution settings are merged.
 There is no `[remotes]` registry: SSH configuration owns connection aliases.
