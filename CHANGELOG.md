@@ -24,6 +24,8 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-27
+
 ### Added
 
 - Muse Code through `brnr-muse-adapter`, built from pinned upstream Rust source; adapter discovery and version reporting, ACP v1 checks, Dependabot and canary coverage (ADR 11.1–11.3).
@@ -48,22 +50,10 @@ brnr's own conventions:
   started with, redacted, without the prompt (ADR 6.5). The protocol stays
   version 1 until after 1.0.0 (ADR 8.8).
 
-### Removed
+### Changed
 
-- **Breaking:** Removed `remote init` and `remote remove`, and their
-  configuration-writing implementation. The remote command group
-  is read-only for local configuration (ADR 12).
-- **Breaking:** Removed `[remotes.<name>]` and `remote list`. Use SSH
-  aliases or `[user@]host` directly, with `--remote` (ADR 12.2).
-- **Breaking:** Removed a profile's `remote` table
-  (`[profiles.<name>.remote]`), and with it `profiles.default.remote`: a
-  `remote` key now fails to load, and `brnr doctor` names it. Put
-  `--remote <alias>` on the command line and the destination's profile in
-  `--profile`, and set the remote brnr's PATH and `BRNR_*` paths in the
-  destination shell's environment (`~/.zshenv`, `~/.bashrc`) (ADR 12.2,
-  #409).
-- **Breaking:** Removed `remote check --profile`. Use `remote check
-  <target>` (ADR 12.2, #409).
+- The Claude adapter is built from claude-agent-acp 0.94.0
+  (`brnr-claude-adapter`) (ADR 11.3).
 
 ## [0.11.0] - 2026-10-24
 
@@ -1374,7 +1364,8 @@ brnr's own conventions:
   single-file executables (ADR 37).
 - `brew install brnrhq/tap/brnr`, building from source, and `brnr --version`.
 
-[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/brnrhq/brnr/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/brnrhq/brnr/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/brnrhq/brnr/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/brnrhq/brnr/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/brnrhq/brnr/compare/v0.8.0...v0.9.0
