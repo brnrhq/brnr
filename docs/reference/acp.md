@@ -7,13 +7,18 @@ agent, and relays ACP between the editor and that agent
 ([ADR 3.1](../adr/0003-processes-sessions-and-ownership.md#31-the-editors-process-brnr-acp-relays-the-host-owns-the-agent)).
 The editor initializes the protocol and owns its sessions.
 
-    brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
+    brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]
 
 | Flag | Meaning |
 |---|---|
-| `--profile <p>` | The profile to use. `default` when there is one and this isn't given. |
+| `--profile <p>` | Without `--remote`, load the profile on the source machine; it may route to a destination profile. With `--remote`, load it on the destination and bypass source config. Without an explicit profile, the applicable `default` profile is used when present. |
+| `--remote <target>` | Execute through SSH on `[user@]host` or an SSH alias. See [remote hosts](../guide/remote.md). |
 | `--strict` | Stable ACP only ([ADR 2.1](../adr/0002-acp-faithfully.md)): what isn't stable ACP is refused, and the experimental actions on the editor's session are off. |
 | `-- <agent> [args...]` | The agent to run, in place of the profile's. |
+
+See [which machine loads the profile](../guide/remote.md#which-machine-loads-the-profile)
+for the difference between a source routing profile and a destination execution
+profile. Their settings are never merged.
 
 It has no `--json`: stdout is ACP.
 

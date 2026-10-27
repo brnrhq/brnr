@@ -11,6 +11,7 @@
 - [Approvals and elicitations](guide/approvals.md)
 - [Events and notifications](guide/events.md)
 - [Headless sessions](guide/headless.md)
+- [Remote hosts](guide/remote.md)
 - [For agents](guide/agents.md)
 - [Profiles, bridges and environment](guide/profiles.md)
 - [Transcripts](guide/transcripts.md)
@@ -30,6 +31,7 @@
 - [config](reference/config.md)
 - [event](reference/event.md)
 - [acp](reference/acp.md)
+- [remote](reference/remote.md)
 - [doctor](reference/doctor.md)
 - [skill](reference/skill.md)
 - [Events](reference/events.md)
@@ -53,6 +55,7 @@
   - [9. Security and privacy](adr/0009-security-and-privacy.md)
   - [10. Bounded resources](adr/0010-bounded-resources.md)
   - [11. Building, releasing and support](adr/0011-building-releasing-and-support.md)
+  - [12. Remote execution](adr/0012-remote-execution.md)
 - [Threat model](threat-model.md)
 
 # Project

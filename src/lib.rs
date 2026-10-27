@@ -84,6 +84,7 @@ mod log;
 mod paths;
 mod profiles;
 mod proxy;
+mod remote;
 mod render;
 mod request;
 mod schema;
@@ -103,6 +104,8 @@ pub use facade::{
 /// new` and `session resume` with one request on its stdin, never by hand
 /// (host/ and request.rs); everything else controls running hosts (ctl.rs).
 /// A panic but the host's prints a link to report it (bug.rs).
+/// Remote execution replaces the calling process with system SSH (ADR 12),
+/// so it returns only if routing or executing SSH fails.
 ///
 /// ```
 /// brnr::run(["--version".into()]);
@@ -111,6 +114,16 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     // Each of them starts processes and waits for them, which an inherited
     // SIGCHLD ignored would keep it from (see signals.rs).
     signals::wait_for_children();
+    let mut args: Vec<OsString> = args.into_iter().collect();
+    // Transport entry point, stripped once. It prevents routing loops without
+    // exporting a marker into agents or the commands they subsequently run.
+    let received = args.first().is_some_and(|arg| arg == "_remote");
+    if received {
+        args.remove(0);
+    }
+    if let Some(code) = remote::dispatch(&args, received) {
+        return code;
+    }
     let mut args = args.into_iter();
     match args.next() {
         Some(cmd) if cmd == "acp" => {

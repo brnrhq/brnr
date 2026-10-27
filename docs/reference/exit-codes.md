@@ -10,6 +10,7 @@ can give a situation that has none a code of its own.
 | 2 | A usage error: what the command line alone shows wrong, with nothing done and the usage on stderr. |
 | 3 | A command cut off for falling behind that couldn't catch up from the transcript. |
 | 124 | A wait's `--timeout` passed, as timeout(1) exits. |
+| 255 | SSH connection, authentication or trust failure during remote execution. SSH diagnostics go to stderr; brnr JSON is not guaranteed. A remote command that itself exits 255 is indistinguishable by status alone. |
 
 ## By command
 

@@ -360,6 +360,12 @@ older brnr wrote, or a process that isn't this brnr, can nest deeper.
 
 ## 2.6 The editor's stdin and stdout end when the agent's do, and its stderr comes as written
 
+These pipe and signal claims describe the local proxy. With remote
+execution (ADR 12.1), the proxy remains local to its host and agent, but
+the editor observes it through SSH. ACP bytes are relayed as standard
+streams; SSH does not promise identical individual-pipe closure, signal
+delivery or signal exit status at the editor.
+
 - The editor's stdout ends when the agent's does, after the last of what
   the agent wrote, whether the agent runs on or not. The host sends the
   proxy `EOF` on the link after the last `DATA` frame (frame.rs), and the

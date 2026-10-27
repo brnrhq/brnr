@@ -35,7 +35,9 @@ for row in brnr::session::list(&flags)?.sessions {
   arguments to `brnr::run` when the first is `host`, first thing in its
   `main`.
 - Not in the facade: `--foreground`, `event notify` (`event::watch` does
-  what it does), `doctor --report`, `--help` and `--version`.
+  what it does), `doctor --report`, `--help`, `--version`, SSH routing and `remote check`.
+  `brnr::run` accepts remote options, but replaces the calling process with
+  SSH on a successful dispatch; it returns only if routing or execution fails.
 
 The `internals` feature, which the crate's own tests and fuzz targets use,
 is not covered by any compatibility promise.
@@ -71,6 +73,25 @@ Other pages: [events](events.md), the [bridge protocol](bridge.md),
 [exit codes](exit-codes.md), [errors](errors.md), the
 [configuration](configuration.md) and [files](files.md), which has the
 compatibility rules.
+
+## Remote execution
+
+All execution commands, including `acp`, `doctor`, `skill` and `--version`,
+accept `--remote <[user@]host>` before `--`. SSH resolves aliases, usernames,
+ports and keys. An explicit target bypasses local brnr config; `--profile`
+then names an execution profile on the destination. Otherwise `--profile`
+can select a local [routing profile](configuration.md#profilesnameremote).
+Only `acp`, `session new` and `session resume` consult a default routing
+profile implicitly. Routing happens once; a second hop is refused.
+
+Arguments, stdin, stdout, stderr and ordinary exit statuses pass through
+system SSH, without a terminal. Paths, attachments, skill installation and
+notification commands refer to the destination. Authentication and host
+trust must already work; SSH runs with `BatchMode=yes` and
+`StrictHostKeyChecking=yes`. Both brnr versions must match exactly.
+Transport failures exit 255 and may have no brnr JSON. Help stays local.
+See [remote hosts](../guide/remote.md) for setup and lifecycle limits, and
+[`remote check`](remote.md) for installation checks.
 
 ## Covered and not covered
 
@@ -205,7 +226,7 @@ prints it, and `brnr host`.
 
 ```text
 usage:
-  brnr acp [--profile <p>] [--strict] [-- <agent> [args...]]
+  brnr acp [--profile <p>] [--strict] [--remote <target>] [-- <agent> [args...]]
              what an editor runs as its ACP agent
 
 process
@@ -275,6 +296,9 @@ event
   brnr event wait <session> [--for idle|turn|permission|elicitation|exit] [--timeout <s>]
                   [--json]
 
+remote
+  brnr remote check (<target> | --profile <p>) [--json]
+
 brnr
   brnr doctor [--fix | --report] [--json]
   brnr skill [<reference> | install [--dir <dir>]...]
@@ -287,4 +311,9 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
+Execution commands accept --remote <[user@]host> before --: execute over SSH.
+With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
+Without --remote, --profile <p> is loaded locally and can select a routing profile.
+SSH uses existing host trust and keys.
+Remote paths and event notify commands are on the destination. See brnr remote --help.
 ```

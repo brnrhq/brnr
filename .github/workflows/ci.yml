@@ -47,6 +47,11 @@ jobs:
       # network test needs lsof: macOS has it, the Linux image may not.
       - if: runner.os == 'Linux'
         run: command -v lsof || { sudo apt-get update && sudo apt-get install -y lsof; }
+      - name: OpenSSH for the isolated Linux remote transport test
+        if: runner.os == 'Linux'
+        run: |
+          command -v sshd || { sudo apt-get update && sudo apt-get install -y openssh-server; }
+          sudo mkdir -p /run/sshd
       # Release, as locally: some tests stream tens of thousands of events.
       - run: cargo test --release
       # another_user_cant_connect needs root, to connect as nobody: B1's

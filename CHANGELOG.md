@@ -24,6 +24,36 @@ brnr's own conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Execute commands over system SSH with `--remote <[user@]host>`,
+  including ACP, session control and event streams. Routing
+  profiles select SSH destinations and brnr-specific executable, profile
+  and runtime-path overrides. `remote check` checks an SSH destination or
+  routing profile's installation. SSH owns authentication and host trust;
+  matching brnr versions are required (ADR 12, #401).
+
+### Changed
+
+- CLI help and the remote guide call out where profiles are loaded: source
+  routing profiles without `--remote`, destination execution profiles with
+  it, and the separate destination name in `remote.profile` (ADR 12.2).
+
+### Removed
+
+- **Breaking:** Removed `remote init` and `remote remove`, and their
+  configuration-writing implementation. The remote command group
+  is read-only for local configuration (ADR 12).
+- **Breaking:** Removed `[remotes.<name>]` and `remote list`. Use SSH
+  aliases or `[user@]host` directly; move brnr-specific overrides into
+  `[profiles.<name>.remote]`. `remote check --profile <p>` checks a routing
+  profile's installation (ADR 12.2).
+
+### Fixed
+
+- An explicit `--profile` that cannot load fails before execution, including
+  `--version`, instead of falling back locally (ADR 12.2).
+
 ## [0.11.0] - 2026-10-24
 
 ### Added

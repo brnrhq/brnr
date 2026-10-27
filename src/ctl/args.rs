@@ -247,6 +247,9 @@ pub(super) const VERBS: &[Spec] = &[
     verb("event", "wait", SESSION)
         .flags(&[Flag("--for", One("a value")), Flag("--timeout", Seconds)]),
     command("doctor", &[]).flags(&[switch("--fix"), switch("--report")]),
+    verb("remote", "check", &["<target>"])
+        .flags(&[Flag("--profile", One("a local routing profile"))])
+        .instead("--profile"),
     command("skill", &["<reference>"]).optional().no_json(),
     verb("skill", "install", &[]).flags(&[Flag("--dir", Many("a directory"))]).no_json(),
 ];
@@ -254,6 +257,115 @@ pub(super) const VERBS: &[Spec] = &[
 /// The arguments of `brnr <cmd> <verb>`, if it is a verb.
 pub(super) fn spec(cmd: &str, verb: Option<&str>) -> Option<&'static Spec> {
     VERBS.iter().find(|s| s.cmd == cmd && s.verb == verb)
+}
+
+const TRANSPORT: &[Flag] =
+    &[Flag("--remote", One("a destination")), Flag("--profile", One("a profile"))];
+const ACP: Spec = command("acp", &[])
+    .flags(&[Flag("--profile", One("a profile")), switch("--strict")])
+    .rest(Rest::Dashed)
+    .no_json();
+const VERSION: Spec = command("--version", &[]).no_json();
+
+/// Validated public arguments, with transport/profile selection separated
+/// from the words that must reach the remote command (ADR 12.1).
+pub(crate) struct Routing {
+    pub(crate) remote: Option<String>,
+    pub(crate) profile: Option<String>,
+    pub(crate) help: bool,
+    pub(crate) default_profile: bool,
+    pub(crate) json: bool,
+    prefix: Vec<String>,
+    rest: Vec<String>,
+    takes_profile: bool,
+}
+
+impl Routing {
+    pub(crate) fn command(&self, profile: Option<&str>) -> Vec<String> {
+        let mut words = self.prefix.clone();
+        if self.takes_profile
+            && let Some(profile) = profile
+        {
+            words.extend(["--profile".into(), profile.into()]);
+        }
+        words.extend(self.rest.clone());
+        words
+    }
+}
+
+/// Uses the command table, so prompts and words after `--` can never turn
+/// into transport flags. Invalid local syntax stays with its usual parser.
+pub(crate) fn routing(words: &[String]) -> Option<Routing> {
+    let cmd = words.first()?.as_str();
+    if cmd == "remote" {
+        return None;
+    }
+    let (spec, start) = match cmd {
+        "acp" => (&ACP, 1),
+        "-V" | "--version" => (&VERSION, 1),
+        "skill" if words.get(1).is_some_and(|v| v == "install") => (spec(cmd, Some("install"))?, 2),
+        _ => match spec(cmd, None) {
+            Some(spec) => (spec, 1),
+            None => (spec(cmd, words.get(1).map(String::as_str))?, 2),
+        },
+    };
+    let mut rest = words[start..].to_vec();
+    // ACP already accepts --profile=p; keep that spelling working remotely.
+    if cmd == "acp" {
+        let mut normal = Vec::new();
+        let mut it = rest.into_iter();
+        while let Some(word) = it.next() {
+            if word == "--" {
+                normal.push(word);
+                normal.extend(it);
+                break;
+            }
+            if let Some((key @ ("--profile" | "--remote"), value)) = word.split_once('=') {
+                normal.extend([key.into(), value.into()]);
+            } else {
+                let takes = spec.takes_value(&word);
+                normal.push(word);
+                if takes && let Some(value) = it.next() {
+                    normal.push(value);
+                }
+            }
+        }
+        rest = normal;
+    }
+    let help = spec.asks_help(&rest);
+    let parsed = if help { None } else { Some(spec.parse_inner(&rest, true).ok()?) };
+    let mut route = Routing {
+        remote: None,
+        profile: None,
+        help,
+        default_profile: cmd == "acp"
+            || (cmd == "session" && matches!(spec.verb, Some("new" | "resume"))),
+        prefix: words[..start].to_vec(),
+        rest: Vec::new(),
+        takes_profile: spec.flags.iter().any(|f| f.0 == "--profile"),
+        json: false,
+    };
+    if let Some(a) = parsed {
+        route.json = a.json;
+        route.remote = a.value("--remote").map(str::to_owned);
+        route.profile = a.value("--profile").map(str::to_owned);
+        for (flag, value) in a.given {
+            if flag == "--remote" || flag == "--profile" {
+                continue;
+            }
+            route.rest.push(flag.into());
+            route.rest.extend(value);
+        }
+        if a.json {
+            route.rest.push("--json".into());
+        }
+        route.rest.extend(a.positional);
+        if let Some(rest) = a.rest {
+            route.rest.push("--".into());
+            route.rest.extend(rest);
+        }
+    }
+    Some(route)
 }
 
 /// Why a command didn't do what it was asked (ADR 8.3): a usage error,
@@ -314,11 +426,16 @@ impl Spec {
     /// `args`, the words after the verb, read; a mistake the first one
     /// found, left to right.
     pub(super) fn parse(&'static self, args: &[String]) -> Result<Args, Error> {
+        self.parse_inner(args, false)
+    }
+
+    fn parse_inner(&'static self, args: &[String], transport: bool) -> Result<Args, Error> {
         let mut a =
             Args { spec: self, given: Vec::new(), positional: Vec::new(), rest: None, json: false };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
-            if let Some(&Flag(name, takes)) = self.flags.iter().find(|f| f.0 == arg) {
+            let flags = self.flags.iter().chain(if transport { TRANSPORT } else { &[] }.iter());
+            if let Some(&Flag(name, takes)) = flags.into_iter().find(|f| f.0 == arg) {
                 let value = match takes {
                     Nothing => None,
                     _ => Some(
@@ -351,7 +468,8 @@ impl Spec {
         }
         let instead = self.instead.is_some_and(|flag| a.has(flag)) as usize;
         let (min, max) = (self.required.saturating_sub(instead), self.positionals.len() - instead);
-        let flags = !self.needs_flag || !a.given.is_empty();
+        let flags = !self.needs_flag
+            || a.given.iter().any(|(name, _)| self.flags.iter().any(|f| f.0 == *name));
         match (min..=max).contains(&a.positional.len()) && flags {
             true => Ok(a),
             false => Err(Error::Usage),
@@ -382,7 +500,7 @@ impl Spec {
 
     /// Whether `flag` is one of the verb's that takes a value.
     fn takes_value(&self, flag: &str) -> bool {
-        self.flags.iter().any(|f| f.0 == flag && f.1 != Nothing)
+        self.flags.iter().chain(TRANSPORT).any(|f| f.0 == flag && f.1 != Nothing)
     }
 }
 
@@ -391,7 +509,11 @@ impl Args {
     /// for a switch. A flag the verb doesn't take is a mistake here, not
     /// the user's.
     fn all(&self, flag: &str) -> impl Iterator<Item = &Option<String>> {
-        assert!(self.spec.flags.iter().any(|f| f.0 == flag), "{flag} isn't {:?}'s", self.spec);
+        assert!(
+            self.spec.flags.iter().chain(TRANSPORT).any(|f| f.0 == flag),
+            "{flag} isn't {:?}'s",
+            self.spec
+        );
         self.given.iter().filter(move |(name, _)| *name == flag).map(|(_, value)| value)
     }
 

@@ -262,6 +262,11 @@ points (N1).
 
 ## 9.4 The config file is read only if only you can change or read it
 
+Remote routing profiles use the same reader and checks
+(ADR 12.2). The remote command group only inspects configuration and remote
+installations; it has no configuration-editing commands. Symlinked config
+files retain the normal read-only support below.
+
 - Before brnr reads the config file (`$BRNR_CONFIG`, else
   `$XDG_CONFIG_HOME/brnr/config.toml`, else `~/.config/brnr/config.toml`),
   it checks the file and the folder it is in, and refuses:
@@ -293,9 +298,11 @@ points (N1).
 - brnr never changes the file, its folder or their modes itself (P4), and
   `brnr doctor --fix` doesn't either. `brnr doctor` fails its config check
   with the same problems.
-- Every command reads the config through one function, `config::load_all`,
-  so the check covers each: `brnr acp`, `session new`, `session resume`,
-  what takes `--profile`, and `doctor`.
+- Every config read goes through `profiles::load_all` and
+  `profiles::read_private`, including local routing profiles and
+  `remote check --profile`: the same check covers launches, commands
+  selecting a profile and `doctor`. Explicit SSH destinations do not read
+  local config (ADR 12).
 - No config file (and no folder) is no config, as before: defaults apply.
 - There is no override.
 
