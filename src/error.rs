@@ -102,6 +102,12 @@ codes! {
     process_unreachable,
     /// The config has no profile of that name.
     profile_not_found,
+    /// `--remote`: the destination's shell has no `brnr` on its PATH
+    /// (ADR 12.2).
+    remote_brnr_not_found,
+    /// `--remote`: the destination's brnr is another version, or has no
+    /// remote support (ADR 12.1).
+    remote_version_mismatch,
     /// No permission request or elicitation of that handle is waiting.
     request_not_found,
     /// The session is open in a process, and the command needs it not to

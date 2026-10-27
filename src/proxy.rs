@@ -43,10 +43,11 @@ const HELP: &str = "What an editor runs as its ACP agent, in place of the agent 
 The agent runs in a process of its own, which brnr's other commands can
 reach (brnr session list, prompt send, event watch, permission allow, ...); it
 stops when the editor goes.
---remote <[user@]host> runs it through system SSH. With --remote, --profile
-is loaded on the destination; local brnr config is bypassed. Without --remote,
---profile is loaded locally and can name a routing profile whose remote.profile
-names the destination execution profile. Establish SSH authentication and trust first.";
+--remote <[user@]host> runs it through system SSH, with brnr on the remote
+shell's PATH. A profile is loaded on the machine that runs the agent: with
+--remote, --profile is the destination's, and local brnr config isn't read;
+without it, nothing connects to another machine. Establish SSH authentication
+and trust first.";
 
 /// The fds the host finds its end of the link and of the signal link on.
 const HOST_LINK_FD: c_int = 3;

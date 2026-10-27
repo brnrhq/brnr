@@ -27,17 +27,21 @@ brnr's own conventions:
 ### Added
 
 - Execute commands over system SSH with `--remote <[user@]host>`,
-  including ACP, session control and event streams. Routing
-  profiles select SSH destinations and brnr-specific executable, profile
-  and runtime-path overrides. `remote check` checks an SSH destination or
-  routing profile's installation. SSH owns authentication and host trust;
-  matching brnr versions are required (ADR 12, #401).
-
-### Changed
-
-- CLI help and the remote guide call out where profiles are loaded: source
-  routing profiles without `--remote`, destination execution profiles with
-  it, and the separate destination name in `remote.profile` (ADR 12.2).
+  including ACP, session control and event streams. `--remote` is the only
+  transport: without it, nothing connects to another machine. A profile is
+  read on the machine that runs the command, so with `--remote`,
+  `--profile` is the destination's. The destination's brnr is the one on
+  its shell's PATH; without one the command fails with
+  `remote_brnr_not_found`, which says where to set the PATH, and another
+  version fails with `remote_version_mismatch`. `remote check <target>`
+  checks a destination's installation. SSH owns authentication and host
+  trust; matching brnr versions are required (ADR 12, #401, #409).
+- `brnr profile list | show [<name> | --pid <pid>] | keys`, which read and
+  never write: the config file's profiles, a profile as a start would use
+  it (its unset keys marked, with their defaults or rules), what a running
+  process was started with, and every key a profile can have. MCP servers'
+  `env` and `headers` values show as `<redacted>`. With `--remote`, they
+  read the destination's (ADR 6.5, #409).
 
 ### Removed
 
@@ -45,14 +49,16 @@ brnr's own conventions:
   configuration-writing implementation. The remote command group
   is read-only for local configuration (ADR 12).
 - **Breaking:** Removed `[remotes.<name>]` and `remote list`. Use SSH
-  aliases or `[user@]host` directly; move brnr-specific overrides into
-  `[profiles.<name>.remote]`. `remote check --profile <p>` checks a routing
-  profile's installation (ADR 12.2).
-
-### Fixed
-
-- An explicit `--profile` that cannot load fails before execution, including
-  `--version`, instead of falling back locally (ADR 12.2).
+  aliases or `[user@]host` directly, with `--remote` (ADR 12.2).
+- **Breaking:** Removed a profile's `remote` table
+  (`[profiles.<name>.remote]`), and with it `profiles.default.remote`: a
+  `remote` key now fails to load, and `brnr doctor` names it. Put
+  `--remote <alias>` on the command line and the destination's profile in
+  `--profile`, and set the remote brnr's PATH and `BRNR_*` paths in the
+  destination shell's environment (`~/.zshenv`, `~/.bashrc`) (ADR 12.2,
+  #409).
+- **Breaking:** Removed `remote check --profile`. Use `remote check
+  <target>` (ADR 12.2, #409).
 
 ## [0.11.0] - 2026-10-24
 

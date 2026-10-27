@@ -113,7 +113,7 @@ numbers against budgets ([N3](https://brnrhq.github.io/brnr/docs/adr/0001-princi
 
 ## Documentation
 
-Run commands on another host with `--remote linux` or a routing profile; see
+Run commands on another host with `--remote linux`; see
 [remote hosts](https://brnrhq.github.io/brnr/docs/guide/remote.html).
 
 The documentation is a book at

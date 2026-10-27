@@ -11,13 +11,11 @@ editor (F3), with each setting's role in the config itself.
 
 ## 6.1 Profiles, and a start's flags over them
 
-An execution profile has three parts, by role (P7, P12). A local profile
-can instead contain only a `remote` table that delegates to a destination
-and its execution profile (ADR 12.2); routing and execution settings are
-never implicitly merged. SSH owns destination aliases and connection
-settings; brnr-specific overrides live in the profile's `remote` table.
+A profile has three parts, by role (P7, P12). It is read on the machine
+that runs the command, and holds no routing: `--remote` on the command
+line is the one way to another machine (ADR 12.2).
 
-An execution profile looks like this:
+A profile looks like this:
 
 ```toml
 [profiles.work]                     # every process of the profile

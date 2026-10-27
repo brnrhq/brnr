@@ -247,9 +247,7 @@ pub(super) const VERBS: &[Spec] = &[
     verb("event", "wait", SESSION)
         .flags(&[Flag("--for", One("a value")), Flag("--timeout", Seconds)]),
     command("doctor", &[]).flags(&[switch("--fix"), switch("--report")]),
-    verb("remote", "check", &["<target>"])
-        .flags(&[Flag("--profile", One("a local routing profile"))])
-        .instead("--profile"),
+    verb("remote", "check", &["<target>"]),
     command("skill", &["<reference>"]).optional().no_json(),
     verb("skill", "install", &[]).flags(&[Flag("--dir", Many("a directory"))]).no_json(),
 ];
@@ -259,37 +257,29 @@ pub(super) fn spec(cmd: &str, verb: Option<&str>) -> Option<&'static Spec> {
     VERBS.iter().find(|s| s.cmd == cmd && s.verb == verb)
 }
 
-const TRANSPORT: &[Flag] =
-    &[Flag("--remote", One("a destination")), Flag("--profile", One("a profile"))];
+/// The one transport flag (ADR 12.1). `--profile` is the verb's own: with
+/// `--remote` it goes to the destination, which loads it (ADR 12.2).
+const TRANSPORT: &[Flag] = &[Flag("--remote", One("a destination"))];
 const ACP: Spec = command("acp", &[])
     .flags(&[Flag("--profile", One("a profile")), switch("--strict")])
     .rest(Rest::Dashed)
     .no_json();
 const VERSION: Spec = command("--version", &[]).no_json();
 
-/// Validated public arguments, with transport/profile selection separated
-/// from the words that must reach the remote command (ADR 12.1).
+/// Validated public arguments, with `--remote` separated from the words
+/// that must reach the remote command (ADR 12.1).
 pub(crate) struct Routing {
     pub(crate) remote: Option<String>,
-    pub(crate) profile: Option<String>,
     pub(crate) help: bool,
-    pub(crate) default_profile: bool,
     pub(crate) json: bool,
     prefix: Vec<String>,
     rest: Vec<String>,
-    takes_profile: bool,
 }
 
 impl Routing {
-    pub(crate) fn command(&self, profile: Option<&str>) -> Vec<String> {
-        let mut words = self.prefix.clone();
-        if self.takes_profile
-            && let Some(profile) = profile
-        {
-            words.extend(["--profile".into(), profile.into()]);
-        }
-        words.extend(self.rest.clone());
-        words
+    /// The command the destination runs: every word but `--remote`'s.
+    pub(crate) fn command(&self) -> Vec<String> {
+        [self.prefix.clone(), self.rest.clone()].concat()
     }
 }
 
@@ -336,21 +326,16 @@ pub(crate) fn routing(words: &[String]) -> Option<Routing> {
     let parsed = if help { None } else { Some(spec.parse_inner(&rest, true).ok()?) };
     let mut route = Routing {
         remote: None,
-        profile: None,
         help,
-        default_profile: cmd == "acp"
-            || (cmd == "session" && matches!(spec.verb, Some("new" | "resume"))),
         prefix: words[..start].to_vec(),
         rest: Vec::new(),
-        takes_profile: spec.flags.iter().any(|f| f.0 == "--profile"),
         json: false,
     };
     if let Some(a) = parsed {
         route.json = a.json;
         route.remote = a.value("--remote").map(str::to_owned);
-        route.profile = a.value("--profile").map(str::to_owned);
         for (flag, value) in a.given {
-            if flag == "--remote" || flag == "--profile" {
+            if flag == "--remote" {
                 continue;
             }
             route.rest.push(flag.into());

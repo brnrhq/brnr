@@ -13,11 +13,11 @@ skill that teaches agents to use brnr.
 ## 8.1 Commands are grouped by what they act on, with ACP's verbs
 
 Every public execution command also accepts `--remote <target>` before
-`--`, and `--profile` can select a local routing profile (ADR 12). Transport
-selection respects flag values and the delimiter. Help stays local. The
-`remote check (<target> | --profile <p>)` checks installations through SSH
-destinations or local routing profiles. It never writes local config and
-does not itself accept remote routing.
+`--`, the one transport (ADR 12). With it, `--profile` is the
+destination's; without it, nothing connects. Transport selection respects
+flag values and the delimiter. Help stays local. `remote check <target>`
+checks a destination's installation through SSH. It reads no local config
+and does not itself accept `--remote`.
 
 A command is `brnr <entity> <verb>`: the entity it acts on, and ACP's verb
 wherever ACP has one (P1). The entities are brnr's model of a process:
@@ -1275,6 +1275,8 @@ The codes, by subject:
 | `process_stopping` | The process is stopping, or its agent takes no more input. |
 | `process_unreachable` | The process doesn't answer, or can't be reached from here (another `BRNR_DIR`, ADR 3.9). |
 | `profile_not_found` | The config has no profile of that name. |
+| `remote_brnr_not_found` | `--remote`: no `brnr` on the destination shell's PATH; set it in `~/.zshenv` or `~/.bashrc` there (ADR 12.2). |
+| `remote_version_mismatch` | `--remote`: the destination's brnr is another version, or has no remote support (ADR 12.1). |
 | `request_not_found` | No permission request or elicitation of that handle is waiting (ADR 4.1). |
 | `session_active` | The session is open in a process, where the command needs it not to be: close it first, or take it over (ADR 3.9). |
 | `session_closed` | The session closed before the command was done. |

@@ -37,6 +37,8 @@ assert sys.argv[1:6] == ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecki
 os.environ['BRNR_CONFIG'] = os.environ['SSH_CONFIG']
 os.environ['BRNR_HOME'] = os.environ['SSH_HOME']
 os.environ['BRNR_DIR'] = os.environ['SSH_DIR']
+if 'SSH_PATH' in os.environ:
+    os.environ['PATH'] = os.environ['SSH_PATH']
 os.execv('/bin/sh', ['sh', '-c', sys.argv[-1]])
 "#,
         )
@@ -105,24 +107,84 @@ fn adr_0012_remote_sessions_stdin_and_json_use_the_destination() {
     assert_eq!(s.arguments()[0][5], "linux");
 }
 
+/// Without `--remote`, `--profile` is a local profile and nothing connects:
+/// a local start stays local, and a verb that takes no `--profile` refuses it.
 #[test]
-fn adr_0012_profiles_route_once_and_explicit_remote_wins() {
-    let s = Setup::new("profiles");
-    let original = fs::read_to_string(s.local.config()).unwrap();
+fn adr_0012_profile_without_remote_never_connects() {
+    let s = Setup::new("local-profile");
     s.local.write_config(&format!(
-        "{original}\n[profiles.work.remote]\ntarget = 'linux'\nprofile = 'coding'\n"
+        "[profiles.default]\nagent = ['python3', {AGENT:?}]\n\n[profiles.coding]\nagent = ['python3', {AGENT:?}]\n"
     ));
-    let new = s.run(&["session", "new", "--profile", "work", "--json"]);
+    let new = s.run(&["session", "new", "--profile", "coding", "--json"]);
     let id = new["session"].as_str().unwrap();
-    let status = s.run(&["session", "status", id, "--profile", "work", "--json"]);
-    assert_eq!(status["session"], id);
-    s.run(&["session", "list", "--remote", "linux", "--profile", "coding", "--json"]);
-    assert!(!s.arguments().iter().any(|a| a[6].as_str().unwrap().contains("--profile work")));
-    s.remote.write_config("[profiles.coding.remote]\ntarget = 'another-host'\n");
-    let out = s.cmd(&["acp", "--profile", "work"]).output().unwrap();
-    assert!(!out.status.success());
+    let local = s.run(&["session", "list", "--profile", "coding", "--include", "active", "--json"]);
+    assert!(local["sessions"].as_array().unwrap().iter().any(|r| r["session"] == id), "{local}");
+    let out = s.cmd(&["session", "status", id, "--profile", "coding"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown option: --profile"));
+    assert!(s.arguments().is_empty(), "{:?}", s.arguments());
+}
+
+/// With `--remote`, `--profile` goes to the destination for every verb that
+/// takes it, and the destination loads it from its own config; a verb that
+/// takes none refuses it before connecting.
+#[test]
+fn adr_0012_with_remote_profile_reaches_the_destination_for_every_verb_that_takes_it() {
+    let s = Setup::new("remote-profile");
+    let new = s.run(&["session", "new", "--remote", "linux", "--profile", "coding", "--json"]);
+    let id = new["session"].as_str().unwrap().to_owned();
+    let listed = s.run(&[
+        "session",
+        "list",
+        "--remote",
+        "linux",
+        "--profile",
+        "coding",
+        "--include",
+        "active",
+        "--json",
+    ]);
+    assert_eq!(listed["sessions"][0]["session"], id.as_str());
+    for args in [
+        vec!["session", "resume", &id, "--remote", "linux", "--profile", "coding", "--json"],
+        vec!["session", "delete", &id, "--remote", "linux", "--profile", "coding", "--json"],
+        vec!["acp", "--remote", "linux", "--profile", "coding"],
+    ] {
+        let out = s.cmd(&args).stdin(Stdio::null()).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(!stderr.contains("profile_not_found"), "{args:?}: {stderr}");
+    }
+    let arguments = s.arguments();
+    assert_eq!(arguments.len(), 5);
+    for sent in &arguments {
+        assert!(sent[6].as_str().unwrap().contains("--profile coding"), "{sent}");
+    }
+    // The destination's profile isn't the source's: a name only the source
+    // has fails there.
+    s.local.write_config("[profiles.source-only]\n");
+    let out = s
+        .cmd(&["session", "list", "--remote", "linux", "--profile", "source-only", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    common::code_is(&out, "profile_not_found");
+    let before = s.arguments().len();
+    let out = s.cmd(&["process", "list", "--remote", "linux", "--profile", "coding"]).output();
+    assert_eq!(out.unwrap().status.code(), Some(2));
+    assert_eq!(s.arguments().len(), before);
+}
+
+/// The destination runs the command itself: a `--remote` it receives is
+/// refused, never another hop.
+#[test]
+fn adr_0012_nested_remote_routing_is_refused() {
+    let s = Setup::new("nested");
+    let out = s.cmd(&["_remote", "session", "list", "--remote", "other", "--json"]).output();
+    let out = out.unwrap();
+    assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nested remote routing"));
-    assert_eq!(s.arguments().len(), 4);
+    assert!(s.arguments().is_empty());
 }
 
 #[test]
@@ -176,16 +238,41 @@ fn adr_0012_auth_missing_client_version_and_bad_targets_fail() {
         assert!(!out.status.success());
     }
     assert_eq!(s.arguments().len(), before);
-    let wrong = s.local.dir.join("wrong-version");
-    fs::write(&wrong, "#!/bin/sh\nprintf 'brnr 99.0.0\\n'\n").unwrap();
-    fs::set_permissions(&wrong, fs::Permissions::from_mode(0o755)).unwrap();
-    s.local.write_config(&format!(
-        "[profiles.wrong.remote]\ntarget='linux'\nexecutable={:?}\n",
-        wrong.to_str().unwrap()
-    ));
-    let out = s.cmd(&["session", "list", "--profile", "wrong"]).output().unwrap();
+    // brnr on the remote PATH, of another version.
+    let wrong = s.local.dir.join("wrong");
+    fs::create_dir_all(&wrong).unwrap();
+    fs::write(wrong.join("brnr"), "#!/bin/sh\nprintf 'brnr 99.0.0\\n'\n").unwrap();
+    fs::set_permissions(wrong.join("brnr"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", wrong.display());
+    let mut list = s.cmd(&["session", "list", "--remote", "linux", "--json"]);
+    let out = list.env("SSH_PATH", &path).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("version mismatch"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("another version"));
+    common::code_is(&out, "remote_version_mismatch");
+}
+
+/// brnr not on the remote shell's PATH: the error says how to fix that
+/// shell's environment, with its code, in text and JSON.
+#[test]
+fn adr_0012_a_missing_remote_brnr_says_how_to_fix_the_path() {
+    let s = Setup::new("missing");
+    for json in [false, true] {
+        let mut args = vec!["session", "list", "--remote", "linux"];
+        if json {
+            args.push("--json");
+        }
+        let out = s.cmd(&args).env("SSH_PATH", "/usr/bin:/bin").output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("~/.zshenv") && stderr.contains("~/.bashrc"), "{stderr}");
+        common::code_is(&out, "remote_brnr_not_found");
+        if json {
+            let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(error["error"]["code"], "remote_brnr_not_found");
+        } else {
+            assert!(out.stdout.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -206,61 +293,42 @@ fn adr_0012_direct_user_destinations_use_remote_path_without_initialisation() {
     assert_eq!(s.arguments().len(), 2);
 }
 
+/// A profile's `remote` table is gone: it is an unknown key, which fails to
+/// load, and doctor names it; nothing connects.
 #[test]
-fn adr_0012_explicit_profile_failures_never_fall_back_locally() {
-    let s = Setup::new("profile-errors");
-    for (config, mode, code) in [
-        (Some("[profiles.work"), 0o600, "config_invalid"),
-        (Some("[profiles.work.remote]\ntarget='linux'\n"), 0o644, "config_invalid"),
-        (Some("[profiles.other]\n"), 0o600, "profile_not_found"),
-        (None, 0o600, "config_invalid"),
-    ] {
-        if let Some(config) = config {
-            s.local.write_config(config);
-            fs::set_permissions(s.local.config(), fs::Permissions::from_mode(mode)).unwrap();
-        } else {
-            fs::remove_file(s.local.config()).unwrap();
-        }
-        for args in [
-            vec!["--version", "--profile", "work"],
-            vec!["process", "list", "--profile", "work", "--json"],
-            vec!["session", "list", "--profile", "work", "--json"],
-        ] {
-            let out = s.cmd(&args).output().unwrap();
-            assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
-            common::code_is(&out, code);
-            if args.contains(&"--json") {
-                assert_eq!(
-                    serde_json::from_slice::<Value>(&out.stdout).unwrap()["error"]["code"],
-                    code
-                );
-            } else {
-                assert!(out.stdout.is_empty(), "local version must not be printed");
-            }
-        }
-        // Commands without explicit profile selection retain their local behaviour.
-        assert!(s.cmd(&["--version"]).output().unwrap().status.success());
-        assert_eq!(s.run(&["process", "list", "--json"])["processes"], json!([]));
-        assert!(s.arguments().is_empty());
-    }
-    for args in [vec!["--version", "--profile"], vec!["--version", "--profile", "work", "--bogus"]]
+fn adr_0012_a_remote_table_fails_to_load_and_doctor_names_it() {
+    let s = Setup::new("remote-table");
+    s.local.write_config("[profiles.work.remote]\ntarget = 'linux'\n");
+    for args in
+        [vec!["session", "list", "--profile", "work", "--json"], vec!["session", "new", "--json"]]
     {
         let out = s.cmd(&args).output().unwrap();
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        common::code_is(&out, "config_invalid");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("unknown key remote"));
     }
+    let doctor = s.local.run(&["doctor", "--json"]);
+    assert!(!doctor.status.success());
+    let checks: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let named = checks["checks"].as_array().unwrap().iter().any(|c| {
+        c["level"] == "fail" && c["message"].as_str().unwrap().contains("unknown key remote")
+    });
+    assert!(named, "{checks}");
+    // `--version` takes no `--profile`; alone it is local.
+    let out = s.cmd(&["--version", "--profile", "work"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(s.cmd(&["--version"]).output().unwrap().status.success());
     assert!(s.arguments().is_empty());
 }
 
 #[test]
 fn adr_0012_remote_checks_never_write_or_require_local_configuration() {
     let s = Setup::new("inspection");
-    s.local.write_config("[profiles.work.remote]\ntarget='agent@linux'\nprofile='coding'\n");
     let original = fs::read(s.local.config()).unwrap();
     fs::set_permissions(s.local.config(), fs::Permissions::from_mode(0o400)).unwrap();
     fs::set_permissions(s.local.config().parent().unwrap(), fs::Permissions::from_mode(0o500))
         .unwrap();
-    let checked = s.cmd(&["remote", "check", "--profile", "work", "--json"]).output().unwrap();
+    let checked = s.cmd(&["remote", "check", "agent@linux", "--json"]).output().unwrap();
     let result: Value = serde_json::from_slice(&checked.stdout).unwrap();
     assert!(result["checks"].is_array(), "{result}");
     assert_eq!(s.arguments()[0][5], "agent@linux");
@@ -295,29 +363,6 @@ fn adr_0012_ssh_destinations_bypass_local_config_and_legacy_registry_is_rejected
     assert!(!doctor.status.success());
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("unknown key remotes"));
     assert_eq!(fs::read(s.local.config()).unwrap(), original);
-}
-
-#[test]
-fn adr_0012_remote_environment_paths_and_default_launch_profiles_are_resolved_once() {
-    let s = Setup::new("environment");
-    s.local.write_config(&format!(
-        "[profiles.default.remote]\ntarget='agent@linux'\nprofile='coding'\nexecutable={:?}\nruntime_dir={:?}\nhome={:?}\nconfig={:?}\ncwd={:?}\n",
-        env!("CARGO_BIN_EXE_brnr"), s.remote.dir.join("run"), s.remote.dir.join("home"), s.remote.config(), s.remote.dir
-    ));
-    let new = s.run(&["session", "new", "--json"]);
-    let id = new["session"].as_str().unwrap();
-    let status = s.run(&["session", "status", id, "--remote", "linux", "--json"]);
-    assert_eq!(status["session"], id);
-    let command = s.arguments()[0][6].as_str().unwrap().to_owned();
-    assert!(command.contains("BRNR_DIR="));
-    assert!(command.contains("BRNR_HOME="));
-    assert!(command.contains("BRNR_CONFIG="));
-    assert!(command.starts_with("cd "));
-    let local = s.local.run(&["session", "list", "--include", "active", "--json"]);
-    assert_eq!(serde_json::from_slice::<Value>(&local.stdout).unwrap()["sessions"], json!([]));
-    assert_eq!(s.arguments().len(), 2);
-    assert_eq!(s.arguments()[0][5], "agent@linux");
-    assert_eq!(s.arguments()[1][5], "linux");
 }
 
 #[test]
@@ -463,8 +508,10 @@ fn adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux() {
     let user = String::from_utf8(user.stdout).unwrap();
     let config = dir.join("sshd_config");
     fs::write(&config, format!(
-        "Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host-key\nAuthorizedKeysFile {}/client-key.pub\nPidFile {}/sshd.pid\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin yes\nStrictModes no\nLogLevel ERROR\n",
-        dir.display(), dir.display(), dir.display()
+        "Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host-key\nAuthorizedKeysFile {}/client-key.pub\nPidFile {}/sshd.pid\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nPermitRootLogin yes\nStrictModes no\nLogLevel ERROR\nSetEnv PATH={}:/usr/bin:/bin BRNR_DIR={} BRNR_HOME={} BRNR_CONFIG={}\n",
+        dir.display(), dir.display(), dir.display(), dir.join("bin").display(),
+        s.remote.dir.join("run").display(), s.remote.dir.join("home").display(),
+        s.remote.config().display()
     )).unwrap();
     let log = dir.join("sshd.log");
     let mut daemon = Daemon(
@@ -497,18 +544,16 @@ fn adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux() {
     let quoted = format!("'{}'", client.to_str().unwrap().replace('\'', "'\\''"));
     fs::write(dir.join("bin/ssh"), format!("#!/bin/sh\nexec /usr/bin/ssh -F {quoted} \"$@\"\n"))
         .unwrap();
-    s.local.write_config(&format!(
-        "[profiles.work.remote]\ntarget='linux'\nprofile='coding'\nexecutable={:?}\nruntime_dir={:?}\nhome={:?}\nconfig={:?}\n",
-        env!("CARGO_BIN_EXE_brnr"), s.remote.dir.join("run"), s.remote.dir.join("home"), s.remote.config()
-    ));
-    let new = s.run(&["session", "new", "--profile", "work", "--json"]);
+    // The destination's environment is its shell's, as ~/.zshenv or
+    // ~/.bashrc would set it: here sshd's SetEnv (ADR 12.2).
+    let new = s.run(&["session", "new", "--remote", "linux", "--profile", "coding", "--json"]);
     let id = new["session"].as_str().unwrap();
     assert_eq!(
-        s.run(&["session", "list", "--profile", "work", "--json"])["sessions"][0]["session"],
+        s.run(&["session", "list", "--remote", "linux", "--json"])["sessions"][0]["session"],
         id
     );
     let mut child = s
-        .cmd(&["prompt", "send", id, "--profile", "work", "--prompt", "-", "--wait", "--json"])
+        .cmd(&["prompt", "send", id, "--remote", "linux", "--prompt", "-", "--wait", "--json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -521,5 +566,5 @@ fn adr_0012_system_ssh_authenticates_and_runs_cli_and_acp_on_linux() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["reply"],
         "authenticated-ssh"
     );
-    acp_command(s.cmd(&["acp", "--profile", "work"]));
+    acp_command(s.cmd(&["acp", "--remote", "linux", "--profile", "coding"]));
 }

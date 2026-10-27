@@ -169,7 +169,7 @@ event
                   [--json]
 
 remote
-  brnr remote check (<target> | --profile <p>) [--json]
+  brnr remote check <target> [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -183,10 +183,10 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
-Execution commands accept --remote <[user@]host> before --: execute over SSH.
-With --remote, --profile <p> is loaded on the destination; local brnr config is bypassed.
-Without --remote, --profile <p> is loaded locally and can select a routing profile.
-SSH uses existing host trust and keys.
+Execution commands accept --remote <[user@]host> before --: execute over SSH, with brnr on
+the remote shell's PATH. Without --remote, no command connects to another machine.
+A profile is loaded on the machine that runs the command: with --remote, --profile <p> is the
+destination's, and local brnr config isn't read. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.";
 
 /// How long a start may take until it commits, in seconds, unless

@@ -98,8 +98,7 @@ the user from their own processes.
 
 ### Remote SSH transport
 
-An explicit `--remote` or selected routing profile (ADR 12) trusts the
-destination account, SSH server and the user's system SSH client/config.
+`--remote` (ADR 12), the one transport, trusts the destination account, SSH server and the user's system SSH client/config.
 The client owns key handling, host verification and encryption. brnr uses
 `BatchMode=yes`, `StrictHostKeyChecking=yes` and no terminal; it neither
 accepts unknown host keys nor stores credentials. Destination sockets and
@@ -108,14 +107,15 @@ stay remotely configured; profiles are not copied between machines.
 
 `remote::script` quotes each shell word and validates the destination so
 it cannot become an SSH option. The preflight reads `/dev/null` and keeps
-successful output off ACP/JSON streams. `_remote` prevents routing loops
-without exposing a marker to agents. Explicit destinations are passed
-directly to SSH without local config lookup. Routing profiles and their
-brnr-specific overrides use the existing private-file reader.
-`remote check --profile` reads the selected profile; a direct check needs
-no local config. SSH owns aliases and connection settings; there is no
-brnr remote registry. No remote
-command creates or edits config. Same-user processes remain trusted;
+successful output off ACP/JSON streams. `_remote` refuses another hop
+without exposing a marker to agents. Destinations are passed directly to
+SSH without local config lookup, and no profile routes: without `--remote`
+on its command line, no command connects, so an agent's tool-permission
+rules see every remote call and can allow or deny it (ADR 12.2, N1). The
+destination's brnr is the one on its shell's PATH, with that shell's
+environment; brnr sets none of it. `remote check` needs no local config.
+SSH owns aliases and connection settings; there is no brnr remote
+registry. No command creates or edits config. Same-user processes remain trusted;
 removing CLI config editing does not prevent direct file access when the
 agent's filesystem permissions already allow it.
 
@@ -213,7 +213,7 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 | Claim | Enforced by | Tested by |
 |---|---|---|
-| Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/profiles.rs), from `load_all`, including local routing profiles and `remote check --profile`; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
+| Before any command reads the config file, it and its folder are the user's own and nobody else can write them, and nobody else can read the file, and on macOS neither has an access control list, which can grant what the mode doesn't show; a symlink is followed, and the file it resolves to and that file's folder are checked, through the descriptors the file is read from (`openat`, `O_NOFOLLOW`, `fstat`). Otherwise the command fails before it starts or reaches anything, naming the path, the owner or mode, and the `chmod` or `chown` that fixes it. brnr changes neither (P4). No file is no config (ADR 9.4). | `read_private`, `check_private` (src/profiles.rs), from `load_all`, for every command that reads it, `brnr profile` too; `sys::openat`, `sys::has_acl` (src/sys.rs) | `security.rs`: `adr_0009_a_config_others_can_read_or_write_is_refused`, `adr_0009_a_config_of_another_users_is_refused`, `adr_0009_a_symlinked_config_is_checked_where_it_points`, `adr_0009_a_config_with_an_acl_is_refused` (macOS), `adr_0009_a_missing_config_is_no_config` |
 | `doctor` fails a config file others can reach, with the same problems and fixes, and `--fix` doesn't change it. | `config_file` (src/ctl/doctor.rs), through `load_all` | `doctor.rs`: `adr_0009_doctor_fails_a_config_others_can_reach` |
 
 ### The adapters and the release

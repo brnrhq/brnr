@@ -12,8 +12,7 @@ are what N2 asks of it.
 
 ## 3.1 The editor's process: `brnr acp` relays, the host owns the agent
 
-With explicit remote selection or a routing profile (ADR 12), the local
-process becomes SSH; the ordinary proxy and host below run on the
+With `--remote` (ADR 12), the local process becomes SSH; the ordinary proxy and host below run on the
 destination. They retain editor ownership. SSH disconnect/EOF detection,
 signals and pipe closure have the transport limitations in ADR 12.1;
 remote execution does not add attachment or reconnect semantics.

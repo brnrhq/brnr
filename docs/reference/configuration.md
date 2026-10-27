@@ -17,6 +17,12 @@ file is no configuration.
   brnr never changes the file's mode
   ([ADR 9.4](../adr/0009-security-and-privacy.md#94-the-config-file-is-read-only-if-only-you-can-change-or-read-it)).
 - Without `--profile`, the `default` profile applies, if there is one.
+- A profile is read on the machine that runs the command, and holds no
+  routing: a `remote` key is unknown. `--remote` on the command line is the
+  one way to another machine, whose config is its own
+  ([remote hosts](../guide/remote.md)).
+- `brnr profile` shows what a profile holds and every key it can have,
+  without the file ([profile](profile.md)).
 - Beside the profiles, the file has one key of its own, `retention`.
 
 **Covered** from 1.0.0: the TOML below, its sections, keys, values and names;
@@ -49,35 +55,6 @@ What every process of the profile uses.
 | `log` | string | What the process records ([transcripts](../guide/transcripts.md)): `"all"` (the default), `"events"` (no raw ACP) or `"off"`. A string only. |
 | `strict` | boolean | Stable ACP only ([ADR 2.1](../adr/0002-acp-faithfully.md)). Default `false`. |
 | `bridges` | array of tables | The [bridges](#bridges) the process starts. |
-
-## `[profiles.<name>.remote]`
-
-**This table lives on the source machine.** Without `--remote`,
-`--profile <name>` selects it locally; its `profile` key names the execution
-profile loaded from the destination's config. These are separate profiles,
-and their names can differ. With explicit `--remote`, the CLI's `--profile`
-instead names a destination profile and source config is bypassed. See
-[which machine loads the profile](../guide/remote.md#which-machine-loads-the-profile)
-for side-by-side examples.
-
-A routing profile contains only this table; execution settings belong on
-its destination. No local and remote execution settings are merged.
-There is no `[remotes]` registry: SSH configuration owns connection aliases.
-
-| Key | Type | Meaning |
-|---|---|---|
-| `target` | string | Required SSH alias or `[user@]hostname`. |
-| `profile` | string | Optional execution profile on the destination; otherwise its default applies. |
-| `executable` | string | Remote brnr executable; default `brnr` on remote PATH. A bare program name or absolute path. |
-| `cwd` | string | Optional remote process starting directory. |
-| `runtime_dir` | string | Optional remote `BRNR_DIR`, where sessions' runtime sockets are found. |
-| `home` | string | Optional remote `BRNR_HOME`, where state and transcripts are stored. |
-| `config` | string | Optional remote `BRNR_CONFIG`, the destination config file. |
-
-Paths must be absolute on the destination, without `~` expansion.
-An explicit `--remote` uses remote defaults and bypasses these overrides
-and local config entirely. See [remote hosts](../guide/remote.md) for an
-example and [ADR 12](../adr/0012-remote-execution.md) for routing precedence.
 
 ## `[profiles.<name>.headless]`
 
