@@ -3,7 +3,7 @@
   "private": true,
   "description": "ACP adapters built from source as standalone executables. The agents themselves (Claude Code, Codex, Muse Code) are not bundled.",
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.93.0",
+    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     "@agentclientprotocol/codex-acp": "2.2.2"
   },
   "devDependencies": {
