@@ -43,6 +43,11 @@ brnr's own conventions:
   `[profiles.<name>.remote]`. `remote check --profile <p>` checks a routing
   profile's installation (ADR 12.2).
 
+### Fixed
+
+- An explicit `--profile` that cannot load fails before execution, including
+  `--version`, instead of falling back locally (ADR 12.2).
+
 ## [0.11.0] - 2026-10-24
 
 ### Added

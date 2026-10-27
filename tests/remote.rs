@@ -207,6 +207,52 @@ fn adr_0012_direct_user_destinations_use_remote_path_without_initialisation() {
 }
 
 #[test]
+fn adr_0012_explicit_profile_failures_never_fall_back_locally() {
+    let s = Setup::new("profile-errors");
+    for (config, mode, code) in [
+        (Some("[profiles.work"), 0o600, "config_invalid"),
+        (Some("[profiles.work.remote]\ntarget='linux'\n"), 0o644, "config_invalid"),
+        (Some("[profiles.other]\n"), 0o600, "profile_not_found"),
+        (None, 0o600, "config_invalid"),
+    ] {
+        if let Some(config) = config {
+            s.local.write_config(config);
+            fs::set_permissions(s.local.config(), fs::Permissions::from_mode(mode)).unwrap();
+        } else {
+            fs::remove_file(s.local.config()).unwrap();
+        }
+        for args in [
+            vec!["--version", "--profile", "work"],
+            vec!["process", "list", "--profile", "work", "--json"],
+            vec!["session", "list", "--profile", "work", "--json"],
+        ] {
+            let out = s.cmd(&args).output().unwrap();
+            assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+            common::code_is(&out, code);
+            if args.contains(&"--json") {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&out.stdout).unwrap()["error"]["code"],
+                    code
+                );
+            } else {
+                assert!(out.stdout.is_empty(), "local version must not be printed");
+            }
+        }
+        // Commands without explicit profile selection retain their local behaviour.
+        assert!(s.cmd(&["--version"]).output().unwrap().status.success());
+        assert_eq!(s.run(&["process", "list", "--json"])["processes"], json!([]));
+        assert!(s.arguments().is_empty());
+    }
+    for args in [vec!["--version", "--profile"], vec!["--version", "--profile", "work", "--bogus"]]
+    {
+        let out = s.cmd(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty());
+    }
+    assert!(s.arguments().is_empty());
+}
+
+#[test]
 fn adr_0012_remote_checks_never_write_or_require_local_configuration() {
     let s = Setup::new("inspection");
     s.local.write_config("[profiles.work.remote]\ntarget='agent@linux'\nprofile='coding'\n");

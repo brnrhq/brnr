@@ -6206,6 +6206,8 @@ fn adr_0005_a_bridges_load_finds_the_transcript_in_another_folder() {
 #[test]
 fn adr_0008_pid_refuses_process_flags() {
     let env = Env::new("c-pid-flags");
+    // Profile resolution precedes command-specific validation (ADR 12.2).
+    env.write_config("[profiles.default]\n");
     env.start(&[]);
     let pid = env.pid();
     let flags: [&[&str]; 9] = [

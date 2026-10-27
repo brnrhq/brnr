@@ -65,7 +65,9 @@ credentials belong on the destination; local and remote execution settings
 are not merged. Explicit `--remote` wins, and with it `--profile` names a
 remote execution profile. Without either flag, only `acp`, `session new`
 and `session resume` consult a routing `default` profile; other commands
-stay local. Routing happens once; another remote hop is refused.
+stay local. An explicit profile that cannot load fails, including for
+`--version`; it never falls back to local execution. Routing happens once;
+another remote hop is refused.
 
 Input, output, JSON and live event streams pass through SSH. File/image
 attachments, working directories, skill installation and notification

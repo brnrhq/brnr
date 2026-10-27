@@ -15,10 +15,13 @@ pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
     let route = match ctl::args::routing(&words) {
         Some(route) => route,
         None if words.first().is_some_and(|w| matches!(w.as_str(), "-V" | "--version"))
-            && words.iter().take_while(|w| *w != "--").any(|w| w == "--remote") =>
+            && words
+                .iter()
+                .take_while(|w| *w != "--")
+                .any(|w| matches!(w.as_str(), "--remote" | "--profile")) =>
         {
             eprintln!(
-                "brnr: invalid remote version command\nusage: brnr --version [--remote <target>]"
+                "brnr: invalid remote version command\nusage: brnr --version [--remote <target>] [--profile <p>]"
             );
             return Some(ExitCode::from(2));
         }
@@ -39,12 +42,16 @@ pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
     let remote = if let Some(target) = route.remote.as_deref() {
         Remote::new(target)
     } else {
-        let profiles = match profiles::load_all() {
-            Ok(Some(config)) => config.profiles,
-            // Local commands retain their existing diagnostics on failure.
-            _ => return None,
+        let (profile, _) = match profiles::load(route.profile.as_deref()) {
+            Ok(profile) => profile,
+            Err(error) if route.profile.is_some() => {
+                ctl::failed(&error, route.json);
+                return Some(ExitCode::FAILURE);
+            }
+            // Implicit defaults retain the local command's existing diagnostics.
+            Err(_) => return None,
         };
-        profiles.get(route.profile.as_deref().unwrap_or("default"))?.remote.clone()?
+        profile.remote?
     };
     let result = (|| -> Result<Command, String> {
         let profile = if route.remote.is_some() {

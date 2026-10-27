@@ -110,7 +110,9 @@ applies. Execution settings are not merged between machines.
   destination PATH and the destination's default paths; profile-specific
   overrides are not applied.
 - Otherwise an explicit local `--profile` can select routing for any
-  execution command. The destination profile is forwarded only where the
+  execution command. If that explicit profile cannot load, report its
+  config/profile error before executing anything locally or connecting;
+  this includes `--version`. The destination profile is forwarded only where the
   command supports profiles (launches, session listing/deletion).
 - Without either flag, only `acp`, `session new` and `session resume`
   consult `profiles.default.remote`, matching their existing default
@@ -156,6 +158,7 @@ a fake SSH client, without requiring credentials:
 
 - `adr_0012_remote_sessions_stdin_and_json_use_the_destination`
 - `adr_0012_profiles_route_once_and_explicit_remote_wins`
+- `adr_0012_explicit_profile_failures_never_fall_back_locally`
 - `adr_0012_shell_quoting_preserves_prompts_and_delimiters`
 - `adr_0012_auth_missing_client_version_and_bad_targets_fail`
 - `adr_0012_direct_user_destinations_use_remote_path_without_initialisation`
