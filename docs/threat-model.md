@@ -108,9 +108,12 @@ stay remotely configured; profiles are not copied between machines.
 `remote::script` quotes each shell word and validates the destination so
 it cannot become an SSH option. The preflight reads `/dev/null` and keeps
 successful output off ACP/JSON streams. `_remote` prevents routing loops
-without exposing a marker to agents. Remote settings are
-maintained manually; `remote list` and `remote check` read configuration
-through the existing private-file reader and never write it. No remote
+without exposing a marker to agents. Explicit destinations are passed
+directly to SSH without local config lookup. Routing profiles and their
+brnr-specific overrides use the existing private-file reader.
+`remote check --profile` reads the selected profile; a direct check needs
+no local config. SSH owns aliases and connection settings; there is no
+brnr remote registry. No remote
 command creates or edits config. Same-user processes remain trusted;
 removing CLI config editing does not prevent direct file access when the
 agent's filesystem permissions already allow it.

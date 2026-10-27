@@ -790,34 +790,40 @@ jump hosts in `~/.ssh/config`. brnr uses `BatchMode=yes` and
 `StrictHostKeyChecking=yes`: it fails rather than waiting for an invisible
 authentication or host-verification prompt in an editor.
 
-Maintain named remotes and routing profiles by editing your local config
-manually. The remote CLI never writes this file. For example:
+An SSH alias belongs in `~/.ssh/config`, for example:
+
+```sshconfig
+Host linux
+    HostName linux.example.com
+    User agent
+```
+
+brnr passes `linux` directly to SSH; it has no separate remote registry.
+For a named working setup, define a local routing profile:
 
 ```toml
-[remotes.linux]
-host = "agent@linux"
-executable = "/home/agent/.local/bin/brnr" # default: brnr on remote PATH
+[profiles.remote-work.remote]
+target = "linux"                         # SSH alias or [user@]hostname
+profile = "coding"                       # execution profile on linux
+executable = "/home/agent/.local/bin/brnr" # optional; default: brnr on remote PATH
 cwd = "/home/agent/work"                 # optional remote starting directory
 runtime_dir = "/run/user/1000/brnr"       # optional BRNR_DIR
 # home = "/home/agent/.brnr"              # optional BRNR_HOME
 # config = "/home/agent/.config/brnr/config.toml" # optional BRNR_CONFIG
-
-[profiles.remote-work.remote]
-target = "linux"
-profile = "coding"                       # execution profile on linux
 ```
 
-Inspect a configured connection and its remote installation:
+Check the destination with defaults, or use the profile's overrides:
 
 ```sh
-brnr remote list
 brnr remote check linux
+brnr remote check --profile remote-work
 brnr session list --remote linux --json
 brnr event watch $s --remote linux
 ```
 
-`list` reads the configured names and settings; `check` runs the remote
-doctor. Both support `--json` and leave the local config unchanged.
+`check` runs the remote doctor and supports `--json`. It leaves local
+configuration unchanged. An explicit destination uses remote defaults and
+does not read local brnr config; a profile supplies brnr-specific overrides.
 
 Then the same profile selects the connection from an editor or terminal:
 
@@ -839,7 +845,7 @@ attachments, working directories, skill installation and notification
 commands refer to the remote host. There is no file transfer or path
 translation: the editor must send paths that match the remote workspace.
 Configured paths must be absolute, without `~`. Set `runtime_dir` in the
-remote's config table when SSH's environment differs from the environment
+profile's `remote` table when SSH's environment differs from the environment
 that started the remote sessions. `cwd` sets the remote starting directory,
 `home` selects `BRNR_HOME`, and `config` selects `BRNR_CONFIG`.
 
@@ -849,7 +855,7 @@ conversion to headless ownership. A headless session survives commands and
 watchers disconnecting. Signals and individual pipe closures follow SSH's
 semantics, which differ from a local process. Transport failures exit 255
 with SSH's stderr and may have no JSON result. Help remains local, and the
-`remote` inspection commands read local connection settings.
+`remote check --profile` reads the selected local routing profile.
 
 Remote settings use the same private config-file checks as execution
 profiles, including support for symlinked configs. See

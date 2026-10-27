@@ -159,8 +159,7 @@ event
                   [--json]
 
 remote
-  brnr remote list [--json]
-  brnr remote check <target> [--json]
+  brnr remote check (<target> | --profile <p>) [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -174,7 +173,7 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
-Execution commands accept --remote <[user@]host|name> before --: execute over SSH.
+Execution commands accept --remote <[user@]host> before --: execute over SSH.
 --profile <p> can select a local routing profile. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.";
 
@@ -295,7 +294,7 @@ fn run(spec: &args::Spec, a: &Args) -> Result<ExitCode, args::Error> {
         ("event", Some("notify")) => code(notify::notify(a)),
         ("event", Some("wait")) => code(talk::wait(a)),
         ("doctor", None) => code(doctor::main(a)),
-        ("remote", Some(verb)) => code(remotes::main(verb, a)),
+        ("remote", Some("check")) => code(remotes::check(a)),
         ("skill", None) => done(skill::skill(a)),
         ("skill", Some("install")) => done(skill::install(a)),
         (cmd, verb) => unreachable!("{cmd} {verb:?} is in the table, so runs"),

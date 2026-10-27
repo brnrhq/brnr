@@ -16,8 +16,9 @@ skill that teaches agents to use brnr.
 Every public execution command also accepts `--remote <target>` before
 `--`, and `--profile` can select a local routing profile (ADR 12). Transport
 selection respects flag values and the delimiter. Help stays local. The
-`remote list|check` group inspects remote settings and installations; it
-never writes local config and does not itself accept remote routing.
+`remote check (<target> | --profile <p>)` checks installations through SSH
+destinations or local routing profiles. It never writes local config and
+does not itself accept remote routing.
 
 A command is `brnr <entity> <verb>`: the entity it acts on, and ACP's verb
 wherever ACP has one (P1). The entities are brnr's model of a process:

@@ -6,7 +6,7 @@ Resolves #401.
 ## 12.1 Public commands can execute through the system SSH client
 
 `--remote <target>` before `--` executes a public command on that target.
-The target is a configured remote's exact name, or an SSH destination in
+The target is always an SSH destination in
 `[user@]host` form (including an SSH alias). An explicit username is passed
 to SSH; otherwise SSH's own configuration and defaults decide it. Ports,
 keys, jump hosts and connection sharing belong in SSH configuration.
@@ -18,8 +18,9 @@ The sequence is:
    never transport options. Help stays local and does not read config or
    connect. Invalid command-table syntax does not connect; command-specific
    validation (such as incompatible flags) runs on the destination.
-2. Resolve an explicit destination, or a local routing profile (12.2).
-   Do not resolve local execution profiles, attachments or sessions.
+2. Pass an explicit destination straight to SSH without reading local
+   brnr config, or load a local routing profile (12.2). Do not resolve
+   local execution profiles, attachments or sessions.
 3. Replace the local process with system `ssh`, preserving its standard
    streams: `-T -o BatchMode=yes -o StrictHostKeyChecking=yes`. Missing
    authentication or host trust fails; the user establishes these with
@@ -77,22 +78,19 @@ implementation of users' SSH configuration. Forwarding control sockets
 couples clients to a private protocol. Automatic reconnect would risk
 replaying prompts or approvals, and changes ownership (P11/P14).
 
-## 12.2 Remotes are reusable connections, and profiles can delegate
+## 12.2 Profiles reference SSH destinations and hold brnr overrides
 
 `config.toml` can contain:
 
 ```toml
-[remotes.linux]
-host = "agent@linux"
-executable = "/home/agent/.local/bin/brnr" # default: brnr on remote PATH
+[profiles.work.remote]
+target = "linux"                         # SSH alias or [user@]hostname
+profile = "coding"                       # optional destination profile
+executable = "/home/agent/.local/bin/brnr" # optional; default: brnr on remote PATH
 cwd = "/home/agent/work"                 # optional, before all commands
 runtime_dir = "/run/user/1000/brnr"       # optional BRNR_DIR
 home = "/home/agent/.brnr"                # optional BRNR_HOME
 config = "/home/agent/.config/brnr/config.toml" # optional BRNR_CONFIG
-
-[profiles.work.remote]
-target = "linux"
-profile = "coding"                       # optional remote profile
 ```
 
 Each path must be absolute on the destination; there is no `~` expansion.
@@ -103,12 +101,14 @@ copied or stored in remote settings.
 
 A routing profile contains only its `remote` table: local execution
 settings alongside it fail validation, rather than being silently ignored.
-The target is a saved remote or SSH destination. Its optional `profile`
+The target is an SSH alias or `[user@]hostname`, never a brnr registry key. Its optional `profile`
 selects a destination execution profile; otherwise the remote default
 applies. Execution settings are not merged between machines.
 
 - Explicit `--remote` wins. With it, `--profile` is a destination profile,
-  and no local profile of that name is required.
+  and no local profile of that name is required. It uses brnr on the
+  destination PATH and the destination's default paths; profile-specific
+  overrides are not applied.
 - Otherwise an explicit local `--profile` can select routing for any
   execution command. The destination profile is forwarded only where the
   command supports profiles (launches, session listing/deletion).
@@ -119,32 +119,35 @@ applies. Execution settings are not merged between machines.
 - Routing is resolved once. A destination profile that delegates again
   fails before another SSH process starts.
 
-Remote settings are maintained manually in the config file. The remote
-CLI has no command that creates, edits or deletes config. Its inspection
-commands are:
+There is no `[remotes]` registry and no `remote list` command. Hostnames,
+users, keys, ports and jump hosts belong in SSH configuration. A routing
+profile contains only the destination and brnr-specific choices above.
 
-- `remote list`: configured names and connection settings, read locally.
-- `remote check <target>`: version preflight followed by the remote
-  `doctor`, using the configured environment and executable. The normal
-  doctor result and exit status are returned.
+`remote check (<target> | --profile <p>) [--json]` runs a version preflight
+followed by the destination's doctor. A direct target uses remote defaults
+and does not read local brnr configuration. `--profile` loads that local
+routing profile and uses its executable, cwd and environment overrides.
+Giving both a destination and `--profile`, or neither, is a usage error.
+A local execution profile without a `remote` table is refused.
 
-Both support `--json`. List is `{remotes: [{name, settings}]}`; check
-returns doctor's interface. Neither writes local config or creates its
-file or directory when missing. Config access retains the existing
-private-file and symlink rules (ADR 9.4). `doctor` validates local routing
-profiles without checking remote executables locally or connecting.
+The result and exit status are doctor's interface. Checks neither write
+local config nor create a missing config file or directory. Profiles are
+maintained manually and retain the existing private-file and symlink rules
+(ADR 9.4). Local `doctor` validates routing profiles without initiating a
+connection.
 
-**Why.** Connections are reusable across profiles (N4), a profile names a
-working setup (F5), and execution settings have one owner (P4/P12).
-Keeping the remote CLI read-only for configuration avoids giving agents
-that can invoke brnr an additional configuration-editing interface (N1).
-Direct file access still depends on the agent's filesystem permissions;
-this does not establish a boundary against unrestricted same-user code
-(P13). Commands never install software or change host trust (P7/P15).
+**Why.** SSH already owns the connection's identity and authentication.
+Another remote-name registry duplicates its configuration and adds an
+avoidable resolution step (F5/N4/P4). Profiles name working setups and hold
+only brnr-specific overrides (P12). Keeping config edits outside the CLI
+avoids an additional configuration-editing interface for agents (N1).
+Direct file access still depends on filesystem permissions; this is no
+boundary against unrestricted same-user code (P13). Commands never install
+software or change host trust (P7/P15).
 
-**Considered.** `remote init` and `remote remove`: both write configuration,
-which can select programs, remote hosts and execution settings. Those
-edits remain the user's responsibility, outside brnr's command interface.
+**Considered.** A `[remotes]` registry and `remote list`: duplicate SSH's
+aliases, and require separate connection configuration. `remote init` and
+`remote remove`: edit configuration, which remains the user's responsibility.
 
 ## Tests
 
@@ -156,7 +159,8 @@ a fake SSH client, without requiring credentials:
 - `adr_0012_shell_quoting_preserves_prompts_and_delimiters`
 - `adr_0012_auth_missing_client_version_and_bad_targets_fail`
 - `adr_0012_direct_user_destinations_use_remote_path_without_initialisation`
-- `adr_0012_remote_inspection_never_writes_configuration`
+- `adr_0012_remote_checks_never_write_or_require_local_configuration`
+- `adr_0012_ssh_destinations_bypass_local_config_and_legacy_registry_is_rejected`
 - `adr_0012_acp_has_clean_streams_and_remote_profile_resolution`
 - `adr_0012_help_and_invalid_commands_never_connect`
 - `adr_0012_event_streams_deliver_live_events_and_disconnect_without_stopping_headless`

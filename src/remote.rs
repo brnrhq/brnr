@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
 
-use crate::config::{self, ConfigFile, Remote};
+use crate::config::{self, Remote};
 use crate::{ctl, paths};
 
 /// None leaves a local command to its existing parser and implementation.
@@ -34,31 +34,23 @@ pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
     if route.remote.is_none() && route.profile.is_none() && !route.default_profile {
         return None;
     }
-    let file = match config::load_file() {
-        Ok(file) => file.unwrap_or_default(),
-        // A local command retains its existing error code and diagnostics.
-        Err(_) if route.remote.is_none() => return None,
-        Err(problems) => {
-            let error = crate::error::Error::new(
-                crate::error::Code::config_invalid,
-                format!("{}: {}", paths::config_file().display(), problems.join("; ")),
-            );
-            ctl::failed(&error, route.json);
-            return Some(ExitCode::FAILURE);
-        }
+    // An explicit destination belongs entirely to SSH. It needs no local
+    // configuration, not even a valid config file or a matching profile.
+    let remote = if let Some(target) = route.remote.as_deref() {
+        Remote::new(target)
+    } else {
+        let profiles = match config::load_all() {
+            Ok(Some(profiles)) => profiles,
+            // Local commands retain their existing diagnostics on failure.
+            _ => return None,
+        };
+        profiles.get(route.profile.as_deref().unwrap_or("default"))?.remote.clone()?
     };
-    let result = (|| -> Result<Option<Command>, String> {
-        let mut profile = route.profile.as_deref();
-        let target = match route.remote.as_deref() {
-            Some(target) => target,
-            None => {
-                let name = profile.unwrap_or("default");
-                let Some(remote) = file.profiles.get(name).and_then(|p| p.remote.as_ref()) else {
-                    return Ok(None);
-                };
-                profile = remote.profile.as_deref();
-                &remote.target
-            }
+    let result = (|| -> Result<Command, String> {
+        let profile = if route.remote.is_some() {
+            route.profile.as_deref()
+        } else {
+            remote.profile.as_deref()
         };
         if received {
             return Err(
@@ -66,12 +58,10 @@ pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
                     .into(),
             );
         }
-        let remote = destination(&file, target)?;
-        Ok(Some(ssh(&remote, &route.command(profile), route.json)?))
+        ssh(&remote, &route.command(profile), route.json)
     })();
     match result {
-        Ok(None) => None,
-        Ok(Some(mut command)) => {
+        Ok(mut command) => {
             // No extra relay, buffering or child process: the editor now owns
             // ssh. Its standard streams and exit status are SSH's (ADR 12.1).
             let error = command.exec();
@@ -89,23 +79,6 @@ fn failed(message: &str, json: bool) -> ExitCode {
     ExitCode::FAILURE
 }
 
-pub(crate) fn configuration() -> Result<ConfigFile, String> {
-    config::load_file().map_err(|e| e.join("; ")).map(Option::unwrap_or_default)
-}
-
-pub(crate) fn destination(file: &ConfigFile, name: &str) -> Result<Remote, String> {
-    let remote = file.remotes.get(name).cloned().unwrap_or_else(|| Remote {
-        host: name.into(),
-        executable: "brnr".into(),
-        cwd: None,
-        runtime_dir: None,
-        home: None,
-        config: None,
-    });
-    validate(&remote)?;
-    Ok(remote)
-}
-
 /// Destination is one SSH argument, never an option or a command string.
 pub(crate) fn validate_host(host: &str) -> Result<(), String> {
     if host.is_empty()
@@ -118,7 +91,7 @@ pub(crate) fn validate_host(host: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate(remote: &Remote) -> Result<(), String> {
-    validate_host(&remote.host)?;
+    validate_host(&remote.target)?;
     if remote.executable.is_empty()
         || remote.executable.starts_with('-')
         || remote.executable.contains('\0')
@@ -195,7 +168,7 @@ fn script(remote: &Remote, args: &[String], json: bool) -> Result<String, String
 fn ssh(remote: &Remote, args: &[String], json: bool) -> Result<Command, String> {
     let mut command = Command::new("ssh");
     command.args(["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]);
-    command.arg(&remote.host).arg(script(remote, args, json)?);
+    command.arg(&remote.target).arg(script(remote, args, json)?);
     Ok(command)
 }
 

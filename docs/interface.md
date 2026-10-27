@@ -134,8 +134,7 @@ event
                   [--json]
 
 remote
-  brnr remote list [--json]
-  brnr remote check <target> [--json]
+  brnr remote check (<target> | --profile <p>) [--json]
 
 brnr
   brnr doctor [--fix | --report] [--json]
@@ -149,7 +148,7 @@ and brnr elicitation requests show them. <pid> is a brnr process, which runs one
 more sessions, as brnr process list shows them. --json prints the same data as the text: one JSON value, or one event per line for event
 log, event watch and session new --foreground. --strict is stable ACP only: no --steer into a
 running turn, no session fork.
-Execution commands accept --remote <[user@]host|name> before --: execute over SSH.
+Execution commands accept --remote <[user@]host> before --: execute over SSH.
 --profile <p> can select a local routing profile. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.
 ```
@@ -157,8 +156,9 @@ Remote paths and event notify commands are on the destination. See brnr remote -
 ## Remote execution
 
 All execution commands, including `acp`, `doctor`, `skill` and
-`--version`, accept `--remote <target>` before `--`. The target is a saved
-remote name or SSH destination `[user@]host`. Help remains local. The
+`--version`, accept `--remote <target>` before `--`. The target is an SSH alias
+or destination `[user@]host`, passed directly to SSH without reading local
+brnr configuration. Help remains local. The
 `remote` inspection group remains local and does not accept `--remote`.
 
 System OpenSSH executes the same command remotely, with inherited standard
@@ -183,29 +183,29 @@ There is no file transfer, path translation or implicit credential copy.
 Local ACP signal/pipe fidelity is limited by SSH's channel semantics.
 
 ```text
-brnr remote list [--json]
-brnr remote check <target> [--json]
+brnr remote check (<target> | --profile <p>) [--json]
 ```
 
-List reads locally configured remote settings; check executes the
-destination's doctor after the version preflight. List JSON is
-`{remotes: [{name, settings}]}`; check returns doctor's interface. Maintain
-remote settings manually in the config file; these commands do not create,
-edit or delete local configuration.
+Check executes the destination's doctor after the version preflight and
+returns doctor's interface. A direct target uses brnr on the remote PATH
+and remote default paths, without reading local brnr config. `--profile`
+selects a local routing profile with any brnr-specific overrides. The two
+selectors are mutually exclusive and exactly one is required; a profile
+without a `remote` table fails. No check creates, edits or deletes local
+configuration.
 
-Config permits `[remotes.<name>]` with required string `host`, string
-`executable` (default `brnr`), and optional strings `cwd`, `runtime_dir`,
-`home`, `config`. Paths are absolute remote paths without tilde expansion;
-the executable can instead be a bare PATH program. Runtime/home/config set
-the corresponding remote `BRNR_DIR`/`BRNR_HOME`/`BRNR_CONFIG`. A routing
-profile contains only `[profiles.<name>.remote]`, with required `target`
-and optional destination `profile`. Execution settings stay on the
-destination. SSH keys, usernames omitted from destinations, ports and
-jump hosts are managed through SSH configuration.
+A routing profile contains only `[profiles.<name>.remote]`, with required
+string `target` (SSH alias or `[user@]hostname`), optional destination
+`profile`, `executable` (default `brnr`), and optional strings `cwd`,
+`runtime_dir`, `home`, `config`. Paths are absolute remote paths without
+tilde expansion; the executable can instead be a bare PATH program.
+Runtime/home/config select remote `BRNR_DIR`/`BRNR_HOME`/`BRNR_CONFIG`.
+Agent settings remain on the destination. Profiles retain the existing
+private config-file checks and symlink support.
 
-Remote inspection uses the existing private config-file checks, including
-symlink support, and does not create a config file or directory when
-missing. See [ADR 12](adr/0012-remote-execution.md).
+There is no brnr remote registry or `remote list`. SSH configuration owns
+aliases, hostnames, usernames, keys, ports and jump hosts. Legacy
+`[remotes.<name>]` tables fail validation. See [ADR 12](adr/0012-remote-execution.md).
 
 ## CLI inputs and results
 
@@ -499,8 +499,7 @@ doesn't load in an earlier one.
 | Section | Keys and input types |
 |---|---|
 | `profiles.<name>` | `agent`: argv string array; `log`: `"all"` (default), `"events"`, or `"off"`, a string only; `strict`: boolean (default false); `bridges`: table array. |
-| `profiles.<name>.remote` | A routing profile contains only this table: required string `target`, optional destination execution `profile`. See [remote execution](#remote-execution). |
-| `remotes.<name>` | Required string `host`; `executable` defaults to `brnr`; optional absolute remote paths `cwd`, `runtime_dir`, `home`, `config`. |
+| `profiles.<name>.remote` | A routing profile contains only this table: required SSH `target`; optional destination `profile`, `executable` (default `brnr`), and absolute remote paths `cwd`, `runtime_dir`, `home`, `config`. See [remote execution](#remote-execution). |
 | `profiles.<name>.headless` | `cwd`, `mode`, `model`, `thought_level`, `auth`: strings; `options`: map of option IDs to strings; `response_timeout`, `stop_when_idle`: nonnegative integer seconds; `mcp_servers`: table array. Omitted timeouts impose no configured deadline, and neither has a default: an unattended run must set `response_timeout`, or a request nobody answers waits as long as the process runs. A response timeout answers with the `reject_once` option, else cancels the turn; an elicitation it answers `cancel`. |
 | `profiles.<name>.editor` | `experimental`: array of `send`, `context`, `cancel`, `permission`, `elicitation`, `config`, `close`; `client_capabilities`: array of `fs`, `terminal`, the editor's capabilities that reach the agent outside strict mode ([ADR 2.7](adr/0002-acp-faithfully.md#27-the-editors-file-system-and-terminal-reach-the-agent-in-strict-mode-or-when-its-profile-names-them)); `features`: array containing `shared_sessions` if enabled. All three default empty. `echo_as`: `"tool_call"` (default) or `"user_message_chunk"`, how a message or context sent through brnr is shown to the editor ([ADR 7.2](adr/0007-experimental-actions-on-an-editors-session.md#72-how-a-message-sent-through-brnr-is-shown-to-the-editor)). |
 | Bridge table | `command`: the program, a nonempty string (a list fails to load); optional `args`: string array, as an MCP server's; optional `events`: event-name array (default all except `acp`). |

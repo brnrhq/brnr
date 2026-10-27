@@ -519,8 +519,9 @@ fn config_file(r: &mut Report) {
                 Level::Ok,
                 &what,
                 format!(
-                    "remote {} (check with brnr remote check {})",
-                    remote.target, remote.target
+                    "remote {} (check with brnr remote check --profile {})",
+                    remote.target,
+                    paths::shell_word(name)
                 ),
             );
             continue;

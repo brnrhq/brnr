@@ -261,7 +261,7 @@ points (N1).
 
 ## 9.4 The config file is read only if only you can change or read it
 
-Remote definitions and routing profiles use the same reader and checks
+Remote routing profiles use the same reader and checks
 (ADR 12.2). The remote command group only inspects configuration and remote
 installations; it has no configuration-editing commands. Symlinked config
 files retain the normal read-only support below.
