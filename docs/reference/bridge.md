@@ -185,7 +185,7 @@ The process's full report: its metadata, its state, and each session's.
   "id": "4466",
   "host_id": "20261023T150820-4466",
   "brnr": "0.10.0",
-  "protocol": 2,
+  "protocol": 1,
   "profile": null,
   "host_pid": 4466,
   "proxy_pid": null,

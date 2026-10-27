@@ -44,8 +44,8 @@ brnr's own conventions:
   read the destination's. The library's facade has them as
   `brnr::profile` (ADR 6.5, 8.5, #409).
 - The bridge protocol's `start_request`: the request the process was
-  started with, redacted, without the prompt. The protocol is now version
-  2 (ADR 6.5, 8.8).
+  started with, redacted, without the prompt (ADR 6.5). The protocol stays
+  version 1 until after 1.0.0 (ADR 8.8).
 
 ### Removed
 

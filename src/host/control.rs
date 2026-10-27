@@ -170,9 +170,10 @@ pub(crate) const EVENTS: &[&str] = &[
 
 /// The version of what the socket speaks, its requests, their fields and
 /// replies, and the events, in `<pid>.json` and `status` beside brnr's own
-/// (ADR 8.8). One more in a release that adds to it; within a major version
-/// it only grows, as the bridge protocol is covered (ADR 8.4).
-pub(crate) const PROTOCOL: u64 = 2;
+/// (ADR 8.8). 1 until the first release after 1.0.0 that adds to it, then
+/// one more in each release that does; within a major version it only
+/// grows, as the bridge protocol is covered (ADR 8.4).
+pub(crate) const PROTOCOL: u64 = 1;
 
 /// Each request, and its fields but `cmd` and `req_id`, which every request
 /// may have. What isn't here the process doesn't have, and refuses
