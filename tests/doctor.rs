@@ -567,6 +567,7 @@ fn adr_0011_adapter_versions() {
     script(&bin.join("brnr-claude-adapter"), claude);
     // One built before --version: it waits for an editor instead.
     script(&bin.join("brnr-codex-adapter"), "#!/bin/sh\nexec sleep 30\n");
+    script(&bin.join("muse-acp"), "#!/bin/sh\n[ \"$1\" = --version ] && echo 'muse-acp 0.16.0'\n");
     // codex-acp from npm: a bin link into the package.
     let package = env.dir.join("lib/node_modules/@agentclientprotocol/codex-acp");
     mkdir(&package.join("dist"), 0o755);
@@ -587,6 +588,10 @@ fn adr_0011_adapter_versions() {
     let alone = env.dir.join("alone");
     mkdir(&alone, 0o755);
     install(Path::new(env!("CARGO_BIN_EXE_brnr")), &alone.join("brnr"));
+    script(
+        &alone.join("brnr-muse-adapter"),
+        "#!/bin/sh\n[ \"$1\" = --version ] && echo 'muse-acp 0.16.0'\n",
+    );
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = env.brnr_at(&alone.join("brnr"), &["doctor"]).env("PATH", path).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -602,7 +607,57 @@ fn adr_0011_adapter_versions() {
         "{text}"
     );
     assert!(line("codex-acp").ends_with("(@agentclientprotocol/codex-acp 2.1.1)"), "{text}");
+    assert!(line("muse-acp").ends_with("(@brokkai/muse-acp 0.16.0)"), "{text}");
+    assert!(line("brnr-muse-adapter").contains(&alone.display().to_string()), "{text}");
+    assert!(line("brnr-muse-adapter").ends_with("(@brokkai/muse-acp 0.16.0)"), "{text}");
     assert!(line("claude-agent-acp").starts_with("--"), "{text}");
+}
+
+/// The scoped npm Muse package is identified without running it; the
+/// unrelated unscoped package is never probed as if it were BrokkAi's.
+#[test]
+fn adr_0011_muse_npm_identity_is_scoped() {
+    let env = Env::new("dr-muse-npm");
+    let bin = env.dir.join("bin");
+    let package = env.dir.join("package");
+    mkdir(&bin, 0o755);
+    mkdir(&package, 0o755);
+    script(&package.join("index.js"), "#!/bin/sh\ntouch \"$BRNR_HOME/probed\"\n");
+    symlink("../package/index.js", bin.join("muse-acp")).unwrap();
+    let alone = env.dir.join("alone");
+    mkdir(&alone, 0o755);
+    install(Path::new(env!("CARGO_BIN_EXE_brnr")), &alone.join("brnr"));
+    let check = || {
+        let out = env
+            .brnr_at(&alone.join("brnr"), &["doctor", "--json"])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["check"] == "muse-acp")
+            .unwrap()
+            .clone()
+    };
+    write(
+        &package.join("package.json"),
+        r#"{"name":"@brokkai/muse-acp","version":"0.16.0"}"#,
+        0o644,
+    );
+    assert!(check()["message"].as_str().unwrap().ends_with("(@brokkai/muse-acp 0.16.0)"));
+    write(&package.join("package.json"), r#"{"name":"muse-acp","version":"0.1.0"}"#, 0o644);
+    assert!(check()["message"].as_str().unwrap().contains("unrelated npm package muse-acp"));
+    assert!(!env.dir.join("home/probed").exists(), "npm package was run");
+    // Older native builds may treat --version as a stdio launch. The
+    // existing five-second probe bound also applies to the upstream name.
+    fs::remove_file(bin.join("muse-acp")).unwrap();
+    script(&bin.join("muse-acp"), "#!/bin/sh\nexec sleep 30\n");
+    let start = std::time::Instant::now();
+    assert!(check()["message"].as_str().unwrap().ends_with("(version unknown)"));
+    assert!(start.elapsed() < Duration::from_secs(8), "version probe hung");
 }
 
 /// `doctor --report` (ADR 11.5): the version, the OS, the adapters, the checks
@@ -675,7 +730,7 @@ fn adr_0011_the_report_is_what_to_paste() {
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["brnr"], env!("CARGO_PKG_VERSION"));
     assert!(text.contains(&format!(" on {}\n", report["os"].as_str().unwrap())), "{report}");
-    assert_eq!(report["adapters"].as_array().unwrap().len(), 4, "{report}");
+    assert_eq!(report["adapters"].as_array().unwrap().len(), 6, "{report}");
     assert_eq!(report["checks"][0]["level"], "warn", "{report}");
     let logs = report["host_logs"].as_array().unwrap();
     assert_eq!(logs.len(), 2, "{report}");

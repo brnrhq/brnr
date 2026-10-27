@@ -154,6 +154,7 @@ and by the prompt's text:
   commands          its commands change: compact goes, review comes
   unknown           an update of a kind ACP's schema doesn't have (an
                     adapter's own) in the middle of a message, then answers
+  muse              v1 message and session metadata as muse-acp sends them
   perm <kind> [<n>] asks permission for n tool calls of that kind (1) at once
                     first, and answers once each is answered
   odd <how> [<n>]   asks permission in a line brnr once couldn't read: how is
@@ -534,6 +535,24 @@ def run(mid, sid, text):
             {
                 "sessionUpdate": "available_commands_update",
                 "availableCommands": [{"name": "review", "description": "Review the changes"}],
+            },
+        )
+        end_turn(mid)
+    elif first == "muse":
+        update(
+            sid,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Muse reply"},
+                "_meta": {"muse": {"messagePhase": "finalAnswer", "cutOff": True}},
+            },
+        )
+        update(
+            sid,
+            {
+                "sessionUpdate": "session_info_update",
+                "title": "Muse session",
+                "_meta": {"muse": {"status": "running", "approvalReviewing": None}},
             },
         )
         end_turn(mid)

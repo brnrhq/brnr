@@ -3493,6 +3493,44 @@ fn open_editor_with(env: &Env, args: &[&str]) -> (Child, ChildStdin, BufReader<C
     (editor, to_agent, from_agent)
 }
 
+/// Muse's metadata and private extension calls stay as sent in the editor
+/// stream and raw transcript; they do not invent new event semantics (ADR 2.3).
+#[test]
+fn adr_0002_muse_metadata_and_extensions_pass_through() {
+    let env = Env::new("muse-meta");
+    let (mut editor, mut input, mut output) = open_editor(&env);
+    writeln!(input, "{}", editor_prompt_in(3, "sess-1", "muse")).unwrap();
+    let message = line_with(&mut output, "messagePhase");
+    let message: Value = serde_json::from_str(&message).unwrap();
+    assert_eq!(message["params"]["update"]["_meta"]["muse"]["cutOff"], true);
+    let info = line_with(&mut output, "approvalReviewing");
+    let info: Value = serde_json::from_str(&info).unwrap();
+    assert_eq!(info["params"]["update"]["_meta"]["muse"]["approvalReviewing"], Value::Null);
+    response(&mut output, 3);
+    // An unsupported Muse extension still reaches the agent and returns its
+    // own error, without brnr acting on its metadata or swallowing its reply.
+    writeln!(
+        input,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 4,
+        "method": "_session/plugins", "params": { "sessionId": "sess-1",
+            "_meta": { "muse": { "probe": "unchanged" } } } })
+    )
+    .unwrap();
+    assert_eq!(response(&mut output, 4)["error"]["code"], -32601);
+    let raw = env.ok(&["event", "log", "sess-1", "--events", "acp", "--json"]);
+    let raw: Vec<Value> = raw.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(raw.iter().any(|r| r["msg"] == message), "{raw:?}");
+    assert!(raw.iter().any(|r| r["msg"] == info), "{raw:?}");
+    assert!(
+        raw.iter().any(|r| r["msg"]["method"] == "_session/plugins"
+            && r["msg"]["params"]["_meta"]["muse"]["probe"] == "unchanged"),
+        "{raw:?}"
+    );
+    drop(input);
+    assert!(editor.wait().unwrap().success());
+}
+
 /// The editor closing its session (`session/close`) is a `session_closed`,
 /// by the editor, in the session's transcript; the process stays the
 /// editor's.

@@ -600,6 +600,8 @@ Run `cargo test --release adr_0002_`. Named claims, by section:
   stops at `initialize` too; version 1 starts.
 - 2.3: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0002_an_update_the_schema_doesnt_know_changes_nothing`;
+  [tests/headless.rs](https://github.com/brnrhq/brnr/blob/main/tests/headless.rs):
+  `adr_0002_muse_metadata_and_extensions_pass_through`;
   [src/schema.rs](https://github.com/brnrhq/brnr/blob/main/src/schema.rs):
   `adr_0002_what_the_adapters_send_is_read_as_the_schemas_types`,
   `adr_0002_a_part_of_a_line_at_the_limit_reads_as_its_type`,

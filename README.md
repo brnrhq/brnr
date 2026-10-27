@@ -65,6 +65,7 @@ has the details.
 brew install brnrhq/tap/brnr
 brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
+brew install brnrhq/tap/brnr-muse-adapter     # for Muse Code, built from Rust source
 ```
 
 Or brnr alone, from [crates.io](https://crates.io/crates/brnr), with the
@@ -73,6 +74,10 @@ adapters from Homebrew or npm:
 ```sh
 cargo install brnr --locked
 ```
+
+Muse uses your own `muse` CLI and login; its npm alternative is the scoped
+`@brokkai/muse-acp`. [Adapters](https://brnrhq.github.io/brnr/docs/guide/adapters.html)
+has the ACP v1 integration details.
 
 [Install](https://brnrhq.github.io/brnr/docs/install.html) has the rest:
 what the adapters are, building from source, and checking a release.

@@ -1,7 +1,8 @@
 # 11. Building, releasing and support
 
-Draft 2026-10-19, 11.9 2026-10-24. Implemented. Factors: N1, and F1 for
-11.9 (ADR 1). Brings together former ADRs 37, 38, 39, 40, 45, 47 and 52
+Draft 2026-10-19, 11.9 2026-10-24. Implemented; Muse's authenticated
+acceptance review (#223) is not complete. Factors: N1, and F1 for 11.9
+(ADR 1). Brings together former ADRs 37, 38, 39, 40, 45, 47 and 52
 (docs/adr/README.md maps them).
 
 How brnr and its adapters are built, found, versioned, released and
@@ -21,20 +22,32 @@ their own serves F1: what brnr does with each is seen, not assumed.
   distributed: the user's machine fetches and compiles the packages, as
   `adapters/build.sh` does for anyone who builds from source. The npm
   packages are mentioned as the alternative.
-- One formula per adapter. You install what you use (each is about 60 MB
-  and its own build). Each has the license that fits: only the Claude
+- One formula per adapter. You install what you use (each Node adapter is
+  about 60 MB and its own build; the native Muse binary is smaller).
+  Each has the license that fits: only the Claude
   adapter compiles in the SDK, `license :cannot_represent` with a caveat;
   the Codex adapter is Apache-2.0. One adapter's upstream breaking doesn't
   stop the other from installing. A third agent's adapter is one more
   formula.
 - `adapters/` packages the adapters unchanged. brnr adds only finding the
   user's own agent, and `--version` (`adapters/claude.ts`, `codex.ts`).
+- Muse Code uses `brnr-muse-adapter`, built from the pinned `muse-acp`
+  source tag with Cargo (Rust and Python are build-only dependencies).
+  Its upstream Rust sources are unchanged, including `--version` and the
+  search for the user's own `muse`. `adapters/muse.py` builds a production-only
+  workspace offline: upstream's test-only and ACP client SDK dependencies
+  aren't needed. A new production dependency fails the build until reviewed.
+  The formula stages a checksum-verified source resource; a source checkout
+  fetches the same tag. No upstream prebuilt executable is installed.
+  `adapters/muse.rb.in` is the formula template, published by the maintainer's
+  release workflow with the pinned source's SHA-256. The npm package is an
+  alternative for people who choose its bundled prebuilt binaries.
 
 Not covered by a Rust test: Homebrew formulae live in the separate tap
 repository; this checkout cannot prove their installation or license
-declarations. The adapters CI job builds and exercises both pinned
-adapters; the release workflow tests the public brnr formula. Adapter
-formula installation still needs a tap-side check.
+declarations. The adapters CI job builds and exercises the pinned Node
+adapters and Muse's source build; the release workflow tests the public brnr
+formula. Adapter formula installation still needs a tap-side check.
 
 **Why.** brnr runs the community's ACP adapters for Claude Code and Codex.
 They are Node packages. claude-agent-acp compiles in Anthropic's Claude
@@ -59,7 +72,7 @@ prebuilt adapters.
 ## 11.2 The adapters' names, and finding them next to brnr
 
 - The compiled adapters are `brnr-claude-adapter` and
-  `brnr-codex-adapter`. `brnr acp -- claude-agent-acp` runs the npm
+  `brnr-codex-adapter`, and `brnr-muse-adapter`. `brnr acp -- claude-agent-acp` runs the npm
   package. `brnr doctor` reports both kinds.
 - A bare agent name (no `/`) is looked for next to brnr first, then on
   PATH, so an editor's PATH needn't include Homebrew's. "Next to brnr" is
@@ -96,6 +109,12 @@ running binary's own directory is in the Cellar, away from the adapters.
   brnr release that doesn't move the pin changes the formula's source but
   not its version, so nobody rebuilds for nothing. `brew outdated` shows an
   adapter when its package moves.
+- Muse's exact version is the `@brokkai/muse-acp` devDependency in
+  `adapters/package.json`, tracked by `bun.lock` and Dependabot. It is only
+  a version catalogue: `bun install --production` never installs that
+  package or its prebuilt binaries. `adapters/muse.py` fetches `v<version>`
+  from BrokkAi/muse-acp, checks the source's Cargo version, and builds it.
+  The formula's source resource is pinned by SHA-256 as well as its tag.
 - When `adapters/` changes without a new npm version, `release.sh` says so:
   bump the formula's `revision` by hand if users need the new build. That
   is any change in `adapters/` but the pins' files (`package.json`,
@@ -109,13 +128,27 @@ running binary's own directory is in the Cellar, away from the adapters.
   status` shows what the agent says it is in `initialize`: ACP's
   `agentInfo`, as its `agent`'s `name` and `version`, beside `program`
   (ADR 8.2).
+- Muse 0.16.0 already has `--version`, printing `muse-acp <version>`;
+  doctor accepts that for the renamed source build and a standalone upstream
+  binary, or reads the scoped npm package manifest. Version probes close
+  stdin and are killed after five seconds, including older Muse releases
+  which might otherwise start ACP. The unrelated unscoped npm `muse-acp`
+  package is not a supported source.
 - Dependabot opens a pull request for new releases of the two packages,
-  weekly; the next brnr release ships them. A nightly workflow
+  and the scoped Muse package, weekly; the next brnr release ships them. A nightly workflow
   (`canary.yml`) builds the newest releases first, without moving the pins,
   checks them with brnr and opens an issue when they fail, so a breaking
   release is known before Dependabot proposes it. Every pull request, a
   Dependabot one included, builds the pinned adapters and checks them with
   brnr the same way (`adapters/check.py --brnr`).
+
+Muse integration is ACP v1 (ADR 2.2), with the existing steering convention,
+approvals, authentication, config selectors and session lifecycle. Muse's
+private extensions pass through an editor's proxy and are kept in raw ACP;
+they add no dedicated headless commands. Muse metadata does not change
+brnr's interpretation of standard events. Dedicated capabilities are follow-up
+issues (#402–#405). A real authenticated Muse acceptance run is required before
+this integration is considered complete; stand-in CI proves only transport.
 
 **Consequences.** The pin matters. The adapters behave differently from
 each other, and from one version to the next, wherever ACP leaves room
@@ -566,6 +599,8 @@ Run `cargo test --release adr_0011_`. Named claims, by section:
   `adr_0011_bridges_next_to_a_symlinked_brnr`.
 - 11.3: [tests/doctor.rs](https://github.com/brnrhq/brnr/blob/main/tests/doctor.rs):
   `adr_0011_adapter_versions`.
+  `adr_0011_muse_npm_identity_is_scoped` checks scoped npm metadata, refuses
+  the unrelated npm package, and bounds a native version probe that hangs.
 - 11.4: [tests/release.rs](https://github.com/brnrhq/brnr/blob/main/tests/release.rs):
   - `adr_0011_a_releases_notes_are_its_changelog_section`.
   - `adr_0011_a_version_without_a_section_has_no_notes`.

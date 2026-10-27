@@ -5,6 +5,7 @@ Configure your editor's ACP agent command as:
 ```sh
 brnr acp -- brnr-claude-adapter  # or claude-agent-acp, from npm
 brnr acp -- brnr-codex-adapter   # or codex-acp, from npm
+brnr acp -- brnr-muse-adapter    # or muse-acp, from @brokkai/muse-acp
 brnr acp --profile work          # agent and settings from a profile
 ```
 

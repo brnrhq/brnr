@@ -46,9 +46,10 @@ cargo build --release
 cargo fmt --check
 cargo clippy --release --all-targets -- -D warnings
 cargo test --release           # release, as CI: some tests stream tens of thousands of events
-adapters/build.sh              # only if you change adapters/ (needs bun)
+adapters/build.sh              # only if you change adapters/ (bun, Rust, Python 3.11+, git)
 adapters/check.py --brnr target/release
 adapters/test_check.py         # only if you change adapters/check.py
+python3 adapters/test_muse.py  # if you change the Muse source build
 ```
 
 CI runs the same on Linux and macOS, on every pull request; all of it has to

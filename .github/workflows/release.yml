@@ -119,9 +119,23 @@ jobs:
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$TARBALL"
           sha256=$(sha256sum "$TARBALL" | cut -d' ' -f1)
           python3 - "$url" "$sha256" <<'PY'
-          import json, re, sys
+          import hashlib, json, pathlib, re, sys, urllib.request
           url, sha256 = sys.argv[1:]
           deps = json.load(open("adapters/package.json"))["dependencies"]
+          muse = json.load(open("adapters/package.json"))["devDependencies"]["@brokkai/muse-acp"]
+          source = f"https://github.com/BrokkAi/muse-acp/archive/refs/tags/v{muse}.tar.gz"
+          with urllib.request.urlopen(source, timeout=60) as response:
+              muse_sha = hashlib.file_digest(response, "sha256").hexdigest()
+          path = pathlib.Path("tap/Formula/brnr-muse-adapter.rb")
+          old = path.read_text() if path.exists() else ""
+          revision = re.search(r'\n  revision \d+', old) if f'\n  version "{muse}"' in old else None
+          formula = pathlib.Path("adapters/muse.rb.in").read_text()
+          for key, value in {"BRNR_URL": url, "BRNR_SHA256": sha256,
+                             "MUSE_VERSION": muse, "MUSE_SHA256": muse_sha}.items():
+              formula = formula.replace(f"@{key}@", value)
+          if revision:
+              formula = formula.replace('\n  license ', revision[0] + '\n  license ', 1)
+          path.write_text(formula)
           formulae = {
               "brnr": None,
               "brnr-claude-adapter": deps["@agentclientprotocol/claude-agent-acp"],
@@ -145,6 +159,8 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The first release adds the Muse formula; -a skips untracked files.
+          git add Formula/brnr-muse-adapter.rb
           git commit -am "brnr ${GITHUB_REF_NAME#v}"
           git push
 

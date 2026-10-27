@@ -164,6 +164,7 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // going away closes it.
     ("brnr acp -- brnr-claude-adapter", Nothing, Succeeds),
     ("brnr acp -- brnr-codex-adapter", Nothing, Succeeds),
+    ("brnr acp -- brnr-muse-adapter", Nothing, Succeeds),
     ("brnr acp --profile work", Nothing, Succeeds),
     // Agents with ACP of their own: their arguments go to the fake agent.
     ("brnr acp -- junie --acp true", Nothing, Succeeds),
@@ -421,6 +422,7 @@ const SKIPPED: &[(&str, &str)] = &[
     ("brew install brnrhq/tap/brnr", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-claude-adapter", "installs from the Homebrew tap"),
     ("brew install brnrhq/tap/brnr-codex-adapter", "installs from the Homebrew tap"),
+    ("brew install brnrhq/tap/brnr-muse-adapter", "installs from the Homebrew tap"),
     ("gh attestation verify brnr-X.tar.gz -R brnrhq/brnr", "verifies a release asset, from GitHub"),
     ("cargo install brnr --locked", "installs from crates.io"),
     ("cargo build --release", "the build these tests run"),
@@ -438,6 +440,7 @@ const STAND_INS: &[(&str, &str)] = &[
     ("$s", "{s}"),
     ("brnr-claude-adapter", "{agent}"),
     ("brnr-codex-adapter", "{agent}"),
+    ("brnr-muse-adapter", "{agent}"),
     ("junie", "{agent}"),
     ("cursor-agent", "{agent}"),
     ("~/work/project", "{dir}/project"),

@@ -319,7 +319,8 @@ events = ["permission_request", "turn_ended"]</pre>
       <div class="body">
 <pre>brew install brnrhq/tap/brnr
 brew install brnrhq/tap/brnr-claude-adapter   <span class="c"># for Claude Code</span>
-brew install brnrhq/tap/brnr-codex-adapter    <span class="c"># for Codex</span></pre>
+brew install brnrhq/tap/brnr-codex-adapter    <span class="c"># for Codex</span>
+brew install brnrhq/tap/brnr-muse-adapter     <span class="c"># for Muse Code</span></pre>
         <p>Or brnr alone with <code>cargo install brnr --locked</code>, and the adapters from npm. <a href="docs/install.html">Install</a> has the rest. brnr runs on macOS and Linux.</p>
       </div>
     </div>
@@ -332,7 +333,7 @@ brew install brnrhq/tap/brnr-codex-adapter    <span class="c"># for Codex</span>
         <p class="intro">brnr works with any ACP agent. It doesn't include one.</p>
       </div>
       <div class="body">
-        <p>For Claude Code and Codex, brnr uses the community's ACP adapters: <a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a> by Zed Industries and contributors, and <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a> by JetBrains. Install them from npm, or with Homebrew, which compiles them on your machine into standalone executables that need no Node.js. Either way, they run your own <code>claude</code> or <code>codex</code>.</p>
+        <p>For Claude Code, Codex and Muse Code, brnr uses the community's ACP adapters: <a href="https://github.com/agentclientprotocol/claude-agent-acp">claude-agent-acp</a> by Zed Industries and contributors, and <a href="https://github.com/agentclientprotocol/codex-acp">codex-acp</a> by JetBrains, and <a href="https://github.com/BrokkAi/muse-acp">muse-acp</a> by BrokkAi. Install them from npm, or with Homebrew, which compiles them on your machine into standalone executables that need no Node.js. Either way, they run your own <code>claude</code>, <code>codex</code> or <code>muse</code>. Muse is built from Rust source and uses ACP v1; run <code>muse login</code> first. Its npm alternative is the scoped <code>@brokkai/muse-acp</code>.</p>
       </div>
     </div>
   </section>

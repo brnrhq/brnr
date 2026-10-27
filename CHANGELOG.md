@@ -26,6 +26,7 @@ brnr's own conventions:
 
 ### Added
 
+- Muse Code through `brnr-muse-adapter`, built from pinned upstream Rust source; adapter discovery and version reporting, ACP v1 checks, Dependabot and canary coverage (ADR 11.1–11.3).
 - Execute commands over system SSH with `--remote <[user@]host>`,
   including ACP, session control and event streams. Routing
   profiles select SSH destinations and brnr-specific executable, profile

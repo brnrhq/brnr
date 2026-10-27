@@ -4,13 +4,14 @@
 brew install brnrhq/tap/brnr
 brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
+brew install brnrhq/tap/brnr-muse-adapter     # for Muse Code, built from Rust source
 ```
 
-The adapter formulae compile the community's ACP adapters for Claude Code and
-Codex into standalone executables that need no Node.js ([Adapters](guide/adapters.md#adapters)
+The adapter formulae compile the community's ACP adapters for Claude Code,
+Codex and Muse Code into standalone executables that need no Node.js ([Adapters](guide/adapters.md#adapters)
 says whose they are), and link them next to `brnr`, where brnr finds them
 even when an editor's `PATH` doesn't include Homebrew. Each is versioned by
-the npm package it builds, so `brew upgrade` rebuilds an adapter when that
+its upstream adapter, so `brew upgrade` rebuilds an adapter when that
 package moves. `brnr doctor` shows which version each adapter was built from.
 
 Or brnr alone, from [crates.io](https://crates.io/crates/brnr), with the
@@ -54,8 +55,8 @@ More at
 
 ```sh
 cargo build --release          # target/release/brnr
-adapters/build.sh              # optional: target/release/brnr-claude-adapter, brnr-codex-adapter (needs bun)
+adapters/build.sh              # optional: all three adapters in target/release (bun, Rust, Python 3.11+, git)
 ```
 
 `brnr` is one binary. The adapters are separate, single-file builds of the ACP
-adapters for Claude Code and Codex; see [Adapters](guide/adapters.md#adapters).
+adapters for Claude Code, Codex and Muse Code; see [Adapters](guide/adapters.md#adapters).

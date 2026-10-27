@@ -87,7 +87,8 @@ socket. The diagram is at the top of [src/lib.rs](src/lib.rs) and the
 - `docs/threat-model.md`: who can reach what, each claim with what enforces
   it and its test, and the gaps. A change to a boundary (permissions, the
   socket, redaction, approvals, what `brnr acp` changes) updates it.
-- `adapters/`: the Claude Code and Codex ACP adapters, built with bun, and
+- `adapters/`: the Claude Code and Codex ACP adapters, built with bun, the
+  Muse Code adapter built from Rust source with `muse.py`, and
   `smoke.py`, the smoke check for agents with ACP of their own.
 - `docs/`: the documentation, an mdBook (`book.toml`; `mdbook build`
   writes it to `target/book`), published with `site/` by `pages.yml`
@@ -109,7 +110,8 @@ shellcheck release.sh adapters/build.sh .clusterfuzzlite/build.sh tests/flake-lo
 
 Change `adapters/`? Also `adapters/build.sh` and `adapters/check.py --brnr
 target/release` (`--brnr`: brnr, built there, is checked with them); change
-`check.py`? `adapters/test_check.py`. `adapters/smoke.py` checks an agent
+`check.py`? `adapters/test_check.py`. Muse's source build also runs
+`python3 adapters/test_muse.py`. `adapters/smoke.py` checks an agent
 with ACP of its own (Junie, Cursor) through brnr, by hand, with the real
 agent and its login (ADR 11.9); `tests/smoke.rs` runs it against the fake
 agent. CI also runs `cargo deny check`, `cargo vet --locked`, the minimum Rust version

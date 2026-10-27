@@ -11,17 +11,26 @@ On macOS or Linux, with Homebrew:
 brew install brnrhq/tap/brnr
 brew install brnrhq/tap/brnr-claude-adapter   # for Claude Code, compiled on your machine
 brew install brnrhq/tap/brnr-codex-adapter    # for Codex
+brew install brnrhq/tap/brnr-muse-adapter     # for Muse Code, built from Rust source
 ```
 
 Without Homebrew, `cargo install brnr --locked` installs brnr; the adapters
-then come from npm (`claude-agent-acp`, `codex-acp`).
+then come from Homebrew or npm (`claude-agent-acp`, `codex-acp`,
+`@brokkai/muse-acp`). The unscoped npm `muse-acp` is unrelated.
 
-The adapters run the user's own `claude` or `codex` CLI, which must be
+The adapters run the user's own `claude`, `codex` or `muse` CLI, which must be
 installed and logged in already; brnr doesn't log in for the user. Then check:
 
 ```sh
 brnr doctor --json
 ```
+
+For Muse, run `muse login` first. `MUSE_CLI` can name its absolute path;
+otherwise the adapter searches PATH and Muse's usual installer directory.
+brnr speaks ACP v1. Approval Mode and Auto-review are config options provided
+by Muse: inspect them with `brnr config get`, and only change them when the
+user asks. Private Muse extensions pass through an editor's connection and
+are kept in raw ACP transcripts; they have no dedicated headless commands.
 
 It prints the checks, each `{level, check, message}`, and exits non-zero if
 one fails: the runtime directory, transcripts, the config and every profile,
@@ -45,11 +54,13 @@ is pasted anywhere, and don't file it yourself. Nothing is sent by brnr.
 ## An editor
 
 An editor runs brnr as its ACP agent: the command `brnr`, with the arguments
-`acp -- brnr-claude-adapter` (or `acp -- brnr-codex-adapter`, or
+`acp -- brnr-claude-adapter` (or `acp -- brnr-codex-adapter`,
+`acp -- brnr-muse-adapter`, or
 `acp --profile <p>`).
 
 ```sh
 brnr acp -- brnr-claude-adapter
+brnr acp -- brnr-muse-adapter
 brnr acp --profile work
 ```
 

@@ -118,11 +118,19 @@ mod tests {
     use crate::json;
 
     /// Session updates as claude-agent-acp 0.85.1 and codex-acp 2.1.1 send
-    /// them, unless the client asks for more (notices, compaction,
-    /// subagents).
+    /// them, and muse-acp 0.16.0's v1 updates, unless the client asks for more
+    /// (notices, compaction, subagents).
     fn adapter_updates() -> Vec<Value> {
         let text = json!({ "type": "text", "text": "hi" });
         vec![
+            json!({ "sessionUpdate": "agent_message_chunk", "content": text,
+                    "_meta": { "muse": { "messagePhase": "finalAnswer", "cutOff": true } } }),
+            json!({ "sessionUpdate": "session_info_update", "title": "Muse session",
+                    "_meta": { "muse": { "status": "running", "approvalReviewing": null },
+                               "goal": null } }),
+            json!({ "sessionUpdate": "tool_call_update", "toolCallId": "monitor-1",
+                    "status": "in_progress", "_meta": { "muse": {
+                        "monitorInbox": { "pending": 1, "drained": 0, "voided": 0 } } } }),
             json!({ "sessionUpdate": "agent_message_chunk", "content": text, "messageId": "m1",
                     "_meta": { "claudeCode": { "parentToolUseId": "t0" } } }),
             json!({ "sessionUpdate": "agent_thought_chunk", "content": text }),

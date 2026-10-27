@@ -1,9 +1,12 @@
 {
   "name": "brnr-adapters",
   "private": true,
-  "description": "ACP adapters bundled with brnr as single-file executables. The agents themselves (Claude Code, Codex) are not bundled; the adapters run the user's own.",
+  "description": "ACP adapters built from source as standalone executables. The agents themselves (Claude Code, Codex, Muse Code) are not bundled.",
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.93.0",
     "@agentclientprotocol/codex-acp": "2.2.2"
+  },
+  "devDependencies": {
+    "@brokkai/muse-acp": "0.16.0"
   }
 }
