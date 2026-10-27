@@ -50,22 +50,10 @@ brnr's own conventions:
   started with, redacted, without the prompt (ADR 6.5). The protocol stays
   version 1 until after 1.0.0 (ADR 8.8).
 
-### Removed
+### Changed
 
-- **Breaking:** Removed `remote init` and `remote remove`, and their
-  configuration-writing implementation. The remote command group
-  is read-only for local configuration (ADR 12).
-- **Breaking:** Removed `[remotes.<name>]` and `remote list`. Use SSH
-  aliases or `[user@]host` directly, with `--remote` (ADR 12.2).
-- **Breaking:** Removed a profile's `remote` table
-  (`[profiles.<name>.remote]`), and with it `profiles.default.remote`: a
-  `remote` key now fails to load, and `brnr doctor` names it. Put
-  `--remote <alias>` on the command line and the destination's profile in
-  `--profile`, and set the remote brnr's PATH and `BRNR_*` paths in the
-  destination shell's environment (`~/.zshenv`, `~/.bashrc`) (ADR 12.2,
-  #409).
-- **Breaking:** Removed `remote check --profile`. Use `remote check
-  <target>` (ADR 12.2, #409).
+- The Claude adapter is built from claude-agent-acp 0.94.0
+  (`brnr-claude-adapter`) (ADR 11.3).
 
 ## [0.11.0] - 2026-10-24
 
