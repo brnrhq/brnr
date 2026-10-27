@@ -1,6 +1,10 @@
+# Versioned by the muse-acp tag it builds, which the brnr release workflow
+# writes from adapters/package.json: brew upgrade rebuilds the adapter when
+# that moves, not on every brnr release. No head: muse.py builds the source
+# tag that package.json pins, and the resource below is pinned too.
 class BrnrMuseAdapter < Formula
-  desc "Muse Code ACP adapter, built from source for brnr"
-  homepage "https://github.com/brnrhq/brnr"
+  desc "BrokkAi's ACP adapter for Muse Code (muse-acp), built from Rust source"
+  homepage "https://brnrhq.github.io/brnr/"
   url "@BRNR_URL@"
   version "@MUSE_VERSION@"
   sha256 "@BRNR_SHA256@"
@@ -15,19 +19,37 @@ class BrnrMuseAdapter < Formula
   end
 
   def install
+    # brnr's own build of the checksummed source, offline (adapters/muse.py).
     resource("muse-acp").stage do
-      system Formula["python@3.14"].opt_bin/"python3.14", buildpath/"adapters/muse.py",
+      system formula_opt_bin("python@3.14")/"python3.14", buildpath/"adapters/muse.py",
              buildpath/"out", "--source", Pathname.pwd
     end
     bin.install buildpath/"out/brnr-muse-adapter"
     (pkgshare/"licenses").install Dir[buildpath/"out/licenses/*"]
   end
 
+  def caveats
+    <<~EOS
+      brnr-muse-adapter is muse-acp, by BrokkAi and contributors (Apache-2.0):
+        https://github.com/BrokkAi/muse-acp
+      brnr builds it, unchanged, from its Rust source.
+
+      It runs your own Muse Code (muse); install that separately, and run
+      muse login first. In an editor:
+        brnr acp -- brnr-muse-adapter
+      Headless:
+        brnr session new --prompt "fix the failing tests" -- brnr-muse-adapter
+
+      Its license and notice are in:
+        #{opt_pkgshare}/licenses
+    EOS
+  end
+
   test do
     assert_equal "muse-acp #{version}", shell_output("#{bin}/brnr-muse-adapter --version").strip
     ENV["MUSE_CLI"] = "/usr/bin/false"
-    request = {jsonrpc: "2.0", id: 1, method: "initialize",
-               params: {protocolVersion: 1, clientCapabilities: {}}}
+    request = { jsonrpc: "2.0", id: 1, method: "initialize",
+                params: { protocolVersion: 1, clientCapabilities: {} } }
     require "open3"
     require "timeout"
     Open3.popen3(bin/"brnr-muse-adapter") do |stdin, stdout, stderr, wait|
