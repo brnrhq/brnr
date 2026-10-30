@@ -26,3 +26,27 @@ A version must come after the current one (ADR 11.4).
 
 Dependabot opens a pull request when an adapter's npm package has a new
 release; the next brnr release ships it.
+
+## 1.0.0
+
+At 1.0.0 the ADRs are accepted, and ADR 8.4's compatibility promise starts
+(docs/adr/README.md). `release.sh` doesn't do either: the release pull request
+for 1.0.0 (not a release candidate's) also changes, by hand, dated the day of
+the release:
+
+- Each topic's status line, under its title in `docs/adr/0001-*.md` to
+  `0012-*.md`: `Draft …` becomes `Accepted <date>`. A line that says
+  `Implemented` keeps the word, and what follows it: `adr-tests.py` reads it.
+- ADR 8's status line: `but 8.4 is a promise that applies from 1.0.0` goes,
+  as 8.4 now applies.
+- ADR 8.4, its first paragraph: `Nothing is implemented: the promise starts
+  at 1.0.0.` says the promise applies from 1.0.0.
+- [The ADRs' table](../adr/README.md#records), row 8, Implemented:
+  `partly: 8.4 applies from 1.0.0;` goes.
+- The interface reference: [Covered and not covered](../reference/overview.md#covered-and-not-covered)
+  and [Compatibility](../reference/files.md#compatibility) start
+  `Before 1.0.0 every interface here can change outright`, which no longer
+  applies.
+
+After 1.0.0 an accepted record changes only by a new section that amends or
+supersedes it (docs/adr/README.md).
