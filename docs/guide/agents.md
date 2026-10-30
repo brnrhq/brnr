@@ -82,10 +82,14 @@ session new`, `session resume`, `session fork`, `session delete`, `prompt
 send`, `permission allow`, `elicitation accept`, `config set`, `event notify`
 and `brnr acp`, and `session list` with `--` or `--profile`, which starts an
 agent: `session resume` and `session delete` start the one recorded for the
-session even with neither. `prompt send` matters even with the rest denied:
-a session you or another agent started in a mode that asks nothing does what
+session even with neither. Deny `brnr _remote` whole: it is the
+destination's entry point, and it runs any verb locally. `prompt send`
+matters even with the rest denied: a session you or another agent started
+in a mode that asks nothing does what
 any prompt says, and a fork of one may keep its mode. Safer is to allow only
 the verbs that read and observe: `session status`, `event log`, `event
 watch`, `event wait`, `permission requests` and `show`, `elicitation
-requests` and `show`, and `config get`. A deny list has to match every way
-of spelling a command; a short allow list doesn't.
+requests` and `show`, and `config get`. These also take `--remote <host>`
+and read session state on any machine the user's SSH reaches; rules meant
+to stay local should deny `--remote`. A deny list has to match every way of
+spelling a command; a short allow list doesn't.

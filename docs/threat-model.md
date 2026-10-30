@@ -305,8 +305,10 @@ What brnr doesn't enforce, or doesn't test, today.
   run the agent recorded for the session (whatever program a transcript
   names), or the one `--profile` or `--` names, and `session list` the one
   `--profile` or `--` names; `brnr event notify --stdin -- sh -c '…'` runs
-  one for each line it reads. What holds is the agent's command rules, and an
-  OS sandbox around the agent, which what it starts inherits.
+  one for each line it reads. `brnr _remote` is the destination's entry
+  point, but also runs any of these verbs locally. What holds is the agent's
+  command rules, and an OS sandbox around the agent, which what it starts
+  inherits.
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
   editor, serves whoever reaches its socket: an agent in the sandbox that can
