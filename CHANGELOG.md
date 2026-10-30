@@ -9,11 +9,11 @@ brnr's own conventions:
 
 - A pull request that changes what users notice adds its entry under
   [Unreleased]. `release.sh` dates that section for the release, and a
-  release's section is its GitHub release's notes (ADR 40).
+  release's section is its GitHub release's notes (ADR 11.4).
 - Before 1.0 nothing is kept for compatibility (ADR 1, P9). A breaking
   change goes under Changed or Removed, starts with **Breaking:**, and says
   what to do instead.
-- From 1.0.0, what ADR 64 covers is kept compatible within a major version.
+- From 1.0.0, what ADR 8.4 covers is kept compatible within a major version.
   A breaking change to it waits for the next major, where it is marked as
   above. A form replaced in a minor release goes under Deprecated, says what
   to use instead, and keeps working until the next major.
@@ -34,6 +34,7 @@ brnr's own conventions:
   agent", says how to set Claude Code's managed settings, Codex's managed
   requirements, a sandbox and command rules. The skill's rule 4 says it isn't
   enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1).
+- Releasing says what the 1.0.0 release pull request changes by hand: each ADR's status line becomes Accepted, and ADR 8.4's promise is said to apply (ADR 8.4, ADR 11.4).
 
 ## [0.12.0] - 2026-10-27
 
