@@ -39,7 +39,9 @@ the brnr that printed it (`brnr skill`).
    user told you to, explicitly, for that session and that kind of request.
    Otherwise show the request (`brnr permission show`, `brnr elicitation
    show`), say in a sentence what it would do or asks, and wait for the user's answer. Don't switch a worker to a mode that
-   asks less to get around this.
+   asks less to get around this. brnr doesn't enforce this rule; you keep
+   it. A user who needs it enforced sets limits you can't change: see
+   [brnr from a restricted agent](https://brnrhq.github.io/brnr/docs/guide/agents.html#brnr-from-a-restricted-agent).
 5. **Clean up what you start; touch nothing else.** Start workers with
    `--stop-when-idle`, and `brnr session close` each when its work is done.
    Sessions you didn't start, an editor's above all, you may watch and read, never
