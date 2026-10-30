@@ -29,8 +29,8 @@ brnr's own conventions:
 - The documentation says that brnr is not a permission boundary between an
   agent and the agents it starts, and which boundaries hold: the
   threat model's Actors and Gaps name the paths (a start in a mode that asks
-  nothing, answering a started agent's approvals, any program as the agent,
-  the socket out of a sandbox), and a guide section, "brnr from a restricted
+  nothing, answering a started agent's approvals, prompting a session that
+  already asks less, any program as the agent, the socket out of a sandbox), and a guide section, "brnr from a restricted
   agent", says how to set Claude Code's managed settings, Codex's managed
   requirements, a sandbox and command rules. The skill's rule 4 says it isn't
   enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1).

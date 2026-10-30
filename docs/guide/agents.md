@@ -74,14 +74,18 @@ sandbox. Keep the runtime directory (`BRNR_DIR`; by default
 `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>`) out of the sandbox's
 reach, or run no brnr process outside it.
 
-**Command rules: allow what it needs, or deny what starts or answers.** In
-the agent's own command rules (Claude Code's
+**Command rules: allow what it needs, or deny what starts, prompts or
+answers.** In the agent's own command rules (Claude Code's
 [permission rules](https://code.claude.com/docs/en/permissions), Codex's
 [rules](https://developers.openai.com/codex/exec-policy)), deny `brnr
-session new`, `session resume`, `permission allow`, `elicitation accept`,
-`config set` and `event notify`, and `brnr acp`, `session list` and `session
-delete` with `-- <agent>`, which run that program. Safer is to allow only
-the verbs that read and observe: `session list` with no `--`, `session
-status`, `event log`, `event watch`, `event wait`, `permission requests` and
-`show`, `elicitation requests` and `show`, and `config get`. A deny list has
-to match every way of spelling a command; a short allow list doesn't.
+session new`, `session resume`, `session fork`, `prompt send`, `permission
+allow`, `elicitation accept`, `config set`, `event notify` and `brnr acp`,
+and `session list` and `session delete` with `--` or `--profile`, which
+start an agent. `prompt send` matters even with the rest denied: a session
+you or another agent started in a mode that asks nothing does what any
+prompt says, and a fork of one may keep its mode. Safer is to allow only the
+verbs that read and observe: `session list` with neither `--` nor
+`--profile`, `session status`, `event log`, `event watch`, `event wait`,
+`permission requests` and `show`, `elicitation requests` and `show`, and
+`config get`. A deny list has to match every way of spelling a command; a
+short allow list doesn't.

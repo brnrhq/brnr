@@ -286,11 +286,24 @@ What brnr doesn't enforce, or doesn't test, today.
   rules, denying it those verbs. Skill rule 4 tells an agent not to answer
   approvals it wasn't given or switch a worker to a mode that asks less; a
   prompt-injected agent (P8) can ignore it, and nothing enforces it.
+- **An agent that may run brnr can prompt a session that already asks
+  less.** `brnr prompt send` reaches any headless session from any socket
+  client, and an editor's where `send` is enabled (ADR 7.1): a worker the
+  user, or an unrestricted agent, started with `--mode bypassPermissions` or
+  `agent-full-access` does what the prompt says, without asking. `brnr
+  session fork` copies a session into one that can be prompted, and brnr
+  sends no mode with it: the Claude adapter resumes the copy in the mode its
+  transcript recorded (unless settings disable it), so a fork of a session
+  that asks nothing asks nothing too; the Codex adapter starts the fork in
+  its initial mode. What holds is the agent's command rules, denying it
+  those verbs, and the managed settings above, which keep any session from
+  being one that asks nothing.
 - **An agent that may run brnr can run any command, with no agent at all.**
   The agent's command is any program: `brnr session new -- sh -c '…'` runs
-  it, as do `session resume`, `session list` and `session delete` with `--
-  <agent>`, and `brnr acp -- <agent>`; `brnr event notify --stdin -- sh -c
-  '…'` runs one for each line it reads. What holds is the agent's command
+  it, as do `session resume` and `brnr acp` with `-- <agent>`, and `session
+  list` and `session delete` start one with `-- <agent>` (or the profile's,
+  with `--profile`); `brnr event notify --stdin -- sh -c '…'` runs one for
+  each line it reads. What holds is the agent's command
   rules, and an OS sandbox around the agent, which what it starts inherits.
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
