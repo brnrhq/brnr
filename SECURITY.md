@@ -52,4 +52,9 @@ brnr keeps it so, the test for each claim, and the known gaps.
 - The agents (Claude Code, Codex, Muse Code) and the upstream ACP adapters; report those
   to their projects. A flaw in how brnr builds or runs them is in scope.
 - What an agent does with an approval its user gave.
-- Anyone who can already run code as the user.
+- Anyone who can already run code as the user. That includes an agent
+  allowed to run `brnr`: with any arguments, it can run any command as the
+  user, start an agent that asks nothing, and answer the approvals of one it
+  started. brnr is not a permission boundary between an agent and the
+  agents it starts; [brnr from a restricted agent](docs/guide/agents.md#brnr-from-a-restricted-agent)
+  says which boundaries hold, and how to set them.
