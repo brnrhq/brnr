@@ -60,6 +60,17 @@ experimental and refused unless enabled by name (ADR 7.1), and strict mode has
 none of them (ADR 2.1). Those protect the editor's view from surprises, not
 the user from their own processes.
 
+An agent is one of those processes once it may run `brnr`. Allowing an
+agent to run `brnr` with any arguments allows it to run any command, as the
+user, and, with `--remote`, on any machine the user's SSH reaches: the
+agent's command in `session new -- <agent>` is any program, and so is `event
+notify`'s, and an agent it starts can be told to ask nothing. brnr is not a
+permission boundary between an agent and the agents it starts (P13); the
+boundaries that hold are the agent's managed settings, an OS
+sandbox, and the agent's own command rules, as the Gaps below say, and
+[brnr from a restricted agent](guide/agents.md#brnr-from-a-restricted-agent)
+how to set them.
+
 `brnr profile` (ADR 6.5) is a hole made on purpose in what a user may have
 set up within the user: an agent that its tool permissions keep from
 `~/.config` can still run brnr, and `brnr profile` reads the profiles for
@@ -254,6 +265,42 @@ What brnr doesn't enforce, or doesn't test, today.
   fails today and is ignored until then.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
+- **An agent that may run brnr can start one that asks nothing.** `brnr
+  session new --mode bypassPermissions -- brnr-claude-adapter` opens a
+  session and sets its mode before the first prompt (ADR 6.2), and `brnr
+  config set --mode` does it later; the Claude adapter lists
+  `bypassPermissions` unless it runs as root or settings disable it, and the
+  Codex adapter always lists `agent-full-access` (approvals `never`, sandbox
+  `danger-full-access`). The started agent then runs its tools without
+  asking. What holds is the started agent's managed settings: Claude's
+  `permissions.disableBypassPermissionsMode = "disable"` in managed settings,
+  Codex's `allowed_approval_policies` and `allowed_sandbox_modes` (or
+  `allowed_permission_profiles`) in `requirements.toml`. The user's own
+  settings are not a boundary: an agent that can write a file can write them,
+  and Claude reads a project's `.claude/settings.local.json`, in the cwd the
+  agent chose, over the user's.
+- **An agent that may run brnr can answer the approvals of one it started.**
+  `brnr permission allow` and `brnr elicitation accept` work from any socket
+  client on a headless session, and on an editor's where `permission` or
+  `elicitation` is enabled (ADR 7.1). What holds is the agent's own command
+  rules, denying it those verbs. Skill rule 4 tells an agent not to answer
+  approvals it wasn't given or switch a worker to a mode that asks less; a
+  prompt-injected agent (P8) can ignore it, and nothing enforces it.
+- **An agent that may run brnr can run any command, with no agent at all.**
+  The agent's command is any program: `brnr session new -- sh -c '…'` runs
+  it, as do `session resume`, `session list` and `session delete` with `--
+  <agent>`, and `brnr acp -- <agent>`; `brnr event notify --stdin -- sh -c
+  '…'` runs one for each line it reads. What holds is the agent's command
+  rules, and an OS sandbox around the agent, which what it starts inherits.
+- **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
+  brnr inside it, but a brnr process started outside it, by the user or an
+  editor, serves whoever reaches its socket: an agent in the sandbox that can
+  reach the runtime directory can open a session there (`session new
+  --pid`), prompt it, set its mode and answer its approvals, and the agent
+  then acts outside the sandbox. What holds is the sandbox keeping
+  the runtime directory (`BRNR_DIR`, by default `$XDG_RUNTIME_DIR/brnr`, else
+  `$TMPDIR/brnr-<uid>`) out of its reach, or no brnr process running outside
+  it.
 - **No peer credentials on the socket.** The process doesn't check who
   connected (`SO_PEERCRED`, `getpeereid`); the directory's and the socket's
   modes are the only control. Root is never kept out.
