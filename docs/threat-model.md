@@ -288,7 +288,8 @@ What brnr doesn't enforce, or doesn't test, today.
   prompt-injected agent (P8) can ignore it, and nothing enforces it.
 - **An agent that may run brnr can prompt a session that already asks
   less.** `brnr prompt send` reaches any headless session from any socket
-  client, and an editor's where `send` is enabled (ADR 7.1): a worker the
+  client, and an editor's where `send` (or, with `--context`, `context`) is
+  enabled (ADR 7.1): a worker the
   user, or an unrestricted agent, started with `--mode bypassPermissions` or
   `agent-full-access` does what the prompt says, without asking. `brnr
   session fork` copies a session into one that can be prompted, and brnr
@@ -300,11 +301,12 @@ What brnr doesn't enforce, or doesn't test, today.
   being one that asks nothing.
 - **An agent that may run brnr can run any command, with no agent at all.**
   The agent's command is any program: `brnr session new -- sh -c '…'` runs
-  it, as do `session resume` and `brnr acp` with `-- <agent>`, and `session
-  list` and `session delete` start one with `-- <agent>` (or the profile's,
-  with `--profile`); `brnr event notify --stdin -- sh -c '…'` runs one for
-  each line it reads. What holds is the agent's command
-  rules, and an OS sandbox around the agent, which what it starts inherits.
+  it, as does `brnr acp -- <agent>`; `session resume` and `session delete`
+  run the agent recorded for the session (whatever program a transcript
+  names), or the one `--profile` or `--` names, and `session list` the one
+  `--profile` or `--` names; `brnr event notify --stdin -- sh -c '…'` runs
+  one for each line it reads. What holds is the agent's command rules, and an
+  OS sandbox around the agent, which what it starts inherits.
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
   editor, serves whoever reaches its socket: an agent in the sandbox that can
