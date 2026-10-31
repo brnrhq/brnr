@@ -80,7 +80,13 @@ answers.** In the agent's own command rules (Claude Code's
 [rules](https://developers.openai.com/codex/exec-policy)), deny `brnr
 session new`, `session resume`, `session fork`, `session delete`, `prompt
 send`, `permission allow`, `elicitation accept`, `config set`, `event notify`
-and `brnr acp`. Deny `session list` whole: with `--` or `--profile`, it
+and `brnr acp`. If the policy means no program starts, also deny `brnr
+doctor` and `brnr remote check` whole, or explicitly scope an exception
+to trusted executables and destinations. Even without `--fix`, doctor
+runs adapter `--version` probes resolved beside brnr or on PATH; that
+argument does not constrain what the selected executable can do.
+`remote check` starts system SSH and the destination's doctor, including
+its adapter probes. Deny `session list` whole: with `--` or `--profile`, it
 starts an agent. `session resume` and `session delete` start the one
 recorded for the session even with neither. Deny the internal entry points
 `brnr host` and `brnr _remote` whole: `host` runs the program its stdin
@@ -89,8 +95,8 @@ matters even with the rest denied: a session you or another agent started
 in a mode that asks nothing does what any prompt says, and a fork of one
 may keep its mode. Disruptive verbs such as `process stop` and `session
 close` stop or delete brnr's own state but don't escalate;
-`skill install --dir`, `doctor --fix` and `session prune` write or delete,
-and doctor also runs adapters with `--version` to check their versions.
+`skill install --dir`, `doctor --fix` and `session prune` also write or
+delete files.
 
 Safer is to allow only the verbs that read and observe: `session status`,
 `event log`, `event watch`, `event wait`, `permission requests` and `show`,
@@ -102,7 +108,8 @@ short allow list limits the verbs, but does not keep their reads local.
 The allowed read verbs also take `--remote <host>` and read session state
 on every destination the user's SSH reaches. Without `--remote`, no
 command but `remote check` connects: it runs `ssh <target> brnr doctor`,
-with a version preflight, and is read-only. `--remote` can come anywhere
+with a version preflight. It requests diagnostics without `--fix`, but
+executed adapters can have side effects. `--remote` can come anywhere
 among a verb's arguments, so a prefix rule can't exclude it. In Claude
 Code, add `Bash(brnr * --remote *)` to `permissions.deny`: its
 [wildcard rules](https://code.claude.com/docs/en/permissions#wildcard-patterns)

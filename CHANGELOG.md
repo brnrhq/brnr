@@ -34,7 +34,11 @@ brnr's own conventions:
   out of a sandbox), and a guide section, "brnr from a restricted agent",
   says how to set Claude Code's managed settings, Codex's managed
   requirements, a sandbox and command rules: deny `brnr host`,
-  `brnr _remote` and `session list` whole. Claude Code's wildcard deny rule
+  `brnr _remote` and `session list` whole, and deny `doctor` and
+  `remote check` whole when no program starts are allowed: even without
+  `--fix`, adapter version probes execute programs, and `remote check`
+  starts SSH and remote doctor. ADR 12 names the remote-check exception
+  to `--remote` routing. Claude Code's wildcard deny rule
   for remote reads is best effort; what holds is a sandbox without network
   or `ssh`, or no usable SSH keys. Codex's prefix rules cannot exclude
   `--remote` at every argument position. The skill's rule 4 says it isn't

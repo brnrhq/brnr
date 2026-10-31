@@ -57,4 +57,10 @@ brnr keeps it so, the test for each claim, and the known gaps.
   user, start an agent that asks nothing, and answer the approvals of one it
   started. brnr is not a permission boundary between an agent and the
   agents it starts; [brnr from a restricted agent](docs/guide/agents.md#brnr-from-a-restricted-agent)
-  says which boundaries hold, and how to set them.
+  says which boundaries hold, and how to set them. Even without `--fix`,
+  `doctor` runs adapter `--version` probes resolved beside brnr or on PATH;
+  `remote check` starts system SSH and the destination's doctor, including
+  its probes. Diagnostic arguments do not guarantee side-effect-free
+  executables. Deny both commands whole when the policy forbids program
+  starts, or explicitly scope an exception to trusted executables and
+  destinations.

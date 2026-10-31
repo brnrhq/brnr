@@ -133,7 +133,12 @@ without exposing a marker to agents. Destinations are passed directly to
 SSH without local config lookup, and no profile routes: without `--remote`
 on its command line, no command but `remote check` connects (ADR 12.2, N1).
 `remote check` runs `ssh <target> brnr doctor`, with the version preflight
-and quoting described above; it is read-only. Remote calls are
+and quoting described above. It starts system SSH and remote doctor. Even
+without `--fix`, doctor runs adapter `--version` probes, resolved beside
+brnr or on PATH. These request diagnostics, but do not guarantee that the
+selected executables have no side effects. A policy that forbids program
+starts must deny both `doctor` and `remote check` whole, or explicitly
+scope an exception to trusted executables and destinations. Remote calls are
 visible to tool-permission rules, but prefix rules cannot exclude
 `--remote` at every argument position; see Gaps below. The destination's
 brnr is the one on its shell's PATH, with that shell's environment; brnr
