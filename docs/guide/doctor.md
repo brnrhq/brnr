@@ -21,6 +21,15 @@ connection to a stopped process whose socket's backlog is full, so there a
 refusal counts only if the process with that pid started after brnr's file
 was written.
 
+Even without `--fix`, doctor runs `brnr-claude-adapter`,
+`brnr-codex-adapter` and `brnr-muse-adapter` with `--version`, and
+`muse-acp` when no npm package identifies it. It uses adapter lookup
+(ADR 11.2), whose caller-chosen inputs are described in the
+[program-starting Gap](../threat-model.md#program-starts). It reads
+`package.json` for `claude-agent-acp`, `codex-acp` and npm `muse-acp`
+without running them. These probes do not constrain what the selected
+executable can do.
+
 It also lists the host logs (`~/.brnr/hosts/`) of processes that died
 without recording it, killed by SIGKILL for instance: logs without `process_exited`
 whose process isn't running. The line says how many, and for the latest three

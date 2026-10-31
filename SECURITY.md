@@ -57,4 +57,14 @@ brnr keeps it so, the test for each claim, and the known gaps.
   user, start an agent that asks nothing, and answer the approvals of one it
   started. brnr is not a permission boundary between an agent and the
   agents it starts; [brnr from a restricted agent](docs/guide/agents.md#brnr-from-a-restricted-agent)
-  says which boundaries hold, and how to set them.
+  says which boundaries hold, and how to set them. Command rules cannot
+  make `doctor`, `remote check` or any `--remote` command safe: they start
+  programs whose choice and behavior depend on the caller's environment
+  and files. A deny-list policy must deny these paths whole, including
+  `--remote` on allowed read verbs. The threat model's
+  [program-starting Gap](docs/threat-model.md#program-starts) gives known
+  examples, not an exhaustive list. What holds is an
+  [OS sandbox](docs/guide/agents.md#an-os-sandbox) that keeps the agent from
+  writing files that can be run or loaded as code (executables, shared
+  libraries, scripts), or brnr links, anywhere, and from writing SSH
+  configuration. Those restrictions are not a complete sandbox policy.

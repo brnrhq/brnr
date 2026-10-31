@@ -46,8 +46,8 @@ stops when the editor goes.
 --remote <[user@]host> runs it through system SSH, with brnr on the remote
 shell's PATH. A profile is loaded on the machine that runs the agent: with
 --remote, --profile is the destination's, and local brnr config isn't read;
-without it, nothing connects to another machine. Establish SSH authentication
-and trust first.";
+without --remote, brnr acp starts the agent locally; profiles do not select
+SSH routing. Establish SSH authentication and trust first.";
 
 /// The fds the host finds its end of the link and of the signal link on.
 const HOST_LINK_FD: c_int = 3;

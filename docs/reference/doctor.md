@@ -5,7 +5,16 @@
 Checks what brnr depends on, and says what is wrong: the runtime directory,
 the session locks, the transcripts, the config file and every profile in
 it, how long transcripts are kept (`retention`), the adapters, the running processes, the host logs, and files in a format
-this brnr doesn't read. See [doctor](../guide/doctor.md).
+this brnr doesn't read.
+
+Even without `--fix`, doctor runs `brnr-claude-adapter`,
+`brnr-codex-adapter` and `brnr-muse-adapter` with `--version`, and
+`muse-acp` when no npm package identifies it. It uses adapter lookup
+(ADR 11.2), whose caller-chosen inputs are described in the
+[program-starting Gap](../threat-model.md#program-starts). It reads
+`package.json` for `claude-agent-acp`, `codex-acp` and npm `muse-acp`
+without running them. These probes do not constrain what the selected
+executable can do. See [doctor](../guide/doctor.md).
 
     brnr doctor [--fix | --report] [--json]
 

@@ -127,18 +127,31 @@ transcripts keep their existing user-only boundaries. Provider credentials
 stay remotely configured; profiles are not copied between machines.
 
 `remote::script` quotes each shell word and validates the destination so
-it cannot become an SSH option. The preflight reads `/dev/null` and keeps
-successful output off ACP/JSON streams. `_remote` refuses another hop
-without exposing a marker to agents. Destinations are passed directly to
-SSH without local config lookup, and no profile routes: without `--remote`
-on its command line, no command connects, so an agent's tool-permission
-rules see every remote call and can allow or deny it (ADR 12.2, N1). The
-destination's brnr is the one on its shell's PATH, with that shell's
-environment; brnr sets none of it. `remote check` needs no local config.
-SSH owns aliases and connection settings; there is no brnr remote
-registry. No command creates or edits config. Same-user processes remain trusted;
-removing CLI config editing does not prevent direct file access when the
-agent's filesystem permissions already allow it.
+it cannot become an SSH option. The preflight reads `/dev/null` and
+keeps successful output off ACP/JSON streams. `_remote` refuses another
+hop without exposing a marker to agents. Destinations are passed
+directly to SSH without local config lookup, and no profile routes:
+without `--remote` on its command line, no command but `remote check`
+connects through brnr's transport (ADR 12.2, N1). `remote check` runs
+`ssh <target> brnr doctor`, with the version preflight and quoting
+described above. It starts system SSH and remote doctor. Even without
+`--fix`, doctor runs the three `brnr-*-adapter` programs and non-npm
+`muse-acp` with `--version`, using adapter lookup (ADR 11.2); the other
+npm adapters are identified from `package.json`. These request
+diagnostics, but do not constrain the selected executables. Command
+rules cannot make `doctor`, `remote check` or any `--remote` command
+safe. A deny-list policy must deny these paths whole, including
+`--remote` on allowed read verbs. See the [program-starting
+Gap](#program-starts) and the [OS
+sandbox](guide/agents.md#an-os-sandbox). Remote calls are visible to
+tool-permission rules, but prefix rules cannot exclude `--remote` at
+every argument position. The destination's brnr is the one on its
+shell's PATH, with that shell's environment; brnr sets none of it.
+`remote check` needs no local config. SSH owns aliases and connection
+settings; there is no brnr remote registry. No command creates or edits
+config. Same-user processes remain trusted; removing CLI config editing
+does not prevent direct file access when the agent's filesystem
+permissions already allow it.
 
 `tests/remote.rs` checks command injection, prompt/delimiter parsing,
 isolated remote state, version/authentication failures, ACP/stdin streams,
@@ -288,23 +301,73 @@ What brnr doesn't enforce, or doesn't test, today.
   prompt-injected agent (P8) can ignore it, and nothing enforces it.
 - **An agent that may run brnr can prompt a session that already asks
   less.** `brnr prompt send` reaches any headless session from any socket
-  client, and an editor's where `send` is enabled (ADR 7.1): a worker the
-  user, or an unrestricted agent, started with `--mode bypassPermissions` or
-  `agent-full-access` does what the prompt says, without asking. `brnr
-  session fork` copies a session into one that can be prompted, and brnr
+  client, and an editor's where `send` (or, with `--context`, `context`) is
+  enabled (ADR 7.1): a worker the user, or an unrestricted agent, started
+  with `--mode bypassPermissions` or `agent-full-access` does what the
+  prompt says, without asking. `brnr session fork` copies a session into
+  one that can be prompted, and brnr
   sends no mode with it: the Claude adapter resumes the copy in the mode its
   transcript recorded (unless settings disable it), so a fork of a session
   that asks nothing asks nothing too; the Codex adapter starts the fork in
   its initial mode. What holds is the agent's command rules, denying it
   those verbs, and the managed settings above, which keep any session from
   being one that asks nothing.
-- **An agent that may run brnr can run any command, with no agent at all.**
+- <a id="program-starts"></a>**An agent that may run brnr can run any
+  command, with no agent at all.**
   The agent's command is any program: `brnr session new -- sh -c '…'` runs
-  it, as do `session resume` and `brnr acp` with `-- <agent>`, and `session
-  list` and `session delete` start one with `-- <agent>` (or the profile's,
-  with `--profile`); `brnr event notify --stdin -- sh -c '…'` runs one for
-  each line it reads. What holds is the agent's command
-  rules, and an OS sandbox around the agent, which what it starts inherits.
+  it, as does `brnr acp -- <agent>`; `session resume` and `session delete`
+  run the agent recorded for the session (whatever program a transcript
+  names), or the one `--profile` or `--` names, and `session list` the one
+  `--profile` or `--` names; `brnr event notify --stdin -- sh -c '…'` runs
+  one for each line it reads. `brnr _remote` is the destination's entry
+  point, but also runs any of these verbs locally. `brnr host` runs the
+  program its stdin request names whenever fd 3 is a socket (with no
+  arguments and stdin not a terminal). A shell can provide that socket by
+  redirecting an inherited socket with `3>&1`, or with bash's `/dev/tcp`.
+  The command rules have to deny `brnr host` too. Even without `--fix`,
+  `doctor` runs the three `brnr-*-adapter` programs and non-npm `muse-acp`
+  with `--version`. Every `--remote` command, including allowed read verbs,
+  and `remote check` start SSH. Command rules cannot make these safe:
+  program choice and behavior depend on the caller's environment and
+  files. Known examples, not an exhaustive list, include:
+
+  - The caller's PATH, which selects `ssh` and can select adapters.
+  - The directories of the path brnr was started by (`argv[0]`) and the
+    running binary's path (ADR 11.2). A symlink or hard link to brnr, or a
+    chosen `argv[0]`, can select a caller-writable directory for adapters,
+    agents and bridges even when PATH is fixed.
+  - SSH configuration (`~/.ssh/config`, `/etc/ssh/ssh_config` and their
+    `Include`s). The genuine SSH client can run local commands through
+    `ProxyCommand`, `Match exec`, `KnownHostsCommand` or `LocalCommand`,
+    even with `BatchMode=yes` and `StrictHostKeyChecking=yes`. A plain
+    configuration write can suffice; no executable bit, network or keys
+    are needed.
+  - The inherited environment, including preload variables such as
+    `LD_PRELOAD` and `DYLD_INSERT_LIBRARIES`, or interpreter option
+    variables. Programs can load code from files with no executable bit.
+
+  A deny-list policy must deny `doctor`, `remote check` and every
+  `--remote` command whole. What holds is the
+  [OS sandbox](guide/agents.md#an-os-sandbox), inherited by programs the
+  agent starts. It must keep the agent from writing files that can be run
+  or loaded as code (executables, shared libraries, scripts), or brnr
+  links, anywhere, and from writing SSH configuration. These restrictions
+  are not a complete sandbox policy.
+- **An allowed read verb can read remote sessions.** With `--remote`, it
+  reads session state on every destination the user's SSH reaches. The flag
+  can come anywhere among a verb's arguments, so Codex's prefix rules
+  cannot exclude it. Claude Code's wildcard deny rule
+  `Bash(brnr * --remote *)` can match it in either position, as the
+  [guide](guide/agents.md#brnr-from-a-restricted-agent) describes. It is best
+  effort against an agent trying to evade it: quoting, an absolute path or
+  `env brnr` can change the command text it matches. Command rules cannot
+  make any `--remote` command safe, even a read verb: it starts programs
+  whose choice and behavior depend on the caller's environment and files.
+  A deny-list policy must deny these commands whole. Network and key
+  restrictions can limit remote reads but do not stop local commands.
+  What holds is the [OS sandbox](guide/agents.md#an-os-sandbox), with the
+  restrictions and limits described in the
+  [program-starting Gap](#program-starts).
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
   editor, serves whoever reaches its socket: an agent in the sandbox that can
@@ -426,9 +489,11 @@ What brnr doesn't enforce, or doesn't test, today.
   accept`) can have the editor's
   late answer to the first taken as its answer to the second (ADR 2.4). Not
   tested; no agent known reuses ids.
-- **Agents' lookup next to brnr.** A bare agent or bridge name is looked up
-  next to the `brnr` executable first (ADR 11.2); that directory is trusted as
-  `PATH` is.
+- **Agents' lookup next to brnr.** Both the start path and the running
+  binary's path can be caller-chosen (ADR 11.2): a symlink or hard link
+  to brnr, or a chosen `argv[0]`, can select a lookup directory. This is
+  one of the inputs in the [program-starting Gap](#program-starts), not a
+  trusted installation boundary.
 - **A process the library's facade starts is the calling program.**
   `brnr::session::new` and `resume` start it as `<program> host` (ADR 8.5),
   and look up bare names next to that program: the program, which runs as

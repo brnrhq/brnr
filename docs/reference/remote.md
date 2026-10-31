@@ -1,7 +1,12 @@
 # remote
 
-A read-only check of an SSH destination's brnr. The group does not accept
-`--remote`; help stays local.
+Check an SSH destination's brnr by starting system SSH and running the
+destination's doctor, including its adapter `--version` probes. It writes
+no local configuration. Command rules cannot make these program starts
+safe: their choice and behavior depend on the caller's environment and
+files. See the [program-starting Gap](../threat-model.md#program-starts)
+and [OS sandbox](../guide/agents.md#an-os-sandbox).
+The group does not accept `--remote`; help stays local.
 
 ## `brnr remote check`
 

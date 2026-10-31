@@ -11,6 +11,13 @@ The target is always an SSH destination in
 to SSH; otherwise SSH's own configuration and defaults decide it. Ports,
 keys, jump hosts and connection sharing belong in SSH configuration.
 
+System `ssh` means the executable named `ssh` on the caller's PATH, not a
+pinned path. This applies to every `--remote` command and `remote check`,
+including read verbs. The SSH client reads its own configuration, which
+can also request local commands. Command rules cannot make these starts
+safe: program choice and behavior depend on the caller's environment and
+files. See the [program-starting Gap](../threat-model.md#program-starts).
+
 The sequence is:
 
 1. Parse the public command using the existing argument table, with
@@ -20,7 +27,8 @@ The sequence is:
    validation (such as incompatible flags) runs on the destination.
 2. Pass the destination straight to SSH without reading local brnr
    config. Do not resolve profiles, attachments or sessions. Without
-   `--remote`, the command is local, and nothing connects (12.2).
+   `--remote`, execution stays local, except that `remote check <target>`
+   explicitly starts SSH to run the destination's doctor (12.2).
 3. Replace the local process with system `ssh`, preserving its standard
    streams: `-T -o BatchMode=yes -o StrictHostKeyChecking=yes`. Missing
    authentication or host trust fails; the user establishes these with
@@ -82,7 +90,8 @@ replaying prompts or approvals, and changes ownership (P11/P14).
 ## 12.2 `--remote` is the only transport, and a profile is read where the command runs
 
 `--remote <target>` on the command line is the one way a command reaches
-another machine. Profiles hold no routing:
+another machine for ordinary execution. `remote check <target>` explicitly
+connects without that flag to check the destination. Profiles hold no routing:
 
 - A profile is always read on the machine that runs the command. Without
   `--remote`, `--profile` is a local profile. With `--remote`, `--profile`
@@ -90,9 +99,9 @@ another machine. Profiles hold no routing:
   verb that takes `--profile` (`acp`, `session new`, `session resume`,
   `session list`, `session delete`). A verb that takes no `--profile`
   refuses it, before anything connects (ADR 8.1).
-- Without `--remote`, no command connects to another machine. There is no
-  default routing: `profiles.default` is a local execution profile, as
-  every profile is.
+- Without `--remote`, no command but `remote check` connects to another
+  machine through brnr's transport. There is no default routing:
+  `profiles.default` is a local execution profile, as every profile is.
 - A profile has no `remote` table. A `remote` key is an unknown key, which
   fails to load (ADR 6.1); `brnr doctor` names it.
 - The destination's brnr is `brnr` on the remote shell's PATH, and its
@@ -114,24 +123,33 @@ users, keys, ports and jump hosts belong in SSH configuration.
 destination's doctor. It reads no local brnr configuration. The result and
 exit status are doctor's interface. Checks neither write local config nor
 create a missing config file or directory. Local `doctor` checks local
-profiles only, and never connects.
+profiles only, and does not use SSH. Even without `--fix`, doctor runs
+the three `brnr-*-adapter` programs and non-npm `muse-acp` with `--version`,
+resolved using adapter lookup (ADR 11.2); it reads npm adapters' versions
+from `package.json`. These are program starts, not a guarantee
+that the selected adapters have no side effects; `remote check` starts SSH
+and runs those probes remotely.
 
 The CLI never writes config (N1). Profiles are maintained by hand, on each
 machine, and keep the private-file and symlink rules (ADR 9.4). An agent
 reads them with `brnr profile` (ADR 6.5), locally or, with `--remote`, on
 the destination.
 
-**Why.** Each remote call has `--remote` on its command line, so an agent's
-tool-permission rules can see it, and allow or deny it (N1). `--profile`
-has one meaning, a profile read where the command runs (ADR 8.1); before,
-it had three: a local execution profile, a local routing profile, or a
-destination profile. `profiles.default.remote` sent a plain `brnr acp` or
-`brnr session new` to another machine, and the command line didn't show it
-(P4). The overrides that a routing table held (`executable`, `cwd`,
-`runtime_dir`, `home`, `config`) are the remote shell's environment, which
-SSH users already keep, so brnr doesn't need a second place for them (P12,
-N4). SSH already owns the connection's identity and authentication; a
-remote-name registry would duplicate its configuration (F5, P4). Commands
+**Why.** Remote execution has `--remote` on its command line, so it is
+visible to an agent's tool-permission rules (N1), but prefix rules cannot
+exclude it at every argument position; see the
+[threat model's Gap](../threat-model.md#program-starts). `remote check`
+connects without that flag and runs the destination's diagnostic programs.
+`--profile` has one meaning, a profile read where the command runs
+(ADR 8.1); before, it had three: a local execution profile, a local routing
+profile, or a destination profile. `profiles.default.remote` sent a plain
+`brnr acp` or `brnr session new` to another machine, and the command line
+didn't show it (P4). The overrides that a routing table held
+(`executable`, `cwd`, `runtime_dir`, `home`, `config`) are the remote
+shell's environment, which SSH users already keep, so brnr doesn't need
+a second place for them (P12, N4). SSH already owns the connection's
+identity and authentication; a remote-name registry would duplicate its
+configuration (F5, P4). Commands
 never install software or change host trust (P7, P15).
 
 **Consequences.**

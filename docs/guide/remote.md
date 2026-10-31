@@ -1,10 +1,13 @@
 # Remote hosts
 
 Run any execution command on another host with `--remote`. brnr uses the
-installed OpenSSH client; the remote host needs a matching brnr version,
+`ssh` on the caller's PATH; the remote host needs a matching brnr version,
 with remote support, on its shell's PATH, and its own agents, adapters and
 provider credentials. Establish authentication and host trust with SSH
-first:
+first. Command rules cannot make these program starts safe: their choice
+and behavior depend on the caller's environment and files. See the
+[program-starting Gap](../threat-model.md#program-starts) and
+[OS sandbox](agents.md#an-os-sandbox).
 
 ```sh
 ssh agent@linux
@@ -19,11 +22,12 @@ is the machine where you invoke brnr; the destination is the SSH host.
 
 | Invocation | Where the profile is loaded |
 |---|---|
-| `brnr acp --profile coding` | `coding` is loaded from brnr config on the **source**. Nothing connects to another machine. |
+| `brnr acp --profile coding` | `coding` is loaded from brnr config on the **source**. brnr starts the agent locally, without SSH routing. |
 | `brnr acp --remote agent@linux --profile coding` | `coding` is loaded from brnr config on **linux**. Source brnr config is not read. |
 
-`--remote` on the command line is the only way to another machine. A
-profile holds no routing, and a profile named `default` is the source's
+`--remote` on the command line selects execution on another machine;
+`remote check <target>` also connects, to check its installation. A profile
+holds no routing, and a profile named `default` is the source's
 default, nothing more. With `--remote`, `--profile` goes to the
 destination for every command that takes it: `acp`, `session new`,
 `session resume`, `session list` and `session delete`. A command that
@@ -68,8 +72,10 @@ brnr session list --remote linux --json
 brnr event watch $s --remote linux
 ```
 
-`check` runs the remote doctor and supports `--json`. It reads no local
-brnr config, and leaves it unchanged.
+`check` starts system SSH and runs the remote doctor, including its adapter
+`--version` probes, and supports `--json`. It reads no local brnr config,
+and leaves it unchanged. The probes do not constrain what the selected
+executables can do.
 
 ## The destination's environment
 
