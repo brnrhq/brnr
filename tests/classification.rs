@@ -1,13 +1,20 @@
-//! Every command, entry point and transport form brnr's parser has is
+//! Every verb, `Spec`, transport flag and entry point brnr's parser has is
 //! classified in the agents guide, and nothing the guide classifies is
 //! gone: the `<!-- classification: … -->` in docs/guide/agents.md. This
 //! checks that each has been considered, not that the guide is a complete
-//! policy (the OS sandbox is what holds, as the guide says).
+//! policy (only an OS sandbox holds, as the guide says).
 //!
 //! The list is read from the parser itself: the verb table and the other
-//! `Spec`s and transport flags in src/ctl/args.rs, and the words `brnr::run`
-//! (src/lib.rs) dispatches on before them. `brnr --help` is read too, so a
-//! command it lists that the reading of the source missed fails.
+//! `Spec`s and transport flags in src/ctl/args.rs, and the `== "…"` words
+//! `brnr::run` (src/lib.rs) dispatches on before them. `brnr --help` is read
+//! too, so a command it lists that the reading of the source missed fails.
+//!
+//! Not checked: aliases (`-V`, `-h`, `--help`, `<group> --help`); an entry
+//! point dispatched other than by `==` in `brnr::run`, which `--help`
+//! doesn't list either (a comment there asks for its classification); that
+//! the `writes`, `disrupts` and `unlisted` names are right, which no prose
+//! says; and that every verb the deny and allow paragraphs name is in that
+//! class here.
 
 mod common;
 
@@ -19,8 +26,8 @@ const ARGS: &str = include_str!("../src/ctl/args.rs");
 const LIB: &str = include_str!("../src/lib.rs");
 const GUIDE: &str = include_str!("../docs/guide/agents.md");
 
-/// The guide's classes, as its command-rules paragraphs have them.
-const CLASSES: &[&str] = &["deny", "writes", "disrupts", "allow", "reads"];
+/// The classification's classes; `note:` lines say more about them.
+const CLASSES: &[&str] = &["deny", "writes", "disrupts", "allow", "unlisted"];
 
 /// The string literals in `line`.
 fn literals(line: &str) -> Vec<&str> {
@@ -85,9 +92,10 @@ fn classified() -> BTreeMap<String, String> {
     let mut names = BTreeMap::new();
     for line in marker.lines() {
         let Some((class, list)) = line.split_once(": ") else { continue };
-        if !CLASSES.contains(&class) {
+        if class == "note" || class.contains(' ') {
             continue;
         }
+        assert!(CLASSES.contains(&class), "an unknown class in the guide: {class}");
         for name in list.split(',').map(str::trim) {
             let was = names.insert(name.to_owned(), class.to_owned());
             assert!(was.is_none(), "{name} classified twice: {was:?} and {class}");
@@ -139,17 +147,44 @@ fn every_command_and_entry_point_has_a_security_classification() {
     );
 }
 
-/// What the classification denies, the guide's paragraphs say to deny: each
-/// is in them, in backticks, with or without `brnr `.
+/// The guide's paragraphs from the one starting `from` up to the one
+/// starting `to`, with whitespace made single spaces.
+fn paragraphs(from: &str, to: &str) -> String {
+    let all: Vec<&str> = GUIDE.split("\n\n").map(str::trim).collect();
+    let start = all.iter().position(|p| p.starts_with(from)).unwrap_or_else(|| panic!("{from}"));
+    let end = start + all[start..].iter().position(|p| p.starts_with(to)).expect(to);
+    all[start..end].join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The words in backticks in `text`.
+fn quoted(text: &str) -> Vec<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+/// What the classification denies, the deny paragraphs (from "Command
+/// rules" to the allow list) name, in backticks, with or without `brnr `;
+/// what it allows, the allow list's sentence names, or its last word
+/// (`` `permission requests` and `show` ``) with the first in it too.
 #[test]
-fn what_the_classification_denies_the_guide_names() {
-    let prose = &GUIDE[..GUIDE.find("<!-- classification:").unwrap()];
-    let prose = prose.split_whitespace().collect::<Vec<_>>().join(" ");
+fn what_the_classification_denies_and_allows_the_guide_names() {
+    let deny = paragraphs("**Command rules:", "Safer is to allow only");
+    let deny = quoted(&deny);
+    let allow = paragraphs("Safer is to allow only", "The allowed read verbs");
+    let allow = &allow[..allow.find(". ").unwrap()];
+    let allow = quoted(allow);
     for (name, class) in classified() {
-        if class == "deny" {
-            let named =
-                prose.contains(&format!("`{name}`")) || prose.contains(&format!("`brnr {name}`"));
-            assert!(named, "{name} is classified deny, and the guide's prose doesn't name it");
+        match class.as_str() {
+            "deny" => {
+                let named = deny.iter().any(|q| *q == name || *q == format!("brnr {name}"));
+                assert!(named, "{name} is classified deny, and the deny paragraphs don't name it");
+            }
+            "allow" => {
+                let (first, last) = name.split_once(' ').unwrap_or(("", &name));
+                let named = allow.contains(&name.as_str())
+                    || allow.contains(&last) && allow.iter().any(|q| q.starts_with(first));
+                assert!(named, "{name} is classified allow, and the allow list doesn't name it");
+            }
+            _ => {}
         }
     }
 }
