@@ -34,9 +34,11 @@ brnr's own conventions:
   out of a sandbox), and a guide section, "brnr from a restricted agent",
   says how to set Claude Code's managed settings, Codex's managed
   requirements, a sandbox and command rules: deny `brnr _remote` whole,
-  and deny `--remote` when reads should stay local. The skill's rule 4 says
-  it isn't enforced, and SECURITY.md links the section (ADR 1, N1 and P13;
-  ADR 7.1).
+  and keep reads local with Claude Code's wildcard deny rule or limits on
+  network, `ssh` or SSH keys; Codex's prefix rules cannot exclude
+  `--remote` at every argument position. The skill's rule 4 says it isn't
+  enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1;
+  ADR 12.1–12.2).
 - Releasing says what the 1.0.0 release pull request changes by hand: each ADR's status line becomes Accepted, and ADR 8.4's promise is said to apply (ADR 8.4, ADR 11.4).
 
 ## [0.12.0] - 2026-10-27

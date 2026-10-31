@@ -131,10 +131,11 @@ it cannot become an SSH option. The preflight reads `/dev/null` and keeps
 successful output off ACP/JSON streams. `_remote` refuses another hop
 without exposing a marker to agents. Destinations are passed directly to
 SSH without local config lookup, and no profile routes: without `--remote`
-on its command line, no command connects, so an agent's tool-permission
-rules see every remote call and can allow or deny it (ADR 12.2, N1). The
-destination's brnr is the one on its shell's PATH, with that shell's
-environment; brnr sets none of it. `remote check` needs no local config.
+on its command line, no command connects (ADR 12.2, N1). Remote calls are
+visible to tool-permission rules, but prefix rules cannot exclude
+`--remote` at every argument position; see Gaps below. The destination's
+brnr is the one on its shell's PATH, with that shell's environment; brnr
+sets none of it. `remote check` needs no local config.
 SSH owns aliases and connection settings; there is no brnr remote
 registry. No command creates or edits config. Same-user processes remain trusted;
 removing CLI config editing does not prevent direct file access when the
@@ -289,10 +290,10 @@ What brnr doesn't enforce, or doesn't test, today.
 - **An agent that may run brnr can prompt a session that already asks
   less.** `brnr prompt send` reaches any headless session from any socket
   client, and an editor's where `send` (or, with `--context`, `context`) is
-  enabled (ADR 7.1): a worker the
-  user, or an unrestricted agent, started with `--mode bypassPermissions` or
-  `agent-full-access` does what the prompt says, without asking. `brnr
-  session fork` copies a session into one that can be prompted, and brnr
+  enabled (ADR 7.1): a worker the user, or an unrestricted agent, started
+  with `--mode bypassPermissions` or `agent-full-access` does what the
+  prompt says, without asking. `brnr session fork` copies a session into
+  one that can be prompted, and brnr
   sends no mode with it: the Claude adapter resumes the copy in the mode its
   transcript recorded (unless settings disable it), so a fork of a session
   that asks nothing asks nothing too; the Codex adapter starts the fork in
@@ -306,9 +307,19 @@ What brnr doesn't enforce, or doesn't test, today.
   names), or the one `--profile` or `--` names, and `session list` the one
   `--profile` or `--` names; `brnr event notify --stdin -- sh -c '…'` runs
   one for each line it reads. `brnr _remote` is the destination's entry
-  point, but also runs any of these verbs locally. What holds is the agent's
-  command rules, and an OS sandbox around the agent, which what it starts
-  inherits.
+  point, but also runs any of these verbs locally. `brnr host` runs the
+  program its stdin request names, but needs a socket on fd 3, so only code
+  that can already run arbitrary programs reaches it. What holds is the
+  agent's command rules, and an OS sandbox around the agent, which what it
+  starts inherits.
+- **An allowed read verb can read remote sessions.** With `--remote`, it
+  reads session state on every destination the user's SSH reaches. The flag
+  can come anywhere among a verb's arguments, so Codex's prefix rules
+  cannot exclude it. Claude Code's wildcard deny rule
+  `Bash(brnr * --remote *)` can match it in either position, as the
+  [guide](guide/agents.md#brnr-from-a-restricted-agent) describes. What holds
+  beyond those rules is an OS sandbox without network access or without
+  `ssh`, or no SSH keys the agent can use: brnr executes the system `ssh`.
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
   editor, serves whoever reaches its socket: an agent in the sandbox that can

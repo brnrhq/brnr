@@ -85,11 +85,25 @@ agent: `session resume` and `session delete` start the one recorded for the
 session even with neither. Deny `brnr _remote` whole: it is the
 destination's entry point, and it runs any verb locally. `prompt send`
 matters even with the rest denied: a session you or another agent started
-in a mode that asks nothing does what
-any prompt says, and a fork of one may keep its mode. Safer is to allow only
-the verbs that read and observe: `session status`, `event log`, `event
-watch`, `event wait`, `permission requests` and `show`, `elicitation
-requests` and `show`, and `config get`. These also take `--remote <host>`
-and read session state on any machine the user's SSH reaches; rules meant
-to stay local should deny `--remote`. A deny list has to match every way of
-spelling a command; a short allow list doesn't.
+in a mode that asks nothing does what any prompt says, and a fork of one
+may keep its mode. Disruptive verbs such as `process stop` and `session
+close` stop or delete brnr's own state but don't escalate.
+
+Safer is to allow only the verbs that read and observe: `session status`,
+`event log`, `event watch`, `event wait`, `permission requests` and `show`,
+`elicitation
+requests` and `show`, and `config get`. This list has no session-listing
+verb, so the agent gets session ids from whoever started the sessions.
+A short allow list limits the verbs, but does not keep their reads local.
+
+The allowed read verbs also take `--remote <host>` and read session state
+on every destination the user's SSH reaches. `--remote` can come anywhere
+among a verb's arguments, so a prefix rule can't exclude it. In Claude
+Code, add `Bash(brnr * --remote *)` to `permissions.deny`: its
+[wildcard rules](https://code.claude.com/docs/en/permissions#wildcard-patterns)
+support `*` in the middle, so this matches both `brnr session status s
+--remote h` and `brnr session status --remote h s`. Codex's prefix rules
+can't express that exclusion. What holds there is an OS sandbox without
+network access or without `ssh`, or no SSH keys the agent can use: brnr
+executes the system `ssh`. A deny list must cover every spelling of a
+command; an allow list still needs these limits on remote reads.
