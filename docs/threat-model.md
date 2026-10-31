@@ -266,16 +266,16 @@ can't see past its stdin. That is the reach P13 says a bridge adds.
 
 What brnr doesn't enforce, or doesn't test, today.
 
-- **SIGKILL of the host bypasses child cleanup.** The host is the sole
-  supervisor. Its death closes the agent and bridge pipes, but an agent or
-  bridge that ignores EOF, is blocked, or leaves descendants can survive it.
-  `doctor --fix` repairs stale metadata and locks; it does not kill those
-  survivors. `chaos.rs` checks a flooding agent exits on its broken pipe,
-  and that killing the proxy during a hung setup or turn lets the surviving
-  host stop its agent. Neither establishes unconditional cleanup after host
-  SIGKILL; that would require a separate lifetime supervisor on both macOS
-  and Linux (#391). Its test, `killed_host_leaves_no_agent_or_child_behind`,
-  fails today and is ignored until then.
+- **Host-death cleanup is limited to a surviving watcher and one group.**
+  The #391 prototype (proposed ADR 3.7, awaiting the lifetime decision)
+  forks a watcher in the agent's group before exec. Host-pipe EOF makes it
+  SIGKILL that group, including itself. `chaos.rs`'s
+  `adr_0003_killed_host_leaves_no_agent_or_child_behind` checks a hung agent
+  and a SIGTERM-ignoring child after host SIGKILL. Killing or stopping the
+  watcher prevents timely cleanup; descendants that leave the group escape.
+  Bridges are not covered. `doctor --fix` repairs stale files and locks;
+  it never kills survivors using stale pids. This is cleanup, not an OS
+  sandbox or unconditional process-tree containment.
 - **Same-user processes.** Inside the boundary by design (above): any of
   them can approve, prompt, read transcripts and add bridges.
 - **An agent that may run brnr can start one that asks nothing.** `brnr

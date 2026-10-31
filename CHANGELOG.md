@@ -59,6 +59,13 @@ brnr's own conventions:
   links the section (ADR 1, N1 and P13; ADR 7.1; ADR 12.1–12.2).
 - Releasing says what the 1.0.0 release pull request changes by hand: each ADR's status line becomes Accepted, and ADR 8.4's promise is said to apply (ADR 8.4, ADR 11.4).
 
+### Fixed
+
+- Prototype, pending the ADR 3.7 lifetime decision: a surviving watcher
+  kills the agent's process group when the host dies, including a hung
+  agent and children that ignore SIGTERM (#391). Processes that leave
+  the group, bridges, and a watcher killed too remain outside the guarantee.
+
 ## [0.12.0] - 2026-10-27
 
 ### Added

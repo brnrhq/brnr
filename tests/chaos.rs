@@ -288,9 +288,8 @@ fn adr_0003_killed_proxy_mid_fault_stops_host_and_agent() {
 
 #[test]
 fn adr_0003_killed_host_mid_start_commits_nothing() {
-    // Each setup step, chosen rather than seeded. A flooding agent exits on
-    // its broken pipe; a hung one outlives the host (#391,
-    // killed_host_leaves_no_agent_or_child_behind).
+    // Each setup step, chosen rather than seeded. This checks the start
+    // never commits; the hung-agent test below checks watcher cleanup.
     for (n, step) in ["initialize", "session/new"].into_iter().enumerate() {
         let env = fixture(&format!("chaos-start-{n}"), "flood", 0)
             .agent("FAULT_PHASE", "setup")
@@ -371,12 +370,10 @@ fn adr_0003_killed_host_mid_turn_ends_the_editors_proxy() {
     }
 }
 
-/// The gap the threat model names: the host is the only supervisor, and
-/// SIGKILL stops it signalling its children. A hung agent and the child it
-/// started outlive it.
+/// The lifetime watcher stops a hung agent and its stubborn child when
+/// SIGKILL prevents the host from doing its own cleanup.
 #[test]
-#[ignore = "#391: a SIGKILLed host leaves a hung agent and its children running"]
-fn killed_host_leaves_no_agent_or_child_behind() {
+fn adr_0003_killed_host_leaves_no_agent_or_child_behind() {
     for seed in seeds() {
         let _replay = Replay(seed);
         let env = fixture(&format!("chaos-orphan-{seed}"), "hang", seed).agent("STUBBORN", "child");

@@ -44,6 +44,7 @@ mod start;
 mod state;
 mod strict;
 mod turns;
+mod watcher;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
@@ -375,6 +376,8 @@ struct Host {
     /// rejected, and an elicitation before it is cancelled (ADR 4.5).
     response_timeout: Option<Duration>,
     agent_pid: pid_t,
+    /// Only the host holds this write end after agent exec.
+    _watcher: Option<PipeWriter>,
     /// Bytes for the agent's stdin. Written on their own thread, so an agent
     /// that stops reading can't stall the host; dropping this closes the
     /// agent's stdin once what's queued is written.
@@ -549,6 +552,10 @@ impl Host {
                 Ok(())
             })
         };
+        let watcher = watcher::attach(&mut cmd).map_err(|err| {
+            cleanup();
+            (Error::from(err), 1)
+        })?;
         let child = cmd.spawn().map_err(|err| {
             cleanup();
             // Same codes a shell uses for "not found" / "not executable".
@@ -565,7 +572,8 @@ impl Host {
         let (tx, rx) = mpsc::sync_channel(EVENTS_QUEUED);
         let new = Host::new(role, cwd, strict, logging, agent_pid, rx);
         let start_request = request::shown(&recorded);
-        let mut host = Host { host_id, sock_path, meta_path, start_request, ..new };
+        let mut host =
+            Host { host_id, sock_path, meta_path, start_request, _watcher: Some(watcher), ..new };
         let parts = Parts {
             child,
             listener,
@@ -630,6 +638,7 @@ impl Host {
             host_id: String::new(),
             response_timeout: h.response_timeout.map(Duration::from_secs),
             agent_pid,
+            _watcher: None,
             agent_in: None,
             to_agent: Backlog::default(),
             from_agent: Backlog::default(),

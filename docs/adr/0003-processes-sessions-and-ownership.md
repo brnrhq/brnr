@@ -59,7 +59,8 @@ remote execution does not add attachment or reconnect semantics.
 - A host that dies without a word (SIGKILL) closes the link: the proxy
   says `brnr acp: lost the connection to its process` on stderr and exits
   1, and the editor sees its agent go. A flooding agent exits on its
-  broken pipe; one that isn't reading outlives the host (ADR 3.7, #391).
+  broken pipe; the lifetime watcher kills the agent group even when the
+  agent is not reading (ADR 3.7).
 - The editor's child is the proxy, not the agent, so its pid and process
   tree differ. That separation is what lets the side channel exist.
 - Side-channel actions, where a profile enables them: ADR 7.1.
@@ -360,14 +361,34 @@ every session).
   Setup faults never commit the prompt (ADR 3.4). `tests/chaos.rs` injects
   these at a seeded point, and says the seed of a run that fails, to
   replay it.
-- The host is the only supervisor. SIGKILL closes its pipes but can't make
-  it signal its children: a blocked agent, a bridge that ignores EOF, or
-  their descendants can outlive it. The host-SIGKILL test checks a flooding
-  agent that exits on its broken pipe, not cleanup in every case. That
-  stronger promise needs a separate supervisor, and a decision about its
-  own lifetime (#391; `killed_host_leaves_no_agent_or_child_behind` in
-  `tests/chaos.rs` shows it, ignored until then). `doctor` doesn't kill
-  processes inferred from stale pids.
+- **Proposed for #391; awaiting the maintainer's lifetime decision.** Before
+  the agent execs, it double-forks one lifetime watcher in its own process
+  group, reaping the intermediate so the watcher is reparented before exec
+  and is not an extra child for the agent to wait for or move. Only the host retains the write end of a private pipe after exec. EOF
+  makes the watcher SIGKILL its own group, including itself, without a
+  grace period. The watcher remains in the group, so it never targets a
+  group id that could have been reused. Normal host cleanup kills it with
+  the group; it holds no session locks, sockets, logs or agent output pipes.
+- This covers a host killed alone, with the watcher still scheduled and
+  alive, and only processes remaining in the agent's group. Killing the
+  watcher too defeats the fallback; stopped watchers cannot act until
+  continued. Descendants that use `setsid` or change groups can escape.
+  Bridges are outside this watcher and can still survive the host. There
+  is no further watcher of the watcher, nor a new daemon or recovery scan.
+  `doctor` continues to repair files without signalling stale pids.
+- The watcher adds one sleeping process and one host pipe descriptor per
+  agent. It is an implementation detail, not a new CLI role. This draft
+  deliberately narrows P14's practical guarantee to one surviving watcher
+  and one process group; it does not promise containment of arbitrary code.
+
+**Considered for #391.** Linux `PR_SET_PDEATHSIG` does not kill grandchildren
+and follows the creating thread's death. A watcher using macOS kqueue or
+Linux pidfd still needs an identity-safe group lifetime; the private pipe
+avoids platform-specific registration and host-pid lookup. Killing groups
+from stale metadata in `doctor --fix` risks other processes' lives (N1).
+The proposed watcher serves F3 and N2/P14 without sacrificing N1/P4 to stale
+pid guesses. It changes the process tree (P1's stated caveat), not ACP or
+an ADR 8.4 public interface.
 
 **Why.** In October 2026 an editor's host, agent and proxy died together
 three times, with no `exited`, no `editor-disconnected` and no `signal`
@@ -839,7 +860,9 @@ Run `cargo test --release adr_0003_`. Named claims, by section:
   - [tests/chaos.rs](https://github.com/brnrhq/brnr/blob/main/tests/chaos.rs):
     `adr_0003_seeded_agent_crash_records_death_and_releases_session`,
     `adr_0003_killed_proxy_mid_fault_stops_host_and_agent`,
-    `adr_0003_killed_proxy_mid_setup_stops_host_and_agent`.
+    `adr_0003_killed_proxy_mid_setup_stops_host_and_agent`,
+    `adr_0003_killed_host_leaves_no_agent_or_child_behind` (a hung agent
+    and its SIGTERM-ignoring child, in the original group).
 - 3.8: [tests/cli.rs](https://github.com/brnrhq/brnr/blob/main/tests/cli.rs):
   `adr_0003_fork_is_refused_when_it_could_never_close`,
   `adr_0003_stop_when_idle`,

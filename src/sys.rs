@@ -15,13 +15,24 @@ use std::time::{Duration, Instant};
 
 use libc::{c_int, c_uint, mode_t, pid_t};
 
-/// Sends `sig` to `pid` (a negative pid: its process group; 0: only checks
-/// it could be sent). Whether it was.
+/// Sends `sig` to `pid` (a negative pid: its process group; pid 0: our
+/// group). Signal 0 only checks it could be sent. Whether it was.
 pub(crate) fn kill(pid: pid_t, sig: c_int) -> bool {
     // SAFETY: kill(2) takes no pointers and touches no memory of ours; any
     // pid and signal are valid arguments (a bad one is an error, EINVAL,
     // ESRCH or EPERM).
     unsafe { libc::kill(pid, sig) == 0 }
+}
+
+/// The exclusive descriptor bound for a process that has not lowered its
+/// descriptor limit after opening files.
+pub(crate) fn open_max() -> io::Result<c_int> {
+    // SAFETY: sysconf takes a constant and touches no memory of ours.
+    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    if limit < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    c_int::try_from(limit).map_err(|_| io::Error::other("descriptor limit exceeds c_int"))
 }
 
 /// Whether `file` has an extended ACL. On macOS one grants access its mode

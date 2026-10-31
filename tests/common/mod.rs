@@ -35,6 +35,12 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("brnr-t{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["tmp", "xdg", "user"] {
+            let path = dir.join(name);
+            fs::create_dir_all(&path).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         Env { dir, agent_env: Vec::new() }
     }
 
@@ -54,6 +60,9 @@ impl Env {
             .current_dir(&self.dir)
             .env("BRNR_DIR", self.dir.join("run"))
             .env("BRNR_HOME", self.dir.join("home"))
+            .env("TMPDIR", self.dir.join("tmp"))
+            .env("XDG_RUNTIME_DIR", self.dir.join("xdg"))
+            .env("HOME", self.dir.join("user"))
             .env("BRNR_CONFIG", self.config())
             .env("PROMPT_LOG", self.dir.join("prompts"))
             .env("CALL_LOG", self.dir.join("calls"))
