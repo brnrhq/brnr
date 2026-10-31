@@ -88,17 +88,21 @@ request names, and `_remote` runs any verb locally. `prompt send`
 matters even with the rest denied: a session you or another agent started
 in a mode that asks nothing does what any prompt says, and a fork of one
 may keep its mode. Disruptive verbs such as `process stop` and `session
-close` stop or delete brnr's own state but don't escalate.
+close` stop or delete brnr's own state but don't escalate;
+`skill install --dir`, `doctor --fix` and `session prune` write or delete,
+and doctor also runs adapters with `--version` to check their versions.
 
 Safer is to allow only the verbs that read and observe: `session status`,
 `event log`, `event watch`, `event wait`, `permission requests` and `show`,
 `elicitation requests` and `show`, and `config get`. This list has no
 session-listing verb, so the agent gets session ids from whoever started
-the sessions.
-A short allow list limits the verbs, but does not keep their reads local.
+the sessions, or from `permission requests` / `elicitation requests`. A
+short allow list limits the verbs, but does not keep their reads local.
 
 The allowed read verbs also take `--remote <host>` and read session state
-on every destination the user's SSH reaches. `--remote` can come anywhere
+on every destination the user's SSH reaches. Without `--remote`, no
+command but `remote check` connects: it runs `ssh <target> brnr doctor`,
+with a version preflight, and is read-only. `--remote` can come anywhere
 among a verb's arguments, so a prefix rule can't exclude it. In Claude
 Code, add `Bash(brnr * --remote *)` to `permissions.deny`: its
 [wildcard rules](https://code.claude.com/docs/en/permissions#wildcard-patterns)

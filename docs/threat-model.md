@@ -131,7 +131,9 @@ it cannot become an SSH option. The preflight reads `/dev/null` and keeps
 successful output off ACP/JSON streams. `_remote` refuses another hop
 without exposing a marker to agents. Destinations are passed directly to
 SSH without local config lookup, and no profile routes: without `--remote`
-on its command line, no command connects (ADR 12.2, N1). Remote calls are
+on its command line, no command but `remote check` connects (ADR 12.2, N1).
+`remote check` runs `ssh <target> brnr doctor`, with the version preflight
+and quoting described above; it is read-only. Remote calls are
 visible to tool-permission rules, but prefix rules cannot exclude
 `--remote` at every argument position; see Gaps below. The destination's
 brnr is the one on its shell's PATH, with that shell's environment; brnr

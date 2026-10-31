@@ -121,11 +121,13 @@ machine, and keep the private-file and symlink rules (ADR 9.4). An agent
 reads them with `brnr profile` (ADR 6.5), locally or, with `--remote`, on
 the destination.
 
-**Why.** Each remote call has `--remote` on its command line, so an agent's
-tool-permission rules can see it, and allow or deny it (N1). `--profile`
-has one meaning, a profile read where the command runs (ADR 8.1); before,
-it had three: a local execution profile, a local routing profile, or a
-destination profile. `profiles.default.remote` sent a plain `brnr acp` or
+**Why.** Remote execution has `--remote` on its command line, so it is
+visible to an agent's tool-permission rules (N1), but prefix rules cannot
+exclude it at every argument position; see the
+[threat model's Gap](../threat-model.md#gaps). The read-only `remote check`
+connects without that flag. `--profile` has one meaning, a profile read
+where the command runs (ADR 8.1); before, it had three: a local execution
+profile, a local routing profile, or a destination profile. `profiles.default.remote` sent a plain `brnr acp` or
 `brnr session new` to another machine, and the command line didn't show it
 (P4). The overrides that a routing table held (`executable`, `cwd`,
 `runtime_dir`, `home`, `config`) are the remote shell's environment, which
