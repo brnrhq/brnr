@@ -11,7 +11,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::sleep;
@@ -29,6 +29,55 @@ impl Drop for ChildGuard {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+impl ChildGuard {
+    /// Drain both pipes without letting a stalled child or inherited pipe hang the test.
+    fn output(mut self, timeout: Duration, stage: &str) -> Output {
+        fn nonblocking(pipe: &impl AsRawFd) {
+            let fd = pipe.as_raw_fd();
+            // SAFETY: fcntl only changes flags on this owned, open pipe descriptor.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            assert!(flags >= 0, "get pipe flags: {}", std::io::Error::last_os_error());
+            // SAFETY: fd is still open; O_NONBLOCK preserves the other descriptor flags.
+            assert!(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0);
+        }
+        fn drain(pipe: &mut impl Read, bytes: &mut Vec<u8>, stage: &str) -> bool {
+            let mut buf = [0; 8192];
+            match pipe.read(&mut buf) {
+                Ok(0) => true,
+                Ok(n) => {
+                    bytes.extend_from_slice(&buf[..n]);
+                    false
+                }
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                    false
+                }
+                Err(e) => panic!("{stage}: reading output: {e}"),
+            }
+        }
+        let child = self.0.as_mut().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        nonblocking(&stdout);
+        nonblocking(&stderr);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let (mut out_done, mut err_done) = (false, false);
+        let mut status = None;
+        let done = wait_for(timeout, || {
+            if !out_done {
+                out_done = drain(&mut stdout, &mut out, stage);
+            }
+            if !err_done {
+                err_done = drain(&mut stderr, &mut err, stage);
+            }
+            status = child.try_wait().unwrap_or_else(|e| panic!("{stage}: waiting: {e}"));
+            status.is_some() && out_done && err_done
+        });
+        // Keep the child guarded through the deadline: a failure kills and reaps it.
+        assert!(done, "{stage}: child exit/output exceeded {timeout:?}");
+        Output { status: status.unwrap(), stdout: out, stderr: err }
     }
 }
 
@@ -1481,11 +1530,16 @@ fn adr_0010_a_wait_cut_off_catches_up() {
 
 /// `event wait --for turn`, cut off while four 6 MB approvals came (stopped,
 /// here), catches up on the turn's end (ADR 10.2).
+// This optimized-throughput fixture can exceed the inner control deadline in debug.
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "optimized-throughput stress fixture; run with cargo test --release (debug can exceed the 5 s control deadline)"
+)]
 fn adr_0010_event_wait_cut_off_catches_up() {
     let env = Env::new("evwaitcatchup").agent("PERM_PAD", "6000000");
     env.start(&[]);
-    let mut wait = env.subscribed(|| {
+    let wait = env.subscribed(|| {
         ChildGuard(Some(
             env.brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
                 .stdout(Stdio::piped())
@@ -1501,12 +1555,13 @@ fn adr_0010_event_wait_cut_off_catches_up() {
     for n in 1..=4 {
         env.ok(&["permission", "allow", "sess-1", &format!("p{n}")]);
     }
-    env.ok(&["event", "wait", "sess-1"]);
+    // Bound turn completion separately from the stopped waiter's catch-up.
+    env.ok(&["event", "wait", "sess-1", "--timeout", "10"]);
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
     kill(wait.0.as_ref().unwrap().id() as i32, libc::SIGCONT);
     assert!(cut, "the wait wasn't cut off");
-    let out = wait.0.take().unwrap().wait_with_output().unwrap();
+    let out = wait.output(Duration::from_secs(15), "cut-off event waiter catch-up");
     assert!(out.status.success(), "event wait: {}", stderr(&out));
     let ended: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
