@@ -131,10 +131,11 @@ visible to an agent's tool-permission rules (N1), but prefix rules cannot
 exclude it at every argument position; see the
 [threat model's Gap](../threat-model.md#gaps). `remote check`
 connects without that flag and runs the destination's diagnostic programs.
-`--profile` has one meaning, a profile read where the command runs (ADR 8.1); before, it had three: a local execution
-profile, a local routing profile, or a destination profile. `profiles.default.remote` sent a plain `brnr acp` or
-`brnr session new` to another machine, and the command line didn't show it
-(P4). The overrides that a routing table held (`executable`, `cwd`,
+`--profile` has one meaning, a profile read where the command runs
+(ADR 8.1); before, it had three: a local execution profile, a local routing
+profile, or a destination profile. `profiles.default.remote` sent a plain
+`brnr acp` or `brnr session new` to another machine, and the command line
+didn't show it (P4). The overrides that a routing table held (`executable`, `cwd`,
 `runtime_dir`, `home`, `config`) are the remote shell's environment, which
 SSH users already keep, so brnr doesn't need a second place for them (P12,
 N4). SSH already owns the connection's identity and authentication; a

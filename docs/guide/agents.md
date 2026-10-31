@@ -95,8 +95,10 @@ matters even with the rest denied: a session you or another agent started
 in a mode that asks nothing does what any prompt says, and a fork of one
 may keep its mode. Disruptive verbs such as `process stop` and `session
 close` stop or delete brnr's own state but don't escalate;
-`skill install --dir`, `doctor --fix` and `session prune` also write or
-delete files.
+`skill install`, `doctor --fix` and `session prune` also write or delete
+files. Bare `skill install` writes to the default skill directories
+(`~/.claude/skills` and `~/.agents/skills`); `--dir` selects other
+directories.
 
 Safer is to allow only the verbs that read and observe: `session status`,
 `event log`, `event watch`, `event wait`, `permission requests` and `show`,

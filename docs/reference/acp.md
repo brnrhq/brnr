@@ -17,7 +17,8 @@ The editor initializes the protocol and owns its sessions.
 | `-- <agent> [args...]` | The agent to run, in place of the profile's. |
 
 See [which machine loads the profile](../guide/remote.md#which-machine-loads-the-profile).
-Without `--remote`, nothing connects to another machine.
+Without `--remote`, `brnr acp` starts the agent locally; profiles do not
+select SSH routing.
 
 It has no `--json`: stdout is ACP.
 

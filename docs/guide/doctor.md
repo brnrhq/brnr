@@ -21,6 +21,10 @@ connection to a stopped process whose socket's backlog is full, so there a
 refusal counts only if the process with that pid started after brnr's file
 was written.
 
+Even without `--fix`, doctor runs adapters it finds beside brnr or on PATH
+with `--version` to check their versions. These probes do not constrain
+what the selected executable can do.
+
 It also lists the host logs (`~/.brnr/hosts/`) of processes that died
 without recording it, killed by SIGKILL for instance: logs without `process_exited`
 whose process isn't running. The line says how many, and for the latest three

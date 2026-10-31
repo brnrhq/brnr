@@ -38,7 +38,9 @@ brnr's own conventions:
   `remote check` whole when no program starts are allowed: even without
   `--fix`, adapter version probes execute programs, and `remote check`
   starts SSH and remote doctor. ADR 12 names the remote-check exception
-  to `--remote` routing. Claude Code's wildcard deny rule
+  to `--remote` routing; the CLI help and reference do too. The guide
+  also names bare `skill install` as writing to default skill directories.
+  Claude Code's wildcard deny rule
   for remote reads is best effort; what holds is a sandbox without network
   or `ssh`, or no usable SSH keys. Codex's prefix rules cannot exclude
   `--remote` at every argument position. The skill's rule 4 says it isn't

@@ -14,8 +14,9 @@ skill that teaches agents to use brnr.
 
 Every public execution command also accepts `--remote <target>` before
 `--`, the one transport (ADR 12). With it, `--profile` is the
-destination's; without it, nothing connects. Transport selection respects
-flag values and the delimiter. Help stays local. `remote check <target>`
+destination's; without it, no command but `remote check` connects to
+another machine through brnr's transport. Transport selection respects flag
+values and the delimiter. Help stays local. `remote check <target>`
 checks a destination's installation through SSH. It reads no local config
 and does not itself accept `--remote`.
 
