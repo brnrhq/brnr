@@ -7,6 +7,7 @@
 # Guide
 
 - [Use it from an editor](guide/editor.md)
+  - [Real-editor checks](guide/editor-checks.md)
 - [Talk to it from outside](guide/outside.md)
 - [Approvals and elicitations](guide/approvals.md)
 - [Events and notifications](guide/events.md)
