@@ -6792,7 +6792,10 @@ fn adr_0008_purge_deletes_an_older_brnrs_files_too() {
     let purged: Vec<&str> =
         out["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     // In each folder, an older brnr's set aside, then the raw ACP, then the
-    // events file. Folder groups follow purge's sort of the folder names.
+    // events file. The generated folder name comes from TMPDIR: `/Users/...`
+    // gives `-Users-...`, which sorts before `-before-the-hash`; `/private/...`
+    // gives `-private-...`, which sorts after. Expected groups are sorted the
+    // way purge sorts the folder names.
     let mut groups = [
         (
             before_hash.parent().unwrap().file_name().unwrap().to_owned(),
