@@ -52,6 +52,7 @@ const DOCS: &[&str] = &[
     "docs/introduction.md",
     "docs/install.md",
     "docs/guide/editor.md",
+    "docs/guide/editor-checks.md",
     "docs/guide/outside.md",
     "docs/guide/approvals.md",
     "docs/guide/events.md",
@@ -395,6 +396,45 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     // setup
     ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
+    // The editor checklist's terminal commands run against the fake agent;
+    // this checks the CLI examples, not the editor's rendering or file tools.
+    ("brnr --version", Nothing, Says(concat!("brnr ", env!("CARGO_PKG_VERSION")))),
+    ("brnr acp --strict -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr acp --profile fsterm -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr acp --profile exp -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr profile show fsterm", Nothing, Says("client_capabilities = [\"fs\", \"terminal\"]")),
+    (
+        "brnr profile show exp",
+        Nothing,
+        Says(
+            "experimental = [\"send\", \"context\", \"cancel\", \"permission\", \"elicitation\", \"config\", \"close\"]",
+        ),
+    ),
+    ("brnr event log <session> --events acp", Idle, Says("session/prompt")),
+    ("brnr event log <session>", Idle, Says("agent: hi")),
+    (
+        "brnr prompt send <session> --prompt \"Read editor-check.txt from disk and quote it.\" --wait",
+        Idle,
+        Succeeds,
+    ),
+    ("brnr session resume <session>", Ended, Says("started sess-1")),
+    (
+        "brnr prompt send <session> --prompt \"Reply with headless-marker only.\" --wait",
+        Idle,
+        Succeeds,
+    ),
+    ("brnr session close <session>", Idle, Says("closed")),
+    ("brnr permission requests <session>", Approval, Says("p1")),
+    ("brnr permission allow <session> <request>", Approval, Says("p1 allow")),
+    ("brnr permission reject <session> <request>", Approval, Says("p1 reject")),
+    ("brnr elicitation requests <session>", Elicitation, Says("e1")),
+    (
+        "brnr elicitation accept <session> <request> --field <key>=<value>",
+        Elicitation,
+        Says("e1 accepted"),
+    ),
+    ("brnr elicitation decline <session> <request>", Elicitation, Says("e1 declined")),
+    ("brnr elicitation cancel <session> <request>", Elicitation, Says("e1 cancelled")),
     // Reading profiles
     ("brnr profile list", Nothing, Says("work: agent")),
     ("brnr profile show work", Nothing, Says("[profiles.work]")),
@@ -410,6 +450,13 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
 
 /// The lines of `sh` blocks that don't run here, and why.
 const SKIPPED: &[(&str, &str)] = &[
+    ("brnr-claude-adapter", "starts the real adapter directly; needs its installation and login"),
+    ("brnr-claude-adapter --version", "needs the installed real Claude adapter"),
+    ("brnr-codex-adapter --version", "needs the installed real Codex adapter"),
+    (
+        "brnr session resume <session> --take-over",
+        "needs an editor-owned session with experimental take-over enabled",
+    ),
     ("ssh agent@linux", "establishes authentication and host trust with an external SSH host"),
     (
         "brnr session list --remote agent@linux",
@@ -439,6 +486,9 @@ const SKIPPED: &[(&str, &str)] = &[
 /// `{pid}` the one running process, `{s}` the example's session.
 const STAND_INS: &[(&str, &str)] = &[
     ("$s", "{s}"),
+    ("<session>", "{s}"),
+    ("<request>", "{request}"),
+    ("<key>=<value>", "{fields}"),
     ("brnr-claude-adapter", "{agent}"),
     ("brnr-codex-adapter", "{agent}"),
     ("brnr-muse-adapter", "{agent}"),
@@ -888,9 +938,19 @@ fn variants((words, _): &(Vec<Word>, usize)) -> Vec<Vec<Word>> {
 /// Runs one example in an environment of its own, `name`.
 fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), String> {
     let env = scratch(name, before, &[], false);
+    if words.iter().any(|w| matches!(w.text.as_str(), "fsterm" | "exp")) {
+        // Only these examples need the checklist's actual profile definitions.
+        let mut config = fs::read_to_string(env.config()).unwrap();
+        for (lang, _, body) in md_blocks(&read("docs/guide/editor-checks.md")) {
+            if lang == "toml" {
+                config.push_str(&body);
+            }
+        }
+        env.write_config(&config);
+    }
     let dir = env.dir.clone();
     let s = "sess-1";
-    let (mut cmd, stdout) = command(&env, words)?;
+    let (mut cmd, stdout) = command(&env, words, before)?;
     cmd.stderr(File::create(dir.join("stderr")).unwrap());
     let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
     let printed = || fs::read_to_string(dir.join(&stdout)).unwrap_or_default();
@@ -992,7 +1052,11 @@ fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool)
 /// The command `words` are, as sh would run it in `env`'s scratch directory,
 /// [`STAND_INS`] in place, its stdin from the file after `<`; and the file
 /// its stdout goes to, the one after `>` or `stdout`.
-fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String), String> {
+fn command(
+    env: &Env,
+    words: &[Word],
+    before: Before,
+) -> Result<(std::process::Command, String), String> {
     let (dir, s) = (&env.dir, "sess-1");
     let (mut args, mut stdin, mut stdout) = (Vec::new(), None, "stdout".to_owned());
     let mut it = words.iter();
@@ -1000,6 +1064,16 @@ fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String),
         let text = STAND_INS.iter().find(|(from, _)| *from == w.text).map_or(&*w.text, |s| s.1);
         let text = match text {
             "{pid}" => env.pid(),
+            "{request}" => match before {
+                Approval => "p1".to_owned(),
+                Elicitation => "e1".to_owned(),
+                _ => return Err("<request> needs Before::Approval or Before::Elicitation".into()),
+            },
+            // The form placeholder stands for all required fields.
+            "{fields}" => {
+                args.extend(["name=Ada", "--field", "color=green"].map(str::to_owned));
+                continue;
+            }
             _ => text.to_owned(),
         };
         let text = text
@@ -1270,7 +1344,7 @@ fn run_json(name: &str, block: &Json) -> Result<(), String> {
         false => {
             let mut printed = String::new();
             for (i, words) in spec.commands.iter().enumerate() {
-                let (mut cmd, stdout) = command(&env, words)?;
+                let (mut cmd, stdout) = command(&env, words, spec.before)?;
                 cmd.stderr(File::create(env.dir.join("stderr")).unwrap());
                 let mut child = cmd.spawn().unwrap();
                 let status = match wait_for(TIMEOUT, || child.try_wait().unwrap().is_some()) {

@@ -99,6 +99,9 @@ brnr permission allow $s p1        # with its allow_once option; --always: allow
 brnr doctor                        # checks what brnr depends on
 ```
 
+The [real-editor check matrix](docs/guide/editor-checks.md) has the manual
+checklists for Zed and IntelliJ with AIR.
+
 ## How light it is
 
 `brnr acp` relays bytes to a process that reads ACP once. What that adds,
