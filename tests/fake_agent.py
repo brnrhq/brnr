@@ -178,6 +178,11 @@ and by the prompt's text:
                     <message>", one line each), or "no fs", "no terminal" for
                     one not offered, and answers the prompt once done
   client anyway     the same, but asks for both whatever initialize offered
+  Reply with headless-marker only.
+                    answers with headless-marker (editor-checks resume example)
+  Read editor-check.txt from disk and quote it.
+                    reads editor-check.txt from the process cwd and answers
+                    with its contents (editor-checks take-over example)
 """
 
 import json
@@ -453,6 +458,16 @@ def run(mid, sid, text):
         end_turn(mid)
     elif first == "reply":
         say(sid, text[len("reply ") :])
+        end_turn(mid)
+    elif text == "Reply with headless-marker only.":
+        say(sid, "headless-marker")
+        end_turn(mid)
+    elif text == "Read editor-check.txt from disk and quote it.":
+        try:
+            with open("editor-check.txt") as f:
+                say(sid, f.read().rstrip("\n"))
+        except OSError as e:
+            say(sid, f"missing editor-check.txt: {e}")
         end_turn(mid)
     elif first == "big":
         if words[2:] == ["think"]:

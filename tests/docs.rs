@@ -35,8 +35,9 @@
 mod common;
 
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::sleep;
@@ -148,6 +149,12 @@ enum Then {
     Succeeds,
     /// Prints this on stdout (or in the file it is redirected to).
     Says(&'static str),
+    /// Prints this on stdout, and the fake agent received this exact prompt.
+    SaysPrompted(&'static str, &'static str),
+    /// Feeds a capable editor's `initialize` and `session/new` over ACP, then
+    /// checks the named launch: `"strict"` and `"fsterm"` pass `fs`/`terminal`;
+    /// `"strict"` refuses experimental `send`; `"exp"` allows it.
+    EditorAcp(&'static str),
     /// Runs until `$s` closes, printing this meanwhile (on stdout or
     /// stderr, where `notify` has its command's output): `$s` is sent
     /// `reply readme` until it does, then closed.
@@ -397,11 +404,12 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     // setup
     ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
     // The editor checklist's terminal commands run against the fake agent;
-    // this checks the CLI examples, not the editor's rendering or file tools.
+    // this checks the CLI examples' negotiation and prompt effects, not the
+    // editor's rendering or file tools.
     ("brnr --version", Nothing, Says(concat!("brnr ", env!("CARGO_PKG_VERSION")))),
-    ("brnr acp --strict -- brnr-claude-adapter", Nothing, Succeeds),
-    ("brnr acp --profile fsterm -- brnr-claude-adapter", Nothing, Succeeds),
-    ("brnr acp --profile exp -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr acp --strict -- brnr-claude-adapter", Nothing, EditorAcp("strict")),
+    ("brnr acp --profile fsterm -- brnr-claude-adapter", Nothing, EditorAcp("fsterm")),
+    ("brnr acp --profile exp -- brnr-claude-adapter", Nothing, EditorAcp("exp")),
     ("brnr profile show fsterm", Nothing, Says("client_capabilities = [\"fs\", \"terminal\"]")),
     (
         "brnr profile show exp",
@@ -415,13 +423,13 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     (
         "brnr prompt send <session> --prompt \"Read editor-check.txt from disk and quote it.\" --wait",
         Idle,
-        Succeeds,
+        SaysPrompted("disk-marker", "Read editor-check.txt from disk and quote it."),
     ),
     ("brnr session resume <session>", Ended, Says("started sess-1")),
     (
         "brnr prompt send <session> --prompt \"Reply with headless-marker only.\" --wait",
         Idle,
-        Succeeds,
+        SaysPrompted("headless-marker", "Reply with headless-marker only."),
     ),
     ("brnr session close <session>", Idle, Says("closed")),
     ("brnr permission requests <session>", Approval, Says("p1")),
@@ -948,6 +956,9 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         }
         env.write_config(&config);
     }
+    if let EditorAcp(kind) = then {
+        return run_editor_acp(&env, words, before, kind);
+    }
     let dir = env.dir.clone();
     let s = "sess-1";
     let (mut cmd, stdout) = command(&env, words, before)?;
@@ -958,7 +969,8 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
     let never = |what| Err(format!("never printed {what:?}"));
 
     let shown = match then {
-        Succeeds | Says(_) => Ok(()),
+        Succeeds | Says(_) | SaysPrompted(..) => Ok(()),
+        EditorAcp(_) => unreachable!("handled above"),
         Follows(what) => {
             let ok = wait_for(Duration::from_secs(10), || {
                 env.run(&["prompt", "send", s, "--prompt", "reply readme"]);
@@ -983,12 +995,165 @@ fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), Str
         Some(false) => return Err(report("exited non-zero".into())),
         Some(true) => {}
     }
-    if let Says(what) = then
+    let expected = match then {
+        Says(what) | SaysPrompted(what, _) => Some(what),
+        _ => None,
+    };
+    if let Some(what) = expected
         && !out.contains(what)
     {
         return Err(report(format!("didn't print {what:?}")));
     }
+    if let SaysPrompted(_, prompt) = then {
+        let prompted = env.prompts();
+        if !prompted.iter().any(|p| p == prompt) {
+            return Err(report(format!("agent prompts were {prompted:?}, missing {prompt:?}")));
+        }
+    }
     Ok(())
+}
+
+/// What a capable editor sends as `initialize` (fs + terminal).
+const CAPABLE_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true}}}"#;
+
+/// Feeds initialize + session/new to an editor-checks `brnr acp` launch and
+/// asserts the profile or strict effect the page names for `kind`.
+fn run_editor_acp(env: &Env, words: &[Word], before: Before, kind: &str) -> Result<(), String> {
+    let dir = env.dir.clone();
+    let (mut cmd, _) = command(env, words, before)?;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(File::create(dir.join("stderr")).unwrap());
+    let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
+    let pid = child.id() as i32;
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if done_rx.recv_timeout(TIMEOUT).is_err() {
+            kill(pid, libc::SIGKILL);
+        }
+    });
+    let mut to_agent = child.stdin.take().unwrap();
+    let mut from_agent = BufReader::new(child.stdout.take().unwrap());
+    let stderr = || fs::read_to_string(dir.join("stderr")).unwrap_or_default();
+    let stop = |child: &mut Child, done_tx: std::sync::mpsc::Sender<()>, e: String| {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = done_tx.send(());
+        Err(format!("{e}\nstderr:\n{}", stderr()))
+    };
+
+    if let Err(e) = writeln!(to_agent, "{CAPABLE_INITIALIZE}") {
+        return stop(&mut child, done_tx, e.to_string());
+    }
+    if let Err(e) = acp_response(&mut from_agent, 1) {
+        return stop(&mut child, done_tx, e);
+    }
+    let new = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session/new","params":{{"cwd":{:?},"mcpServers":[]}}}}"#,
+        env.dir.display().to_string()
+    );
+    if let Err(e) = writeln!(to_agent, "{new}") {
+        return stop(&mut child, done_tx, e.to_string());
+    }
+    let opened = match acp_response(&mut from_agent, 2) {
+        Ok(v) => v,
+        Err(e) => return stop(&mut child, done_tx, e),
+    };
+    if opened["result"]["sessionId"] != "sess-1" {
+        return stop(&mut child, done_tx, format!("session/new answered {opened}"));
+    }
+    if env.calls_of("initialize").is_empty() || env.calls_of("session/new").is_empty() {
+        return stop(&mut child, done_tx, "agent never saw initialize and session/new".into());
+    }
+
+    let sent: Value = serde_json::from_str(CAPABLE_INITIALIZE).unwrap();
+    let sent = &sent["params"]["clientCapabilities"];
+    let init = env.calls_of("initialize");
+    let caps = &init[0]["params"]["clientCapabilities"];
+    match kind {
+        "strict" | "fsterm" => {
+            for cap in ["fs", "terminal"] {
+                if caps[cap] != sent[cap] {
+                    return stop(
+                        &mut child,
+                        done_tx,
+                        format!("{kind}: {cap} was {caps}, expected {sent}"),
+                    );
+                }
+            }
+        }
+        "exp" => {
+            if !caps["fs"].is_null() || !caps["terminal"].is_null() {
+                return stop(
+                    &mut child,
+                    done_tx,
+                    format!("exp should drop fs/terminal, got {caps}"),
+                );
+            }
+        }
+        other => return stop(&mut child, done_tx, format!("unknown EditorAcp kind {other:?}")),
+    }
+
+    match kind {
+        "strict" => {
+            let out = env.run(&["prompt", "send", "sess-1", "--prompt", "reply side"]);
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            if out.status.success() || !err.contains("experimental") {
+                return stop(
+                    &mut child,
+                    done_tx,
+                    format!("strict should refuse experimental send: {err}"),
+                );
+            }
+        }
+        "exp" => {
+            let out =
+                env.run(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply side-marker"]);
+            let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            if !out.status.success() {
+                return stop(&mut child, done_tx, format!("exp send failed: {err}"));
+            }
+            if !printed.contains("side-marker") {
+                return stop(
+                    &mut child,
+                    done_tx,
+                    format!("exp send should reach the agent: {printed}"),
+                );
+            }
+            let prompted = env.prompts();
+            if !prompted.iter().any(|p| p == "reply side-marker") {
+                return stop(&mut child, done_tx, format!("exp send prompts were {prompted:?}"));
+            }
+        }
+        _ => {}
+    }
+
+    drop(to_agent);
+    let status = finish(&mut child);
+    let _ = done_tx.send(());
+    match status {
+        None => Err(format!("still running after {TIMEOUT:?}\nstderr:\n{}", stderr())),
+        Some(false) => Err(format!("exited non-zero\nstderr:\n{}", stderr())),
+        Some(true) => Ok(()),
+    }
+}
+
+/// The next ACP message on `from_agent` whose `id` is `id`.
+fn acp_response(from_agent: &mut BufReader<ChildStdout>, id: u64) -> Result<Value, String> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match from_agent.read_line(&mut line) {
+            Ok(0) => return Err(format!("EOF before answer to {id}")),
+            Ok(_) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        if msg["id"] == id {
+            return Ok(msg);
+        }
+    }
 }
 
 /// Whether `child` exited 0; `None`, killing it, if it runs past
@@ -1024,6 +1189,7 @@ fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool)
     }
     env.write_config(&config);
     fs::write(dir.join("task.md"), "reply readme\n").unwrap();
+    fs::write(dir.join("editor-check.txt"), "disk-marker\n").unwrap();
     fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
     fs::write(dir.join("screenshot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
     script(&dir.join("bin/curl"), "#!/bin/sh\necho curl \"$@\"\n");
