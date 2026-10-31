@@ -74,9 +74,13 @@ refusal a successful take-over or a missing stimulus a pass.
 
 ## Before you start
 
-Use a scratch project with no secrets, read raw ACP excerpts before
-committing or filing them, and replace your home directory with `~`.
-Use `brnr doctor --report` for host-log lines.
+Use a scratch project with no secrets. Raw ACP and host logs can contain
+prompts, file contents and terminal output **unredacted**: only MCP server
+`env` and `headers` are redacted (see the threat model's
+[redaction limits](../threat-model.md#gaps)). Read and trim
+excerpts before pasting them into the public matrix or an issue, and replace
+your home directory with `~`. Use `brnr doctor --report` for host-log lines;
+its path replacement does not remove sensitive content.
 Work with one small text file open in the editor. Keep one brnr build for
 every run in a cell, and record its version before you start.
 
@@ -88,9 +92,9 @@ agent environment and the terminal, or remove these profiles when done.
 
 The checks need two profiles in the config file
 (`$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`, falling back to
-`~/.config/brnr/config.toml`; the file and its
-folder must be only yours to read and write, as
-[profiles](profiles.md) says). Add:
+`~/.config/brnr/config.toml`; the file must be yours and only you can
+read and write it, and its folder must be yours and only you can write it,
+as [profiles](profiles.md) says). Add:
 
 ```toml
 [profiles.fsterm.editor]
@@ -173,9 +177,13 @@ brnr event log <session>
 
 The first prints the raw ACP messages, each as an `acp` event; the
 second prints brnr's story of the session (messages, tool calls,
-approvals, how the turn ended). Quote the lines that show the result
-in the cell's note. Use `brnr event log <session> --events acp --json`
-to find the run's `host_id`; its host log is
+approvals, how the turn ended). Raw ACP and host logs leave prompts, file
+contents and terminal output unredacted; only MCP server `env` and `headers`
+are redacted. Read and trim the excerpts before posting them in a public
+matrix or issue (see [redaction limits](../threat-model.md#gaps)).
+`event log` does not replace your home directory with `~`; do that yourself.
+Quote only the lines needed to show the result in the cell's note.
+Use `brnr event log <session> --events acp --json` to find the run's `host_id`; its host log is
 `$BRNR_HOME/hosts/<host_id>.jsonl` (by default under `~/.brnr/hosts/`); checks
 that name a host-log record say what to look for there.
 

@@ -938,9 +938,19 @@ fn variants((words, _): &(Vec<Word>, usize)) -> Vec<Vec<Word>> {
 /// Runs one example in an environment of its own, `name`.
 fn run(name: &str, words: &[Word], before: Before, then: Then) -> Result<(), String> {
     let env = scratch(name, before, &[], false);
+    if words.iter().any(|w| matches!(w.text.as_str(), "fsterm" | "exp")) {
+        // Only these examples need the checklist's actual profile definitions.
+        let mut config = fs::read_to_string(env.config()).unwrap();
+        for (lang, _, body) in md_blocks(&read("docs/guide/editor-checks.md")) {
+            if lang == "toml" {
+                config.push_str(&body);
+            }
+        }
+        env.write_config(&config);
+    }
     let dir = env.dir.clone();
     let s = "sess-1";
-    let (mut cmd, stdout) = command(&env, words)?;
+    let (mut cmd, stdout) = command(&env, words, before)?;
     cmd.stderr(File::create(dir.join("stderr")).unwrap());
     let mut child = with_default_interrupt(&mut cmd).spawn().unwrap();
     let printed = || fs::read_to_string(dir.join(&stdout)).unwrap_or_default();
@@ -1012,13 +1022,6 @@ fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool)
             "\n[[profiles.default.bridges]]\ncommand = {command:?}\nargs = {args:?}\n"
         ));
     }
-    // Use the checklist's actual profile definitions so its show/start
-    // examples stay in step with the TOML on the page.
-    for (lang, _, body) in md_blocks(&read("docs/guide/editor-checks.md")) {
-        if lang == "toml" {
-            config.push_str(&body);
-        }
-    }
     env.write_config(&config);
     fs::write(dir.join("task.md"), "reply readme\n").unwrap();
     fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
@@ -1049,7 +1052,11 @@ fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool)
 /// The command `words` are, as sh would run it in `env`'s scratch directory,
 /// [`STAND_INS`] in place, its stdin from the file after `<`; and the file
 /// its stdout goes to, the one after `>` or `stdout`.
-fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String), String> {
+fn command(
+    env: &Env,
+    words: &[Word],
+    before: Before,
+) -> Result<(std::process::Command, String), String> {
     let (dir, s) = (&env.dir, "sess-1");
     let (mut args, mut stdin, mut stdout) = (Vec::new(), None, "stdout".to_owned());
     let mut it = words.iter();
@@ -1057,6 +1064,11 @@ fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String),
         let text = STAND_INS.iter().find(|(from, _)| *from == w.text).map_or(&*w.text, |s| s.1);
         let text = match text {
             "{pid}" => env.pid(),
+            "{request}" => match before {
+                Approval => "p1".to_owned(),
+                Elicitation => "e1".to_owned(),
+                _ => return Err("<request> needs Before::Approval or Before::Elicitation".into()),
+            },
             // The form placeholder stands for all required fields.
             "{fields}" => {
                 args.extend(["name=Ada", "--field", "color=green"].map(str::to_owned));
@@ -1066,10 +1078,6 @@ fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String),
         };
         let text = text
             .replace("{s}", s)
-            .replace(
-                "{request}",
-                if words.get(1).is_some_and(|w| w.text == "permission") { "p1" } else { "e1" },
-            )
             .replace("{agent}", AGENT)
             .replace("{dir}", &dir.to_string_lossy());
         match (w.quoted, &*text) {
@@ -1336,7 +1344,7 @@ fn run_json(name: &str, block: &Json) -> Result<(), String> {
         false => {
             let mut printed = String::new();
             for (i, words) in spec.commands.iter().enumerate() {
-                let (mut cmd, stdout) = command(&env, words)?;
+                let (mut cmd, stdout) = command(&env, words, spec.before)?;
                 cmd.stderr(File::create(env.dir.join("stderr")).unwrap());
                 let mut child = cmd.spawn().unwrap();
                 let status = match wait_for(TIMEOUT, || child.try_wait().unwrap().is_some()) {
