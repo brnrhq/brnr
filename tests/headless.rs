@@ -20,6 +20,18 @@ use std::time::{Duration, Instant};
 use common::*;
 use serde_json::{Value, json};
 
+/// Kills and reaps a child if a test panics before collecting its output.
+struct ChildGuard(Option<Child>);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 // ---- starting ----------------------------------------------------------
 
 /// The process's `started` record: the first in its host log.
@@ -1469,14 +1481,16 @@ fn adr_0010_a_wait_cut_off_catches_up() {
 fn adr_0010_event_wait_cut_off_catches_up() {
     let env = Env::new("evwaitcatchup").agent("PERM_PAD", "6000000");
     env.start(&[]);
-    let wait = env.subscribed(|| {
-        env.brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
+    let mut wait = env.subscribed(|| {
+        ChildGuard(Some(
+            env.brnr(&["event", "wait", "sess-1", "--for", "turn", "--json"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
     });
-    kill(wait.id() as i32, libc::SIGSTOP);
+    kill(wait.0.as_ref().unwrap().id() as i32, libc::SIGSTOP);
     env.ok(&["prompt", "send", "sess-1", "--prompt", "perm edit 4"]);
     let pending = || env.ok(&["permission", "requests", "sess-1"]).contains("p4 ");
     assert!(wait_for(Duration::from_secs(10), pending), "no approvals");
@@ -1486,9 +1500,9 @@ fn adr_0010_event_wait_cut_off_catches_up() {
     env.ok(&["event", "wait", "sess-1"]);
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
-    kill(wait.id() as i32, libc::SIGCONT);
+    kill(wait.0.as_ref().unwrap().id() as i32, libc::SIGCONT);
     assert!(cut, "the wait wasn't cut off");
-    let out = wait.wait_with_output().unwrap();
+    let out = wait.0.take().unwrap().wait_with_output().unwrap();
     assert!(out.status.success(), "event wait: {}", stderr(&out));
     let ended: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
@@ -1925,14 +1939,9 @@ fn adr_0010_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
 
 /// The host log's `peer_dropped` records, once there is one.
 fn peers_dropped(env: &Env) -> Vec<Value> {
-    let dropped = || host_logs(env).contains(r#""event":"peer_dropped""#);
-    assert!(wait_for(Duration::from_secs(10), dropped), "no peer_dropped");
-    let records: Vec<Value> =
-        host_logs(env).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    records
+    log_with(|| host_logs(env), "peer_dropped", Duration::from_secs(10))
         .into_iter()
-        .filter(|r| r["event"]["event"] == "peer_dropped")
-        .map(|r| r["event"].clone())
+        .filter(|r| r["event"] == "peer_dropped")
         .collect()
 }
 
@@ -4006,6 +4015,7 @@ fn adr_0003_a_signal_doesnt_wait_behind_a_stalled_agents_stdin() {
 fn adr_0003_an_editors_process_needs_its_signal_link() {
     let env = Env::new("ed-nosig");
     let (mut ours, theirs) = UnixStream::pair().unwrap();
+    ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let fd = theirs.as_raw_fd();
     let mut cmd = env.brnr(&["host"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
@@ -4016,7 +4026,8 @@ fn adr_0003_an_editors_process_needs_its_signal_link() {
             (libc::dup2(fd, 3) >= 0).then_some(()).ok_or_else(std::io::Error::last_os_error)
         })
     };
-    let mut child = cmd.spawn().unwrap();
+    let mut guarded = ChildGuard(Some(cmd.spawn().unwrap()));
+    let child = guarded.0.as_mut().unwrap();
     drop(theirs);
     let editor = serde_json::json!({
         "proxy_pid": std::process::id(), "sigmask": [], "experimental": [],
@@ -4027,15 +4038,16 @@ fn adr_0003_an_editors_process_needs_its_signal_link() {
         "bridges": [], "role": { "editor": editor },
     });
     child.stdin.take().unwrap().write_all(request.to_string().as_bytes()).unwrap();
-    let out = child.wait_with_output().unwrap();
+    assert!(wait_exit(child, Duration::from_secs(5)), "host without a signal link did not exit");
+    let out = guarded.0.take().unwrap().wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("no signal link on fd 4"), "{}", stderr(&out));
     // A FAILED frame: kind, length (u32 BE), payload.
     let mut head = [0; 5];
-    ours.read_exact(&mut head).unwrap();
+    ours.read_exact(&mut head).expect("FAILED frame header not received");
     assert_eq!(head[0], b'F', "{head:?}");
     let mut payload = vec![0; u32::from_be_bytes(head[1..].try_into().unwrap()) as usize];
-    ours.read_exact(&mut payload).unwrap();
+    ours.read_exact(&mut payload).expect("FAILED frame payload not received");
     let failure: Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(failure["code"], 2, "{failure}");
     assert!(env.hosts().is_empty() && env.calls().is_empty());
@@ -4759,13 +4771,18 @@ fn taken_meanwhile(env: &Env, session: &str) -> String {
 /// lines: the host may be writing the last one as it is read.
 fn host_log_with(env: &Env, event: &str) -> Vec<Value> {
     let path = editor_process(env)["host_log"].as_str().unwrap().to_owned();
+    log_with(|| fs::read_to_string(&path).unwrap_or_default(), event, Duration::from_secs(5))
+}
+
+/// Complete host-log records from the snapshot that first contains `event`.
+fn log_with(mut read: impl FnMut() -> String, event: &str, timeout: Duration) -> Vec<Value> {
     let mut log = String::new();
     let has = || {
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = read();
         log = text[..text.rfind('\n').map_or(0, |end| end + 1)].to_owned();
         log.contains(&format!("\"{event}\""))
     };
-    assert!(wait_for(Duration::from_secs(5), has), "no {event} in the host log");
+    assert!(wait_for(timeout, has), "no {event} in the host log");
     log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take()).collect()
 }
 
