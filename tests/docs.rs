@@ -396,6 +396,45 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
     ),
     // setup
     ("brnr doctor --json", Nothing, Says(r#""check": "config""#)),
+    // The editor checklist's terminal commands run against the fake agent;
+    // this checks the CLI examples, not the editor's rendering or file tools.
+    ("brnr --version", Nothing, Says(concat!("brnr ", env!("CARGO_PKG_VERSION")))),
+    ("brnr acp --strict -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr acp --profile fsterm -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr acp --profile exp -- brnr-claude-adapter", Nothing, Succeeds),
+    ("brnr profile show fsterm", Nothing, Says("client_capabilities = [\"fs\", \"terminal\"]")),
+    (
+        "brnr profile show exp",
+        Nothing,
+        Says(
+            "experimental = [\"send\", \"context\", \"cancel\", \"permission\", \"elicitation\", \"config\", \"close\"]",
+        ),
+    ),
+    ("brnr event log <session> --events acp", Idle, Says("session/prompt")),
+    ("brnr event log <session>", Idle, Says("agent: hi")),
+    (
+        "brnr prompt send <session> --prompt \"Read editor-check.txt from disk and quote it.\" --wait",
+        Idle,
+        Succeeds,
+    ),
+    ("brnr session resume <session>", Ended, Says("started sess-1")),
+    (
+        "brnr prompt send <session> --prompt \"Reply with headless-marker only.\" --wait",
+        Idle,
+        Succeeds,
+    ),
+    ("brnr session close <session>", Idle, Says("closed")),
+    ("brnr permission requests <session>", Approval, Says("p1")),
+    ("brnr permission allow <session> <request>", Approval, Says("p1 allow")),
+    ("brnr permission reject <session> <request>", Approval, Says("p1 reject")),
+    ("brnr elicitation requests <session>", Elicitation, Says("e1")),
+    (
+        "brnr elicitation accept <session> <request> --field <key>=<value>",
+        Elicitation,
+        Says("e1 accepted"),
+    ),
+    ("brnr elicitation decline <session> <request>", Elicitation, Says("e1 declined")),
+    ("brnr elicitation cancel <session> <request>", Elicitation, Says("e1 cancelled")),
     // Reading profiles
     ("brnr profile list", Nothing, Says("work: agent")),
     ("brnr profile show work", Nothing, Says("[profiles.work]")),
@@ -411,35 +450,13 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
 
 /// The lines of `sh` blocks that don't run here, and why.
 const SKIPPED: &[(&str, &str)] = &[
-    ("brnr-claude-adapter", "needs a real editor"),
-    ("brnr --version", "needs a real editor"),
-    ("brnr-claude-adapter --version", "needs a real editor"),
-    ("brnr-codex-adapter --version", "needs a real editor"),
-    ("brnr acp --strict -- brnr-claude-adapter", "needs a real editor"),
-    ("brnr acp --profile fsterm -- brnr-claude-adapter", "needs a real editor"),
-    ("brnr acp --profile exp -- brnr-claude-adapter", "needs a real editor"),
-    ("brnr profile show fsterm", "needs a real editor"),
-    ("brnr profile show exp", "needs a real editor"),
-    ("brnr event log <session> --events acp", "needs a real editor"),
-    ("brnr event log <session>", "needs a real editor"),
-    ("brnr session resume <session> --take-over", "needs a real editor"),
+    ("brnr-claude-adapter", "starts the real adapter directly; needs its installation and login"),
+    ("brnr-claude-adapter --version", "needs the installed real Claude adapter"),
+    ("brnr-codex-adapter --version", "needs the installed real Codex adapter"),
     (
-        "brnr prompt send <session> --prompt \"Read editor-check.txt from disk and quote it.\" --wait",
-        "needs a real editor",
+        "brnr session resume <session> --take-over",
+        "needs an editor-owned session with experimental take-over enabled",
     ),
-    ("brnr session resume <session>", "needs a real editor"),
-    (
-        "brnr prompt send <session> --prompt \"Reply with headless-marker only.\" --wait",
-        "needs a real editor",
-    ),
-    ("brnr session close <session>", "needs a real editor"),
-    ("brnr permission requests <session>", "needs a real editor"),
-    ("brnr permission allow <session> <request>", "needs a real editor"),
-    ("brnr permission reject <session> <request>", "needs a real editor"),
-    ("brnr elicitation requests <session>", "needs a real editor"),
-    ("brnr elicitation accept <session> <request> --field <key>=<value>", "needs a real editor"),
-    ("brnr elicitation decline <session> <request>", "needs a real editor"),
-    ("brnr elicitation cancel <session> <request>", "needs a real editor"),
     ("ssh agent@linux", "establishes authentication and host trust with an external SSH host"),
     (
         "brnr session list --remote agent@linux",
@@ -469,6 +486,9 @@ const SKIPPED: &[(&str, &str)] = &[
 /// `{pid}` the one running process, `{s}` the example's session.
 const STAND_INS: &[(&str, &str)] = &[
     ("$s", "{s}"),
+    ("<session>", "{s}"),
+    ("<request>", "{request}"),
+    ("<key>=<value>", "{fields}"),
     ("brnr-claude-adapter", "{agent}"),
     ("brnr-codex-adapter", "{agent}"),
     ("brnr-muse-adapter", "{agent}"),
@@ -992,6 +1012,13 @@ fn scratch(name: &str, before: Before, agent: &[(String, String)], bridge: bool)
             "\n[[profiles.default.bridges]]\ncommand = {command:?}\nargs = {args:?}\n"
         ));
     }
+    // Use the checklist's actual profile definitions so its show/start
+    // examples stay in step with the TOML on the page.
+    for (lang, _, body) in md_blocks(&read("docs/guide/editor-checks.md")) {
+        if lang == "toml" {
+            config.push_str(&body);
+        }
+    }
     env.write_config(&config);
     fs::write(dir.join("task.md"), "reply readme\n").unwrap();
     fs::write(dir.join("src/api.rs"), "pub fn api() {}\n").unwrap();
@@ -1030,10 +1057,19 @@ fn command(env: &Env, words: &[Word]) -> Result<(std::process::Command, String),
         let text = STAND_INS.iter().find(|(from, _)| *from == w.text).map_or(&*w.text, |s| s.1);
         let text = match text {
             "{pid}" => env.pid(),
+            // The form placeholder stands for all required fields.
+            "{fields}" => {
+                args.extend(["name=Ada", "--field", "color=green"].map(str::to_owned));
+                continue;
+            }
             _ => text.to_owned(),
         };
         let text = text
             .replace("{s}", s)
+            .replace(
+                "{request}",
+                if words.get(1).is_some_and(|w| w.text == "permission") { "p1" } else { "e1" },
+            )
             .replace("{agent}", AGENT)
             .replace("{dir}", &dir.to_string_lossy());
         match (w.quoted, &*text) {
