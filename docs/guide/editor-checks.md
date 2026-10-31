@@ -8,9 +8,9 @@ makes of it. This page is the checklist and the results matrix for those
 checks (#216). Check 11 is step 1 of #217.
 
 Nothing here has been run yet. Every cell in the matrix below is
-`untested`, and no editor results are claimed here. Run the checks by hand, replace `untested` with `pass` or `fail`
-as you go, and give each failure an issue of its own. Until a cell is
-filled in, it says nothing about that editor.
+`untested`, and no editor results are claimed here. Run the checks by hand,
+replace `untested` with `pass` or `fail` as you go, and give each failure an
+issue of its own. Until a cell is filled in, it says nothing about that editor.
 
 ## What to record
 
@@ -31,15 +31,15 @@ For each cell, record:
 
 Get the program versions from a terminal:
 
-```text
+```sh
 brnr --version
 brnr-claude-adapter --version
 brnr-codex-adapter --version
 ```
 
 A `fail` is any difference from what the check says passing looks like.
-The direct run (below) is the baseline: a difference
-from it is the finding, even when the turn itself succeeds.
+The direct run (below) is the baseline: a difference from it is the finding,
+even when the turn itself succeeds.
 
 ## The three ways to run each check
 
@@ -58,7 +58,7 @@ that applies to it:
 
 The editor commands for the Claude adapter are:
 
-```text
+```sh
 brnr acp -- brnr-claude-adapter
 brnr acp --strict -- brnr-claude-adapter
 brnr-claude-adapter
@@ -74,11 +74,17 @@ refusal a successful take-over or a missing stimulus a pass.
 
 ## Before you start
 
-Work in a scratch project you can edit freely, with one small text
-file open in the editor. Keep one brnr build for every run in a cell,
-and record its version before you start.
+Use a scratch project with no secrets, read raw ACP excerpts before
+committing or filing them, and replace your home directory with `~`.
+Use `brnr doctor --report` for host-log lines.
+Work with one small text file open in the editor. Keep one brnr build for
+every run in a cell, and record its version before you start.
 
 ### Profiles
+
+Keep `exp` and `fsterm` in a scratch config selected with
+`BRNR_CONFIG=/absolute/path/to/scratch/config.toml` in both the editor
+agent environment and the terminal, or remove these profiles when done.
 
 The checks need two profiles in the config file
 (`$BRNR_CONFIG`, else `$XDG_CONFIG_HOME/brnr/config.toml`, falling back to
@@ -104,14 +110,14 @@ leaves nothing for the raw-ACP step of each check.
 
 The editor commands with a profile are:
 
-```text
+```sh
 brnr acp --profile fsterm -- brnr-claude-adapter
 brnr acp --profile exp -- brnr-claude-adapter
 ```
 
 Check what a run will use before you start it:
 
-```text
+```sh
 brnr profile show fsterm
 brnr profile show exp
 ```
@@ -148,7 +154,7 @@ login, model and permission settings for all three runs.
 After the editor starts the agent, confirm from a terminal that brnr
 has the session (not needed for the direct run):
 
-```text
+```sh
 brnr session list
 brnr process list
 ```
@@ -160,7 +166,7 @@ it `<session>`.
 
 After each check, look at what crossed. `<session>` is the id above:
 
-```text
+```sh
 brnr event log <session> --events acp
 brnr event log <session>
 ```
@@ -169,10 +175,9 @@ The first prints the raw ACP messages, each as an `acp` event; the
 second prints brnr's story of the session (messages, tool calls,
 approvals, how the turn ended). Quote the lines that show the result
 in the cell's note. Use `brnr event log <session> --events acp --json`
-to find the run’s
-`host_id`; its host log is `$BRNR_HOME/hosts/<host_id>.jsonl` (by default
-under `~/.brnr/hosts/`); checks that name a
-host-log record say what to look for there.
+to find the run's `host_id`; its host log is
+`$BRNR_HOME/hosts/<host_id>.jsonl` (by default under `~/.brnr/hosts/`); checks
+that name a host-log record say what to look for there.
 
 ## The matrix
 
@@ -338,17 +343,19 @@ check cancellation cleans those up too and record the difference.
 
 1. Start an editor session with profile `exp`. Leave an unsaved marker in
    the scratch file. Note the session id and start a long turn.
-2. In a terminal run:
-
-   ```text
-   brnr session resume <session> --take-over
-   brnr prompt send <session> --prompt "Read editor-check.txt from disk and quote it." --wait
-   ```
+2. In a terminal run the commands for step 2 below.
 
 3. Check the editor's notice, then try a prompt in the old pane. Close the
    headless session with `brnr session close <session>` before continuing.
 4. Repeat with strict added to the editor's `exp` command: take-over must
    be refused. Direct has no brnr owner to take over; record that limitation.
+
+Commands for step 2:
+
+```sh
+brnr session resume <session> --take-over
+brnr prompt send <session> --prompt "Read editor-check.txt from disk and quote it." --wait
+```
 
 **Pass:** opted-in non-strict take-over cancels the old turn, tells the
 editor “Session taken over by brnr”, and continues headless using disk text.
@@ -415,18 +422,20 @@ host log and OS observations instead of expecting a final ACP response.
 
 1. Complete a short turn and record its session id. Close the editor and
    verify its agent process exits as in check 8.
-2. Run the following (add `--strict` to resume for the strict run):
-
-   ```text
-   brnr session resume <session>
-   brnr prompt send <session> --prompt "Reply with headless-marker only." --wait
-   brnr session close <session>
-   ```
+2. Run the commands for step 2 below (add `--strict` to resume for the strict run).
 
 3. Reopen the editor, select the same configured agent and load that session
    from its history. Send “Reply with editor-again-marker only”.
 4. For direct, close and reopen the editor and try its own history load;
    there is no brnr headless middle step. Record that limitation.
+
+Commands for step 2:
+
+```sh
+brnr session resume <session>
+brnr prompt send <session> --prompt "Reply with headless-marker only." --wait
+brnr session close <session>
+```
 
 **Pass:** headless continuation succeeds, releasing it allows the editor
 load, and the editor shows history and accepts a new prompt. ACP shows
@@ -454,26 +463,15 @@ result and ACP excerpt for **each** action in the matrix notes.
 3. **cancel:** trigger an approval, then run `brnr prompt cancel <session>`.
    Repeat with an elicitation if the adapter can produce one. Check the
    turn ends and pending dialogs are withdrawn.
-4. **permission:** trigger a fresh approval for each of:
-
-   ```text
-   brnr permission requests <session>
-   brnr permission allow <session> <request>
-   brnr permission reject <session> <request>
-   ```
+4. **permission:** use the permission commands below, triggering a fresh
+   approval for each decision.
 
    Check withdrawal (`$/cancel_request`), tool status `in_progress` for
    allow or `failed` for reject, and “Allowed via brnr” / “Rejected via brnr”.
    If a stale dialog remains, answer it and check only one decision reaches
    the agent and the editor shows “Already allowed/rejected via brnr”.
-5. **elicitation:** trigger separate agent questions for each command:
-
-   ```text
-   brnr elicitation requests <session>
-   brnr elicitation accept <session> <request> --field <key>=<value>
-   brnr elicitation decline <session> <request>
-   brnr elicitation cancel <session> <request>
-   ```
+5. **elicitation:** use the elicitation commands below, triggering separate
+   agent questions for each decision.
 
    Use fields required by the actual question (`elicitation show` gives
    its schema). Check withdrawal and accepted/declined notices, and try a
@@ -489,6 +487,23 @@ result and ACP excerpt for **each** action in the matrix notes.
 8. If the editor supports steering, send a message during a long turn and
    inspect whether it sends `_session/steering`; record its behavior.
    Include IntelliJ restart observations from check 8.
+
+Permission commands for step 4:
+
+```sh
+brnr permission requests <session>
+brnr permission allow <session> <request>
+brnr permission reject <session> <request>
+```
+
+Elicitation commands for step 5:
+
+```sh
+brnr elicitation requests <session>
+brnr elicitation accept <session> <request> --field <key>=<value>
+brnr elicitation decline <session> <request>
+brnr elicitation cancel <session> <request>
+```
 
 **Pass:** each available action produces the ADR 7.1 compensation described
 above and the editor stays usable; record rendering, dialog withdrawal and

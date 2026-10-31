@@ -100,7 +100,7 @@ brnr doctor                        # checks what brnr depends on
 ```
 
 The [real-editor check matrix](docs/guide/editor-checks.md) has the manual
-checklists for Zed and IntelliJ with AIR; every result is untested.
+checklists for Zed and IntelliJ with AIR.
 
 ## How light it is
 

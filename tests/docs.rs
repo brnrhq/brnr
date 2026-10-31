@@ -52,6 +52,7 @@ const DOCS: &[&str] = &[
     "docs/introduction.md",
     "docs/install.md",
     "docs/guide/editor.md",
+    "docs/guide/editor-checks.md",
     "docs/guide/outside.md",
     "docs/guide/approvals.md",
     "docs/guide/events.md",
@@ -410,6 +411,35 @@ const EXAMPLES: &[(&str, Before, Then)] = &[
 
 /// The lines of `sh` blocks that don't run here, and why.
 const SKIPPED: &[(&str, &str)] = &[
+    ("brnr-claude-adapter", "needs a real editor"),
+    ("brnr --version", "needs a real editor"),
+    ("brnr-claude-adapter --version", "needs a real editor"),
+    ("brnr-codex-adapter --version", "needs a real editor"),
+    ("brnr acp --strict -- brnr-claude-adapter", "needs a real editor"),
+    ("brnr acp --profile fsterm -- brnr-claude-adapter", "needs a real editor"),
+    ("brnr acp --profile exp -- brnr-claude-adapter", "needs a real editor"),
+    ("brnr profile show fsterm", "needs a real editor"),
+    ("brnr profile show exp", "needs a real editor"),
+    ("brnr event log <session> --events acp", "needs a real editor"),
+    ("brnr event log <session>", "needs a real editor"),
+    ("brnr session resume <session> --take-over", "needs a real editor"),
+    (
+        "brnr prompt send <session> --prompt \"Read editor-check.txt from disk and quote it.\" --wait",
+        "needs a real editor",
+    ),
+    ("brnr session resume <session>", "needs a real editor"),
+    (
+        "brnr prompt send <session> --prompt \"Reply with headless-marker only.\" --wait",
+        "needs a real editor",
+    ),
+    ("brnr session close <session>", "needs a real editor"),
+    ("brnr permission requests <session>", "needs a real editor"),
+    ("brnr permission allow <session> <request>", "needs a real editor"),
+    ("brnr permission reject <session> <request>", "needs a real editor"),
+    ("brnr elicitation requests <session>", "needs a real editor"),
+    ("brnr elicitation accept <session> <request> --field <key>=<value>", "needs a real editor"),
+    ("brnr elicitation decline <session> <request>", "needs a real editor"),
+    ("brnr elicitation cancel <session> <request>", "needs a real editor"),
     ("ssh agent@linux", "establishes authentication and host trust with an external SSH host"),
     (
         "brnr session list --remote agent@linux",
