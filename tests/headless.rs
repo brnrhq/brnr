@@ -45,16 +45,14 @@ impl ChildGuard {
         }
         fn drain(pipe: &mut impl Read, bytes: &mut Vec<u8>, stage: &str) -> bool {
             let mut buf = [0; 8192];
-            match pipe.read(&mut buf) {
-                Ok(0) => true,
-                Ok(n) => {
-                    bytes.extend_from_slice(&buf[..n]);
-                    false
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) => return true,
+                    Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => return false,
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) => panic!("{stage}: reading output: {e}"),
                 }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-                    false
-                }
-                Err(e) => panic!("{stage}: reading output: {e}"),
             }
         }
         let child = self.0.as_mut().unwrap();
@@ -1507,22 +1505,24 @@ fn adr_0010_a_wait_cut_off_catches_up() {
     let env = Env::new("waitcatchup");
     env.start(&[]);
     env.ok(&["prompt", "send", "sess-1", "--prompt", "hang"]);
-    let wait = env
-        .brnr(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply done"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    // Guard the stopped waiter so an earlier failure also kills and reaps it.
+    let wait = ChildGuard(Some(
+        env.brnr(&["prompt", "send", "sess-1", "--wait", "--prompt", "reply done"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
     let held = || env.ok(&["queue", "list", "sess-1"]).contains("m2 (after turn)");
     assert!(wait_for(Duration::from_secs(10), held), "not held");
-    kill(wait.id() as i32, libc::SIGSTOP);
+    kill(wait.0.as_ref().unwrap().id() as i32, libc::SIGSTOP);
     env.ok(&["prompt", "send", "sess-1", "--interrupt", "--prompt", "many 4 6000000"]);
-    env.ok(&["event", "wait", "sess-1"]);
+    env.ok(&["event", "wait", "sess-1", "--timeout", "10"]);
     let dropped = || host_logs(&env).contains(r#""event":"peer_dropped""#);
     let cut = wait_for(Duration::from_secs(10), dropped);
-    kill(wait.id() as i32, libc::SIGCONT);
+    kill(wait.0.as_ref().unwrap().id() as i32, libc::SIGCONT);
     assert!(cut, "the wait wasn't cut off");
-    let out = wait.wait_with_output().unwrap();
+    let out = wait.output(Duration::from_secs(15), "cut-off prompt waiter catch-up");
     assert!(out.status.success(), "send --wait: {}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
     env.stop();
@@ -1530,7 +1530,6 @@ fn adr_0010_a_wait_cut_off_catches_up() {
 
 /// `event wait --for turn`, cut off while four 6 MB approvals came (stopped,
 /// here), catches up on the turn's end (ADR 10.2).
-// This optimized-throughput fixture can exceed the inner control deadline in debug.
 #[test]
 #[cfg_attr(
     debug_assertions,
