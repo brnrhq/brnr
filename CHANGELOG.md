@@ -33,9 +33,10 @@ brnr's own conventions:
   already asks less or a fork of one, any program as the agent, the socket
   out of a sandbox), and a guide section, "brnr from a restricted agent",
   says how to set Claude Code's managed settings, Codex's managed
-  requirements, a sandbox and command rules: deny `brnr _remote` whole,
-  and keep reads local with Claude Code's wildcard deny rule or limits on
-  network, `ssh` or SSH keys; Codex's prefix rules cannot exclude
+  requirements, a sandbox and command rules: deny `brnr host`,
+  `brnr _remote` and `session list` whole. Claude Code's wildcard deny rule
+  for remote reads is best effort; what holds is a sandbox without network
+  or `ssh`, or no usable SSH keys. Codex's prefix rules cannot exclude
   `--remote` at every argument position. The skill's rule 4 says it isn't
   enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1;
   ADR 12.1–12.2).

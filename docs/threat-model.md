@@ -308,18 +308,22 @@ What brnr doesn't enforce, or doesn't test, today.
   `--profile` or `--` names; `brnr event notify --stdin -- sh -c '…'` runs
   one for each line it reads. `brnr _remote` is the destination's entry
   point, but also runs any of these verbs locally. `brnr host` runs the
-  program its stdin request names, but needs a socket on fd 3, so only code
-  that can already run arbitrary programs reaches it. What holds is the
-  agent's command rules, and an OS sandbox around the agent, which what it
-  starts inherits.
+  program its stdin request names whenever fd 3 is a socket (with no
+  arguments and stdin not a terminal). A shell can provide that socket by
+  redirecting an inherited socket with `3>&1`, or with bash's `/dev/tcp`.
+  The command rules have to deny `brnr host` too. What holds is the agent's
+  command rules, and an OS sandbox around the agent, which what it starts
+  inherits.
 - **An allowed read verb can read remote sessions.** With `--remote`, it
   reads session state on every destination the user's SSH reaches. The flag
   can come anywhere among a verb's arguments, so Codex's prefix rules
   cannot exclude it. Claude Code's wildcard deny rule
   `Bash(brnr * --remote *)` can match it in either position, as the
-  [guide](guide/agents.md#brnr-from-a-restricted-agent) describes. What holds
-  beyond those rules is an OS sandbox without network access or without
-  `ssh`, or no SSH keys the agent can use: brnr executes the system `ssh`.
+  [guide](guide/agents.md#brnr-from-a-restricted-agent) describes. It is best
+  effort against an agent trying to evade it: quoting, an absolute path or
+  `env brnr` can change the command text it matches. What holds is an OS
+  sandbox without network access or without `ssh`, or no SSH keys the agent
+  can use: brnr executes the system `ssh`.
 - **The socket is a way out of a sandbox.** An agent in an OS sandbox starts
   brnr inside it, but a brnr process started outside it, by the user or an
   editor, serves whoever reaches its socket: an agent in the sandbox that can
