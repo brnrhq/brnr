@@ -147,3 +147,15 @@ restrictions can limit remote access, but do not stop these programs
 from running local commands. The [OS sandbox](#an-os-sandbox) is the
 boundary. A deny list must cover every spelling of a command; an allow
 list still needs sandbox limits on remote reads and program starts.
+
+<!-- classification: every command, entry point and transport form brnr's
+parser has, by the paragraph above that covers it; tests/classification.rs
+fails when one is missing here or is no longer brnr's. It checks that each
+has been considered, not that these rules are a complete policy: the OS
+sandbox is what holds.
+deny: acp, host, _remote, --remote, doctor, remote check, session new, session resume, session fork, session delete, session list, prompt send, permission allow, elicitation accept, config set, event notify
+writes: skill install, session prune
+disrupts: process stop, session close, prompt cancel, queue drop, queue clear, permission reject, elicitation decline, elicitation cancel
+allow: session status, event log, event watch, event wait, permission requests, permission show, elicitation requests, elicitation show, config get
+reads: --version, process list, prompt commands, queue list, queue show, profile list, profile show, profile keys, skill
+-->
