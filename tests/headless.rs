@@ -433,10 +433,14 @@ fn adr_0003_foreground_close_of_the_last_session() {
     assert!(fg.wait().unwrap().success(), "{err}");
 }
 
-/// Everything the processes' host logs hold.
+/// Complete records from every process's host log.
 fn host_logs(env: &Env) -> String {
     let Ok(dir) = fs::read_dir(env.dir.join("home/hosts")) else { return String::new() };
-    dir.map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect()
+    dir.map(|e| {
+        let text = fs::read_to_string(e.unwrap().path()).unwrap();
+        complete_lines(&text).to_owned()
+    })
+    .collect()
 }
 
 /// What is left in the runtime dir, and the session locks left in the state
@@ -4774,13 +4778,50 @@ fn host_log_with(env: &Env, event: &str) -> Vec<Value> {
     log_with(|| fs::read_to_string(&path).unwrap_or_default(), event, Duration::from_secs(5))
 }
 
+/// The lines a writer has finished, leaving its partial last record out.
+fn complete_lines(text: &str) -> &str {
+    &text[..text.rfind('\n').map_or(0, |end| end + 1)]
+}
+
+/// Every file in a snapshot drops its partial tail, and an unrelated field
+/// named like the event doesn't end the wait.
+#[test]
+fn host_log_snapshots_wait_for_complete_events() {
+    let env = Env::new("logsnapshot");
+    let dir = env.dir.join("home/hosts");
+    fs::create_dir_all(&dir).unwrap();
+    for name in ["a", "b"] {
+        fs::write(
+            dir.join(name),
+            "{\"event\":{\"event\":\"other\",\"text\":\"peer_dropped\"}}\n{\"event\":",
+        )
+        .unwrap();
+    }
+    let mut reads = 0;
+    let records = log_with(
+        || {
+            reads += 1;
+            let mut text = host_logs(&env);
+            if reads == 2 {
+                text.push_str("{\"event\":{\"event\":\"peer_dropped\"}}\n");
+            }
+            text
+        },
+        "peer_dropped",
+        Duration::from_secs(5),
+    );
+    assert_eq!(reads, 2);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[2]["event"], "peer_dropped");
+}
+
 /// Complete host-log records from the snapshot that first contains `event`.
 fn log_with(mut read: impl FnMut() -> String, event: &str, timeout: Duration) -> Vec<Value> {
     let mut log = String::new();
     let has = || {
         let text = read();
-        log = text[..text.rfind('\n').map_or(0, |end| end + 1)].to_owned();
-        log.contains(&format!("\"{event}\""))
+        log = complete_lines(&text).to_owned();
+        log.contains(&format!("\"event\":\"{event}\""))
     };
     assert!(wait_for(timeout, has), "no {event} in the host log");
     log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].take()).collect()
