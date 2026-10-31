@@ -1997,8 +1997,9 @@ fn adr_0010_a_bridges_stderr_keeps_a_character_a_piece_would_cut() {
 
 /// The host log's `peer_dropped` records, once there is one.
 fn peers_dropped(env: &Env) -> Vec<Value> {
-    // A bridge must produce and the host read 32 MiB first; under load that
-    // can exceed ten seconds. This is an observation budget, not a product deadline.
+    // A peer (a bridge, or a socket client) must send and the host read 32 MiB
+    // first; under load that can exceed ten seconds. This is an observation
+    // budget, not a product deadline.
     log_with(|| host_logs(env), "peer_dropped", Duration::from_secs(30))
         .into_iter()
         .filter(|r| r["event"] == "peer_dropped")
