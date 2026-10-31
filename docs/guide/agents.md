@@ -66,17 +66,19 @@ override`), so the session can't be made to ask nothing. Codex 0.138.0 and
 later prefer `allowed_permission_profiles` for the sandbox, leaving
 `:danger-full-access` out; check the requirements against the Codex you run.
 
-### An OS sandbox
+<a id="an-os-sandbox"></a>
 
-A brnr process an agent in a sandbox starts runs in the sandbox, and so
-does its agent. One started outside it, by you or your editor, serves
-whoever reaches its socket, and opens sessions, sets modes and answers
-approvals outside the sandbox. Keep the runtime directory (`BRNR_DIR`;
-by default `$XDG_RUNTIME_DIR/brnr`, else `$TMPDIR/brnr-<uid>`) out of
-the sandbox's reach, or run no brnr process outside it.
+**An OS sandbox.** A brnr process an agent in a sandbox starts runs in
+the sandbox, and so does its agent. One started outside it, by you or
+your editor, serves whoever reaches its socket, and opens sessions, sets
+modes and answers approvals outside the sandbox. Keep the runtime
+directory (`BRNR_DIR`; by default `$XDG_RUNTIME_DIR/brnr`, else
+`$TMPDIR/brnr-<uid>`) out of the sandbox's reach, or run no brnr process
+outside it.
 
-The sandbox must also keep the agent from writing executables or brnr
-symlinks anywhere it can run them from, and from writing SSH configuration.
+The sandbox must also keep the agent from writing files that can be run
+or loaded as code (executables, shared libraries, scripts), or brnr links,
+anywhere, and from writing SSH configuration.
 These are examples of required restrictions, not a complete sandbox policy.
 The programs brnr starts inherit its OS sandbox; command rules cannot
 replace that boundary. See the

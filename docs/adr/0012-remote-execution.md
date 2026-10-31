@@ -138,7 +138,7 @@ the destination.
 **Why.** Remote execution has `--remote` on its command line, so it is
 visible to an agent's tool-permission rules (N1), but prefix rules cannot
 exclude it at every argument position; see the
-[threat model's Gap](../threat-model.md#gaps). `remote check`
+[threat model's Gap](../threat-model.md#program-starts). `remote check`
 connects without that flag and runs the destination's diagnostic programs.
 `--profile` has one meaning, a profile read where the command runs
 (ADR 8.1); before, it had three: a local execution profile, a local routing

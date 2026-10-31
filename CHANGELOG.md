@@ -26,35 +26,35 @@ brnr's own conventions:
 
 ### Added
 
-- The documentation says that brnr is not a permission boundary between an
-  agent and the agents it starts, and which boundaries hold: the threat
-  model's Actors and Gaps name the paths (a start in a mode that asks
-  nothing, answering a started agent's approvals, prompting a session that
-  already asks less or a fork of one, any program as the agent, the socket
-  out of a sandbox), and a guide section, "brnr from a restricted agent",
-  says how to set Claude Code's managed settings, Codex's managed
-  requirements, a sandbox and command rules: deny `brnr host`,
-  `brnr _remote` and `session list` whole, and deny `doctor` and
-  `remote check` whole: even without
-  `--fix`, adapter version probes execute programs, and `remote check`
-  starts SSH and remote doctor. ADR 12 names the remote-check exception
-  to `--remote` routing; the CLI help and reference do too. The guide
-  also names bare `skill install` as writing to default skill directories.
-  Claude Code's wildcard deny rule for remote reads is best effort.
-  Command rules cannot make `doctor`, `remote check` or any `--remote`
-  command safe: program choice and behavior depend on the caller's
-  environment and files. A deny-list policy must deny these paths whole.
-  The threat model's [Gap](docs/threat-model.md#program-starts) gives known
+- The documentation says that brnr is not a permission boundary between
+  an agent and the agents it starts, and which boundaries hold: the
+  threat model's Actors and Gaps name the paths (a start in a mode that
+  asks nothing, answering a started agent's approvals, prompting a
+  session that already asks less or a fork of one, any program as the
+  agent, the socket out of a sandbox), and a guide section, "brnr from a
+  restricted agent", says how to set Claude Code's managed settings,
+  Codex's managed requirements, a sandbox and command rules: deny
+  `brnr host`, `brnr _remote` and `session list` whole, and deny
+  `doctor` and `remote check` whole: even without `--fix`, adapter
+  version probes execute programs, and `remote check` starts SSH and
+  remote doctor. ADR 12 names the remote-check exception to `--remote`
+  routing; the CLI help and reference do too. The guide also names bare
+  `skill install` as writing to default skill directories. Claude Code's
+  wildcard deny rule for remote reads is best effort. Command rules
+  cannot make `doctor`, `remote check` or any `--remote` command safe:
+  program choice and behavior depend on the caller's environment and
+  files. A deny-list policy must deny these paths whole. The threat
+  model's [Gap](docs/threat-model.md#program-starts) gives known
   examples rather than a complete list; what holds is the
-  [OS sandbox](docs/guide/agents.md#an-os-sandbox). It keeps the agent from
-  writing executables or brnr symlinks anywhere it can run them from, and
-  from writing SSH configuration; these are not a complete sandbox policy.
-  The docs distinguish executable probes from npm-manifest reads; help
-  and comments limit connection claims to brnr's transport. Codex's
-  prefix rules cannot exclude
-  `--remote` at every argument position. The skill's rule 4 says it isn't
-  enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1;
-  ADR 12.1–12.2).
+  [OS sandbox](docs/guide/agents.md#an-os-sandbox) that keeps the agent
+  from writing files that can be run or loaded as code (executables,
+  shared libraries, scripts), or brnr links, anywhere, and from writing
+  SSH configuration. These restrictions are not a complete sandbox
+  policy. The docs distinguish executable probes from npm-manifest
+  reads; help and comments limit connection claims to brnr's transport.
+  Codex's prefix rules cannot exclude `--remote` at every argument
+  position. The skill's rule 4 says it isn't enforced, and SECURITY.md
+  links the section (ADR 1, N1 and P13; ADR 7.1; ADR 12.1–12.2).
 - Releasing says what the 1.0.0 release pull request changes by hand: each ADR's status line becomes Accepted, and ADR 8.4's promise is said to apply (ADR 8.4, ADR 11.4).
 
 ## [0.12.0] - 2026-10-27

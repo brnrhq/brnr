@@ -332,9 +332,9 @@ What brnr doesn't enforce, or doesn't test, today.
   files. Known examples, not an exhaustive list, include:
 
   - The caller's PATH, which selects `ssh` and can select adapters.
-  - The directory of the path brnr was started by (`argv[0]`), as well as
-    the running binary's directory (ADR 11.2). A symlink to brnr or a
-    chosen `argv[0]` can select a caller-writable directory for adapters,
+  - The directories of the path brnr was started by (`argv[0]`) and the
+    running binary's path (ADR 11.2). A symlink or hard link to brnr, or a
+    chosen `argv[0]`, can select a caller-writable directory for adapters,
     agents and bridges even when PATH is fixed.
   - SSH configuration (`~/.ssh/config`, `/etc/ssh/ssh_config` and their
     `Include`s). The genuine SSH client can run local commands through
@@ -342,13 +342,17 @@ What brnr doesn't enforce, or doesn't test, today.
     even with `BatchMode=yes` and `StrictHostKeyChecking=yes`. A plain
     configuration write can suffice; no executable bit, network or keys
     are needed.
+  - The inherited environment, including preload variables such as
+    `LD_PRELOAD` and `DYLD_INSERT_LIBRARIES`, or interpreter option
+    variables. Programs can load code from files with no executable bit.
 
   A deny-list policy must deny `doctor`, `remote check` and every
   `--remote` command whole. What holds is the
   [OS sandbox](guide/agents.md#an-os-sandbox), inherited by programs the
-  agent starts. It must keep the agent from writing executables or brnr
-  symlinks anywhere it can run them from, and from writing SSH
-  configuration. These restrictions are not a complete sandbox policy.
+  agent starts. It must keep the agent from writing files that can be run
+  or loaded as code (executables, shared libraries, scripts), or brnr
+  links, anywhere, and from writing SSH configuration. These restrictions
+  are not a complete sandbox policy.
 - **An allowed read verb can read remote sessions.** With `--remote`, it
   reads session state on every destination the user's SSH reaches. The flag
   can come anywhere among a verb's arguments, so Codex's prefix rules
@@ -485,9 +489,10 @@ What brnr doesn't enforce, or doesn't test, today.
   accept`) can have the editor's
   late answer to the first taken as its answer to the second (ADR 2.4). Not
   tested; no agent known reuses ids.
-- **Agents' lookup next to brnr.** The lookup uses a caller-chosen start
-  path as well as the running binary's directory (ADR 11.2). This is one
-  of the inputs in the [program-starting Gap](#program-starts), not a
+- **Agents' lookup next to brnr.** Both the start path and the running
+  binary's path can be caller-chosen (ADR 11.2): a symlink or hard link
+  to brnr, or a chosen `argv[0]`, can select a lookup directory. This is
+  one of the inputs in the [program-starting Gap](#program-starts), not a
   trusted installation boundary.
 - **A process the library's facade starts is the calling program.**
   `brnr::session::new` and `resume` start it as `<program> host` (ADR 8.5),

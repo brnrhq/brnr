@@ -65,6 +65,6 @@ brnr keeps it so, the test for each claim, and the known gaps.
   [program-starting Gap](docs/threat-model.md#program-starts) gives known
   examples, not an exhaustive list. What holds is an
   [OS sandbox](docs/guide/agents.md#an-os-sandbox) that keeps the agent from
-  writing executables or brnr symlinks anywhere it can run them from, and
-  from writing SSH configuration. Those restrictions are not a complete
-  sandbox policy.
+  writing files that can be run or loaded as code (executables, shared
+  libraries, scripts), or brnr links, anywhere, and from writing SSH
+  configuration. Those restrictions are not a complete sandbox policy.
